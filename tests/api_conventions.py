@@ -79,6 +79,9 @@ follows is the one-line claim each check makes, so a failure message reads in co
     renders as an exception type.
 26. **A Warp-typed module constant is not used as a Python-scope arithmetic operand or slice
     bound** (section 4.5). Its operators route through Warp's builtin dispatch.
+27. **No ``warp.sparse`` triplet build under ``triwarp/``** (section 3.7). An operator's matrix
+    is assembled from sorted keys (``array.csr_from_keys``) or, for genuinely unordered input,
+    ``array.csr_from_triplets``.
 
 Why a static scan rather than importing ``triwarp``
 ---------------------------------------------------
@@ -2278,4 +2281,42 @@ def warp_host_arithmetic_problems() -> list[str]:
                         f"int(...), or derive a plain module-level value the way "
                         f"kernels/array.py's LOOP_CONDITION_VIEW does"
                     )
+    return problems
+
+
+_TRIPLET_BUILDERS = frozenset({"bsr_from_triplets", "bsr_set_from_triplets"})
+
+
+def triplet_build_problems() -> list[str]:
+    """
+    Check 27: a call to ``warp.sparse``'s triplet builders anywhere under ``triwarp/``.
+
+    ``bsr_from_triplets`` sorts every triplet on a full-width key and allocates scratch several
+    times the matrix; on a 28 M-face mesh ``cotmatrix`` spent 9.4 GB a call there for a matrix
+    under 1 GB, and a drained CUDA mempool (CLAUDE.md 13.1) makes every one of those bytes a cost.
+    The package builds its matrices from row-major keys instead -- ``array.csr_from_keys`` when
+    the sparsity follows from the mesh, ``array.csr_from_triplets`` when the input is genuinely an
+    unordered coordinate list -- so a new call is a regression to route through one of those.
+    Tests may still call it: there it builds an *input*, independently of the code under test.
+
+    No allowlist: every former site converted, including the trivial ones (an empty matrix and a
+    one-entry-per-row prolongator are written as CSR directly).
+    """
+    problems: list[str] = []
+    for path in sorted(_PACKAGE_DIR.rglob("*.py")):
+        site = path.relative_to(_REPO_ROOT)
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except SyntaxError:
+            continue  # check 12 and the suite itself report an unparseable module
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name in _TRIPLET_BUILDERS:
+                problems.append(
+                    f"{site}:{node.lineno}: calls {name} -- assemble the CSR from keys "
+                    "(array.csr_from_keys) or through array.csr_from_triplets"
+                )
     return problems

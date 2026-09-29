@@ -904,14 +904,78 @@ def emit_split_uncut_faces(
 
 
 @wp.func
-def split_edge_vertex(
-    halfedge_edges: wp.array[wp.int32],
-    edge_vertex_rank: wp.array[wp.int32],
+def unique_edge_order_key(a: wp.int64, b: wp.int64, base: wp.int64) -> wp.int64:
+    # The undirected edge key in ``edges.edges_unique``' row order: that packs a sorted row with
+    # its first column as the low digit, so the larger endpoint is the high one.
+    return wp.max(a, b) * base + wp.min(a, b)
+
+
+@wp.kernel
+def split_crossed_halfedge_keys(
+    faces: wp.array[wp.int32],
+    cut_indices: wp.array[wp.int32],
+    face_signs: wp.array2d[wp.int32],
+    key_base: wp.int64,
+    out_keys: wp.array[wp.int64],
+    out_halfedges: wp.array[wp.int32],
+) -> None:
+    # One thread per halfedge of a cut face: the undirected key of the edge when the level set
+    # crosses its interior (strictly opposite corner signs, the classifier's own tolerance), else
+    # ``key_base ** 2``, above every edge key. Written straight into a radix sort's double-width
+    # buffer with the cut-local halfedge ``3 j + k`` as payload, so equal keys -- the two faces
+    # sharing a crossed edge -- land next to each other, in the order a mesh-wide unique-edge
+    # table lists the edges.
+    j, k = wp.tid()
+    face_index = cut_indices[j]
+    a = faces[3 * face_index + k]
+    b = faces[3 * face_index + (k + 1) % 3]
+    key = key_base * key_base
+    if face_signs[face_index, k] * face_signs[face_index, (k + 1) % 3] < 0:
+        key = unique_edge_order_key(wp.int64(a), wp.int64(b), key_base)
+    out_keys[3 * j + k] = key
+    out_halfedges[3 * j + k] = 3 * j + k
+
+
+@wp.kernel
+def split_crossed_edge_flags(
+    keys: wp.array[wp.int64], key_base: wp.int64, out_flags: wp.array[wp.int32]
+) -> None:
+    # ``1`` at the first of each run of equal crossed-edge keys in the sorted halfedges: one new
+    # vertex per crossed edge, numbered in ascending edge order by the inclusive scan of these.
+    q = wp.int32(wp.tid())
+    key = keys[q]
+    first = key < key_base * key_base
+    if q > 0:
+        first = first and keys[q - 1] != key
+    out_flags[q] = wp.where(first, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def split_crossed_edge_vertices(
+    vertices: wp.array[wp.vec3],
+    vertex_dots: wp.array[wp.float32],
+    keys: wp.array[wp.int64],
+    halfedges: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    key_base: wp.int64,
     vertex_base: wp.int32,
-    halfedge: wp.int32,
-) -> wp.int32:
-    # The new vertex index sitting on a face's edge ``k``, which is halfedge ``3 * f + k``.
-    return vertex_base + edge_vertex_rank[halfedge_edges[halfedge]]
+    out_cut_vertices: wp.array[wp.int32],
+    out_points: wp.array[wp.vec3],
+) -> None:
+    # Give every crossed cut-face halfedge its edge's new vertex, and have the first halfedge of
+    # each edge write the crossing point. ``canonical_edge_crossing`` interpolates from the lower
+    # endpoint, so both faces' views of the edge agree.
+    q = wp.int32(wp.tid())
+    key = keys[q]
+    if key >= key_base * key_base:
+        return
+    slot, first = kernel_array.scanned_count(rank, q)
+    slot = slot + first - 1
+    out_cut_vertices[halfedges[q]] = vertex_base + slot
+    if first != 0:
+        high = wp.int32(key // key_base)
+        low = wp.int32(key % key_base)
+        out_points[slot] = canonical_edge_crossing(vertices, vertex_dots, low, high)
 
 
 @wp.kernel
@@ -919,9 +983,7 @@ def emit_split_cut_edges(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     face_signs: wp.array2d[wp.int32],
-    halfedge_edges: wp.array[wp.int32],
-    edge_vertex_rank: wp.array[wp.int32],
-    vertex_base: wp.int32,
+    cut_vertices: wp.array[wp.int32],
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
@@ -935,8 +997,10 @@ def emit_split_cut_edges(
     next_corner = (lone + wp.int32(1)) % wp.int32(3)
     last_corner = (lone + wp.int32(2)) % wp.int32(3)
     # ``p0`` on the edge leaving the lone corner, ``p1`` on the edge arriving at it.
-    p0 = split_edge_vertex(halfedge_edges, edge_vertex_rank, vertex_base, base + lone)
-    p1 = split_edge_vertex(halfedge_edges, edge_vertex_rank, vertex_base, base + last_corner)
+    # ``cut_vertices`` holds the new vertex on each of this cut face's edges, edge ``k`` joining
+    # corners ``k`` and ``k + 1``.
+    p0 = cut_vertices[3 * tid + lone]
+    p1 = cut_vertices[3 * tid + last_corner]
     v_next = faces[base + next_corner]
     v_last = faces[base + last_corner]
 
@@ -962,9 +1026,7 @@ def emit_split_cut_corner(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     face_signs: wp.array2d[wp.int32],
-    halfedge_edges: wp.array[wp.int32],
-    edge_vertex_rank: wp.array[wp.int32],
-    vertex_base: wp.int32,
+    cut_vertices: wp.array[wp.int32],
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
@@ -980,7 +1042,7 @@ def emit_split_cut_corner(
     on_level = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_ON_PLANE)
     next_corner = (on_level + wp.int32(1)) % wp.int32(3)
     last_corner = (on_level + wp.int32(2)) % wp.int32(3)
-    crossing = split_edge_vertex(halfedge_edges, edge_vertex_rank, vertex_base, base + next_corner)
+    crossing = cut_vertices[3 * tid + next_corner]
 
     row = wp.int32(2) * tid
     out_new_faces[row, 0] = faces[base + on_level]
@@ -1196,6 +1258,24 @@ def marching_triangles_segments(
         out_edges[f, 1] = edge_next
 
 
+@wp.func
+def copy_cut_segment(
+    inclusive: wp.array[wp.int32],
+    segments: wp.array2d[wp.vec3],
+    i: wp.int32,
+    out_segments: wp.array2d[wp.vec3],
+) -> wp.int32:
+    # Copy row ``i`` of a per-face segment buffer to its compacted slot and return that slot, or
+    # ``-1`` when the row is not cut. Shared by the two compactions below, which differ only in how
+    # they hand on ``marching_triangles_segments``' crossing keys.
+    slot, cut = kernel_array.scanned_count(inclusive, i)
+    if cut == 0:
+        return wp.int32(-1)
+    out_segments[slot, 0] = segments[i, 0]
+    out_segments[slot, 1] = segments[i, 1]
+    return slot
+
+
 @wp.kernel
 def compact_cut_segments(
     inclusive: wp.array[wp.int32],
@@ -1211,16 +1291,187 @@ def compact_cut_segments(
     # ``out_rows`` (the source row of each kept segment) are optional -- a caller that has no use
     # for one passes ``None``, whose shape reads 0.
     i = wp.int32(wp.tid())
-    slot, cut = kernel_array.scanned_count(inclusive, i)
-    if cut == 0:
+    slot = copy_cut_segment(inclusive, segments, i, out_segments)
+    if slot < 0:
         return
-    out_segments[slot, 0] = segments[i, 0]
-    out_segments[slot, 1] = segments[i, 1]
     if out_edges.shape[0] > 0:
         out_edges[slot, 0] = edges[i, 0]
         out_edges[slot, 1] = edges[i, 1]
     if out_rows.shape[0] > 0:
         out_rows[slot] = i
+
+
+@wp.kernel
+def compact_cut_segment_keys(
+    inclusive: wp.array[wp.int32],
+    segments: wp.array2d[wp.vec3],
+    edges: wp.array2d[wp.int64],
+    out_segments: wp.array2d[wp.vec3],
+    out_keys: wp.array[wp.int64],
+    out_endpoints: wp.array[wp.int32],
+) -> None:
+    # ``compact_cut_segments`` for the device link: the crossing key of endpoint ``e`` of kept
+    # segment ``s`` goes straight into slot ``2 s + e`` of a radix sort's double-width key buffer,
+    # with the endpoint id ``2 s + e`` as its payload, so the sort needs no staging pass.
+    i = wp.int32(wp.tid())
+    slot = copy_cut_segment(inclusive, segments, i, out_segments)
+    if slot < 0:
+        return
+    out_keys[2 * slot] = edges[i, 0]
+    out_keys[2 * slot + 1] = edges[i, 1]
+    out_endpoints[2 * slot] = 2 * slot
+    out_endpoints[2 * slot + 1] = 2 * slot + 1
+
+
+# The device link of ``marching_triangles``: pair endpoints through the sorted crossing keys, then
+# rank every segment along its curve by multi-hop pointer jumping. It computes exactly what
+# ``intersection._link_segments`` computes on the host, and the two are pinned to each other.
+#
+# A segment's ranking state is one ``wp.vec4i``: ``(ahead, lowest, offset, steps)``. ``ahead`` is
+# the segment ``width`` hops downstream (an open curve's last segment is a fixed point),
+# ``lowest`` the smallest segment index in the window of ``width`` segments starting here,
+# ``offset`` how many hops into that window it first occurs, and ``steps`` how many real hops the
+# window spans. Once the window is at least as long as the curve, an open curve's segments read
+# their hop count to its last segment off ``steps``, and a closed curve's read the index it is
+# entered at off ``lowest`` and their hop count to it off ``offset``.
+LINK_MALFORMED = wp.constant(wp.int32(1))
+
+
+@wp.kernel
+def link_sorted_endpoints(
+    keys: wp.array[wp.int64],
+    endpoints: wp.array[wp.int32],
+    n_endpoints: wp.int32,
+    error_slot: wp.int32,
+    out_link: wp.array[wp.int32],
+    out_state: wp.array[wp.vec4i],
+    out_error: wp.array[wp.int32],
+) -> None:
+    # One thread per sorted endpoint. An interior crossing is a run of two equal keys, one
+    # segment's outgoing endpoint (even id) and another's incoming one (odd id); a boundary
+    # crossing is a run of one. The thread holding a segment's incoming endpoint writes its
+    # successor (``out_link[s]``) and its initial ranking state, the one holding its outgoing
+    # endpoint whether it has a predecessor (``out_link[n + s]``), so every slot has exactly one
+    # writer. Anything else -- a longer run, or two endpoints of one kind on one crossing -- is a
+    # level set the host link must judge, flagged in ``out_error[error_slot]``.
+    q = wp.int32(wp.tid())
+    endpoint = endpoints[q]
+    key = keys[q]
+    partner = wp.int32(-1)
+    same_prev = wp.bool(False)
+    if q > 0:
+        same_prev = keys[q - 1] == key
+    if same_prev:
+        partner = endpoints[q - 1]
+    if q + 1 < n_endpoints:
+        if keys[q + 1] == key:
+            if same_prev:
+                out_error[error_slot] = LINK_MALFORMED
+            partner = endpoints[q + 1]
+    if partner >= 0 and partner % 2 == endpoint % 2:
+        out_error[error_slot] = LINK_MALFORMED
+
+    segment = endpoint // 2
+    n_segments = n_endpoints // 2
+    if endpoint % 2 == 0:
+        out_link[n_segments + segment] = wp.where(partner >= 0, wp.int32(1), wp.int32(0))
+        return
+    successor = wp.int32(-1)
+    if partner >= 0:
+        successor = partner // 2
+    out_link[segment] = successor
+    if successor >= 0:
+        out_state[segment] = wp.vec4i(successor, segment, 0, 1)
+    else:
+        out_state[segment] = wp.vec4i(segment, segment, 0, 0)
+
+
+@wp.kernel
+def link_rank_round(
+    state: wp.array[wp.vec4i], hops: wp.int32, width: wp.int32, out_state: wp.array[wp.vec4i]
+) -> None:
+    # One multi-hop pointer-jumping round: merge the ``hops`` consecutive windows of ``width``
+    # segments starting here into one of ``hops * width``. The strict ``<`` keeps the *first*
+    # occurrence of the window's minimum, which is what makes ``offset`` the hop count to it.
+    i = wp.int32(wp.tid())
+    own = state[i]
+    ahead = own[0]
+    lowest = own[1]
+    offset = own[2]
+    steps = own[3]
+    for k in range(1, hops):
+        window = state[ahead]
+        if window[1] < lowest:
+            lowest = window[1]
+            offset = k * width + window[2]
+        steps = steps + window[3]
+        ahead = window[0]
+    out_state[i] = wp.vec4i(ahead, lowest, offset, steps)
+
+
+@wp.func
+def linked_curve_is_closed(
+    link: wp.array[wp.int32], state: wp.array[wp.vec4i], i: wp.int32
+) -> wp.bool:
+    # Once ranked, a segment on an open curve points at that curve's last segment, which has no
+    # successor; one on a closed curve never reaches a fixed point.
+    return link[state[i][0]] >= 0
+
+
+@wp.kernel
+def link_curve_weights(
+    link: wp.array[wp.int32],
+    state: wp.array[wp.vec4i],
+    n_segments: wp.int32,
+    out_weights: wp.array[wp.int32],
+    out_head_of_tail: wp.array[wp.int32],
+) -> None:
+    # Name each curve by one segment and weigh it by the points it emits. Open curves are named by
+    # their predecessor-free first segment at ``i`` and weigh their segment count plus one (the
+    # last segment emits both endpoints); closed curves by the segment they are entered at, their
+    # lowest index, at ``n + i``, and weigh their segment count. Every other slot weighs zero, so
+    # the inclusive scan of the weights lists the curves -- open ones first, each kind in index
+    # order -- with each named slot holding its curve's end bound. An open curve's segments only
+    # know its last segment, so its first writes its own index there.
+    i = wp.int32(wp.tid())
+    own = state[i]
+    open_weight = wp.int32(0)
+    closed_weight = wp.int32(0)
+    if linked_curve_is_closed(link, state, i):
+        if own[1] == i:
+            closed_weight = state[link[i]][2] + 1
+    elif link[n_segments + i] == 0:
+        open_weight = own[3] + 2
+        out_head_of_tail[own[0]] = i
+    out_weights[i] = open_weight
+    out_weights[n_segments + i] = closed_weight
+
+
+@wp.kernel
+def emit_linked_curves(
+    segments: wp.array2d[wp.vec3],
+    link: wp.array[wp.int32],
+    state: wp.array[wp.vec4i],
+    bounds: wp.array[wp.int32],
+    head_of_tail: wp.array[wp.int32],
+    n_segments: wp.int32,
+    out_points: wp.array[wp.vec3],
+) -> None:
+    # Write each segment's outgoing endpoint at its place along its curve in the packed output,
+    # and an open curve's last segment its incoming one after it.
+    i = wp.int32(wp.tid())
+    own = state[i]
+    closed = linked_curve_is_closed(link, state, i)
+    name = own[1] + n_segments
+    if not closed:
+        name = head_of_tail[own[0]]
+    start, count = kernel_array.scanned_count(bounds, name)
+    position = count - wp.int32(2) - own[3]
+    if closed:
+        position = (count - own[2]) % count
+    out_points[start + position] = segments[i, 0]
+    if not closed and link[i] < 0:
+        out_points[start + position + 1] = segments[i, 1]
 
 
 # Concrete overloads, registered at import -- rationale in ``triwarp/kernels/reduce.py``, rule in

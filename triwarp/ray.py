@@ -6,9 +6,9 @@ import math
 
 import warp as wp
 
-import triwarp as tw
-from triwarp._device import require_same_device
-from triwarp.bounds import aabb, enclosing_diagonal
+import triwarp.typing as twt
+from triwarp._device import read_scalar, require_same_device
+from triwarp.bounds import aabb
 from triwarp.constants import TOLERANCE_PLANAR
 from triwarp.kernels import proximity as kernel_proximity
 from triwarp.kernels import ray as kernel_ray
@@ -29,6 +29,9 @@ def intersects_location(
     carrying the same set of hits as the dense output of
     [`intersects_first`][triwarp.ray.intersects_first].
 
+    The returned arrays are prefix views of buffers sized for every ray, so they keep that
+    storage alive for as long as they are held.
+
     **Row order is unspecified.** Each hitting ray claims its output slot from an atomic
     counter, so rows arrive in the order the rays completed rather than in ray order, and two
     runs over the same input may order them differently. Sort by ``index_ray`` (or read
@@ -44,7 +47,8 @@ def intersects_location(
         ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
-        ``None``, derived from the combined mesh-and-origin AABB diagonal.
+        ``None``, the search is unbounded, which finds the same first hit as any bound at least
+        as long as the diagonal of the box enclosing the mesh and the ray origins.
 
     Returns
     -------
@@ -71,7 +75,7 @@ def intersects_location(
         return wp.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
 
     if max_t is None:
-        max_t = enclosing_diagonal(mesh.points, ray_origins)
+        max_t = math.inf
 
     index_ray = wp.empty(n, dtype=wp.int32, device=device)
     index_tri = wp.empty(n, dtype=wp.int32, device=device)
@@ -92,10 +96,17 @@ def intersects_location(
         ],
         device=device,
     )
-    _, (locations, index_ray, index_tri) = tw.array.trim_to_count(
-        counter, locations, index_ray, index_tri
+    # Prefix views of the per-ray buffers rather than exact-size copies: three allocations and
+    # three copies fewer, at the price of the returned arrays keeping ``n``-long storage alive.
+    n_hits = int(read_scalar(counter, 0))
+    if n_hits == 0:
+        empty_int = wp.empty(0, dtype=wp.int32, device=device)
+        return wp.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
+    return (
+        twt.as_dense(locations[:n_hits]),
+        twt.as_dense(index_ray[:n_hits]),
+        twt.as_dense(index_tri[:n_hits]),
     )
-    return locations, index_ray, index_tri
 
 
 def intersects_first(
@@ -109,8 +120,7 @@ def intersects_first(
     Find the index of the first triangle each ray hits.
 
     Uses ``wp.mesh_query_ray`` on the mesh BVH. Ray directions are unitized before
-    querying. The search distance along each ray defaults to the diagonal of the
-    axis-aligned bounding box enclosing mesh vertices and ray origins.
+    querying. The search along each ray is unbounded unless ``max_t`` is given.
 
     Parameters
     ----------
@@ -122,7 +132,8 @@ def intersects_first(
         ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
-        ``None``, derived from the combined mesh-and-origin AABB diagonal.
+        ``None``, the search is unbounded, which finds the same first hit as any bound at least
+        as long as the diagonal of the box enclosing the mesh and the ray origins.
 
     Returns
     -------
@@ -142,7 +153,7 @@ def intersects_first(
     if n == 0:
         return wp.empty(0, dtype=wp.int32, device=ray_origins.device)
     if max_t is None:
-        max_t = enclosing_diagonal(mesh.points, ray_origins)
+        max_t = math.inf
 
     out_triangle_index = wp.empty(n, dtype=wp.int32, device=ray_origins.device)
     # ``first_hit`` returns ``(face, location)`` and ``wp.map`` wants one ``out=`` per returned
@@ -172,8 +183,7 @@ def intersects_any(
     Check whether each ray hits the mesh surface.
 
     Uses ``wp.mesh_query_ray_anyhit`` on the mesh BVH. Ray directions are unitized
-    before querying. The search distance along each ray defaults to the diagonal of
-    the axis-aligned bounding box enclosing mesh vertices and ray origins.
+    before querying. The search along each ray is unbounded unless ``max_t`` is given.
 
     Parameters
     ----------
@@ -185,7 +195,8 @@ def intersects_any(
         ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
-        ``None``, derived from the combined mesh-and-origin AABB diagonal.
+        ``None``, the search is unbounded, which finds the same first hit as any bound at least
+        as long as the diagonal of the box enclosing the mesh and the ray origins.
 
     Returns
     -------
@@ -205,7 +216,7 @@ def intersects_any(
     if n == 0:
         return wp.empty(0, dtype=wp.bool, device=ray_origins.device)
     if max_t is None:
-        max_t = enclosing_diagonal(mesh.points, ray_origins)
+        max_t = math.inf
 
     out_hit = wp.empty(n, dtype=wp.bool, device=ray_origins.device)
     wp.map(
@@ -247,7 +258,8 @@ def longest_ray(
         ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
-        ``None``, derived from the combined mesh-and-origin AABB diagonal.
+        ``None``, the search is unbounded, which finds the same first hit as any bound at least
+        as long as the diagonal of the box enclosing the mesh and the ray origins.
     planar_tol
         Ignore intersections closer than this distance from the ray origin.
 
@@ -269,7 +281,7 @@ def longest_ray(
     if n == 0:
         return wp.empty(0, dtype=wp.float32, device=ray_origins.device)
     if max_t is None:
-        max_t = enclosing_diagonal(mesh.points, ray_origins)
+        max_t = math.inf
 
     out_distances = wp.empty(n, dtype=wp.float32, device=ray_origins.device)
     wp.map(

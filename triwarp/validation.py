@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 import warp as wp
@@ -11,6 +12,7 @@ import triwarp as tw
 import triwarp.typing as twt
 from triwarp._device import (
     read_scalar,
+    read_values,
     require_nonempty_mesh,
     require_same_device,
     require_valid_faces,
@@ -48,17 +50,17 @@ def is_edge_manifold(
         every edge must be shared by exactly two faces.
     edges_sorted
         Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. When ``None``, built from
-        ``faces``.
+        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Not read: the edge keys are
+        packed straight from ``faces``, which costs no more than hashing these rows and lets the
+        range check ride on the same pass.
     n_vertices
-        Optional vertex count (the edge-hash base). When ``None`` and ``validate`` is ``True``,
-        inferred from ``faces`` by the same reduction that checks them; unvalidated, no bound is
-        needed and none is inferred.
+        Optional vertex count (the edge-hash base and the upper bound checked). When ``None``, the
+        keys pack against a bound on every ``int32`` and only the negative half is checked.
     validate
-        Whether to range-check the edge indices before packing them. The check is a
-        ``triwarp.reduce.minmax`` whose host readback serialises the device pipeline. Pass
-        ``False`` only where both bounds are structurally guaranteed -- a face buffer this package
-        produced itself, or one an entry point has already validated.
+        Whether to range-check the face indices. The check rides on the pass that packs the keys
+        and shares the verdict's readback. Pass ``False`` only where both bounds are structurally
+        guaranteed -- a face buffer this package produced itself, or one an entry point has
+        already validated.
 
     Returns
     -------
@@ -96,27 +98,21 @@ def is_edge_manifold(
     device = faces.device
     # ``flags[0]`` is the verdict and ``flags[1]`` the range check, read back together.
     flags = wp.zeros(2, dtype=wp.int32, device=device)
-    if edges_sorted is None:
-        # The range check rides on the key pass, so validating costs no reduction and no
-        # readback of its own; unvalidated, its flag is simply not read.
-        keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=device)
-        wp.launch(
-            kernel_validation.face_edge_keys_checked,
-            dim=n_faces,
-            inputs=[
-                faces,
-                wp.uint64(INDEX_RADIX_PAIR if n_vertices is None else n_vertices),
-                twt.dtype_max(wp.int32) if n_vertices is None else n_vertices,
-            ],
-            outputs=[keys, flags],
-            device=device,
-        )
-    else:
-        keys = _halfedge_keys(
+    # The keys come straight off ``faces``, never off ``edges_sorted``: packing them there costs no
+    # more than hashing the rows, and the range check rides on the same pass, so validating costs
+    # no reduction and no readback of its own; unvalidated, its flag is simply not read.
+    keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=device)
+    wp.launch(
+        kernel_validation.face_edge_keys_checked,
+        dim=n_faces,
+        inputs=[
             faces,
-            edges_sorted,
-            _validated_vertex_bound(faces, n_vertices, validate, "is_edge_manifold"),
-        )
+            wp.uint64(INDEX_RADIX_PAIR if n_vertices is None else n_vertices),
+            twt.dtype_max(wp.int32) if n_vertices is None else n_vertices,
+        ],
+        outputs=[keys, flags],
+        device=device,
+    )
     # Counted with ``grouping.hashed_occurrence_counts``, the table ``grouping.unique_1d`` builds,
     # and tested in place: the answer is
     # order-free and needs no per-edge output, so the compaction, the sort and the host read of
@@ -129,7 +125,7 @@ def is_edge_manifold(
         device=device,
     )
     # One readback for both flags.
-    violated, out_of_range = flags.numpy().tolist()
+    violated, out_of_range = read_values(flags, 0, 2)
     if validate and out_of_range:
         bound = "" if n_vertices is None else f" below {n_vertices}"
         raise ValueError(f"is_edge_manifold: faces must be non-negative indices{bound}")
@@ -163,8 +159,9 @@ def edge_manifold_mask(
         ``False`` every edge of a face must be shared by exactly two faces.
     edges_sorted
         Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order (each row min-first). When
-        ``None``, built from ``faces``.
+        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order (each row min-first). Not read:
+        the halfedge keys are packed straight from ``faces``, which costs less than hashing these
+        rows.
     n_vertices
         Optional vertex count (the edge-hash base). When ``None`` and ``validate`` is ``True``,
         inferred from ``faces`` by the same reduction that checks them; unvalidated, no bound is
@@ -201,9 +198,7 @@ def edge_manifold_mask(
     # The share count of each edge is the length of its run of sorted keys, read in place: no
     # unique-edge table, inverse or count array, and no host read of the unique count.
     keys, order = _sorted_halfedge_keys(
-        faces,
-        edges_sorted,
-        _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask"),
+        faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
     )
     out_mask = wp.full(n_faces, True, dtype=wp.bool, device=device)
     wp.launch(
@@ -314,7 +309,7 @@ def is_vertex_manifold(
     violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
     if face_adjacency is None:
         parents = _corner_parents_from_keys(
-            faces, _sorted_halfedge_keys(faces, None, n_vertices), False, None
+            faces, _sorted_halfedge_keys(faces, n_vertices), False, None
         )
     else:
         assert face_adjacency_edges is not None
@@ -397,7 +392,7 @@ def vertex_manifold_mask(
     # The corner graph straight off the sorted halfedge keys, with its pair check off: no thread
     # indexes the violation flag, so none is allocated.
     parents = _corner_parents_from_keys(
-        faces, _sorted_halfedge_keys(faces, None, n_vertices), False, None
+        faces, _sorted_halfedge_keys(faces, n_vertices), False, None
     )
     mask = wp.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     _vertex_manifold_check(faces, n_vertices, parents, mask, None)
@@ -609,7 +604,7 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
 
     # ``edge_winding_consistent_mask``'s per-pair test read straight off the sorted keys, so the
     # verdict needs no group table, no host read of its length and no reduction over a mask.
-    keys, order = _sorted_halfedge_keys(faces, None, None)
+    keys, order = _sorted_halfedge_keys(faces, None)
     violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
     wp.launch(
         kernel_validation.sorted_pair_winding_violation,
@@ -669,7 +664,7 @@ def edge_winding_consistent_mask(
 
     # Neither edge table is built when not given: the keys come straight off ``faces`` and the
     # kernel reads each directed edge from its face corner, the row ``faces_to_edges`` would hold.
-    edge_groups = tw.grouping.group(_halfedge_keys(faces, edges_sorted, None), 2)
+    edge_groups = tw.grouping.group(_halfedge_keys(faces), 2)
     n_groups = int(edge_groups.shape[0])
     if n_groups == 0:
         return wp.empty(0, dtype=wp.bool, device=device)
@@ -884,7 +879,7 @@ def _orientation_bits_from_keys(
     [`face_flip_mask`][triwarp.validation.face_flip_mask]. ``faces`` must be non-empty. The sorted
     keys are returned too, so a caller can re-form the same edges.
     """
-    keys, order = _sorted_halfedge_keys(faces, None, None)
+    keys, order = _sorted_halfedge_keys(faces, None)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
     # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
     orient = _solve_orientation(
@@ -931,7 +926,7 @@ def is_watertight(
     faces: wp.array[wp.int32],
     *,
     edges_sorted: twt.Array2dInt32 | None = None,
-    mesh: wp.Mesh | None = None,
+    mesh: wp.Mesh | Callable[[], wp.Mesh] | None = None,
 ) -> bool:
     """
     Whether the mesh bounds a closed volume with no self-intersections.
@@ -947,12 +942,15 @@ def is_watertight(
         Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
     edges_sorted
         Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. When ``None``, built once
-        and shared by the edge- and vertex-manifold checks.
+        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Not read: the vertex count is
+        known here, and packing the halfedge keys straight from ``faces`` against it costs less
+        than hashing these rows.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, forwarded to the
-        self-intersection broad phase so its BVH is not rebuilt. Purely an optimization, and not
-        checked against ``vertices`` / ``faces``.
+        self-intersection broad phase so its BVH is not rebuilt -- or a zero-argument callable
+        returning one, called only once both manifold tests have passed, so a caller that caches
+        the mesh builds it only when the answer needs it. Purely an optimization, and not checked
+        against ``vertices`` / ``faces``.
 
     Returns
     -------
@@ -963,7 +961,8 @@ def is_watertight(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces``, ``edges_sorted`` and ``mesh`` are not all on one device.
+        If ``vertices``, ``faces``, ``edges_sorted`` and a ``wp.Mesh`` ``mesh`` are not all on one
+        device.
 
     See Also
     --------
@@ -986,7 +985,12 @@ def is_watertight(
     ``all(face_watertight_mask(faces))`` is the *first* of the three conditions and not this
     function. Every other ``is_*`` / ``*_mask`` pair in this module does relate that way.
     """
-    require_same_device(vertices=vertices, faces=faces, edges_sorted=edges_sorted, mesh=mesh)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        edges_sorted=edges_sorted,
+        mesh=mesh if isinstance(mesh, wp.Mesh) else None,
+    )
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
         return True
@@ -995,10 +999,13 @@ def is_watertight(
     # edge-share counts the edge test reads and the face pairs the vertex test's corner graph
     # links, so neither a face-adjacency table nor a second packing is built. Both tests raise one
     # flag and it is read once; only the self-intersection test, which needs a BVH, waits for it.
+    # Reading the edge test's flag first, to skip the vertex test on an open mesh, costs a closed
+    # mesh more than it saves an open one: the vertex test's launches then no longer overlap the
+    # sort on the device.
     n_vertices = int(vertices.shape[0])
     violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
     parents = _corner_parents_from_keys(
-        faces, _sorted_halfedge_keys(faces, edges_sorted, n_vertices), True, violation
+        faces, _sorted_halfedge_keys(faces, n_vertices), True, violation
     )
     _vertex_manifold_check(faces, n_vertices, parents, None, violation)
     if int(read_scalar(violation)) != 0:
@@ -1006,6 +1013,8 @@ def is_watertight(
     if mesh is None:
         require_nonempty_mesh(faces, "is_watertight")
         mesh = wp.Mesh(points=vertices, indices=faces)
+    elif not isinstance(mesh, wp.Mesh):
+        mesh = mesh()
     return not is_self_intersecting(mesh)
 
 
@@ -1083,8 +1092,9 @@ def is_volume(
         [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. When ``None``, built from
         ``faces``.
     edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges (same row order). When ``None``,
-        built from ``faces``.
+        Optional precomputed ``(n_faces * 3, 2)`` sorted edges (same row order). Not read: the
+        halfedge keys are packed straight from ``faces`` against the vertex count, which costs less
+        than hashing these rows.
 
     Returns
     -------
@@ -1124,7 +1134,7 @@ def is_volume(
     # Watertightness and winding consistency are one pass over the sorted halfedge keys: a run
     # that is not exactly two keys is an edge not shared by exactly two faces, and each pair's two
     # directed copies must be reversed. One flag, one readback, and the volume only if it passes.
-    keys, order = _sorted_halfedge_keys(faces, edges_sorted, None)
+    keys, order = _sorted_halfedge_keys(faces, int(vertices.shape[0]))
     violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
     wp.launch(
         kernel_validation.sorted_pair_winding_violation,
@@ -1242,7 +1252,7 @@ def face_defective_mask(
         max_angle = wp.zeros(n_faces, dtype=wp.float32, device=device)
         # Over the sorted halfedge keys, each adjacency pair taken at its first member: the pairs
         # ``face_adjacency`` would emit, with no table compacted and no host read of its length.
-        keys, order = _sorted_halfedge_keys(faces, None, int(vertices.shape[0]))
+        keys, order = _sorted_halfedge_keys(faces, int(vertices.shape[0]))
         wp.launch(
             kernel_validation.accumulate_neighbor_normals,
             dim=int(keys.shape[0]),
@@ -1353,38 +1363,39 @@ def _vertex_manifold_check(
 
 
 def _sorted_halfedge_keys(
-    faces: wp.array[wp.int32], edges_sorted: twt.Array2dInt32 | None, n_vertices: int | None
+    faces: wp.array[wp.int32], n_vertices: int | None
 ) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Sort the ``3 * n_faces`` packed undirected halfedge keys, returning the sorting permutation too.
 
     Halfedge ``3f + k`` is corner ``k`` of face ``f``, the ``faces_to_edges`` row order, so the
-    permutation maps each sorted position back to its face and corner. Without ``edges_sorted`` the
-    keys come straight off ``faces`` in one launch; with it they are ``hash_indices_rows`` of the
-    caller's rows, which packs identically. The radix is ``n_vertices``, or ``INDEX_RADIX_PAIR``
-    when it is ``None`` -- injective on any ``int32`` pair and order-preserving on non-negative
-    indices, so the sort, and every run of equal keys, is the same whichever radix packed them and
-    no reduction has to find the bound. The radix sort is stable, so equal keys stay in halfedge
+    permutation maps each sorted position back to its face and corner. The keys come straight off
+    ``faces`` in one launch into the sort's own buffer
+    ([`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys]), which packs a caller's
+    ``edges_sorted`` rows identically and costs less than hashing them: no row read, no staging
+    copy, and only the bits ``n_vertices`` leaves a key are sorted. So no caller here reads a
+    precomputed row table for its keys. The radix is ``n_vertices``, or ``INDEX_RADIX_PAIR`` when
+    it is ``None`` -- injective on any ``int32`` pair and order-preserving on non-negative indices,
+    so the sort, and every run of equal keys, is the same whichever radix packed them and no
+    reduction has to find the bound. The radix sort is stable, so equal keys stay in halfedge
     order: the order [`face_adjacency`][triwarp.adjacency.face_adjacency] groups them in.
     """
-    if edges_sorted is None:
-        return tw.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    return tw.array.sort_and_argsort(_halfedge_keys(faces, edges_sorted, n_vertices))
+    return tw.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
 
 
-def _halfedge_keys(
-    faces: wp.array[wp.int32], edges_sorted: twt.Array2dInt32 | None, n_vertices: int | None
-) -> wp.array[wp.uint64]:
-    """Pack the undirected key of every halfedge, in halfedge order (``_sorted_halfedge_keys``)."""
-    radix = INDEX_RADIX_PAIR if n_vertices is None else n_vertices
-    if edges_sorted is not None:
-        return tw.grouping.hash_indices_rows(edges_sorted, max_index=radix, validate=False)
+def _halfedge_keys(faces: wp.array[wp.int32]) -> wp.array[wp.uint64]:
+    """
+    Pack the undirected key of every halfedge, in halfedge order, against ``INDEX_RADIX_PAIR``.
+
+    The unsorted counterpart of ``_sorted_halfedge_keys``, read straight off ``faces`` for the
+    same reason: it is the rows ``hash_indices_rows`` of ``edges_sorted`` would give, for less.
+    """
     n_faces = int(faces.shape[0]) // 3
     keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
     wp.launch(
         kernel_adjacency.face_edge_keys,
         dim=n_faces,
-        inputs=[faces, wp.uint64(radix)],
+        inputs=[faces, wp.uint64(INDEX_RADIX_PAIR)],
         outputs=[keys],
         device=faces.device,
     )

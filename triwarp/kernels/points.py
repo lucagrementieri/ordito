@@ -349,6 +349,32 @@ def outlier_probability(plof: wp.float32, inverse_normalizer: wp.float32) -> wp.
     return wp.max(wp.float32(0.0), wp.erf(plof * inverse_normalizer))
 
 
+SQRT2_F64 = wp.constant(wp.float64(1.4142135623730951))
+
+
+@wp.kernel
+def outlier_probabilities(
+    plof: wp.array[wp.float32],
+    plof_sum_squares: wp.array[wp.float32],
+    scale: wp.float64,
+    n: wp.float32,
+    out_probability: wp.array[wp.float32],
+) -> None:
+    # ``outlier_probability`` with the cloud-wide normalizer ``nplof = scale * sqrt(E[plof^2])``
+    # formed here from the device sum rather than on the host, so no readback sits between the two
+    # passes. Each thread repeats the host form's arithmetic operation for operation -- the mean in
+    # ``float32``, then square root, product and reciprocal in ``float64``, each correctly rounded
+    # on both devices -- so the scale it narrows to ``float32`` is the host's to the bit. A cloud
+    # with no spread (every plof zero) scores zero.
+    i = wp.int32(wp.tid())
+    normalizer = scale * wp.sqrt(wp.float64(plof_sum_squares[0] / n))
+    probability = wp.float32(0.0)
+    if normalizer > wp.float64(0.0):
+        inverse = wp.float32(wp.float64(1.0) / (normalizer * SQRT2_F64))
+        probability = outlier_probability(plof[i], inverse)
+    out_probability[i] = probability
+
+
 @wp.func
 def centered_square_if_counted(
     value: wp.float32, count: wp.int32, center: wp.float32

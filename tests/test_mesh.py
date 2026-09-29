@@ -721,6 +721,31 @@ def test_is_watertight_decomposes_into_trimesh_clause(
     assert mesh.is_watertight == (edge_manifold_closed_tm and not self_intersecting)
 
 
+@pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius", "bohemian_dome"])
+def test_is_watertight_builds_the_bvh_only_when_it_needs_one(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Triwarp against triwarp: the cold property against the free function, and what it caches.
+
+    The free function carries the oracle (``test_is_watertight_decomposes_into_trimesh_clause``).
+    What this pins is the cold path the ``from_warp_mesh`` tests never reach: a ``Trimesh`` built
+    from buffers has no BVH, and builds -- and caches -- `warp_mesh` exactly when the two manifold
+    tests pass and the broad phase needs it. ``mobius`` and the open fixtures stop at the edge
+    test; ``boy_surface`` and ``bohemian_dome`` pass both manifold tests and reach the broad phase,
+    so both outcomes of the caching are asserted.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    mesh = tw.Trimesh(mesh_wp.points, mesh_wp.indices)
+    reaches_broad_phase = tw.validation.is_edge_manifold(
+        mesh_wp.indices, allow_boundary_edges=False
+    ) and tw.validation.is_vertex_manifold(mesh_wp.indices)
+    assert mesh.is_watertight == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
+    assert ("warp_mesh" in mesh._cache) == reaches_broad_phase
+    if reaches_broad_phase:
+        assert mesh.warp_mesh is mesh._cache["warp_mesh"]
+
+
 @pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
 def test_is_edge_and_vertex_manifold_closed_meshes(
     request: pytest.FixtureRequest, mesh_name: str

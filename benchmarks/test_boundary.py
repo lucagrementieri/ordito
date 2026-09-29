@@ -11,7 +11,7 @@ the *shape* of the boundary, along two independent directions that the axis sepa
 - **loop count** decides the host work. Per loop, a slice of a read-back offset table plus a
   ``wp.clone`` makes ``holes_many``'s 512 three-vertex loops *more* expensive than ``rim_long``'s
   two enormous ones despite a quarter of the boundary vertices. ``boundary_loops`` is a slicing
-  wrapper over the packed ``boundary_loops_batched`` for that reason.
+  wrapper over the packed ``boundary_loops_with_offsets`` for that reason.
 
 The spread over an unchanged face count is the point, and it is what identified the per-loop host
 sequence rather than the ranking as the thing to batch: with the wrong end on top this group runs an

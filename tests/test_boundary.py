@@ -431,6 +431,32 @@ def test_boundary_loops_mobius_is_one_cycle(mobius: tuple[tm.Trimesh, wp.Mesh]) 
     ]
 
 
+def test_boundary_loops_two_mobius_bands_keep_one_direction_each(
+    mobius: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Not a library comparison: the undirected walk keeps exactly one of each loop's two mirrors.
+
+    Two disjoint Moebius bands, the second's ids offset past the first's: the walk runs over darts,
+    so each boundary circle comes back once per direction, and only the even-starting mirror is
+    kept. Two loops of 78, in ascending order of their smallest vertex, each the first band's loop
+    shifted by the offset -- which pins the filter per cycle rather than on the only cycle there
+    is, and the ascending order of the kept cycles.
+    """
+    mesh_tm, mesh_wp = mobius
+    n = mesh_tm.vertices.shape[0]
+    vertices_np = np.concatenate([mesh_tm.vertices, mesh_tm.vertices + 5.0])
+    faces_np = np.concatenate([mesh_tm.faces, mesh_tm.faces + n])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
+
+    single_np = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)[0].numpy()
+    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+
+    assert [loop_wp.shape[0] for loop_wp in loops_wp] == [78, 78]
+    assert np.array_equal(loops_wp[0].numpy(), single_np)
+    assert np.array_equal(loops_wp[1].numpy(), single_np + n)
+
+
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosahedron"])
 def test_boundary_loop_sizes_helper_agrees_with_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
@@ -476,22 +502,22 @@ def test_boundary_loop_sizes_refuses_a_pinched_rim(device: str) -> None:
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-def test_boundary_loops_batched_matches_boundary_loops(
+def test_boundary_loops_with_offsets_matches_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
+    """Triwarp against triwarp: the list form is the packed form split, loop for loop."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
-    flat_wp, offsets_wp, sizes_wp = tw.boundary.boundary_loops_batched(
-        mesh_wp.points, mesh_wp.indices
-    )
+    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(mesh_wp.points, mesh_wp.indices)
 
-    offsets_np, sizes_np = offsets_wp.numpy(), sizes_wp.numpy()
-    assert len(loops_wp) == offsets_np.shape[0]
-    assert int(flat_wp.shape[0]) == int(sizes_np.sum())
+    offsets_np = offsets_wp.numpy()
+    assert len(loops_wp) == offsets_np.shape[0] - 1
+    assert int(offsets_np[0]) == 0
+    assert int(flat_wp.shape[0]) == int(offsets_np[-1])
     for i, loop_wp in enumerate(loops_wp):
-        begin = int(offsets_np[i])
-        assert np.array_equal(loop_wp.numpy(), flat_wp.numpy()[begin : begin + int(sizes_np[i])])
+        begin, end = int(offsets_np[i]), int(offsets_np[i + 1])
+        assert np.array_equal(loop_wp.numpy(), flat_wp.numpy()[begin:end])
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
@@ -512,6 +538,31 @@ def test_boundary_loops_copy_detaches_from_packed_buffer(
         assert views[0].ptr != views[1].ptr
         # Adjacent views share one allocation; the copies do not.
         assert views[1].ptr - views[0].ptr == 4 * int(views[0].shape[0])
+
+
+@pytest.mark.parametrize("rim", [7, 8, 9, 15, 16, 17, 63, 64, 65, 255, 256, 257, 4095, 4097])
+def test_boundary_loops_rank_across_jump_round_boundaries(device: str, rim: int) -> None:
+    """
+    Not a library comparison: the loop of a fan is known, so the oracle is its construction.
+
+    A disk fanned from one centre over a rim of ``rim`` vertices, its ids shuffled: the one loop
+    is the rim in winding order, from its smallest id. The rim length is the ranked-node count, so
+    lengths straddling the powers of the pointer-jump widths (8 and 16) put the closed-cycle
+    ranking one side and the other of each added round.
+    """
+    rng = np.random.default_rng(rim)
+    ids = rng.permutation(rim + 1).astype(np.int32)
+    centre, ring = ids[0], ids[1:]
+    faces_np = np.stack([np.full(rim, centre), ring, np.roll(ring, -1)], axis=1)
+    angle = 2.0 * np.pi * np.arange(rim) / rim
+    positions = np.zeros((rim + 1, 3))
+    positions[ring] = np.stack([np.cos(angle), np.sin(angle), np.zeros(rim)], axis=1)
+    vertices_wp, faces_wp = numpy_to_warp(positions, faces_np, device)
+
+    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+
+    assert np.array_equal(flat_wp.numpy(), np.roll(ring, -int(np.argmin(ring))))
+    assert np.array_equal(offsets_wp.numpy(), np.array([0, rim], dtype=np.int32))
 
 
 def test_boundary_loops_non_manifold_terminates(device: str) -> None:
@@ -907,8 +958,9 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     """
     Triwarp against triwarp: the packed entry points against the list ones, which carry the oracle.
 
-    ``loop_perimeters_batched`` and ``loop_directed_areas_batched`` exist so that a caller holding
-    ``boundary_loops_batched``'s output can measure it without splitting it back into a Python list
+    ``loop_perimeters_from_offsets`` and ``loop_directed_areas_from_offsets`` exist so that a caller
+    holding ``boundary_loops_with_offsets``' output can measure it without splitting it back into a
+    Python list
     and repacking; this asserts the two forms are the same measure. The list forms are the ones
     compared against a reference, so a divergence here is the packed path's.
 
@@ -925,32 +977,58 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops_wp) > 0  # non-vacuity: an empty comparison would pass and test nothing
-    flat_wp, offsets_wp, sizes_wp = tw.boundary.boundary_loops_batched(vertices_wp, faces_wp)
+    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
 
     assert np.allclose(
-        tw.boundary.loop_perimeters_batched(vertices_wp, flat_wp, offsets_wp, sizes_wp).numpy(),
+        tw.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
         tw.boundary.loop_perimeters(vertices_wp, loops_wp).numpy(),
         rtol=1e-5,
         atol=1e-5,
     )
     areas_np = tw.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
     assert np.allclose(
-        tw.boundary.loop_directed_areas_batched(vertices_wp, flat_wp, offsets_wp, sizes_wp).numpy(),
+        tw.boundary.loop_directed_areas_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
         areas_np,
         rtol=1e-5,
         atol=1e-5,
     )
 
-    owner_np = np.repeat(np.arange(sizes_wp.shape[0], dtype=np.int32), sizes_wp.numpy())
+    sizes_np = np.diff(offsets_wp.numpy())
+    owner_np = np.repeat(np.arange(sizes_np.shape[0], dtype=np.int32), sizes_np)
     owner_wp = wp.array(owner_np, dtype=wp.int32, device=vertices_wp.device)
     assert np.allclose(
-        tw.boundary.loop_directed_areas_batched(
-            vertices_wp, flat_wp, offsets_wp, sizes_wp, loop_id=owner_wp
+        tw.boundary.loop_directed_areas_from_offsets(
+            vertices_wp, flat_wp, offsets_wp, loop_id=owner_wp
         ).numpy(),
         areas_np,
         rtol=1e-5,
         atol=1e-5,
     )
+
+
+@pytest.mark.parametrize(
+    "offsets",
+    [[0, 3], [0, 3, 2, 6], [1, 6], [0, 7]],
+    ids=["unterminated", "decreasing", "start", "end"],
+)
+def test_packed_loop_measures_reject_malformed_offsets(device: str, offsets: list[int]) -> None:
+    """
+    Not a library comparison: the ``validate`` guard is what keeps a malformed pair off the kernel.
+
+    Six packed positions. An unterminated, length-``n`` offsets array fails it like any other
+    malformed one, and ``validate=False`` is the documented way past it.
+    """
+    vertices_wp = wp.zeros(6, dtype=wp.vec3, device=device)
+    flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
+    offsets_wp = wp.array(np.array(offsets, dtype=np.int32), dtype=wp.int32, device=device)
+    for measure in (
+        tw.boundary.loop_perimeters_from_offsets,
+        tw.boundary.loop_directed_areas_from_offsets,
+    ):
+        with pytest.raises(ValueError, match="offsets must run non-decreasing"):
+            measure(vertices_wp, flat_wp, offsets_wp)
+    good_wp = wp.array(np.array([0, 2, 6], dtype=np.int32), dtype=wp.int32, device=device)
+    assert tw.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, good_wp).shape == (2,)
 
 
 def test_loop_measures_empty(device: str) -> None:

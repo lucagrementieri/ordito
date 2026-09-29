@@ -8,7 +8,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device
+from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INDEX_RADIX_PAIR
 from triwarp.halfedge import halfedge_twins, require_matching_twins
 from triwarp.kernels import adjacency as kernel_adjacency
@@ -493,19 +493,17 @@ def submeshes_from_face_groups(
         Concatenated face indices of every group, as ``wp.int32``. Indices must be unique within a
         group (duplicates would produce duplicate output faces).
     group_offsets
-        Length-``k`` ``wp.int32`` start of each group in ``group_face_indices``, ascending, with
-        ``group_offsets[0] == 0`` — the repo's no-terminator CSR convention (as in
-        [`pack_1d_arrays`][triwarp.array.pack_1d_arrays] and
-        [`successor_cycles`][triwarp.graph.successor_cycles]). Groups must be non-empty.
+        Length-``k + 1`` total-terminated ``wp.int32`` offsets of the groups in
+        ``group_face_indices`` -- the package's one convention, stated at
+        [`pack_1d_arrays`][triwarp.array.pack_1d_arrays]. Groups must be non-empty.
 
     Returns
     -------
     vertices_all : wp.array[wp.vec3]
         Every group's compacted vertices, concatenated.
     vertex_offsets : wp.array[wp.int32]
-        Length-``k`` start of each group in ``vertices_all``; group ``g`` owns
-        ``vertices_all[vertex_offsets[g] : vertex_offsets[g + 1]]``, with the last group running to
-        the end.
+        Length-``k + 1`` total-terminated offsets; group ``g`` owns
+        ``vertices_all[vertex_offsets[g] : vertex_offsets[g + 1]]``.
     faces_all : wp.array[wp.int32]
         Every group's reindexed flat faces, concatenated in the same group order. Group ``g`` owns
         ``faces_all[3 * group_offsets[g] : 3 * group_offsets[g + 1]]`` — the *input* offsets,
@@ -522,7 +520,7 @@ def submeshes_from_face_groups(
     See Also
     --------
     [`submesh_from_face_indices`][triwarp.selection.submesh_from_face_indices]
-    [`split_batched`][triwarp.combine.split_batched]
+    [`split_with_offsets`][triwarp.combine.split_with_offsets]
     [`unique_1d`][triwarp.grouping.unique_1d]
     """
     require_same_device(
@@ -532,13 +530,13 @@ def submeshes_from_face_groups(
         group_offsets=group_offsets,
     )
     device = vertices.device
-    k = int(group_offsets.shape[0])
+    k = max(int(group_offsets.shape[0]) - 1, 0)
     n_selected = int(group_face_indices.shape[0])
     n_vertices = int(vertices.shape[0])
     if k == 0 or n_selected == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
-            wp.zeros(k, dtype=wp.int32, device=device),
+            wp.zeros(k + 1, dtype=wp.int32, device=device),
             wp.empty(0, dtype=wp.int32, device=device),
         )
     radix = max(n_vertices, 1)
@@ -563,7 +561,10 @@ def submeshes_from_face_groups(
     # group's vertex count (a histogram, so an empty group still gets a zero-length entry and no
     # host synchronisation is needed to size it), and the source position it names.
     slot_groups = wp.empty(n_slots, dtype=wp.int32, device=device)
-    group_counts = wp.zeros(k, dtype=wp.int32, device=device)
+    # The counts land behind the leading zero of the ``k + 1`` offsets buffer and are scanned there
+    # in place, which leaves the total-terminated vertex offsets with no second buffer.
+    vertex_offsets = wp.zeros(k + 1, dtype=wp.int32, device=device)
+    group_counts = twt.as_dense(vertex_offsets[1:])
     vertices_all = wp.empty(n_slots, dtype=wp.vec3, device=device)
     wp.launch(
         kernel_selection.decode_group_vertex_keys,
@@ -571,8 +572,7 @@ def submeshes_from_face_groups(
         inputs=[unique_keys, wp.int64(radix), vertices, slot_groups, group_counts, vertices_all],
         device=device,
     )
-    vertex_offsets = wp.empty(k, dtype=wp.int32, device=device)
-    wp.utils.array_scan(group_counts, out_array=vertex_offsets, inclusive=False)
+    wp.utils.array_scan(group_counts, out_array=group_counts, inclusive=True)
 
     faces_all = wp.empty(n_corners, dtype=wp.int32, device=device)
     wp.launch(
@@ -726,10 +726,103 @@ def delete_region_keep_boundary(
 
     See Also
     --------
+    [`delete_region_keep_boundary_with_offsets`][triwarp.selection.delete_region_keep_boundary_with_offsets]
+        The same, with the new loops packed into one buffer and their offsets.
     [`submesh_from_face_mask`][triwarp.selection.submesh_from_face_mask]
         The same extraction with the mask's polarity reversed and no loop report.
     [`triwarp.holes.refill_region`][triwarp.holes.refill_region]
         Delete and immediately fill, which is what this is usually the first half of.
+    """
+    kept_vertices, kept_faces, _, _, views = _delete_region_loops(
+        vertices, faces, face_mask, host_bounds=True
+    )
+    assert views is not None
+    return kept_vertices, kept_faces, views
+
+
+def delete_region_keep_boundary_with_offsets(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_mask: wp.array[wp.bool]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Remove a face region and report the boundary loops it opened, packed with their offsets.
+
+    The packed form of
+    [`delete_region_keep_boundary`][triwarp.selection.delete_region_keep_boundary]: the same
+    surviving mesh and the same new loops in the same order, the loops concatenated into one buffer
+    with no per-loop Python object. It is the form
+    [`triwarp.boundary.boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]
+    returns, so a packed hole filler can take it directly.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions on the target device.
+    faces
+        Length-``3 * n_faces`` flat triangle index buffer.
+    face_mask
+        Length-``n_faces`` ``wp.bool`` array, ``True`` for each face to **delete**.
+
+    Returns
+    -------
+    kept_vertices : wp.array[wp.vec3]
+        Compact positions of the surviving submesh.
+    kept_faces : wp.array[wp.int32]
+        Flat triangle index buffer into ``kept_vertices``.
+    loops : wp.array[wp.int32]
+        Every new boundary loop's vertex cycle **into** ``kept_vertices``, loop after loop.
+    loop_offsets : wp.array[wp.int32]
+        ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
+        ``loops[loop_offsets[i] : loop_offsets[i + 1]]``, and ``[0]`` when the deletion opened no
+        rim.
+
+    Raises
+    ------
+    ValueError
+        If ``face_mask`` does not have one entry per face.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``face_mask`` are not all on one device.
+
+    Notes
+    -----
+    Which loops count as new is decided exactly as in
+    [`delete_region_keep_boundary`][triwarp.selection.delete_region_keep_boundary]'s Notes. The kept
+    loops are compacted on the device, and the one readback is the scan's tail, which sizes the
+    buffer.
+
+    See Also
+    --------
+    [`delete_region_keep_boundary`][triwarp.selection.delete_region_keep_boundary]
+        The same, with one array per new loop.
+    [`triwarp.boundary.boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]
+    """
+    kept_vertices, kept_faces, loops, loop_offsets, _ = _delete_region_loops(
+        vertices, faces, face_mask, host_bounds=False
+    )
+    return kept_vertices, kept_faces, loops, loop_offsets
+
+
+def _delete_region_loops(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    *,
+    host_bounds: bool,
+) -> tuple[
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    list[wp.array[wp.int32]] | None,
+]:
+    """
+    Both ``delete_region_keep_boundary`` forms: ``(vertices, faces, loops, offsets, views)``.
+
+    With ``host_bounds`` the one readback is every loop's verdict and extent, and ``views`` cuts
+    the kept loops straight out of the traced ones (``loops`` / ``offsets`` are then the traced,
+    unfiltered pair and not an answer). Without it the verdicts are scanned on the device, the kept
+    loops compacted into ``loops`` / ``offsets``, the one readback is the scan's tail, and
+    ``views`` is ``None``. Both forms share the classification, so they cannot disagree about
+    which loops are new.
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     device = vertices.device
@@ -742,19 +835,34 @@ def delete_region_keep_boundary(
     kept_vertices, kept_faces, vertex_index, kept_ranks = _submesh_from_mask(
         vertices, faces, face_mask, keep_masked=False
     )
+
+    def no_loops() -> tuple[
+        wp.array[wp.vec3],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        wp.array[wp.int32],
+        list[wp.array[wp.int32]] | None,
+    ]:
+        # Built only when returned: two allocations the common path must not pay.
+        return (
+            kept_vertices,
+            kept_faces,
+            wp.empty(0, dtype=wp.int32, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
+            [] if host_bounds else None,
+        )
+
     if int(kept_faces.shape[0]) == 0:
-        return kept_vertices, kept_faces, []
+        return no_loops()
     # Nothing deleted opens no rim: every loop the submesh has is the input's own. The face count
     # says so without a readback, and it skips the loop extraction as well as the classification.
     if int(kept_faces.shape[0]) == 3 * n_faces:
-        return kept_vertices, kept_faces, []
+        return no_loops()
 
-    flat_loops, loop_offsets, loop_sizes = tw.boundary.boundary_loops_batched(
-        kept_vertices, kept_faces
-    )
-    n_loops = int(loop_offsets.shape[0])
+    flat_loops, loop_offsets = tw.boundary.boundary_loops_with_offsets(kept_vertices, kept_faces)
+    n_loops = int(loop_offsets.shape[0]) - 1
     if n_loops == 0:
-        return kept_vertices, kept_faces, []
+        return no_loops()
 
     # Classify every loop at once on the device, from the deletion rather than from the input's
     # boundary, so no table here is mesh-sized: the deleted faces' edges are sorted, and each loop
@@ -789,31 +897,38 @@ def delete_region_keep_boundary(
     )
     deleted_keys = twt.as_dense(key_buffer[:n_deleted_keys])
 
-    starts_and_rims = twt.empty_2d((2, n_loops), wp.int32, device=device)
+    kept_counts = wp.empty(n_loops, dtype=wp.vec3i, device=device)
     wp.launch(
         kernel_selection.loops_are_input_rims,
         dim=n_loops,
-        inputs=[
-            flat_loops,
-            loop_offsets,
-            loop_sizes,
-            vertex_index,
-            deleted_keys,
-            base,
-            starts_and_rims,
-        ],
+        inputs=[flat_loops, loop_offsets, vertex_index, deleted_keys, base, kept_counts],
         device=device,
     )
-    # One readback, of each loop's start and verdict, which is all it takes to cut the surviving
-    # loops out of the packed buffer as views.
-    starts_np, rims_np = starts_and_rims.numpy()
-    stops_np = [*starts_np[1:].tolist(), int(flat_loops.shape[0])]
-    kept = [
-        twt.as_dense(flat_loops[int(start) : stop])
-        for start, stop, rim in zip(starts_np, stops_np, rims_np, strict=True)
-        if not rim
-    ]
-    return kept_vertices, kept_faces, kept
+    if host_bounds:
+        # The list form's one readback: each loop's verdict and extent, from which its views are
+        # cut straight out of the traced loops -- no scan and no compaction.
+        counts_np = kept_counts.numpy()
+        views = [
+            twt.as_dense(flat_loops[int(start) : int(start) + int(size)])
+            for kept, size, start in counts_np
+            if kept
+        ]
+        return kept_vertices, kept_faces, flat_loops, loop_offsets, views
+    wp.utils.array_scan(kept_counts, out_array=kept_counts, inclusive=True)
+    # The packed form's one readback: the scan's tail sizes the kept loops.
+    tail = read_scalar(kept_counts)
+    n_new, n_values = int(tail[0]), int(tail[1])
+    if n_new == 0:
+        return no_loops()
+    loops = wp.empty(n_values, dtype=wp.int32, device=device)
+    offsets = wp.zeros(n_new + 1, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_selection.compact_kept_loops,
+        dim=n_loops,
+        inputs=[flat_loops, loop_offsets, kept_counts, loops, offsets],
+        device=device,
+    )
+    return kept_vertices, kept_faces, loops, offsets, None
 
 
 def _submesh_from_mask(
@@ -852,7 +967,7 @@ def _submesh_from_mask(
         kernel_selection.submesh_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
     )
     # One readback sizes both outputs.
-    n_kept_faces, n_kept_vertices = (int(count) for count in counts.numpy())
+    n_kept_faces, n_kept_vertices = read_values(counts, 0, 2)
 
     sub_vertices = wp.empty(n_kept_vertices, dtype=wp.vec3, device=device)
     sub_faces = wp.empty(3 * n_kept_faces, dtype=wp.int32, device=device)

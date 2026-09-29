@@ -206,25 +206,28 @@ def pack_1d_arrays(
     """
     Concatenate several 1-D ``warp.array`` instances into one buffer plus per-segment offsets.
 
-    Segment ``i`` starts at ``offsets[i]`` in ``flat``; its length is ``arrays[i].size``, so it
-    occupies ``flat[offsets[i] : offsets[i] + arrays[i].size]``. This is the usual packed
+    Segment ``i`` occupies ``flat[offsets[i] : offsets[i + 1]]``. This is the usual packed
     representation for variable-length per-item lists on the device (no nested arrays).
 
-    !!! note "The packed pair is spelled values first, offsets second"
+    !!! note "The packed pair is spelled values first, then total-terminated offsets"
         This function is where the package's convention is stated, because it is the primitive the
         others are built on: **a packed buffer and its offsets are returned, and accepted, values
-        first.** Fifteen public functions hand back such a pair —
-        [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched],
+        first, and the offsets are the ``n + 1`` total-terminated CSR form** (``scipy``'s
+        ``indptr``): item ``i`` is ``values[offsets[i] : offsets[i + 1]]``, ``offsets[0] == 0``,
+        ``offsets[n] == values.shape[0]``, and a size is the difference of two neighbouring
+        entries -- there is no separate sizes array. An empty packed result has ``offsets == [0]``.
+        Every public function that hands back such a pair --
+        [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets],
         [`successor_cycles`][triwarp.graph.successor_cycles],
         [`query_ball_with_offsets`][triwarp.neighbors.query_ball_with_offsets],
         [`geodesic_ball`][triwarp.neighbors.geodesic_ball],
         [`vertex_face_adjacency`][triwarp.adjacency.vertex_face_adjacency],
         [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] and the
-        [`triwarp.geodesic_walk`][triwarp.geodesic_walk] tracers among them — and every function
+        [`triwarp.geodesic_walk`][triwarp.geodesic_walk] tracers among them -- and every function
         that *takes* one ([`split`][triwarp.array.split],
         [`trace_polylines`][triwarp.geodesic_walk.trace_polylines],
-        [`submeshes_from_face_groups`][triwarp.selection.submeshes_from_face_groups]) takes it in
-        the same order. Both halves are ``wp.int32`` in the common case, so a transposed unpack
+        [`submeshes_from_face_groups`][triwarp.selection.submeshes_from_face_groups]) uses the same
+        order and form. Both halves are ``wp.int32`` in the common case, so a transposed unpack
         type-checks, runs, and indexes garbage; there is nothing but the convention to lean on.
         Where a third array rides along it is a *per-item* one and goes last, as in
         ``(ring_halfedges, offsets, is_boundary)``.
@@ -246,11 +249,8 @@ def pack_1d_arrays(
         1-D array of length ``sum(a.size for a in arrays)``, same ``dtype`` and ``device`` as
         the inputs.
     offsets
-        Length ``len(arrays)`` (the start offset of each segment, an exclusive scan of the
-        segment sizes), ``dtype`` ``wp.int32``, same ``device`` as the inputs. ``offsets[0] == 0``.
-        This is *not* a total-terminated CSR array — there is no ``offsets[-1] == flat.size``
-        terminator, so the last segment's length must be taken from ``arrays[-1].size`` (or
-        ``flat.size - offsets[-1]``).
+        Length ``len(arrays) + 1`` total-terminated offsets, ``dtype`` ``wp.int32``, same
+        ``device`` as the inputs: ``offsets[0] == 0`` and ``offsets[-1] == flat.size``.
 
     Raises
     ------
@@ -266,7 +266,7 @@ def pack_1d_arrays(
     [`concatenate`][triwarp.array.concatenate]
     """
     flat, offsets = _pack_segments(arrays, caller="pack_1d_arrays", copy=copy)
-    return flat, wp.array(offsets, dtype=wp.int32, device=flat.device)
+    return flat, wp.array([*offsets, int(flat.shape[0])], dtype=wp.int32, device=flat.device)
 
 
 def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.array[DType]:
@@ -316,40 +316,52 @@ def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.a
 
 
 def split(
-    array: wp.array[DType], offsets: wp.array[wp.int32], *, copy: bool = False
+    array: wp.array[DType],
+    offsets: wp.array[wp.int32] | Sequence[int],
+    *,
+    copy: bool = False,
+    row_size: int = 1,
 ) -> list[wp.array[DType]]:
     """
     Break a packed 1-D array into its per-segment arrays (``numpy.split``).
 
     The inverse of [`pack_1d_arrays`][triwarp.array.pack_1d_arrays]: segment ``i`` is
-    ``array[offsets[i] : offsets[i + 1]]``, with the last segment running to the end of
-    ``array``. One host readback of ``offsets``, then zero copies by default — the segments are
-    views into ``array``, which they keep alive.
+    ``array[offsets[i] : offsets[i + 1]]``. One host readback of ``offsets`` (none when they are
+    passed as a host sequence), then zero copies by default -- the segments are views into
+    ``array``, which they keep alive.
 
     Parameters
     ----------
     array
         Rank-1 array to split, any ``dtype``.
     offsets
-        Length-``n_segments`` ``wp.int32`` exclusive prefix sum of the segment sizes, starting
-        at ``0`` — exactly what [`pack_1d_arrays`][triwarp.array.pack_1d_arrays] and
-        [`counts_to_offsets`][triwarp.array.counts_to_offsets] return. The total-terminated
-        ``n + 1`` form (``include_total=True``) is also accepted; its trailing entry simply
-        yields one final empty segment, so pass the length-``n`` form when that matters.
+        Length-``n_segments + 1`` total-terminated ``wp.int32`` offsets: ``offsets[0] == 0``,
+        non-decreasing, and ``offsets[-1]`` equal to ``array``'s row count -- exactly what
+        [`pack_1d_arrays`][triwarp.array.pack_1d_arrays] and
+        [`counts_to_offsets`][triwarp.array.counts_to_offsets] return. ``[0]`` describes no
+        segments. A host sequence of ints with the same contents is accepted too, for a caller
+        that already holds the bounds.
     copy
-        When ``True``, return independent ``wp.clone`` copies instead of views.
+        When ``True``, return independent copies, each in its own allocation, instead of views.
+    row_size
+        Number of elements each offset counts. With ``row_size=3`` the offsets index the rows of a
+        flat ``(3 * n_faces,)`` face buffer, and segment ``i`` is
+        ``array[3 * offsets[i] : 3 * offsets[i + 1]]`` -- the form
+        [`split_with_offsets`][triwarp.combine.split_with_offsets] returns its face offsets in.
 
     Returns
     -------
     list[wp.array]
         One array per segment, on ``array.device``, in segment order. Empty list when
-        ``offsets`` is empty.
+        ``offsets == [0]``.
 
     Raises
     ------
     ValueError
-        If ``array`` or ``offsets`` is not rank-1, or ``offsets`` is not a non-decreasing
-        sequence starting at ``0`` and bounded by ``array``'s length.
+        If ``array`` or ``offsets`` is not rank-1, ``row_size`` is not positive or does not divide
+        ``array``'s length, ``offsets`` is empty, or ``offsets`` is not a non-decreasing sequence
+        from ``0`` to ``array``'s row count -- which is what an unterminated, length-``n_segments``
+        offsets array fails.
     RuntimeError
         If ``array`` and ``offsets`` are not all on one device.
 
@@ -366,36 +378,123 @@ def split(
     require_same_device(array=array, offsets=offsets)
     if int(array.ndim) != 1:
         raise ValueError(f"split requires a rank-1 array, got ndim={array.ndim}")
-    if int(offsets.ndim) != 1:
-        raise ValueError(f"split requires rank-1 offsets, got ndim={offsets.ndim}")
-
+    on_device = isinstance(offsets, wp.array)
+    offsets_ndim = int(offsets.ndim) if on_device else np.ndim(offsets)
+    if offsets_ndim != 1:
+        raise ValueError(f"split requires rank-1 offsets, got ndim={offsets_ndim}")
     n = int(array.shape[0])
-    starts = [int(start) for start in offsets.list()]
-    if not starts:
-        return []
-    bounds = [*starts, n]
-    if starts[0] != 0 or any(a > b for a, b in itertools.pairwise(bounds)):
+    if row_size < 1 or n % row_size != 0:
         raise ValueError(
-            f"offsets must start at 0 and be non-decreasing within [0, {n}], got {starts}"
+            f"row_size must be positive and divide the array length {n}, got {row_size}"
         )
-    # Warp rejects a zero-length slice at the very end of a buffer (``arr[n:n]``) while accepting
-    # an interior one, so an empty trailing segment needs its own allocation.
-    #
-    # Views are built with ``array[begin:end]`` rather than a raw ``wp.array(ptr=..., shape=...,
-    # strides=...)`` construction: the latter re-implements ``wp.array.__getitem__``'s contract (20
-    # attributes) and already gets one of them wrong, dropping the ``grad`` view a slice of a
-    # ``requires_grad`` array carries.
-    #
-    # ``copy=True`` clones each segment independently rather than filling one shared buffer with
-    # disjoint views into it, because a shared allocation would mean holding one segment pins the
-    # whole buffer alive -- the opposite of what ``copy=True`` promises.
+    n_offsets = int(offsets.shape[0]) if on_device else len(offsets)
+    if n_offsets == 0:
+        raise ValueError("split requires total-terminated offsets of length n_segments + 1, got []")
+    if n_offsets == 1 and n == 0:
+        # No segments over an empty array: the only valid entry is the ``0`` both ends must be.
+        return []
+
+    # The one readback, unless the caller already holds the bounds on the host. ``.numpy()`` of a
+    # CPU array is a view, so the bounds are built in a fresh buffer rather than in place.
+    bounds_np = np.array(offsets.numpy() if on_device else offsets, dtype=np.int64)
+    n_rows = n // row_size
+    if bounds_np[0] != 0 or bounds_np[-1] != n_rows or bool((bounds_np[1:] < bounds_np[:-1]).any()):
+        raise ValueError(
+            f"offsets must be total-terminated: start at 0, be non-decreasing and end at the row "
+            f"count {n_rows}, got {bounds_np.tolist()}"
+        )
+    if bounds_np.shape[0] == 1:
+        return []
+    if row_size != 1:
+        bounds_np *= row_size
+    bounds = bounds_np.tolist()
+    return _copy_segments(array, bounds) if copy else _segment_views(array, bounds)
+
+
+def _segment_views(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.array[DType]]:
+    """
+    Return the views ``array[a:b]`` for every consecutive pair of ``bounds``.
+
+    A Warp slice is built in interpreted Python (``__getitem__`` into ``__init__``), and for a
+    contiguous rank-1 base its whole state is a plain ``__dict__`` of which only ``ptr``, ``shape``,
+    ``size`` and ``capacity`` depend on the bounds. So one real slice serves as a template and every
+    segment is ``object.__new__`` plus a copy of its dictionary with those four patched: the same
+    object a slice would be, ``_ref`` included (it is what keeps ``array`` alive), for a fraction of
+    the construction cost. ``test_segment_views_match_real_slices`` compares the two dictionaries
+    key by key, so a Warp release that adds or renames per-view state fails there rather than here.
+
+    Anything the template cannot describe takes real slices: a ``requires_grad`` base (a slice
+    also carries a ``grad`` view of its own), a non-contiguous or empty base, or a subclass. A
+    zero-length segment at the very end is stamped too, although Warp rejects the slice
+    ``array[n:n]``: its state is exactly that of an interior empty slice, one past the last element.
+    """
+    n = int(array.shape[0])
+    if type(array) is not wp.array or array.requires_grad or not array.is_contiguous or n == 0:
+        return [
+            twt.as_dense(array[begin:end])
+            if end > begin
+            else wp.empty(0, dtype=array.dtype, device=array.device)
+            for begin, end in itertools.pairwise(bounds)
+        ]
+    template = array[0:1].__dict__
+    stride = int(array.strides[0])
+    base_ptr = int(array.ptr)
+    new = object.__new__
+    views: list[wp.array[DType]] = []
+    for begin, end in itertools.pairwise(bounds):
+        size = end - begin
+        state = template.copy()
+        state["ptr"] = base_ptr + begin * stride
+        state["shape"] = (size,)
+        state["size"] = size
+        state["capacity"] = size * stride
+        view = new(wp.array)
+        view.__dict__ = state
+        views.append(view)
+    return views
+
+
+def _copy_segments(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.array[DType]]:
+    """
+    Return an independent copy of every segment ``array[a:b]`` of consecutive ``bounds``.
+
+    Each segment gets its own allocation rather than a view of one shared buffer, because a shared
+    allocation would mean holding one segment pins the whole buffer alive -- the opposite of what
+    ``split(copy=True)`` promises. The allocations cannot be batched, but the copies can: from
+    ``PACK_SEGMENTS_KERNEL_FROM`` segments one launch over a descriptor table of the destinations
+    fills them all (``kernels.array.unpack_segment_words``, the packing kernel run backwards), in
+    place of one ``wp.clone`` -- an allocation and a copy -- per segment. Anything the word copy
+    cannot address clones per segment: a ``requires_grad`` base (a clone carries its own
+    gradient), a non-contiguous one, or a dtype whose itemsize is not a multiple of four.
+    """
+    n_segments = len(bounds) - 1
+    words_per_element = _words_per_element(array.dtype)
+    if (
+        n_segments < PACK_SEGMENTS_KERNEL_FROM
+        or words_per_element == 0
+        or type(array) is not wp.array
+        or array.requires_grad
+        or not array.is_contiguous
+    ):
+        return [wp.clone(segment) for segment in _segment_views(array, bounds)]
+    device = array.device
+    sizes = [end - begin for begin, end in itertools.pairwise(bounds)]
     segments = [
-        twt.as_dense(array[begin:end])
-        if end > begin
-        else wp.empty(0, dtype=array.dtype, device=array.device)
-        for begin, end in itertools.pairwise(bounds)
+        wp.empty(size, dtype=array.dtype, device=device, pinned=array.pinned) for size in sizes
     ]
-    return [wp.clone(segment) for segment in segments] if copy else segments
+    table = _word_segment_table(
+        [segment.ptr or 0 for segment in segments], sizes, bounds[:-1], words_per_element, device
+    )
+    if table is not None:
+        descriptor, width = table
+        wp.launch(
+            kernel_array.unpack_segment_words,
+            dim=(n_segments, width),
+            inputs=[_as_words(array, words_per_element), wp.int32(width)],
+            outputs=[descriptor],
+            device=device,
+        )
+    return segments
 
 
 def _pack_segments(
@@ -428,8 +527,7 @@ def _pack_segments(
     # buffer on whichever segment happened to be first, which then decides the device of every
     # launch built on it downstream. Both callers name the parameter ``arrays``, so the labels in
     # the message (``arrays[3]``) point at the segment a caller can identify.
-    require_same_device(arrays=list(arrays))
-
+    require_same_device(arrays=arrays)
     dtype = arrays[0].dtype
     device = arrays[0].device
     sizes = []
@@ -501,43 +599,76 @@ def _pack_in_one_launch(
     n_segments = len(arrays)
     if n_segments < PACK_SEGMENTS_KERNEL_FROM:
         return False
-    itemsize = int(wp.types.type_size_in_bytes(flat.dtype))
-    if itemsize % 4 != 0:
+    words_per_element = _words_per_element(flat.dtype)
+    if words_per_element == 0:
         return False
-    words_per_element = itemsize // 4
+    table = _word_segment_table(
+        [arr.ptr or 0 for arr in arrays], sizes, offsets, words_per_element, flat.device
+    )
+    if table is None:
+        return False
+    descriptor, width = table
+    wp.launch(
+        kernel_array.pack_segment_words,
+        dim=(n_segments, width),
+        inputs=[descriptor, wp.int32(width)],
+        outputs=[_as_words(flat, words_per_element)],
+        device=flat.device,
+    )
+    return True
+
+
+def _words_per_element(dtype: type) -> int:
+    """Return how many 4-byte words one element of ``dtype`` spans; ``0`` if not a whole number."""
+    words, remainder = divmod(int(wp.types.type_size_in_bytes(dtype)), 4)
+    return 0 if remainder else words
+
+
+def _word_segment_table(
+    pointers: Sequence[int],
+    sizes: Sequence[int],
+    offsets: Sequence[int],
+    words_per_element: int,
+    device: wp.DeviceLike,
+) -> tuple[wp.array[Any], int] | None:
+    """
+    Build the ``WordSegment`` descriptor table of a segmented copy, and its launch width.
+
+    Segment ``i`` is ``sizes[i]`` elements at address ``pointers[i]``, and sits at element
+    ``offsets[i]`` of the packed buffer. The shared half of the two directions of the segmented
+    copy, [`_pack_in_one_launch`][triwarp.array._pack_in_one_launch] and
+    [`_copy_segments`][triwarp.array._copy_segments]. ``None`` when every segment is empty, since
+    there is then nothing to launch.
+    """
     word_counts = np.asarray(sizes, dtype=np.int64) * words_per_element
-    if int(word_counts.max()) == 0:
-        return False
+    longest = int(word_counts.max())
+    if longest == 0:
+        return None
     # ``Struct.numpy_dtype()`` is unannotated and builds a plain ``dict``, where numpy's
     # ``zeros`` wants the ``_DTypeDict`` TypedDict; ``np.dtype`` is the documented way to
     # turn that mapping into a real structured dtype.
     record_dtype = np.dtype(cast("npt.DTypeLike", kernel_array.WordSegment.numpy_dtype()))
-    record_np = cast("npt.NDArray[np.void]", np.zeros(n_segments, dtype=record_dtype))
-    record_np["data"]["data"] = np.asarray([arr.ptr or 0 for arr in arrays], dtype=np.uint64)
+    record_np = cast("npt.NDArray[np.void]", np.zeros(len(sizes), dtype=record_dtype))
+    record_np["data"]["data"] = np.asarray(pointers, dtype=np.uint64)
     record_np["data"]["shape"][:, 0] = word_counts
     record_np["data"]["strides"][:, 0] = 4
     record_np["data"]["ndim"] = 1
     record_np["offset"] = np.asarray(offsets, dtype=np.int64) * words_per_element
     record_np["count"] = word_counts
-    descriptor = wp.array(record_np, dtype=kernel_array.WordSegment, device=flat.device, copy=True)
-    # A second, zero-copy handle on the destination, typed as the words the kernel moves. This is
-    # the same reinterpretation ``wp.array.view`` performs, written out because ``view`` refuses a
-    # dtype of a different size and every dtype wider than four bytes needs exactly that.
-    words_flat = wp.array(
-        ptr=flat.ptr,
-        dtype=wp.int32,
-        shape=int(flat.shape[0]) * words_per_element,
-        device=flat.device,
+    descriptor = wp.array(record_np, dtype=kernel_array.WordSegment, device=device, copy=True)
+    return descriptor, min(longest, _PACK_SEGMENTS_MAX_WIDTH)
+
+
+def _as_words(arr: wp.array[DType], words_per_element: int) -> wp.array[wp.int32]:
+    """
+    Return a zero-copy ``wp.int32`` handle on a contiguous ``arr``, typed as the words it holds.
+
+    The same reinterpretation ``wp.array.view`` performs, written out because ``view`` refuses a
+    dtype of a different size and every dtype wider than four bytes needs exactly that.
+    """
+    return wp.array(
+        ptr=arr.ptr, dtype=wp.int32, shape=int(arr.shape[0]) * words_per_element, device=arr.device
     )
-    width = min(int(word_counts.max()), _PACK_SEGMENTS_MAX_WIDTH)
-    wp.launch(
-        kernel_array.pack_segment_words,
-        dim=(n_segments, width),
-        inputs=[descriptor, wp.int32(width)],
-        outputs=[words_flat],
-        device=flat.device,
-    )
-    return True
 
 
 def _tiled_span(
@@ -576,8 +707,9 @@ def _tiled_span(
     stride = int(base.strides[0])
     cursor = int(arrays[0].ptr)
     for arr, n in zip(arrays, sizes, strict=True):
+        # A direct view of ``base`` -- every segment ``split`` returns -- answers in one lookup.
         if (
-            _view_base(arr) is not base
+            (getattr(arr, "_ref", None) is not base and _view_base(arr) is not base)
             or not arr.is_contiguous
             or int(arr.strides[0]) != stride
             or int(arr.ptr) != cursor
@@ -701,8 +833,8 @@ def sort_and_argsort(
     each run of duplicate keys. ``warp.utils.radix_sort_pairs`` documents this ("the sort is
     stable and operates in linear time"), it is inherent to its LSD radix passes, and it is
     verified on both devices against ``numpy.argsort(kind="stable")``. Callers may rely on it --
-    [`split_batched`][triwarp.combine.split_batched] does, to keep faces ascending within each
-    component.
+    [`split_with_offsets`][triwarp.combine.split_with_offsets] does, to keep faces ascending within
+    each component.
 
     See Also
     --------
@@ -787,13 +919,14 @@ def triplet_buffers(
     n_triplets: int, dtype: type, device: wp.DeviceLike
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], twt.ArrayNd]:
     """
-    Uninitialized ``(rows, cols, values)`` COO buffers for one ``bsr_from_triplets`` build.
+    Uninitialized ``(rows, cols, values)`` COO buffers for one ``csr_from_triplets`` build.
 
     Parameters
     ----------
     n_triplets
         Length of each of the three buffers: the number of ``(row, col, value)`` entries the
-        writing kernel will emit, counting duplicates, since ``warp.sparse.bsr_from_triplets``
+        writing kernel will emit, counting duplicates, since
+        [`csr_from_triplets`][triwarp.array.csr_from_triplets]
         sums entries that land on the same position.
     dtype
         Element type of the value buffer. A scalar (``wp.float32`` / ``wp.float64``) for a
@@ -813,8 +946,8 @@ def triplet_buffers(
     ``wp.empty`` rather than ``wp.zeros`` deliberately: a triplet writer fills all three buffers,
     so zeroing them first would be three wasted launches. A kernel that emits *fewer* than
     ``n_triplets`` entries must therefore write an explicit structural zero (typically a
-    self-entry) rather than leave a slot untouched, which is also why every operator build in
-    this package passes ``prune_numerical_zeros=False`` -- see the note on
+    self-entry) or point the slot outside the matrix, where the build drops it; every operator
+    build in this package keeps numerical zeros -- see the note on
     [`index_sparse`][triwarp.array.index_sparse], the one caller that prunes.
 
     See Also
@@ -834,13 +967,12 @@ def empty_square_bsr(n_rows: int, dtype: type, device: wp.DeviceLike) -> wps.Bsr
     """
     Zero-nnz ``(n_rows, n_rows)`` operator, the ``n_faces == 0`` return several assemblers share.
 
-    A square BSR matrix with no faces to build triplets from is still a valid, correctly-shaped
+    A square BSR matrix with no faces to assemble from is still a valid, correctly-shaped
     operator -- just an empty one -- so [`laplacian.cotmatrix`][triwarp.laplacian.cotmatrix],
     [`laplacian.connection_laplacian`][triwarp.laplacian.connection_laplacian],
     [`laplacian.graph_laplacian`][triwarp.laplacian.graph_laplacian] and
     [`energies`][triwarp.energies]'s assembly wrappers all construct this exact matrix for their
-    empty-mesh early return, and did so as four near-identical inline copies before this was
-    factored out.
+    empty-mesh early return.
 
     Parameters
     ----------
@@ -848,8 +980,7 @@ def empty_square_bsr(n_rows: int, dtype: type, device: wp.DeviceLike) -> wps.Bsr
         Row and column count of the square matrix.
     dtype
         Element type of the (empty) value buffer -- a scalar for a 1x1-block matrix, or a matrix
-        type (e.g. ``wp.mat22d``) for a block matrix, exactly as
-        [`triplet_buffers`][triwarp.array.triplet_buffers] takes it.
+        type (e.g. ``wp.mat22d``) for a block matrix.
     device
         Warp device for the matrix.
 
@@ -860,16 +991,326 @@ def empty_square_bsr(n_rows: int, dtype: type, device: wp.DeviceLike) -> wps.Bsr
 
     See Also
     --------
-    [`triplet_buffers`][triwarp.array.triplet_buffers]
+    [`bsr_from_csr`][triwarp.array.bsr_from_csr]
     """
-    return wps.bsr_from_triplets(
+    return bsr_from_csr(
         n_rows,
         n_rows,
-        wp.empty(0, dtype=wp.int32, device=device),
+        wp.zeros(n_rows + 1, dtype=wp.int32, device=device),
         wp.empty(0, dtype=wp.int32, device=device),
         wp.empty(0, dtype=dtype, device=device),
-        prune_numerical_zeros=False,
+        nnz=0,
     )
+
+
+def bsr_from_csr(
+    n_rows: int,
+    n_cols: int,
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[Any],
+    *,
+    nnz: int | None = None,
+) -> wps.BsrMatrix[Any]:
+    """
+    Wrap compressed-row arrays that already hold a matrix's storage as a ``BsrMatrix``, no copy.
+
+    ``values``' dtype is the block type: a scalar for a 1x1-block (CSR) matrix, or a matrix type
+    such as ``wp.mat22d``. Row ``i``'s entries are ``columns[offsets[i] : offsets[i + 1]]``, and
+    every ``warp.sparse`` operation expects them sorted by column with no duplicates.
+
+    Parameters
+    ----------
+    n_rows, n_cols
+        Block row and column counts.
+    offsets
+        Length ``n_rows + 1``, total-terminated (``offsets[-1]`` is the stored entry count).
+    columns, values
+        One element per stored entry, at least ``offsets[-1]`` long. A longer buffer is a
+        capacity, as ``warp.sparse`` itself allocates.
+    nnz
+        The stored entry count, when the host knows it. ``None`` records the buffers' length as an
+        upper bound and starts the asynchronous copy of ``offsets[-1]`` that
+        ``BsrMatrix.nnz_sync()`` then completes -- the state ``warp.sparse.bsr_from_triplets``
+        leaves, with no host synchronization here.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        An ``(n_rows, n_cols)`` compact matrix holding exactly these arrays.
+
+    Raises
+    ------
+    ValueError
+        If ``offsets`` is not ``n_rows + 1`` long, or ``columns`` and ``values`` differ in length.
+
+    See Also
+    --------
+    [`csr_from_keys`][triwarp.array.csr_from_keys]
+    [`csr_from_triplets`][triwarp.array.csr_from_triplets]
+    """
+    if int(offsets.shape[0]) != n_rows + 1:
+        raise ValueError(
+            f"offsets must have n_rows + 1 = {n_rows + 1} entries, got {offsets.shape[0]}"
+        )
+    if int(columns.shape[0]) != int(values.shape[0]):
+        raise ValueError(
+            f"columns and values must have one element per entry, got {columns.shape[0]} and "
+            f"{values.shape[0]}"
+        )
+    matrix = wps.bsr_matrix_t(values.dtype)()
+    matrix.nrow = n_rows
+    matrix.ncol = n_cols
+    matrix.offsets = offsets
+    matrix.columns = columns
+    matrix.values = values
+    matrix.row_counts = None
+    if nnz is None:
+        matrix.notify_nnz_changed(nnz_capacity=int(columns.shape[0]))
+    else:
+        matrix.notify_nnz_changed(nnz=nnz)
+    return matrix
+
+
+def csr_key_buffers(
+    count: int, device: wp.DeviceLike
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
+    """
+    Uninitialized ``(keys, order)`` buffers for one [`csr_from_keys`][triwarp.array.csr_from_keys].
+
+    Both are ``2 * count`` long because ``warp.utils.radix_sort_pairs`` sorts in place with its
+    upper halves as scratch; a producer writes entry ``i``'s key into ``keys[i]`` and its payload
+    (usually ``i`` itself, or anything that locates the entry's value) into ``order[i]``, for
+    ``i < count``, and never touches the upper halves.
+
+    Parameters
+    ----------
+    count
+        The number of keys the producer writes, counting duplicates.
+    device
+        Warp device for both buffers.
+
+    Returns
+    -------
+    keys, order
+        ``wp.uint64`` and ``wp.int32`` arrays of length ``2 * count``.
+
+    See Also
+    --------
+    [`csr_from_keys`][triwarp.array.csr_from_keys]
+    """
+    keys = wp.empty(2 * count, dtype=wp.uint64, device=device)
+    order = wp.empty(2 * count, dtype=wp.int32, device=device)
+    return keys, order
+
+
+def csr_from_keys(
+    keys: wp.array[wp.uint64], order: wp.array[wp.int32], count: int, n_rows: int, n_cols: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Sort row-major entry keys and return the CSR pattern they spell, with each entry's positions.
+
+    A producer writes ``count`` keys ``row * n_cols + col`` -- ``kernels/array.csr_key``, which
+    maps an index outside the matrix to the sentinel ``n_rows * n_cols`` -- with a payload each,
+    into [`csr_key_buffers`][triwarp.array.csr_key_buffers]. This sorts them in place (stably, and
+    only over the bits ``n_rows * n_cols`` needs), keeps each run of equal in-range keys as one
+    entry and drops the sentinels. Entry ``e``'s contributors are the payloads
+    ``order[starts[e] : starts[e + 1]]``, in the order the producer wrote them, so a value kernel
+    can form the entry's value deterministically. Nothing is read back to the host.
+
+    Parameters
+    ----------
+    keys, order
+        The ``2 * count`` sort buffers, holding the keys and payloads in their first halves. Both
+        are sorted in place, and ``order``'s upper half is overwritten.
+    count
+        The number of keys written.
+    n_rows, n_cols
+        The matrix shape the keys encode.
+
+    Returns
+    -------
+    offsets
+        ``n_rows + 1`` row bounds, total-terminated.
+    columns
+        Sorted column index of each entry, per row; ``count`` long, of which the first
+        ``offsets[-1]`` are written.
+    starts
+        ``count + 1`` long: entry ``e``'s first sorted position is ``starts[e]`` and
+        ``starts[offsets[-1]]`` closes the last.
+
+    See Also
+    --------
+    [`csr_from_triplets`][triwarp.array.csr_from_triplets]
+    [`bsr_from_csr`][triwarp.array.bsr_from_csr]
+    """
+    device = keys.device
+    offsets = wp.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    columns = wp.empty(count, dtype=wp.int32, device=device)
+    starts = wp.empty(count + 1, dtype=wp.int32, device=device)
+    if count == 0:
+        starts.zero_()
+        return offsets, columns, starts
+    sentinel = n_rows * n_cols
+    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    # The run flags and their scan live in the payload buffer's upper half, which is sort scratch.
+    inclusive = order[count:]
+    wp.launch(
+        kernel_array.csr_run_flags,
+        dim=count,
+        inputs=[keys, wp.uint64(sentinel), inclusive],
+        device=device,
+    )
+    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    wp.launch(
+        kernel_array.csr_from_runs,
+        dim=count,
+        inputs=[
+            keys,
+            inclusive,
+            wp.uint64(sentinel),
+            wp.int32(n_rows),
+            wp.uint64(n_cols),
+            offsets,
+            columns,
+            starts,
+        ],
+        device=device,
+    )
+    return offsets, columns, starts
+
+
+def csr_from_triplets(
+    n_rows: int,
+    n_cols: int,
+    rows: wp.array[wp.int32],
+    cols: wp.array[wp.int32],
+    values: wp.array[Any],
+    *,
+    prune_numerical_zeros: bool = False,
+) -> wps.BsrMatrix[Any]:
+    """
+    Assemble a sparse matrix from coordinate triplets, summing duplicates.
+
+    The replacement for ``warp.sparse.bsr_from_triplets`` over 1x1 or matrix blocks: a triplet
+    whose row or column is outside the matrix is dropped, duplicates are summed in the triplets'
+    own order, and nothing is read back. It sorts a key over only the bits the shape needs and
+    allocates a fraction of ``bsr_from_triplets``' scratch. Assemblers whose sparsity follows from
+    the mesh write their keys directly with [`csr_from_keys`][triwarp.array.csr_from_keys] and
+    never materialize the triplets at all.
+
+    Parameters
+    ----------
+    n_rows, n_cols
+        Matrix shape in blocks.
+    rows, cols
+        ``wp.int32`` block coordinates, one per triplet.
+    values
+        One block per triplet; its dtype is the matrix's block type (``wp.float32``,
+        ``wp.float64``, ``wp.int32`` or ``wp.mat22d``).
+    prune_numerical_zeros
+        Drop every entry whose *summed* value is exactly zero -- including one whose triplets
+        cancel. ``bsr_from_triplets`` instead drops zero-valued triplets before summing and keeps
+        an entry that sums to zero, so the two differ only in stored zeros.
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        The assembled ``(n_rows, n_cols)`` matrix. Its ``nnz`` is the triplet count as an upper
+        bound until ``nnz_sync()``, exactly as after ``bsr_from_triplets``.
+
+    Raises
+    ------
+    ValueError
+        If ``rows``, ``cols`` and ``values`` differ in length.
+    RuntimeError
+        If they are not all on one device.
+    KeyError
+        If ``values``' dtype is not one of the four supported block types.
+
+    See Also
+    --------
+    [`csr_from_keys`][triwarp.array.csr_from_keys]
+    [`triplet_buffers`][triwarp.array.triplet_buffers]
+    """
+    require_same_device(rows=rows, cols=cols, values=values)
+    count = int(rows.shape[0])
+    if int(cols.shape[0]) != count or int(values.shape[0]) != count:
+        raise ValueError(
+            f"rows, cols and values must have equal length, got {count}, {cols.shape[0]} and "
+            f"{values.shape[0]}"
+        )
+    device = rows.device
+    offsets = wp.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    columns = wp.empty(count, dtype=wp.int32, device=device)
+    summed = wp.empty(count, dtype=values.dtype, device=device)
+    if count == 0:
+        return bsr_from_csr(n_rows, n_cols, offsets, columns, summed)
+    keys, order = csr_key_buffers(count, device)
+    if prune_numerical_zeros:
+        # Zero-valued triplets are never sorted: they cannot change a sum, so this only saves work.
+        wp.launch(
+            kernel_array.COO_KEYS_NONZERO[values.dtype],
+            dim=count,
+            inputs=[
+                rows,
+                cols,
+                values,
+                wp.int32(n_rows),
+                wp.int32(n_cols),
+                values.dtype(),
+                keys,
+                order,
+            ],
+            device=device,
+        )
+    else:
+        wp.launch(
+            kernel_array.coo_keys,
+            dim=count,
+            inputs=[rows, cols, wp.int32(n_rows), wp.int32(n_cols), keys, order],
+            device=device,
+        )
+    sentinel = n_rows * n_cols
+    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    # One pass sums each run at its start and flags it (pruning on the sum), one scan numbers the
+    # kept entries, and one pass places them -- the values never go through a separate launch.
+    # Both scratch arrays live in the sort buffers' upper halves.
+    flags = order[count:]
+    run_values = wp.empty(count, dtype=values.dtype, device=device)
+    wp.launch(
+        kernel_array.CSR_RUN_VALUES[values.dtype],
+        dim=count,
+        inputs=[
+            keys,
+            order,
+            values,
+            wp.uint64(sentinel),
+            wp.int32(prune_numerical_zeros),
+            values.dtype(),
+            flags,
+            run_values,
+        ],
+        device=device,
+    )
+    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+    wp.launch(
+        kernel_array.CSR_FROM_FLAGGED_RUNS[values.dtype],
+        dim=count,
+        inputs=[
+            keys,
+            flags,
+            run_values,
+            wp.uint64(sentinel),
+            wp.int32(n_rows),
+            wp.uint64(n_cols),
+            offsets,
+            columns,
+            summed,
+        ],
+        device=device,
+    )
+    return bsr_from_csr(n_rows, n_cols, offsets, columns, summed)
 
 
 def index_sparse(
@@ -900,7 +1341,7 @@ def index_sparse(
         ``dtype`` is ``None``). When ``data`` and ``dtype`` are provided, the values of the
         matrix are cast to ``dtype``.
     prune_numerical_zeros
-        Forwarded to ``warp.sparse.bsr_from_triplets``.
+        Forwarded to [`csr_from_triplets`][triwarp.array.csr_from_triplets].
 
     Returns
     -------
@@ -930,7 +1371,7 @@ def index_sparse(
 
     n_cols, n_repeats = indices.shape
     cols = arange_repeat(n_cols * n_repeats, n_repeats, indices.device)
-    return wps.bsr_from_triplets(
+    return csr_from_triplets(
         n_rows,
         indices.shape[0],
         indices.flatten(),
@@ -1461,20 +1902,18 @@ def mask_to_compact_ranks(
         wp.map(kernel_array.complement_flag, mask, out=flags)
     else:
         wp.launch(kernel_array.bool_flags, dim=n, inputs=[mask, flags], device=device)
-    return _offsets_from_scan(buffer, flags, flags, include_total=False)
+    return twt.as_dense(buffer[:n]), _scan_into_tail(buffer, flags, flags)
 
 
-def counts_to_offsets(
-    counts: wp.array[wp.int32], *, include_total: bool = False
-) -> tuple[wp.array[wp.int32], int]:
+def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], int]:
     """
-    Exclusive prefix sum of ``counts``, plus their total.
+    Total-terminated exclusive prefix sum of ``counts``, plus their total.
 
     The CSR-building step that turns per-element counts into row starts. Done in **one** scan pass
     and one 4-byte host read: the scan runs *inclusive* into the tail of an ``n + 1`` buffer whose
     leading zero is already in place, which makes the first ``n`` entries the exclusive sum and the
-    last entry the total. The obvious spelling — one exclusive scan for the offsets and a second
-    inclusive scan (or a ``reduce.sum``) for the total — costs a second full pass over ``counts``,
+    last entry the total. The obvious spelling -- one exclusive scan for the offsets and a second
+    inclusive scan (or a ``reduce.sum``) for the total -- costs a second full pass over ``counts``,
     and reading the total as ``inclusive.numpy()[-1]`` copies the whole array to the host to look at
     one element of it.
 
@@ -1482,27 +1921,19 @@ def counts_to_offsets(
     ----------
     counts
         Length-``n`` ``wp.int32`` per-element counts.
-    include_total
-        Return the length-``n + 1`` CSR form, whose trailing element is ``total``, instead of the
-        length-``n`` form. Free — that buffer is what gets built either way — and it is what
-        ``warp.utils.segmented_sort_pairs`` and the other segment-bounds consumers want.
 
     Returns
     -------
     offsets : wp.array[wp.int32]
-        Exclusive prefix sum: length ``n`` by default, or ``n + 1`` with ``offsets[n] == total``
-        when ``include_total`` is set. The default is a **view** into the ``n + 1`` buffer, which
-        the returned array keeps alive. Element ``i`` owns ``[offsets[i], offsets[i] + counts[i])``.
+        Length-``n + 1`` total-terminated offsets (the package's one convention, stated at
+        [`pack_1d_arrays`][triwarp.array.pack_1d_arrays]): element ``i`` owns
+        ``[offsets[i], offsets[i + 1])`` and ``offsets[n] == total``. ``[0]`` when ``counts`` is
+        empty.
     total : int
-        Sum of ``counts``.
+        Sum of ``counts``, read back so a caller sizing an output needs no second device access.
 
     Notes
     -----
-    Two offsets conventions coexist in this package: the length-``n`` form, with the total
-    implicit, and the length-``n + 1`` form that stores it (``halfedge.vertex_one_rings``,
-    ``geodesic_walk.trace_from_vertex``, and every ``segmented_sort_pairs`` caller). Both come
-    out of here, so no caller has to append the terminator afterwards.
-
     **This is for callers that want ``total``**, which it reads back unconditionally, and a host
     readback serialises the device pipeline. A caller that only needs the offsets and already knows
     its buffer size should keep the open-coded ``wp.zeros(n + 1)`` plus a scan into ``[1:]``, as
@@ -1519,20 +1950,16 @@ def counts_to_offsets(
     n = int(counts.shape[0])
     device = counts.device
     if n == 0:
-        return wp.zeros(1 if include_total else 0, dtype=wp.int32, device=device), 0
+        return wp.zeros(1, dtype=wp.int32, device=device), 0
     # The leading zero from ``wp.zeros`` is the first exclusive offset; the inclusive scan fills the
     # rest, so ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets.
     buffer = wp.zeros(n + 1, dtype=wp.int32, device=device)
-    return _offsets_from_scan(buffer, counts, buffer[1:], include_total=include_total)
+    return buffer, _scan_into_tail(buffer, counts, buffer[1:])
 
 
-def _offsets_from_scan(
-    buffer: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    tail: wp.array[wp.int32],
-    *,
-    include_total: bool,
-) -> tuple[wp.array[wp.int32], int]:
+def _scan_into_tail(
+    buffer: wp.array[wp.int32], counts: wp.array[wp.int32], tail: wp.array[wp.int32]
+) -> int:
     """
     Scan ``counts`` inclusively into ``tail`` (``buffer[1:]``) and read the total off the end.
 
@@ -1542,9 +1969,8 @@ def _offsets_from_scan(
     [`flatnonzero`][triwarp.array.flatnonzero]), which is what lets the mask form skip its own flag
     buffer.
     """
-    n = int(tail.shape[0])
     wp.utils.array_scan(counts, out_array=tail, inclusive=True)
-    return buffer if include_total else twt.as_dense(buffer[:n]), int(read_scalar(buffer))
+    return int(read_scalar(buffer))
 
 
 def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.array[wp.int32]:

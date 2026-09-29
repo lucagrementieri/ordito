@@ -322,8 +322,8 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
             assert len(set(match_np.tolist())) == match_np.shape[0]
 
 
-def test_split_batched_matches_split(request: pytest.FixtureRequest) -> None:
-    """``split`` slices ``split_batched``: the CSR must agree with it slice for slice."""
+def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> None:
+    """Triwarp against triwarp: ``split`` is ``split_with_offsets`` split, slice for slice."""
     meshes_wp = [
         request.getfixturevalue(name) for name in ("icosahedron", "hemisphere", "half_torus")
     ]
@@ -331,14 +331,16 @@ def test_split_batched_matches_split(request: pytest.FixtureRequest) -> None:
         [(mesh_wp.points, mesh_wp.indices) for _mesh_tm, mesh_wp in meshes_wp]
     )
 
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = tw.combine.split_batched(
-        concat_vertices_wp, concat_faces_wp
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
+        tw.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)
     )
     split_wp = tw.combine.split(concat_vertices_wp, concat_faces_wp)
-    assert int(vertex_offsets_wp.shape[0]) == len(split_wp) == 3
+    assert int(vertex_offsets_wp.shape[0]) == len(split_wp) + 1 == 4
 
-    vertex_bounds_np = [*vertex_offsets_wp.list(), int(vertices_all_wp.shape[0])]
-    face_bounds_np = [*face_offsets_wp.list(), int(faces_all_wp.shape[0]) // 3]
+    vertex_bounds_np = vertex_offsets_wp.list()
+    face_bounds_np = face_offsets_wp.list()
+    assert vertex_bounds_np[-1] == int(vertices_all_wp.shape[0])
+    assert face_bounds_np[-1] == int(faces_all_wp.shape[0]) // 3
     for index, (vertices_wp, faces_wp) in enumerate(split_wp):
         v_begin, v_end = vertex_bounds_np[index], vertex_bounds_np[index + 1]
         f_begin, f_end = face_bounds_np[index], face_bounds_np[index + 1]
@@ -354,6 +356,33 @@ def test_split_batched_matches_split(request: pytest.FixtureRequest) -> None:
         assert copy_vertices_wp.ptr != view_vertices_wp.ptr
 
 
+def test_split_copies_many_components(device: str) -> None:
+    """
+    Triwarp against triwarp: forty components copy out equal to their views, into owned buffers.
+
+    Forty is past the count at which ``array.split(copy=True)`` fills its copies in one launch, the
+    path a handful of components never reaches. The views carry the oracle through
+    ``test_split_meshes``; this pins the copies to them.
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=0)
+    parts_tm = [sphere_tm.copy().apply_translation([3.0 * i, 0.0, 0.0]) for i in range(40)]
+    mesh_tm = tm.util.concatenate(parts_tm)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
+
+    views_wp = tw.combine.split(vertices_wp, faces_wp)
+    copies_wp = tw.combine.split(vertices_wp, faces_wp, copy=True)
+
+    assert len(views_wp) == len(copies_wp) == 40
+    for (view_vertices_wp, view_faces_wp), (copy_vertices_wp, copy_faces_wp) in zip(
+        views_wp, copies_wp, strict=True
+    ):
+        assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
+        assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
+        assert int(copy_faces_wp.shape[0]) == 3 * sphere_tm.faces.shape[0]
+        assert copy_vertices_wp._ref is None
+        assert copy_faces_wp._ref is None
+
+
 def test_split_single_component(request: pytest.FixtureRequest) -> None:
     """Triwarp against triwarp: the ``k == 1`` fast path equals the batched key packing."""
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
@@ -367,13 +396,13 @@ def test_split_empty(device: str) -> None:
     vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
     faces_wp = wp.empty(0, dtype=wp.int32, device=device)
     assert tw.combine.split(vertices_wp, faces_wp) == []
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = tw.combine.split_batched(
-        vertices_wp, faces_wp
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
+        tw.combine.split_with_offsets(vertices_wp, faces_wp)
     )
     assert vertices_all_wp.shape == (0,)
-    assert vertex_offsets_wp.shape == (0,)
+    assert np.array_equal(vertex_offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
     assert faces_all_wp.shape == (0,)
-    assert face_offsets_wp.shape == (0,)
+    assert np.array_equal(face_offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def test_concatenate_rejects_mismatched_devices() -> None:

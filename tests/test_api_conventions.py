@@ -60,6 +60,7 @@ from tests.api_conventions import (
     mask_return_problems,
     private_import_problems,
     scan_package,
+    triplet_build_problems,
     uncitable_reference_problems,
     undocumented_raise_problems,
     warp_host_arithmetic_problems,
@@ -923,3 +924,13 @@ def test_warp_typed_constants_stay_out_of_host_arithmetic() -> None:
     instance.
     """
     _fail("Warp-typed constant(s) in Python-scope arithmetic:", warp_host_arithmetic_problems())
+
+
+def test_no_warp_sparse_triplet_builds_in_the_package() -> None:
+    """
+    No ``triwarp/`` module calls ``warp.sparse.bsr_from_triplets``.
+
+    Not a library comparison: this is a property of triwarp's own source. Check 27. The probe that
+    shows it bites: reverting ``laplacian.cotmatrix`` to its triplet build reports one problem.
+    """
+    _fail("warp.sparse triplet build(s) in the package:", triplet_build_problems())

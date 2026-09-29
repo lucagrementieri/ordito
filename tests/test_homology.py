@@ -270,3 +270,28 @@ def test_homology_generators_empty(device: str) -> None:
     vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert tw.homology.homology_generators(vertices_wp, faces_wp) == []
+
+
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "torus", "genus_two"])
+def test_homology_generators_is_its_packed_form_split(
+    request: pytest.FixtureRequest, mesh_name: str, device: str
+) -> None:
+    """
+    Triwarp against triwarp: the list form is the packed form, loop by loop.
+
+    ``homology_generators`` carries the MeshLib count comparison and the invariants above; this
+    pins ``homology_generators_with_offsets`` to it -- the same basis in the same order, with
+    ``[0]`` offsets for the sphere.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    flat_wp, offsets_wp = tw.homology.homology_generators_with_offsets(
+        mesh_wp.points, mesh_wp.indices
+    )
+
+    offsets_np = offsets_wp.numpy()
+    assert offsets_np.shape[0] == len(loops_wp) + 1
+    assert offsets_np[-1] == flat_wp.shape[0]
+    flat_np = flat_wp.numpy()
+    for i, loop_wp in enumerate(loops_wp):
+        assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])

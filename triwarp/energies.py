@@ -35,7 +35,7 @@ Four families, and the first is the only one that returns a number rather than a
   two coordinate blocks. [`lscm`][triwarp.parametrization.lscm] is the solve; these are what it
   minimizes.
 
-Every *operator* is assembled in ``float64`` in a single ``bsr_from_triplets``, because the
+Every *operator* is assembled in ``float64`` in a single sparse build, because the
 conjugate-gradient solves they feed run in ``float64`` for determinism and a ``float32``
 intermediate would be the accuracy floor. The three scalar regularizers are ``float32`` throughout:
 they are read by a human or by an optimizer's stopping rule, not solved with.
@@ -297,7 +297,8 @@ def k_harmonic(
 
     Each power is assembled by one triplet pass over matching CSR rows —
     ``(A M^-1 B)_ij = sum_t A_ti M_t^-1 B_tj`` with both operands symmetric — followed by a single
-    ``bsr_from_triplets``, so the product is built without ``warp.sparse.bsr_mm``.
+    [`csr_from_triplets`][triwarp.array.csr_from_triplets], so the product is built without
+    ``warp.sparse.bsr_mm``.
 
     Parameters
     ----------
@@ -366,7 +367,7 @@ def _diagonal_sandwich(
 
     Row ``t`` of the product is the outer product of ``A``'s and ``B``'s rows ``t`` scaled by the
     diagonal weight, so the whole product is one count kernel, one scan, one emission kernel and a
-    single ``bsr_from_triplets``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
+    single ``array.csr_from_triplets``, built without ``warp.sparse.bsr_mm``. ``bsr_mm(bsr_mm(a,
     bsr_diag(inverse_mass)), b)`` is an equivalent construction, but this path avoids materializing
     an intermediate diagonal matrix and its scratch.
     """
@@ -380,7 +381,7 @@ def _diagonal_sandwich(
         device=device,
     )
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    segment_offsets, n_triplets = tw.array.counts_to_offsets(counts, include_total=True)
+    segment_offsets, n_triplets = tw.array.counts_to_offsets(counts)
 
     dtype = a.values.dtype
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
@@ -403,7 +404,7 @@ def _diagonal_sandwich(
             ],
             device=device,
         )
-    return wps.bsr_from_triplets(n_rows, n_rows, rows, cols, vals, prune_numerical_zeros=False)
+    return tw.array.csr_from_triplets(n_rows, n_rows, rows, cols, vals)
 
 
 def hessian_energy(
@@ -503,7 +504,7 @@ def hessian_energy(
         device=device,
     )
     # Host readback: only the device knows the scan total, and it sizes the triplet buffers.
-    segment_offsets, n_triplets = tw.array.counts_to_offsets(counts, include_total=True)
+    segment_offsets, n_triplets = tw.array.counts_to_offsets(counts)
 
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
     if n_triplets > 0:
@@ -524,9 +525,7 @@ def hessian_energy(
             ],
             device=device,
         )
-    return wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
-    )
+    return tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
 
 
 def curved_hessian_energy(
@@ -658,9 +657,7 @@ def curved_hessian_energy(
         ],
         device=device,
     )
-    return wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
-    )
+    return tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
 
 
 def crouzeix_raviart_cotmatrix(
@@ -759,7 +756,7 @@ def crouzeix_raviart_cotmatrix(
         inputs=[edge_map, cot_entries, rows, cols, vals],
         device=device,
     )
-    return wps.bsr_from_triplets(n_edges, n_edges, rows, cols, vals, prune_numerical_zeros=False)
+    return tw.array.csr_from_triplets(n_edges, n_edges, rows, cols, vals)
 
 
 def crouzeix_raviart_massmatrix(
@@ -862,7 +859,8 @@ def lscm_hessian(
     ``L`` is the cotangent Laplacian [`cotmatrix`][triwarp.laplacian.cotmatrix] (negative-diagonal
     convention), ``repdiag(L, 2)`` is the block-diagonal ``[[L, 0], [0, L]]``, and ``A`` is the
     boundary [`vector_area_matrix`][triwarp.energies.vector_area_matrix]. Built natively in
-    float64 in a single ``bsr_from_triplets`` (the within-quadrant repdiag triplets and the
+    float64 in a single [`csr_from_triplets`][triwarp.array.csr_from_triplets] (the
+    within-quadrant repdiag triplets and the
     cross-quadrant ``-2 A`` triplets never collide), so it feeds the float64 conjugate-gradient
     solve directly. Matches the ``Q`` returned by ``igl.lscm`` exactly.
 
@@ -930,7 +928,7 @@ def lscm_hessian(
         _vector_area_triplets(
             boundary, n, -2.0, rows[2 * n_entries :], cols[2 * n_entries :], vals[2 * n_entries :]
         )
-    return wps.bsr_from_triplets(2 * n, 2 * n, rows, cols, vals, prune_numerical_zeros=False)
+    return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
 
 def vector_area_matrix(
@@ -944,7 +942,7 @@ def vector_area_matrix(
     winding, via [`oriented_boundary_edges`][triwarp.boundary.oriented_boundary_edges]) it adds the
     cross-quadrant entries ``(i+n, j, -1/4)``, ``(j, i+n, -1/4)``, ``(i, j+n, +1/4)``,
     ``(j+n, i, +1/4)``. On a closed mesh (no boundary) ``A`` is the zero matrix. Built natively in
-    float64 in a single ``bsr_from_triplets``.
+    float64 in a single [`csr_from_triplets`][triwarp.array.csr_from_triplets].
 
     Parameters
     ----------
@@ -983,7 +981,7 @@ def vector_area_matrix(
 
     rows, cols, vals = tw.array.triplet_buffers(4 * n_be, wp.float64, device)
     _vector_area_triplets(boundary, n, 1.0, rows, cols, vals)
-    return wps.bsr_from_triplets(2 * n, 2 * n, rows, cols, vals, prune_numerical_zeros=False)
+    return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
 
 def _vector_area_triplets(

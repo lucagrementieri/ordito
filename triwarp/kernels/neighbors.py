@@ -25,9 +25,19 @@ from triwarp.kernels.reduce import block_chunk_1d, block_min
 MAX_SEARCH_ATTEMPTS = wp.constant(wp.int32(16))
 RADIUS_GROWTH = wp.constant(wp.float32(2.0))
 
-# Index a grid k-NN row carries when its search was handed to ``nearest_point_via_mesh`` rather
-# than finished by a linear scan. Distinct from ``-1``, which is an answer: no point in range.
+# Index a grid k-NN row carries when its search was handed to a tree -- ``nearest_point_via_mesh``
+# at ``k = 1``, the BVH row kernel's ``only_deferred`` pass above it -- rather than finished by a
+# linear scan. Distinct from ``-1``, which is an answer: no point in range.
 DEFERRED_ROW = wp.constant(wp.int32(-2))
+
+# Above ``k = 1`` a grid k-NN row is deferred to the BVH only when its nearest point lies within
+# this fraction of the initial radius, i.e. when the query is (essentially) a point of the cloud.
+# Measured on a 1.5x-scaled, jittered bunny as the query set: the rows the grid gives up on there
+# answer within ~2 initial radii yet cost the BVH's radius search more than a scan of the whole
+# cloud, because a small ball in the empty space a surface cloud encloses still overlaps many of
+# the tree's large interior nodes. A self-query in the sparse part of a density-graded cloud is the
+# opposite case, and the one the deferral exists for.
+DEFER_NEAR = wp.constant(wp.float32(0.5))
 
 # Candidate-row sizes the register-resident k-NN kernels are generated for. The row is held in a
 # ``wp.types.vector(length=K)`` value type, i.e. in registers, so ``K`` must be a compile-time
@@ -433,9 +443,13 @@ def query_bvh_nearest_neighbors(
     initial_radius: wp.float32,
     min_bound: wp.vec3,
     max_bound: wp.vec3,
+    only_deferred: wp.int32,
     out_indices: wp.array2d[wp.int32],
     out_distances: wp.array2d[wp.float32],
 ) -> None:
+    # ``only_deferred`` is the register-row twins' switch for finishing the rows a grid search
+    # deferred; this global-row form serves only ``k`` above the largest bucket, where the grid
+    # never defers, so it takes the argument and ignores it.
     tid = wp.int32(wp.tid())
     q = queries[tid]
     out_indices_row = out_indices[tid]
@@ -561,10 +575,13 @@ def _bvh_nearest_row_kernel(row_size: int, name: str):
         initial_radius: wp.float32,
         min_bound: wp.vec3,
         max_bound: wp.vec3,
+        only_deferred: wp.int32,
         out_indices: wp.array2d[wp.int32],
         out_distances: wp.array2d[wp.float32],
     ) -> None:
         tid = wp.int32(wp.tid())
+        if only_deferred != 0 and out_indices[tid, 0] != DEFERRED_ROW:
+            return  # the grid already certified this row
         q = queries[tid]
         row_indices = vec_indices()
         row_distances = vec_distances()
@@ -746,6 +763,7 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
 
         r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, initial_radius)
         certified = wp.int32(0)
+        nearest = FLOAT32_INF_CONSTANT  # the last cell walk's nearest distance
         for _attempt in range(MAX_SEARCH_ATTEMPTS):
             if not r <= widest:
                 # Past ``widest`` a cell walk costs more than touching every point (and a NaN
@@ -769,15 +787,21 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
                             row_indices[slot] = carry_index
                             carry_distance = held_distance
                             carry_index = held_index
+            nearest = row_distances[0]
             worst = row_kth(row_distances, k)
             r = next_search_radius(worst, r, r_hard)
             if r < 0.0:
                 certified = 1  # certified exact, or the scan was already complete
                 break
 
-        if certified == 0 and defer != 0:
-            # Hand the row to ``nearest_point_via_mesh`` instead of scanning: a query this far
-            # from the cloud is the grid's worst case and a closest-point descent's ordinary one.
+        if certified == 0 and defer != 0 and (k == 1 or nearest <= DEFER_NEAR * initial_radius):
+            # Hand the row to a tree instead of scanning. At ``k = 1`` that is
+            # ``nearest_point_via_mesh``, whose descent costs the same however far the query is
+            # from the cloud. Above it, the BVH row kernel's ``only_deferred`` pass, and only for a
+            # query sitting *on* a point of the cloud (``DEFER_NEAR``): that is a self-query in a
+            # part of the cloud sparser than the cell width was sized for, where the ball search
+            # stays small and a scan would touch every point. A query off the cloud keeps the scan,
+            # because there the tree is the slower finish (see ``DEFER_NEAR``).
             # Marked ``DEFERRED_ROW`` rather than ``-1``, which already means "nothing within
             # ``max_radius``", and counted so the caller can skip the second pass when none was.
             row_reset(row_distances, row_indices)

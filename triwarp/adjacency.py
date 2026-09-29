@@ -79,8 +79,8 @@ def face_adjacency(
         Optional precomputed ``(n_faces * 3, 2)`` edge rows with each row sorted
         so the smaller vertex index is first (as from
         [`faces_to_edges`][triwarp.edges.faces_to_edges] with
-        ``sorted=True``). When ``None``, edges are built from ``faces`` on
-        ``faces.device``.
+        ``sorted=True``). Not read: the edge keys and the shared edges are read straight off
+        ``faces``, which packs these rows identically for less than hashing them.
     return_edges
         If ``True``, also return the shared vertex indices for each adjacency row.
     n_vertices
@@ -144,16 +144,15 @@ def face_adjacency(
         raise ValueError(f"edges_paired needs an even face count, got {n_faces} faces")
     # Edge ``e`` belongs to face ``e // 3``, so the owning faces need no ``edges_face`` table, no
     # gather through it, and no row sort — one kernel does the division and orders the pair. With
-    # ``return_edges`` the same kernel writes each pair's shared edge too: from the caller's
-    # ``edges_sorted`` rows when given, and otherwise straight off ``faces``, so no edge table is
-    # built just to be gathered from. Unpaired, that kernel also compacts the pairs off the sorted
-    # keys, so no intermediate group table is written.
+    # ``return_edges`` the same kernel writes each pair's shared edge too, straight off ``faces``,
+    # so no edge table is built just to be gathered from. Unpaired, that kernel also compacts the
+    # pairs off the sorted keys, so no intermediate group table is written.
     if edges_paired:
-        edge_groups = _paired_edge_groups(faces, edges_sorted, n_vertices)
+        edge_groups = _paired_edge_groups(faces, n_vertices)
         n_pairs = int(edge_groups.shape[0])
         kernel, dim, sources = kernel_adjacency.edge_pairs_to_face_pairs, n_pairs, [edge_groups]
     else:
-        order, offsets, n_pairs = _sorted_pair_offsets(faces, edges_sorted, n_vertices)
+        order, offsets, n_pairs = _sorted_pair_offsets(faces, n_vertices)
         kernel, dim = kernel_adjacency.emit_sorted_face_pairs, int(order.shape[0])
         sources = [offsets, order]
     adjacency = twt.empty_2d((n_pairs, 2), wp.int32, device=device)
@@ -162,7 +161,7 @@ def face_adjacency(
         wp.launch(
             kernel,
             dim=dim,
-            inputs=[faces, edges_sorted, *sources, adjacency, adjacency_edges],
+            inputs=[faces, None, *sources, adjacency, adjacency_edges],
             device=device,
         )
     if adjacency_edges is None:
@@ -219,9 +218,7 @@ def require_paired_adjacency(
         )
 
 
-def _paired_edge_groups(
-    faces: wp.array[wp.int32], edges_sorted: twt.Array2dInt32 | None, n_vertices: int | None
-) -> twt.Array2dInt32:
+def _paired_edge_groups(faces: wp.array[wp.int32], n_vertices: int | None) -> twt.Array2dInt32:
     """
     Pair the halfedges of a mesh whose every edge is shared by exactly two faces, as ``(m, 2)``.
 
@@ -229,15 +226,12 @@ def _paired_edge_groups(
     position and the run detection of [`group`][triwarp.grouping.group] would emit sorted slots
     ``2k, 2k + 1`` as row ``k``: the sort's permutation, read two to a row, is that answer already.
     """
-    if edges_sorted is None:
-        _, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    else:
-        _, order = tw.array.sort_and_argsort(_edge_row_keys(edges_sorted, n_vertices))
+    _, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
     return twt.as_array2d(order.reshape((int(order.shape[0]) // 2, 2)), wp.int32)
 
 
 def _sorted_pair_offsets(
-    faces: wp.array[wp.int32], edges_sorted: twt.Array2dInt32 | None, n_vertices: int | None
+    faces: wp.array[wp.int32], n_vertices: int | None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Sort the ``3 * n_faces`` undirected halfedge keys and locate the runs of exactly two.
@@ -250,16 +244,12 @@ def _sorted_pair_offsets(
 
     The keys hash the edge rows over the vertex-index range (the caller's ``n_vertices``, or
     ``INDEX_RADIX_PAIR``); using ``n_faces`` as the base is wrong whenever the largest vertex
-    index is >= n_faces. The partition is invariant to any sufficiently large base, and when
-    ``edges_sorted`` is ``None`` the keys come straight off ``faces`` in one launch, so the
-    ``(3 * n_faces, 2)`` edge rows are never written or read back. Both spellings produce
-    byte-identical keys, hence identical pair order, so callers can mix the two paths and still
-    get row-aligned results.
+    index is >= n_faces. The partition is invariant to any sufficiently large base, and the keys
+    come straight off ``faces`` in one launch, so the ``(3 * n_faces, 2)`` edge rows are never
+    written or read back; hashing those rows would give byte-identical keys, hence identical pair
+    order, for more work.
     """
-    if edges_sorted is None:
-        keys, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    else:
-        keys, order = tw.array.sort_and_argsort(_edge_row_keys(edges_sorted, n_vertices))
+    keys, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
     n = int(keys.shape[0])
     offsets = wp.zeros(n + 1, dtype=wp.int32, device=faces.device)
     flags = offsets[1:]
@@ -272,28 +262,6 @@ def _sorted_pair_offsets(
     wp.utils.array_scan(flags, flags, inclusive=True)
     # The pair count sizes the output, so it has to come back to the host.
     return order, offsets, int(read_scalar(offsets))
-
-
-def _edge_row_keys(edges_sorted: twt.Array2dInt32, n_vertices: int | None) -> wp.array[wp.uint64]:
-    """Pack each caller-supplied sorted edge row into its undirected key, as ``face_edge_keys``."""
-    return tw.grouping.hash_indices_rows(edges_sorted, _hash_radix(n_vertices), validate=False)
-
-
-def _hash_radix(n_vertices: int | None) -> int:
-    """
-    Resolve the row-hash base for the edge keys: ``n_vertices``, or ``INDEX_RADIX_PAIR``.
-
-    Any base above every index packs a sorted pair injectively and in lexicographic order, so the
-    radix sort orders the keys -- and ``group`` emits the pairs -- identically whichever base is
-    used. ``INDEX_RADIX_PAIR`` exceeds every ``int32`` reinterpreted as ``uint32``, which is what
-    ``pack_edge_key`` packs, so no reduction has to find the bound and no host readback serialises
-    the call.
-    """
-    if n_vertices is None:
-        return INDEX_RADIX_PAIR
-    if n_vertices <= 0:
-        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
-    return n_vertices
 
 
 def vertex_face_adjacency(
@@ -452,7 +420,7 @@ def face_adjacency_unshared(
     if face_adjacency is None:
         m, dim, tables = 0, 0, ()
         if int(faces.shape[0]) >= 3:
-            order, offsets, m = _sorted_pair_offsets(faces, None, n_vertices)
+            order, offsets, m = _sorted_pair_offsets(faces, n_vertices)
             dim, tables = int(order.shape[0]), (offsets, order)
         kernel = kernel_adjacency.emit_sorted_unshared
     else:
@@ -769,7 +737,9 @@ def _projection_tables(
     return face_normals, face_adjacency, face_adjacency_edges, face_adjacency_unshared
 
 
-def face_connected_component_labels(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
+def face_connected_component_labels(
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+) -> wp.array[wp.int32]:
     """
     Connected-component label per face (face-adjacency graph).
 
@@ -779,13 +749,18 @@ def face_connected_component_labels(faces: wp.array[wp.int32]) -> wp.array[wp.in
     ``node_count = n_faces`` -- each component named by its smallest face id -- and run through
     the same union-find, fed straight from the sorted edge keys instead of a compacted pair table.
     [`Trimesh.face_connected_component_labels`][triwarp.mesh.Trimesh] calls the edge-list form
-    directly to reuse its own cached adjacency.
+    directly when it already holds a cached adjacency.
 
     Parameters
     ----------
     faces
         Length-``3 * n_faces`` flat triangle index buffer (same as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
+    n_vertices
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys] so the key sort orders
+        only the bits a key can occupy. It does not change the answer, and it is trusted, not
+        checked.
 
     Returns
     -------
@@ -806,7 +781,7 @@ def face_connected_component_labels(faces: wp.array[wp.int32]) -> wp.array[wp.in
     # table, no host read of its length, and no per-halfedge edge table written only to be read
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
     device = faces.device
-    sorted_keys, order = sorted_face_edge_keys(faces)
+    sorted_keys, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
     parents = tw.array.arange(n_faces, device=device)
     for kernel in (kernel_adjacency.sorted_pair_prehook, kernel_adjacency.sorted_pair_hook):
         wp.launch(kernel, dim=3 * n_faces, inputs=[sorted_keys, order, parents], device=device)
@@ -878,3 +853,20 @@ def sorted_face_edge_keys(
         keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
     )
     return twt.as_dense(keys[:n]), twt.as_dense(order[:n])
+
+
+def _hash_radix(n_vertices: int | None) -> int:
+    """
+    Resolve the row-hash base for the edge keys: ``n_vertices``, or ``INDEX_RADIX_PAIR``.
+
+    Any base above every index packs a sorted pair injectively and in lexicographic order, so the
+    radix sort orders the keys -- and ``group`` emits the pairs -- identically whichever base is
+    used. ``INDEX_RADIX_PAIR`` exceeds every ``int32`` reinterpreted as ``uint32``, which is what
+    ``pack_edge_key`` packs, so no reduction has to find the bound and no host readback serialises
+    the call.
+    """
+    if n_vertices is None:
+        return INDEX_RADIX_PAIR
+    if n_vertices <= 0:
+        raise ValueError(f"n_vertices must be positive, got {n_vertices}")
+    return n_vertices

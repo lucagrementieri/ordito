@@ -15,11 +15,12 @@ angles into a polar coordinate system on the tangent plane.
 
 from __future__ import annotations
 
-import numpy as np
+from collections.abc import Sequence
+
 import warp as wp
 
 import triwarp as tw
-from triwarp._device import read_scalar, require_same_device
+from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INT32_MAX
 from triwarp.kernels import halfedge as kernel_halfedge
 
@@ -89,7 +90,7 @@ def halfedge_twins(
     defect_counts = wp.zeros(2, dtype=wp.int32, device=faces.device)
     twins = _pair_halfedges(faces, n_vertices, defect_counts)
     if validate and twins.shape[0] > 0:
-        _raise_twin_defects(defect_counts.numpy())
+        _raise_twin_defects(read_values(defect_counts, 0, 2))
     return twins
 
 
@@ -258,20 +259,22 @@ def vertex_one_rings(
     defect_counts = wp.zeros(3, dtype=wp.int32, device=device)
     check_twins = twins is None and validate
     if twins is None:
-        twins = _pair_halfedges(faces, n_vertices, defect_counts[0:2])
+        # The pairing writes only the first two slots, so it takes the buffer whole.
+        twins = _pair_halfedges(faces, n_vertices, defect_counts)
 
     offsets = wp.zeros(n_vertices + 1, dtype=wp.int32, device=device)
     ring_halfedges = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0 or n_vertices == 0:
         if check_twins and n_halfedges > 0:
-            _raise_twin_defects(defect_counts.numpy())
+            _raise_twin_defects(read_values(defect_counts, 0, 2))
         return ring_halfedges, offsets, wp.zeros(n_vertices, dtype=wp.bool, device=device)
 
     # One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row
     # 0 over all outgoing halfedges, row 1 over the boundary ones): every face contributes exactly
     # one outgoing halfedge per corner, so a vertex's ring size is how often it appears in the
-    # flat face buffer -- no walk needed.
-    counts = wp.zeros(n_vertices, dtype=wp.int32, device=device)
+    # flat face buffer -- no walk needed. The degrees are counted straight into ``offsets[1:]``,
+    # already zeroed, and scanned there in place.
+    counts = offsets[1:]
     candidate_starts = wp.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
     wp.launch(
         kernel_halfedge.ring_degrees_and_starts,
@@ -279,11 +282,11 @@ def vertex_one_rings(
         inputs=[faces, twins, counts, candidate_starts],
         device=device,
     )
-    # Inclusive scan into offsets[1:] leaves the leading zero in place, giving the usual CSR bounds.
+    # The inclusive scan in place leaves the leading zero, giving the usual CSR bounds.
     # Deliberately NOT tw.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is n_halfedges, known on the host). Converting for symmetry
     # would add a device synchronization where there is currently none.
-    wp.utils.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
 
     # The walk resolves each vertex's start and boundary flag from the candidates itself, and
     # writes the flag for every vertex, so ``is_boundary`` needs no initial value.
@@ -297,7 +300,7 @@ def vertex_one_rings(
     )
     if not validate:
         return ring_halfedges, offsets, is_boundary
-    counts_np = defect_counts.numpy()
+    counts_np = read_values(defect_counts, 0, 3)
     if check_twins:
         _raise_twin_defects(counts_np)
     n_incomplete = int(counts_np[2])
@@ -345,7 +348,7 @@ def _pair_halfedges(
     return twins
 
 
-def _raise_twin_defects(defect_counts: np.ndarray) -> None:
+def _raise_twin_defects(defect_counts: Sequence[int]) -> None:
     """Raise ``halfedge_twins``' two rejections from its read-back defect counts."""
     n_nonmanifold, n_misoriented = (int(count) for count in defect_counts[:2])
     if n_nonmanifold > 0:

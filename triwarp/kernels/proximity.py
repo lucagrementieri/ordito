@@ -412,6 +412,17 @@ def face_to_mesh_distance_tiled(
         out_witness[f] = block_witness
 
 
+@wp.func
+def closest_face_or_first(mesh_id: wp.uint64, p: wp.vec3, max_dist: wp.float32) -> wp.int32:
+    # The face closest to ``p``, or face 0 on a miss -- the wrapper's documented convention, which
+    # also keeps a table read in range. Shared by the two ``normals_at_closest_faces*`` kernels.
+    #
+    # Only the face index is wanted, so this stops at the query -- no ``mesh_eval_position`` and no
+    # distance.
+    query = wp.mesh_query_point_no_sign(mesh_id, p, max_dist)
+    return wp.where(query.result, query.face, wp.int32(0))
+
+
 @wp.kernel
 def normals_at_closest_faces(
     mesh_id: wp.uint64,
@@ -420,16 +431,29 @@ def normals_at_closest_faces(
     face_normals: wp.array[wp.vec3],
     out_normals: wp.array[wp.vec3],
 ) -> None:
-    # The normal of the face closest to each point, gathered in the same thread that found the face.
-    # A miss reads face 0, which is the wrapper's documented convention and keeps the read in range.
-    #
-    # Only the face index is wanted, so this stops at the query -- no ``mesh_eval_position`` and no
-    # distance -- where the three-launch form it replaces ran the full ``closest_point_on_mesh``
-    # kernel into three buffers, a ``wp.map`` clamping the index into a fourth and a gather into the
-    # result.
+    # The normal of the face closest to each point, gathered from a caller's table in the same
+    # thread that found the face. ``normals_at_closest_faces_computed`` is the no-table variant.
     tid = wp.int32(wp.tid())
-    query = wp.mesh_query_point_no_sign(mesh_id, points[tid], max_dist)
-    out_normals[tid] = face_normals[wp.where(query.result, query.face, wp.int32(0))]
+    out_normals[tid] = face_normals[closest_face_or_first(mesh_id, points[tid], max_dist)]
+
+
+@wp.kernel
+def normals_at_closest_faces_computed(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    max_dist: wp.float32,
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    out_normals: wp.array[wp.vec3],
+) -> None:
+    # ``normals_at_closest_faces`` with the hit face's normal formed from its corners in the thread,
+    # by the same ``face_normals_and_area`` the per-face table is built with, so the value is the
+    # table's entry. The two kernels differ only in where the normal comes from: a whole-mesh table
+    # costs a launch and two face-sized buffers the queries read a few entries of.
+    tid = wp.int32(wp.tid())
+    face = closest_face_or_first(mesh_id, points[tid], max_dist)
+    normal, _area = kernel_triangles.face_normals_and_area(vertices, faces, face)
+    out_normals[tid] = normal
 
 
 @wp.func
@@ -669,6 +693,12 @@ def face_containing_point_2d(
     # triangulation also rejects points just inside it, and **no radius separates the two**. The
     # barycentric test is a sign test on the query's own coordinates, orders of magnitude sharper,
     # so the radius only has to be loose enough to find the candidate.
+    #
+    # An unbounded query returns the identical answer (a query farther than the radius from every
+    # face has a barycentric coordinate far below ``-barycentric_epsilon``), and it was measured and
+    # declined: the radius prunes the descent of every query landing outside, so dropping it, and
+    # with it the reduction and readback that size it, is 2.4x at 40 000 queries on CUDA but
+    # 1.1-1.2x slower at a million, and 1.2-2.3x slower at every size on the CPU.
     tid = wp.int32(wp.tid())
     p = points[tid]
     out_face[tid] = wp.int32(-1)

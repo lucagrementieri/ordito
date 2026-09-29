@@ -107,6 +107,43 @@ def halfedge_vertex_pairs(
     out_edges[i, 1] = tip
 
 
+# ``sorted_halfedge_run_class`` verdicts for one sorted position of the packed halfedge keys.
+HALFEDGE_RUN_NONE = wp.constant(wp.int32(0))  # not a run's first position, or a boundary edge
+HALFEDGE_RUN_NON_MANIFOLD = wp.constant(wp.int32(1))  # first of a run of three or more
+HALFEDGE_RUN_SAME_DIRECTION = wp.constant(wp.int32(2))  # first of a pair running the same way
+HALFEDGE_RUN_TWINS = wp.constant(wp.int32(3))  # first of a pair of opposite halfedges
+
+
+@wp.func
+def sorted_halfedge_run_class(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    i: wp.int32,
+) -> wp.int32:
+    """
+    Classify sorted position ``i`` of the packed halfedge keys by the halfedge-twin rule.
+
+    Only the first position of each run of equal keys answers, so a kernel over every sorted
+    position resolves each undirected edge exactly once: a run of one is a boundary edge
+    (``HALFEDGE_RUN_NONE``), three or more a non-manifold edge, and a pair is a twin pair unless
+    its two halfedges share an origin, i.e. traverse the edge the same way. The one spelling of the
+    rule ``pair_sorted_halfedges`` applies while pairing twins and ``repair.degree3_fan_tables``
+    applies to validate without building the table.
+    """
+    key = sorted_keys[i]
+    if i > 0 and sorted_keys[i - 1] == key:
+        return HALFEDGE_RUN_NONE
+    n = sorted_keys.shape[0]
+    if i + 1 >= n or sorted_keys[i + 1] != key:
+        return HALFEDGE_RUN_NONE
+    if i + 2 < n and sorted_keys[i + 2] == key:
+        return HALFEDGE_RUN_NON_MANIFOLD
+    if faces[order[i]] == faces[order[i + 1]]:
+        return HALFEDGE_RUN_SAME_DIRECTION
+    return HALFEDGE_RUN_TWINS
+
+
 @wp.kernel
 def pair_sorted_halfedges(
     faces: wp.array[wp.int32],
@@ -143,22 +180,16 @@ def pair_sorted_halfedges(
     # a face with a repeated vertex, whose self-edge ``a -> a`` has no opposite direction to find.
     # The wrapper's message says "the same direction", which is true of all three.
     i = wp.int32(wp.tid())
-    key = sorted_keys[i]
-    if i > 0 and sorted_keys[i - 1] == key:
-        return
-    n = sorted_keys.shape[0]
-    if i + 1 >= n or sorted_keys[i + 1] != key:
-        return
-    if i + 2 < n and sorted_keys[i + 2] == key:
+    run = sorted_halfedge_run_class(faces, sorted_keys, order, i)
+    if run == HALFEDGE_RUN_NON_MANIFOLD:
         wp.atomic_add(out_defect_counts, 0, 1)
-        return
-    h0 = order[i]
-    h1 = order[i + 1]
-    if faces[h0] == faces[h1]:
+    elif run == HALFEDGE_RUN_SAME_DIRECTION:
         wp.atomic_add(out_defect_counts, 1, 1)
-        return
-    out_twins[h0] = h1
-    out_twins[h1] = h0
+    elif run == HALFEDGE_RUN_TWINS:
+        h0 = order[i]
+        h1 = order[i + 1]
+        out_twins[h0] = h1
+        out_twins[h1] = h0
 
 
 @wp.kernel

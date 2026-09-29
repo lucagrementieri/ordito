@@ -318,3 +318,24 @@ def test_shorten_loop(bench_case: BenchCase) -> None:
     )
     assert len(shortened) == len(loops)
     assert sweeps > 0
+
+
+@pytest.mark.benchmark(group="shorten_loop_with_offsets")
+@pytest.mark.benchaxis("genus")
+@pytest.mark.benchlibs("triwarp")
+def test_shorten_loop_with_offsets(bench_case: BenchCase) -> None:
+    """
+    ``shorten_loop``'s row on the packed basis: no pack of the input, no split of the output.
+
+    Read against that group's triwarp row, from the same basis built outside the timed callable.
+    """
+    if _GENERATORS[bench_case.mesh_name] == 0:
+        pytest.skip(f"{bench_case.mesh_name} is genus 0: there is no loop to shorten")
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    loops, offsets = tw.homology.homology_generators_with_offsets(vertices, faces)
+    _shortened, shortened_offsets, sweeps = bench_case.run(
+        lambda: tw.geodesic_walk.shorten_loop_with_offsets(vertices, faces, loops, offsets),
+        rounds=_ROUNDS,
+    )
+    assert int(shortened_offsets.shape[0]) == int(offsets.shape[0])
+    assert sweeps > 0

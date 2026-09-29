@@ -289,8 +289,13 @@ def triangulate_point_cloud(
     k = num_neighbours if num_neighbours > 0 else max_neighbours
     k = min(k, max_neighbours)
 
+    # One box serves the neighbour search and the default hole length, which would otherwise each
+    # reduce the cloud and read the corners back.
+    bounds = tw.bounds.aabb(points)
+    if crit_hole_length < 0.0:
+        crit_hole_length = 0.1 * _box_diagonal(bounds)
     # Dense (n, k+1) nearest-neighbour table; slot 0 is the point itself and is skipped in-kernel.
-    neighbor_idx, neighbor_dist = tw.neighbors.query_nearest(points, points, k=k + 1, backend="bvh")
+    neighbor_idx, neighbor_dist = tw.neighbors.query_nearest(points, points, k=k + 1, bounds=bounds)
 
     if normals is None:
         normals = tw.points.estimate_normals(points, neighbor_idx)
@@ -330,6 +335,17 @@ def triangulate_point_cloud(
     # and ``make_normals_outward`` would rewind a whole inward-normal cloud's mesh outward, silently
     # breaking that contract.
     return _clean_reconstruction(points, faces, crit_hole_length, orient=False, deduplicate=False)
+
+
+def _box_diagonal(bounds: tuple[wp.vec3, wp.vec3]) -> float:
+    """
+    Length of a box's diagonal, bit for bit what ``bounds.enclosing_diagonal`` returns.
+
+    Both read the same ``float32`` corners and take the norm of their ``float32`` difference.
+    """
+    lower = np.array(bounds[0], dtype=np.float32)
+    upper = np.array(bounds[1], dtype=np.float32)
+    return float(np.linalg.norm(upper - lower))
 
 
 def _repeated_oriented_triangles(
@@ -1543,7 +1559,7 @@ def ball_pivoting(
         return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
 
     # Nearest-neighbour table drives both the radius auto-guess and (if needed) normal estimation.
-    neighbor_idx, neighbor_dist = tw.neighbors.query_nearest(points, points, k=7, backend="bvh")
+    neighbor_idx, neighbor_dist = tw.neighbors.query_nearest(points, points, k=7)
     if radius <= 0.0:
         # The whole table, not columns ``1:``: the self-distance in slot 0 is exactly zero and the
         # positive-finite filter drops it, so flattening costs nothing and keeps the reduction on

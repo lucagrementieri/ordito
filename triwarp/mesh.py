@@ -291,8 +291,8 @@ class Trimesh:
     to host on first access; the synchronized Python value is then cached like any other.
 
     Most of these are also what the free functions accept as an optional precomputed argument, so
-    the cache is worth more than the repeat accesses on this class: pass `edges_sorted`,
-    `face_adjacency`, `halfedge_twins`, `vertex_one_rings`, `vertex_face_adjacency`, `face_normals`
+    the cache is worth more than the repeat accesses on this class: pass `face_adjacency`,
+    `halfedge_twins`, `vertex_one_rings`, `vertex_face_adjacency`, `face_normals`
     / `face_areas`, `cotmatrix_entries`, `bounds`, `laplacian_operator` or an operator bundle into
     the wrapper that takes it and the whole assembly is skipped. The discrete operators at the
     bottom of the class (`cotmatrix` through `vector_heat_operators`) are the heaviest of these and
@@ -732,7 +732,7 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return 0.0
-        lengths = tw.edges.edges_length(self._vertices, self._faces, edges_in=self.edges)
+        lengths = tw.edges.edges_length(self._vertices, self._faces)
         return tw.reduce.mean(cast("twt.Array1dFloat32", lengths))
 
     @_CachedProperty
@@ -784,9 +784,7 @@ class Trimesh:
         [`triwarp.edges.edges_unique`][]
         [`trimesh.Trimesh.edges_unique`][]
         """
-        unique, inverse = tw.edges.edges_unique(
-            self._faces, edges_sorted=self.edges_sorted, n_vertices=self.n_vertices
-        )
+        unique, inverse = tw.edges.edges_unique(self._faces, n_vertices=self.n_vertices)
         self._cache.setdefault("edges_unique_inverse", inverse)
         return unique
 
@@ -802,9 +800,7 @@ class Trimesh:
         """
         # As in `face_areas`: `edges_unique` fills this only when it is itself cold, and a
         # mirroring `transform` carries it while dropping this one, whose row order reverses.
-        unique, inverse = tw.edges.edges_unique(
-            self._faces, edges_sorted=self.edges_sorted, n_vertices=self.n_vertices
-        )
+        unique, inverse = tw.edges.edges_unique(self._faces, n_vertices=self.n_vertices)
         self._cache.setdefault("edges_unique", unique)
         return inverse
 
@@ -858,7 +854,6 @@ class Trimesh:
         """
         adjacency, adjacency_edges = tw.adjacency.face_adjacency(
             self._faces,
-            edges_sorted=self.edges_sorted,
             return_edges=True,
             # The mesh knows its own vertex count, so the row-hash radix never has to be inferred
             # from a device reduction ending in a host readback.
@@ -965,21 +960,26 @@ class Trimesh:
 
         Notes
         -----
-        Calls
+        With `face_adjacency` already cached, calls
         [`connected_component_labels_from_edges`][triwarp.graph.connected_component_labels_from_edges]
-        directly rather than going through
-        [`face_connected_component_labels`][triwarp.adjacency.face_connected_component_labels], so
-        that the cached `face_adjacency` is reused instead of rebuilt. Same labelling engine, same
-        answer.
+        on it; otherwise
+        [`face_connected_component_labels`][triwarp.adjacency.face_connected_component_labels],
+        which labels straight off the sorted edge keys and builds no adjacency table. Same
+        labelling engine, same answer.
 
         See Also
         --------
         [`triwarp.adjacency.face_connected_component_labels`][]
         """
+        adjacency = self._cache.get("face_adjacency")
+        if adjacency is None:
+            return tw.adjacency.face_connected_component_labels(
+                self._faces, n_vertices=self.n_vertices
+            )
         # ``validate=False``: the rows are face ids ``face_adjacency`` derived as ``e // 3``,
         # so they are below ``n_faces`` by construction and the check would only add a sync.
         return tw.graph.connected_component_labels_from_edges(
-            self.face_adjacency, node_count=self.n_faces, validate=False
+            cast("twt.Array2dInt32", adjacency), node_count=self.n_faces, validate=False
         )
 
     @_CachedProperty
@@ -1082,7 +1082,7 @@ class Trimesh:
         --------
         [`triwarp.boundary.boundary_edges`][]
         """
-        return tw.boundary.boundary_edges(self._vertices, self._faces, self.edges_sorted)
+        return tw.boundary.boundary_edges(self._vertices, self._faces)
 
     @_CachedProperty
     def oriented_boundary_edges(self) -> twt.Array2dInt32:
@@ -1093,9 +1093,7 @@ class Trimesh:
         --------
         [`triwarp.boundary.oriented_boundary_edges`][]
         """
-        return tw.boundary.oriented_boundary_edges(
-            self._vertices, self._faces, self.edges_sorted, self.edges
-        )
+        return tw.boundary.oriented_boundary_edges(self._vertices, self._faces)
 
     @_CachedProperty
     def boundary_loops(self) -> list[wp.array[wp.int32]]:
@@ -1106,9 +1104,7 @@ class Trimesh:
         --------
         [`triwarp.boundary.boundary_loops`][]
         """
-        return tw.boundary.boundary_loops(
-            self._vertices, self._faces, self.edges_sorted, self.edges
-        )
+        return tw.boundary.boundary_loops(self._vertices, self._faces)
 
     @_CachedProperty
     def boundary_vertex_indices(self) -> wp.array[wp.int32]:
@@ -1119,7 +1115,7 @@ class Trimesh:
         --------
         [`triwarp.boundary.boundary_vertex_indices`][]
         """
-        return tw.boundary.boundary_vertex_indices(self._vertices, self._faces, self.edges_sorted)
+        return tw.boundary.boundary_vertex_indices(self._vertices, self._faces)
 
     @_CachedProperty
     def euler_characteristic(self) -> int:
@@ -1155,9 +1151,7 @@ class Trimesh:
         --------
         [`triwarp.validation.is_edge_manifold`][]
         """
-        return tw.validation.is_edge_manifold(
-            self._faces, edges_sorted=self.edges_sorted, n_vertices=self.n_vertices
-        )
+        return tw.validation.is_edge_manifold(self._faces, n_vertices=self.n_vertices)
 
     @_CachedProperty
     def is_vertex_manifold(self) -> bool:
@@ -1166,12 +1160,16 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access.
+        Triggers a device-to-host synchronization on first access. Reuses `face_adjacency` when
+        it is already cached; otherwise the corner graph is hooked straight off the sorted edge
+        keys, which is cheaper than building the adjacency table for it.
 
         See Also
         --------
         [`triwarp.validation.is_vertex_manifold`][]
         """
+        if "face_adjacency" not in self._cache:
+            return tw.validation.is_vertex_manifold(self._faces)
         return tw.validation.is_vertex_manifold(
             self._faces,
             face_adjacency=self.face_adjacency,
@@ -1185,23 +1183,14 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access. Equivalent to
-        [`is_winding_consistent`][triwarp.validation.is_winding_consistent], recomposed here to
-        reuse the cached `edges` / `edges_sorted`.
+        Triggers a device-to-host synchronization on first access.
 
         See Also
         --------
         [`triwarp.validation.is_winding_consistent`][]
         [`trimesh.Trimesh.is_winding_consistent`][]
         """
-        if self.n_faces == 0:
-            return True
-        mask = tw.validation.edge_winding_consistent_mask(
-            self._faces, edges=self.edges, edges_sorted=self.edges_sorted
-        )
-        if int(mask.shape[0]) == 0:
-            return True
-        return bool(tw.reduce.all(mask))
+        return tw.validation.is_winding_consistent(self._faces)
 
     @_CachedProperty
     def is_orientable(self) -> bool:
@@ -1232,10 +1221,11 @@ class Trimesh:
 
         Notes
         -----
-        Triggers a device-to-host synchronization on first access. Passes the cached `warp_mesh`,
-        so the self-intersection broad phase reuses that BVH instead of building a second one --
-        the same reuse [`is_self_intersecting`][triwarp.mesh.Trimesh.is_self_intersecting] gets
-        for free by taking a `wp.Mesh` directly.
+        Triggers a device-to-host synchronization on first access. The self-intersection broad
+        phase runs over `warp_mesh` -- the cached BVH when there is one, and otherwise one built
+        and cached only once the manifold tests pass, so an open mesh never pays for it -- the
+        same reuse [`is_self_intersecting`][triwarp.mesh.Trimesh.is_self_intersecting] gets by
+        taking a `wp.Mesh` directly.
 
         See Also
         --------
@@ -1244,8 +1234,13 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return True
+        # A cached BVH is reused; otherwise it is built -- and cached for later readers -- only
+        # once the manifold tests pass, since an open mesh never reaches the broad phase.
+        mesh = self._cache.get("warp_mesh")
         return tw.validation.is_watertight(
-            self._vertices, self._faces, edges_sorted=self.edges_sorted, mesh=self.warp_mesh
+            self._vertices,
+            self._faces,
+            mesh=cast("wp.Mesh", mesh) if mesh is not None else lambda: self.warp_mesh,
         )
 
     @_CachedProperty
@@ -1286,9 +1281,7 @@ class Trimesh:
         [`triwarp.validation.is_volume`][]
         [`trimesh.Trimesh.is_volume`][]
         """
-        return tw.validation.is_volume(
-            self._vertices, self._faces, edges=self.edges, edges_sorted=self.edges_sorted
-        )
+        return tw.validation.is_volume(self._vertices, self._faces)
 
     # Discrete operators: the assemblies every solve over this mesh shares. Heavier than everything
     # above (a sparse build each, and the two heat bundles several) and reached by fewer callers,

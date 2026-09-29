@@ -279,13 +279,13 @@ def _unique_hash(
     slot_key, slot_counts, occupied = _hash_insert(data_int, n, mask)
     cap = int(slot_key.shape[0])
 
-    # Phase 2: prefix-scan the occupancy to get compact positions.
-    scan_pos = wp.empty(cap, dtype=wp.int32, device=device)
-    wp.utils.array_scan(occupied, scan_pos, inclusive=True)
+    # Phase 2: prefix-scan the occupancy in place to get compact positions -- nothing reads the
+    # flags afterwards except the compaction, which recovers each one as a step of the scan.
+    wp.utils.array_scan(occupied, occupied, inclusive=True)
     # An inclusive scan of 0/1 flags ends at the number set, so one 4-byte tail read sizes the
     # output where ``reduce.max`` would scan all ``cap`` (~2n) slots. The same idiom as
     # ``array.flatnonzero`` and ``array.counts_to_offsets``.
-    n_unique = int(read_scalar(scan_pos))
+    n_unique = int(read_scalar(occupied))
 
     # Phase 3: compact unique keys, their occurrence counts, and the identity permutation the sort
     # below pairs with them -- all three in one pass over the table.
@@ -297,12 +297,12 @@ def _unique_hash(
     # written here in the first place.
     sort_dtype = twt.sortable_dtype(original_dtype)
     keys_compact = wp.empty(2 * n_unique, dtype=key_dtype, device=device)
-    cnts_compact = wp.empty(n_unique, dtype=wp.int32, device=device)
+    cnts_compact = wp.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
     perm_buf = wp.empty(2 * n_unique, dtype=wp.int32, device=device)
     wp.launch(
         kernel_grouping.COMPACT_FROM_TABLE[key_dtype],
         dim=cap,
-        inputs=[slot_key, slot_counts, occupied, scan_pos, keys_compact, cnts_compact, perm_buf],
+        inputs=[slot_key, slot_counts, occupied, keys_compact, cnts_compact, perm_buf],
         device=device,
     )
 
@@ -330,7 +330,7 @@ def _unique_hash(
         )
 
     unique_counts = None
-    if return_counts:
+    if cnts_compact is not None:
         # A contiguous prefix slice, not a gather-unsafe strided view (CLAUDE.md §3.4) -- no copy
         # needed before handing it to ``gather`` as the index array.
         unique_counts = gather(cnts_compact, perm_buf[:n_unique])

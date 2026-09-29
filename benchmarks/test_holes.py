@@ -578,8 +578,8 @@ def test_extend_hole(bench_case: BenchCase) -> None:
         Passing ``loops`` is what keeps the row measuring the extension rather than
         ``boundary_loops``, and it is the right call -- but it also hands the function a *list*, so
         the row cannot see the cost of deriving that list. On the ``loops=None`` default the rims
-        come from ``boundary_loops_batched`` and are never split into one array per rim; a 407-rim
-        scan mesh measured 1.65x from that alone, and the gap grows with the rim count.
+        come from ``boundary_loops_with_offsets`` and are never split into one array per rim; a
+        407-rim scan mesh measured 1.65x from that alone, and the gap grows with the rim count.
     """
     height = float(bench_case.vertices_np[:, 2].max()) + 1.0
     if bench_case.kind == "meshlib":

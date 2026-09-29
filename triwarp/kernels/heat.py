@@ -39,7 +39,7 @@ def upper_edge_length_sum_and_count(
     out_sum_and_count: wp.array[wp.float64],
 ) -> None:
     # Sum and count of the edge lengths over an operator's *strict upper triangle*, which for the
-    # heat method's Laplacians -- one entry per edge, twelve triplets per face, nothing pruned -- is
+    # heat method's Laplacians -- one entry per edge, nothing pruned -- is
     # exactly the mesh's unique edge set. The timestep ``h ** 2`` needs only their mean, and the
     # operator already exists, so the edge set comes free where ``edges_unique`` would re-sort
     # every edge of the mesh to recover it. Reads the sparsity only, so the scalar and the

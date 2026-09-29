@@ -87,7 +87,8 @@ class _PackedLoops:
     Every fillable loop of one mesh in one packed buffer, plus the host metadata to index it.
 
     ``flat_loops`` concatenates the loop vertex indices; loop ``ell`` occupies
-    ``flat_loops[starts[ell] : starts[ell] + sizes[ell]]``. ``loop_id`` inverts that mapping so a
+    ``flat_loops[offsets[ell] : offsets[ell + 1]]`` (the package's total-terminated offsets, which
+    every kernel here reads a loop's extent from). ``loop_id`` inverts that mapping so a
     ``dim=total`` kernel can find its own loop without a search, and ``dp_offsets`` is the exclusive
     scan of ``sizes ** 2`` — where each loop's ``B x B`` dynamic-programming block begins in the
     ragged tables, and ``triangle_offsets`` where its fill triangles begin. The device tables are
@@ -112,12 +113,12 @@ class _PackedLoops:
         triangle_sizes_np = np.maximum(self.sizes_np - 2, 0)
         triangle_offsets_np = np.concatenate([[0], np.cumsum(triangle_sizes_np)[:-1]])
 
-        # One upload for all five tables, each a view into it: the per-call cost of a
+        # One upload for all four tables, each a view into it: the per-call cost of a
         # ``wp.array`` construction is several times a slice's, and none of these is written.
         tables_np = np.concatenate(
             [
                 self.starts_np,
-                self.sizes_np,
+                [self.total],
                 self.dp_offsets_np,
                 triangle_offsets_np,
                 np.repeat(np.arange(self.n_loops, dtype=np.int64), self.sizes_np),
@@ -125,25 +126,25 @@ class _PackedLoops:
         ).astype(np.int32)
         tables = wp.array(tables_np, dtype=wp.int32, device=device)
         n = self.n_loops
-        self.starts = _table_view(tables, 0, n)
-        self.sizes = _table_view(tables, n, 2 * n)
-        self.dp_offsets = _table_view(tables, 2 * n, 3 * n)
-        self.triangle_offsets = _table_view(tables, 3 * n, 4 * n)
-        self.loop_id = _table_view(tables, 4 * n, 4 * n + self.total)
+        self.offsets = _table_view(tables, 0, n + 1)
+        self.dp_offsets = _table_view(tables, n + 1, 2 * n + 1)
+        self.triangle_offsets = _table_view(tables, 2 * n + 1, 3 * n + 1)
+        self.loop_id = _table_view(tables, 3 * n + 1, 3 * n + 1 + self.total)
 
     def perimeters(self, vertices: wp.array[wp.vec3]) -> np.ndarray:
         """
         Measure the closed arc length of every packed loop, returning it on the host.
 
-        Delegates to [`boundary.loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched]
+        Delegates to
+        [`boundary.loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets]
         rather than launching the segmented kernel again here: the packed layout this class holds
         *is* that function's argument list, and ``loop_id`` is passed rather than rebuilt, so the
-        call costs exactly what the private copy this replaced did. ``validate=False``: ``starts``
-        and ``sizes`` are built from ``sizes_np`` right above in this class's own constructor, not
-        handed in from outside, so they already fit ``flat_loops`` by construction.
+        call costs exactly what the private copy this replaced did. ``validate=False``: ``offsets``
+        is built from ``sizes_np`` right above in this class's own constructor, not handed in from
+        outside, so it already fits ``flat_loops`` by construction.
         """
-        return tw.boundary.loop_perimeters_batched(
-            vertices, self.flat_loops, self.starts, self.sizes, loop_id=self.loop_id, validate=False
+        return tw.boundary.loop_perimeters_from_offsets(
+            vertices, self.flat_loops, self.offsets, loop_id=self.loop_id, validate=False
         ).numpy()
 
 
@@ -213,14 +214,14 @@ def fill_fan(
     if packed is None:
         return wp.clone(faces)
 
-    flat_loops, loop_starts = packed.flat_loops, packed.starts
+    flat_loops, loop_offsets = packed.flat_loops, packed.offsets
     n_loops, total = packed.n_loops, packed.total
     n_tri = total - 2 * n_loops
     fill_faces = wp.empty(3 * n_tri, dtype=wp.int32, device=device)
     wp.launch(
         kernel_holes.fan_faces,
         dim=n_loops,
-        inputs=[flat_loops, loop_starts, packed.sizes, fill_faces],
+        inputs=[flat_loops, loop_offsets, fill_faces],
         device=device,
     )
     return tw.array.concatenate([faces, fill_faces])
@@ -283,7 +284,7 @@ def fill_cone(
     if packed is None:
         return wp.clone(vertices), wp.clone(faces)
 
-    flat_loops, loop_starts = packed.flat_loops, packed.starts
+    flat_loops, loop_offsets = packed.flat_loops, packed.offsets
     n_loops, total = packed.n_loops, packed.total
     n_vertices = int(vertices.shape[0])
 
@@ -292,15 +293,7 @@ def fill_cone(
     wp.launch(
         kernel_holes.cone_fill,
         dim=n_loops,
-        inputs=[
-            vertices,
-            flat_loops,
-            loop_starts,
-            packed.sizes,
-            wp.int32(n_vertices),
-            centroids,
-            fill_faces,
-        ],
+        inputs=[vertices, flat_loops, loop_offsets, wp.int32(n_vertices), centroids, fill_faces],
         device=device,
     )
     return (tw.array.concatenate([vertices, centroids]), tw.array.concatenate([faces, fill_faces]))
@@ -364,14 +357,7 @@ class _EdgeTable:
             wp.launch(
                 kernel_holes.rim_edge_keys,
                 dim=loops.total,
-                inputs=[
-                    loops.flat_loops,
-                    loops.loop_id,
-                    loops.starts,
-                    loops.sizes,
-                    self.base,
-                    keys,
-                ],
+                inputs=[loops.flat_loops, loops.loop_id, loops.offsets, self.base, keys],
                 device=self.device,
             )
         sorted_keys, slots = tw.array.sort_and_argsort(keys)
@@ -412,15 +398,7 @@ class _EdgeTable:
         wp.launch(
             kernel_holes.mark_forbidden_chords,
             dim=int(self.edges_sorted.shape[0]),
-            inputs=[
-                self.edges_sorted,
-                slot,
-                loops.loop_id,
-                loops.starts,
-                loops.sizes,
-                loops.dp_offsets,
-                mask,
-            ],
+            inputs=[self.edges_sorted, slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
             device=self.device,
         )
         return mask
@@ -651,8 +629,7 @@ def _fill_packed_loops(
         inputs=[
             loops.flat_loops,
             loops.loop_id,
-            loops.starts,
-            loops.sizes,
+            loops.offsets,
             vertices,
             edge_table.base,
             char_areas,
@@ -707,7 +684,7 @@ def _fill_packed_loops(
         wp.launch(
             kernel_holes.flag_bad_triangulations,
             dim=loops.n_loops,
-            inputs=[loops.sizes, loops.dp_offsets, dp, active, state],
+            inputs=[loops.offsets, loops.dp_offsets, dp, active, state],
             device=device,
         )
         # ...but *whether* any loop failed is worth one host read, because a pass with an all-zero
@@ -776,8 +753,7 @@ def _traceback_fill_faces(
         dim=loops.n_loops,
         inputs=[
             loops.flat_loops,
-            loops.starts,
-            loops.sizes,
+            loops.offsets,
             loops.dp_offsets,
             triangle_offsets,
             prev,
@@ -891,7 +867,7 @@ def _run_hole_dp(
     wp.launch(
         kernel_holes.init_dp_base,
         dim=(loops.n_loops, loops.max_size),
-        inputs=[loops.sizes, loops.dp_offsets, active, dp, prev],
+        inputs=[loops.offsets, loops.dp_offsets, active, dp, prev],
         device=device,
     )
     if n_spans <= 0:
@@ -901,8 +877,7 @@ def _run_hole_dp(
     # costs host time whatever it holds. Rebuilding it per span would give the saving straight back.
     tables = kernel_holes.HoleFillTables()
     tables.loop_pos = loop_pos
-    tables.loop_starts = loops.starts
-    tables.loop_sizes = loops.sizes
+    tables.loop_offsets = loops.offsets
     tables.dp_offsets = loops.dp_offsets
     tables.active = active
     tables.plane_normals = plane_normals
@@ -1606,8 +1581,7 @@ def _extend_packed_rims(
             vertices,
             rims.flat_loops,
             rims.loop_id,
-            rims.starts,
-            rims.sizes,
+            rims.offsets,
             plane_normal,
             plane_origins,
             wp.int32(n_vertices),
@@ -1663,8 +1637,8 @@ def fillable_loop_mask(
         vertex's two outgoing boundary edges -- so the loop this function sees is simply **shorter**
         than the true rim, with no repeated vertex to flag. Such a loop can pass this mask as
         fillable while not actually closing along real mesh edges. Closing the gap needs
-        [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched] itself to detect and
-        report the dropped edge.
+        [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] itself to
+        detect and report the dropped edge.
 
     Parameters
     ----------
@@ -1732,7 +1706,7 @@ def fillable_loop_mask(
         wp.launch(
             kernel_holes.scatter_fillable_loop_slots,
             dim=packed.total,
-            inputs=[packed.flat_loops, packed.loop_id, packed.starts, counts],
+            inputs=[packed.flat_loops, packed.loop_id, packed.offsets, counts],
             outputs=[fillable, loop_slots],
             device=device,
         )
@@ -1741,7 +1715,7 @@ def fillable_loop_mask(
         wp.launch(
             kernel_holes.clear_loops_with_chords,
             dim=int(faces.shape[0]) // 3,
-            inputs=[faces, counts, loop_slots, packed.sizes, fillable],
+            inputs=[faces, counts, loop_slots, packed.offsets, fillable],
             device=device,
         )
     return fillable
@@ -3392,15 +3366,14 @@ def _boundary_loops_packed(
     """
     Every boundary loop of a mesh as one packed buffer plus its host sizes, or ``None`` if none.
 
-    The packed buffer is [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]'s
-    own, handed on unsplit; the sizes come from the single offsets readback the ragged indexing
-    needs anyway.
+    The packed buffer is
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]' own, handed on
+    unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway.
     """
-    flat_loops, offsets, _sizes = tw.boundary.boundary_loops_batched(vertices, faces, edges_sorted)
-    if int(offsets.shape[0]) == 0:
+    flat_loops, offsets = tw.boundary.boundary_loops_with_offsets(vertices, faces, edges_sorted)
+    if int(offsets.shape[0]) == 1:
         return None
-    starts_np = offsets.numpy().astype(np.int64)
-    return flat_loops, np.diff(np.append(starts_np, int(flat_loops.shape[0])))
+    return flat_loops, np.diff(offsets.numpy().astype(np.int64))
 
 
 def _packed_loop_argument(

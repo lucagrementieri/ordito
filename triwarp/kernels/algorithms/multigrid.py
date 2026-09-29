@@ -214,19 +214,21 @@ def aggregate_sizes(label: wp.array[wp.int32], out_sizes: wp.array[wp.int32]) ->
 
 
 @wp.kernel
-def tentative_prolongator_triplets(
+def tentative_prolongator(
     label: wp.array[wp.int32],
     sizes: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
     out_columns: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
-    # The tentative prolongator: one entry per row, carrying the constant near-nullspace vector
-    # restricted to the node's aggregate and normalized so every column has unit norm. Exactly one
-    # triplet per row and no duplicates, so the build's ``nnz`` is exact.
+    # The tentative prolongator as a CSR, written directly: exactly one entry per row, so row ``i``
+    # is entry ``i`` and the offsets are the identity. It carries the constant near-nullspace
+    # vector restricted to the node's aggregate, normalized so every column has unit norm.
     i = wp.int32(wp.tid())
     aggregate = label[i]
-    out_rows[i] = i
+    out_offsets[i] = i
+    if i == out_columns.shape[0] - 1:
+        out_offsets[i + 1] = i + 1
     out_columns[i] = aggregate
     out_values[i] = wp.float64(1.0) / wp.sqrt(wp.float64(sizes[aggregate]))
 

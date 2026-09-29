@@ -384,6 +384,26 @@ def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
     assert len(loops) >= 1
 
 
+@pytest.mark.benchmark(group="delete_region_keep_boundary_with_offsets")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("triwarp")
+def test_delete_region_keep_boundary_with_offsets(bench_case: BenchCase) -> None:
+    """
+    The packed form of ``delete_region_keep_boundary``, over the same cap region.
+
+    Read against that group's triwarp row: the difference is the per-loop views, which the packed
+    form replaces with a device compaction of the kept loops.
+    """
+    mask_wp, _mask_np = _cap_region(bench_case)
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _kept_vertices, kept_faces, loops, offsets = bench_case.run(
+        lambda: tw.selection.delete_region_keep_boundary_with_offsets(vertices, faces, mask_wp)
+    )
+    assert int(kept_faces.shape[0]) > 0
+    assert int(offsets.shape[0]) >= 2
+    assert int(loops.shape[0]) > 0
+
+
 @pytest.mark.benchmark(group="exclude_fully_selected_components")
 @pytest.mark.benchaxis("components")
 @pytest.mark.benchlibs("triwarp")

@@ -26,10 +26,12 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import require_same_device
+from triwarp._device import read_scalar, require_same_device
+from triwarp.kernels import array as kernel_array
 from triwarp.kernels import bounds as kernel_bounds
 from triwarp.kernels import predicates as kernel_predicates
 from triwarp.kernels import reduce as kernel_reduce
+from triwarp.kernels import scatter as kernel_scatter
 
 # Points reduced per thread by the per-candidate extent reduction in
 # [`oriented_bounding_box`][triwarp.bounds.oriented_bounding_box]. Long, and one value for both
@@ -42,6 +44,9 @@ ITEMS_PER_CANDIDATE_SLICE = 256
 # [`convex_superset_mask`][triwarp.points.convex_superset_mask] and searches only the survivors.
 # The mask keeps every convex-hull vertex and the extent reduction is decided by hull vertices.
 CONVEX_PREFILTER_MIN_POINTS = 100_000
+
+# Placeholder frame for the axis-aligned arm of ``kernels/bounds.box_flags``, which never reads it.
+_UNUSED_ROTATION = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
 
 def aabb(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
@@ -220,7 +225,7 @@ def points_in_aabb(
         This plus the gather, when the points themselves are wanted.
     [`aabb`][triwarp.bounds.aabb]
     """
-    return tw.array.flatnonzero(points_in_aabb_mask(points, min_bound, max_bound))
+    return _box_indices(points, min_bound, max_bound, None)
 
 
 def points_in_aabb_mask(
@@ -311,7 +316,7 @@ def points_in_obb(
     [`oriented_bounding_box`][triwarp.bounds.oriented_bounding_box]
         Where the ``(rotation, min_bound, max_bound)`` triple comes from.
     """
-    return tw.array.flatnonzero(points_in_obb_mask(points, rotation, min_bound, max_bound))
+    return _box_indices(points, min_bound, max_bound, rotation)
 
 
 def points_in_obb_mask(
@@ -399,8 +404,18 @@ def crop_points(
         The selection alone, when the points are not needed.
     [`triwarp.array.gather`][triwarp.array.gather]
     """
-    indices = tw.array.flatnonzero(_box_mask(points, min_bound, max_bound, rotation))
-    return tw.array.gather(points, indices), indices
+    device = points.device
+    inclusive, n_kept = _scanned_box_flags(points, min_bound, max_bound, rotation)
+    kept = wp.empty(n_kept, dtype=wp.vec3, device=device)
+    indices = wp.empty(n_kept, dtype=wp.int32, device=device)
+    if n_kept > 0:
+        wp.launch(
+            kernel_bounds.compact_scanned_points,
+            dim=int(points.shape[0]),
+            inputs=[inclusive, points, kept, indices],
+            device=device,
+        )
+    return kept, indices
 
 
 def crop_mesh(
@@ -475,10 +490,58 @@ def crop_mesh(
 def _box_mask(
     points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
 ) -> wp.array[wp.bool]:
-    """Dispatch the two crop entry points onto the axis-aligned or the oriented predicate."""
+    """Dispatch ``crop_mesh`` onto the axis-aligned or the oriented mask."""
     if rotation is None:
         return points_in_aabb_mask(points, min_bound, max_bound)
     return points_in_obb_mask(points, rotation, min_bound, max_bound)
+
+
+def _box_indices(
+    points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
+) -> wp.array[wp.int32]:
+    """Ascending indices of the points inside the box: the index forms' shared body."""
+    inclusive, n_inside = _scanned_box_flags(points, min_bound, max_bound, rotation)
+    out_indices = wp.empty(n_inside, dtype=wp.int32, device=points.device)
+    if n_inside > 0:
+        wp.launch(
+            kernel_scatter.scatter_index_where_scanned,
+            dim=int(points.shape[0]),
+            inputs=[inclusive, out_indices],
+            device=points.device,
+        )
+    return out_indices
+
+
+def _scanned_box_flags(
+    points: wp.array[wp.vec3], min_bound: wp.vec3, max_bound: wp.vec3, rotation: wp.mat33 | None
+) -> tuple[wp.array[wp.int32], int]:
+    """
+    Inclusive scan of the inside-the-box flags, scanned in place, and the count inside.
+
+    The flags are written straight as ``int32`` and the one tail read sizes the caller's output,
+    so neither a ``wp.bool`` mask nor its widening copy is ever allocated.
+    """
+    device = points.device
+    n = int(points.shape[0])
+    inclusive = wp.empty(n, dtype=wp.int32, device=device)
+    if n == 0:
+        return inclusive, 0
+    wp.launch(
+        kernel_bounds.box_flags,
+        dim=n,
+        inputs=[
+            points,
+            _UNUSED_ROTATION if rotation is None else rotation,
+            min_bound,
+            max_bound,
+            0 if rotation is None else 1,
+            inclusive,
+        ],
+        device=device,
+    )
+    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    # One 4-byte tail read: the count sizes every output.
+    return inclusive, int(read_scalar(inclusive))
 
 
 def oriented_bounding_box(
@@ -597,8 +660,7 @@ def oriented_bounding_box(
         # Identical box, decided at the threshold above: only hull vertices can touch an
         # enclosing box, the mask keeps all of them, and min/max extents do not care about the
         # discarded interior points.
-        mask = tw.points.convex_superset_mask(points)
-        points = tw.array.gather(points, tw.array.flatnonzero(mask))
+        points = _compact_masked_points(points, tw.points.convex_superset_mask(points))
         n = int(points.shape[0])
 
     device = points.device
@@ -676,6 +738,30 @@ _BOX_OBJECTIVES: dict[str, wp.int32] = {
     "surface_area": kernel_bounds.BOX_OBJECTIVE_SURFACE_AREA,
     "diagonal": kernel_bounds.BOX_OBJECTIVE_DIAGONAL,
 }
+
+
+def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -> wp.array[wp.vec3]:
+    """
+    Compact the points ``mask`` keeps, in index order.
+
+    ``gather(points, flatnonzero(mask))`` without the index list or the gathered copy between them.
+    """
+    device = points.device
+    n = int(points.shape[0])
+    inclusive = wp.empty(n, dtype=wp.int32, device=device)
+    wp.launch(kernel_array.bool_flags, dim=n, inputs=[mask, inclusive], device=device)
+    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    # The kept count sizes the output.
+    n_kept = int(read_scalar(inclusive))
+    kept = wp.empty(n_kept, dtype=wp.vec3, device=device)
+    if n_kept > 0:
+        wp.launch(
+            kernel_bounds.compact_scanned_points,
+            dim=n,
+            inputs=[inclusive, points, kept, None],
+            device=device,
+        )
+    return kept
 
 
 def _refine_box(

@@ -1335,6 +1335,32 @@ def test_is_watertight(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert watertight_wp == bool(mesh_tm.is_watertight)
 
 
+@pytest.mark.parametrize("mesh_name", [*MESHES, "mobius", "boy_surface", "bohemian_dome"])
+def test_is_watertight_calls_a_mesh_factory_only_past_the_manifold_tests(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Triwarp against triwarp: a ``mesh=`` callable gives the answer a ``wp.Mesh`` does, lazily.
+
+    ``test_is_watertight`` carries the oracle. The factory must be called exactly when both
+    manifold tests pass -- the edge test stops ``mobius`` and the open fixtures before it, and the
+    closed ``boy_surface`` / ``bohemian_dome`` reach the broad phase -- and at most once.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    calls: list[int] = []
+
+    def factory() -> wp.Mesh:
+        calls.append(1)
+        return mesh_wp
+
+    answer = tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=factory)
+    assert answer == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=mesh_wp)
+    reaches_broad_phase = tw.validation.is_edge_manifold(
+        mesh_wp.indices, allow_boundary_edges=False
+    ) and tw.validation.is_vertex_manifold(mesh_wp.indices)
+    assert len(calls) == int(reaches_broad_phase)
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_face_watertight_mask_matches_reference(
     request: pytest.FixtureRequest, mesh_name: str

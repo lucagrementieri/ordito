@@ -1,7 +1,13 @@
 import warp as wp
 
 from triwarp.kernels.adjacency import edge_endpoints
-from triwarp.kernels.array import loop_rim_edge, pack_directed_key, pack_ranked_key, scanned_count
+from triwarp.kernels.array import (
+    loop_rim_edge,
+    pack_directed_key,
+    pack_ranked_key,
+    scanned_count,
+    wrap_index,
+)
 from triwarp.kernels.grouping import sorted_run_of_length
 from triwarp.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
 
@@ -52,8 +58,8 @@ def mark_boundary_runs(
 ) -> None:
     # 1 where a sorted position holds a key occurring exactly once -- a boundary edge -- as the
     # ``int32`` flag ``wp.utils.array_scan`` then scans in place, over ``out_flags``' first ``n``
-    # entries. With ``out_degrees`` (else ``None``), ``boundary_loops_batched``'s degree census of
-    # the directed rows (see ``boundary_halfedge_pair``) rides in the same launch, its two defect
+    # entries. With ``out_degrees`` (else ``None``), ``boundary_loops_with_offsets``' degree census
+    # of the directed rows (see ``boundary_halfedge_pair``) rides in the same launch, its two defect
     # bits stamped into the zeroed ``out_flags[n]`` and ``out_flags[n + 1]`` -- the scan does not
     # reach them, so the total and both bits come back in one readback.
     #
@@ -88,25 +94,19 @@ def emit_boundary_edges(
     faces: wp.array[wp.int32],
     table: wp.array2d[wp.int32],
     sort_pair: wp.bool,
-    out_rows: wp.array[wp.int32],
     out_edges: wp.array2d[wp.int32],
 ) -> None:
     # One thread per sorted position; ``inclusive`` is ``mark_boundary_runs``' flags scanned in
     # place, so a boundary edge is where the scan steps and its rank is the step's start. Rows come
-    # out in ascending key order -- the order ``grouping.group`` emitted them in. Both outputs are
-    # optional (``None``, read as ``shape[0] == 0``): the halfedge index, and its edge row (see
-    # ``boundary_halfedge_pair``).
+    # out in ascending key order -- the order ``grouping.group`` emitted them in -- read from the
+    # caller's table or from ``faces`` (see ``boundary_halfedge_pair``).
     i = wp.int32(wp.tid())
     g, count = scanned_count(inclusive, i)
     if count == 0:
         return
-    h = order[i]
-    if out_rows.shape[0] > 0:
-        out_rows[g] = h
-    if out_edges.shape[0] > 0:
-        a, b = boundary_halfedge_pair(faces, table, sort_pair, h)
-        out_edges[g, 0] = a
-        out_edges[g, 1] = b
+    a, b = boundary_halfedge_pair(faces, table, sort_pair, order[i])
+    out_edges[g, 0] = a
+    out_edges[g, 1] = b
 
 
 @wp.kernel
@@ -216,58 +216,234 @@ def sort_boundary_neighbor_slots(neighbors: wp.array2d[wp.int32]) -> None:
 
 
 @wp.kernel
-def build_dart_successors(
-    boundary_vertices: wp.array[wp.int32],
+def dart_successors(
+    boundary_edges: wp.array2d[wp.int32],
     neighbors: wp.array2d[wp.int32],
-    out_edges: wp.array2d[wp.int32],
+    out_tails: wp.array[wp.int32],
+    out_next: wp.array[wp.int32],
 ) -> None:
-    # One successor edge per *dart*, where dart ``2 * v + s`` means "at vertex v, arrived from
+    # One successor per *dart*, where dart ``2 * v + s`` means "at vertex v, arrived from
     # neighbour slot s". Its successor leaves by the other slot: the next vertex is
     # ``w = neighbors[v, 1 - s]``, and the arriving slot at w is whichever of w's two slots holds
     # v. Every dart therefore has exactly one out-edge -- which is the property the directed
     # boundary edges lose on a non-orientable surface, and the whole reason this path exists.
-    i, s = wp.tid()
-    v = boundary_vertices[i]
+    #
+    # One thread per boundary edge end: end ``v`` of edge ``(v, u)`` is the dart that arrived at
+    # ``v`` from ``u``, so the edge ends are the darts, each once, with no list of boundary
+    # vertices to build first. ``out_tails`` is that dart list, in edge order; ranking is by dart
+    # index, so the order is free.
+    e, end = wp.tid()
+    v = boundary_edges[e, end]
+    u = boundary_edges[e, 1 - end]
+    s = wp.where(neighbors[v, 0] == u, wp.int32(0), wp.int32(1))
     w = neighbors[v, 1 - s]
-    arriving = wp.int32(0)
-    if neighbors[w, 0] != v:
-        arriving = wp.int32(1)
-    out_edges[2 * i + s, 0] = 2 * v + s
-    out_edges[2 * i + s, 1] = 2 * w + arriving
+    dart = 2 * v + s
+    out_tails[2 * e + end] = dart
+    if w < 0:
+        # ``v`` has one boundary edge (a non-manifold edge ends the rim there): a chain end, which
+        # the ranking drops.
+        out_next[dart] = -1
+    else:
+        arriving = wp.where(neighbors[w, 0] == v, wp.int32(0), wp.int32(1))
+        out_next[dart] = 2 * w + arriving
 
 
 @wp.kernel
-def boundary_halfedge_successors(
+def emit_boundary_successors(
+    inclusive: wp.array[wp.int32],
+    order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
+    table: wp.array2d[wp.int32],
     twins: wp.array[wp.int32],
-    boundary_halfedges: wp.array[wp.int32],
-    out_edges: wp.array2d[wp.int32],
+    out_tails: wp.array[wp.int32],
+    out_next: wp.array[wp.int32],
 ) -> None:
-    # The boundary as a successor graph over *halfedges*: row ``(h, next)`` for each boundary
-    # halfedge, where ``next`` is the boundary halfedge leaving ``h``'s tip in ``h``'s own sector.
-    # Over vertices a pinch point has two successors; over halfedges every node has exactly one,
-    # which is what ``successor_cycles`` needs. A fan that does not close (a malformed twin
-    # table) maps to a self-loop, so the graph stays in range and the walk stays bounded.
+    # The boundary as a successor graph, straight off the sorted keys (``emit_boundary_edges``'
+    # scan) with no edge rows in between: the ranked nodes in ``out_tails`` and their successors in
+    # the node-sized ``out_next``. Without ``twins`` (``None``) the nodes are the vertices, the
+    # directed rows' tails (see ``boundary_halfedge_pair``). With it they are the boundary
+    # *halfedges*, each followed by the boundary halfedge leaving its tip in its own sector: over
+    # vertices a pinch point has two successors, over halfedges every node has one. A fan that
+    # does not close (a malformed twin table) maps to a self-loop, so the walk stays bounded.
     i = wp.int32(wp.tid())
-    h = boundary_halfedges[i]
-    following = next_boundary_halfedge(faces, twins, h)
-    out_edges[i, 0] = h
-    out_edges[i, 1] = wp.where(following >= 0, following, h)
+    g, count = scanned_count(inclusive, i)
+    if count == 0:
+        return
+    h = order[i]
+    if twins.shape[0] > 0:
+        following = next_boundary_halfedge(faces, twins, h)
+        out_tails[g] = h
+        out_next[h] = wp.where(following >= 0, following, h)
+    else:
+        a, b = boundary_halfedge_pair(faces, table, False, h)
+        out_tails[g] = a
+        out_next[a] = b
+
+
+# ---------------------------------------------------------------------------------------------
+# Closed-cycle ranking
+#
+# Every boundary walk hands its ranking a successor graph that is a union of cycles by
+# construction: each node is the tail of exactly one edge and the head of at most one. So the
+# nodes are the edge tails, the cycle a node belongs to is named by its smallest node, and that
+# node is also where the cycle is cut to rank it -- one quantity, which pointer jumping finds on its
+# own. A node's *window* of length ``W`` is itself and its next ``W - 1`` successors; the table
+# holds, per node, ``(successor^W, smallest node in the window, hops to its first occurrence)``.
+# Merging two adjacent windows keeps the earlier minimum on a tie, and once ``W`` covers the cycle
+# the minimum is the cycle's and the hop count is the distance to it. No union-find and no cut: the
+# connected-component labelling ``graph.successor_cycles`` runs for an arbitrary graph gives each
+# cycle the same label, its smallest node, and ranks from the same start.
+#
+# That holds on an edge-manifold mesh. On one that is not, a walk can reach a node that is not a
+# tail -- a vertex where the rim runs into a three-faced edge, a halfedge whose rotation dead-ends
+# on one that is not a boundary halfedge -- and several chains can end on the same one. Such a
+# successor makes the window's successor ``-1``: the node is on a chain, not a cycle, and is dropped
+# with its whole chain -- exactly the component ``successor_cycles`` excludes. No two *tails* ever
+# share a successor (that would be a pinch or a seam, which take their own walks), so the cycles
+# that remain are exact.
+
+# What a ranked node is written out as.
+CYCLE_NODES = 0  # the node itself: a vertex of the vertex walk
+CYCLE_DARTS = 1  # dart ``2 * v + s`` -> vertex ``v``; keep only cycles starting at an even dart
+CYCLE_HALFEDGES = 2  # halfedge ``h`` -> its origin vertex ``faces[h]``
+
+
+@wp.func
+def closed_cycle_is_kept(successor: wp.int32, start: wp.int32, mode: wp.int32) -> wp.bool:
+    # A node is ranked when its window closed (no chain end reached) and, for the dart walk, when
+    # its cycle is the even-starting one of its mirror pair (``_unoriented_boundary_cycles``).
+    return successor >= 0 and (mode != CYCLE_DARTS or start % 2 == 0)
+
+
+@wp.func
+def count_closed_cycle_node(
+    out_cycle_counts: wp.array[wp.vec2i],
+    v: wp.int32,
+    successor: wp.int32,
+    start: wp.int32,
+    mode: wp.int32,
+) -> None:
+    # Last round only (``out_cycle_counts`` is ``None`` before it): per cycle start, ``(1, length)``
+    # accumulated as ``(v == start, 1)`` per ranked node, for the caller's inclusive scan.
+    if out_cycle_counts.shape[0] > 0 and closed_cycle_is_kept(successor, start, mode):
+        wp.atomic_add(out_cycle_counts, start, wp.vec2i(wp.where(v == start, 1, 0), wp.int32(1)))
+
+
+@wp.kernel
+def closed_cycle_windows(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    hops: wp.int32,
+    mode: wp.int32,
+    out_windows: wp.array[wp.vec3i],
+    out_cycle_counts: wp.array[wp.vec2i],
+) -> None:
+    # Round one: every window of length ``hops``, straight off the successor table. A successor is
+    # a tail exactly when its own successor is set: ``next_node`` is ``-1`` off the tails wherever
+    # a walk can reach a non-tail, and a tail whose successor is ``-1`` ends its chain at once.
+    v = tails[wp.tid()]
+    start = v
+    dist = wp.int32(0)
+    current = v
+    following = next_node[v]
+    for k in range(1, hops + 1):
+        if current >= 0:
+            after = wp.int32(-1)
+            if following >= 0:
+                after = next_node[following]
+            if after < 0:
+                current = -1
+            else:
+                current = following
+                if k < hops and current < start:
+                    start = current
+                    dist = k
+                following = after
+    out_windows[v] = wp.vec3i(current, start, dist)
+    count_closed_cycle_node(out_cycle_counts, v, current, start, mode)
+
+
+@wp.kernel
+def closed_cycle_jump(
+    tails: wp.array[wp.int32],
+    windows: wp.array[wp.vec3i],
+    window: wp.int32,
+    hops: wp.int32,
+    mode: wp.int32,
+    out_windows: wp.array[wp.vec3i],
+    out_cycle_counts: wp.array[wp.vec2i],
+) -> None:
+    # One further round: ``hops`` adjacent windows of length ``window`` merged into one, chased
+    # through the previous round's table (ping-ponged, so no thread reads a window merged this
+    # round). The minimum keeps its first occurrence -- strict ``<`` -- so the hop count is the
+    # distance to the earliest one.
+    v = tails[wp.tid()]
+    own = windows[v]
+    current = own[0]
+    start = own[1]
+    dist = own[2]
+    offset = window
+    for _ in range(hops - 1):
+        if current >= 0:
+            other = windows[current]
+            if other[1] < start:
+                start = other[1]
+                dist = offset + other[2]
+            offset += window
+            current = other[0]
+    out_windows[v] = wp.vec3i(current, start, dist)
+    count_closed_cycle_node(out_cycle_counts, v, current, start, mode)
+
+
+@wp.kernel
+def scatter_closed_cycles(
+    tails: wp.array[wp.int32],
+    windows: wp.array[wp.vec3i],
+    cycle_counts: wp.array[wp.vec2i],
+    mode: wp.int32,
+    faces: wp.array[wp.int32],
+    out_flat: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # ``cycle_counts`` is scanned inclusively in place over node space, so the entry below a cycle's
+    # start is ``(its rank, its offset)`` and the difference is ``(1, its length)``: every cycle is
+    # placed in ascending start order with no rank table and no second scan. The start writes the
+    # cycle's own offset and its end into the total-terminated ``out_offsets``; the end is the next
+    # cycle's offset, so every interior entry is written twice with the same value and the last
+    # entry (the total) is written by the last cycle. ``faces`` is read by the halfedge walk only.
+    v = tails[wp.tid()]
+    own = windows[v]
+    start = own[1]
+    if not closed_cycle_is_kept(own[0], start, mode):
+        return
+    inclusive = cycle_counts[start]
+    exclusive = wp.vec2i(0, 0)
+    if start > 0:
+        exclusive = cycle_counts[start - 1]
+    length = inclusive[1] - exclusive[1]
+    node = v
+    if mode == CYCLE_DARTS:
+        node = v // 2
+    elif mode == CYCLE_HALFEDGES:
+        node = faces[v]
+    out_flat[exclusive[1] + wrap_index(length - own[2], length)] = node
+    if v == start:
+        out_offsets[exclusive[0]] = exclusive[1]
+        out_offsets[inclusive[0]] = inclusive[1]
 
 
 @wp.kernel
 def loop_perimeters(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     out_perimeter: wp.array[wp.float32],
 ) -> None:
     # Segmented ``polyline_length(closed=True)``: the arc length of every loop in one launch, so
     # ``preserve_largest_hole`` costs one readback instead of two per loop.
     t = wp.int32(wp.tid())
-    ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_starts, loop_sizes, vertices, t)
+    ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, t)
     wp.atomic_add(out_perimeter, ell, wp.length(c - a))
 
 
@@ -275,8 +451,7 @@ def loop_perimeters(
 def loop_directed_areas(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     out_directed_area: wp.array[wp.vec3],
 ) -> None:
@@ -285,17 +460,15 @@ def loop_directed_areas(
     # Origin-independent because the cross products of a *closed* ring cancel the shift, so no
     # centroid pass is needed -- and accumulated per segment in one launch, like the perimeter.
     t = wp.int32(wp.tid())
-    ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_starts, loop_sizes, vertices, t)
+    ell, a, c = loop_rim_edge(flat_loops, loop_id, loop_offsets, vertices, t)
     wp.atomic_add(out_directed_area, ell, wp.float32(0.5) * wp.cross(a, c))
 
 
 @wp.kernel
-def longest_loop_key(
-    loop_starts: wp.array[wp.int32], loop_sizes: wp.array[wp.int32], out_best: wp.array[wp.int64]
-) -> None:
+def longest_loop_key(loop_offsets: wp.array[wp.int32], out_best: wp.array[wp.int64]) -> None:
     # The longest packed loop, as one ``wp.atomic_max`` over ``pack_ranked_key``. The low half
     # carries the loop's *start* rather than its index, which is what lets a single readback of
-    # this key give the caller both halves of the answer -- a second read of ``loop_starts`` at
+    # this key give the caller both halves of the answer -- a second read of ``loop_offsets`` at
     # the winning index would otherwise cost as much again as the reduction. Starts increase with
     # the loop index, so "lowest start on a tie" is "lowest index on a tie" and the packer's
     # tie-break is the one a host-side first-maximum scan would have produced.
@@ -305,4 +478,5 @@ def longest_loop_key(
     # did -- 1.8x on the whole public call at 384, and 4.1x on a mesh with several thousand. The
     # win grows with the rim count because the host form was linear in it and this is not.
     ell = wp.int32(wp.tid())
-    wp.atomic_max(out_best, 0, pack_ranked_key(loop_sizes[ell], loop_starts[ell]))
+    start = loop_offsets[ell]
+    wp.atomic_max(out_best, 0, pack_ranked_key(loop_offsets[ell + 1] - start, start))

@@ -666,3 +666,26 @@ def test_marching_triangles(bench_case: BenchCase) -> None:
 def test_marching_triangles_curves(bench_case: BenchCase, field: str) -> None:
     """One mesh, level sets from 1 to ~1 000 curves, to see whether linking cost shows up."""
     _run_case(bench_case, field)
+
+
+@pytest.mark.benchmark(group="marching_triangles_with_offsets")
+@pytest.mark.benchmeshes("sphere_med")
+@pytest.mark.benchlibs("triwarp")
+@pytest.mark.parametrize("field", list(_FIELDS))
+def test_marching_triangles_with_offsets(bench_case: BenchCase, field: str) -> None:
+    """
+    The packed form of ``marching_triangles_curves``' level sets: no per-curve object.
+
+    Read against that group's triwarp row: the difference is the list of per-curve views, which is
+    the whole of what the list form adds.
+    """
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    values, n_vertices = _field_wp(bench_case, field), bench_case.n_vertices
+    points, offsets, closed = bench_case.run(
+        lambda: tw.intersection.marching_triangles_with_offsets(
+            vertices, faces, values, _ISOVALUE, n_vertices=n_vertices
+        ),
+        rounds=_ROUNDS,
+    )
+    assert offsets.shape[0] == closed.shape[0] + 1
+    assert points.shape[0] > 0

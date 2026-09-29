@@ -37,14 +37,14 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from typing import Any, Literal, cast, overload
+from typing import Literal, cast, overload
 
 import numpy as np
 import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device
+from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INT64_MAX, TILE_1D
 from triwarp.kernels import neighbors as kernel_neighbors
 from triwarp.kernels import reduce as kernel_reduce
@@ -61,6 +61,11 @@ _FLAT_AXIS_FRACTION = 1e-6
 # under ``backend="hashgrid"``
 # and scans exactly instead; see ``_knn_widest_grid_radius``.
 _CELL_PROBE_POINTS = 600
+
+# Smallest cloud a ``k > 1`` hash-grid search defers its unfinished self-query rows to the BVH at.
+# Below it the scan those rows would otherwise take is short enough that the tree build, the
+# second launch and the readback deciding them cost more than they save.
+_KNN_DEFER_MIN_POINTS = 8192
 
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
@@ -213,7 +218,7 @@ def bvh_from_bounds(
 
 
 def query_bvh_ball(
-    bvh: wp.Bvh, queries: wp.array[wp.vec3], radius: float, *, include_total: bool = False
+    bvh: wp.Bvh, queries: wp.array[wp.vec3], radius: float
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Low-level BVH ball query: primitive indices in one flat buffer plus offsets.
@@ -234,17 +239,14 @@ def query_bvh_ball(
         ``(m, 3)`` query centers stored as ``wp.vec3``.
     radius
         Ball radius about each query center.
-    include_total
-        Return ``offsets`` in the length-``m + 1`` CSR form whose trailing element is the total hit
-        count, instead of the length-``m`` form. Same meaning as on the ball queries.
 
     Returns
     -------
     candidate_indices_flat, offsets
         Exactly the packing
-        [`query_bvh_box`][triwarp.neighbors.query_bvh_box] returns:
-        ``offsets`` is the exclusive prefix sum of per-query hit counts, and query ``k`` owns
-        ``candidate_indices_flat[offsets[k] : offsets[k+1]]``.
+        [`query_bvh_box`][triwarp.neighbors.query_bvh_box] returns: ``offsets`` is the
+        length-``m + 1`` total-terminated prefix sum of per-query hit counts, and query ``k`` owns
+        ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``.
 
     Raises
     ------
@@ -275,10 +277,13 @@ def query_bvh_ball(
     if m == 0:
         return (
             wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1 if include_total else 0, dtype=wp.int32, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
         )
 
-    hit_counts = wp.empty(m, dtype=wp.int32, device=device)
+    # The counts land behind the leading zero of the ``m + 1`` offsets buffer and are scanned there
+    # in place, so no separate count buffer is allocated.
+    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    hit_counts = twt.as_dense(offsets[1:])
     # ``wp.uint64(bvh.id)`` explicitly: unlike ``wp.launch``, ``wp.map`` infers a bare Python int
     # scalar's dtype as ``wp.int32`` rather than matching the mapped @wp.func's declared parameter
     # type, and a mismatched dtype is a codegen-time TypeError, not a silent truncation.
@@ -290,10 +295,8 @@ def query_bvh_ball(
         out=hit_counts,
     )
 
-    segment_bounds, total_hits = tw.array.counts_to_offsets(hit_counts, include_total=True)
-    # One view of the row-offset window, used both as the return value and as the launch argument.
-    row_offsets = twt.as_dense(segment_bounds[:m])
-    offsets = segment_bounds if include_total else row_offsets
+    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    total_hits = int(read_scalar(offsets))
     if total_hits == 0:
         return wp.empty(0, dtype=wp.int32, device=device), offsets
 
@@ -301,7 +304,7 @@ def query_bvh_ball(
     wp.launch(
         kernel_neighbors.query_bvh_ball_neighbors,
         dim=m,
-        inputs=[queries, bvh.id, wp.float32(radius), row_offsets, candidate_indices_flat],
+        inputs=[queries, bvh.id, wp.float32(radius), offsets, candidate_indices_flat],
         device=device,
     )
 
@@ -309,11 +312,7 @@ def query_bvh_ball(
 
 
 def query_bvh_box(
-    bvh: wp.Bvh,
-    query_lower: wp.array[wp.vec3],
-    query_upper: wp.array[wp.vec3],
-    *,
-    include_total: bool = False,
+    bvh: wp.Bvh, query_lower: wp.array[wp.vec3], query_upper: wp.array[wp.vec3]
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Primitives overlapping one axis-aligned box **per query**, in the same CSR packing.
@@ -332,15 +331,12 @@ def query_bvh_box(
         Pre-built BVH over points or bounds.
     query_lower, query_upper
         ``(m,)`` ``wp.vec3`` corners of the query boxes, one pair per query.
-    include_total
-        Return ``offsets`` in the length-``m + 1`` CSR form whose trailing element is the total hit
-        count, instead of the length-``m`` form. Same meaning as on the ball queries.
 
     Returns
     -------
     candidate_indices_flat, offsets
         Query ``k`` owns ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``, with ``offsets``
-        the exclusive prefix sum of per-query hit counts.
+        the length-``m + 1`` total-terminated prefix sum of per-query hit counts.
 
     Raises
     ------
@@ -381,10 +377,11 @@ def query_bvh_box(
     if m == 0:
         return (
             wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1 if include_total else 0, dtype=wp.int32, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
         )
 
-    hit_counts = wp.empty(m, dtype=wp.int32, device=device)
+    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    hit_counts = twt.as_dense(offsets[1:])
     # ``wp.uint64(bvh.id)`` explicitly -- see the same cast in ``query_bvh_ball``
     # above.
     wp.map(
@@ -395,10 +392,8 @@ def query_bvh_box(
         out=hit_counts,
     )
 
-    segment_bounds, total_hits = tw.array.counts_to_offsets(hit_counts, include_total=True)
-    # One view of the row-offset window, used both as the return value and as the launch argument.
-    row_offsets = twt.as_dense(segment_bounds[:m])
-    offsets = segment_bounds if include_total else row_offsets
+    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    total_hits = int(read_scalar(offsets))
     if total_hits == 0:
         return wp.empty(0, dtype=wp.int32, device=device), offsets
 
@@ -406,7 +401,7 @@ def query_bvh_box(
     wp.launch(
         kernel_neighbors.query_bvh_box_neighbors,
         dim=m,
-        inputs=[query_lower, query_upper, bvh.id, row_offsets, candidate_indices_flat],
+        inputs=[query_lower, query_upper, bvh.id, offsets, candidate_indices_flat],
         device=device,
     )
 
@@ -430,6 +425,7 @@ def query_ball(
     grid_bins: int = ...,
     leaf_size: int = ...,
     return_sorted: bool = ...,
+    copy: bool = ...,
 ) -> tuple[list[wp.array[wp.int32]], list[wp.array[wp.float32]]]: ...
 @overload
 def query_ball(
@@ -442,6 +438,7 @@ def query_ball(
     grid_bins: int = ...,
     leaf_size: int = ...,
     return_sorted: bool = ...,
+    copy: bool = ...,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32]]: ...
 def query_ball(
     points: wp.array[wp.vec3],
@@ -453,6 +450,7 @@ def query_ball(
     grid_bins: int = 128,
     leaf_size: int = 4,
     return_sorted: bool = False,
+    copy: bool = False,
 ) -> (
     tuple[list[wp.array[wp.int32]], list[wp.array[wp.float32]]]
     | tuple[wp.array[wp.int32], wp.array[wp.float32]]
@@ -467,9 +465,16 @@ def query_ball(
 
     Unlike SciPy's object array of lists, multi-query results are two Python lists of length ``m``,
     each element a rank-1 ``wp.array`` for that query. A single ``wp.vec3`` query returns one
-    ``(indices, distances)`` pair directly (not wrapped in lists). This clones each query's segment
-    out of the internal flat buffer; for one flat buffer plus offsets on device, call
-    [`query_ball_with_offsets`][triwarp.neighbors.query_ball_with_offsets] instead.
+    ``(indices, distances)`` pair directly (not wrapped in lists). This is
+    [`split`][triwarp.array.split] over
+    [`query_ball_with_offsets`][triwarp.neighbors.query_ball_with_offsets]'s packed result; call
+    that instead for one flat buffer plus offsets on device.
+
+    !!! note "The returned arrays are views"
+        Each query's arrays slice the two flat buffers the packed query produced, which costs no
+        device memory and no launches. Holding on to one query's arrays keeps the *whole* buffers
+        alive, and writing into one writes into the shared allocation. Pass ``copy=True`` for
+        independent buffers.
 
     Parameters
     ----------
@@ -498,6 +503,8 @@ def query_ball(
     return_sorted
         If ``True``, neighbors within each query are ordered by increasing distance. If ``False``,
         order follows the broad phase's traversal (undefined ordering).
+    copy
+        Return independent buffers instead of views into the packed result.
 
     Returns
     -------
@@ -552,8 +559,8 @@ def query_ball(
         leaf_size=leaf_size,
         return_sorted=return_sorted,
     )
-    neighbor_indices = tw.array.split(neighbor_indices_flat, offsets, copy=True)
-    neighbor_distances = tw.array.split(neighbor_distances_flat, offsets, copy=True)
+    neighbor_indices = tw.array.split(neighbor_indices_flat, offsets, copy=copy)
+    neighbor_distances = tw.array.split(neighbor_distances_flat, offsets, copy=copy)
 
     if single_query:
         return neighbor_indices[0], neighbor_distances[0]
@@ -648,7 +655,6 @@ def query_ball_with_offsets(
     grid_bins: int = 128,
     leaf_size: int = 4,
     return_sorted: bool = False,
-    include_total: bool = False,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
     """
     Low-level ball query: neighbors in one concatenated pair plus per-query offsets.
@@ -674,22 +680,15 @@ def query_ball_with_offsets(
         As in [`query_ball`][triwarp.neighbors.query_ball].
     return_sorted
         If ``True``, neighbors within each query are ordered by increasing distance.
-    include_total
-        Return ``offsets`` in the length-``m + 1`` CSR form, whose trailing element is the total
-        neighbor count, instead of the length-``m`` form. Free -- the terminator is built either
-        way, since the ``return_sorted`` path needs it as segment bounds.
 
     Returns
     -------
     neighbor_indices_flat, neighbor_distances_flat, offsets
         Three rank-1 arrays. Let ``m = queries.shape[0]`` after any ``wp.vec3`` wrap.
 
-        ``offsets`` has length ``m`` (or ``m + 1`` with ``include_total``) and is the exclusive
-        prefix sum of per-query neighbor counts (same layout as
-        ``wp.utils.array_scan(..., inclusive=False)``): query ``k`` owns
-        ``neighbor_indices_flat[offsets[k] : offsets[k+1]]`` where ``offsets[m]`` is
-        ``neighbor_indices_flat.shape[0]`` (the total neighbor count), stored only in the
-        CSR form.
+        ``offsets`` has length ``m + 1`` and is the total-terminated prefix sum of per-query
+        neighbor counts: query ``k`` owns ``neighbor_indices_flat[offsets[k] : offsets[k + 1]]``,
+        and ``offsets[m]`` is ``neighbor_indices_flat.shape[0]`` (the total neighbor count).
 
         ``neighbor_indices_flat`` and ``neighbor_distances_flat`` have that total length
         and list point indices and distances ``‖points[i] - q‖₂`` in parallel. Empty
@@ -728,11 +727,7 @@ def query_ball_with_offsets(
             build_accelerator=lambda: (
                 resolved if resolved is not None else hashgrid_from_points(points, r, grid_bins)
             ),
-            count_fn=lambda pts, qrs, radius, built: query_ball_count(
-                pts, qrs, radius, accelerator=built
-            ),
             accel=kernel_neighbors.ACCEL_HASHGRID,
-            include_total=include_total,
             return_sorted=return_sorted,
         )
     return _ball_with_offsets(
@@ -742,11 +737,7 @@ def query_ball_with_offsets(
         build_accelerator=lambda: (
             resolved if resolved is not None else bvh_from_points(points, leaf_size)
         ),
-        count_fn=lambda pts, qrs, radius, built: query_ball_count(
-            pts, qrs, radius, accelerator=built
-        ),
         accel=kernel_neighbors.ACCEL_BVH,
-        include_total=include_total,
         return_sorted=return_sorted,
     )
 
@@ -757,20 +748,19 @@ def _ball_with_offsets(
     r: float,
     *,
     build_accelerator: Callable[[], wp.HashGrid | wp.Bvh],
-    count_fn: Callable[[wp.array[wp.vec3], wp.array[wp.vec3], float, Any], wp.array[wp.int32]],
     accel: wp.int32,
-    include_total: bool,
     return_sorted: bool,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
     """
     Count, scan, gather and optionally sort one ball query -- the body both accelerators share.
 
     The two backends of [`query_ball_with_offsets`][triwarp.neighbors.query_ball_with_offsets]
-    differ only in which structure they build, which counting pass they run and which traversal the
-    one shared neighbour kernel takes (``accel``, one of ``kernels.neighbors.ACCEL_*``); everything
-    else --
+    differ only in which structure they build and which traversal the shared counting and
+    neighbour kernels take (``accel``, one of ``kernels.neighbors.ACCEL_*``); everything else --
     the empty guards, the CSR scan, the ``2x`` sort scratch and the trailing compaction -- is
-    identical. The accelerator is built lazily so an empty query never pays for one.
+    identical. The accelerator is built lazily so an empty query never pays for one. The counts
+    are [`query_ball_count`][triwarp.neighbors.query_ball_count]'s launch, written behind the
+    leading zero of the offsets buffer so they are scanned in place.
     """
     device = points.device
 
@@ -782,18 +772,22 @@ def _ball_with_offsets(
         return (
             wp.empty(0, dtype=wp.int32, device=device),
             wp.empty(0, dtype=wp.float32, device=device),
-            wp.zeros(m + 1 if include_total else m, dtype=wp.int32, device=device),
+            wp.zeros(m + 1, dtype=wp.int32, device=device),
         )
 
     accelerator = build_accelerator()
-    neighbor_counts = count_fn(points, queries, r, accelerator)
-    # The total-terminated CSR form is the segment-bounds array ``segmented_sort_pairs``
-    # wants below; the length-``m`` form is a view of its prefix, so both come out of the one
-    # scan buffer.
-    segment_bounds, total_neighbors = tw.array.counts_to_offsets(
-        neighbor_counts, include_total=True
+    # The total-terminated offsets are also the segment-bounds array ``segmented_sort_pairs``
+    # wants below.
+    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    neighbor_counts = twt.as_dense(offsets[1:])
+    wp.launch(
+        kernel_neighbors.query_ball_count,
+        dim=m,
+        inputs=[points, queries, accel, accelerator.id, wp.float32(r), neighbor_counts],
+        device=device,
     )
-    offsets = segment_bounds if include_total else twt.as_dense(segment_bounds[:m])
+    wp.utils.array_scan(neighbor_counts, out_array=neighbor_counts, inclusive=True)
+    total_neighbors = int(read_scalar(offsets))
     if total_neighbors == 0:
         return (
             wp.empty(0, dtype=wp.int32, device=device),
@@ -813,7 +807,7 @@ def _ball_with_offsets(
             accel,
             accelerator.id,
             wp.float32(r),
-            segment_bounds,
+            offsets,
             neighbor_indices_flat,
             neighbor_distances_flat,
         ],
@@ -824,7 +818,7 @@ def _ball_with_offsets(
         # Sized exactly, so the buffers are the answer as they stand.
         return neighbor_indices_flat, neighbor_distances_flat, offsets
     wp.utils.segmented_sort_pairs(
-        neighbor_distances_flat, neighbor_indices_flat, total_neighbors, segment_bounds
+        neighbor_distances_flat, neighbor_indices_flat, total_neighbors, offsets
     )
     # The sort needs a second half of scratch; copying the sorted half out lets it go.
     return (
@@ -966,27 +960,24 @@ def query_nearest(
     !!! note "Which backend to use"
         ``"hashgrid"`` (the default) is the faster broad phase when the query scale matches the
         cloud's density, because ``initial_radius`` sets the cell width: the walk visits
-        ``(2 ceil(r / cell) + 1) ** 3`` cells, so a radius **f** times too large costs ``f ** 3``,
-        and the search falls back to an exact linear scan once ``r`` outgrows a few cells -- or, at
-        ``k == 1``, to a closest-point query over a tree of the cloud, whose cost does not grow
-        with how far the query is from it. That also
-        makes it sensitive to a cloud whose density is not uniform, and to queries drawn from a
-        different distribution than the points, since the cell width was sized for the data rather
-        than for where the queries land.
+        ``(2 ceil(r / cell) + 1) ** 3`` cells, so a radius **f** times too large costs ``f ** 3``.
+        A row the walk cannot certify within a few cells is finished another way. At ``k == 1``
+        that is a closest-point query over a tree of the cloud, whose cost does not grow with how
+        far the query is from it. Above it, a query that sits on a point of the cloud -- a
+        self-query, in a part of the cloud sparser than the cell was sized for -- goes to the
+        BVH's radius search, so a cloud whose density is not uniform costs its sparse rows a tree
+        search rather than a scan; any other row falls back to an exact linear scan of the cloud.
 
         ``"bvh"`` has no cell width to get wrong, so it is the one to reach for when the query scale
-        is unknown, the cloud is non-uniform, or the queries sit outside it. Its own cost grows
-        with ``k`` faster than the grid's, so at small ``k`` the grid tends to win. At ``k == 1``
-        with no ``accelerator`` it is not a radius search at all but a closest-point query over
-        [`mesh_from_points`][triwarp.neighbors.mesh_from_points], whose cost does not grow with the
-        queries' distance from the cloud.
+        is unknown and the queries do not sit on the cloud. Its own cost grows with ``k`` faster
+        than the grid's. At ``k == 1`` with no ``accelerator`` it is not a radius search at all but
+        a closest-point query over [`mesh_from_points`][triwarp.neighbors.mesh_from_points], whose
+        cost does not grow with the queries' distance from the cloud.
 
-        **But at moderate ``k`` the tree can win on a perfectly uniform cloud too, which is not what
-        "an awkward one" suggests.** The grid's cost is *non-monotonic* in cloud size at moderate
-        ``k``: a row whose true ``k``-th distance runs past ``_knn_widest_grid_radius`` abandons
-        the cell walk for an exact linear scan of the whole cloud, and how much of the cloud falls
-        in that tail moves with ``n``. The tree's cost stays monotonic over the same range. Both
-        answers are still exact; only the cost moves.
+        **For queries off the cloud at moderate ``k``, the grid's cost is non-monotonic in cloud
+        size**: a row whose true ``k``-th distance runs past the widest walk takes the linear scan,
+        and how much of the query set falls in that tail moves with ``n``. The tree's cost stays
+        monotonic over the same range.
 
         Both are exact; this is a cost choice only. Reuse the structure across calls by passing it
         as ``accelerator`` when several queries share one cloud.
@@ -1115,7 +1106,7 @@ def query_nearest(
         wp.launch(
             kernel_neighbors.bvh_nearest_kernel(k),
             dim=m,
-            inputs=[*search, bvh.id, *shared, min_bound, max_bound, *outputs],
+            inputs=[*search, bvh.id, *shared, min_bound, max_bound, wp.int32(0), *outputs],
             device=device,
         )
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
@@ -1133,6 +1124,15 @@ def query_nearest(
     # it gives up on pay for the tree. The walk gives up at the same radius it hands over to the
     # scan at: bringing that in shortens a displaced row's walk, but it also defers the odd outlier
     # of an on-surface query set, and one deferred row pays for the whole tree.
+    #
+    # Above ``k == 1`` a row is deferred only when the query sits on a point of the cloud -- a
+    # self-query -- in a part sparser than the cell width was sized for: the sparse end of a cloud
+    # whose density is not uniform. Those rows go to the BVH's radius search, which stays small
+    # there; without it each one would scan every point. A query off the cloud keeps the scan,
+    # which is the cheaper finish for it (``kernel_neighbors.DEFER_NEAR``). A cloud smaller than
+    # ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest register bucket never
+    # defer above ``k == 1``.
+    defer = k == 1 or (k <= kernel_neighbors.KNN_ROW_BUCKETS[-1] and n >= _KNN_DEFER_MIN_POINTS)
     deferred = wp.zeros(1, dtype=wp.int32, device=device)
     wp.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
@@ -1144,15 +1144,24 @@ def query_nearest(
             wp.float32(_knn_widest_grid_radius(cell_size, n)),
             min_bound,
             max_bound,
-            wp.int32(1 if k == 1 else 0),
+            wp.int32(1 if defer else 0),
             deferred,
             *outputs,
         ],
         device=device,
     )
-    if k == 1:
+    if defer:
         _finish_deferred_nearest(
-            points, queries, max_radius, deferred, neighbor_indices, neighbor_distances
+            points,
+            queries,
+            k,
+            max_radius,
+            initial_radius,
+            (min_bound, max_bound),
+            leaf_size,
+            deferred,
+            neighbor_indices,
+            neighbor_distances,
         )
     return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
@@ -1160,29 +1169,57 @@ def query_nearest(
 def _finish_deferred_nearest(
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
+    k: int,
     max_radius: float,
+    initial_radius: float,
+    bounds: tuple[wp.vec3, wp.vec3],
+    leaf_size: int,
     deferred: wp.array[wp.int32],
     neighbor_indices: twt.Array2dInt32,
     neighbor_distances: twt.Array2dFloat32,
 ) -> None:
     """
-    Answer the ``k = 1`` rows the grid deferred, by a closest-point query over the cloud.
+    Answer the rows the grid deferred, by a tree over the cloud.
 
-    One four-byte readback decides whether there are any, since the tree it takes is a build over
-    the whole cloud: queries on the cloud defer nothing and pay only that read. The tree is a
+    One four-byte readback decides whether there are any, since the tree is a build over the whole
+    cloud: a query set the grid certified in full pays only that read. At ``k = 1`` the tree is a
     ``wp.Mesh`` whose triangles each collapse onto one point, so its closest-face query is a
-    nearest-point query with the mesh BVH's pruned descent.
+    nearest-point query with the mesh BVH's pruned descent; above it, the BVH's radius search
+    finishes each deferred row and returns at once on the others.
     """
-    # The one sync the k = 1 path adds, and it decides whether a whole-cloud build is needed.
+    # The one sync deferral adds, and it decides whether a whole-cloud build is needed.
     if int(read_scalar(deferred, 0)) == 0:
         return
-    mesh = mesh_from_points(points)
+    device = points.device
+    m = int(queries.shape[0])
+    if k == 1:
+        mesh = mesh_from_points(points)
+        wp.launch(
+            kernel_neighbors.nearest_point_via_mesh,
+            dim=m,
+            inputs=[mesh.id, points, queries, wp.float32(max_radius)],
+            outputs=[neighbor_indices, neighbor_distances],
+            device=device,
+        )
+        return
+    bvh = bvh_from_points(points, leaf_size)
     wp.launch(
-        kernel_neighbors.nearest_point_via_mesh,
-        dim=int(queries.shape[0]),
-        inputs=[mesh.id, points, queries, wp.float32(max_radius)],
-        outputs=[neighbor_indices, neighbor_distances],
-        device=points.device,
+        kernel_neighbors.bvh_nearest_kernel(k),
+        dim=m,
+        inputs=[
+            points,
+            queries,
+            bvh.id,
+            wp.int32(k),
+            wp.float32(max_radius),
+            wp.float32(initial_radius),
+            bounds[0],
+            bounds[1],
+            wp.int32(1),
+            neighbor_indices,
+            neighbor_distances,
+        ],
+        device=device,
     )
 
 
@@ -1492,7 +1529,7 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     if n < 2:
         return wp.full(n, math.inf, dtype=wp.float32, device=device)
 
-    _indices, distances = query_nearest(points, points, k=2, backend="bvh")
+    _indices, distances = query_nearest(points, points, k=2)
     # Column 1 of the ``(n, 2)`` table, which is a *strided* view -- so it is copied into a dense
     # buffer rather than returned, both because callers expect a plain ``wp.array`` and because a
     # strided array is the shape that silently corrupts a downstream Python-scope gather.
@@ -1552,7 +1589,7 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
         raise ValueError("closest_pair needs at least two points")
 
     device = points.device
-    indices, distances = query_nearest(points, points, k=2, backend="bvh")
+    indices, distances = query_nearest(points, points, k=2)
     # Column 1 of the table, as strided views -- column 0 is each point itself. The two kernels only
     # index them, so neither needs a dense copy.
     result = wp.full(2, INT64_MAX, dtype=wp.int64, device=device)
@@ -1679,24 +1716,30 @@ def geodesic_ball(
     ext_dist_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.float32, device=device)
     ext_idx_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.int32, device=device)
 
-    overflow = wp.zeros(1, dtype=wp.int32, device=device)
     counts = wp.empty(n, dtype=wp.int32, device=device)
     # CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first
     # exclusive offset and the inclusive scan fills the rest, so ``offsets[n]`` holds the total --
     # ``array.counts_to_offsets``' convention, open-coded here because that helper reads the total
     # back to the host and no caller here wants it. The terminator belongs at this producer rather
     # than in each consumer's kernel: both of them read ``offsets[i + 1]`` as the row end.
-    offsets = wp.zeros(n + 1, dtype=wp.int32, device=device)
     single_chunk = n <= chunk
     # With one chunk the global scan *is* the chunk's: its prefix is the exclusive offsets and its
-    # terminator the total, so no chunk-local scan or total buffer is needed.
-    chunk_total_buf: wp.array[wp.int32] | None = None
+    # terminator the total, so no chunk-local scan or total buffer is needed. The overflow counter
+    # sits right after the total -- in the offsets' own buffer on one chunk, beside the chunk total
+    # on several -- so the last chunk reads both in one copy.
     if single_chunk:
+        totals = wp.zeros(n + 2, dtype=wp.int32, device=device)
+        total_at = n
+        offsets = twt.as_dense(totals[: n + 1])
         local_offsets = twt.as_dense(offsets[:n])
     else:
+        totals = wp.zeros(2, dtype=wp.int32, device=device)
+        total_at = 0
+        offsets = wp.zeros(n + 1, dtype=wp.int32, device=device)
         local_offsets = wp.empty(chunk, dtype=wp.int32, device=device)
-        chunk_total_buf = wp.empty(1, dtype=wp.int32, device=device)
+    overflow = twt.as_dense(totals[total_at + 1 : total_at + 2])
     chunk_flats: list[wp.array[wp.int32]] = []
+    n_overflow = 0
     for start in range(0, n, chunk):
         m = min(chunk, n - start)
         if start > 0:
@@ -1723,20 +1766,19 @@ def geodesic_ball(
         # Gather this chunk's queue rows before the next chunk reuses the pools: chunk-local
         # exclusive scan of counts, one 4-byte readback for the chunk total, then a coalesced
         # 2D copy into the chunk's flat buffer.
-        if chunk_total_buf is None:
+        if single_chunk:
             wp.utils.array_scan(counts, out_array=offsets[1:], inclusive=True)
-            chunk_total = int(read_scalar(offsets, n))
         else:
             wp.utils.array_scan(
                 counts[start : start + m], out_array=local_offsets[:m], inclusive=False
             )
             wp.map(
-                wp.add,
-                local_offsets[m - 1 : m],
-                counts[start + m - 1 : start + m],
-                out=chunk_total_buf,
+                wp.add, local_offsets[m - 1 : m], counts[start + m - 1 : start + m], out=totals[:1]
             )
-            chunk_total = int(read_scalar(chunk_total_buf, 0))
+        if start + m == n:
+            chunk_total, n_overflow = read_values(totals, total_at, 2)
+        else:
+            chunk_total = int(read_scalar(totals, 0))
         flat_chunk = wp.empty(chunk_total, dtype=wp.int32, device=device)
         if chunk_total > 0:
             wp.launch(
@@ -1747,7 +1789,6 @@ def geodesic_ball(
             )
         chunk_flats.append(flat_chunk)
 
-    n_overflow = int(read_scalar(overflow, 0))
     if n_overflow > 0:
         warnings.warn(
             f"geodesic_ball: {n_overflow} neighborhood capacity breaches "

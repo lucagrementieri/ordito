@@ -17,11 +17,12 @@ from scipy.spatial import KDTree
 
 import triwarp as tw
 from tests.comparisons import hausdorff_two_sided
-from tests.conftest import MESHES
+from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
     numpy_to_pymeshfix,
+    numpy_to_warp,
     points_to_warp,
     pymeshfix_face_remap,
     pymeshfix_intersecting_faces,
@@ -707,6 +708,151 @@ def test_marching_triangles_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     values_wp = wp.empty(0, dtype=wp.float32, device=device)
     assert tw.intersection.marching_triangles(vertices_wp, faces_wp, values_wp) == ([], [])
+
+
+@pytest.mark.parametrize("field", ["plane", "wave"])
+def test_marching_triangles_is_its_packed_form_split(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], field: str, device: str
+) -> None:
+    """
+    Triwarp against triwarp: the list form is the packed form, curve by curve.
+
+    ``marching_triangles`` carries the potpourri3d, igl and MeshLib comparisons above; this pins
+    ``marching_triangles_with_offsets`` to it -- the same points in the same order, total-terminated
+    offsets bounding each curve, and the same closed flags. ``wave`` gives many curves, ``plane``
+    one.
+    """
+    mesh_tm, mesh_wp = icosphere
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    if field == "plane":
+        values_np = vertices_np[:, 2]
+    else:
+        values_np = np.sin(9.0 * vertices_np[:, 0]) * np.cos(7.0 * vertices_np[:, 1])
+    values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
+
+    curves_wp, closed_wp = tw.intersection.marching_triangles(
+        mesh_wp.points, mesh_wp.indices, values_wp, 0.05
+    )
+    points_wp, offsets_wp, closed_packed_wp = tw.intersection.marching_triangles_with_offsets(
+        mesh_wp.points, mesh_wp.indices, values_wp, 0.05
+    )
+
+    offsets_np = offsets_wp.numpy()
+    assert len(curves_wp) == 1 if field == "plane" else len(curves_wp) > 10
+    assert offsets_np.shape[0] == len(curves_wp) + 1
+    assert offsets_np[0] == 0
+    assert offsets_np[-1] == points_wp.shape[0]
+    assert closed_packed_wp.numpy().tolist() == closed_wp
+    for c, curve_wp in enumerate(curves_wp):
+        assert np.array_equal(
+            curve_wp.numpy(), points_wp.numpy()[offsets_np[c] : offsets_np[c + 1]]
+        )
+
+
+def test_marching_triangles_with_offsets_empty(
+    icosahedron: tuple[object, wp.Mesh], device: str
+) -> None:
+    """An empty level set is no points, ``[0]`` offsets and no flags."""
+    _, mesh_wp = icosahedron
+    values_wp = wp.zeros(mesh_wp.points.shape[0], dtype=wp.float32, device=mesh_wp.device)
+    points_wp, offsets_wp, closed_wp = tw.intersection.marching_triangles_with_offsets(
+        mesh_wp.points, mesh_wp.indices, values_wp, 1e6
+    )
+    assert points_wp.shape[0] == 0
+    assert closed_wp.shape[0] == 0
+    assert offsets_wp.numpy().tolist() == [0]
+
+
+def _marching_triangles_both_links(
+    monkeypatch: pytest.MonkeyPatch,
+    vertices_wp: wp.array,
+    faces_wp: wp.array,
+    values_wp: wp.array,
+    isovalue: float,
+) -> list[tuple[list[np.ndarray], list[bool]]]:
+    """Run ``marching_triangles`` once through the host link and once through the device link."""
+    results = []
+    for on_device in (False, True):
+        monkeypatch.setattr(
+            tw.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
+        )
+        curves_wp, closed_wp = tw.intersection.marching_triangles(
+            vertices_wp, faces_wp, values_wp, isovalue
+        )
+        results.append(([curve.numpy() for curve in curves_wp], closed_wp))
+    return results
+
+
+@pytest.mark.parametrize("hops", [2, 3, 16])
+@pytest.mark.parametrize("field", ["random", "wave"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "icosphere"])
+def test_marching_triangles_device_link_matches_host_link(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    field: str,
+    hops: int,
+    device: str,
+) -> None:
+    """
+    Triwarp against triwarp: the device link returns the host link's curves exactly.
+
+    The host link (``_link_segments``) carries the oracle, through the potpourri3d, igl and
+    MeshLib comparisons above; this pins the device link to it -- the same curves in the same
+    order, each from the same first point, with the same closed flags -- on both devices, with the
+    gate forced each way. The open meshes put open contours in the set, which rank from their
+    unique first segment rather than from their lowest one, and ``hops`` walks the pointer-jumping
+    rounds through several round counts, 2 and 3 putting the curve lengths on both sides of many
+    round boundaries.
+    """
+    monkeypatch.setattr(tw.intersection, "_LINK_HOPS", hops)
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    rng = np.random.default_rng(23)
+    if field == "random":
+        values_np = rng.standard_normal(len(vertices_np))
+    else:
+        values_np = np.sin(9.0 * vertices_np[:, 0]) * np.cos(7.0 * vertices_np[:, 1])
+    values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
+
+    (curves_host, closed_host), (curves_device, closed_device) = _marching_triangles_both_links(
+        monkeypatch, mesh_wp.points, mesh_wp.indices, values_wp, 0.1
+    )
+
+    assert len(curves_host) > 0
+    if mesh_name in OPEN_MESHES:
+        assert not all(closed_host)
+    assert closed_device == closed_host
+    assert len(curves_device) == len(curves_host)
+    for points_device, points_host in zip(curves_device, curves_host, strict=True):
+        assert np.array_equal(points_device, points_host)
+
+
+def test_marching_triangles_rejects_inconsistent_winding(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """
+    Not a library comparison: a face wound against its neighbours makes both links raise.
+
+    A reversed face on the contour starts its segment on the edge its neighbour's also starts on,
+    which the host link reports as inconsistent winding; the device link hands such a level set
+    to the host link rather than chaining it.
+    """
+    vertices_np, faces_np = (array.numpy() for array in tw.creation.icosphere(subdivisions=2))
+    faces_np = faces_np.reshape(-1, 3).copy()
+    values_np = vertices_np[:, 2].astype(np.float64) - 0.1
+    positive = values_np[faces_np] >= 0.0
+    straddles = np.flatnonzero(positive.any(axis=1) & ~positive.all(axis=1))
+    faces_np[straddles[0]] = faces_np[straddles[0], ::-1]
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.reshape(-1), device)
+    values_wp = wp.array(values_np, dtype=wp.float64, device=device)
+
+    for on_device in (False, True):
+        monkeypatch.setattr(
+            tw.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
+        )
+        with pytest.raises(ValueError, match="not consistently oriented"):
+            tw.intersection.marching_triangles(vertices_wp, faces_wp, values_wp, 0.0)
 
 
 def _pyvista_intersection_segments(mesh1_pv: pv.PolyData, mesh2_pv: pv.PolyData) -> np.ndarray:

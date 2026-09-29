@@ -32,7 +32,7 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 
 from __future__ import annotations
 
-from typing import cast, overload
+from typing import Literal, cast, overload
 
 import warp as wp
 import warp.sparse as wps
@@ -49,6 +49,14 @@ from triwarp.reduce import max as reduce_max
 from triwarp.reduce import mean as reduce_mean
 from triwarp.tangent_space import halfedge_transport_angles
 from triwarp.triangles import face_normals_and_areas
+
+# Face count from which a mesh operator's pattern is built from undirected keys plus a 32-bit
+# second sort rather than one sort of directed keys (``_mesh_operator_pattern``). Both give the
+# identical matrix; the undirected build sorts less and holds less memory, for five more launches.
+# Measured on ``cotmatrix``: directed wins below ~0.5 M faces (undirected 0.55-0.59x at 16-82 k,
+# 0.78x at 328 k), undirected above (1.35x at 871 k and 28 M, 1.45x at 1.3 M), where it also holds
+# a fifth less memory.
+_UNDIRECTED_PATTERN_FROM_FACES = 500_000
 
 
 def face_gradients(
@@ -305,8 +313,8 @@ def cotmatrix(
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``. Use
         ``wp.float64`` when the matrix feeds an ill-conditioned solve (e.g. the biharmonic operator
-        in [`harmonic`][triwarp.parametrization.harmonic]); the entries are always built in a single
-        ``bsr_from_triplets`` in the requested precision.
+        in [`harmonic`][triwarp.parametrization.harmonic]); the entries are always assembled in
+        the requested precision, in one build.
 
     Returns
     -------
@@ -351,19 +359,18 @@ def cotmatrix(
             f"got {(int(cot_entries.shape[0]), int(cot_entries.shape[1]))}"
         )
 
-    n_triplets = 12 * n_faces
-    rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
-    # One generic kernel handles both precisions: it casts the (float32 or float64) half-cotangent
-    # weights to the matrix dtype, assembling a native float32/float64 matrix in a single build.
+    # The pattern comes from the faces (``_mesh_operator_pattern``) with no triplets in between;
+    # one row kernel then forms each off-diagonal from its contributing half-cotangents and the
+    # diagonal from the row sum, casting the (float32 or float64) weights to the matrix dtype.
+    offsets, columns, run_start, keys, count, order = _mesh_operator_pattern(faces, n_vertices)
+    values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
     wp.launch(
-        kernel_laplacian.COTMATRIX_TRIPLETS[cot_entries.dtype, dtype],
-        dim=n_faces,
-        inputs=[faces, cot_entries, rows, cols, vals],
+        kernel_laplacian.COTMATRIX_ROWS[cot_entries.dtype, dtype],
+        dim=n_vertices,
+        inputs=[offsets, columns, run_start, keys, wp.int32(count), order, cot_entries, values],
         device=device,
     )
-    return wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
-    )
+    return tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
 
 
 def robust_laplacian(
@@ -593,17 +600,205 @@ def connection_laplacian(
             f"got {int(transport_angles.shape[0])}"
         )
 
-    n_triplets = 12 * n_faces
-    rows, cols, vals = tw.array.triplet_buffers(n_triplets, wp.mat22d, device)
+    offsets, columns, run_start, keys, count, order = _mesh_operator_pattern(faces, n_vertices)
+    values = wp.empty(int(columns.shape[0]), dtype=wp.mat22d, device=device)
     wp.launch(
-        kernel_laplacian.CONNECTION_LAPLACIAN_TRIPLETS[cot_entries.dtype],
-        dim=n_faces,
-        inputs=[faces, cot_entries, transport_angles, rows, cols, vals],
+        kernel_laplacian.CONNECTION_LAPLACIAN_ROWS[cot_entries.dtype],
+        dim=n_vertices,
+        inputs=[
+            offsets,
+            columns,
+            run_start,
+            keys,
+            wp.int32(count),
+            order,
+            faces,
+            cot_entries,
+            transport_angles,
+            values,
+        ],
         device=device,
     )
-    return wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
+    return tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
+
+
+def _mesh_operator_pattern(
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    *,
+    halfedges: bool = False,
+    diagonal: Literal["self", "referenced", "all"] = "referenced",
+) -> tuple[
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    wp.array[wp.uint64],
+    int,
+    wp.array[wp.int32],
+]:
+    """
+    Build a vertex operator's sparsity on ``faces``, with each entry's contributing corners.
+
+    The pattern is every edge both ways plus every referenced vertex's diagonal, built straight
+    from the faces with no triplets. Returns ``(offsets, columns, run_start, keys, count, order)``:
+    an off-diagonal entry ``k``'s contributors are the corner slots ``order[p]`` (``3 * f + e``,
+    the corner opposite the edge) over the run of equal sorted ``keys[:count]`` that starts at
+    ``run_start[k]``, in face order; a diagonal's ``run_start`` is not meaningful. ``columns`` is a
+    capacity of ``6 * n_faces + n_vertices``, of which ``offsets[-1]`` are entries.
+
+    ``halfedges`` builds one entry per halfedge instead (``i -> j`` only, self-edges included; no
+    diagonal). ``diagonal`` chooses which rows carry a diagonal: only those of a degenerate face's
+    self-edge, those of vertices a face references (an unreferenced vertex's row stays empty), or
+    all. A self-edge always lands on its vertex's diagonal entry, whose value is the operator's.
+
+    Two builds give the identical pattern. Below ``_UNDIRECTED_PATTERN_FROM_FACES`` one sort of
+    ``6 * n_faces`` directed keys plus the diagonal slots is cheapest; above it one sort of the
+    ``3 * n_faces`` undirected keys plus a 32-bit sort of the unique edges does less sorting in less
+    memory, for five more launches.
+    """
+    device = faces.device
+    n_faces = int(faces.shape[0]) // 3
+    if halfedges:
+        count = 3 * n_faces
+        keys, order = tw.array.csr_key_buffers(count, device)
+        wp.launch(
+            kernel_laplacian.mesh_halfedge_keys,
+            dim=count,
+            inputs=[faces, wp.int32(n_vertices), keys, order],
+            device=device,
+        )
+        offsets, columns, starts = tw.array.csr_from_keys(
+            keys, order, count, n_vertices, n_vertices
+        )
+        return offsets, columns, starts, keys, count, order
+    if n_faces < _UNDIRECTED_PATTERN_FROM_FACES:
+        # A self-edge's own keys are its diagonal entry, so ``"self"`` needs no diagonal slots.
+        tail = 0 if diagonal == "self" else n_vertices
+        count = 6 * n_faces + tail
+        keys, order = tw.array.csr_key_buffers(count, device)
+        if diagonal == "referenced":
+            # The diagonal slots start as the sentinel: a vertex no face references stays out of
+            # the pattern, so its row is empty, as ``cotmatrix``'s callers rely on.
+            keys[6 * n_faces : count].fill_(n_vertices * n_vertices)
+        elif diagonal == "all":
+            wp.launch(
+                kernel_laplacian.diagonal_keys,
+                dim=n_vertices,
+                inputs=[wp.int32(n_vertices), wp.int32(6 * n_faces), keys],
+                device=device,
+            )
+        wp.launch(
+            kernel_laplacian.mesh_operator_keys,
+            dim=n_faces,
+            inputs=[faces, wp.int32(n_vertices), wp.int32(diagonal == "referenced"), keys, order],
+            device=device,
+        )
+        offsets, columns, starts = tw.array.csr_from_keys(
+            keys, order, count, n_vertices, n_vertices
+        )
+        return offsets, columns, starts, keys, count, order
+
+    count = 3 * n_faces
+    sentinel = n_vertices * n_vertices
+    keys, order = tw.array.csr_key_buffers(count, device)
+    # Rows: per-vertex upper-half count, lower-half count, referenced flag; then their scans.
+    tallies = wp.zeros((3, n_vertices), dtype=wp.int32, device=device)
+    upper, lower, referenced = tallies[0], tallies[1], tallies[2]
+    if diagonal == "all":
+        referenced.fill_(1)
+    wp.launch(
+        kernel_laplacian.mesh_edge_keys,
+        dim=n_faces,
+        inputs=[
+            faces,
+            wp.int32(n_vertices),
+            wp.int32({"self": 2, "referenced": 1, "all": 0}[diagonal]),
+            keys,
+            order,
+            referenced,
+        ],
+        device=device,
     )
+    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    # Scratch in the first sort's upper halves, free once it has run: the edge flags in the
+    # payload's, and the second sort's 32-bit keys in the key buffer's (``count`` 8-byte slots are
+    # exactly ``2 * count`` 4-byte ones). ``keys`` holds the storage, so the alias cannot outlive
+    # it.
+    flags = order[count:]
+    assert keys.ptr is not None  # a non-empty allocation
+    second_keys = wp.array(
+        ptr=keys.ptr + count * 8, dtype=wp.int32, shape=(2 * count,), device=device
+    )
+    second_order = wp.empty(2 * count, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_laplacian.mesh_edge_runs,
+        dim=count,
+        inputs=[
+            keys,
+            wp.uint64(sentinel),
+            wp.int32(n_vertices),
+            flags,
+            upper,
+            lower,
+            second_keys,
+            second_order,
+        ],
+        device=device,
+    )
+    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+    offsets = wp.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_laplacian.mesh_row_counts,
+        dim=n_vertices,
+        inputs=[upper, lower, referenced, offsets[1:]],
+        device=device,
+    )
+    wp.utils.array_scan(offsets[1:], out_array=offsets[1:], inclusive=True)
+    before = wp.empty((2, n_vertices), dtype=wp.int32, device=device)
+    wp.utils.array_scan(upper, out_array=before[0], inclusive=False)
+    wp.utils.array_scan(lower, out_array=before[1], inclusive=False)
+    wp.utils.radix_sort_pairs(
+        second_keys, second_order, count=count, end_bit=max(1, n_vertices.bit_length())
+    )
+    capacity = 2 * count + n_vertices
+    columns = wp.empty(capacity, dtype=wp.int32, device=device)
+    run_start = wp.empty(capacity, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_laplacian.mesh_place_upper,
+        dim=count,
+        inputs=[
+            keys,
+            flags,
+            wp.uint64(sentinel),
+            wp.int32(n_vertices),
+            offsets,
+            lower,
+            referenced,
+            before[0],
+            columns,
+            run_start,
+        ],
+        device=device,
+    )
+    wp.launch(
+        kernel_laplacian.mesh_place_lower,
+        dim=max(count, n_vertices),
+        inputs=[
+            keys,
+            second_keys,
+            second_order,
+            wp.int32(count),
+            wp.int32(n_vertices),
+            offsets,
+            lower,
+            referenced,
+            before[1],
+            columns,
+            run_start,
+        ],
+        device=device,
+    )
+    return offsets, columns, run_start, keys, count, order
 
 
 def laplacian_entries(
@@ -765,7 +960,7 @@ def laplacian(
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``. Use
         ``wp.float64`` when the operator feeds a linear-system solve; the matrix is built and
-        row-normalized natively in the requested precision (single ``bsr_from_triplets``).
+        row-normalized natively in the requested precision, in one build.
     edges
         Optional precomputed ``(m, 2)`` unique undirected edges, forwarded to
         [`laplacian_entries`][triwarp.laplacian.laplacian_entries]. Read its note before skipping
@@ -805,6 +1000,35 @@ def laplacian(
     require_same_device(vertices=vertices, faces=faces, edges=edges)
     n_vertices = int(vertices.shape[0])
     device = vertices.device
+    if edges is None:
+        # The adjacency follows from the faces: its pattern is built straight from them and one row
+        # kernel writes the weights and normalizes. Directed is one entry per halfedge; symmetric
+        # both directions of every edge, plus a degenerate face's self-edge as a diagonal entry.
+        if symmetric is None:
+            symmetric = not equal_weight
+        if int(faces.shape[0]) == 0:
+            return tw.array.empty_square_bsr(n_vertices, dtype, device)
+        offsets, columns, run_start, keys, count, _ = _mesh_operator_pattern(
+            faces, n_vertices, halfedges=not symmetric, diagonal="self"
+        )
+        values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
+        wp.launch(
+            kernel_laplacian.LAPLACIAN_ROWS[dtype],
+            dim=n_vertices,
+            inputs=[
+                offsets,
+                columns,
+                run_start,
+                keys,
+                wp.int32(count),
+                vertices,
+                wp.int32(equal_weight),
+                wp.int32(symmetric),
+                values,
+            ],
+            device=device,
+        )
+        return tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
     rows, cols, vals = laplacian_entries(
         vertices,
         faces,
@@ -814,9 +1038,7 @@ def laplacian(
         edges=edges,
         validate=validate,
     )
-    operator = wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
-    )
+    operator = tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
     if n_vertices > 0 and operator.nnz > 0:
         wp.launch(
             kernel_laplacian.ROW_NORMALIZE[operator.values.dtype],
@@ -879,23 +1101,20 @@ def graph_laplacian(
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
 
-    # Symmetric unit-weight adjacency: each undirected edge emits both directed (a, b) and (b, a)
-    # triplets with weight 1, matching ``igl::adjacency_matrix`` (all non-zeros forced to one).
-    # The triplet values are emitted natively in ``dtype`` (single build, no recast).
-    rows, cols, vals = laplacian_entries(
-        vertices, faces, equal_weight=True, symmetric=True, dtype=dtype
+    # ``A - diag(deg)`` with ``A`` the unit-weight adjacency of ``igl::adjacency_matrix``: the mesh
+    # pattern with every vertex's diagonal (an unreferenced vertex keeps a zero one), and one row
+    # kernel writing the ones and minus their count.
+    offsets, columns, _, _, _, _ = _mesh_operator_pattern(faces, n_vertices, diagonal="all")
+    values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
+    wp.launch(
+        kernel_laplacian.GRAPH_LAPLACIAN_ROWS[dtype],
+        dim=n_vertices,
+        inputs=[offsets, columns, values],
+        device=device,
     )
-    adjacency = wps.bsr_from_triplets(
-        n_vertices, n_vertices, rows, cols, vals, prune_numerical_zeros=False
-    )
-
-    # Vertex degrees as the row sums ``A @ 1``, then ``L = A - diag(deg)``.
-    degree = wp.empty(n_vertices, dtype=dtype, device=device)
-    ones = wp.ones(n_vertices, dtype=dtype, device=device)
-    wps.bsr_mv(adjacency, ones, degree, alpha=1.0, beta=0.0)
     return cast(
         "wps.BsrMatrix[wp.float32]",
-        wps.bsr_axpy(x=adjacency, y=wps.bsr_diag(diag=degree), alpha=1.0, beta=-1.0),
+        tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values),
     )
 
 

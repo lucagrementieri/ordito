@@ -138,7 +138,7 @@ def _neighbor_table(bench_case: BenchCase, k: int = _KNN) -> twt.Array2dInt32:
     key = (bench_case.mesh_name, str(bench_case.device), k)
     if key not in _neighbors_cache:
         points = bench_case.vertices_wp
-        _neighbors_cache[key] = tw.neighbors.query_nearest(points, points, k=k, backend="bvh")[0]
+        _neighbors_cache[key] = tw.neighbors.query_nearest(points, points, k=k)[0]
     return _neighbors_cache[key]
 
 
@@ -569,7 +569,7 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
         points = bench_case.vertices_wp
         normals = bench_case.run(
             lambda: tw.points.estimate_normals(
-                points, tw.neighbors.query_nearest(points, points, k=_KNN, backend="bvh")[0]
+                points, tw.neighbors.query_nearest(points, points, k=_KNN)[0]
             )
         )
         assert normals.shape == (bench_case.n_vertices,)
@@ -600,9 +600,7 @@ def test_outlier_probability(bench_case: BenchCase) -> None:
         return
     points = bench_case.vertices_wp
     probability = bench_case.run(
-        lambda: tw.points.outlier_probability(
-            *tw.neighbors.query_nearest(points, points, k=_KNN, backend="bvh")
-        )
+        lambda: tw.points.outlier_probability(*tw.neighbors.query_nearest(points, points, k=_KNN))
     )
     assert probability.shape == (bench_case.n_vertices,)
 
@@ -618,7 +616,7 @@ def test_statistical_outlier_mask(bench_case: BenchCase) -> None:
         points = bench_case.vertices_wp
         mask = bench_case.run(
             lambda: tw.points.statistical_outlier_mask(
-                tw.neighbors.query_nearest(points, points, k=_KNN, backend="bvh")[1]
+                tw.neighbors.query_nearest(points, points, k=_KNN)[1]
             )
         )
         assert mask.shape == (bench_case.n_vertices,)

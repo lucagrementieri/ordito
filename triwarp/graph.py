@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import math
-
 import warp as wp
 import warp.sparse as wps
 
@@ -86,9 +84,7 @@ def edges_to_csr(
                 inputs=[edges, weights, rows, cols, data],
                 device=device,
             )
-    return wps.bsr_from_triplets(
-        node_count, node_count, rows, cols, data, prune_numerical_zeros=False
-    )
+    return tw.array.csr_from_triplets(node_count, node_count, rows, cols, data)
 
 
 def edges_to_neighbor_lists(
@@ -172,7 +168,7 @@ def edges_to_neighbor_lists(
     Notes
     -----
     **The fill is a counting sort with no sort in it, and that is the whole reason this exists
-    beside [`edges_to_csr`][triwarp.graph.edges_to_csr].** Going through ``bsr_from_triplets``
+    beside [`edges_to_csr`][triwarp.graph.edges_to_csr].** A triplet build
     radix-sorts ``2 * m`` triplets and carries a ``float32`` value array a structure-only traversal
     never reads; counting and filling does neither, and even with ``sort_rows=True`` -- whose
     per-row sort is over one node's neighbours rather than the whole edge list -- the result is the
@@ -204,9 +200,9 @@ def edges_to_neighbor_lists(
     # this function never needs it (it is 2 * m, known on the host). The same decline
     # ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.
     wp.utils.array_scan(degree, out_array=offsets[1:], inclusive=True)
-    # ``degree`` has done its job and becomes the fill's write cursor, which saves an allocation
-    # and is why the scatter takes both it and ``offsets``.
-    degree.zero_()
+    # ``degree`` has done its job and becomes the fill's write cursor, counting each row's free
+    # slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both
+    # it and ``offsets``.
     wp.launch(
         kernel_graph.scatter_neighbor_lists,
         dim=m,
@@ -506,7 +502,7 @@ def connected_component_parity_from_edges(
 
 def successor_cycles(
     edges: twt.Array2dInt32, node_count: int, *, validate: bool = True
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Every cycle of a successor graph in traversal order, packed flat plus per-cycle offsets.
 
@@ -516,7 +512,7 @@ def successor_cycles(
     and no per-cycle allocation. The ranking is pointer-jumping (Wyllie's list ranking), so the
     work is ``O(k log L)`` over ``k`` cycle nodes with longest cycle ``L`` rather than the
     quadratic per-node successor walk. A mesh boundary's oriented edges are the motivating input
-    (see [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]).
+    (see [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]).
 
     Parameters
     ----------
@@ -537,11 +533,8 @@ def successor_cycles(
         Concatenated ordered node indices of every cycle, on ``edges.device``. Each cycle starts
         at its smallest node index and follows the edge direction.
     offsets : wp.array[wp.int32]
-        Length-``n_cycles`` exclusive prefix sum of the cycle sizes: cycle ``i`` occupies
-        ``flat_cycles[offsets[i] : offsets[i] + cycle_sizes[i]]``. Not a total-terminated CSR
-        array — the last cycle ends at ``flat_cycles.shape[0]``.
-    cycle_sizes : wp.array[wp.int32]
-        Length-``n_cycles`` node count per cycle.
+        Length-``n_cycles + 1`` total-terminated offsets: cycle ``i`` occupies
+        ``flat_cycles[offsets[i] : offsets[i + 1]]``; ``[0]`` when there is no cycle.
 
     Raises
     ------
@@ -561,7 +554,7 @@ def successor_cycles(
     See Also
     --------
     [`connected_component_labels_from_edges`][triwarp.graph.connected_component_labels_from_edges]
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]
     """
     # The range check must run BEFORE ``scatter_successor`` below, not be deferred to the
     # ``connected_component_labels_from_edges`` call: that kernel indexes ``next_node`` by the raw
@@ -573,11 +566,8 @@ def successor_cycles(
     device = edges.device
     m = int(edges.shape[0])
     if m == 0 or node_count == 0:
-        # Three *distinct* empty allocations, so callers may write into them independently.
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+            1, dtype=wp.int32, device=device
         )
 
     # The successor table and the distinct-endpoint mask come out of one pass over the edges. The
@@ -624,14 +614,14 @@ def successor_cycles(
     cycle_nodes = tw.array.flatnonzero(node_mask)
     n_nodes = int(cycle_nodes.shape[0])
     if n_nodes == 0:
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+            1, dtype=wp.int32, device=device
         )
 
-    # Pointer-jumping list ranking (Wyllie): O(log L) rounds of pointer doubling replace the
-    # per-node successor walk, whose total work was quadratic in the cycle length.
+    # Pointer-jumping list ranking (Wyllie): O(log L) rounds of pointer jumping replace the
+    # per-node successor walk, whose total work was quadratic in the cycle length. Each round
+    # chases several pointers (``pointer_jump_schedule``), so the round count is a logarithm to a
+    # base above two.
     successor = wp.empty(node_count, dtype=wp.int32, device=device)
     steps = wp.empty(node_count, dtype=wp.int32, device=device)
     successor_next = wp.empty(node_count, dtype=wp.int32, device=device)
@@ -642,12 +632,12 @@ def successor_cycles(
         inputs=[cycle_nodes, next_node, labels, label_min, successor, steps],
         device=device,
     )
-    rounds = max(1, math.ceil(math.log2(max(n_nodes, 2))))
+    hops, rounds = kernel_graph.pointer_jump_schedule(n_nodes)
     for _ in range(rounds):
         wp.launch(
             kernel_graph.jump_rank,
             dim=n_nodes,
-            inputs=[cycle_nodes, successor, steps, successor_next, steps_next],
+            inputs=[cycle_nodes, successor, steps, hops, successor_next, steps_next],
             device=device,
         )
         successor, successor_next = successor_next, successor
@@ -665,15 +655,17 @@ def successor_cycles(
     # The cycles are grouped by label, and a label is a node index, so the mask's compact ranks
     # number them in ascending label order -- the order ``unique_1d`` over the labels gave.
     label_ranks, n_cycles = tw.array.mask_to_compact_ranks(label_mask)
-    cycle_sizes = wp.empty(n_cycles, dtype=wp.int32, device=device)
+    # The sizes land in the tail of the ``n_cycles + 1`` offsets buffer and are scanned there in
+    # place, behind the leading zero, so no separate sizes buffer is allocated.
+    offsets = wp.zeros(n_cycles + 1, dtype=wp.int32, device=device)
+    sizes = twt.as_dense(offsets[1:])
     wp.launch(
         kernel_graph.compact_cycle_sizes,
         dim=node_count,
-        inputs=[label_mask, label_ranks, label_count, cycle_sizes],
+        inputs=[label_mask, label_ranks, label_count, sizes],
         device=device,
     )
-    offsets = wp.empty(n_cycles, dtype=wp.int32, device=device)
-    wp.utils.array_scan(cycle_sizes, out_array=offsets, inclusive=False)
+    wp.utils.array_scan(sizes, out_array=sizes, inclusive=True)
 
     # Zero-initialised (not wp.empty): colliding ranks on malformed input (see Notes) can leave
     # slots unwritten by scatter_cycle_slot, and zero is a valid node index.
@@ -685,7 +677,7 @@ def successor_cycles(
         device=device,
     )
 
-    return flat_cycles, offsets, cycle_sizes
+    return flat_cycles, offsets
 
 
 def shortest_path_envelope(

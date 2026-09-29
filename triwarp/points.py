@@ -51,7 +51,6 @@ angle between two ``wp.vec3`` arrays, geometry rather than array structure, so
 [`triwarp.array`][triwarp.array] is no better a home.
 """
 
-import math
 from typing import cast
 
 import warp as wp
@@ -736,19 +735,17 @@ def outlier_probability(
         device=device,
     )
 
-    # nplof = scale * sqrt(E[plof^2]) over the whole cloud: one fused sum-of-squares reduction and
-    # one readback, because the normalizer is a scalar every point divides by and Warp cannot pass
-    # a device scalar as a uniform argument.
-    normalizer = scale * math.sqrt(wp.utils.array_inner(plof, plof) / n)
-    if normalizer <= 0.0:
-        # A cloud with no spread: every plof is zero.
-        return wp.zeros(n, dtype=wp.float32, device=device)
+    # nplof = scale * sqrt(E[plof^2]) over the whole cloud: one fused sum-of-squares reduction,
+    # left on the device -- the probability kernel reads it and forms the normalizer itself.
+    plof_sum_squares = wp.empty(1, dtype=wp.float32, device=device)
+    wp.utils.array_inner(plof, plof, out=plof_sum_squares)
     out_probability = wp.empty(n, dtype=wp.float32, device=device)
-    wp.map(
-        kernel_points.outlier_probability,
-        plof,
-        wp.float32(1.0 / (normalizer * math.sqrt(2.0))),
-        out=out_probability,
+    wp.launch(
+        kernel_points.outlier_probabilities,
+        dim=n,
+        inputs=[plof, plof_sum_squares, wp.float64(scale), wp.float32(n)],
+        outputs=[out_probability],
+        device=device,
     )
     return out_probability
 

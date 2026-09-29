@@ -484,6 +484,50 @@ def test_crop_points_matches_open3d(request: pytest.FixtureRequest, mesh_name: s
     )
 
 
+@pytest.mark.parametrize("oriented", [False, True])
+def test_index_crop_and_mask_forms_agree(device: str, oriented: bool) -> None:
+    """
+    Triwarp against triwarp: the index and crop forms select exactly the mask form's points.
+
+    Not a parity assert -- the Open3D comparisons above carry the oracle. The index and crop forms
+    test containment in a flag kernel of their own rather than compacting the mask, so this pins
+    the two spellings of the predicate to each other on the rows a random cloud never produces:
+    ``nan`` and infinite coordinates, and the closed boundary.
+    """
+    rng = np.random.default_rng(23)
+    points_np = rng.uniform(-2.0, 2.0, size=(4000, 3))
+    points_np[:6] = [
+        [np.nan, 0.0, 0.0],
+        [0.0, np.inf, 0.0],
+        [-np.inf, 0.0, 0.0],
+        [1.0, 1.0, 1.0],
+        [-1.0, -1.0, -1.0],
+        [1.0, 0.0, 0.0],
+    ]
+    points_wp = points_to_warp(points_np, device)
+    lower_wp, upper_wp = _corners_wp(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]))
+    angle = 0.3
+    rotation_wp = wp.mat33(
+        np.cos(angle), -np.sin(angle), 0.0, np.sin(angle), np.cos(angle), 0.0, 0.0, 0.0, 1.0
+    )
+    if oriented:
+        mask_np = tw.bounds.points_in_obb_mask(points_wp, rotation_wp, lower_wp, upper_wp).numpy()
+        indices_wp = tw.bounds.points_in_obb(points_wp, rotation_wp, lower_wp, upper_wp)
+        kept_wp, crop_indices_wp = tw.bounds.crop_points(
+            points_wp, lower_wp, upper_wp, rotation=rotation_wp
+        )
+    else:
+        mask_np = tw.bounds.points_in_aabb_mask(points_wp, lower_wp, upper_wp).numpy()
+        indices_wp = tw.bounds.points_in_aabb(points_wp, lower_wp, upper_wp)
+        kept_wp, crop_indices_wp = tw.bounds.crop_points(points_wp, lower_wp, upper_wp)
+    expected_np = np.flatnonzero(mask_np)
+    assert 0 < expected_np.shape[0] < points_np.shape[0]
+    assert not mask_np[:3].any(), "a non-finite row was selected"
+    assert np.array_equal(indices_wp.numpy(), expected_np)
+    assert np.array_equal(crop_indices_wp.numpy(), expected_np)
+    assert np.array_equal(kept_wp.numpy(), points_np.astype(np.float32)[expected_np])
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("crop_mesh", "open3d")
 def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:

@@ -132,7 +132,7 @@ def _calls_getfixturevalue(code: CodeType) -> bool:
     The recursion is the point. On Python 3.11 a comprehension compiles to its own code object, so
     ``[request.getfixturevalue(n) for n in names]`` puts the name in the *comprehension's*
     ``co_names`` and leaves the enclosing function's clean -- which is how a flat check silently
-    missed ``test_combine.py::test_split_batched_matches_split`` and let it run single-device.
+    missed ``test_combine.py::test_split_with_offsets_matches_split`` and let it run single-device.
     (3.12 inlines comprehensions and would have hidden the bug the other way, on a future upgrade.)
     """
     if "getfixturevalue" in code.co_names:

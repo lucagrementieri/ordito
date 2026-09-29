@@ -10,7 +10,7 @@ condition rather than by two endpoints.
 
 Both entry points are batched over many rays: one thread walks one ray, and the traced polylines
 come back packed into one buffer with CSR offsets, the same shape
-[`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched] uses.
+[`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] uses.
 
 [`trace_from_vertex`][triwarp.geodesic_walk.trace_from_vertex] is the **exponential map** of the
 surface, and its inverse is [`log_map`][triwarp.heat.log_map]: one takes a tangent direction
@@ -564,6 +564,8 @@ def shorten_loop(
 
     See Also
     --------
+    [`shorten_loop_with_offsets`][triwarp.geodesic_walk.shorten_loop_with_offsets]
+        The same, on loops packed into one buffer with their offsets.
     [`homology_generators`][triwarp.homology.homology_generators]
         Produces the loops this shortens.
     [`polyline_length`][triwarp.polyline.polyline_length]
@@ -572,12 +574,107 @@ def shorten_loop(
         The open, endpoint-to-endpoint problem, solved by descending a heat field instead.
     """
     require_same_device(vertices=vertices, faces=faces, loops=loops, twins=twins, rings=rings)
-    device = faces.device
     loops = list(loops)
     for loop in loops:
         twt.ensure_ndim(loop, 1, dtype=wp.int32)
     if not loops or int(faces.shape[0]) == 0 or max_iter <= 0:
         return loops, 0
+    # ``copy=False``: the packed form never writes into its input -- each sweep writes a freshly
+    # sized buffer -- so the first pack can alias the caller's loops.
+    packed, loop_offsets = tw.array.pack_1d_arrays(loops, copy=False)
+    packed, loop_offsets, sweeps = shorten_loop_with_offsets(
+        vertices,
+        faces,
+        packed,
+        loop_offsets,
+        max_iter=max_iter,
+        tolerance=tolerance,
+        twins=twins,
+        rings=rings,
+    )
+    return tw.array.split(packed, loop_offsets), sweeps
+
+
+def shorten_loop_with_offsets(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    loops: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    *,
+    max_iter: int = 100,
+    tolerance: float = 0.0,
+    twins: wp.array[wp.int32] | None = None,
+    rings: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.bool]] | None = None,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
+    """
+    Shorten packed closed edge loops within their homotopy class, keeping them on mesh edges.
+
+    The packed form of [`shorten_loop`][triwarp.geodesic_walk.shorten_loop], which is this plus a
+    pack of its input and a split of its output: the loops arrive and leave as one buffer and its
+    offsets, which is what
+    [`homology_generators_with_offsets`][triwarp.homology.homology_generators_with_offsets]
+    returns. The sweeps and their stopping rule are ``shorten_loop``'s.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+    loops
+        Every loop's vertex-index cycle, loop after loop. It is read and never written.
+    loop_offsets
+        ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is ``loops[loop_offsets[i] :
+        loop_offsets[i + 1]]``.
+    max_iter
+        Cap on the number of sweeps, as in [`shorten_loop`][triwarp.geodesic_walk.shorten_loop].
+    tolerance
+        Absolute length a replacement must save to be accepted.
+    twins
+        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+    rings
+        Optional precomputed [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] as
+        ``(ring_halfedges, offsets, is_boundary)``.
+
+    Returns
+    -------
+    loops : wp.array[wp.int32]
+        The shortened cycles, in the input's order, on ``faces.device``. The input itself when no
+        sweep ran.
+    loop_offsets : wp.array[wp.int32]
+        Their ``(n_loops + 1,)`` total-terminated offsets.
+    sweeps : int
+        How many sweeps ran; equal to ``max_iter``, the cap bound the result.
+
+    Raises
+    ------
+    TypeError
+        If ``loops`` or ``loop_offsets`` is not a rank-1 ``wp.int32`` array.
+    RuntimeError
+        If ``vertices``, ``faces``, ``loops``, ``loop_offsets``, ``twins`` and ``rings`` are not
+        all on one device.
+
+    See Also
+    --------
+    [`shorten_loop`][triwarp.geodesic_walk.shorten_loop]
+        The same, on one array per loop.
+    [`homology_generators_with_offsets`][triwarp.homology.homology_generators_with_offsets]
+        Produces the loops this shortens, in this form.
+    """
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        loops=loops,
+        loop_offsets=loop_offsets,
+        twins=twins,
+        rings=rings,
+    )
+    device = faces.device
+    twt.ensure_ndim(loops, 1, dtype=wp.int32)
+    twt.ensure_ndim(loop_offsets, 1, dtype=wp.int32)
+    n_loops = int(loop_offsets.shape[0]) - 1
+    if n_loops <= 0 or int(faces.shape[0]) == 0 or max_iter <= 0:
+        return loops, loop_offsets, 0
 
     n_vertices = int(vertices.shape[0])
     if twins is None:
@@ -586,15 +683,10 @@ def shorten_loop(
         rings if rings is not None else vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
     )
 
-    # ``copy=False``: each sweep reads ``packed`` and writes a freshly sized buffer, so the
-    # first pack can alias the caller's loops. A sweep that accepts nothing leaves them alone.
-    packed, starts = tw.array.pack_1d_arrays(loops, copy=False)
-    # The offsets `pack_1d_arrays` returns are not total-terminated, and every kernel below reads
-    # `loop_offsets[l + 1]`, so terminate them once here rather than special-casing the last loop.
-    loop_offsets = tw.array.concatenate(
-        [starts, wp.array([packed.shape[0]], dtype=wp.int32, device=device)]
-    )
-    n_loops = len(loops)
+    # Each sweep reads ``packed`` and writes a freshly sized buffer, so the caller's loops are never
+    # written; a sweep that accepts nothing leaves them alone. The offsets are total-terminated,
+    # which is what every kernel below reads ``loop_offsets[l + 1]`` against.
+    packed = loops
     changed = wp.zeros(1, dtype=wp.int32, device=device)
 
     sweeps = 0
@@ -614,7 +706,7 @@ def shorten_loop(
             wp.launch(
                 kernel_array.segment_owner_labels,
                 dim=n_loops,
-                inputs=[loop_offsets, wp.int32(n_positions), position_loop],
+                inputs=[loop_offsets, position_loop],
                 device=device,
             )
             counts = wp.empty(n_positions, dtype=wp.int32, device=device)
@@ -661,7 +753,7 @@ def shorten_loop(
         )
         packed, loop_offsets = _compact_repeats(packed, loop_offsets, n_loops)
 
-    return tw.array.split(packed, loop_offsets[:n_loops]), sweeps
+    return packed, loop_offsets, sweeps
 
 
 def _rewrite_loops(
@@ -676,7 +768,7 @@ def _rewrite_loops(
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """Scatter each position's replacement into a freshly sized buffer, and remap the offsets."""
     device = packed.device
-    positions, total = tw.array.counts_to_offsets(counts, include_total=True)
+    positions, total = tw.array.counts_to_offsets(counts)
     rewritten = wp.empty(max(total, 1), dtype=wp.int32, device=device)
     wp.launch(
         kernel_geodesic_walk.shorten_loop_write,
@@ -722,7 +814,7 @@ def _compact_repeats(
     wp.launch(
         kernel_array.segment_owner_labels,
         dim=n_loops,
-        inputs=[loop_offsets, wp.int32(n_positions), position_loop],
+        inputs=[loop_offsets, position_loop],
         device=device,
     )
     counts = wp.empty(n_positions, dtype=wp.int32, device=device)
@@ -732,7 +824,7 @@ def _compact_repeats(
         inputs=[packed, position_loop, loop_offsets, counts],
         device=device,
     )
-    positions, total = tw.array.counts_to_offsets(counts, include_total=True)
+    positions, total = tw.array.counts_to_offsets(counts)
     if total == n_positions:
         return packed, loop_offsets
     kept = wp.empty(max(total, 1), dtype=wp.int32, device=device)
@@ -782,6 +874,9 @@ def trace_polylines(
 
     Raises
     ------
+    ValueError
+        If ``offsets`` is not total-terminated over ``points`` (see
+        [`array.split`][triwarp.array.split]).
     RuntimeError
         If ``points`` and ``offsets`` are not all on one device.
 
@@ -791,13 +886,7 @@ def trace_polylines(
     [`boundary_loops`][triwarp.boundary.boundary_loops]
     """
     require_same_device(points=points, offsets=offsets)
-    # ``offsets`` is the total-terminated n + 1 form, and ``split`` wants the length-n one, whose
-    # last segment already runs to the end of ``points``. The guard is required rather than
-    # defensive: a no-ray trace returns a length-1 offsets array, and Warp rejects the resulting
-    # zero-length slice outright ("Invalid indexing in slice: 0:0:1").
-    if int(offsets.shape[0]) <= 1:
-        return []
-    return tw.array.split(points, offsets[:-1], copy=copy)
+    return tw.array.split(points, offsets, copy=copy)
 
 
 def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:
@@ -828,7 +917,7 @@ def _trace(
     wp.launch(kernel, dim=n_rays, inputs=[*inputs, no_offsets, counts, no_points], device=device)
 
     # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
-    offsets, total = tw.array.counts_to_offsets(counts, include_total=True)
+    offsets, total = tw.array.counts_to_offsets(counts)
     points = wp.empty(total, dtype=wp.vec3, device=device)
     wp.launch(kernel, dim=n_rays, inputs=[*inputs, offsets, counts, points], device=device)
     return points, offsets

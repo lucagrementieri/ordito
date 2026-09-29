@@ -235,9 +235,9 @@ def test_cotmatrix(bench_case: BenchCase) -> None:
     **pytorch3d**'s ``cot_laplacian`` is the fourth assembly here and the only one on the GPU. It
     does not assemble a matrix: it wraps ``3F`` entries as an *uncoalesced* ``sparse_coo_tensor``
     and adds its transpose, so the duplicate ``(i, j)`` pairs are never summed and no diagonal is
-    ever written, where triwarp sorts, dedups and accumulates **12 triplets a face** into a CSR
-    *with* its assembled row sum. The row therefore times ``_assembled_p3d``, which finishes the
-    assembly -- and this row is why that helper exists.
+    ever written, where triwarp sorts the mesh's edge keys into a CSR, sums each entry's
+    half-cotangents and writes each diagonal as its row's sum. The row therefore times
+    ``_assembled_p3d``, which finishes the assembly -- and this row is why that helper exists.
 
     The structure names the mechanism rather than merely being consistent with it: on ``dragon``
     the uncoalesced tensor holds 5 228 484 entries (``6F``), coalescing it gives 2 618 512, and

@@ -1765,8 +1765,8 @@ def band_dirichlet_values(
     # across ``smooth_region_boundary``'s passes while the weights move, so only the band's rows are
     # computed, every pass, and the whole mesh's matrix never is. The weight of the edge
     # opposite corner ``e`` is ``laplacian.face_half_cotangents``' column ``e`` for the current
-    # ``positions`` (``kernels/laplacian.cotmatrix_triplets``' convention), formed here for the
-    # band's own faces rather than read from a whole-mesh table, and cast to ``float64`` as
+    # ``positions`` (``kernels/laplacian.mesh_operator_keys``' corner convention), formed here for
+    # the band's own faces rather than read from a whole-mesh table, and cast to ``float64`` as
     # ``cotmatrix`` casts it; the off-diagonal is ``-w``, the diagonal ``sum w``, and a pinned
     # neighbour moves ``w * field_j`` to the right-hand side.
     v = wp.int32(wp.tid())

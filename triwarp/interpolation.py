@@ -528,14 +528,12 @@ def interpolate_from_points(
 
     if k is None:
         indices, distances, offsets = tw.neighbors.query_ball_with_offsets(
-            source_points, query_points, float(radius), include_total=True, backend="bvh"
+            source_points, query_points, float(radius)
         )
     else:
         # The padded rows carry index -1 at distance ``inf``, which the kernel skips, so a
         # fixed-width row is a CSR whose offsets are a constant stride.
-        row_indices, row_distances = tw.neighbors.query_nearest(
-            source_points, query_points, int(k), backend="bvh"
-        )
+        row_indices, row_distances = tw.neighbors.query_nearest(source_points, query_points, int(k))
         n_slots = n_query * int(k)
         indices = row_indices.reshape((n_slots,))
         distances = row_distances.reshape((n_slots,))

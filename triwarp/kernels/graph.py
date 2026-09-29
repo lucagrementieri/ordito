@@ -53,24 +53,25 @@ def scatter_neighbor_lists(
     out_neighbors: wp.array[wp.int32],
 ) -> None:
     # Both directed entries of each undirected edge, into the CSR row the counting pass sized --
-    # the payload half of ``graph.edges_to_neighbor_lists``. The same ``offsets[row] +
-    # wp.atomic_add(cursor, row, 1)`` counting-sort fill as
+    # the payload half of ``graph.edges_to_neighbor_lists``. The same counting-sort fill as
     # [`scatter_vertex_faces`][triwarp.kernels.adjacency.scatter_vertex_faces]; what differs is the
     # payload, which is the *other endpoint* here and the owning face there, so the two are
     # siblings rather than one kernel.
     #
-    # ``cursor`` is zeroed per-node scratch, not an output: each node's slots are handed out by the
-    # atomic, so the column order within a row is thread order and **not sorted** -- nor stable,
-    # so two runs return different permutations. That is deliberate and is what this build costs
-    # less than ``bsr_from_triplets`` for. ``graph.edges_to_neighbor_lists(sort_rows=True)`` pins
-    # it with one ``array.sort_segments`` launch, which makes the buffer identical to
-    # ``graph.edges_to_csr``'s; that is what ``neighbors.geodesic_ball`` asks for, because it emits
-    # its BFS queue in visit order.
+    # ``cursor`` is the counting pass's per-node degree, not an output, and it counts *down*: the
+    # atomic returns how many slots of the row are still free, so ``offsets[row + 1]`` minus it is
+    # the next free slot from the front -- the slot a zeroed cursor counting up hands out, without
+    # zeroing the cursor first. The column order within a row is thread order and **not sorted**
+    # -- nor stable, so two runs return different permutations. That is deliberate and is what
+    # this build costs less than ``bsr_from_triplets`` for.
+    # ``graph.edges_to_neighbor_lists(sort_rows=True)`` pins it with one ``array.sort_segments``
+    # launch, which makes the buffer identical to ``graph.edges_to_csr``'s; that is what
+    # ``neighbors.geodesic_ball`` asks for, because it emits its BFS queue in visit order.
     e = wp.int32(wp.tid())
     a = edges[e, 0]
     b = edges[e, 1]
-    out_neighbors[offsets[a] + wp.atomic_add(cursor, a, 1)] = b
-    out_neighbors[offsets[b] + wp.atomic_add(cursor, b, 1)] = a
+    out_neighbors[offsets[a + 1] - wp.atomic_sub(cursor, a, 1)] = b
+    out_neighbors[offsets[b + 1] - wp.atomic_sub(cursor, b, 1)] = a
 
 
 @wp.kernel
@@ -192,22 +193,56 @@ def init_rank_arrays(
         out_steps[v] = wp.int32(1)
 
 
+# The widest pointer jump one launch takes. A launch chasing ``h`` pointers through the previous
+# round's table multiplies every node's window by ``h``, so ``L`` nodes need ``ceil(log_h L)``
+# launches rather than doubling's ``ceil(log2 L)``. The chase is ``h - 1`` dependent loads per
+# thread, a few microseconds against a launch's host cost, so the widest hop that still bounds the
+# round count is the one to take; ``pointer_jump_schedule`` then narrows it to the smallest hop that
+# reaches the same round count.
+POINTER_JUMP_MAX_HOPS = 16
+
+
+def pointer_jump_schedule(n: int) -> tuple[int, int]:
+    """
+    ``(hops, rounds)`` for ranking chains of at most ``n`` nodes: ``hops ** rounds >= n``.
+
+    ``rounds`` is the fewest launches at ``POINTER_JUMP_MAX_HOPS``, and ``hops`` the smallest
+    width reaching ``n`` in that many -- the same launch count for the fewest dependent loads.
+    """
+    rounds = 1
+    window = POINTER_JUMP_MAX_HOPS
+    while window < n:
+        window *= POINTER_JUMP_MAX_HOPS
+        rounds += 1
+    hops = 2
+    while hops**rounds < n:
+        hops += 1
+    return hops, rounds
+
+
 @wp.kernel
 def jump_rank(
     cycle_nodes: wp.array[wp.int32],
     successor_in: wp.array[wp.int32],
     steps_in: wp.array[wp.int32],
+    hops: wp.int32,
     out_successor: wp.array[wp.int32],
     out_steps: wp.array[wp.int32],
 ) -> None:
-    # Pointer doubling (Wyllie): after k rounds each node knows its 2^k-th successor and the
-    # exact hop count to it; the fixed point at the cycle start contributes zero, so steps
-    # converges to the hop distance to the start in ceil(log2(chain length)) rounds.
+    # Pointer jumping (Wyllie), ``hops`` pointers a round: each node chases its window-``W``
+    # successor ``hops`` times through the previous round's table, so after ``k`` rounds it knows
+    # its ``hops^k``-th successor and the exact hop count to it. The fixed point at the cycle start
+    # contributes zero, so steps converges to the hop distance to the start once the window covers
+    # the chain. Ping-ponged: the chase reads only the previous round's table.
     tid = wp.int32(wp.tid())
     v = cycle_nodes[tid]
     s = successor_in[v]
-    out_steps[v] = steps_in[v] + steps_in[s]
-    out_successor[v] = successor_in[s]
+    total = steps_in[v]
+    for _ in range(hops - 1):
+        total += steps_in[s]
+        s = successor_in[s]
+    out_steps[v] = total
+    out_successor[v] = s
 
 
 @wp.kernel

@@ -233,10 +233,10 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
     """
     A duplicate-built operator gives the same result as its compact form.
 
-    ``cotmatrix`` emits 12 triplets per face, so ``operator.nnz`` -- the triplet *capacity*
-    ``bsr_from_triplets`` was handed -- overshoots ``nnz_sync()`` by ~3.4x. The implicit system used
-    to size its ``wp.empty`` triplet buffers by ``nnz``, leaving that gap uninitialized for
-    ``bsr_from_triplets`` to read back as triplets: out-of-range garbage indices are dropped
+    ``cotmatrix`` sizes its storage for six keys per face plus one per vertex, so ``operator.nnz``
+    -- that *capacity*, recorded until a sync -- overshoots ``nnz_sync()`` by ~1.85x. The implicit
+    system used to size its ``wp.empty`` triplet buffers by ``nnz``, leaving that gap uninitialized
+    for the triplet build to read back as triplets: out-of-range garbage indices are dropped
     silently, but any landing in ``[0, n)`` accumulate a junk value into a real entry. Measured
     ``‖values‖ = 1.1e13`` against a correct 84.3, and every vertex ``NaN`` end to end. Rebuilt
     sliced to ``nnz_sync()`` the same operator is compact, so the two must agree.

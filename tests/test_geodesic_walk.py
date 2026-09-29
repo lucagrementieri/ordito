@@ -798,6 +798,41 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
         assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
 
 
+def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Triwarp against triwarp: the list form is the packed form, loop by loop.
+
+    ``shorten_loop`` carries the potpourri3d homotopy comparison above; this pins
+    ``shorten_loop_with_offsets`` to it on a genus-2 basis (four loops), and checks that the packed
+    form leaves its input buffer untouched and hands it back as is when no sweep may run.
+    """
+    _, mesh_wp = genus_two
+    flat_wp, offsets_wp = tw.homology.homology_generators_with_offsets(
+        mesh_wp.points, mesh_wp.indices
+    )
+    flat_before_np = flat_wp.numpy().copy()
+    loops_wp = tw.array.split(flat_wp, offsets_wp)
+    assert len(loops_wp) == 4
+
+    shortened_wp, sweeps = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    packed_wp, packed_offsets_wp, packed_sweeps = tw.geodesic_walk.shorten_loop_with_offsets(
+        mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp
+    )
+
+    assert packed_sweeps == sweeps
+    assert np.array_equal(flat_wp.numpy(), flat_before_np)
+    offsets_np = packed_offsets_wp.numpy()
+    assert offsets_np.shape[0] == len(shortened_wp) + 1
+    packed_np = packed_wp.numpy()
+    for i, loop_wp in enumerate(shortened_wp):
+        assert np.array_equal(loop_wp.numpy(), packed_np[offsets_np[i] : offsets_np[i + 1]])
+
+    unchanged = tw.geodesic_walk.shorten_loop_with_offsets(
+        mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp, max_iter=0
+    )
+    assert unchanged == (flat_wp, offsets_wp, 0)
+
+
 def test_shorten_loop_is_idempotent_and_handles_edge_cases(
     torus: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

@@ -3,8 +3,8 @@ import math
 import warp as wp
 
 from triwarp.constants import FLOAT32_INF_CONSTANT
-from triwarp.kernels.array import atomic_min_packed_box
-from triwarp.kernels.predicates import TWO_PI_F64
+from triwarp.kernels.array import atomic_min_packed_box, scanned_count
+from triwarp.kernels.predicates import TWO_PI_F64, is_in_aabb, is_in_obb
 from triwarp.kernels.reduce import block_argmin
 
 # Super-Fibonacci spiral constants [Alexa 2022]: the two irrational strides whose phase pair
@@ -413,3 +413,48 @@ def packed_box_diagonals(corners: wp.array[wp.float32], out_diagonal: wp.array[w
         out_diagonal[box] = wp.float32(0.0)
     else:
         out_diagonal[box] = wp.length(extent)
+
+
+@wp.kernel
+def box_flags(
+    points: wp.array[wp.vec3],
+    rotation: wp.mat33,
+    min_bound: wp.vec3,
+    max_bound: wp.vec3,
+    oriented: wp.int32,
+    out_flags: wp.array[wp.int32],
+) -> None:
+    # ``1`` / ``0`` per point for "inside the box", written as the ``int32`` an in-place
+    # ``wp.utils.array_scan`` reads -- the index and crop forms of ``bounds.points_in_*`` scan this
+    # directly instead of mapping a ``wp.bool`` mask and widening it. ``oriented`` is a
+    # warp-uniform selector, not a rotation by the identity: ``0 * inf`` is ``nan``, so the
+    # identity product would move a point at an infinity into the box's ``nan`` convention. The two
+    # arms are the predicates ``points_in_aabb_mask`` / ``points_in_obb_mask`` map, so the index
+    # and mask forms cannot disagree.
+    i = wp.int32(wp.tid())
+    inside = wp.bool(False)
+    if oriented != 0:
+        inside = is_in_obb(points[i], rotation, min_bound, max_bound)
+    else:
+        inside = is_in_aabb(points[i], min_bound, max_bound)
+    out_flags[i] = wp.where(inside, 1, 0)
+
+
+@wp.kernel
+def compact_scanned_points(
+    inclusive: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    out_kept: wp.array[wp.vec3],
+    out_indices: wp.array[wp.int32],
+) -> None:
+    # ``kernels/scatter.scatter_index_where_scanned`` plus the gather it would feed: every selected
+    # point lands at its exclusive rank together with its index, so a crop is one compaction over
+    # the in-place scan of its flags rather than an index scatter and a gathered copy.
+    # ``out_indices`` may be a null descriptor (``None`` at the launch) when only the points are
+    # wanted.
+    i = wp.int32(wp.tid())
+    start, count = scanned_count(inclusive, i)
+    if count != 0:
+        out_kept[start] = points[i]
+        if out_indices.shape[0] > 0:
+            out_indices[start] = i

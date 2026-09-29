@@ -438,10 +438,9 @@ def greedy_downsample_mask(
     #
     # **Kept for short polylines only**, and it is `polyline_downsample`'s
     # ``_DOWNSAMPLE_DOUBLING_FROM`` that decides. The walk is a few tens of nanoseconds a point, so
-    # it is the cheapest thing available until the point count pays for the ``log2(n) + 1``
-    # launches the parallel form below costs; the crossover is on that constant. It was measured
-    # when a doubling round took two launches rather than ``double_greedy_orbit``'s one, so it is
-    # conservative until re-probed.
+    # it is the cheapest thing available until the point count pays for the handful of launches
+    # the parallel form below costs (``graph.pointer_jump_schedule``); the crossover is on that
+    # constant, measured at 0.89x serial-over-jumped at 1 024 points and 1.15x at 2 048.
     #
     # ``out_keep`` is ``0`` / ``1`` flags rather than a mask, so the caller scans it in place for
     # the kept count and the compaction (``gather_kept_points``). ``polyline`` is read only for the
@@ -467,8 +466,9 @@ def greedy_successors(
     # The greedy walk's step function, for every point at once: ``out_successor[i]`` is the point
     # the walk would keep next *if* it had just kept ``i``, or ``n`` when the polyline ends first.
     # The walk is then the orbit of 0 under this map, which ``double_greedy_orbit`` below
-    # enumerates in ``log2(n)`` rounds instead of ``n`` steps. Thread 0 also seeds that orbit --
-    # the walk always keeps the first point -- so the caller's zeroed mask needs no separate write.
+    # enumerates in a logarithmic number of rounds instead of ``n`` steps. Thread 0 also seeds that
+    # orbit -- the walk always keeps the first point -- so the caller's zeroed mask needs no
+    # separate write.
     #
     # A hand-written lower bound rather than ``array.binary_search_index_left`` because the
     # predicate has to be **the serial kernel's, character for character**: ``cum[mid] - base`` and
@@ -502,42 +502,43 @@ def greedy_successors(
 def double_greedy_orbit(
     successor: wp.array[wp.int32],
     reached: wp.array[wp.int32],
+    hops: wp.int32,
     out_squared: wp.array[wp.int32],
     out_keep: wp.array[wp.int32],
 ) -> None:
-    # One pointer-doubling round, both halves in one launch. Given ``successor`` holding
-    # ``succ^(2^k)`` and ``reached`` holding ``{succ^t(0) : t < 2^k}``:
+    # One pointer-jumping round, both halves in one launch. Given ``successor`` holding
+    # ``succ^W`` and ``reached`` holding ``{succ^t(0) : t < W}``:
     #
-    # **Spread.** Mark ``succ^(t + 2^k)(0)`` for each reached point, so the set covers
-    # ``t < 2^(k + 1)``. ``ceil(log2(n + 1))`` rounds therefore cover the whole orbit, whatever its
-    # length -- the walk advances by at least ``step_size`` each time, so the orbit is at most ``n``
-    # long. ``reached`` and ``out_keep`` are **the same buffer**, updated in place, and that is safe
-    # *and* deliberate. Every write is ``1``, so a lost update is impossible; a thread that
-    # happens to see a mark written this round propagates one extra hop, which can only mark
-    # another point of the same orbit (``succ`` of an orbit point is one). So intermediate rounds
-    # are nondeterministic in *which* extra points they mark and the final answer is not, because
-    # the round count alone guarantees completeness.
+    # **Spread.** Mark ``succ^(t + k W)(0)`` for each reached point and ``k < hops``, so the set
+    # covers ``t < hops W``. Rounds with ``hops^rounds >= n + 1`` therefore cover the whole orbit,
+    # whatever its length -- the walk advances by at least ``step_size`` each time, so the orbit is
+    # at most ``n`` long. ``reached`` and ``out_keep`` are **the same buffer**, updated in place,
+    # and that is safe *and* deliberate. Every write is ``1``, so a lost update is impossible; a
+    # thread that happens to see a mark written this round propagates extra hops, which can only
+    # mark other points of the same orbit (``succ`` of an orbit point is one). So intermediate
+    # rounds are nondeterministic in *which* extra points they mark and the final answer is not,
+    # because the round count alone guarantees completeness.
     #
-    # **Square.** ``succ^(2^(k + 1))`` from ``succ^(2^k)``, for the next round. ``n`` is the
-    # absorbing state (the walk has run off the end) and stays absorbing. Ping-ponged rather than
+    # **Power.** ``succ^(hops W)`` from ``succ^W``, for the next round: the same chase through the
+    # old table. ``n`` is the absorbing state (the walk has run off the end) and stays absorbing,
+    # and the chase stops there before it would index past the table. Ping-ponged rather than
     # written in place, and that is load-bearing: in place a thread could read a slot another
-    # thread had already doubled, giving ``succ^(a + b)`` for uncontrolled ``a``, ``b`` -- which
+    # thread had already advanced, giving ``succ^(a + b)`` for uncontrolled ``a``, ``b`` -- which
     # breaks the round count's guarantee above.
     #
     # The two halves share a launch because neither reads what the other writes this round: the
-    # spread reads ``successor``, which the square only reads too, and the square never touches the
-    # mask. They were two ``dim=n`` launches per round.
+    # spread reads ``successor``, which the power only reads too, and the power never touches the
+    # mask.
     i = wp.int32(wp.tid())
     n = successor.shape[0]
+    marking = reached[i] != 0
     j = successor[i]
-    if reached[i] != 0 and j < n:
-        out_keep[j] = 1
-    # ``wp.where`` evaluates both arms (it is not a short-circuiting ternary), so indexing
-    # ``successor[j]`` directly is an out-of-bounds read once ``j`` has reached the absorbing
-    # state ``n`` -- the read value is discarded either way, but it is a real OOB and aborts under
-    # ``wp.config.mode = "debug"``. Clamp the index before the load rather than after.
-    safe_j = wp.min(j, n - wp.int32(1))
-    out_squared[i] = wp.where(j >= n, n, successor[safe_j])
+    for _ in range(hops - 1):
+        if j < n:
+            if marking:
+                out_keep[j] = 1
+            j = successor[j]
+    out_squared[i] = j
 
 
 @wp.kernel
@@ -1625,8 +1626,7 @@ def polyline_total_length(
 def packed_closed_loop_lengths(
     vertices: wp.array[wp.vec3],
     loops: wp.array[wp.int32],
-    starts: wp.array[wp.int32],
-    sizes: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
     out_lengths: wp.array[wp.float32],
 ) -> None:
     # ``polyline_total_length``'s closed form for many vertex-index loops at once, one block per
@@ -1636,8 +1636,8 @@ def packed_closed_loop_lengths(
     # differ only in where a segment's points come from: gathered through the loop's indices
     # here, a dense buffer there. Launched ``wp.launch_tiled(dim=n_loops, block_dim=TILE_1D)``.
     loop, lane = wp.tid()
-    base = starts[loop]
-    n = sizes[loop]
+    base = offsets[loop]
+    n = offsets[loop + 1] - base
     total = wp.float32(0.0)
     for k in range(lane, n, wp.block_dim()):
         total += segment_length(

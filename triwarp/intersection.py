@@ -22,7 +22,6 @@ its result splats straight into any of them.
 
 from __future__ import annotations
 
-import itertools
 import math
 from typing import Literal, NamedTuple
 
@@ -36,6 +35,12 @@ from triwarp.constants import TOLERANCE_MERGE
 from triwarp.kernels import intersection as kernel_intersections
 from triwarp.kernels import predicates as kernel_predicates
 from triwarp.kernels import triangles as kernel_triangles
+
+# Segment count from which ``marching_triangles`` links its curves on the device.
+_LINK_ON_DEVICE_FROM = 1024
+
+# Hops merged per pointer-jumping launch of the device link.
+_LINK_HOPS = 16
 
 
 def segments_with_plane(
@@ -187,11 +192,11 @@ def marching_triangles(
     segment; a contour running exactly through a vertex therefore yields zero-length segments rather
     than an ambiguous junction.
 
-    Crossings are matched by the vertex pair of the edge they lie on, then
-    linked on the host: the segment list is compacted on device first, so the readback is one
-    ``int32`` pair per segment, and the linking itself is a vectorized pointer-doubling ranking over
-    the compacted arrays with no per-segment iteration (the same successor-graph shape
-    [`boundary_loops`][triwarp.boundary.boundary_loops] solves on device).
+    Crossings are matched by the vertex pair of the edge they lie on, and the segments are linked
+    into curves by pointer-jumping list ranking over that successor graph (the shape
+    [`boundary_loops`][triwarp.boundary.boundary_loops] solves too): on the device once the level
+    set is large, on the host over one readback of the crossing keys while it is small enough for a
+    handful of launches to cost more than the walk.
 
     !!! note "The returned arrays are views"
         Every curve slices one packed buffer, so holding a single curve keeps them all alive and
@@ -234,17 +239,121 @@ def marching_triangles(
 
     See Also
     --------
+    [`marching_triangles_with_offsets`][triwarp.intersection.marching_triangles_with_offsets]
     [`clip_mesh_with_field`][triwarp.intersection.clip_mesh_with_field]
     [`mesh_with_plane`][triwarp.intersection.mesh_with_plane]
     [`heat_geodesic`][triwarp.heat.heat_geodesic]
     [`polyline_length`][triwarp.polyline.polyline_length]
     ``potpourri3d.MarchingTrianglesSolver``
     """
+    linked = _marching_curves(vertices, faces, values, isovalue, n_vertices)
+    if linked is None:
+        return [], []
+    points, bounds, closed = linked
+    return tw.array.split(points, bounds), closed
+
+
+def marching_triangles_with_offsets(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float = 0.0,
+    n_vertices: int | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    """
+    Extract the ``values == isovalue`` level set as packed polylines: points, offsets, closed.
+
+    Each returned curve is a connected component of the level set, oriented so that the region where
+    ``values > isovalue`` lies to its left (with the vertex normals as up). Curves close up unless
+    they run into a mesh boundary, so an open curve begins and ends on a boundary edge.
+
+    A value equal to the isovalue counts as positive, which keeps every cut face at exactly one
+    segment; a contour running exactly through a vertex therefore yields zero-length segments rather
+    than an ambiguous junction.
+
+    Crossings are matched by the vertex pair of the edge they lie on, and the segments are linked
+    into curves by pointer-jumping list ranking over that successor graph (the shape
+    [`boundary_loops`][triwarp.boundary.boundary_loops] solves too): on the device once the level
+    set is large, on the host over one readback of the crossing keys while it is small enough for a
+    handful of launches to cost more than the walk.
+
+    The packed form of [`marching_triangles`][triwarp.intersection.marching_triangles]: the same
+    curves in the same order, concatenated, with no per-curve Python object.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+    values
+        ``(n_vertices,)`` scalar field, ``wp.float32`` or ``wp.float64``. A ``float64`` field (what
+        [`heat_geodesic`][triwarp.heat.heat_geodesic] returns) is interpolated in
+        ``float64``.
+    isovalue
+        Level to extract.
+    n_vertices
+        Total vertex count, used as the base that packs a crossed edge's two vertex indices into
+        the key matching it across the two faces that share it. When ``None`` the length of
+        ``vertices`` is used, which bounds every index the faces may reference.
+
+    Returns
+    -------
+    points : wp.array[wp.vec3]
+        Every curve's points in order along the curve, curve after curve, on ``vertices.device``.
+        Closed curves do not repeat their first point.
+    offsets : wp.array[wp.int32]
+        ``(n_curves + 1,)`` total-terminated offsets: curve ``c`` is
+        ``points[offsets[c] : offsets[c + 1]]``, and ``[0]`` when the level set is empty.
+    closed : wp.array[wp.bool]
+        ``(n_curves,)`` whether each curve is a closed loop.
+
+    Raises
+    ------
+    ValueError
+        If two segments start on the same mesh edge, which means the faces are not consistently
+        oriented (the level set cannot then be linked into oriented curves). Repair the winding with
+        [`make_winding_consistent`][triwarp.repair.make_winding_consistent] first.
+    RuntimeError
+        If ``vertices``, ``faces`` and ``values`` are not all on one device.
+
+    See Also
+    --------
+    [`marching_triangles`][triwarp.intersection.marching_triangles]
+    [`clip_mesh_with_field`][triwarp.intersection.clip_mesh_with_field]
+    [`mesh_with_plane`][triwarp.intersection.mesh_with_plane]
+    [`heat_geodesic`][triwarp.heat.heat_geodesic]
+    [`polyline_length`][triwarp.polyline.polyline_length]
+    ``potpourri3d.MarchingTrianglesSolver``
+    """
+    device = vertices.device
+    linked = _marching_curves(vertices, faces, values, isovalue, n_vertices)
+    if linked is None:
+        return (
+            wp.empty(0, dtype=wp.vec3, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.bool, device=device),
+        )
+    points, bounds, closed = linked
+    # Both links finish with the curve bounds on the host (they size the output), so the offsets
+    # and flags are one upload each.
+    offsets = wp.array(bounds, dtype=wp.int32, device=device)
+    return points, offsets, wp.array(closed, dtype=wp.bool, device=device)
+
+
+def _marching_curves(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float32] | wp.array[wp.float64],
+    isovalue: float,
+    n_vertices: int | None,
+) -> tuple[wp.array[wp.vec3], list[int], list[bool]] | None:
+    """Cut and link the level set into ``(points, bounds, closed)``, ``None`` when it is empty."""
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
-        return [], []
+        return None
 
     # The key base only has to exceed every vertex index the faces reference; ``vertices`` is the
     # buffer they index, so its length is the bound whenever the caller did not give one.
@@ -268,24 +377,139 @@ def marching_triangles(
         device=device,
     )
 
-    hit_segments, hit_edges, _ = _compact_cut_segments(cut, segments, segment_edges)
-    n_segments = int(hit_segments.shape[0])
+    n_segments = _scan_cut_flags(cut)
     if n_segments == 0:
-        return [], []
+        return None
+    return _link_curves(cut, segments, segment_edges, n_segments, key_base)
+
+
+def _link_curves(
+    inclusive: wp.array[wp.int32],
+    segments: twt.Array2dVec3,
+    segment_edges: wp.array[wp.int64, Literal[2]],
+    n_segments: int,
+    key_base: int,
+) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
+    """
+    Compact the cut segments and chain them into curves: ``(points, bounds, closed)``.
+
+    ``points`` packs every curve in order, curve ``c`` occupying ``points[bounds[c] :
+    bounds[c + 1]]``. Above ``_LINK_ON_DEVICE_FROM`` segments on a CUDA device the chaining runs
+    on the device (``_link_on_device``), below it -- where a handful of launches outweigh the host
+    walk -- and on the CPU device, whose serial launches never beat NumPy's walk, through
+    ``_link_segments``; both produce the identical packing.
+    """
+    if _links_on_device(inclusive.device, n_segments):
+        return _link_on_device(inclusive, segments, segment_edges, n_segments, key_base)
+    hit_segments, hit_edges, _ = _compact_cut_segments(
+        inclusive, segments, segment_edges, n_kept=n_segments
+    )
     assert hit_edges is not None
+    # The one readback of the host link: an ``int64`` key pair per kept segment.
+    return _link_on_host(hit_segments, hit_edges.numpy())
 
-    slots_np, starts_np, closed = _link_segments(hit_edges.numpy())
 
-    # One gather assembles every curve: the slots index the flattened endpoint buffer, so the
-    # packed result can be sliced per curve without a launch each. The curve bounds are already on
-    # the host, so the views are cut here rather than by ``array.split``, which would read back an
-    # uploaded copy of them. Every curve holds at least two points, so no view is empty.
+def _links_on_device(device: wp.context.Device, n_segments: int) -> bool:
+    """Whether ``_link_curves`` chains ``n_segments`` segments on the device, not the host."""
+    return device.is_cuda and n_segments >= _LINK_ON_DEVICE_FROM
+
+
+def _link_on_device(
+    inclusive: wp.array[wp.int32],
+    segments: twt.Array2dVec3,
+    segment_edges: wp.array[wp.int64, Literal[2]],
+    n_segments: int,
+    key_base: int,
+) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
+    """
+    Device counterpart of ``_link_on_host``, with the same result.
+
+    The compaction writes the ``2 n`` endpoint keys straight into a radix sort, whose equal
+    adjacent keys pair each segment's incoming endpoint with its successor's outgoing one; ranking
+    along the curves is multi-hop pointer jumping (``kernels/intersection.link_rank_round``), and
+    one inclusive scan of per-curve weights lays the curves out in the host link's order. One
+    readback of that scan sizes the output and gives the bounds; a level set the device cannot
+    pair cleanly is handed to the host link, which judges it exactly as it always did.
+    """
+    device = inclusive.device
+    n = n_segments
+    m = 2 * n
+    hit_segments = twt.empty_2d((n, 2), wp.vec3, device=device)
+    keys = wp.empty(2 * m, dtype=wp.int64, device=device)
+    endpoints = wp.empty(2 * m, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_intersections.compact_cut_segment_keys,
+        dim=int(inclusive.shape[0]),
+        inputs=[inclusive, segments, segment_edges, hit_segments, keys, endpoints],
+        device=device,
+    )
+    # Every key packs two vertex indices below ``key_base``, so only its low bits need sorting.
+    end_bit = max(1, (key_base * key_base - 1).bit_length())
+    wp.utils.radix_sort_pairs(keys, endpoints, m, end_bit=end_bit)
+
+    link = wp.empty(m, dtype=wp.int32, device=device)
+    state = wp.empty(n, dtype=wp.vec4i, device=device)
+    # The per-curve weights, then their scan, with the malformed-input flag in the last slot.
+    weights = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_intersections.link_sorted_endpoints,
+        dim=m,
+        inputs=[keys, endpoints, m, m, link, state, weights],
+        device=device,
+    )
+    # Rank until the windows cover the longest possible curve, all ``n`` segments.
+    scratch = wp.empty(n, dtype=wp.vec4i, device=device)
+    width = 1
+    while width < n:
+        wp.launch(
+            kernel_intersections.link_rank_round,
+            dim=n,
+            inputs=[state, _LINK_HOPS, width, scratch],
+            device=device,
+        )
+        state, scratch = scratch, state
+        width *= _LINK_HOPS
+
+    head_of_tail = wp.empty(n, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_intersections.link_curve_weights,
+        dim=n,
+        inputs=[link, state, n, weights, head_of_tail],
+        device=device,
+    )
+    bounds_view = weights[:m]
+    wp.utils.array_scan(bounds_view, out_array=bounds_view, inclusive=True)
+    # The one readback of the device link: the scanned weights size the output and bound every
+    # curve, and the last slot says whether the pairing was clean.
+    table = weights.numpy()
+    if table[m] != 0:
+        # Undo the sort to recover each endpoint's key, and let the host link decide.
+        edges_np = np.empty(m, dtype=np.int64)
+        np.put(edges_np, twt.as_dense(endpoints[:m]).numpy(), twt.as_dense(keys[:m]).numpy())
+        return _link_on_host(hit_segments, edges_np.reshape(n, 2))
+    scan = table[:m]
+    names = np.flatnonzero(np.diff(scan, prepend=0))
+    points = wp.empty(int(scan[-1]), dtype=wp.vec3, device=device)
+    wp.launch(
+        kernel_intersections.emit_linked_curves,
+        dim=n,
+        inputs=[hit_segments, link, state, weights, head_of_tail, n, points],
+        device=device,
+    )
+    return points, [0, *scan[names].tolist()], (names >= n).tolist()
+
+
+def _link_on_host(
+    hit_segments: twt.Array2dVec3, edges_np: np.ndarray
+) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
+    """Link ``_link_segments``' curves on the host and gather their points in one launch."""
+    n_segments = int(hit_segments.shape[0])
+    slots_np, starts_np, closed = _link_segments(edges_np)
+    # One gather assembles every curve: the slots index the flattened endpoint buffer.
     endpoints = hit_segments.reshape((2 * n_segments,))
-    slots = wp.array(slots_np, dtype=wp.int32, device=device)
+    slots = wp.array(slots_np, dtype=wp.int32, device=hit_segments.device)
     packed = tw.array.gather(endpoints, slots)
-    bounds = [*starts_np.tolist(), int(slots_np.shape[0])]
-    curves = [twt.as_dense(packed[start:stop]) for start, stop in itertools.pairwise(bounds)]
-    return curves, closed
+    return packed, [*starts_np.tolist(), int(slots_np.shape[0])], closed
 
 
 def _link_segments(segment_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[bool]]:
@@ -1260,35 +1484,50 @@ def _split_with_vertex_field(
         return wp.clone(vertices), wp.clone(faces), positive
 
     # One new vertex per crossed *edge*: both faces sharing it address the same index, which is
-    # what makes the cut watertight rather than a seam of coincident pairs. Sign agreement with the
-    # classifier is a correctness requirement, so the mask is built at ``TOLERANCE_MERGE`` -- the
-    # dead zone ``classify_faces_for_split`` passes ``sign_with_tolerance`` a few lines above.
-    unique_edges, halfedge_edges = tw.edges.edges_unique(
-        faces, n_vertices=n_vertices, validate=False
-    )
-    n_unique_edges = int(unique_edges.shape[0])
-    crossed_flags = wp.empty(n_unique_edges, dtype=wp.int32, device=device)
+    # what makes the cut watertight rather than a seam of coincident pairs. Only a cut face has a
+    # crossed edge, so the edges are numbered by sorting the cut faces' crossed halfedges alone --
+    # in the order ``edges.edges_unique`` would list them -- and the crossing test reads the
+    # classifier's own corner signs.
+    n_uncut = n_positive + n_negative
+    n_cut = n_edges + n_corner
+    n_emitted = n_uncut + 3 * n_edges + 2 * n_corner
+    n_halfedges = 3 * n_cut
+    key_base = wp.int64(n_vertices)
+    keys = wp.empty(2 * n_halfedges, dtype=wp.int64, device=device)
+    halfedges = wp.empty(2 * n_halfedges, dtype=wp.int32, device=device)
     wp.launch(
-        kernel_intersections.plane_crossed_edge_mask,
-        dim=n_unique_edges,
-        inputs=[unique_edges, vertex_dots, TOLERANCE_MERGE, None, crossed_flags],
+        kernel_intersections.split_crossed_halfedge_keys,
+        dim=(n_cut, 3),
+        inputs=[faces, class_indices[n_uncut:], face_signs, key_base, keys, halfedges],
         device=device,
     )
-    edge_vertex_rank, n_new = tw.array.counts_to_offsets(crossed_flags)
-
-    n_uncut = n_positive + n_negative
-    n_emitted = n_uncut + 3 * n_edges + 2 * n_corner
+    # Every key is below ``n_vertices ** 2`` or the not-crossed marker equal to it.
+    wp.utils.radix_sort_pairs(
+        keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
+    )
+    rank = wp.empty(n_halfedges, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_intersections.split_crossed_edge_flags,
+        dim=n_halfedges,
+        inputs=[keys, key_base, rank],
+        device=device,
+    )
+    n_new = _scan_cut_flags(rank)
     all_vertices = wp.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
     wp.copy(all_vertices[:n_vertices], vertices)
+    cut_vertices = wp.empty(n_halfedges, dtype=wp.int32, device=device)
     wp.launch(
-        kernel_intersections.plane_edge_crossing_points,
-        dim=n_unique_edges,
+        kernel_intersections.split_crossed_edge_vertices,
+        dim=n_halfedges,
         inputs=[
             vertices,
-            unique_edges,
-            crossed_flags,
-            edge_vertex_rank,
             vertex_dots,
+            keys,
+            halfedges,
+            rank,
+            key_base,
+            wp.int32(n_vertices),
+            cut_vertices,
             all_vertices[n_vertices:],
         ],
         device=device,
@@ -1308,6 +1547,7 @@ def _split_with_vertex_field(
         )
 
     face_base = n_uncut
+    cut_base = 0
     for count, index_block, emit, rows_per_cut in (
         (n_edges, edges_idx, kernel_intersections.emit_split_cut_edges, 3),
         (n_corner, corner_idx, kernel_intersections.emit_split_cut_corner, 2),
@@ -1322,15 +1562,14 @@ def _split_with_vertex_field(
                 faces,
                 index_block,
                 face_signs,
-                halfedge_edges,
-                edge_vertex_rank,
-                wp.int32(n_vertices),
+                cut_vertices[3 * cut_base :],
                 face_rows[face_base : face_base + emitted],
                 positive[face_base : face_base + emitted],
             ],
             device=device,
         )
         face_base += emitted
+        cut_base += count
 
     return all_vertices, all_faces, positive
 
@@ -1479,19 +1718,21 @@ def _compact_cut_segments(
     edges: wp.array[wp.int64, Literal[2]] | None = None,
     *,
     return_rows: bool = False,
+    n_kept: int | None = None,
 ) -> tuple[twt.Array2dVec3, wp.array[wp.int64, Literal[2]] | None, wp.array[wp.int32] | None]:
     """
     Keep the rows of ``segments`` (and ``edges``) whose ``0`` / ``1`` ``cut`` flag is set, in order.
 
-    ``cut`` is scanned in place, and its tail -- the kept count, the one readback -- sizes the
-    outputs, which one ``compact_cut_segments`` launch fills; with ``return_rows`` it also writes
-    the source row of each kept segment. Returns ``(segments, edges, rows)``, the last two ``None``
-    when not asked for.
+    ``cut`` is scanned in place (``_scan_cut_flags``), and its tail -- the kept count, the one
+    readback -- sizes the outputs, which one ``compact_cut_segments`` launch fills; with
+    ``return_rows`` it also writes the source row of each kept segment. A caller that has already
+    scanned ``cut`` passes the count as ``n_kept``. Returns ``(segments, edges, rows)``, the last
+    two ``None`` when not asked for.
     """
     device = cut.device
     n = int(cut.shape[0])
-    wp.utils.array_scan(cut, out_array=cut, inclusive=True)
-    n_kept = int(read_scalar(cut)) if n > 0 else 0
+    if n_kept is None:
+        n_kept = _scan_cut_flags(cut)
     out_segments = twt.empty_2d((n_kept, 2), wp.vec3, device=device)
     out_edges = twt.empty_2d((n_kept, 2), wp.int64, device=device) if edges is not None else None
     out_rows = wp.empty(n_kept, dtype=wp.int32, device=device) if return_rows else None
@@ -1503,3 +1744,12 @@ def _compact_cut_segments(
             device=device,
         )
     return out_segments, out_edges, out_rows
+
+
+def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:
+    """Scan ``0`` / ``1`` flags in place into an inclusive scan and return their total."""
+    if int(cut.shape[0]) == 0:
+        return 0
+    wp.utils.array_scan(cut, out_array=cut, inclusive=True)
+    # The kept count sizes every compacted output.
+    return int(read_scalar(cut))

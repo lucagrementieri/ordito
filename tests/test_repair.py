@@ -3256,7 +3256,8 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
     accepted as input and must remove nothing. The tetrahedron is the other side: every vertex is a
     candidate and each is adjacent to the rest, so the lowest index wins alone and its fan becomes
     the face opposite it with the winding reversed -- a two-face closed pillow over the other three
-    vertices. And a mesh with an edge on three faces raises, from the input validation.
+    vertices. And a mesh with an edge on three faces, or with an edge both of whose faces
+    traverse it the same way, raises from the input validation, with the count of each.
     """
     fan_vertices_np = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0]], float)
     fan_faces_np = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4]])
@@ -3292,8 +3293,19 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
 
     fin_faces_np = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]])
     vertices_wp, faces_wp = numpy_to_warp(fan_vertices_np, fin_faces_np.ravel(), device)
-    with pytest.raises(ValueError, match="edge-manifold"):
+    with pytest.raises(ValueError, match="edge-manifold mesh: 1 edge"):
         tw.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+
+    # The other rejection: the tetrahedron with one face reversed is edge-manifold, but three of
+    # its edges are traversed the same way by both faces. Checked before a pass removes anything,
+    # although vertex 0 would otherwise be a candidate.
+    flipped_np = tetrahedron_faces_np.copy()
+    flipped_np[3] = flipped_np[3, ::-1]
+    vertices_wp, faces_wp = numpy_to_warp(tetrahedron_np, flipped_np.ravel(), device)
+    with pytest.raises(ValueError, match="consistently wound mesh: 3 edge"):
+        tw.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+    # ``max_iter=0`` runs no pass, so it validates nothing and returns the input.
+    assert tw.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=0)[1] is faces_wp
 
 
 def _nested_face_splits(

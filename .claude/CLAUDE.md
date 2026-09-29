@@ -41,7 +41,7 @@ Two conventions that hold throughout:
 3. [Python-scope wrappers](#3-python-scope-wrappers) — layout, `triwarp.typing`, allocation, gather,
    `wp.map`, dtype conversion, `BsrMatrix`, the NumPy policy, device rules, readbacks
 4. [Evolving the public API](#4-evolving-the-public-api) — naming, signatures, docstring agreement,
-   moving/renaming, the 26 mechanical checks
+   moving/renaming, the 27 mechanical checks
 5. [Function ordering within a module](#5-function-ordering-within-a-module)
 6. [Documentation](#6-documentation-zensical--mkdocstrings)
 7. [Testing](#7-testing) — conventions, devices, fixtures, the parity gate, shared helpers, the nine
@@ -815,12 +815,47 @@ call **`wp.utils.array_cast(src, dst)`** (same device, matching shape). Example:
 `wp.int32` `0`/`1` flags for `wp.utils.array_scan` in `flatnonzero` — do **not** add a
 `bool_to_int32` gather-style kernel.
 
-### 3.7 Sparse: `BsrMatrix.nnz` is a stale capacity
+### 3.7 Sparse: assemble from keys, never through `bsr_from_triplets`; and `nnz` is a stale capacity
+
+**No `triwarp/` module calls `warp.sparse.bsr_from_triplets` (check 27).** It sorts every triplet
+on a full-width key and allocates scratch several times the matrix -- `cotmatrix` spent 9.4 GB a
+call there at `lucy` for a matrix under 1 GB, and a drained mempool makes those bytes a cost
+(§13.1, §16.27). The package builds CSR two ways instead, both in `triwarp/array.py`, both with no
+host readback:
+
+- **The sparsity follows from the mesh: write keys, not triplets.** A producer writes one
+  `kernels/array.csr_key(row, col, n_rows, n_cols)` per contribution (the sentinel `n_rows *
+  n_cols` for a slot that holds nothing) into [`csr_key_buffers`][triwarp.array.csr_key_buffers],
+  with a payload that locates the contribution's value; [`csr_from_keys`][triwarp.array.csr_from_keys]
+  sorts only the bits the shape needs and returns `offsets`, `columns` and each entry's first sorted
+  position; a per-row value kernel then forms each entry from its contributors in producer order
+  and can write the diagonal from the row it just formed. `laplacian._mesh_operator_pattern` is
+  the model, shared by `cotmatrix`, `connection_laplacian`, `graph_laplacian` and `laplacian`
+  (given faces): below `_UNDIRECTED_PATTERN_FROM_FACES` one sort of six directed keys per face
+  plus the diagonal slots, above it one sort of the three undirected keys per face plus a stable
+  32-bit sort of the unique edges by their larger endpoint for each row's transposed half -- the
+  identical matrix either way, and a forced-threshold test pins the two to each other.
+- **The input is genuinely an unordered coordinate list:
+  [`csr_from_triplets`][triwarp.array.csr_from_triplets]**. Unpruned it is `bsr_from_triplets`
+  (summed in triplet order, out-of-range triplets dropped; bit-identical on CUDA, where Warp also
+  sums in triplet order, and equal to rounding on CPU, where it does not). **Pruning differs, on
+  purpose**: `prune_numerical_zeros` drops every entry whose *sum* is zero, where Warp drops
+  zero-valued triplets before summing and keeps an entry whose triplets cancel. So the two differ
+  only in stored zeros -- every entry Warp keeps and we drop is zero there (exactly on CUDA, within
+  float32 rounding on CPU). Zero-valued triplets are still skipped before the sort, which cannot
+  change a sum and makes the rule free. Used where the input is a genuinely unordered coordinate
+  list: the energies, `laplacian(edges=...)`, `graph.edges_to_csr`, `index_sparse`, the Loop
+  operator and the implicit smoothing system.
+- **A CSR the producer can write directly is written directly** and wrapped by
+  [`bsr_from_csr`][triwarp.array.bsr_from_csr] (the multigrid tentative prolongator, one entry
+  per row; the empty matrix).
+
 
 **Never size a buffer, slice, or launch dim off `matrix.nnz`.** After `bsr_from_triplets` the `nnz`
 field still holds the *triplet count it was handed*, duplicates included — so for any
-duplicate-emitting build it is an upper bound, measured at **3.4x** the true count on
-`laplacian.cotmatrix`, which emits 12 triplets per face. Use **`matrix.nnz_sync()`** (one host
+duplicate-emitting build it is an upper bound, measured at **1.85x** the true count on
+`laplacian.cotmatrix`, which emits six off-diagonal triplets per face plus one diagonal slot per
+vertex (it was 3.4x at the old twelve per face, §16.27). Use **`matrix.nnz_sync()`** (one host
 readback) or read `offsets[nrow]`, which `energies.k_harmonic` already does.
 
 **And `nnz` is a *cache*, not a fixed field: `nnz_sync()` repairs it in place.** Nothing else syncs
@@ -1153,6 +1188,25 @@ found them: §12.1.
   **segfaulted the CPU backend several launches after the call, not at it**, so that composition
   carries a test of its own. Do not debug such a crash as a Warp problem — check the pair order
   first.
+- **The offsets are always the `n + 1` total-terminated form, package-wide (round 23)** — scipy's
+  `indptr`: item `i` is `values[offsets[i] : offsets[i + 1]]`, `offsets[-1] == len(values)`, an
+  empty result is `[0]`, and there is **no separate sizes array** anywhere (a size is a difference
+  of neighbours, one load either way). `array.split` enforces it and raises on a length-`n` offsets
+  array, which is the ambiguity one convention removes; `counts_to_offsets` has no `include_total=`
+  any more. Build one by allocating the `n + 1` buffer, writing the counts into `offsets[1:]` and
+  scanning in place — that one idiom saved an allocation at seven sites. **The hazard of the form
+  is an item count read as `offsets.shape[0]`**: it type-checks and runs one item past the end,
+  which on the CPU device is host-heap corruption (§12.1), so a convention change is gated by
+  `tests.devices`, never a CUDA run alone.
+- **Every function returning a list of variable-length items has a packed sibling
+  `<name>_with_offsets`**, returning device arrays (values, offsets, then any per-item array) with
+  no per-item Python, and the list form is that plus `array.split` — so the two cannot drift, and
+  the list costs ~0.4 µs an item (§13.1's stamped views). A function that *takes* the packed form
+  is `<name>_from_offsets` (`boundary.loop_perimeters_from_offsets`); a function whose input is
+  already packed and whose output is the list (`geodesic_walk.trace_polylines`) needs no sibling.
+  `_batched` is not a suffix in this package. `array.split` also accepts the offsets as a host
+  sequence, for a caller that already holds the bounds (both `marching_triangles` links finish
+  with them on the host) — an upload and a readback fewer.
 - **No public signature or return type may name `np.ndarray`**, outside `triwarp/io.py` (§3.8).
 - **A guard must encode a real limitation.** When the implementation is naturally rank- or
   dtype-agnostic — a flatten/reshape, a generic `@wp.func` — drop the `ensure_ndim` cap and widen the
@@ -1285,7 +1339,7 @@ a targeted per-file run does not — a rename is not done until the whole suite 
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-**Twenty-six checks**, and they fail the default `pytest` run.
+**Twenty-seven checks**, and they fail the default `pytest` run.
 
 - **Eight scan the public surface of `triwarp/` (excluding `kernels/`)**: a summary line naming a
   reference library (1); a `*_mask` producer that does not return `wp.array[wp.bool]` (2); a module
@@ -1389,6 +1443,9 @@ a targeted per-file run does not — a rename is not done until the whole suite 
   `BinOp` nor a `Slice`, and `int(CONST)` is an `ast.Call` operand. The wider class — vector
   arithmetic, and explicit Python-scope builtins — is not statically decidable and is covered by the
   runtime census in §15.11 instead.
+- **Check 27**: a call to `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` anywhere under
+  `triwarp/` (§3.7). Empty allowlist; tests may still call it, where it builds an *input*
+  independently of the code under test.
 
 Each check carries a written allowlist — read the reason before adding an entry, and prefer fixing
 the code. **The gate does not replace review**: it cannot tell whether a *new* name is a good one,
@@ -3769,8 +3826,11 @@ harmonic / tutte / arap were being pinned to different boundaries and read as to
 
 **Measure `n` calls between two syncs and divide.** A per-call cost taken with a sync *inside* the
 loop is up to 14x wrong, because Warp leaves the CUDA mempool release threshold at 0, so every sync
-drains the pool and the next allocation is cold. *(Raising the release threshold to 8 GB, measured
-on real wrappers, is only worth 1.00-1.02x — not a lever.)*
+drains the pool and the next allocation is cold. *(Raising the release threshold is 1.00-1.02x on
+real wrappers **at small sizes** and **1.5-1.7x on a few-launch call at ~1 M faces and above**
+(`cotmatrix`, `crease_edges` at `dragon` / `lucy`, §16.27): a drained pool's cost grows with the
+allocation's size, so a call allocating hundreds of MB pays it on every harness round. triwarp keeps
+Warp's default -- the setting is process-wide -- and the lever is allocating less, §16.27.)*
 
 | primitive (correct regime) | cost |
 |---|---|
@@ -3896,6 +3956,20 @@ sites; verified end-to-end against a detached baseline worktree across ~20 repre
 | one whole-buffer `wp.copy`, 48 903 to 2 614 242 elements | **0.010-0.015 ms**, flat |
 
 So the vast majority of a many-segment pack is per-call overhead, not the data volume.
+
+**A `wp.array` view can be stamped instead of sliced (round 23), and `array.split` does.** A
+slice's state is 20 plain attributes in its `__dict__`, four of them per view (`ptr`, `shape`,
+`size`, `capacity`). `object.__new__(wp.array)` plus a copy of one *fresh* template slice's
+`__dict__` with those four patched is the same object -- `_ref` keeps the base alive -- at ~0.4 µs a
+segment against a slice's 3-3.5 (7-9x). The template must be made inside the call: a reused view
+may carry a cached `ctype` holding its own pointer. A trailing empty segment (`arr[n:n]`) stamps
+safely. `requires_grad`, non-contiguous and subclass bases fall back to real slicing.
+`test_segment_views_match_real_slices` pins the layout key by key, so a Warp release that renames
+an attribute fails there. `split(copy=True)` keeps one allocation per segment (its contract) and
+fills them all with one `unpack_segment_words` launch from 32 segments: 2.5x. `combine.split
+[parts_1024]` 8.7-9.5 -> 2.1-2.2 ms. **`_device.require_same_device` scans unlabelled first** and
+builds labels only once a mismatch is known: it had built one f-string per list element, about
+half of `pack_1d_arrays` at 2 048 segments (525 -> 44 µs over a 2 048-array list).
 
 **A "Warp has no X" comment is a claim to probe, not a fact to inherit** — and this is the worked
 case. `_pack_segments` carried *"there is no segmented alternative: Warp has no array-of-arrays and
@@ -4181,8 +4255,10 @@ with a stored box and no cap 97 us, the same with a literal `c < 32` cap 453 us,
 us whether its box was stored or formed in the kernel, and `mesh_aabb_collect` (a runtime cap) 98 us
 with a stored box but 455 us with the box formed from the face corners. Not a rule to spell around --
 it is code-generation variance -- but it means **a new or fused walk kernel is timed against the one
-it replaces, on the device**, and it is an open lead for `mesh_to_mesh_distance`, whose
-`bvh_query_aabb` walk is the slow spelling (untested: its narrow phase changes the loop).
+it replaces, on the device**. The lead it opened for `mesh_to_mesh_distance` is **closed**
+(round 22): its capped walk with `mesh_query_aabb` in place of `bvh_query_aabb`, and with the grown
+boxes precomputed, measured 0.93-1.08x with identical overflow counts -- the variance is not present
+in that kernel's loop.
 
 ### 14.3 CUDA graph capture
 
@@ -4323,10 +4399,10 @@ Two functions branch on the *device* rather than on a constant, both because the
 serial loop there is no GPU win being paid for.
 
 - **`_device.prefers_tiled_reduction`** — a *correctness* branch (§12.2), not a performance one.
-- **`polyline_downsample`'s pointer-doubled greedy walk** (`_DOWNSAMPLE_DOUBLING_FROM = 8192`, CUDA
+- **`polyline_downsample`'s pointer-doubled greedy walk** (`_DOWNSAMPLE_DOUBLING_FROM = 2048`, CUDA
   only): the kept set is the orbit of point 0 under "the next point at least `step` further along",
-  so build that step function for every point at once and pointer-double it. **Crossover 8 192**,
-  not the 4 096 first guessed; on CPU it loses at *every* size (30x at 65 536) because it does
+  so build that step function for every point at once and pointer-double it. **Crossover ~2 048** since
+  round 23 (it was 8 192 when a round cost two launches); on CPU it loses at *every* size (30x at 65 536) because it does
   `n log n` work where the serial form does `n` — and Warp's CPU walk is *faster than CUDA's*, no
   launch to issue and a cache-friendly stride.
     - **Exactness is the claim**: the successor search evaluates the same float32 predicate the walk
@@ -4334,10 +4410,11 @@ serial loop there is no GPU win being paid for.
       large-`n` NumPy oracle is unavailable (a float64 sequential `cumsum` against Warp's float32
       tree scan differs by the same order as the gaps between decisions), so exactness is pinned
       triwarp-against-triwarp and the large-`n` test is invariants only.
-    - **The crossover is stale.** `_DOWNSAMPLE_DOUBLING_FROM` was measured when a doubling
-      round cost two launches; `double_greedy_orbit` now fuses them into one (34 -> 19 launches
-      at n = 20 000), so the doubled walk is cheaper at every size and the real crossover is
-      lower than 8 192. Re-probe with a clock before trusting the constant.
+    - **Re-probed in round 23: the crossover is ~2 048**, and `_DOWNSAMPLE_DOUBLING_FROM` is now
+      2048. `double_greedy_orbit` fuses a round into one launch and chases up to
+      `POINTER_JUMP_MAX_HOPS = 16` pointers per launch (`rim_long` 20 -> 8 launches); serial over
+      jumped reads 0.72x at 512 points, 0.89x at 1 024, 1.15x at 2 048, 2.59x at 8 192, 15.4x at
+      65 536.
 
 ### 14.8 Solvers: the cycle is launch-bound
 
@@ -5214,8 +5291,29 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
       census against an independent oracle before believing it.
 - **`query_nearest`'s non-monotonic drop is `k >= 8` and hash-grid-specific** (the BVH backend is
   monotonic over the same sweep): once a row's true k-th distance exceeds the grid's widest search
-  radius it falls back to an exact O(n) scan, and that tail grows with `n`. `backend="bvh"` is the
-  workaround at moderate `k` on a uniform cloud.
+  radius it falls back to an exact O(n) scan, and that tail grows with `n`. **Fixed in round 23,
+  and the old advice (`backend="bvh"` at moderate `k`) is stale.** The scan was the grid's whole
+  weakness: the sparse end of a density-graded cloud, a volumetric cloud's boundary shell (14 % of
+  rows on a 20 k uniform cube), a LiDAR ground plane -- 0.07-0.54x against `bvh`. A row whose query
+  sits on a point of the cloud (nearest found within `DEFER_NEAR = 0.5` initial radii) is now
+  marked `DEFERRED_ROW` and finished by the BVH row kernel (`only_deferred=1`), for `k <= 64` at
+  `n >= _KNN_DEFER_MIN_POINTS = 8192`. The grid then wins every self-query cloud measured, 1.1-3.6x
+  (`dragon` 2-3x), and every in-tree self-query dropped `backend="bvh"`. The price is one readback
+  per `k > 1` default query: 0.89-0.97x on uniform surface clouds. **Refuted: deferring off-cloud
+  rows too** -- a small ball in the empty space inside a surface cloud overlaps many interior BVH
+  nodes and cost more than the scan (`knn_far` 1.42 -> 3.04 ms on `bunny_decimated`). One measured
+  loss is kept: `interpolate_from_points`' `k` path on queries one to two spacings off the
+  cloud, 0.42x on `bunny_decimated`, against 1.6-6.6x on far (`grid_points`) queries -- and a mesh's
+  own vertices near the cloud are a documented use too, so this is a real regression band.
+  **REFUTED -- widening the deferral to cover it** (`r23x_defer_near.txt`, `DEFER_NEAR` swept 0.5 /
+  1 / 2 / 4 / everything): the losing cells do not move (`bunny_decimated` sits under the 8 192
+  gate at 8 171 points, and `bunny` at two spacings reads 5.7-6.6 ms at every value against
+  `bvh`'s 1.34), and the far set gets worse, up to 2.1x (`bunny` far k = 30, 5.5 -> 11.6 ms). A
+  hand-set `initial_radius` of 2 or 4 spacings does not help either. The cost is the grid walk
+  itself: an off-surface row doubles its radius up to the widest walk before any finish runs, so
+  no choice of finish can recover it -- a fix has to decide *before* the walk. Over the same 34
+  cells the grid beats `bvh` in 24, by up to 3.6x (and 3-4x on every `dragon` and far set), so no
+  backend dominates and `interpolate_from_points` keeps the default.
 - **"It broke a bit-exactness test" and "it changed the answer" are different findings, and only the
   second justifies a revert.** The cheap unsorted adjacency builder was declined for years because
   its `wp.atomic_add` row order differs run to run; the ball's answer never changed at all (same
@@ -6959,3 +7057,185 @@ on residuals scaled by each normal's length. Both now read through one
 `kernels/registration.target_unit_normal`, and the docstring states that normals need not be unit.
 `test_robust_scale_ignores_the_length_of_the_target_normals` (same double under per-normal
 rescaling) and `test_icp_point_to_plane_accepts_non_unit_target_normals` fail on the raw read.
+
+### 16.26 Round 23: round 22's items (2026-09-27)
+
+`plans/benchmark-round-11.md` §22.2's items, built by seven agents with disjoint file ownership
+against a detached `4aa09c8` worktree (`/tmp/tw23base`), evidence counts plus CPU byte-identity;
+probes are `plans/benchmark-round-23-data/probes/r23<agent>_*`. Integrated tree: full CUDA suite
+green. What generalises:
+
+- **An unbounded `max_t` / `max_dist` is bit-identical to the scene diagonal, and computing the
+  diagonal cost two launches and a readback (R22-3).** `mesh_query_ray` / `_anyhit` start
+  `min_t = max_t` and prune against the running best; `mesh_query_point_*` square the limit
+  (`inf^2 = inf`) and only prune with it. 330 of 330 outputs identical on both devices, grazing rays
+  included; `intersects_*` / `longest_ray` 1.3-1.7x, ICP on a mesh target 1.1x (it also loses the
+  seed transform launch). **Three kinds of limit stay**: one that also sizes something else
+  (`visibility`'s ray-origin offset, `closest_point_on_edges`' initial search radius); one inside an
+  iteration whose state can outgrow it (`max_tangent_sphere`'s shrink query, where a miss *is* the
+  answer -- inf changed 68-296 rows of 2 048); and one that prunes queries lying outside the
+  geometry (`containing_faces_2d`: identical answer, 1.1-1.2x slower at 1 M CUDA queries and at
+  every size on CPU).
+- **A caller-supplied `edges_sorted` is never cheaper than packing keys from `faces`** since
+  `sorted_face_edge_keys` (one launch into the sort buffer, `end_bit`) -- the rows path is a hash
+  launch, a staging copy and a full-width sort. Every validation / adjacency / `Trimesh` property
+  now ignores the table (still accepted and device-checked, documented "Not read"). A `Trimesh`
+  property that built `edges_sorted` cold to feed a callee was pure overhead:
+  `is_winding_consistent` 2.3x, `is_edge_manifold` 1.6x, `face_adjacency` 1.3-1.5x, cold
+  `is_watertight` 1.69x open / 1.10x closed -- the last also because `is_watertight(mesh=)` now
+  takes a factory and builds the BVH only once both manifold tests pass. **Declined: the early exit
+  on the edge test** -- reading the edge flag before issuing the vertex test saves an open mesh a
+  third and costs a closed one 3-8 %, because the vertex test's launches stop overlapping the sort.
+- **`remove_degree3_vertices` validates inside pass 0** (the halfedge-twin rule counted in the fan
+  launch, carried in its readback): 1.12-1.40x. The rule itself is one `@wp.func`,
+  `kernels/halfedge.sorted_halfedge_run_class`, which `pair_sorted_halfedges` also calls -- it
+  cannot live in `kernels/adjacency.py`, which imports `halfedge`.
+- **Boundary walks rank their cycles with `_closed_successor_cycles`, not the general
+  `successor_cycles` (R22-2).** A window table `(succ^W, window minimum, hops to its first
+  occurrence)` merged with a strict `<` gives every node its cycle's start and its distance in one
+  set of rounds; one `vec2i` scan places every cycle. The dart walk's mirror filter and the pinched
+  walk's gather moved onto the device, and the pinched walk builds its twins off
+  `_BoundaryHalfedges`' own sort. `boundary_loops_batched` 2.2-2.8x on the rim fixtures, 1.7x
+  `dragon`, 1.3x `lucy`; `delete_region_keep_boundary` 1.8x; `fill_fan[holes_many]` 1.7x. **The
+  plan's premise "pure cycles by construction" is false for the vertex walk on a mesh that is not
+  edge-manifold** (`bunny_decimated`: 71 of 123 boundary edges lie in loops), so the successor table
+  is `-1`-filled and a chase that reaches a non-tail drops the node -- an uninitialised table
+  segfaulted the CPU device mid-edit. **Pointer jumping chases up to `POINTER_JUMP_MAX_HOPS = 16`
+  pointers a launch, and the clock is flat from 8 to 64 hops** (`rim_long` 0.633 / 0.512 / 0.463 /
+  0.454 / 0.451 / 0.443 ms at 2 / 4 / 8 / 16 / 32 / 64): most of the win was dropping the general
+  pipeline, not the width. **In NumPy multi-hop loses** (`h - 1` gathers a round: 1.3-2.7x slower
+  than doubling), so `intersection`'s host doubling keeps doubling.
+- **`marching_triangles` links on the device from `_LINK_ON_DEVICE_FROM = 1024` segments, CUDA only
+  (R22-6).** The compaction writes the `2n` crossing keys straight into a radix sort (`end_bit`);
+  adjacent equal keys pair segments (0.08-0.11 ms flat against `np.unique`'s 0.11-1.14 ms at
+  1.5 k-26 k); multi-hop ranking carries `(ahead, lowest, first-min offset, steps)`; one weight scan
+  lays the curves out in the host's order; a malformed pairing falls back to the host link, keeping
+  its `ValueError`. 1.27x at 1.5 k segments, 1.5x at 26 k, 2.2x at 53 k; on the CPU device it loses
+  at every size (0.89-1.0x). `split_faces_along_field` sorts only the cut faces' crossed halfedges
+  instead of a whole-mesh `edges_unique`: 1.5-3.1x. **`edges_unique`'s row order is `(max, min)`
+  lexicographic** (`hash_indices_rows` packs column 0 as the low digit), so a region sort meant to
+  reproduce its numbering keys `max * base + min`.
+- **The k-NN hash grid's deferral** is §16.6's rewritten bullet (R22-4).
+- **Small trims (R22-7 and the passes around them).** `crop_points` / `points_in_*` flag, scan in
+  place, compact: 1.5-1.7x. `cluster_decimate` packs its cell keys in the cell kernel: 1.05x.
+  `unique_1d`'s hash occupancy is scanned in place and counts are allocated only when asked (one or
+  two table-sized allocations fewer per call; `unique_faces` 1.14x). `outlier_probability` forms
+  its normalizer on the device (1.34-1.41x) -- and **`wp.utils.array_inner(a, a)` returns an
+  `np.float32`**, so the host's `value / n` was a float32 division under NEP 50 and the device
+  port must reproduce it or sit 1 ulp off. `normals_at_closest_faces` without a table forms the hit
+  face's normal in the query thread. `intersects_location` returns prefix views of its per-ray
+  buffers. `geodesic_ball` reads its overflow counter with its total. **A box predicate with an
+  optional rotation must branch, not multiply by the identity**: `0 * inf` is `nan`. The two face
+  compactions share `kernels/triangles.copy_scanned_face`. `remove_degenerate_faces`' fusion was
+  declined (at most one launch, <= 1.07x).
+- **Agent hygiene, two more.** `ruff format triwarp/` run by one agent reformats files others are
+  editing mid-Edit: always name your files. And `pkill -f <probe>` kills the shell running it, the
+  same self-match as §11's `pgrep`.
+- **R22-9: one offsets convention, and a packed sibling for every list return.** §4.2 has the
+  rule. Built in two passes: the convention and the `_batched` renames (`split_with_offsets`,
+  `boundary_loops_with_offsets`, `loop_perimeters_from_offsets`, `loop_directed_areas_from_offsets`;
+  `include_total=` removed everywhere, and `proximity.query_mesh_aabb_with_offsets` /
+  `graph.successor_cycles` / `selection.submeshes_from_face_groups` lost their sizes arrays) —
+  byte-identical on CPU over 697 outputs, parity unchanged at 585 pairs — then
+  `marching_triangles_with_offsets`, `delete_region_keep_boundary_with_offsets` (the classifier writes `(kept, size,
+  start)` per loop; the packed form scans it in place and compacts on the device, the list form
+  reads it raw and cuts its views from the traced loops -- one readback either way, and the list
+  form pays no scan),
+  `homology_generators_with_offsets` and `shorten_loop_with_offsets`, each list form rebuilt on
+  it, 607 list outputs byte-identical on CPU. `repair.remove_tunnels` now stays packed from the
+  basis to the measurement, where it went list -> packed -> list -> packed. **`query_ball`'s list
+  form cloned every query's segment** (8 195 allocations at 4 096 queries): views through
+  `array.split` made it 6.7x (68 -> 10 ms), and a `copy=` keyword keeps the old behaviour
+  reachable.
+  **A default result built eagerly is two allocations on every call.** The first cut built
+  `delete_region_keep_boundary`'s empty `(values, [0])` return up front for its four early exits
+  and read 0.91x on the harness; building it only when returned put it back at parity. An
+  empty-return tuple in a wrapper is a function, not a value.
+
+### 16.27 Round 24: the sweep, and allocating less instead of keeping the pool (2026-09-28)
+
+Full sweep of `4aa09c8` plus the round-22/23 working tree (`plans/benchmark-round-24-data/`): gap
+60.9 -> **40.0 ms**, 767 wins of 928, 5 slower cells of which 4 re-measure level and one is real --
+`interpolate_from_points[lucy k=8]` 0.66x, because its radius path now defaults to the hash grid
+and `hashgrid_from_points`' 128^3 bins are far fewer than `lucy`'s occupied cells (plan R24-1).
+
+- **A drained mempool is a size-proportional cost, and it is the host time of few-launch rows on
+  large meshes.** `crease_edges[lucy]` read 19.0 ms wall against 2.5 ms of device time with three
+  launches, `cotmatrix[dragon]` 2.95 against 0.41. Raising the release threshold was 1.5-1.6x on
+  both at `dragon` / `lucy` and flat at `bunny` (`probes/r24_mempool.txt`). triwarp does not set
+  it -- the setting is process-wide -- so the lever is fewer and smaller allocations. **Census
+  allocation *sizes*, not counts** (`alloc_plugin.py`, which patches
+  `CudaMempoolAllocator.allocate` and attributes each allocation to its triwarp frame): a count
+  census prices the host calls and cannot see this.
+- **`cotmatrix` allocated 9.4 GB per call at `lucy`** for a matrix of under 1 GB: three
+  12-triplets-per-face buffers of 1.28 GB each and 5.2 GB of `bsr_from_triplets` scratch. It now
+  emits the six off-diagonal triplets per face plus one diagonal slot per vertex (the tail's rows
+  prefilled with `n_vertices`, so an unreferenced vertex's slot is out of range and dropped and its
+  row stays empty), and `kernels/laplacian.cotmatrix_diagonal` writes each diagonal as minus its
+  row's off-diagonal sum. **2.00x at `dragon`, 1.94x `happy_buddha`, 1.79x `lucy`** (102.5 -> 57.1
+  ms), 1.25x `bunny`, **0.93x `bunny_decimated`** (the extra fill and launch, ~24 us). Pattern and
+  off-diagonals bit-identical on CPU (an off-diagonal's terms and their order are unchanged), the
+  `float64` diagonal bit-identical, the `float32` diagonal within 3.2e-7 relative -- its terms are
+  now summed per edge first. The capacity `nnz` overshoots `nnz_sync()` by 1.85x rather than 3.4x,
+  and the duplicate-built-operator tests still reach a duplicate build. After it the pool still
+  costs 1.5-1.7x of what is left (`probes/r24_mempool_after_cotmatrix.txt`): that was
+  `bsr_from_triplets`' own sort, removed next.
+- **Not transferable to `connection_laplacian`**: its diagonal is `sum w * I` and `w` is not stably
+  recoverable from a rotated off-diagonal block (the decode divides by `cos rho`), so it needs a
+  scalar weight source, and a float64 atomic sum would make the diagonal nondeterministic on CUDA.
+- **Then every `bsr_from_triplets` call went (§3.7, check 27).** The sorted-keys core
+  (`array.csr_from_keys`: one `uint64` key per contribution, a radix sort over only the bits
+  `n_rows * n_cols` needs, run starts scanned in the payload buffer's own upper half, offsets
+  filled by each row's first run so empty rows need no pass) replaces it at all sixteen sites --
+  structurally for the mesh operators, through `csr_from_triplets` elsewhere, directly for the
+  prolongator and the empty matrix. Harness A/B against `4aa09c8`, one process per module
+  (`plans/benchmark-round-24-data/ab_sparse_*.txt`): `cotmatrix` **2.90x `dragon`, 2.62x
+  `happy_buddha`, 2.44x `lucy`**, 1.62x `bunny`, 1.19x `bunny_decimated` (the round's small-mesh
+  loss gone); `robust_laplacian` 1.52-1.64x; `connection_laplacian` 1.13-2.01x;
+  `laplacian(equal_weight)` / inverse-distance 1.07-1.47x; `laplacian_smoothing_loss[cotcurv]` up
+  to 2.03x; the energies 1.05-1.28x; `graph`, `subdivide_loop`, heat, parametrization, multigrid and
+  the implicit smoothers flat to 1.14x -- the solve dominates there. Every sub-0.95x cell re-measured
+  level alone. `csr_from_triplets` is bit-identical to `bsr_from_triplets` on 160 random scalar
+  builds on both devices (duplicates, out-of-range, empty rows, pruning); the mesh operators'
+  off-diagonals and patterns are bit-identical, their diagonals now a row sum.
+- **Warp's `prune_numerical_zeros` prunes triplets, not entries**: a zero-valued triplet is dropped
+  before summing, and an entry whose nonzero triplets cancel is kept holding zero.
+  `csr_from_triplets` prunes the assembled entries instead (the more useful answer), sums each run
+  at its start in the same launch that flags it (no separate sum kernel, no `starts` buffer), and
+  still skips zero triplets before the sort. Priced against Warp at 0.2 M / 4 M / 40 M triplets:
+  1.06x / 1.00x / 1.10x pruned, 1.12x / 0.99x / 1.11x unpruned -- a wash with the pre-sum rule
+  (`probes/r24_csr_prune.txt`), so the semantics were chosen for the answer, not the clock.
+  Correctness gate (`probes/r24_csr_check.py`): 360 random builds per device, every entry we keep
+  equals Warp's, every entry Warp keeps that we drop is zero there -- exactly on CUDA, at most
+  9.5e-7 on CPU, whose own summation order is not the triplets'. The generic builder is only at
+  parity with Warp's (0.96-1.13x); **the big wins are the structural builds**.
+- **The undirected mesh-pattern build (above ~0.5 M faces)**: one sort of `3 * n_faces` keys plus
+  a 32-bit sort of the unique edges, instead of one sort of `6 * n_faces + n_vertices`. The sorts
+  alone are 1.70-1.88x at `dragon` / `lucy` and 0.72x at the bunnies (`probes/r24_sort_split.txt`);
+  the whole `cotmatrix` 1.35-1.45x above 0.87 M faces and 0.55-0.78x below 0.33 M
+  (`probes/r24_pattern_crossover.txt`). Two things decided it: the second sort's 32-bit keys live
+  in the first sort's upper-half key scratch (a `wp.array(ptr=...)` alias), and each entry's run
+  end is read off the sorted keys rather than stored -- together `lucy` went 6.6 -> 5.3 GB and the
+  first version's 1.11x became 1.35x. A degenerate face's self-edge, which the directed build
+  keeps as its keys, is carried as a flagged diagonal slot so both builds agree.
+- **`graph_laplacian` and `laplacian` (given faces) went structural too.** `graph_laplacian` had
+  run `edges_unique`, a triplet build, `bsr_mv`, `bsr_diag` and `bsr_axpy`; it is now one pattern
+  and one row kernel -- **3.0-5.2x**, `lucy` 101 -> 29 ms. `laplacian_equal_weight` (directed, one
+  key per halfedge) 1.42-1.68x; the symmetric branch 1.64-2.52x against the triplet path in one
+  process (`probes/r24_laplacian_structural.txt`). All 50 operator matrices (5 meshes, degenerate
+  and open included, 2 precisions, 5 operators) bit-identical to `4aa09c8` on both devices.
+  Harness, final: `cotmatrix` 3.1-3.95x at `dragon` / `happy_buddha` / `lucy`, 1.16-1.51x at the
+  bunnies; `connection_laplacian` 1.15-1.83x; `robust_laplacian` 1.7x. The
+  `laplacian_inverse_distance` row passes precomputed `edges=`, so it measures `csr_from_triplets`
+  against Warp (0.97-1.13x), not the structural build.
+- **The sites left on `csr_from_triplets`, and why**: the energy sandwich products and hessians
+  (each input row scatters over many output rows -- unordered by construction), the Loop operator
+  (its even rows are unsorted rings, and a per-row sort is §16.6's hub hazard), `edges_to_csr` /
+  `index_sparse` (the input *is* a coordinate list), the implicit smoothing system (solve-bound,
+  0.97-1.04x whole-call).
+- **Gates at the end of the round**: `tests.devices` CUDA 3 857 passed / CPU 3 811 passed,
+  `tests.parity` 585 pairs / 30 exempt / 0 uncovered (unchanged), basedpyright 0, ruff clean.
+- **The rest of the census is functional**: `crease_edges`' 1.9 GB at `lucy` is the radix sort's
+  double-width keys and payload (the key needs 48 bits there), `cluster_decimate`'s hash tables and
+  face buffer, `mesh_to_mesh_distance`'s 963 MB of per-face and per-vertex buffers.
+

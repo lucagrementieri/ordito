@@ -43,22 +43,23 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device, run_device_loop
+from triwarp._device import read_scalar, read_values, require_same_device, run_device_loop
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
+from triwarp.kernels import graph as kernel_graph
 from triwarp.kernels import polyline as kernel_polyline
 from triwarp.kernels import reduce as kernel_reduce
 
 # Point count from which [`polyline_downsample`][triwarp.polyline.polyline_downsample] stops
 # walking its greedy selection serially and pointer-doubles it instead -- **on the CUDA device
-# only**. The doubling costs ``ceil(log2(n + 1)) + 1`` launches, which pays off once the polyline
+# only**. The doubling costs a logarithmic number of launches, which pays off once the polyline
 # is long enough that a serial walk's linear cost exceeds it; the two masks are verified
 # **byte-identical** at every size.
 #
 # On the CPU device the doubling loses at every size, because it does ``n log n`` work where the
 # serial form does ``n``, on a backend that runs a launch grid as one serial loop -- there is no GPU
 # win being paid for, so the branch takes the device too.
-_DOWNSAMPLE_DOUBLING_FROM = 8192
+_DOWNSAMPLE_DOUBLING_FROM = 2048
 
 
 # ``polyline_radius``'s folded reductions: the kernel's selector and the result slot's seed.
@@ -270,7 +271,8 @@ def polyline_centroid(polyline: wp.array[wp.vec3], *, closed: bool = False) -> w
         raise ValueError("polyline_centroid requires at least two points")
     # One launch and one readback for all four sums: ``polyline_radius``'s frame pass with no
     # Newell sum, whose first four slots are the weighted midpoints and the total length.
-    sums_np = _accumulate_frame(polyline, n_segments, 0, with_normal=False).numpy()
+    sums = _accumulate_frame(polyline, n_segments, 0, with_normal=False)
+    sums_np = np.asarray(read_values(sums, 0, 4), dtype=np.float32)
     # A NumPy float32 quotient: the same IEEE division per component, without Warp's Python-scope
     # dispatch of a ``wp.vec3`` operator.
     return wp.vec3(*(sums_np[:3] / sums_np[3]))
@@ -317,7 +319,7 @@ def polyline_normal(polyline: wp.array[wp.vec3]) -> wp.vec3:
     # Normalized on the host, in float32 as ``wp.normalize`` does, rather than by a ``wp.map``
     # launch before the readback: the three components cross either way.
     normal_slot = int(kernel_polyline.RADIUS_FRAME_NORMAL)
-    x, y, z = frame.numpy()[normal_slot : normal_slot + 3]
+    x, y, z = np.asarray(read_values(frame, normal_slot, 3), dtype=np.float32)
     length = np.sqrt(x * x + y * y + z * z)
     if length > 0.0:
         return wp.vec3(x / length, y / length, z / length)
@@ -628,11 +630,11 @@ def _greedy_downsample_doubling(
     The kept set is the orbit of point 0 under "the next point at least ``step_size`` further
     along", so building that step function for every point at once
     ([`greedy_successors`][triwarp.kernels.polyline.greedy_successors]) turns an ``n``-step walk
-    into ``ceil(log2(n + 1))`` rounds of squaring it. The answer is the serial walk's, exactly and
-    not approximately: the successor search evaluates the same float32 comparison the walk does, so
-    the two masks agree bit for bit -- verified over 27 shapes including exact ties and heavily
-    clustered spacing. ``polyline`` and ``closed`` are the closure the walk stops short of
-    (``greedy_successors``); an open table needs no polyline.
+    into a logarithmic number of rounds of jumping several pointers along it. The answer is the
+    serial walk's, exactly and not approximately: the successor search evaluates the same float32
+    comparison the walk does, so the two masks agree bit for bit -- verified over 27 shapes
+    including exact ties and heavily clustered spacing. ``polyline`` and ``closed`` are the closure
+    the walk stops short of (``greedy_successors``); an open table needs no polyline.
     """
     device = cumulative.device
     n = int(cumulative.shape[0])
@@ -645,11 +647,14 @@ def _greedy_downsample_doubling(
         device=device,
     )
     squared = wp.empty(n, dtype=wp.int32, device=device)
-    for _ in range(max(1, math.ceil(math.log2(n + 1)))):
+    # Several pointers a round (``kernels/graph.pointer_jump_schedule``): the orbit is at most
+    # ``n`` long and a round multiplies the covered prefix of it by ``hops``.
+    hops, rounds = kernel_graph.pointer_jump_schedule(n + 1)
+    for _ in range(rounds):
         wp.launch(
             kernel_polyline.double_greedy_orbit,
             dim=n,
-            inputs=[successor, out_keep, squared, out_keep],
+            inputs=[successor, out_keep, hops, squared, out_keep],
             device=device,
         )
         successor, squared = squared, successor
@@ -1041,7 +1046,7 @@ def polyline_radius(
     )
     if reduction != "mean":
         return float(read_scalar(result, 0))
-    total, count = result.numpy()
+    total, count = read_values(result, 0, 2)
     return float(total) / float(count)
 
 
@@ -1277,11 +1282,11 @@ def _triangulate_ring(
     )
     # The only readback before the convex fast path returns: ring length, turning angle and the
     # reflex count of the oriented loop, all decided on device.
-    sums_np = sums.numpy()
-    turning = float(sums_np[int(kernel_polyline.RING_TURNING)])
-    reflex = float(sums_np[int(kernel_polyline.RING_TURNING) + 1])
-    reflex_mirrored = float(sums_np[int(kernel_polyline.RING_TURNING) + 2])
-    n_ring = n - int(sums_np[int(kernel_polyline.RING_CLOSING)])
+    # The four slots are adjacent, ``RING_TURNING`` through ``RING_CLOSING``: one offset read.
+    turning, reflex, reflex_mirrored, closing = read_values(
+        sums, int(kernel_polyline.RING_TURNING), 4
+    )
+    n_ring = n - int(closing)
     if n_ring < 3:
         return n_ring, twt.empty_2d((0, 3), wp.int32, device=device)
 

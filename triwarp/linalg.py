@@ -34,11 +34,11 @@ update, two launches a round -- and records its loop once per state, where a sol
 [`solve_spd`][triwarp.linalg.solve_spd] or [`solve_spd_columns`][triwarp.linalg.solve_spd_columns]
 keeps one state per operator, so a later solve against the same operator only replays it.
 
-**Determinism.** Build each operator natively at its final dtype in a *single*
-``warp.sparse.bsr_from_triplets`` and never recast or rebuild it. A rebuild re-sorts and
-duplicate-accumulates an order the CSR already has; and if the rebuild's triplet buffers are ever
-sized off ``BsrMatrix.nnz`` (a stale *capacity*, not the true entry count -- see ``nnz_sync()``) the
-buffers' tail reaches ``bsr_from_triplets`` uninitialized. ``Q_uu`` is assembled as a CSR
+**Determinism.** Build each operator natively at its final dtype in a *single* sparse build and
+never recast or rebuild it. A rebuild re-sorts and duplicate-accumulates an order the CSR already
+has; and if the rebuild's triplet buffers are ever sized off ``BsrMatrix.nnz`` (a stale *capacity*,
+not the true entry count -- see ``nnz_sync()``) the buffers' tail reaches the build
+uninitialized. ``Q_uu`` is assembled as a CSR
 *directly*, without any triplet build, so it carries an exact ``nnz``.
 
 **Why Jacobi.** Every solve here preconditions with ``warp.optim.linear.preconditioner(A, "diag")``.
@@ -464,7 +464,7 @@ def assemble_interior_system(
     )
     # The total-terminated form *is* the CSR offsets array, and the one host read it costs is what
     # sizes ``columns`` / ``values`` for their final use at allocation time.
-    row_offsets, nnz_uu = tw.array.counts_to_offsets(counts, include_total=True)
+    row_offsets, nnz_uu = tw.array.counts_to_offsets(counts)
     columns = wp.empty(nnz_uu, dtype=wp.int32, device=device)
     values = wp.empty(nnz_uu, dtype=wp.float64, device=device)
     wp.launch(
@@ -3591,19 +3591,17 @@ def _multigrid_prolongator(
     n = int(matrix.nrow)
     sizes = wp.zeros(n_aggregates, dtype=wp.int32, device=device)
     wp.launch(kernel_mg.aggregate_sizes, dim=n, inputs=[label, sizes], device=device)
-    rows = wp.empty(n, dtype=wp.int32, device=device)
+    offsets = wp.empty(n + 1, dtype=wp.int32, device=device)
     columns = wp.empty(n, dtype=wp.int32, device=device)
     values = wp.empty(n, dtype=wp.float64, device=device)
     wp.launch(
-        kernel_mg.tentative_prolongator_triplets,
+        kernel_mg.tentative_prolongator,
         dim=n,
-        inputs=[label, sizes, rows, columns, values],
+        inputs=[label, sizes, offsets, columns, values],
         device=device,
     )
-    # Exactly one triplet per row and no duplicates, so this build's ``nnz`` is exact.
-    tentative = wps.bsr_from_triplets(
-        n, n_aggregates, rows, columns, values, prune_numerical_zeros=False
-    )
+    # Exactly one entry per row, so the CSR is written directly and its ``nnz`` is exact.
+    tentative = _bsr_over(n, n_aggregates, offsets, columns, values, n)
     smoothed = wps.bsr_mm(matrix, tentative)
     # Row-scale by ``-omega D^-1`` in place: one pass over the product's values, where a ``bsr_mm``
     # against a diagonal matrix would be a second sparse product.

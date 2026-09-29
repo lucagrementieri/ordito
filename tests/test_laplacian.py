@@ -568,6 +568,58 @@ def test_cotmatrix_empty_mesh(device: str) -> None:
     assert laplacian_igl.nnz == 0
 
 
+@pytest.mark.parametrize(
+    "operator",
+    [
+        "cotmatrix",
+        "connection_laplacian",
+        "graph_laplacian",
+        "laplacian_uniform",
+        "laplacian_inverse",
+    ],
+)
+def test_mesh_operator_pattern_builds_agree(
+    operator: str, monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """
+    Triwarp against triwarp: the directed and undirected pattern builds give the same matrix.
+
+    ``_mesh_operator_pattern`` switches builds at ``_UNDIRECTED_PATTERN_FROM_FACES`` and every
+    fixture here sits below it, so the threshold is forced each way. ``test_cotmatrix`` carries the
+    igl oracle for the directed build; this pins the other to it bit for bit -- offsets, columns
+    and values. The mesh carries an unreferenced vertex and a degenerate face -- whose self-edge the
+    symmetric ``laplacian`` keeps as a diagonal entry, which the undirected build flags rather than
+    sorts -- except for the connection Laplacian, which requires an edge-manifold mesh.
+    """
+    sphere = tm.creation.icosphere(3)
+    vertices_np, faces_np = sphere.vertices, sphere.faces
+    if operator != "connection_laplacian":
+        vertices_np = np.vstack([vertices_np, [[3.0, 3.0, 3.0]]])
+        faces_np = np.vstack([faces_np, [[0, 0, 1]]])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    builds = {
+        "laplacian_uniform": lambda v, f: tw.laplacian.laplacian(v, f, symmetric=True),
+        "laplacian_inverse": lambda v, f: tw.laplacian.laplacian(v, f, equal_weight=False),
+    }
+    build = builds.get(operator) or getattr(tw.laplacian, operator)
+    arrays = []
+    for threshold in (10**12, 0):
+        monkeypatch.setattr(tw.laplacian, "_UNDIRECTED_PATTERN_FROM_FACES", threshold)
+        matrix = build(vertices_wp, faces_wp)
+        n_entries = matrix.nnz_sync()
+        arrays.append(
+            (
+                matrix.offsets.numpy(),
+                matrix.columns.numpy()[:n_entries],
+                matrix.values.numpy()[:n_entries],
+            )
+        )
+    directed, undirected = arrays
+    assert directed[0][-1] > vertices_np.shape[0]  # a real pattern, not an empty one
+    for directed_np, undirected_np in zip(directed, undirected, strict=True):
+        assert np.array_equal(directed_np, undirected_np)
+
+
 # -----------------------------------------------------------------------------------------
 # robust_laplacian (libigl reference)
 #

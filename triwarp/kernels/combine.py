@@ -22,9 +22,13 @@ def offset_packed_faces(
 
 @wp.kernel
 def label_run_starts(sorted_labels: wp.array[wp.int32], out_is_start: wp.array[wp.bool]) -> None:
-    # Segment boundaries of a label-sorted array: position 0, plus every label change. One launch
-    # over the whole buffer, where the adjacent-element map it replaces needed two shifted views,
-    # an output view and a separate write for position 0 -- and a guard for the single-element
-    # buffer, which ``sorted_run_start``'s own ``i == 0`` test makes unnecessary.
+    # Segment boundaries of a label-sorted array: position 0, plus every label change, plus the
+    # end -- ``out_is_start`` is one longer than the labels, so its ``flatnonzero`` is the
+    # total-terminated offsets directly. One launch over the whole buffer, where the adjacent-
+    # element map it replaces needed two shifted views, an output view and a separate write for
+    # position 0 -- and a guard for the single-element buffer, which ``sorted_run_start``'s own
+    # ``i == 0`` test makes unnecessary.
     i = wp.int32(wp.tid())
     out_is_start[i] = sorted_run_start(sorted_labels, i)
+    if i == sorted_labels.shape[0] - 1:
+        out_is_start[i + 1] = True

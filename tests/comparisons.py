@@ -573,9 +573,9 @@ def bsr_arrays(matrix: object) -> list[np.ndarray]:
     """
     Return a BSR matrix as ``[offsets, columns, values]``, sliced to its *true* entry count.
 
-    ``matrix.nnz`` is a stale capacity after a duplicate-emitting triplet build -- ``cotmatrix``
-    emits 12 triplets per face -- so everything past ``nnz_sync()`` is uninitialized memory and
-    comparing it reports a difference that is not there.
+    ``matrix.nnz`` is a stale capacity after a duplicate-emitting build -- ``cotmatrix`` sizes its
+    storage for six keys per face plus one per vertex -- so everything past ``nnz_sync()`` is
+    uninitialized memory and comparing it reports a difference that is not there.
     """
     n_entries = int(matrix.nnz_sync())
     return [

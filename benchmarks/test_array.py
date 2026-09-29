@@ -228,17 +228,17 @@ def test_pack_1d_arrays(bench_case: BenchCase, n_segments: int) -> None:
         def pack_np() -> tuple[np.ndarray, np.ndarray]:
             return (
                 np.concatenate(segments_np),
-                np.cumsum([0] + [piece.size for piece in segments_np[:-1]]),
+                np.cumsum([0] + [piece.size for piece in segments_np]),
             )
 
         flat_np, offsets_np = bench_case.run(pack_np)
         assert flat_np.size == bench_case.faces_np.size
-        assert offsets_np.size == n_segments
+        assert offsets_np.size == n_segments + 1
         return
     segments = _segments(bench_case, n_segments)
     flat, offsets = bench_case.run(lambda: tw.array.pack_1d_arrays(segments))
     assert int(flat.shape[0]) == bench_case.faces_np.size
-    assert int(offsets.shape[0]) == n_segments
+    assert int(offsets.shape[0]) == n_segments + 1
 
 
 @pytest.mark.benchmark(group="split_array")
@@ -247,30 +247,28 @@ def test_pack_1d_arrays(bench_case: BenchCase, n_segments: int) -> None:
 @pytest.mark.parametrize("copy", [False, True], ids=["views", "copies"])
 def test_split(bench_case: BenchCase, n_segments: int, copy: bool) -> None:
     """
-    The inverse of ``pack_1d_arrays``: one offsets readback, then views or per-segment clones.
+    The inverse of ``pack_1d_arrays``: one offsets readback, then views or per-segment copies.
 
-    The ``views`` rows price the readback plus Python slicing alone; the gap to ``copies`` at
-    ``many`` is the per-segment ``wp.clone`` launches, the same per-segment floor the packing
-    direction pays.
+    The ``views`` rows price the readback plus Python-side ``warp.array`` construction; the gap to
+    ``copies`` at ``many`` is one allocation per segment, which ``copy=True``'s contract makes the
+    return value itself (the copies are then filled by one launch).
 
     NumPy's ``split`` has the same two modes and the same names for them -- its result is views, and
     a copy is one ``np.copy`` per piece -- so the ``views`` / ``copies`` pair reads across both
     libraries and the ratio between the pairs is the readback triwarp cannot avoid.
 
     **Both modes are per-segment constants, and the readback is not one of them** -- it is a couple
-    of percent of the ``views`` row. What the row actually prices is Python-side ``warp.array``
-    construction, and ``copies`` is that plus one allocation and one copy per piece. The crossover
-    is the same segment size ``concatenate_arrays`` measures, and the ``copies`` rows invert on the
-    group's own axis, winning at ``few``.
+    of percent of the ``views`` row. The views are stamped from one template slice's state rather
+    than sliced one at a time, which is several times cheaper per segment than Warp's own slice;
+    ``copies`` is that plus one allocation per piece. The ``copies`` rows invert on the group's own
+    axis, winning at ``few``.
 
-    **Two levers are declined.** Allocating **one** buffer, filling it with a
-    single ``warp.copy`` and returning disjoint views of *that* is several times faster -- but it is
-    then no longer the operation NumPy's column performs (``np.copy`` per piece is an independent
-    allocation each), so it would win the row by doing less, and it would silently drop half of what
-    ``copy=True`` is documented to promise: a segment could no longer be held without keeping the
-    whole buffer alive. Building the views with a raw ``warp.array(ptr=...)`` instead of
-    ``flat[a:b]`` is a smaller win and is declined in ``triwarp/array.py`` at the site, with the
-    reason.
+    **One lever is declined.** Allocating **one** buffer, filling it with a single ``warp.copy`` and
+    returning disjoint views of *that* is several times faster -- but it is then no longer the
+    operation NumPy's column performs (``np.copy`` per piece is an independent allocation each), so
+    it would win the row by doing less, and it would silently drop half of what ``copy=True`` is
+    documented to promise: a segment could no longer be held without keeping the whole buffer
+    alive.
     """
     if bench_case.kind == "numpy":
         segments_np = _segments_np(bench_case, n_segments)

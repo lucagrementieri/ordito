@@ -301,6 +301,42 @@ def require_same_device(**named: Any) -> None:
     RuntimeError
         If two of the given arguments report a different ``.device``.
     """
+    # Scan unlabelled first: the labels are only needed for the message, and building one per
+    # element of a long list of loops or rings costs more than the comparison itself.
+    first: list[Any] = []
+    for value in named.values():
+        if _first_device_mismatch(value, first):
+            _raise_device_mismatch(named)
+
+
+def _first_device_mismatch(value: Any, first: list[Any]) -> bool:
+    """Whether ``value`` (or an element of it) disagrees with ``first[0]``, seeding it if empty."""
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple)):
+        if not value:
+            return False
+        try:
+            # The common case, a flat sequence of arrays, compares without a call per element;
+            # ``None`` or a nested sequence has no ``.device`` and takes the element-wise walk.
+            head = value[0].device
+            if not first:
+                first.append(head)
+            reference = first[0]
+            return any(item.device is not reference and item.device != reference for item in value)
+        except AttributeError:
+            return any(_first_device_mismatch(item, first) for item in value)
+    device = getattr(value, "device", None)
+    if device is None:
+        return False
+    if not first:
+        first.append(device)
+        return False
+    return device is not first[0] and device != first[0]
+
+
+def _raise_device_mismatch(named: dict[str, Any]) -> None:
+    """Raise naming the first mismatched pair, if the labelled walk confirms the fast scan's."""
     seen: list[tuple[str, Any]] = []
     for name, value in named.items():
         seen.extend(_named_devices(name, value))

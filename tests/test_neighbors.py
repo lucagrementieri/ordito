@@ -226,17 +226,39 @@ def test_query_ball_count_matches_scipy_and_the_list_form(
     assert counts_np.max() < points_np.shape[0]
     assert np.array_equal(counts_wp.numpy(), counts_np)
 
-    indices_wp, _distances_wp, offsets_wp = query_ball_with_offsets(
-        points_wp, queries_wp, radius, include_total=True
-    )
+    indices_wp, _distances_wp, offsets_wp = query_ball_with_offsets(points_wp, queries_wp, radius)
     assert np.array_equal(np.diff(offsets_wp.numpy()), counts_np)
     assert int(indices_wp.shape[0]) == int(counts_np.sum())
 
 
-@pytest.mark.parametrize("include_total", [False, True])
-def test_query_bvh_ball_matches_a_brute_force_ball_overlap(
-    device: str, include_total: bool
-) -> None:
+@pytest.mark.parametrize("copy", [False, True])
+def test_query_ball_is_its_packed_form_split(device: str, copy: bool) -> None:
+    """
+    Triwarp against triwarp: the list form equals ``query_ball_with_offsets`` split per query.
+
+    The packed form carries the scipy oracle (``test_query_ball_*``); this pins the list to it, and
+    ``copy`` to views of the packed buffers or to independent storage.
+    """
+    rng = np.random.default_rng(12)
+    points_wp = points_to_warp(rng.random((300, 3)).astype(np.float32), device)
+    queries_wp = points_to_warp(rng.random((25, 3)).astype(np.float32), device)
+    radius = 0.2
+
+    indices_wp, distances_wp = tw.neighbors.query_ball(points_wp, queries_wp, radius, copy=copy)
+    flat_wp, flat_distances_wp, offsets_wp = tw.neighbors.query_ball_with_offsets(
+        points_wp, queries_wp, radius
+    )
+    bounds_np = offsets_wp.numpy()
+    assert len(indices_wp) == len(distances_wp) == bounds_np.shape[0] - 1 == 25
+    assert int(bounds_np[-1]) > 25  # non-vacuous: most queries find neighbours
+    for query, (index_wp, distance_wp) in enumerate(zip(indices_wp, distances_wp, strict=True)):
+        begin, end = int(bounds_np[query]), int(bounds_np[query + 1])
+        assert np.array_equal(index_wp.numpy(), flat_wp.numpy()[begin:end])
+        assert np.array_equal(distance_wp.numpy(), flat_distances_wp.numpy()[begin:end])
+        assert (index_wp._ref is None) == copy
+
+
+def test_query_bvh_ball_matches_a_brute_force_ball_overlap(device: str) -> None:
     """
     Class A: the broad-phase hits are exactly the boxes the ball of ``radius`` reaches.
 
@@ -261,17 +283,13 @@ def test_query_bvh_ball_matches_a_brute_force_ball_overlap(
         points_to_warp(lower_np, device), points_to_warp(upper_np, device)
     )
     queries_wp = points_to_warp(queries_np, device)
-    indices_wp, offsets_wp = tw.neighbors.query_bvh_ball(
-        bvh, queries_wp, radius, include_total=include_total
-    )
+    indices_wp, offsets_wp = tw.neighbors.query_bvh_ball(bvh, queries_wp, radius)
     indices_np = indices_wp.numpy()
-    offsets_np = offsets_wp.numpy()
+    bounds_np = offsets_wp.numpy()
 
-    assert offsets_np.shape == (n_queries + 1 if include_total else n_queries,)
+    assert bounds_np.shape == (n_queries + 1,)
     assert indices_np.size > 0
-    bounds_np = offsets_np if include_total else np.append(offsets_np, indices_np.size)
-    if include_total:
-        assert int(offsets_np[-1]) == indices_np.size
+    assert int(bounds_np[-1]) == indices_np.size
 
     n_matched = 0
     for query_index, query_np in enumerate(queries_np):
@@ -289,19 +307,18 @@ def test_query_bvh_ball_matches_a_brute_force_ball_overlap(
     cube_lower_wp = points_to_warp(queries_np - radius, device)
     cube_upper_wp = points_to_warp(queries_np + radius, device)
     cube_indices_wp, _cube_offsets_wp = tw.neighbors.query_bvh_box(
-        bvh, cube_lower_wp, cube_upper_wp, include_total=include_total
+        bvh, cube_lower_wp, cube_upper_wp
     )
     assert int(indices_np.size) < int(cube_indices_wp.shape[0])
 
 
-@pytest.mark.parametrize("include_total", [False, True])
-def test_query_bvh_ball_degenerate_inputs(device: str, include_total: bool) -> None:
+def test_query_bvh_ball_degenerate_inputs(device: str) -> None:
     """
-    An empty query set and a query that hits nothing, both honouring ``include_total``.
+    Not a library comparison: an empty query set and a query that hits nothing.
 
     The two early returns, mirroring ``test_query_bvh_box_degenerate_inputs``: a zero-hit query
-    must still produce the offsets shape the general path does, or a caller reading the trailing
-    total breaks.
+    must still produce the total-terminated offsets shape the general path does, or a caller
+    reading the trailing total breaks.
     """
     lower_np = np.zeros((4, 3), dtype=np.float32)
     upper_np = np.full((4, 3), 0.1, dtype=np.float32)
@@ -310,17 +327,15 @@ def test_query_bvh_ball_degenerate_inputs(device: str, include_total: bool) -> N
     )
 
     empty_indices_wp, empty_offsets_wp = tw.neighbors.query_bvh_ball(
-        bvh, wp.empty(0, dtype=wp.vec3, device=device), 0.25, include_total=include_total
+        bvh, wp.empty(0, dtype=wp.vec3, device=device), 0.25
     )
     assert empty_indices_wp.shape == (0,)
-    assert empty_offsets_wp.shape == ((1,) if include_total else (0,))
+    assert np.array_equal(empty_offsets_wp.numpy(), np.zeros(1, np.int32))
 
     far_wp = points_to_warp(np.array([[99.0, 99.0, 99.0]], dtype=np.float32), device)
-    miss_indices_wp, miss_offsets_wp = tw.neighbors.query_bvh_ball(
-        bvh, far_wp, 0.25, include_total=include_total
-    )
+    miss_indices_wp, miss_offsets_wp = tw.neighbors.query_bvh_ball(bvh, far_wp, 0.25)
     assert miss_indices_wp.shape == (0,)
-    assert np.array_equal(miss_offsets_wp.numpy(), np.zeros(2 if include_total else 1, np.int32))
+    assert np.array_equal(miss_offsets_wp.numpy(), np.zeros(2, np.int32))
 
 
 @pytest.mark.parity("query_bvh_box", "open3d")
@@ -337,7 +352,7 @@ def test_query_bvh_box_matches_exact_containment(device: str) -> None:
     below constructs one point on the lower face and one on the upper face rather than trusting
     random data to land there.
 
-    Also pins the two offsets forms against each other, as the uniform-cube sibling's test does.
+    Also pins the total-terminated offsets shape the ball sibling's test pins.
     """
     rng = np.random.default_rng(11)
     points_np = rng.random((400, 3)).astype(np.float32)
@@ -349,7 +364,7 @@ def test_query_bvh_box_matches_exact_containment(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     bvh = tw.neighbors.bvh_from_points(points_wp)
     indices_wp, offsets_wp = tw.neighbors.query_bvh_box(
-        bvh, points_to_warp(lower_np, device), points_to_warp(upper_np, device), include_total=True
+        bvh, points_to_warp(lower_np, device), points_to_warp(upper_np, device)
     )
     indices_np = indices_wp.numpy()
     offsets_np = offsets_wp.numpy()
@@ -378,12 +393,6 @@ def test_query_bvh_box_matches_exact_containment(device: str) -> None:
     # 9 of the 12 boxes hold at least one point here; a run where none did would pass vacuously.
     assert n_nonempty >= 9
 
-    # The length-``m`` form is the same scan buffer's prefix, not a separately computed answer.
-    _short_indices_wp, short_offsets_wp = tw.neighbors.query_bvh_box(
-        bvh, points_to_warp(lower_np, device), points_to_warp(upper_np, device)
-    )
-    assert np.array_equal(short_offsets_wp.numpy(), offsets_np[:-1])
-
     # Inclusive on both faces, and an inverted box selects nothing.
     face_np = np.array([[0.0, 0.5, 0.5], [1.0, 0.5, 0.5], [0.5, 0.5, 0.5]], dtype=np.float32)
     face_bvh = tw.neighbors.bvh_from_points(points_to_warp(face_np, device))
@@ -391,7 +400,6 @@ def test_query_bvh_box_matches_exact_containment(device: str) -> None:
         face_bvh,
         wp.array(np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]], np.float32), wp.vec3, device=device),
         wp.array(np.array([[1.0, 1.0, 1.0], [0.0, 0.0, 0.0]], np.float32), wp.vec3, device=device),
-        include_total=True,
     )
     assert np.array_equal(np.sort(face_indices_wp.numpy()), np.array([0, 1, 2]))
     assert np.array_equal(face_offsets_wp.numpy(), np.array([0, 3, 3]))
@@ -421,7 +429,7 @@ def test_query_bvh_box_matches_meshlib(device: str) -> None:
 
     bvh = tw.neighbors.bvh_from_points(points_to_warp(points_np, device))
     indices_wp, offsets_wp = tw.neighbors.query_bvh_box(
-        bvh, points_to_warp(lower_np, device), points_to_warp(upper_np, device), include_total=True
+        bvh, points_to_warp(lower_np, device), points_to_warp(upper_np, device)
     )
     indices_np, offsets_np = indices_wp.numpy(), offsets_wp.numpy()
 
@@ -460,22 +468,15 @@ def test_query_bvh_box_degenerate_inputs(device: str) -> None:
     bvh = tw.neighbors.bvh_from_points(points_wp)
     empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
 
-    for include_total in (False, True):
-        indices_wp, offsets_wp = tw.neighbors.query_bvh_box(
-            bvh, empty_wp, empty_wp, include_total=include_total
-        )
-        assert indices_wp.shape == (0,)
-        assert offsets_wp.shape == ((1,) if include_total else (0,))
+    indices_wp, offsets_wp = tw.neighbors.query_bvh_box(bvh, empty_wp, empty_wp)
+    assert indices_wp.shape == (0,)
+    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, np.int32))
 
-        far_lower_wp = wp.array(np.full((1, 3), 99.0, np.float32), dtype=wp.vec3, device=device)
-        far_upper_wp = wp.array(np.full((1, 3), 100.0, np.float32), dtype=wp.vec3, device=device)
-        miss_indices_wp, miss_offsets_wp = tw.neighbors.query_bvh_box(
-            bvh, far_lower_wp, far_upper_wp, include_total=include_total
-        )
-        assert miss_indices_wp.shape == (0,)
-        assert np.array_equal(
-            miss_offsets_wp.numpy(), np.zeros(2 if include_total else 1, np.int32)
-        )
+    far_lower_wp = wp.array(np.full((1, 3), 99.0, np.float32), dtype=wp.vec3, device=device)
+    far_upper_wp = wp.array(np.full((1, 3), 100.0, np.float32), dtype=wp.vec3, device=device)
+    miss_indices_wp, miss_offsets_wp = tw.neighbors.query_bvh_box(bvh, far_lower_wp, far_upper_wp)
+    assert miss_indices_wp.shape == (0,)
+    assert np.array_equal(miss_offsets_wp.numpy(), np.zeros(2, np.int32))
 
     with pytest.raises(ValueError, match="same length"):
         tw.neighbors.query_bvh_box(
@@ -787,7 +788,6 @@ def test_query_ball_matches_pytorch3d(device: str, backend: Literal["bvh", "hash
         points_to_warp(queries_np, device),
         radius,
         backend=backend,
-        include_total=True,
     )
 
     counts_p3d = (indices_p3d >= 0).sum(axis=1)
@@ -879,8 +879,9 @@ def test_query_ball_matches_open3d(device: str, backend: Literal["bvh", "hashgri
     offsets_o3d = offsets_o3d.numpy()
 
     neighbors_np = neighbors_wp.numpy()
-    starts_np = offsets_wp.numpy()  # per-query slice starts; the last slice ends at the total
-    ends_np = np.concatenate([starts_np[1:], [neighbors_np.shape[0]]])
+    bounds_np = offsets_wp.numpy()
+    assert int(bounds_np[-1]) == neighbors_np.shape[0]
+    starts_np, ends_np = bounds_np[:-1], bounds_np[1:]
     assert np.array_equal(ends_np - starts_np, np.diff(offsets_o3d))
     for query_index in range(queries.shape[0]):
         set_wp = set(neighbors_np[starts_np[query_index] : ends_np[query_index]])
@@ -1193,6 +1194,68 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     assert np.array_equal(indices_wp.numpy()[in_range], indices_np[in_range])
     assert (indices_wp.numpy()[~in_range] == -1).all()
     assert np.isinf(distances_wp.numpy()[~in_range]).all()
+
+
+def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``scipy.spatial.KDTree``: a ``k > 1`` row the grid defers is still exact.
+
+    A self-query on a cloud whose density falls by two decades along one axis: the grid's cell is
+    sized for the mean spacing, so rows in the sparse end outgrow its widest walk and go to the
+    BVH's radius search rather than scanning the whole cloud. Counting BVH builds keeps it
+    non-vacuous -- the graded self-query must reach the second pass, while a query set displaced
+    off the cloud must not (it keeps the scan). A skipped second pass would leave its rows marked
+    ``DEFERRED_ROW`` and fail the comparison. ``max_radius`` is honoured on the deferred rows too.
+    """
+    rng = np.random.default_rng(23)
+    n = 20_000
+    decades = 2.0 * np.log(10.0)
+    x = np.log1p(rng.random(n) * np.expm1(decades)) / decades
+    graded_np = np.ascontiguousarray(
+        np.stack([x, 0.2 * rng.random(n), 0.2 * rng.random(n)], axis=1), dtype=np.float32
+    )
+    uniform_np = rng.random((n, 3), dtype=np.float32)
+    far_np = np.ascontiguousarray(uniform_np[:500] * 1.5 + 2.0, dtype=np.float32)
+    builds = []
+    original = tw.neighbors.bvh_from_points
+
+    def counting_build(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
+        builds.append(1)
+        return original(points, leaf_size)
+
+    monkeypatch.setattr(tw.neighbors, "bvh_from_points", counting_build)
+    for points_np, queries_np, expect_deferral in (
+        (graded_np, graded_np, True),
+        (uniform_np, far_np, False),
+    ):
+        points_wp = points_to_warp(points_np, device)
+        for k in (8, 30):
+            builds.clear()
+            indices_wp, distances_wp = tw.neighbors.query_nearest(
+                points_wp, points_to_warp(queries_np, device), k=k, backend="hashgrid"
+            )
+            assert bool(builds) == expect_deferral
+            distances_np = KDTree(points_np).query(queries_np, k=k)[0]
+            assert np.allclose(distances_wp.numpy(), distances_np, rtol=1e-5, atol=1e-6)
+            # Indices through the distance they name: a float32 near-tie may order two
+            # neighbours differently from the float64 tree, which the distance row cannot see.
+            named = np.linalg.norm(points_np[indices_wp.numpy()] - queries_np[:, None], axis=2)
+            assert np.allclose(named, distances_np, rtol=1e-5, atol=1e-6)
+
+    points_wp = points_to_warp(graded_np, device)
+    distances_np = KDTree(graded_np).query(graded_np, k=8)[0]
+    cap = float(np.quantile(distances_np[:, -1], 0.99))
+    builds.clear()
+    indices_wp, distances_wp = tw.neighbors.query_nearest(
+        points_wp, points_wp, k=8, backend="hashgrid", max_radius=cap
+    )
+    assert builds
+    in_range = distances_np <= cap
+    assert 0 < (~in_range).sum()  # non-vacuity: some slots are out of range
+    assert np.allclose(distances_wp.numpy()[in_range], distances_np[in_range], rtol=1e-5)
+    assert (indices_wp.numpy()[~in_range] == -1).all()
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])

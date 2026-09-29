@@ -19,6 +19,7 @@ from triwarp.kernels.grouping import (
     hash_find_or_insert,
     hash_slot,
     key_set_remove,
+    pack_index_triple,
     sorted_run_of_length,
     sorted_run_start,
 )
@@ -43,6 +44,7 @@ from triwarp.kernels.scatter import (
     two_rings_hold,
 )
 from triwarp.kernels.triangles import (
+    copy_scanned_face,
     corner_triple,
     face_normal,
     face_normals_and_area,
@@ -52,7 +54,7 @@ from triwarp.kernels.triangles import (
     write_corner_triple,
     write_row_triple,
 )
-from triwarp.kernels.voxels import squared_distance_to_own_cell_center
+from triwarp.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell
 
 # The collapse round loop's third state slot, **appended** after ``array.LOOP_ROUND`` and
 # ``LOOP_CONDITION`` so the shared two keep their numbers: the total commits as of the end of
@@ -596,6 +598,23 @@ def mark_long_region_edges(
 # ---------------------------------------------------------------------------
 
 
+@wp.kernel
+def outside_region_flags(region: wp.array[wp.bool], out_flags: wp.array[wp.int32]) -> None:
+    # ``1`` for a face outside ``region``, as the ``int32`` an in-place ``wp.utils.array_scan``
+    # reads: ``array.mask_not`` and ``array.bool_flags`` in one pass, for
+    # ``remesh._vertex_scale_attribute``'s compaction of the surrounding faces.
+    f = wp.int32(wp.tid())
+    out_flags[f] = wp.where(region[f], 0, 1)
+
+
+@wp.kernel
+def compact_scanned_faces(
+    faces: wp.array[wp.int32], inclusive: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+) -> None:
+    # ``kernels/repair.compact_kept_faces`` without the appended replacement rows.
+    copy_scanned_face(faces, inclusive, wp.int32(wp.tid()), out_faces)
+
+
 @wp.func
 def density_split_wanted(
     a: wp.vec3,
@@ -666,6 +685,7 @@ def emit_density_splits(
     out_scale: wp.array[wp.float32],
     out_faces: wp.array[wp.int32],
     out_region: wp.array[wp.bool],
+    out_region_flags: wp.array[wp.int32],
 ) -> None:
     # One pass of the 1 -> 3 centroid split, faces and new vertices in the same launch.
     #
@@ -680,17 +700,24 @@ def emit_density_splits(
     # exactly where they step.
     #
     # Child faces inherit their parent's region membership, matching
-    # ``subdivide_region_to_size``, so a caller's patch mask survives the pass.
+    # ``subdivide_region_to_size``, so a caller's patch mask survives the pass. The membership is
+    # also written as the ``int32`` flags the flip pass reads, unless ``out_region_flags`` is a null
+    # descriptor -- the ``array.astype`` launch that would otherwise follow every pass.
     f = wp.int32(wp.tid())
     i, j, k = corner_triple(faces, f)
     slot = split_offsets[f]
     first = f + wp.int32(2) * slot
     base = first * 3
+    inside = region[f]
+    flag = wp.where(inside, 1, 0)
+    write_flags = out_region_flags.shape[0] > 0
     if split_offsets[f + 1] == slot:
         out_faces[base + 0] = i
         out_faces[base + 1] = j
         out_faces[base + 2] = k
-        out_region[first] = region[f]
+        out_region[first] = inside
+        if write_flags:
+            out_region_flags[first] = flag
         return
 
     center = n_vertices + slot
@@ -706,7 +733,9 @@ def emit_density_splits(
     out_faces[base + 7] = i
     out_faces[base + 8] = center
     for child in range(3):
-        out_region[first + child] = region[f]
+        out_region[first + child] = inside
+        if write_flags:
+            out_region_flags[first + child] = flag
 
 
 # ---------------------------------------------------------------------------
@@ -2331,6 +2360,23 @@ def fixup_twin_remap(
     remapped = remap[target]
     if remapped != INT32_MAX_CONSTANT:
         twin[h] = remapped
+
+
+@wp.kernel
+def cluster_cell_keys(
+    vertices: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    cell_bound: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+) -> None:
+    # Each vertex's voxel cell, packed straight into the ``uint64`` key ``remesh.cluster_decimate``
+    # deduplicates: ``voxels.cell_indices`` and ``grouping.hash_indices_rows`` in one thread, so the
+    # ``(n, 3)`` cell table they pass between them is never written. The same ``voxel_cell`` and
+    # the same packing, so the keys are theirs bit for bit.
+    v = wp.int32(wp.tid())
+    cell = voxel_cell(vertices[v], origin, inverse_size)
+    out_keys[v] = pack_index_triple(cell[0], cell[1], cell[2], cell_bound)
 
 
 @wp.kernel

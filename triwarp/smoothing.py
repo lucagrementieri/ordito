@@ -318,7 +318,7 @@ def _build_implicit_system(
         ],
         device=device,
     )
-    return wps.bsr_from_triplets(n, n, rows, cols, vals, prune_numerical_zeros=False)
+    return tw.array.csr_from_triplets(n, n, rows, cols, vals)
 
 
 def _apply_volume_constraint(

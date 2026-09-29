@@ -444,17 +444,18 @@ def _classify(
     device = vertices.device
     n_vertices = int(vertices.shape[0])
     n_faces = int(faces.shape[0]) // 3
-    codes = wp.zeros(n_vertices, dtype=wp.int32, device=device)
     boundary_vertex = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     if n_faces == 0:
-        return codes, boundary_vertex
+        return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
     if incidence is None:
         incidence = _edge_incidence(faces, n_vertices)
     m = int(incidence.unique_edges.shape[0])
     if m == 0:
-        return codes, boundary_vertex
+        return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
+    # Every entry is written by the map below.
+    codes = wp.empty(n_vertices, dtype=wp.int32, device=device)
     feature_count = wp.zeros(n_vertices, dtype=wp.int32, device=device)
     wp.launch(
         kernel_remesh.scatter_feature_edge_counts,
@@ -1350,8 +1351,8 @@ def cluster_decimate(
     unreferenced vertices. So the face counts agree exactly and the vertex counts can differ by the
     number of such cells — usually zero, and never in a way that changes the surface.
 
-    The binning goes through [`triwarp.voxels.cell_indices`][triwarp.voxels.cell_indices], but the
-    *dedup* deliberately stays on the packed cell keys
+    The binning is [`triwarp.voxels.cell_indices`][triwarp.voxels.cell_indices]' cell assignment,
+    but the *dedup* deliberately stays on the packed cell keys
     ([`triwarp.grouping.unique_1d`][triwarp.grouping.unique_1d]) rather than moving onto a NanoVDB
     grid: a grid numbers its clusters leaf-major, so preserving today's vertex order would need a
     restoring sort that gives back most of any gain, and it is not worth changing the public output
@@ -1374,13 +1375,19 @@ def cluster_decimate(
     voxel_size, origin, cell_bound = tw.voxels.resolve_voxel_grid(
         vertices, voxel_size, caller="cluster_decimate", return_cell_bound=True
     )
-    cells = tw.voxels.cell_indices(vertices, voxel_size, origin=origin)
-    # The unique cell keys *are* the clusters, so their count is the answer. Only the keys and the
-    # inverse are wanted, so this is ``unique_rows`` without its representative-row gather.
+    # Each vertex's cell, packed into its row key in one launch -- ``voxels.cell_indices`` and
+    # ``grouping.hash_indices_rows`` without the cell table between them. The unique cell keys
+    # *are* the clusters, so their count is the answer. Only the keys and the inverse are wanted,
+    # so this is ``unique_rows`` without its representative-row gather.
+    keys = wp.empty(n_vertices, dtype=wp.uint64, device=device)
+    wp.launch(
+        kernel_remesh.cluster_cell_keys,
+        dim=n_vertices,
+        inputs=[vertices, origin, wp.float32(1.0 / voxel_size), wp.uint64(cell_bound), keys],
+        device=device,
+    )
     cell_keys, labels = tw.grouping.unique_1d(
-        tw.grouping.hash_indices_rows(cells, cell_bound, validate=False),
-        return_inverse=True,
-        max_value=min(cell_bound**3, 1 << 64) - 1,
+        keys, return_inverse=True, max_value=min(cell_bound**3, 1 << 64) - 1
     )
     n_clusters = int(cell_keys.shape[0])
 
@@ -2936,7 +2943,7 @@ def subdivide_loop(
     The operator is assembled from the same three grids and through the same two weight functions
     (``kernels/remesh.loop_odd_weights`` / ``loop_even_weights``) that the position kernels use, so
     the two cannot drift onto different surfaces. It is *not* used to compute the positions -- those
-    stay two direct kernels, since a ``bsr_from_triplets`` build plus a ``bsr_mv`` would make every
+    stay two direct kernels, since a sparse build plus a ``bsr_mv`` would make every
     caller pay for the matrix.
 
     Four launches over three grids -- faces, unique edges, vertices -- plus the shared topology.
@@ -3047,8 +3054,9 @@ def _loop_operator(
     Assemble one Loop pass as a sparse interpolation matrix, from the pass's own intermediates.
 
     Three launches over the three grids the positions come from -- vertices, unique edges, faces --
-    writing into one triplet buffer. ``bsr_from_triplets`` sums coincident entries, which is what
-    lets the odd rows' 3/8 endpoints (edge grid) and 1/8 wings (face grid) be emitted independently.
+    writing into one triplet buffer. ``array.csr_from_triplets`` sums coincident entries, which is
+    what lets the odd rows' 3/8 endpoints (edge grid) and 1/8 wings (face grid) be emitted
+    independently.
     """
     device = faces.device
     n_faces = int(faces.shape[0]) // 3
@@ -3094,9 +3102,7 @@ def _loop_operator(
         ],
         device=device,
     )
-    return wps.bsr_from_triplets(
-        n_vertices + n_unique, n_vertices, rows, cols, values, prune_numerical_zeros=False
-    )
+    return tw.array.csr_from_triplets(n_vertices + n_unique, n_vertices, rows, cols, values)
 
 
 def _split_faces_four(
@@ -3696,6 +3702,7 @@ def refine_region_to_density(
         wp.copy(new_scale, scale, count=n_vertices)
         out_faces = wp.empty(3 * n_out_faces, dtype=wp.int32, device=device)
         out_region = wp.empty(n_out_faces, dtype=wp.bool, device=device)
+        region_flags = wp.empty(n_out_faces, dtype=wp.int32, device=device) if delaunay else None
         wp.launch(
             kernel_remesh.emit_density_splits,
             dim=n_faces,
@@ -3707,7 +3714,13 @@ def refine_region_to_density(
                 split_offsets,
                 wp.int32(n_vertices),
             ],
-            outputs=[new_vertices[n_vertices:], new_scale[n_vertices:], out_faces, out_region],
+            outputs=[
+                new_vertices[n_vertices:],
+                new_scale[n_vertices:],
+                out_faces,
+                out_region,
+                region_flags,
+            ],
             device=device,
         )
         current_vertices = new_vertices
@@ -3715,14 +3728,9 @@ def refine_region_to_density(
         current_faces = out_faces
         current_region = out_region
 
-        if delaunay:
+        if region_flags is not None:
             _flip_region_faces(
-                current_vertices,
-                current_faces,
-                tw.array.astype(current_region, wp.int32),
-                max_angle_change,
-                max_deviation,
-                8,
+                current_vertices, current_faces, region_flags, max_angle_change, max_deviation, 8
             )
 
     # No face was dense enough to split, so all three are still the caller's own buffers -- this one
@@ -3757,14 +3765,24 @@ def _vertex_scale_attribute(
     """
     device = vertices.device
     n_vertices = int(vertices.shape[0])
-    complement = wp.empty(int(region.shape[0]), dtype=wp.bool, device=device)
-    wp.map(kernel_array.mask_not, region, out=complement)
-    outside = tw.array.flatnonzero(complement)
-    surrounding = (
-        faces
-        if int(outside.shape[0]) == 0
-        else tw.array.gather(faces.reshape((-1, 3)), outside).reshape(-1)
+    n_faces = int(region.shape[0])
+    # The outside faces, compacted straight from the in-place scan of their flags: one count read
+    # sizes the buffer, with no complement mask, index list or gathered copy in between.
+    inclusive = wp.empty(n_faces, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_remesh.outside_region_flags, dim=n_faces, inputs=[region, inclusive], device=device
     )
+    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    n_outside = int(read_scalar(inclusive))
+    surrounding = faces
+    if n_outside > 0:
+        surrounding = wp.empty(3 * n_outside, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel_remesh.compact_scanned_faces,
+            dim=n_faces,
+            inputs=[faces, inclusive, surrounding],
+            device=device,
+        )
     unique_edges, _inverse = tw.edges.edges_unique(
         surrounding, n_vertices=n_vertices, validate=False
     )

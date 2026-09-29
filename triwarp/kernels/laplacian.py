@@ -1,6 +1,6 @@
 import warp as wp
 
-from triwarp.kernels.array import OverloadTable
+from triwarp.kernels.array import OverloadTable, csr_key, csr_run_start
 from triwarp.kernels.halfedge import halfedge_destination
 from triwarp.kernels.predicates import doublearea_from_lengths, squared_edge_lengths
 from triwarp.kernels.triangles import face_vertices, row_triple
@@ -188,42 +188,309 @@ def operator_row(
 
 
 @wp.kernel
-def cotmatrix_triplets(
+def mesh_operator_keys(
     faces: wp.array[wp.int32],
-    cot_entries: wp.array2d[wp.Float],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.Float],
+    n_vertices: wp.int32,
+    diagonal: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
-    # Emits the 12 cotangent-Laplacian COO triplets per triangle. ``cot_entries`` and ``out_vals``
-    # are independent generic float types: the half-cotangent weights (typically float32, the
-    # vertex precision) are cast to the requested matrix dtype, so a single ``bsr_from_triplets``
-    # builds a float32 or float64 matrix natively. Building float64 values here (rather than
-    # recasting a float32 matrix) avoids a second ``bsr_from_triplets`` rebuild, which re-sorts an
-    # already-sorted CSR. This was previously described as dodging a Warp ``bsr_mm`` bug; that was
-    # wrong. The nondeterminism came from sizing a rebuild's triplet buffers by ``BsrMatrix.nnz``
-    # (the capacity the matrix was built with) instead of ``nnz_sync()`` (its entry count), leaving
-    # an uninitialized tail for ``bsr_from_triplets`` to read back as triplets.
+    # The sparsity of every vertex operator on a triangle mesh, as ``kernels/array.csr_key`` keys,
+    # for the *directed* pattern build (small meshes): for each face and each corner ``e``, the
+    # edge opposite it both ways -- slots ``6 * f + 2 * e`` and ``+ 1`` hold ``(i, j)`` and
+    # ``(j, i)``, where ``i`` is corner ``e + 1`` and ``j`` corner ``e + 2`` -- and one diagonal
+    # slot per vertex in the tail ``[6 * n_faces, 6 * n_faces + n_vertices)``. The caller fills that
+    # tail with the sentinel first, so a vertex no face references keeps an empty row; every face
+    # writes the same key into a shared vertex's slot, so the race is benign. Both directions carry
+    # the corner slot ``3 * f + e`` as payload -- the convention ``mesh_edge_keys`` shares, so one
+    # value kernel serves both builds; it reads the direction off the row. A diagonal slot's
+    # payload is never read, so it is not written. ``diagonal == 0`` writes no diagonal keys: the
+    # pattern has none, or the caller writes every vertex's (``diagonal_keys``). A degenerate face's
+    # self-edge keeps its keys and lands on the diagonal entry; each value kernel decides what that
+    # means.
+    f = wp.int32(wp.tid())
+    tail = 6 * (faces.shape[0] // 3)
+    for e in range(3):
+        i = faces[f * 3 + (e + 1) % 3]
+        j = faces[f * 3 + (e + 2) % 3]
+        out_keys[f * 6 + e * 2] = csr_key(i, j, n_vertices, n_vertices)
+        out_keys[f * 6 + e * 2 + 1] = csr_key(j, i, n_vertices, n_vertices)
+        out_order[f * 6 + e * 2] = f * 3 + e
+        out_order[f * 6 + e * 2 + 1] = f * 3 + e
+        # Range-checked at the write (CLAUDE.md 12.1): an index past the vertex count must not
+        # become a store past the tail.
+        vertex = faces[f * 3 + e]
+        if diagonal != 0 and vertex >= 0 and vertex < n_vertices:
+            out_keys[tail + vertex] = csr_key(vertex, vertex, n_vertices, n_vertices)
+
+
+@wp.kernel
+def diagonal_keys(n_vertices: wp.int32, base: wp.int32, out_keys: wp.array[wp.uint64]) -> None:
+    # Every vertex's diagonal key, referenced or not, into the tail starting at ``base``.
+    v = wp.int32(wp.tid())
+    out_keys[base + v] = csr_key(v, v, n_vertices, n_vertices)
+
+
+@wp.kernel
+def mesh_halfedge_keys(
+    faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # One key per halfedge ``faces[h] -> faces[next(h)]``, the directed adjacency trimesh's
+    # ``edges_to_coo(mesh.edges)`` builds -- a self-edge included, as an entry on the diagonal.
+    # The payload is the halfedge index.
+    h = wp.int32(wp.tid())
+    out_keys[h] = csr_key(faces[h], halfedge_destination(faces, h), n_vertices, n_vertices)
+    out_order[h] = h
+
+
+# The *undirected* pattern build (large meshes) sorts one key per corner instead of two plus one per
+# vertex: a run of equal ``(min, max)`` keys is one unique edge, and in that order every row's
+# upper half -- the edges whose smaller endpoint it is -- is contiguous and sorted by column. The
+# lower half is the transpose, laid out by a second, stable sort of the unique edges by their larger
+# endpoint over 32-bit keys. Each row is ``[lower | diagonal | upper]``, and an entry's value comes
+# from its edge's run in the first sort, so both builds hand the value kernels the same thing.
+
+
+@wp.kernel
+def mesh_edge_keys(
+    faces: wp.array[wp.int32],
+    n_vertices: wp.int32,
+    mark: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+    out_referenced: wp.array[wp.int32],
+) -> None:
+    # Corner ``e``'s opposite edge as an undirected ``(min, max)`` key with the corner slot
+    # ``3 * f + e`` as payload. A degenerate face's self-edge never gets a key; instead ``mark``
+    # chooses which vertices ``out_referenced`` flags for a diagonal slot: none (0), every in-range
+    # corner (1), or the endpoint of a self-edge (2) -- the entry the directed build keeps for it.
     f = wp.int32(wp.tid())
     for e in range(3):
-        c0 = (e + 1) % 3
-        c1 = (e + 2) % 3
-        source = faces[f * 3 + c0]
-        dest = faces[f * 3 + c1]
-        base = f * 12 + e * 4
-        w = type(out_vals[base])(cot_entries[f, e])
-        out_rows[base + 0] = source
-        out_cols[base + 0] = dest
-        out_vals[base + 0] = w
-        out_rows[base + 1] = dest
-        out_cols[base + 1] = source
-        out_vals[base + 1] = w
-        out_rows[base + 2] = source
-        out_cols[base + 2] = source
-        out_vals[base + 2] = -w
-        out_rows[base + 3] = dest
-        out_cols[base + 3] = dest
-        out_vals[base + 3] = -w
+        i = faces[f * 3 + (e + 1) % 3]
+        j = faces[f * 3 + (e + 2) % 3]
+        key = csr_key(wp.min(i, j), wp.max(i, j), n_vertices, n_vertices)
+        if i == j:
+            key = wp.uint64(n_vertices) * wp.uint64(n_vertices)
+            if mark == 2 and i >= 0 and i < n_vertices:
+                out_referenced[i] = 1
+        out_keys[f * 3 + e] = key
+        out_order[f * 3 + e] = f * 3 + e
+        vertex = faces[f * 3 + e]
+        if mark == 1 and vertex >= 0 and vertex < n_vertices:
+            out_referenced[vertex] = 1
+
+
+@wp.kernel
+def mesh_edge_runs(
+    keys: wp.array[wp.uint64],
+    sentinel: wp.uint64,
+    n_vertices: wp.int32,
+    out_flags: wp.array[wp.int32],
+    out_upper: wp.array[wp.int32],
+    out_lower: wp.array[wp.int32],
+    out_second_keys: wp.array[wp.int32],
+    out_second_order: wp.array[wp.int32],
+) -> None:
+    # Over the sorted corner keys: each run start is one unique edge ``(lo, hi)``. Flag it (the
+    # flags' scan ranks the edges), count it into ``lo``'s upper half and ``hi``'s lower half, and
+    # key it by ``hi`` for the second sort, whose payload is its position here.
+    i = wp.int32(wp.tid())
+    flag = 0
+    second = n_vertices
+    if csr_run_start(keys, i, sentinel):
+        lo = wp.int32(keys[i] // wp.uint64(n_vertices))
+        hi = wp.int32(keys[i] % wp.uint64(n_vertices))
+        wp.atomic_add(out_upper, lo, 1)
+        wp.atomic_add(out_lower, hi, 1)
+        flag = 1
+        second = hi
+    out_flags[i] = flag
+    out_second_keys[i] = second
+    out_second_order[i] = i
+
+
+@wp.kernel
+def mesh_row_counts(
+    upper: wp.array[wp.int32],
+    lower: wp.array[wp.int32],
+    referenced: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    r = wp.int32(wp.tid())
+    out_counts[r] = lower[r] + referenced[r] + upper[r]
+
+
+@wp.func
+def sorted_run_end(keys: wp.array[wp.uint64], i: wp.int32, count: wp.int32) -> wp.int32:
+    """One past the last sorted position of the run of equal keys that starts at ``i``."""
+    key = keys[i]
+    p = i + 1
+    while p < count and keys[p] == key:
+        p += 1
+    return p
+
+
+@wp.kernel
+def mesh_place_upper(
+    keys: wp.array[wp.uint64],
+    inclusive: wp.array[wp.int32],
+    sentinel: wp.uint64,
+    n_vertices: wp.int32,
+    offsets: wp.array[wp.int32],
+    lower: wp.array[wp.int32],
+    referenced: wp.array[wp.int32],
+    upper_before: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_run_start: wp.array[wp.int32],
+) -> None:
+    # Edge ``(lo, hi)`` in row ``lo``: after the lower half and the diagonal, at its rank among the
+    # edges whose smaller endpoint is ``lo`` -- its global rank less the edges of earlier rows.
+    i = wp.int32(wp.tid())
+    if not csr_run_start(keys, i, sentinel):
+        return
+    lo = wp.int32(keys[i] // wp.uint64(n_vertices))
+    rank = inclusive[i] - 1 - upper_before[lo]
+    slot = offsets[lo] + lower[lo] + referenced[lo] + rank
+    out_columns[slot] = wp.int32(keys[i] % wp.uint64(n_vertices))
+    out_run_start[slot] = i
+
+
+@wp.kernel
+def mesh_place_lower(
+    keys: wp.array[wp.uint64],
+    second_keys: wp.array[wp.int32],
+    second_order: wp.array[wp.int32],
+    count: wp.int32,
+    n_vertices: wp.int32,
+    offsets: wp.array[wp.int32],
+    lower: wp.array[wp.int32],
+    referenced: wp.array[wp.int32],
+    lower_before: wp.array[wp.int32],
+    out_columns: wp.array[wp.int32],
+    out_run_start: wp.array[wp.int32],
+) -> None:
+    # Launched over ``max(count, n_vertices)``. As a sorted position of the second sort: edge
+    # ``(lo, hi)`` in row ``hi``, at its rank among the edges whose larger endpoint is ``hi`` --
+    # stable, so in ascending ``lo``. As a vertex: its row's diagonal, which has no contributors.
+    t = wp.int32(wp.tid())
+    if t < n_vertices and referenced[t] != 0:
+        slot = offsets[t] + lower[t]
+        out_columns[slot] = t
+        out_run_start[slot] = 0
+    if t < count:
+        hi = second_keys[t]
+        if hi < n_vertices:
+            i = second_order[t]
+            slot = offsets[hi] + t - lower_before[hi]
+            out_columns[slot] = wp.int32(keys[i] // wp.uint64(n_vertices))
+            out_run_start[slot] = i
+
+
+@wp.kernel
+def cotmatrix_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.Float],
+    out_values: wp.array[wp.Float],
+) -> None:
+    # One thread per row of a mesh operator pattern (``laplacian._mesh_operator_pattern``). An
+    # off-diagonal is the sum of its contributing half-cotangents -- the corner slots ``order[p]``
+    # over its run of equal sorted ``keys`` from ``run_start[k]``, in face order since the sort is
+    # stable -- and the
+    # diagonal is minus the row's off-diagonal sum, in column order, so every row sums to zero up to
+    # that one sum's rounding. A degenerate face's self-edge never reaches a row: its four
+    # contributions ``w + w - w - w`` cancelled exactly in the 12-triplet form too. The
+    # half-cotangents may be float32 or float64 whatever the matrix precision; each is cast once.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    total = type(out_values[start])(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value = type(out_values[k])(0.0)
+        for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+            q = order[p]
+            value += type(out_values[k])(cot_entries[q // 3, q % 3])
+        out_values[k] = value
+        total += value
+    if slot >= 0:
+        out_values[slot] = -total
+
+
+@wp.kernel
+def laplacian_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    vertices: wp.array[wp.vec3],
+    equal_weight: wp.int32,
+    symmetric: wp.int32,
+    out_values: wp.array[wp.Float],
+) -> None:
+    # The row-normalized umbrella operator over a mesh pattern with no diagonal slots. An entry's
+    # weight is ``edge_weight`` of its row and column (cast once). Directed (``symmetric == 0``,
+    # trimesh's ``mesh.edges``): once per halfedge in its run, so a duplicated halfedge counts
+    # twice. Symmetric (trimesh's ``vertex_neighbors``): once per unique edge whatever its run --
+    # but twice for a degenerate face's self-edge, whose unique ``(a, a)`` edge emits both of its
+    # directions onto one entry. The row is then divided by its sum, in column order, if positive.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    total = type(out_values[start])(0.0)
+    for k in range(start, end):
+        c = columns[k]
+        w = type(out_values[k])(edge_weight(i, c, vertices, equal_weight))
+        value = type(out_values[k])(0.0)
+        if symmetric != 0:
+            value = w
+            if c == i:
+                value += w
+        else:
+            for _p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+                value += w
+        out_values[k] = value
+        total += value
+    if total > type(total)(0.0):
+        for k in range(start, end):
+            out_values[k] = out_values[k] / total
+
+
+@wp.kernel
+def graph_laplacian_rows(
+    offsets: wp.array[wp.int32], columns: wp.array[wp.int32], out_values: wp.array[wp.Float]
+) -> None:
+    # ``A - diag(deg)`` over a mesh pattern with every vertex's diagonal: one per neighbour, the
+    # diagonal minus their count (``igl::adjacency_matrix``'s unit weights). A degenerate face's
+    # self-edge is not a neighbour.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    degree = wp.int32(0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+        else:
+            out_values[k] = type(out_values[k])(1.0)
+            degree += 1
+    if slot >= 0:
+        out_values[slot] = -type(out_values[slot])(degree)
 
 
 @wp.func
@@ -236,44 +503,49 @@ def rotation22(angle: wp.float32) -> wp.mat22d:
 
 
 @wp.kernel
-def connection_laplacian_triplets(
+def connection_laplacian_rows(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    run_start: wp.array[wp.int32],
+    keys: wp.array[wp.uint64],
+    count: wp.int32,
+    order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.Float],
     transport_angles: wp.array[wp.float32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.mat22d],
+    out_values: wp.array[wp.mat22d],
 ) -> None:
-    # The vector Laplacian's 12 block triplets per triangle, laid out exactly like
-    # ``cotmatrix_triplets`` but with each off-diagonal weight turned into a rotation: the two
-    # endpoints of an edge measure tangent directions from different reference directions, so a
-    # difference between them is only meaningful after transporting one into the other's frame.
-    #
-    # Built positive semi-definite (positive diagonal), unlike ``cotmatrix``'s igl sign convention,
-    # because every consumer here feeds it straight to a conjugate-gradient solve.
-    f = wp.int32(wp.tid())
-    identity = wp.mat22d(1.0, 0.0, 0.0, 1.0)
-    for e in range(3):
-        # Corner ``e``'s half-cotangent weights the opposite edge, which is halfedge ``e + 1``.
-        h = f * 3 + (e + 1) % 3
-        i = faces[h]
-        j = halfedge_destination(faces, h)
-        w = wp.float64(cot_entries[f, e])
-        rho = transport_angles[h]
-        base = f * 12 + e * 4
-
-        out_rows[base + 0] = i
-        out_cols[base + 0] = j
-        out_vals[base + 0] = -w * rotation22(-rho)
-        out_rows[base + 1] = j
-        out_cols[base + 1] = i
-        out_vals[base + 1] = -w * rotation22(rho)
-        out_rows[base + 2] = i
-        out_cols[base + 2] = i
-        out_vals[base + 2] = w * identity
-        out_rows[base + 3] = j
-        out_cols[base + 3] = j
-        out_vals[base + 3] = w * identity
+    # The vector Laplacian over a mesh operator pattern, one thread per row: each off-diagonal
+    # weight becomes a rotation, since the two endpoints of an edge measure tangent directions from
+    # different reference directions and a difference between them is only meaningful after
+    # transporting one into the other's frame. Corner ``e``'s opposite halfedge ``h`` runs
+    # ``i -> j``; it contributes ``-w R(-rho_h)`` to row ``i`` and ``-w R(rho_h)`` to row ``j``,
+    # summed over the contributing faces in face order. The diagonal is ``sum w * I`` over the
+    # row's entries in column order. Positive semi-definite (positive diagonal), unlike
+    # ``cotmatrix``'s igl sign convention, because every consumer here feeds it straight to a
+    # conjugate-gradient solve. A degenerate face's self-edge never reaches a row.
+    i = wp.int32(wp.tid())
+    start = offsets[i]
+    end = offsets[i + 1]
+    if end == start:
+        return
+    weight = wp.float64(0.0)
+    slot = wp.int32(-1)
+    for k in range(start, end):
+        if columns[k] == i:
+            slot = k
+            continue
+        value = wp.mat22d()
+        for p in range(run_start[k], sorted_run_end(keys, run_start[k], count)):
+            q = order[p]
+            h = (q // 3) * 3 + (q % 3 + 1) % 3
+            w = wp.float64(cot_entries[q // 3, q % 3])
+            rho = transport_angles[h]
+            value += -w * rotation22(wp.where(faces[h] == i, -rho, rho))
+            weight += w
+        out_values[k] = value
+    if slot >= 0:
+        out_values[slot] = weight * wp.mat22d(1.0, 0.0, 0.0, 1.0)
 
 
 @wp.kernel
@@ -323,22 +595,24 @@ _MATRIX_DTYPES = (wp.float32, wp.float64)
 # The concrete handles keyed by the caller's dtype -- see
 # [`OverloadTable`][triwarp.kernels.array.OverloadTable]; worth about a tenth of
 # ``laplacian.cotmatrix`` / ``laplacian.laplacian``, from removing one generic launch each.
-# ``COTMATRIX_TRIPLETS`` keys on the pair ``(entry dtype, matrix dtype)`` because those two
+# ``COTMATRIX_ROWS`` keys on the pair ``(entry dtype, matrix dtype)`` because those two
 # templates are independent, exactly as the registration already was.
 COTMATRIX_ENTRIES: OverloadTable
 COTMATRIX_ENTRIES_INTRINSIC: OverloadTable
 ROW_NORMALIZE: OverloadTable
 LAPLACIAN_TRIPLETS_SYMMETRIC: OverloadTable
 LAPLACIAN_TRIPLETS_DIRECTED: OverloadTable
-COTMATRIX_TRIPLETS: OverloadTable
-CONNECTION_LAPLACIAN_TRIPLETS: OverloadTable
+COTMATRIX_ROWS: OverloadTable
+LAPLACIAN_ROWS: OverloadTable
+GRAPH_LAPLACIAN_ROWS: OverloadTable
+CONNECTION_LAPLACIAN_ROWS: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global COTMATRIX_ENTRIES, COTMATRIX_ENTRIES_INTRINSIC, ROW_NORMALIZE
     global LAPLACIAN_TRIPLETS_SYMMETRIC, LAPLACIAN_TRIPLETS_DIRECTED
-    global COTMATRIX_TRIPLETS, CONNECTION_LAPLACIAN_TRIPLETS
+    global COTMATRIX_ROWS, CONNECTION_LAPLACIAN_ROWS, LAPLACIAN_ROWS, GRAPH_LAPLACIAN_ROWS
     COTMATRIX_ENTRIES = OverloadTable(
         cotmatrix_entries,
         {d: [wp.array[wp.vec3], wp.array[wp.int32], wp.array2d[d]] for d in _MATRIX_DTYPES},
@@ -366,14 +640,17 @@ def _register_overloads() -> None:
     # ``cot_entries`` and the matrix precision are *independent* templates: cotmatrix's
     # docstring says the entries "may be float32 or float64 regardless of dtype: the assembly
     # kernel casts them to the matrix precision", so this is a genuine 2x2, not a diagonal.
-    COTMATRIX_TRIPLETS = OverloadTable(
-        cotmatrix_triplets,
+    COTMATRIX_ROWS = OverloadTable(
+        cotmatrix_rows,
         {
             (entry_dtype, dtype): [
                 wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[wp.int32],
                 wp.array2d[entry_dtype],
-                wp.array[wp.int32],
-                wp.array[wp.int32],
                 wp.array[dtype],
             ]
             for dtype in _MATRIX_DTYPES
@@ -382,15 +659,40 @@ def _register_overloads() -> None:
     )
     # The connection Laplacian's values are always ``wp.mat22d``; only its cotangent entries
     # follow the caller, who may pass their own in place of the float64 default.
-    CONNECTION_LAPLACIAN_TRIPLETS = OverloadTable(
-        connection_laplacian_triplets,
+    LAPLACIAN_ROWS = OverloadTable(
+        laplacian_rows,
         {
             d: [
                 wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[wp.vec3],
+                wp.int32,
+                wp.int32,
+                wp.array[d],
+            ]
+            for d in _MATRIX_DTYPES
+        },
+    )
+    GRAPH_LAPLACIAN_ROWS = OverloadTable(
+        graph_laplacian_rows,
+        {d: [wp.array[wp.int32], wp.array[wp.int32], wp.array[d]] for d in _MATRIX_DTYPES},
+    )
+    CONNECTION_LAPLACIAN_ROWS = OverloadTable(
+        connection_laplacian_rows,
+        {
+            d: [
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.uint64],
+                wp.int32,
+                wp.array[wp.int32],
+                wp.array[wp.int32],
                 wp.array2d[d],
                 wp.array[wp.float32],
-                wp.array[wp.int32],
-                wp.array[wp.int32],
                 wp.array[wp.mat22d],
             ]
             for d in _MATRIX_DTYPES

@@ -1,5 +1,7 @@
 """Regression tests for ``triwarp.geometry`` against ``trimesh.geometry`` (CPU reference)."""
 
+import gc
+
 import numpy as np
 import numpy.typing as npt
 import pytest
@@ -153,14 +155,14 @@ def test_the_packing_family_matches_numpy(device: str, copy: bool) -> None:
     parts_wp = [wp.array(part, dtype=wp.int32, device=device) for part in parts_np]
 
     flat_np = np.concatenate(parts_np)
-    offsets_np = np.cumsum([0] + [part.size for part in parts_np[:-1]])
+    offsets_np = np.cumsum([0] + [part.size for part in parts_np])
     assert np.array_equal(tw.array.concatenate(parts_wp).numpy(), flat_np)
 
     packed_wp, packed_offsets_wp = tw.array.pack_1d_arrays(parts_wp)
     assert np.array_equal(packed_wp.numpy(), flat_np)
     assert np.array_equal(packed_offsets_wp.numpy(), offsets_np.astype(np.int32))
 
-    split_np = np.split(flat_np, offsets_np[1:])
+    split_np = np.split(flat_np, offsets_np[1:-1])
     if copy:
         split_np = [np.copy(part) for part in split_np]
     segments_wp = tw.array.split(packed_wp, packed_offsets_wp, copy=copy)
@@ -180,9 +182,9 @@ def test_the_packing_family_matches_pytorch3d(device: str) -> None:
     it byte-for-byte.
 
     The convention worth pinning is the second argument: pytorch3d's ``first_idxs`` are **starting
-    indices, not counts**, which makes them ``pack_1d_arrays``' ``offsets`` unchanged -- measured
-    ``[0, 3, 8]`` for segment lengths ``(3, 5, 2)`` from both sides. Note that ``offsets`` here is
-    the ``n_segments`` form and its trailing total is what ``padded_to_packed`` wants as
+    indices, not counts**, which makes them ``pack_1d_arrays``' ``offsets`` without its trailing
+    total -- measured ``[0, 3, 8]`` for segment lengths ``(3, 5, 2)`` from both sides, against
+    triwarp's ``[0, 3, 8, 10]``. That trailing total is what ``padded_to_packed`` wants as
     ``total_size``; handing it a mismatched size does not raise, it **corrupts the heap** (the
     C++ kernels bounds-check nothing), which is why the sizes below are read off the buffers.
     """
@@ -192,9 +194,9 @@ def test_the_packing_family_matches_pytorch3d(device: str) -> None:
         [wp.array(segment_np, dtype=wp.float32, device=device) for segment_np in segments_np]
     )
     flat_np, offsets_np = flat_wp.numpy(), offsets_wp.numpy()
-    first_p3d = torch.as_tensor(offsets_np.astype(np.int64), device=device)
+    first_p3d = torch.as_tensor(offsets_np[:-1].astype(np.int64), device=device)
 
-    assert np.array_equal(offsets_np, np.array([0, 3, 8], dtype=np.int32))
+    assert np.array_equal(offsets_np, np.array([0, 3, 8, 10], dtype=np.int32))
     padded_p3d = p3d_ops.packed_to_padded(
         torch.as_tensor(flat_np, device=device), first_p3d, max(len(s) for s in segments_np)
     )
@@ -221,7 +223,7 @@ def test_pack_1d_arrays_reuses_what_split_produced(device: str) -> None:
     a caller's copy into an alias.
     """
     flat_wp = wp.array(np.arange(12, dtype=np.int32), dtype=wp.int32, device=device)
-    offsets_wp = wp.array(np.array([0, 3, 8], dtype=np.int32), dtype=wp.int32, device=device)
+    offsets_wp = wp.array(np.array([0, 3, 8, 12], dtype=np.int32), dtype=wp.int32, device=device)
     segments_wp = tw.array.split(flat_wp, offsets_wp)
 
     packed_wp, packed_offsets_wp = tw.array.pack_1d_arrays(segments_wp, copy=False)
@@ -268,12 +270,13 @@ def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
         packed_wp.numpy(), np.concatenate([loop_wp.numpy() for loop_wp in loops_wp])
     )
     assert offsets_wp.numpy()[0] == 0
+    assert offsets_wp.numpy()[-1] == packed_wp.shape[0]
 
 
 def test_split_views_share_storage_and_copies_do_not(device: str) -> None:
     """Default segments alias the packed buffer; ``copy=True`` detaches them."""
     flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
-    offsets_wp = wp.array(np.array([0, 2], dtype=np.int32), dtype=wp.int32, device=device)
+    offsets_wp = wp.array(np.array([0, 2, 6], dtype=np.int32), dtype=wp.int32, device=device)
 
     views = tw.array.split(flat_wp, offsets_wp)
     copies = tw.array.split(flat_wp, offsets_wp, copy=True)
@@ -285,28 +288,238 @@ def test_split_views_share_storage_and_copies_do_not(device: str) -> None:
 
 
 def test_split_rejects_bad_offsets(device: str) -> None:
+    """``[0, 2]`` over four elements is the unterminated form, and is rejected like the rest."""
     flat_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
-    for bad in ([1, 2], [0, 3, 2], [0, 5]):
+    for bad in ([1, 2, 4], [0, 3, 2, 4], [0, 5], [0, 2], [0]):
         offsets_wp = wp.array(np.array(bad, dtype=np.int32), dtype=wp.int32, device=device)
-        with pytest.raises(ValueError, match="offsets must start at 0"):
+        with pytest.raises(ValueError, match="offsets must be total-terminated"):
             tw.array.split(flat_wp, offsets_wp)
+    with pytest.raises(ValueError, match="total-terminated"):
+        tw.array.split(flat_wp, wp.empty(0, dtype=wp.int32, device=device))
 
 
 def test_split_empty_offsets(device: str) -> None:
-    flat_wp = wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device)
-    assert tw.array.split(flat_wp, wp.empty(0, dtype=wp.int32, device=device)) == []
+    """``[0]`` describes no segments, over an empty buffer."""
+    empty_wp = wp.empty(0, dtype=wp.int32, device=device)
+    assert tw.array.split(empty_wp, wp.zeros(1, dtype=wp.int32, device=device)) == []
+
+
+@pytest.mark.parametrize("copy", [False, True])
+def test_split_accepts_host_offsets(device: str, copy: bool) -> None:
+    """
+    Triwarp against triwarp: host bounds split exactly as the same bounds on the device do.
+
+    The device offsets carry the ``numpy.split`` oracle through the tests above; the host form
+    exists for a caller that already holds the bounds, and must validate the same way.
+    """
+    flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
+    bounds = [0, 2, 2, 6]
+    offsets_wp = wp.array(np.array(bounds, dtype=np.int32), dtype=wp.int32, device=device)
+
+    segments_host = tw.array.split(flat_wp, bounds, copy=copy)
+    segments_device = tw.array.split(flat_wp, offsets_wp, copy=copy)
+
+    assert [s.numpy().tolist() for s in segments_host] == [
+        s.numpy().tolist() for s in segments_device
+    ]
+    assert [s.numpy().tolist() for s in segments_host] == [[0, 1], [], [2, 3, 4, 5]]
+    with pytest.raises(ValueError, match="offsets must be total-terminated"):
+        tw.array.split(flat_wp, [0, 2])
 
 
 @pytest.mark.parametrize("copy", [False, True])
 def test_split_trailing_empty_segment(device: str, copy: bool) -> None:
     """A segment that is empty *at the end* of the buffer splits (Warp rejects ``arr[n:n]``)."""
     flat_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
-    offsets_wp = wp.array(np.array([0, 4, 4], dtype=np.int32), dtype=wp.int32, device=device)
+    offsets_wp = wp.array(np.array([0, 4, 4, 4], dtype=np.int32), dtype=wp.int32, device=device)
 
     segments_wp = tw.array.split(flat_wp, offsets_wp, copy=copy)
 
     assert [int(segment.shape[0]) for segment in segments_wp] == [4, 0, 0]
     assert np.array_equal(segments_wp[0].numpy(), np.arange(4, dtype=np.int32))
+
+
+# Every dtype ``split`` is reached with in the package: index loops and neighbour lists
+# (``int32``), neighbour distances (``float32``), mesh components and traced polylines
+# (``vec3``), plus ``float64`` and ``vec2`` for the widths in between.
+_SPLIT_LAYOUTS: dict[type, tuple[type, int]] = {
+    wp.int32: (np.int32, 1),
+    wp.float32: (np.float32, 1),
+    wp.float64: (np.float64, 1),
+    wp.vec2: (np.float32, 2),
+    wp.vec3: (np.float32, 3),
+}
+_SPLIT_DTYPES = list(_SPLIT_LAYOUTS)
+
+
+def _warp_array_of(dtype: type, n: int, device: str, **kwargs: bool) -> wp.array:
+    """Build a length-``n`` array of ``dtype`` whose every scalar component is distinct."""
+    scalar_np, width = _SPLIT_LAYOUTS[dtype]
+    values_np = np.arange(n * width, dtype=scalar_np)
+    shaped_np = values_np.reshape(n, width) if width > 1 else values_np
+    return wp.array(shaped_np, dtype=dtype, device=device, **kwargs)
+
+
+@pytest.mark.parametrize("dtype", _SPLIT_DTYPES, ids=lambda d: d.__name__)
+def test_segment_views_match_real_slices(device: str, dtype: type) -> None:
+    """
+    Triwarp against Warp: every view ``split`` builds carries exactly a real slice's state.
+
+    ``split`` stamps its views from one template slice's ``__dict__`` rather than slicing per
+    segment, so the claim is that the two objects are indistinguishable. It is checked key by key
+    -- the same key set, and equal values everywhere except ``_ref``, which must be the base array
+    itself -- so a Warp release that adds, drops or renames per-view state fails here. The bounds
+    include an interior empty segment, which Warp can slice, and a trailing one, which it cannot
+    (``arr[n:n]`` raises): that one is compared against an interior empty slice moved one past the
+    last element.
+    """
+    n = 37
+    base_wp = _warp_array_of(dtype, n, device)
+    starts = [0, 5, 5, 6, 20, 37]
+    bounds = [*starts, n]
+    offsets_wp = wp.array(np.array(bounds, dtype=np.int32), dtype=wp.int32, device=device)
+
+    views_wp = tw.array.split(base_wp, offsets_wp)
+
+    assert len(views_wp) == len(starts)
+    stride = int(base_wp.strides[0])
+    for view_wp, begin, end in zip(views_wp, bounds[:-1], bounds[1:], strict=True):
+        if end > begin or end < n:
+            slice_state = dict(base_wp[begin:end].__dict__)
+        else:
+            slice_state = dict(base_wp[0:0].__dict__)
+            slice_state["ptr"] = int(base_wp.ptr) + begin * stride
+        view_state = view_wp.__dict__
+        assert type(view_wp) is type(base_wp)
+        assert sorted(view_state) == sorted(slice_state)
+        assert view_state["_ref"] is base_wp
+        assert slice_state["_ref"] is base_wp
+        for key, value in slice_state.items():
+            if key != "_ref":
+                assert view_state[key] == value, key
+        assert np.array_equal(view_wp.numpy(), base_wp.numpy()[begin:end])
+
+
+@pytest.mark.parametrize("dtype", _SPLIT_DTYPES, ids=lambda d: d.__name__)
+def test_segment_views_keep_their_base_alive_and_write_through(device: str, dtype: type) -> None:
+    """
+    Triwarp against NumPy: stamped views outlive their base and a kernel writing one writes it.
+
+    The base is dropped and the pool churned before the views are read, so a view that did not hold
+    its base would read recycled memory. ``wp.copy`` into a view and ``wp.clone`` of the trailing
+    empty one exercise the pointer every stamped view is launched with.
+    """
+    n = 29
+    base_wp = _warp_array_of(dtype, n, device)
+    expected_np = base_wp.numpy().copy()
+    starts = [0, 7, 7, 18, 29]
+    offsets_wp = wp.array(np.array([*starts, n], dtype=np.int32), dtype=wp.int32, device=device)
+    views_wp = tw.array.split(base_wp, offsets_wp)
+
+    wp.copy(views_wp[2], views_wp[3], count=7)  # elements 18..24 over elements 7..13
+    wp.synchronize_device(device)
+    del base_wp
+    gc.collect()
+    _churn = [wp.zeros(n * 4, dtype=dtype, device=device) for _ in range(8)]
+
+    trailing_wp = wp.clone(views_wp[-1])
+    assert int(trailing_wp.shape[0]) == 0
+    bounds = [*starts, n]
+    expected_np[7:14] = expected_np[18:25]
+    for view_wp, begin, end in zip(views_wp, bounds[:-1], bounds[1:], strict=True):
+        assert np.array_equal(view_wp.numpy(), expected_np[begin:end])
+    del _churn
+
+
+@pytest.mark.parametrize("dtype", [*_SPLIT_DTYPES, wp.uint8], ids=lambda d: d.__name__)
+def test_split_copies_past_the_one_launch_threshold(device: str, dtype: type) -> None:
+    """
+    Triwarp against NumPy: ``copy=True`` over enough segments for the one-launch copy is exact.
+
+    Forty segments -- past ``PACK_SEGMENTS_KERNEL_FROM`` -- with an interior and a trailing empty
+    one, each checked against the NumPy slice and for owning its storage: no copy may point into
+    the base, and rewriting the base afterwards must leave every copy unchanged. ``uint8``, whose
+    elements are not whole 4-byte words, is the per-segment clone fallback at the same count.
+    """
+    assert tw.array.PACK_SEGMENTS_KERNEL_FROM <= 40
+    layouts = {**_SPLIT_LAYOUTS, wp.uint8: (np.uint8, 1)}
+    scalar_np, width = layouts[dtype]
+    n = 211
+    values_np = (np.arange(n * width) % 251).astype(scalar_np)
+    shaped_np = values_np.reshape(n, width) if width > 1 else values_np
+    base_wp = wp.array(shaped_np, dtype=dtype, device=device)
+    starts = np.linspace(0, n - 11, 38).astype(np.int32).tolist()
+    starts = [*starts[:5], starts[5], *starts[5:], n]  # an interior and a trailing empty segment
+    assert len(starts) == 40
+    offsets_wp = wp.array(np.array([*starts, n], dtype=np.int32), dtype=wp.int32, device=device)
+
+    copies_wp = tw.array.split(base_wp, offsets_wp, copy=True)
+    base_begin = int(base_wp.ptr)
+    base_end = base_begin + n * int(base_wp.strides[0])
+    base_wp.zero_()
+
+    bounds = [*starts, n]
+    assert len(copies_wp) == len(starts)
+    for copy_wp, begin, end in zip(copies_wp, bounds[:-1], bounds[1:], strict=True):
+        assert copy_wp.dtype == dtype
+        assert int(copy_wp.shape[0]) == end - begin
+        assert copy_wp._ref is None
+        if end > begin:
+            assert not base_begin <= int(copy_wp.ptr) < base_end
+        assert np.array_equal(copy_wp.numpy(), shaped_np[begin:end])
+
+
+def test_segment_views_fall_back_for_grad_and_strided_bases(device: str) -> None:
+    """
+    Triwarp against NumPy: the bases a template cannot describe still split correctly.
+
+    A ``requires_grad`` base yields non-empty segments that carry their own ``grad`` view, as a
+    real slice does, and a strided base (every other element) yields views reading the right
+    elements.
+    """
+    starts = [0, 3, 3, 8]
+    offsets_wp = wp.array(np.array([*starts, 10], dtype=np.int32), dtype=wp.int32, device=device)
+    grad_wp = _warp_array_of(wp.float32, 10, device, requires_grad=True)
+    grad_views_wp = tw.array.split(grad_wp, offsets_wp)
+    assert all(
+        view.requires_grad and view.grad is not None
+        for view in grad_views_wp
+        if int(view.shape[0]) > 0
+    )
+    first_grad_wp, base_grad_wp = grad_views_wp[0].grad, grad_wp.grad
+    assert first_grad_wp is not None
+    assert base_grad_wp is not None
+    assert int(first_grad_wp.ptr) == int(base_grad_wp.ptr)
+
+    wide_wp = _warp_array_of(wp.int32, 20, device)
+    strided_wp = wide_wp[::2]
+    assert not strided_wp.is_contiguous
+    strided_views_wp = tw.array.split(strided_wp, offsets_wp)
+    strided_np = wide_wp.numpy()[::2]
+    for view_wp, begin, end in zip(strided_views_wp, starts, [*starts[1:], 10], strict=True):
+        assert np.array_equal(view_wp.numpy(), strided_np[begin:end])
+
+
+def test_split_row_size_counts_rows(device: str) -> None:
+    """Class A: ``row_size=3`` splits a flat face buffer at ``3 * offsets``, as numpy does."""
+    flat_np = np.arange(3 * 7, dtype=np.int32)
+    flat_wp = wp.array(flat_np, dtype=wp.int32, device=device)
+    offsets_wp = wp.array(np.array([0, 2, 2, 5, 7], dtype=np.int32), dtype=wp.int32, device=device)
+
+    segments_wp = tw.array.split(flat_wp, offsets_wp, row_size=3)
+
+    segments_np = np.split(flat_np, [6, 6, 15])
+    assert len(segments_wp) == len(segments_np)
+    for segment_wp, segment_np in zip(segments_wp, segments_np, strict=True):
+        assert np.array_equal(segment_wp.numpy(), segment_np)
+    with pytest.raises(ValueError, match="row_size"):
+        tw.array.split(flat_wp, offsets_wp, row_size=2)
+    with pytest.raises(ValueError, match="offsets must be total-terminated"):
+        tw.array.split(
+            flat_wp,
+            wp.array(np.array([0, 8], dtype=np.int32), dtype=wp.int32, device=device),
+            row_size=3,
+        )
 
 
 @pytest.mark.parametrize(
@@ -401,7 +614,7 @@ def test_pack_1d_wp_arrays(device: str):
     assert flat.device == device
     assert offsets.device == device
     assert np.array_equal(flat.numpy(), np.array([1, 2, 3, 4], dtype=np.int32))
-    assert np.array_equal(offsets.numpy(), np.array([0, 3, 3], dtype=np.int32))
+    assert np.array_equal(offsets.numpy(), np.array([0, 3, 3, 4], dtype=np.int32))
 
 
 def test_pack_1d_wp_arrays_vec3(device: str):
@@ -413,7 +626,7 @@ def test_pack_1d_wp_arrays_vec3(device: str):
     expected_np = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [2.0, 2.0, 2.0]], dtype=np.float32)
     flat_wp_np = flat.numpy().reshape(-1, 3)
     assert np.allclose(flat_wp_np, expected_np, rtol=1e-5, atol=1e-5)
-    assert np.array_equal(offsets.numpy(), np.array([0, 2], dtype=np.int32))
+    assert np.array_equal(offsets.numpy(), np.array([0, 2, 3], dtype=np.int32))
 
 
 def test_pack_1d_wp_arrays_dtype_mismatch(device: str):
@@ -466,6 +679,77 @@ def test_triplet_buffers_zero_length(device: str) -> None:
     rows_wp, cols_wp, values_wp = tw.array.triplet_buffers(0, wp.float32, device)
     for buffer_wp in (rows_wp, cols_wp, values_wp):
         assert buffer_wp.shape == (0,)
+
+
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
+def test_csr_from_triplets_matches_warp_sparse(dtype: type, device: str) -> None:
+    """
+    ``csr_from_triplets`` assembles what ``warp.sparse.bsr_from_triplets`` assembles.
+
+    Not a library comparison: Warp's own builder is the oracle for the replacement. The triplets
+    carry duplicates, indices outside the matrix on both axes, and empty rows. The pattern must be
+    identical and the values equal to rounding -- bit-identical on CUDA, where both sum in triplet
+    order; Warp's CPU path sums in another order.
+    """
+    rng = np.random.default_rng(3)
+    n_rows, n_cols, m = 40, 30, 500
+    rows_np = rng.integers(-2, n_rows + 2, m).astype(np.int32)
+    cols_np = rng.integers(-2, n_cols + 2, m).astype(np.int32)
+    values_np = (rng.standard_normal(m) * 10).astype(wp.dtype_to_numpy(dtype))
+    rows_np[rows_np == 7] = 8  # an empty row
+    rows_wp = wp.array(rows_np, dtype=wp.int32, device=device)
+    cols_wp = wp.array(cols_np, dtype=wp.int32, device=device)
+    values_wp = wp.array(values_np, dtype=dtype, device=device)
+    warp_wp = wps.bsr_from_triplets(
+        n_rows, n_cols, rows_wp, cols_wp, values_wp, prune_numerical_zeros=False
+    )
+    ours_wp = tw.array.csr_from_triplets(n_rows, n_cols, rows_wp, cols_wp, values_wp)
+    n_entries = warp_wp.nnz_sync()
+    assert ours_wp.nnz_sync() == n_entries
+    assert np.array_equal(ours_wp.offsets.numpy(), warp_wp.offsets.numpy())
+    assert np.array_equal(ours_wp.columns.numpy()[:n_entries], warp_wp.columns.numpy()[:n_entries])
+    assert np.allclose(
+        ours_wp.values.numpy()[:n_entries], warp_wp.values.numpy()[:n_entries], rtol=1e-6, atol=1e-5
+    )
+
+
+def test_csr_from_triplets_prunes_assembled_zeros(device: str) -> None:
+    """
+    Pruning drops every entry whose *sum* is zero, where ``bsr_from_triplets`` keeps it.
+
+    Not a library comparison: Warp's builder is the oracle, and the two are meant to differ in one
+    way. Warp drops zero-valued triplets before summing, so an entry whose triplets cancel stays,
+    holding zero; ``csr_from_triplets`` drops it. Every entry Warp keeps that ours drops must
+    therefore hold zero there, and every entry ours keeps must match Warp's.
+    """
+    # (0, 0): 1 + 2; (1, 1): 3 - 3 cancels; (2, 0): a lone zero triplet; (2, 2): 4.
+    rows_wp = wp.array([0, 0, 1, 1, 2, 2], dtype=wp.int32, device=device)
+    cols_wp = wp.array([0, 0, 1, 1, 0, 2], dtype=wp.int32, device=device)
+    values_wp = wp.array([1.0, 2.0, 3.0, -3.0, 0.0, 4.0], dtype=wp.float32, device=device)
+    ours_wp = tw.array.csr_from_triplets(
+        3, 3, rows_wp, cols_wp, values_wp, prune_numerical_zeros=True
+    )
+    warp_wp = wps.bsr_from_triplets(3, 3, rows_wp, cols_wp, values_wp, prune_numerical_zeros=True)
+    n_ours, n_warp = ours_wp.nnz_sync(), warp_wp.nnz_sync()
+    assert np.array_equal(ours_wp.offsets.numpy(), [0, 1, 1, 2])
+    assert np.array_equal(ours_wp.columns.numpy()[:n_ours], [0, 2])
+    assert np.array_equal(ours_wp.values.numpy()[:n_ours], [3.0, 4.0])
+
+    def entries(matrix: wps.BsrMatrix, n: int) -> dict[tuple[int, int], float]:
+        offsets = matrix.offsets.numpy()
+        rows = np.repeat(np.arange(offsets.shape[0] - 1), np.diff(offsets))
+        return dict(
+            zip(
+                zip(rows.tolist(), matrix.columns.numpy()[:n].tolist(), strict=True),
+                matrix.values.numpy()[:n].tolist(),
+                strict=True,
+            )
+        )
+
+    ours, warp = entries(ours_wp, n_ours), entries(warp_wp, n_warp)
+    assert all(warp.get(key) == value for key, value in ours.items())
+    dropped = [value for key, value in warp.items() if key not in ours]
+    assert dropped == [0.0]  # (1, 1): Warp keeps the cancelled entry
 
 
 @pytest.mark.parametrize("data", [None, np.arange(1, 13, dtype=np.int32)])
@@ -761,30 +1045,25 @@ def test_mask_to_compact_ranks_empty(device: str) -> None:
     assert index_map_wp.shape == (0,)
 
 
-@pytest.mark.parametrize("include_total", [False, True], ids=["plain", "total"])
-def test_counts_to_offsets(device: str, include_total: bool) -> None:
-    """
-    Exclusive prefix sum, in both offset conventions.
-
-    The total-terminated form is the length-``n + 1`` CSR array ``segmented_sort_pairs`` wants; it
-    the same buffer, so the two must agree on their common prefix and the total.
-    """
+def test_counts_to_offsets(device: str) -> None:
+    """Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero."""
     rng = np.random.default_rng(41)
     counts_np = rng.integers(0, 7, size=32).astype(np.int32)
     counts_wp = wp.array(counts_np, dtype=wp.int32, device=device)
-    offsets_wp, total = tw.array.counts_to_offsets(counts_wp, include_total=include_total)
+    offsets_wp, total = tw.array.counts_to_offsets(counts_wp)
 
-    exclusive_np = np.concatenate([[0], np.cumsum(counts_np)]).astype(np.int32)
     assert total == int(counts_np.sum())
-    assert np.array_equal(offsets_wp.numpy(), exclusive_np if include_total else exclusive_np[:-1])
+    assert np.array_equal(
+        offsets_wp.numpy(), np.concatenate([[0], np.cumsum(counts_np)]).astype(np.int32)
+    )
 
 
-@pytest.mark.parametrize("include_total", [False, True], ids=["plain", "total"])
-def test_counts_to_offsets_empty(device: str, include_total: bool) -> None:
+def test_counts_to_offsets_empty(device: str) -> None:
+    """No counts scan to the one-element ``[0]``, the empty terminated form."""
     counts_wp = wp.empty(0, dtype=wp.int32, device=device)
-    offsets_wp, total = tw.array.counts_to_offsets(counts_wp, include_total=include_total)
+    offsets_wp, total = tw.array.counts_to_offsets(counts_wp)
     assert total == 0
-    assert np.array_equal(offsets_wp.numpy(), np.zeros(1 if include_total else 0, dtype=np.int32))
+    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def test_remap_indices_passes_negative_sentinels_through(device: str) -> None:
@@ -1265,25 +1544,24 @@ def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> N
 
 
 @pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (4,), (0, 0, 2)])
-def test_segment_owner_labels_unterminated_matches_repeat(device, sizes):
+def test_segment_owner_labels_matches_repeat(device, sizes):
     """
-    Not a library comparison: pins the unterminated form to ``numpy.repeat`` of the labels.
+    Not a library comparison: pins the owner labels to ``numpy.repeat`` of the segment indices.
 
-    ``segment_owner_labels`` takes the exclusive scan without its terminator plus the total as a
-    scalar; the answer must be the same owner array the terminated form writes, including empty
-    segments and an empty trailing segment.
+    ``segment_owner_labels`` takes the total-terminated offsets; the answer must be the owner array
+    ``numpy.repeat`` builds, including empty segments and an empty trailing segment.
     """
     from triwarp.kernels import array as kernel_array
 
     sizes_np = np.asarray(sizes, dtype=np.int32)
     total = int(sizes_np.sum())
-    offsets_np = np.concatenate([[0], np.cumsum(sizes_np)[:-1]]).astype(np.int32)
+    offsets_np = np.concatenate([[0], np.cumsum(sizes_np)]).astype(np.int32)
     offsets_wp = wp.array(offsets_np, dtype=wp.int32, device=device)
     owner_wp = wp.full(total, -1, dtype=wp.int32, device=device)
     wp.launch(
         kernel_array.segment_owner_labels,
         dim=len(sizes),
-        inputs=[offsets_wp, wp.int32(total), owner_wp],
+        inputs=[offsets_wp, owner_wp],
         device=device,
     )
     assert np.array_equal(owner_wp.numpy(), np.repeat(np.arange(len(sizes)), sizes_np))

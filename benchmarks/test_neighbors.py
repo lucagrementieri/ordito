@@ -411,7 +411,10 @@ def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
 @pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d", "pytorch3d")
 def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
     """
-    ``k=7`` BVH k-NN — ``ball_pivoting``'s seed-candidate table.
+    ``k=7`` BVH k-NN: the tree side of the backend pair ``query_nearest_hashgrid_k7`` completes.
+
+    ``ball_pivoting``'s ``k=7`` seed-candidate table is a self-query on the default backend, which
+    this displaced query set does not reproduce; the pair times the two indexes on one input.
 
     **pytorch3d** is the fifth exact k-NN and the only reference with GPU kernels, so its
     ``-cuda`` row is the one GPU-against-GPU comparison in the module. It has no spatial structure
@@ -648,7 +651,7 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
         neighbors, _distances, offsets = bench_case.run(
             lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=bvh)
         )
-        assert offsets.shape[0] == int(queries.shape[0])
+        assert offsets.shape[0] == int(queries.shape[0]) + 1
         assert neighbors.shape[0] >= 0
     elif bench_case.kind == "open3d":
         import open3d as o3d
@@ -713,9 +716,7 @@ def test_query_bvh_box(bench_case: BenchCase) -> None:
     bvh = _bvh(bench_case)
     lower_wp = wp.array(lower_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
     upper_wp = wp.array(upper_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
-    indices, offsets = bench_case.run(
-        lambda: tw.neighbors.query_bvh_box(bvh, lower_wp, upper_wp, include_total=True)
-    )
+    indices, offsets = bench_case.run(lambda: tw.neighbors.query_bvh_box(bvh, lower_wp, upper_wp))
     assert offsets.shape == (centers_np.shape[0] + 1,)
     assert indices.shape[0] >= 0
 
@@ -771,7 +772,7 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     neighbors, _distances, offsets = bench_case.run(
         lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=grid)
     )
-    assert offsets.shape[0] == int(queries.shape[0])
+    assert offsets.shape[0] == int(queries.shape[0]) + 1
     assert neighbors.shape[0] >= 0
 
 

@@ -450,12 +450,14 @@ def thickness(
         wp.map(wp.mul, radii, wp.float32(2.0), out=radii)
         return radii
 
-    normals, max_t = _resolve_normals_and_radius(mesh, points, normals, "thickness")
+    # No ray length: an unbounded ``longest_ray`` finds the same first hit as one bounded by the
+    # box enclosing the mesh and the points, and a miss is ``inf`` either way.
+    normals = _resolve_normals(mesh, points, normals, "thickness")
     ray_dirs = normals
     if not exterior:
         ray_dirs = wp.empty(int(points.shape[0]), dtype=wp.vec3, device=points.device)
         wp.map(wp.neg, normals, out=ray_dirs)
-    return tw.ray.longest_ray(mesh, points, ray_dirs, max_t=max_t)
+    return tw.ray.longest_ray(mesh, points, ray_dirs)
 
 
 def max_tangent_sphere(
@@ -536,6 +538,10 @@ def max_tangent_sphere(
     # One reduction of ``mesh.points``, not two: ``max_t`` needs the box enclosing the mesh *and*
     # the queries, while the convergence threshold is a fraction of the mesh's own diagonal. Taking
     # the mesh corners once and deriving both saves an ``aabb`` pass and its host sync.
+    #
+    # ``max_t`` is part of the answer, not only a bound: the shrink step's closest-point query is
+    # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
+    # an unbounded query would keep shrinking it, so the two converge to different spheres.
     mesh_lower, mesh_upper = tw.bounds.aabb(mesh.points)
     query_lower, query_upper = tw.bounds.aabb(points)
     union_lower, union_upper = tw.bounds.aabb_union(
@@ -655,9 +661,9 @@ def _resolve_normals(
     Per-point normals: ``normals`` itself when given (length-checked), else the closest face's.
 
     Split out of [`_resolve_normals_and_radius`][triwarp.visibility._resolve_normals_and_radius]
-    so [`max_tangent_sphere`][triwarp.visibility.max_tangent_sphere] can share the validation and
-    defaulting without also paying for the union-box diagonal it does not use -- it derives its own
-    diagonal from a reduction it performs anyway (see its own docstring note on why).
+    so [`max_tangent_sphere`][triwarp.visibility.max_tangent_sphere] and ``thickness(method="ray")``
+    can share the validation and defaulting without also paying for the union-box diagonal: the
+    first derives its own from a reduction it performs anyway, and the second needs none.
 
     Raises
     ------

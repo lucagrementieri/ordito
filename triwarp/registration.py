@@ -354,18 +354,14 @@ def icp(
     # ``total`` is the transform kept so far, and ``_resolve_initial``'s own copy, so the loop may
     # rewrite it in place. The source is never moved inside the loop: each correspondence pass
     # moves its own point by ``total`` in registers, and ``transformed`` is written again after the
-    # loop by the transform it kept. The seed image sizes a mesh target's query radius and is the
-    # answer of a call that runs no iteration.
+    # loop by the transform it kept. The seed image is the answer of a call that runs no
+    # iteration.
     total = _resolve_initial(initial, device)
     transformed = wp.empty(n, dtype=wp.vec3, device=device)
-    seeded = max_iterations <= 0 or _is_mesh_target(target_faces)
-    if seeded:
-        _apply_transform(a, total, transformed)
     if max_iterations <= 0:
+        _apply_transform(a, total, transformed)
         return total, transformed, math.inf
-    mesh, query_max, target_index = _resolve_icp_target(
-        target_vertices, target_faces, transformed, max_distance, "icp"
-    )
+    mesh, query_max, target_index = _resolve_icp_target(target_vertices, target_faces, "icp")
     search_mesh = mesh if mesh is not None else target_index
     assert search_mesh is not None
 
@@ -445,8 +441,7 @@ def icp(
         replay = record_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], iterate)
         if max_distance is not None and int(read_scalar(state, int(kernel_array.LOOP_ROUND))) == 0:
             # Weightless at the seed: ``total`` is the seed, and ``transformed`` its image.
-            if not seeded:
-                _apply_transform(a, total, transformed)
+            _apply_transform(a, total, transformed)
             return total, transformed, math.inf
         replay()
     _apply_transform(a, total, transformed)
@@ -609,15 +604,12 @@ def icp_point_to_plane(
     if n == 0 or int(target_vertices.shape[0]) == 0:
         return _identity_mat44(device), wp.clone(a), math.inf
 
-    # ``current`` is the moving source. Every search writes it, the first from ``a`` and the seed,
-    # so only a mesh target, whose query radius is sized from it, needs the seed image first.
+    # ``current`` is the moving source. Every search writes it, the first from ``a`` and the seed.
     initial_matrix = _resolve_initial(initial, device)
     current = wp.empty(n, dtype=wp.vec3, device=device)
-    if is_mesh:
-        _apply_transform(a, initial_matrix, current)
 
     mesh, query_max, target_index = _resolve_icp_target(
-        target_vertices, target_faces, current, max_distance, "icp_point_to_plane"
+        target_vertices, target_faces, "icp_point_to_plane"
     )
     face_normals: wp.array[wp.vec3] | None = None
     if is_mesh:
@@ -914,11 +906,7 @@ def _resolve_initial(
 
 
 def _resolve_icp_target(
-    target_vertices: wp.array[wp.vec3],
-    target_faces: wp.array[wp.int32] | None,
-    current: wp.array[wp.vec3],
-    max_distance: float | None,
-    caller: str,
+    target_vertices: wp.array[wp.vec3], target_faces: wp.array[wp.int32] | None, caller: str
 ) -> tuple[wp.Mesh | None, float, wp.Mesh | None]:
     """
     Build the loop-invariant search state for whichever target kind was supplied.
@@ -933,11 +921,6 @@ def _resolve_icp_target(
         ``(m,)`` target positions.
     target_faces
         Flat triangle index buffer, or ``None`` / empty for a point-cloud target.
-    current
-        The transformed source, used only to size the mesh query radius.
-    max_distance
-        Correspondence rejection distance; widens the query radius when larger than the box
-        diagonal.
     caller
         Calling function's name, for ``require_nonempty_mesh``'s error message.
 
@@ -953,10 +936,9 @@ def _resolve_icp_target(
     require_nonempty_mesh(target_faces, caller)
     # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
     mesh = wp.Mesh(points=target_vertices, indices=target_faces)
-    query_max = tw.bounds.enclosing_diagonal(mesh.points, current)
-    if max_distance is not None:
-        query_max = max(query_max, max_distance)
-    return mesh, query_max, None
+    # An unbounded closest-point query: the correspondence gate is ``max_distance``, applied to
+    # the distance the query returns, so the query itself needs no radius.
+    return mesh, math.inf, None
 
 
 def _target_index(target_vertices: wp.array[wp.vec3]) -> wp.Mesh:

@@ -50,7 +50,6 @@ from triwarp.kernels import neighbors as kernel_neighbors
 from triwarp.kernels import proximity as kernel_proximity
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import triangles as kernel_triangles
-from triwarp.triangles import face_normals_and_areas
 
 # Elements per thread for the two *per-query* lane-free reductions here (solid-angle sum, packed
 # support argmax). Unlike a global reduction, these have one accumulator per query, so the query
@@ -147,8 +146,9 @@ def closest_point_on_mesh(
         ``(m,)`` query positions in space as ``wp.vec3``.
     max_dist
         Maximum search radius per query. Faces farther than this are ignored.
-        When ``None``, derived from the axis-aligned box enclosing mesh
-        vertices and query points.
+        When ``None``, the search is
+        unbounded, which finds the same closest point as any radius at least as long as the
+        diagonal of the box enclosing the mesh and the query points.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the clone and BVH
         build this otherwise pays on every call. Purely an optimization: the answer is identical
@@ -194,7 +194,7 @@ def closest_point_on_mesh(
         # The mesh aliases the caller's buffers and is discarded here, so it needs no copy.
         mesh = wp.Mesh(points=vertices, indices=faces)
     if max_dist is None:
-        max_dist = tw.bounds.enclosing_diagonal(mesh.points, points)
+        max_dist = math.inf
 
     out_closest = wp.empty(m, dtype=wp.vec3, device=device)
     out_distance = wp.empty(m, dtype=wp.float32, device=device)
@@ -580,13 +580,13 @@ def normals_at_closest_faces(
     points
         ``(m,)`` query positions as ``wp.vec3``.
     max_dist
-        Maximum search radius per query. When ``None``, derived from the
-        axis-aligned box enclosing mesh vertices and query points.
+        Maximum search radius per query. When ``None``, the search is
+        unbounded, which finds the same closest point as any radius at least as long as the
+        diagonal of the box enclosing the mesh and the query points.
     face_normals
         Optional length-``n_faces`` unit face normals of ``mesh``
-        ([`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]); recomputed when
-        ``None``. This function only gathers from them, so a caller issuing several query batches
-        against one mesh should pass them --
+        ([`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]); when ``None``,
+        each query's hit face normal is computed from its corners instead, to the same value.
         [`Trimesh.face_normals`][triwarp.mesh.Trimesh.face_normals] has them cached.
 
     Returns
@@ -621,11 +621,19 @@ def normals_at_closest_faces(
         nan = float("nan")
         return wp.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
 
-    if face_normals is None:
-        face_normals, _areas = face_normals_and_areas(mesh.points, mesh.indices)
     if max_dist is None:
-        max_dist = tw.bounds.enclosing_diagonal(mesh.points, points)
+        max_dist = math.inf
     out_normals = wp.empty(m, dtype=wp.vec3, device=device)
+    if face_normals is None:
+        # No table: the hit face's normal is formed in the query's thread, the same value the
+        # per-face table would hold.
+        wp.launch(
+            kernel_proximity.normals_at_closest_faces_computed,
+            dim=m,
+            inputs=[mesh.id, points, wp.float32(max_dist), mesh.points, mesh.indices, out_normals],
+            device=device,
+        )
+        return out_normals
     wp.launch(
         kernel_proximity.normals_at_closest_faces,
         dim=m,
@@ -700,8 +708,9 @@ def signed_distance_on_mesh(
     points
         ``(m,)`` query positions in space as ``wp.vec3``.
     max_dist
-        Maximum search radius per query. When ``None``, derived from the
-        axis-aligned box enclosing mesh vertices and query points.
+        Maximum search radius per query. When ``None``, the search is
+        unbounded, which finds the same closest point as any radius at least as long as the
+        diagonal of the box enclosing the mesh and the query points.
     sign_mode
         ``"parity"`` (default) for ray-parity sign, ``"winding"`` for the generalized
         winding-number sign. See the note above.
@@ -772,7 +781,7 @@ def signed_distance_on_mesh(
             points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
         )
     if max_dist is None:
-        max_dist = tw.bounds.enclosing_diagonal(mesh.points, points)
+        max_dist = math.inf
     out_distance = wp.empty(m, dtype=wp.float32, device=device)
     if sign_mode == "winding":
         wp.launch(
@@ -1016,7 +1025,7 @@ def query_mesh_aabb_with_offsets(
     query_upper: wp.array[wp.vec3],
     *,
     max_hits: int = 16,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Low-level mesh AABB query with per-query axis-aligned bounds.
 
@@ -1042,10 +1051,10 @@ def query_mesh_aabb_with_offsets(
 
     Returns
     -------
-    candidate_indices_flat, offsets, hit_counts
-        ``offsets`` is the exclusive prefix sum of per-query hit counts.
-        Query ``k`` owns ``candidate_indices_flat[offsets[k] : offsets[k] + hit_counts[k]]``.
-        All three are empty when ``m == 0``.
+    candidate_indices_flat, offsets
+        ``offsets`` is the length-``m + 1`` total-terminated prefix sum of per-query hit counts:
+        query ``k`` owns ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``. When ``m == 0``
+        the candidates are empty and ``offsets == [0]``.
 
     Raises
     ------
@@ -1063,25 +1072,26 @@ def query_mesh_aabb_with_offsets(
         raise ValueError("max_hits must be >= 1")
 
     if m == 0:
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+            1, dtype=wp.int32, device=device
         )
 
-    hit_counts = wp.empty(m, dtype=wp.int32, device=device)
+    # The counts are written behind the leading zero of the ``m + 1`` offsets buffer and scanned
+    # there in place, so no separate count buffer is allocated; an all-zero count scans to all-zero
+    # offsets, which is exactly what the empty case wants to return.
+    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    hit_counts = twt.as_dense(offsets[1:])
     wp.launch(
         kernel_proximity.query_mesh_aabb_count,
         dim=m,
         inputs=[query_lower, query_upper, mesh.id, wp.int32(max_hits), hit_counts],
         device=device,
     )
-
-    # One scan pass yields both the row starts and their total; an all-zero ``hit_counts`` scans to
-    # all-zero offsets, which is exactly what the empty case wants to return.
-    offsets, total_hits = tw.array.counts_to_offsets(hit_counts)
+    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    # One 4-byte read of the total sizes the candidate buffer.
+    total_hits = int(read_scalar(offsets))
     if total_hits == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), offsets, hit_counts
+        return wp.empty(0, dtype=wp.int32, device=device), offsets
 
     candidate_indices_flat = wp.empty(total_hits, dtype=wp.int32, device=device)
     wp.launch(
@@ -1098,7 +1108,7 @@ def query_mesh_aabb_with_offsets(
         device=device,
     )
 
-    return candidate_indices_flat, offsets, hit_counts
+    return candidate_indices_flat, offsets
 
 
 def containing_faces_2d(
@@ -1173,10 +1183,9 @@ def containing_faces_2d(
 
     lifted = wp.empty(int(vertices.shape[0]), dtype=wp.vec3, device=device)
     wp.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
-    # One readback, the same one `closest_point_on_mesh` pays and for the same reason: the search
-    # radius has to be in the triangulation's own units and nothing else knows its scale.
+    # One readback: the search radius has to be in the triangulation's own units and nothing else
+    # knows its scale.
     search_radius = _CONTAINMENT_SEARCH_SCALE * tw.bounds.enclosing_diagonal(lifted)
-
     require_nonempty_mesh(faces, "containing_faces_2d")
     # Both buffers are local to this call (``lifted`` is built above), so no copy is needed.
     mesh = wp.Mesh(points=lifted, indices=faces)

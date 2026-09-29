@@ -658,7 +658,7 @@ def test_submeshes_from_face_groups_matches_single(
     order_np = rng.permutation(n_faces).astype(np.int32)
     cuts_np = np.sort(rng.choice(np.arange(1, n_faces), size=3, replace=False))
     groups_np = [np.sort(part) for part in np.split(order_np, cuts_np)]
-    offsets_np = np.cumsum([0, *(len(group) for group in groups_np[:-1])]).astype(np.int32)
+    offsets_np = np.cumsum([0, *(len(group) for group in groups_np)]).astype(np.int32)
 
     vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
         mesh_wp.points,
@@ -666,8 +666,10 @@ def test_submeshes_from_face_groups_matches_single(
         wp.array(np.concatenate(groups_np).astype(np.int32), dtype=wp.int32, device=device),
         wp.array(offsets_np, dtype=wp.int32, device=device),
     )
-    vertex_bounds_np = [*vertex_offsets_wp.list(), int(vertices_all_wp.shape[0])]
-    face_bounds_np = [*offsets_np.tolist(), n_faces]
+    vertex_bounds_np = vertex_offsets_wp.list()
+    face_bounds_np = offsets_np.tolist()
+    assert vertex_bounds_np[-1] == int(vertices_all_wp.shape[0])
+    assert face_bounds_np[-1] == n_faces
 
     for group, v_begin, v_end, f_begin, f_end in zip(
         groups_np,
@@ -710,10 +712,10 @@ def test_submeshes_from_face_groups_shared_vertex(device: str) -> None:
         vertices_wp,
         faces_wp,
         wp.array([0, 1], dtype=wp.int32, device=device),
-        wp.array([0, 1], dtype=wp.int32, device=device),
+        wp.array([0, 1, 2], dtype=wp.int32, device=device),
     )
     # 3 + 3 vertices, not 5: vertex 2 belongs to both groups and is emitted in each.
-    assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3])
+    assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3, 6])
     assert int(vertices_all_wp.shape[0]) == 6
     assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2, 0, 1, 2])
     assert np.array_equal(vertices_all_wp.numpy()[:3], vertices_np[[0, 1, 2]])
@@ -733,9 +735,9 @@ def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
         vertices_wp,
         faces_wp,
         wp.array([0], dtype=wp.int32, device=device),
-        wp.array([0], dtype=wp.int32, device=device),
+        wp.array([0, 1], dtype=wp.int32, device=device),
     )
-    assert np.array_equal(vertex_offsets_wp.numpy(), [0])
+    assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3])
     assert np.array_equal(vertices_all_wp.numpy(), vertices_np[[0, 2, 3]])
     assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2])
 
@@ -745,10 +747,10 @@ def test_submeshes_from_face_groups_empty(device: str) -> None:
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
     empty_wp = wp.empty(0, dtype=wp.int32, device=device)
     vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
-        vertices_wp, faces_wp, empty_wp, empty_wp
+        vertices_wp, faces_wp, empty_wp, wp.zeros(1, dtype=wp.int32, device=device)
     )
     assert vertices_all_wp.shape == (0,)
-    assert vertex_offsets_wp.shape == (0,)
+    assert np.array_equal(vertex_offsets_wp.numpy(), [0])
     assert faces_all_wp.shape == (0,)
 
 
@@ -1000,6 +1002,68 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
         axis=1,
     )
     assert np.array_equal(lexsort_rows(reported_np), lexsort_rows(deleted_edges_np))
+
+
+@pytest.mark.parametrize("region", ["nothing", "interior", "two_interior", "on_rim", "pinched"])
+def test_delete_region_keep_boundary_is_its_packed_form_split(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], region: str
+) -> None:
+    """
+    Triwarp against triwarp: the list form is the packed form, loop by loop.
+
+    ``delete_region_keep_boundary`` carries the MeshLib comparison above; this pins
+    ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: no rim, one,
+    two, the input's rim grown (so a loop is classified *and* kept), and a pinched rim.
+    """
+    mesh_tm, mesh_wp = hemisphere
+    n_faces = mesh_tm.faces.shape[0]
+    device = mesh_wp.points.device
+    rim_vertices_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    touches_rim_np = np.isin(mesh_tm.faces, rim_vertices_np).any(axis=1)
+    interior_faces_np = np.flatnonzero(~touches_rim_np)
+    mask_np = np.zeros(n_faces, dtype=bool)
+    if region in ("interior", "two_interior"):
+        mask_np |= _grown_region(mesh_tm, int(interior_faces_np[0]), 5, ~touches_rim_np)
+    if region == "two_interior":
+        far = int(interior_faces_np[-1])
+        mask_np |= _grown_region(mesh_tm, far, 5, ~touches_rim_np)
+    if region == "on_rim":
+        on_rim_np = np.flatnonzero(np.isin(mesh_tm.faces, rim_vertices_np).sum(axis=1) >= 2)
+        mask_np |= _grown_region(mesh_tm, int(on_rim_np[0]), 4, np.ones(n_faces, dtype=bool))
+    if region == "pinched":
+        first = int(interior_faces_np[0])
+        adjacent = {frozenset(pair) for pair in mesh_tm.face_adjacency.tolist()}
+        second = next(
+            int(f)
+            for f in interior_faces_np
+            if np.intersect1d(mesh_tm.faces[f], mesh_tm.faces[first]).size == 1
+            and frozenset((first, int(f))) not in adjacent
+        )
+        mask_np[[first, second]] = True
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+
+    vertices_wp, faces_wp, loops_wp = tw.selection.delete_region_keep_boundary(
+        mesh_wp.points, mesh_wp.indices, mask_wp
+    )
+    packed = tw.selection.delete_region_keep_boundary_with_offsets(
+        mesh_wp.points, mesh_wp.indices, mask_wp
+    )
+    packed_vertices_wp, packed_faces_wp, flat_wp, offsets_wp = packed
+
+    expected_loops = {"nothing": 0, "interior": 1, "two_interior": 2, "on_rim": 1}
+    if region in expected_loops:
+        assert len(loops_wp) == expected_loops[region]
+    else:
+        assert len(loops_wp) >= 1
+    assert np.array_equal(packed_vertices_wp.numpy(), vertices_wp.numpy())
+    assert np.array_equal(packed_faces_wp.numpy(), faces_wp.numpy())
+    offsets_np = offsets_wp.numpy()
+    assert offsets_np.shape[0] == len(loops_wp) + 1
+    assert offsets_np[0] == 0
+    assert offsets_np[-1] == flat_wp.shape[0]
+    flat_np = flat_wp.numpy()
+    for i, loop_wp in enumerate(loops_wp):
+        assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])
 
 
 def _grown_region(

@@ -477,12 +477,11 @@ def deleted_face_edge_keys(
 @wp.kernel
 def loops_are_input_rims(
     flat_loops: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     to_input: wp.array[wp.int32],
     deleted_edge_keys: wp.array[wp.uint64],
     base: wp.uint64,
-    out_starts_and_rims: wp.array2d[wp.int32],
+    out_kept_counts: wp.array[wp.vec3i],
 ) -> None:
     # Per loop: was *every* one of its edges already a boundary edge of the input mesh? A loop for
     # which that holds is the input's own rim surfacing in the submesh rather than a rim the
@@ -495,13 +494,13 @@ def loops_are_input_rims(
     # faces in input indices (``to_input`` maps a submesh vertex back).
     #
     # That premise -- every consecutive loop pair is a boundary edge of the submesh -- is what
-    # ``boundary_loops_batched`` guarantees on *any* input, which is what makes this safe without a
-    # check. Its vertex and seam walks run only on a 2-regular rim. Its pinch walk follows
+    # ``boundary_loops_with_offsets`` guarantees on *any* input, which is what makes this safe
+    # without a check. Its vertex and seam walks run only on a 2-regular rim. Its pinch walk follows
     # ``next_boundary_halfedge``, whose every successor starts where its predecessor ends (twins
     # are true opposites or ``-1``, even unvalidated), and no rotation can enter another boundary
     # halfedge's face (a face is entered through the twin of its incoming halfedge, which a
-    # boundary halfedge lacks), so two rotations never merge and ``successor_cycles`` never sees
-    # the colliding input that would leave slots at ``0``. What a mesh that is not edge-manifold
+    # boundary halfedge lacks), so two rotations never merge and the ranking never sees two tails
+    # sharing a successor. What a mesh that is not edge-manifold
     # *can* do is make a loop go missing -- a rotation stopping at a three-faced edge dead-ends
     # -- and a missing loop defeats any classifier equally. ``tests/test_boundary.py`` pins the
     # guarantee on pinched and non-manifold rims. A kept-face count per loop edge would make it
@@ -510,12 +509,12 @@ def loops_are_input_rims(
     # One thread per *loop*, walking its own rim, rather than one per rim vertex with a segment
     # label: boundary loops are few and short, which is the regime
     # ``kernels/array.segment_owner_labels`` names as the one where the per-segment shape wins --
-    # and it needs no owner array, no total-terminated offsets and no scan to build them. The
+    # and it needs no owner array. The
     # early exit is what makes it cheap in the common case, since a loop the deletion opened
     # usually fails on one of its first edges.
     ell = wp.int32(wp.tid())
-    start = loop_starts[ell]
-    size = loop_sizes[ell]
+    start = loop_offsets[ell]
+    size = loop_offsets[ell + 1] - start
     is_rim = wp.int32(1)
     for k in range(size):
         a = to_input[flat_loops[start + k]]
@@ -523,7 +522,34 @@ def loops_are_input_rims(
         if binary_search_sorted_contains(deleted_edge_keys, pack_edge_key(a, b, base)):
             is_rim = wp.int32(0)
             break
-    # Row 0 carries the loop's start and row 1 the verdict, so the caller reads back the one
-    # buffer it needs to cut the surviving loops out of ``flat_loops``, in one transfer.
-    out_starts_and_rims[0, ell] = start
-    out_starts_and_rims[1, ell] = is_rim
+    # ``(1, size, start)`` for a loop the deletion opened and ``(0, 0, start)`` for the input's
+    # own rim. Read as it is, that is every kept loop's extent in ``flat_loops``, which is all the
+    # list form needs to cut its views; scanned in place, the first two components give every kept
+    # loop its rank and the end of its run in the packed output (``compact_kept_loops``), and the
+    # tail sizes it. The scanned third component is never read.
+    kept = 1 - is_rim
+    out_kept_counts[ell] = wp.vec3i(kept, kept * size, start)
+
+
+@wp.kernel
+def compact_kept_loops(
+    flat_loops: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    kept_scan: wp.array[wp.vec3i],
+    out_loops: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # One thread per input loop, copying a kept loop to its scanned place and writing the end of
+    # its run as the next offset: the terminated offsets of the kept loops, with ``out_offsets[0]``
+    # the zero the caller allocated. Loops are few and short (see ``loops_are_input_rims``).
+    ell = wp.int32(wp.tid())
+    end = kept_scan[ell]
+    before = wp.vec3i(0, 0, 0)
+    if ell > 0:
+        before = kept_scan[ell - 1]
+    if end[0] == before[0]:
+        return
+    start = loop_offsets[ell]
+    for k in range(end[1] - before[1]):
+        out_loops[before[1] + k] = flat_loops[start + k]
+    out_offsets[end[0]] = end[1]

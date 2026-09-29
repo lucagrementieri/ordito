@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import itertools
+
 import igl
 import numpy as np
 import pytest
@@ -612,11 +614,10 @@ def test_successor_cycles_single_cycle(device: str) -> None:
     edges_wp = wp.array(
         np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32), dtype=wp.int32, device=device
     )
-    flat_wp, offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 8)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
 
     assert np.array_equal(flat_wp.numpy(), np.array([2, 7, 3, 5], dtype=np.int32))
-    assert np.array_equal(offsets_wp.numpy(), np.array([0], dtype=np.int32))
-    assert np.array_equal(sizes_wp.numpy(), np.array([4], dtype=np.int32))
+    assert np.array_equal(offsets_wp.numpy(), np.array([0, 4], dtype=np.int32))
 
 
 def test_successor_cycles_multiple_cycles(device: str) -> None:
@@ -635,18 +636,49 @@ def test_successor_cycles_multiple_cycles(device: str) -> None:
     edges_np = np.array(edge_rows, dtype=np.int32)[order]
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
 
-    flat_wp, offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 11)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 11)
 
     flat_np = flat_wp.numpy()
-    starts_np = offsets_wp.numpy()
-    sizes_np = sizes_wp.numpy()
-    assert sizes_np.sum() == flat_np.shape[0] == 9
+    offsets_np = offsets_wp.numpy()
+    assert offsets_np[0] == 0
+    assert offsets_np[-1] == flat_np.shape[0] == 9
     recovered = [
-        flat_np[start : start + size].tolist()
-        for start, size in zip(starts_np, sizes_np, strict=True)
+        flat_np[start:stop].tolist() for start, stop in itertools.pairwise(offsets_np.tolist())
     ]
     # Each cycle starts at its minimum and follows the successor direction.
     assert sorted(recovered) == sorted([[0, 4, 2], [3, 9, 6, 5], [7, 10]])
+
+
+# Cycle lengths straddling the powers of the pointer-jump widths (8 and 16), where the schedule
+# adds a round or narrows its hop: an off-by-one in the round count or the window arithmetic shows
+# up at exactly one of these.
+JUMP_BOUNDARY_LENGTHS = [1, 2, 7, 8, 9, 15, 16, 17, 63, 64, 65, 255, 256, 257, 511, 512, 513, 4097]
+
+
+@pytest.mark.parametrize("length", JUMP_BOUNDARY_LENGTHS)
+def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length: int) -> None:
+    """
+    Not a library comparison: no reference ranks a successor graph, so the oracle is the walk.
+
+    One cycle of ``length`` nodes over shuffled ids plus a chain of the same length: the cycle must
+    come back from its smallest id in successor order, which a serial walk of the same table gives,
+    and the chain must contribute nothing. The chain doubles the ranked-node count, so the
+    schedule's round count is read off ``2 * length`` -- both sides of each power are reached.
+    """
+    rng = np.random.default_rng(length)
+    ids = rng.permutation(3 * length).astype(np.int32)
+    cycle = ids[:length]
+    chain = ids[length : 2 * length + 1]
+    rows = [(cycle[i], cycle[(i + 1) % length]) for i in range(length)]
+    rows += [(chain[i], chain[i + 1]) for i in range(length)]
+    edges_np = np.array(rows, dtype=np.int32)[rng.permutation(len(rows))]
+    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 3 * length)
+
+    start = int(np.argmin(cycle))
+    assert np.array_equal(flat_wp.numpy(), np.roll(cycle, -start))
+    assert np.array_equal(offsets_wp.numpy(), np.array([0, length], dtype=np.int32))
 
 
 def test_successor_cycles_validates_range(device: str) -> None:
@@ -688,14 +720,14 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     Two in-edges on one node (not a successor graph) must not return garbage.
 
     The documented behavior: ranks may collide and slots fall back to zero, but every value in
-    the packed buffer stays a valid node index and the sizes still partition it.
+    the packed buffer stays a valid node index and the offsets still partition it.
     """
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [3, 1]], dtype=np.int32)
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
-    flat_wp, _offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 4)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 4)
 
     flat_np = flat_wp.numpy()
-    assert flat_np.shape[0] == int(sizes_wp.numpy().sum()) == 4
+    assert flat_np.shape[0] == int(offsets_wp.numpy()[-1]) == 4
     assert np.all((flat_np >= 0) & (flat_np < 4))
 
 
@@ -710,28 +742,25 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     contain a node id that never appeared in the input at all.
     """
     edges_wp = wp.array(np.array([[5, 3], [3, 7]], dtype=np.int32), dtype=wp.int32, device=device)
-    flat_wp, offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 8)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
     assert flat_wp.shape == (0,)
-    assert offsets_wp.shape == (0,)
-    assert sizes_wp.shape == (0,)
+    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def test_successor_cycles_mixed_cycle_and_chain(device: str) -> None:
     """A real cycle is reported unchanged alongside a chain that contributes nothing."""
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [5, 3], [3, 7]], dtype=np.int32)
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
-    flat_wp, offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 8)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
     assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2], dtype=np.int32))
-    assert np.array_equal(offsets_wp.numpy(), np.array([0], dtype=np.int32))
-    assert np.array_equal(sizes_wp.numpy(), np.array([3], dtype=np.int32))
+    assert np.array_equal(offsets_wp.numpy(), np.array([0, 3], dtype=np.int32))
 
 
 def test_successor_cycles_empty(device: str) -> None:
     edges_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    flat_wp, offsets_wp, sizes_wp = tw.graph.successor_cycles(edges_wp, 5)
+    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 5)
     assert flat_wp.shape == (0,)
-    assert offsets_wp.shape == (0,)
-    assert sizes_wp.shape == (0,)
+    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[twt.Array2dInt32, int]:

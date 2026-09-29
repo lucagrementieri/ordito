@@ -79,18 +79,64 @@ def homology_generators(
 
     See Also
     --------
+    [`homology_generators_with_offsets`][triwarp.homology.homology_generators_with_offsets]
+        The same loops, packed into one buffer with their offsets.
     [`shorten_loop`][triwarp.geodesic_walk.shorten_loop]
         Shortens these loops within their homotopy class, keeping them on mesh edges.
     [`euler_characteristic`][triwarp.measures.euler_characteristic]
         Fixes how many loops there are: ``2 * g == 2 - chi``.
     [`boundary_loops`][triwarp.boundary.boundary_loops]
     """
+    loops, offsets = homology_generators_with_offsets(vertices, faces)
+    return tw.array.split(loops, offsets, copy=copy)
+
+
+def homology_generators_with_offsets(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Non-contractible loops of the surface, packed: every loop's vertices, then their offsets.
+
+    The packed form of [`homology_generators`][triwarp.homology.homology_generators]: the same
+    basis in the same order, concatenated into one buffer with no per-loop Python object.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions. Only the count is used.
+    faces
+        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be a closed, connected,
+        edge-manifold surface: the counting argument this rests on assumes it.
+
+    Returns
+    -------
+    loops : wp.array[wp.int32]
+        Every generator's vertex-index cycle, loop after loop, on ``faces.device``.
+    offsets : wp.array[wp.int32]
+        ``(2 * g + 1,)`` total-terminated offsets: loop ``i`` is ``loops[offsets[i] :
+        offsets[i + 1]]``, and ``[0]`` for a sphere or a mesh with no faces.
+
+    Raises
+    ------
+    ValueError
+        If the mesh has a boundary, or its referenced vertices are not all in one connected
+        component (see [`homology_generators`][triwarp.homology.homology_generators]).
+    RuntimeError
+        If ``vertices`` and ``faces`` are not all on one device.
+
+    See Also
+    --------
+    [`homology_generators`][triwarp.homology.homology_generators]
+        The same loops, one array each.
+    [`shorten_loop_with_offsets`][triwarp.geodesic_walk.shorten_loop_with_offsets]
+        Shortens them in the packed form.
+    """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
     n_vertices = int(vertices.shape[0])
     n_faces = int(faces.shape[0]) // 3
     if n_vertices == 0 or n_faces == 0:
-        return []
+        return _no_loops(device)
 
     # One grouping of the edge rows answers everything: ``inverse`` maps each face corner to its
     # unique edge, and one scatter over it fills both the per-edge face count and the two incident
@@ -101,7 +147,7 @@ def homology_generators(
     if n_edges == 0:
         # A face carries three edges, so no edges means no faces: vacuously closed, nothing to span
         # and nothing left over.
-        return []
+        return _no_loops(device)
     edge_face_count = wp.zeros(n_edges, dtype=wp.int32, device=device)
     edge_faces = twt.empty_2d((n_edges, 2), wp.int32, device=device)
     wp.launch(
@@ -161,8 +207,8 @@ def homology_generators(
     _remove_dual_spanning_forest(candidate, edge_faces, n_faces)
     generator_edge_ids = tw.array.flatnonzero(candidate)
     if int(generator_edge_ids.shape[0]) == 0:
-        return []
-    return _trace_generator_loops(generator_edge_ids, unique_edges, parents, distances, copy=copy)
+        return _no_loops(device)
+    return _trace_generator_loops(generator_edge_ids, unique_edges, parents, distances)
 
 
 def _primal_spanning_tree(
@@ -282,9 +328,7 @@ def _trace_generator_loops(
     unique_edges: twt.Array2dInt32,
     parents: wp.array[wp.int32],
     distances: wp.array[wp.int32],
-    *,
-    copy: bool,
-) -> list[wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Close each generator edge into a loop through the primal tree, on the device.
 
@@ -306,7 +350,7 @@ def _trace_generator_loops(
     )
     # The total-terminated form: ``write_generator_loops`` reads ``offsets[g + 1]`` as its slice's
     # end, and the total is the packed length, so one call answers both.
-    offsets, total = tw.array.counts_to_offsets(lengths, include_total=True)
+    offsets, total = tw.array.counts_to_offsets(lengths)
     loops = wp.empty(total, dtype=wp.int32, device=device)
     wp.launch(
         kernel_homology.write_generator_loops,
@@ -314,4 +358,9 @@ def _trace_generator_loops(
         inputs=[generator_edge_ids, unique_edges, parents, apex, offsets, loops],
         device=device,
     )
-    return tw.array.split(loops, offsets[:n_generators], copy=copy)
+    return loops, offsets
+
+
+def _no_loops(device: wp.context.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """Return the empty packed basis: no loop vertices and ``[0]`` offsets."""
+    return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(1, dtype=wp.int32, device=device)

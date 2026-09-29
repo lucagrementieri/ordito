@@ -11,10 +11,18 @@ from triwarp.kernels.array import (
     scanned_count,
     update_argmin_pair,
 )
-from triwarp.kernels.halfedge import halfedge_destination, halfedge_next, next_boundary_halfedge
+from triwarp.kernels.halfedge import (
+    HALFEDGE_RUN_NON_MANIFOLD,
+    HALFEDGE_RUN_SAME_DIRECTION,
+    halfedge_destination,
+    halfedge_next,
+    next_boundary_halfedge,
+    sorted_halfedge_run_class,
+)
 from triwarp.kernels.predicates import triangle_aspect_ratio, triangle_normal
 from triwarp.kernels.triangles import (
     QUALITY_AREA,
+    copy_scanned_face,
     corner_triple,
     face_vertices,
     triangle_cross,
@@ -390,10 +398,13 @@ def wins_degree3_conflict(
 @wp.kernel
 def degree3_fan_tables(
     faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_link_sums: wp.array[wp.int32],
     out_fans: wp.array2d[wp.int32],
     out_kept: wp.array[wp.int32],
+    out_defects: wp.array[wp.int32],
 ) -> None:
     # One pass over the halfedges gathers everything ``remove_degree3_vertices`` asks of a vertex,
     # in place of a whole one-ring CSR: its corner count (its face count), its first three outgoing
@@ -410,7 +421,18 @@ def degree3_fan_tables(
     #
     # The table's row is arrival-ordered, so only its *contents* are meaningful;
     # ``interior_degree3_rim`` canonicalizes it.
+    #
+    # On the first pass ``sorted_keys`` / ``order`` are the input's sorted halfedge keys, one per
+    # thread, and each thread also counts its position's twin defect into ``out_defects`` -- the
+    # input validation, riding on this launch and on the pass's one readback. Later passes hand in
+    # empty keys and skip it.
     h = wp.int32(wp.tid())
+    if sorted_keys.shape[0] > 0:
+        run = sorted_halfedge_run_class(faces, sorted_keys, order, h)
+        if run == HALFEDGE_RUN_NON_MANIFOLD:
+            wp.atomic_add(out_defects, 0, 1)
+        elif run == HALFEDGE_RUN_SAME_DIRECTION:
+            wp.atomic_add(out_defects, 1, 1)
     v = faces[h]
     x = halfedge_destination(faces, h)
     y = halfedge_destination(faces, halfedge_next(h))
@@ -529,11 +551,7 @@ def compact_kept_faces(
     if f < n_new:
         for k in range(3):
             out_faces[3 * (n_kept + f) + k] = new_faces[f, k]
-    row, kept = scanned_count(inclusive_ranks, f)
-    if kept == 0:
-        return
-    for k in range(3):
-        out_faces[3 * row + k] = faces[3 * f + k]
+    copy_scanned_face(faces, inclusive_ranks, f, out_faces)
 
 
 @wp.kernel

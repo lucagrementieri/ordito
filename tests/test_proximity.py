@@ -84,14 +84,15 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
     query_lower_wp = points_to_warp(query_lower_np, device)
     query_upper_wp = points_to_warp(query_upper_np, device)
 
-    indices_wp, offsets_wp, hit_counts_wp = tw.proximity.query_mesh_aabb_with_offsets(
+    indices_wp, offsets_wp = tw.proximity.query_mesh_aabb_with_offsets(
         mesh, query_lower_wp, query_upper_wp, max_hits=16
     )
 
     indices_np = indices_wp.numpy()
-    offsets_np = offsets_wp.numpy()
-    hit_counts_np = hit_counts_wp.numpy()
-    bounds_np = np.append(offsets_np, indices_np.shape[0])
+    bounds_np = offsets_wp.numpy()
+    assert bounds_np.shape == (query_lower_np.shape[0] + 1,)
+    assert bounds_np[0] == 0
+    assert bounds_np[-1] == indices_np.shape[0]
 
     for query_idx in range(query_lower_np.shape[0]):
         q_lower = query_lower_np[query_idx]
@@ -99,7 +100,6 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
         mask_np = np.all(lower_np <= q_upper, axis=1) & np.all(upper_np >= q_lower, axis=1)
         expected_np = np.sort(np.flatnonzero(mask_np).astype(np.int32))
         got_np = np.sort(indices_np[bounds_np[query_idx] : bounds_np[query_idx + 1]])
-        assert hit_counts_np[query_idx] == got_np.shape[0]
         assert np.array_equal(got_np, expected_np)
 
 

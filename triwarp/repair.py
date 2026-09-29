@@ -57,6 +57,7 @@ verb.
 
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Callable
 from typing import Literal, cast, overload
@@ -66,7 +67,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device, require_valid_faces
+from triwarp._device import read_scalar, read_values, require_same_device, require_valid_faces
 from triwarp.constants import INDEX_RADIX_PAIR, TILE_1D
 from triwarp.grouping import hash_vector_rows, unique_1d, unique_faces
 from triwarp.kernels import array as kernel_array
@@ -834,7 +835,7 @@ def remove_small_components(
     if n_faces == 0:
         return vertices, faces
 
-    labels = tw.adjacency.face_connected_component_labels(faces)
+    labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=int(vertices.shape[0]))
     keep = wp.empty(n_faces, dtype=wp.bool, device=device)
 
     if min_area is not None:
@@ -1374,8 +1375,10 @@ def remove_degree3_vertices(
     Raises
     ------
     ValueError
-        If ``max_iter`` is negative, or propagated from
-        [`halfedge_twins`][triwarp.halfedge.halfedge_twins] when the mesh is not edge-manifold.
+        If ``max_iter`` is negative, or (when a pass runs) if an edge is shared by three or more
+        faces or both of an edge's halfedges traverse it the same way -- the two meshes
+        [`halfedge_twins`][triwarp.halfedge.halfedge_twins] rejects, tested without building its
+        table.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -1398,26 +1401,29 @@ def remove_degree3_vertices(
     removed = 0
     n_vertices = int(vertices.shape[0])
     n_faces0 = int(faces.shape[0]) // 3
-    if n_faces0 > 0 and max_iter > 0:
-        # The documented edge-manifold check, on the input only. The pass below reasons about each
-        # vertex's three faces alone and needs no twin table, and replacing an interior degree-3
-        # fan by the one triangle over its rim keeps every rim edge at two faces with the same
-        # orientation, so a pass cannot make a valid mesh invalid and later passes do not re-prove
-        # it.
-        tw.halfedge.halfedge_twins(faces, n_vertices, validate=True)
+    # The documented edge-manifold check, on the input only: the run-length test on the sorted
+    # halfedge keys, counted inside pass 0's first launch and read back with that pass's counters,
+    # rather than a twin table the pass never reads. Replacing an interior degree-3 fan by the one
+    # triangle over its rim keeps every rim edge at two faces with the same orientation, so a pass
+    # cannot make a valid mesh invalid and later passes do not re-prove it.
+    input_keys, input_order = (
+        tw.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+        if n_faces0 > 0 and max_iter > 0
+        else (None, None)
+    )
     # Scratch hoisted to the pass-0 size and sliced, rather than reallocated per pass: the vertex
     # count is constant across the loop (compaction is deferred to the end, below) and the face
     # count only ever shrinks, so one allocation each serves every pass. ``state`` holds each
     # vertex's corner count, link sum and decrement tally (``degree3_fan_tables`` and
     # ``emit_degree3_replacement`` say what each means), then the emit cursor -- the selection
-    # size -- and the next-pass candidate count, the two read back together; one fill zeroes all
-    # of it per pass.
-    state = wp.zeros(3 * n_vertices + 2, dtype=wp.int32, device=device)
+    # size -- the next-pass candidate count and pass 0's two twin-defect counts, all read back
+    # together; one fill zeroes all of it per pass.
+    state = wp.zeros(3 * n_vertices + 4, dtype=wp.int32, device=device)
     counts = state[:n_vertices]
     link_sums = state[n_vertices : 2 * n_vertices]
     lost = state[2 * n_vertices : 3 * n_vertices]
     counters = twt.as_dense(state[3 * n_vertices :])
-    cursor, next_candidates = counters[0:1], counters[1:2]
+    cursor, next_candidates, defects = counters[0:1], counters[1:2], counters[2:4]
     fans = twt.empty_2d((n_vertices, 3), wp.int32, device=device)
     new_faces = twt.empty_2d((max(n_faces0 // 3, 1), 3), wp.int32, device=device)
     # The kept-face flags, scanned in place into their inclusive ranks.
@@ -1434,7 +1440,16 @@ def remove_degree3_vertices(
         wp.launch(
             kernel_repair.degree3_fan_tables,
             dim=3 * n_faces,
-            inputs=[faces, counts, link_sums, fans, ranks],
+            inputs=[
+                faces,
+                input_keys if pass_index == 0 else None,
+                input_order if pass_index == 0 else None,
+                counts,
+                link_sums,
+                fans,
+                ranks,
+                defects,
+            ],
             device=device,
         )
         wp.launch(
@@ -1456,8 +1471,13 @@ def remove_degree3_vertices(
         # One readback per pass, carrying both of the loop's host decisions: the selection size
         # sizes the output and ends the loop on a pass that finds nothing (only pass 0 can: every
         # later pass runs because the previous one counted a possible candidate), and the
-        # next-pass count skips the pass that would only learn it finds nothing.
-        n_selected, n_next = (int(x) for x in counters.numpy())
+        # next-pass count skips the pass that would only learn it finds nothing. Pass 0's also
+        # carries the input validation, whose failure discards that pass.
+        if pass_index == 0:
+            n_selected, n_next, n_nonmanifold, n_misoriented = read_values(state, 3 * n_vertices, 4)
+            _raise_degree3_defects(n_nonmanifold, n_misoriented)
+        else:
+            n_selected, n_next = read_values(state, 3 * n_vertices, 2)
         if n_selected == 0:
             break
         # The fans are disjoint and each is three faces, so the kept count is known without reading
@@ -1483,6 +1503,21 @@ def remove_degree3_vertices(
     # vertex-and-face pass to every iteration for no change in the answer.
     vertices, faces, _index = remove_unreferenced_vertices(vertices, faces)
     return (vertices, faces, removed) if return_count else (vertices, faces)
+
+
+def _raise_degree3_defects(n_nonmanifold: int, n_misoriented: int) -> None:
+    """Raise ``remove_degree3_vertices``' two input rejections from pass 0's defect counts."""
+    if n_nonmanifold > 0:
+        raise ValueError(
+            f"remove_degree3_vertices requires an edge-manifold mesh: {n_nonmanifold} edge(s) are "
+            f"shared by three or more faces."
+        )
+    if n_misoriented > 0:
+        raise ValueError(
+            f"remove_degree3_vertices requires a consistently wound mesh: {n_misoriented} edge(s) "
+            f"are traversed in the same direction by both of their halfedges. Run "
+            f"make_winding_consistent first."
+        )
 
 
 def flatten_degree3_vertices(
@@ -1818,7 +1853,9 @@ def make_volume(
     if multibody:
         out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
         signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
-        labels = tw.adjacency.face_connected_component_labels(faces)
+        labels = tw.adjacency.face_connected_component_labels(
+            faces, n_vertices=int(vertices.shape[0])
+        )
         accum = wp.zeros(n_faces, dtype=wp.float32, device=device)
         wp.launch(
             kernel_scatter.SCATTER_ADD[signed_volumes.dtype],
@@ -2276,14 +2313,18 @@ def remove_tunnels(
     require_same_device(vertices=vertices, faces=faces)
     if max_length < 0.0:
         raise ValueError(f"max_length must be non-negative, got {max_length}")
-    loops = tw.homology.homology_generators(vertices, faces)
-    if not loops:
+    # The basis stays packed from the generators through the shortening to the measuring, so no
+    # per-loop array is built and split again on the way.
+    loops, loop_offsets = tw.homology.homology_generators_with_offsets(vertices, faces)
+    if int(loop_offsets.shape[0]) == 1:
         return vertices, faces, 0
 
-    shortened, _sweeps = tw.geodesic_walk.shorten_loop(vertices, faces, loops, max_iter=max_iter)
+    shortened, shortened_offsets, _sweeps = tw.geodesic_walk.shorten_loop_with_offsets(
+        vertices, faces, loops, loop_offsets, max_iter=max_iter
+    )
     # A basis has 2 * genus loops of a handful of indices each, so everything after the measuring
     # runs on the host, over one readback of them all.
-    lengths, loops_np = _measure_loops(vertices, shortened)
+    lengths, loops_np = _measure_loops(vertices, shortened, shortened_offsets)
     short = sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
     selected = _disjoint_loops([loop for length, loop in short if length <= max_length])
     if not selected:
@@ -2307,7 +2348,7 @@ def remove_tunnels(
 
 
 def _measure_loops(
-    vertices: wp.array[wp.vec3], loops: list[wp.array[wp.int32]]
+    vertices: wp.array[wp.vec3], packed: wp.array[wp.int32], offsets: wp.array[wp.int32]
 ) -> tuple[list[float], list[np.ndarray]]:
     """
     Measure every loop's closed length, and read every loop's indices back, in one pass each.
@@ -2319,24 +2360,25 @@ def _measure_loops(
     would change which loops are cut. A loop longer than one block is measured on its own.
     """
     device = vertices.device
-    packed, starts = tw.array.pack_1d_arrays(loops, copy=False)
-    sizes_np = np.asarray([int(loop.shape[0]) for loop in loops], dtype=np.int32)
-    lengths = wp.empty(len(loops), dtype=wp.float32, device=device)
+    n_loops = int(offsets.shape[0]) - 1
+    lengths = wp.empty(n_loops, dtype=wp.float32, device=device)
     wp.launch_tiled(
         kernel_polyline.packed_closed_loop_lengths,
-        dim=len(loops),
-        inputs=[vertices, packed, starts, wp.array(sizes_np, dtype=wp.int32, device=device)],
+        dim=n_loops,
+        inputs=[vertices, packed, offsets],
         outputs=[lengths],
         block_dim=TILE_1D,
         device=device,
     )
     lengths_list = [float(length) for length in lengths.numpy()]
+    bounds_np = offsets.numpy().astype(np.int64)
+    sizes_np = np.diff(bounds_np)
     for index in np.flatnonzero(sizes_np > int(kernel_reduce.ITEMS_PER_BLOCK_1D)):
-        lengths_list[index] = _cycle_length(vertices, loops[index])
+        start, stop = int(bounds_np[index]), int(bounds_np[index + 1])
+        lengths_list[index] = _cycle_length(vertices, twt.as_dense(packed[start:stop]))
     packed_np = packed.numpy()
-    ends = np.cumsum(sizes_np)
     return lengths_list, [
-        packed_np[end - size : end] for end, size in zip(ends, sizes_np, strict=True)
+        packed_np[start:stop] for start, stop in itertools.pairwise(bounds_np.tolist())
     ]
 
 

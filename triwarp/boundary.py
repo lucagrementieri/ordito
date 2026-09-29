@@ -10,24 +10,21 @@ Every loop-shaped entry point comes in two forms, and the pairing is the module'
 worth stating up front: a **list** form returning or taking one ``wp.array`` per loop
 ([`boundary_loops`][triwarp.boundary.boundary_loops],
 [`loop_perimeters`][triwarp.boundary.loop_perimeters],
-[`loop_directed_areas`][triwarp.boundary.loop_directed_areas]) and a ``_batched`` form over one
-packed buffer plus per-loop offsets and sizes
-([`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched],
-[`loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched],
-[`loop_directed_areas_batched`][triwarp.boundary.loop_directed_areas_batched]). They compute the
-same answer; the packed form is the one whose cost is independent of the loop *count*, and it is
-what [`triwarp.holes`][triwarp.holes] carries its rims in from end to end. The list forms pack and
-delegate, so there is one segmented launch behind each measure rather than one per form.
+[`loop_directed_areas`][triwarp.boundary.loop_directed_areas]) and a packed form over one
+buffer plus total-terminated per-loop offsets
+([`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets],
+[`loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets],
+[`loop_directed_areas_from_offsets`][triwarp.boundary.loop_directed_areas_from_offsets]). They
+compute the same answer; the packed form is the one whose cost is independent of the loop *count*,
+and it is what [`triwarp.holes`][triwarp.holes] carries its rims in from end to end. The list forms
+pack and delegate, so there is one segmented launch behind each measure rather than one per form.
 """
 
 from __future__ import annotations
 
-import itertools
 from collections.abc import Sequence
-from typing import cast
 
 import numpy as np
-import numpy.typing as npt
 import warp as wp
 
 import triwarp as tw
@@ -37,6 +34,8 @@ from triwarp.constants import INDEX_RADIX_PAIR, INT32_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import boundary as kernel_boundary
+from triwarp.kernels import graph as kernel_graph
+from triwarp.kernels import halfedge as kernel_halfedge
 from triwarp.kernels import scatter as kernel_scatter
 
 
@@ -131,7 +130,7 @@ def _boundary_edges_impl(
     if n_faces == 0:
         return twt.empty_2d((0, 2), wp.int32, device=faces.device)
     table = edges if oriented else edges_sorted
-    return _BoundaryHalfedges(faces, edges_sorted).edges(table, sort_pair=not oriented)[0]
+    return _BoundaryHalfedges(faces, edges_sorted).edges(table, sort_pair=not oriented)
 
 
 def boundary_loops(
@@ -153,13 +152,13 @@ def boundary_loops(
     ``igl::boundary_loop`` (its first overload).
 
     All loops are found in one batched pass
-    ([`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]); this is
+    ([`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]); this is
     [`split`][triwarp.array.split] over its packed result.
 
     !!! note "The returned arrays are views"
-        Each loop slices the single packed buffer ``boundary_loops_batched`` produced, which costs
-        no device memory and no launches. Two consequences: holding on to a single loop keeps the
-        *whole* buffer alive, and writing into one loop writes into the shared allocation. Pass
+        Each loop slices the single packed buffer ``boundary_loops_with_offsets`` produced, which
+        costs no device memory and no launches. Two consequences: holding on to a single loop keeps
+        the *whole* buffer alive, and writing into one loop writes into the shared allocation. Pass
         ``copy=True`` for independent buffers.
 
     Parameters
@@ -171,10 +170,10 @@ def boundary_loops(
         Length-``3 * n_faces`` ``wp.int32`` face index buffer.
     edges_sorted
         Optional precomputed ``(n_faces * 3, 2)`` sorted edges, forwarded to
-        [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched].
+        [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets].
     edges
         Optional precomputed ``(n_faces * 3, 2)`` directed edges, forwarded to
-        [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched].
+        [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets].
     copy
         Return independent buffers instead of views into the packed result.
 
@@ -207,22 +206,23 @@ def boundary_loops(
 
     See Also
     --------
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]
+        The packed form this splits: the same loops in one buffer plus offsets.
     [`longest_boundary_loop`][triwarp.boundary.longest_boundary_loop]
     [`oriented_boundary_edges`][triwarp.boundary.oriented_boundary_edges]
     ``igl.boundary_loop_all``
     """
     require_same_device(vertices=vertices, faces=faces, edges_sorted=edges_sorted, edges=edges)
-    flat_loops, offsets, _loop_sizes = boundary_loops_batched(vertices, faces, edges_sorted, edges)
+    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, edges_sorted, edges)
     return tw.array.split(flat_loops, offsets, copy=copy)
 
 
-def boundary_loops_batched(
+def boundary_loops_with_offsets(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     edges_sorted: twt.Array2dInt32 | None = None,
     edges: twt.Array2dInt32 | None = None,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Every boundary loop at once, packed into one buffer plus per-loop offsets.
 
@@ -230,9 +230,10 @@ def boundary_loops_batched(
     [`boundary_loops`][triwarp.boundary.boundary_loops] — but with no per-loop Python and no
     per-loop allocation, which is the only form whose cost is independent of the loop *count*.
     Prefer it when a mesh has many small holes or when the loops feed straight into another
-    batched kernel, as [`triwarp.holes`][triwarp.holes] does. The loop ordering itself is the
-    general successor-graph machinery of [`successor_cycles`][triwarp.graph.successor_cycles];
-    this function contributes the boundary-edge detection.
+    batched kernel, as [`triwarp.holes`][triwarp.holes] does. The loops come out as
+    [`successor_cycles`][triwarp.graph.successor_cycles] orders a successor graph's cycles --
+    each from its smallest vertex, the loops in ascending order of it -- ranked by pointer jumping
+    specialised to a graph that is all cycles by construction.
 
     Parameters
     ----------
@@ -254,11 +255,9 @@ def boundary_loops_batched(
     flat_loops
         Concatenated ordered vertex indices of every loop, on ``faces.device``.
     offsets
-        Length-``n_loops`` exclusive prefix sum of the loop sizes: loop ``i`` occupies
-        ``flat_loops[offsets[i] : offsets[i] + loop_sizes[i]]``. Not a total-terminated CSR
-        array — the last loop ends at ``flat_loops.shape[0]``.
-    loop_sizes
-        Length-``n_loops`` vertex count per loop.
+        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` occupies
+        ``flat_loops[offsets[i] : offsets[i + 1]]``, and ``offsets == [0]`` when the mesh has no
+        boundary.
 
     Raises
     ------
@@ -268,6 +267,7 @@ def boundary_loops_batched(
     See Also
     --------
     [`boundary_loops`][triwarp.boundary.boundary_loops]
+        The list form: [`split`][triwarp.array.split] over this result.
     [`longest_boundary_loop`][triwarp.boundary.longest_boundary_loop]
     [`successor_cycles`][triwarp.graph.successor_cycles]
     """
@@ -275,12 +275,7 @@ def boundary_loops_batched(
     n_faces = int(faces.shape[0]) // 3
     device = faces.device
     if n_faces == 0:
-        # Three *distinct* empty allocations, so callers may write into them independently.
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-        )
+        return _no_loops(device)
 
     n_vertices = int(vertices.shape[0])
     # One boundary detection for every edge view below; ``boundary_edges`` /
@@ -288,23 +283,21 @@ def boundary_loops_batched(
     boundary = _BoundaryHalfedges(faces, edges_sorted, n_vertices)
     has_seam, has_pinch = _boundary_defects(boundary, edges, n_vertices)
     if boundary.count() == 0:
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-        )
+        return _no_loops(device)
     if has_pinch:
-        _, rows = boundary.edges(edges, sort_pair=False, with_rows=True)
-        return _pinched_boundary_cycles(faces, rows, n_vertices)
+        return _pinched_boundary_cycles(boundary, n_vertices)
     if has_seam:
-        return _unoriented_boundary_cycles(
-            boundary.edges(edges_sorted, sort_pair=True)[0], n_vertices
-        )
-    directed, _ = boundary.edges(edges, sort_pair=False)
-    # ``validate=False``: ``directed`` holds vertex indices this function just gathered out of
-    # ``faces``, so the range check would only re-derive a bound the caller already guarantees —
-    # at the cost of a device synchronization.
-    return tw.graph.successor_cycles(directed, n_vertices, validate=False)
+        return _unoriented_boundary_cycles(boundary.edges(edges_sorted, sort_pair=True), n_vertices)
+    # With neither defect no boundary vertex has two boundary edges out or three incident, so the
+    # directed rows are cycles over the boundary vertices -- plus, on a mesh that is not
+    # edge-manifold, chains running into a vertex with no edge out, which the ranking drops.
+    tails, next_node = boundary.successors(edges, n_vertices)
+    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_NODES)
+
+
+def _no_loops(device: wp.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """Return the packed answer of a mesh with no boundary: no loop vertices, offsets ``[0]``."""
+    return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(1, dtype=wp.int32, device=device)
 
 
 def _boundary_defects(
@@ -314,13 +307,13 @@ def _boundary_defects(
     Count the boundary edges and detect whether their directed rows have a seam or a pinch.
 
     Returns whether the rows have an orientation seam and whether they have a pinch; the count is
-    left in ``boundary`` for [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]
-    to read.
+    left in ``boundary`` for
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] to read.
 
     They have neither on an orientable surface with a manifold boundary, which is what lets
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched] hand them straight to
-    [`successor_cycles`][triwarp.graph.successor_cycles]. The two defects break that differently
-    and each has its own walk:
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] rank them as the
+    cycles of a successor graph over the vertices. The two defects break that differently and each
+    has its own walk:
 
     - **A non-orientable seam.** The winding cannot be made consistent globally, so at the seam two
       boundary edges leave the same vertex and ``succ[tail] = head`` drops one silently. On the
@@ -348,44 +341,52 @@ def _boundary_defects(
 
 
 def _pinched_boundary_cycles(
-    faces: wp.array[wp.int32], boundary_halfedges: wp.array[wp.int32], n_vertices: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+    boundary: _BoundaryHalfedges, n_vertices: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Boundary cycles of a rim that meets itself at a vertex: walk the boundary *halfedges* instead.
 
     At a pinch the vertex successor table has two writers and no answer, which is why the vertex
     walk came back with slots left at ``0``. A boundary halfedge has exactly one successor -- the
     next boundary halfedge around its tip within its own sector
-    (``kernels/halfedge.next_boundary_halfedge``) -- so the halfedges form a true successor graph
-    and [`successor_cycles`][triwarp.graph.successor_cycles] walks it unchanged. Each cycle is then
-    read back as the origin vertex of each halfedge, which keeps the face winding's direction.
+    (``kernels/halfedge.next_boundary_halfedge``) -- so the halfedges form a true successor graph,
+    and each cycle is read out as the origin vertex of each halfedge, which keeps the face winding's
+    direction.
 
     So the cycles are the boundary of the surface with each pinch vertex split once per fan: every
     boundary edge appears exactly once, and a cycle can pass through a pinch vertex twice where two
     holes touch there (one fan hands the walk from the first rim to the second, the other hands it
-    back). Only this branch builds a twin table (``validate=False``: a mesh
-    this function accepts need not be edge-manifold, and on one that is not, the walk is still
-    bounded and in range, just not meaningful).
+    back). Only this branch builds a twin table (unvalidated: a mesh this function accepts need not
+    be edge-manifold, and on one that is not, the walk is still
+    bounded and in range, just not meaningful). There a rotation can dead-end on a halfedge that is
+    not a boundary one, and the chain it leaves is dropped rather than ranked (see
+    ``kernels/boundary.closed_cycle_windows``), so every returned pair is still a boundary edge.
     """
-    device = faces.device
-    twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices, validate=False)
-    n_boundary = int(boundary_halfedges.shape[0])
-    successors = twt.empty_2d((n_boundary, 2), wp.int32, device=device)
+    faces = boundary.faces
+    # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
+    # detection's own sort: the same keys against the same radix, sorted stably, so the pairing
+    # kernel sees the identical sorted list and the mesh-sized key build and sort are not repeated.
+    n = boundary.n
+    twins = wp.full(n, -1, dtype=wp.int32, device=faces.device)
     wp.launch(
-        kernel_boundary.boundary_halfedge_successors,
-        dim=n_boundary,
-        inputs=[faces, twins, boundary_halfedges, successors],
-        device=device,
+        kernel_halfedge.pair_sorted_halfedges,
+        dim=n,
+        inputs=[
+            faces,
+            twt.as_dense(boundary.keys[:n]),
+            boundary.order,
+            twins,
+            wp.zeros(2, dtype=wp.int32, device=faces.device),
+        ],
+        device=faces.device,
     )
-    flat_halfedges, offsets, sizes = tw.graph.successor_cycles(
-        successors, int(faces.shape[0]) // 3 * 3, validate=False
-    )
-    return tw.array.gather(faces, flat_halfedges), offsets, sizes
+    tails, next_node = boundary.successors(None, n, twins=twins)
+    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_HALFEDGES, faces)
 
 
 def _unoriented_boundary_cycles(
     boundary_edges: twt.Array2dInt32, n_vertices: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Boundary cycles of a mesh whose winding cannot orient them: walk the undirected edges instead.
 
@@ -393,8 +394,7 @@ def _unoriented_boundary_cycles(
     even where a *consistent direction* for them does not. The walk runs on **darts**: dart ``2 * v
     + s`` means "at vertex ``v``, arrived from neighbour slot ``s``", and its successor leaves by
     the other slot. That is a genuine successor graph by construction -- every dart has exactly one
-    out-edge -- so [`successor_cycles`][triwarp.graph.successor_cycles] handles it unchanged, at
-    twice the node count.
+    out-edge -- so it ranks like the oriented walk, at twice the node count.
 
     Each undirected cycle therefore comes back **twice**, once per direction, over disjoint dart
     sets. The two mirrors share their lowest vertex ``v`` but start at darts ``2v`` and ``2v + 1``,
@@ -408,13 +408,9 @@ def _unoriented_boundary_cycles(
     pair that is *not* a boundary edge, and a half-edge hole ring walks the band's *double* cover
     and reads twice the length.
 
-    The mirror filter and the re-pack run on the host, over a buffer bounded by the **boundary**
-    rather than by the mesh, and only ever on a non-orientable surface. Two things make that the
-    right side of the fence rather than an unfinished port. The host loop is over *cycles*, not over
-    darts -- twice the boundary-loop count, so two iterations on a Moebius band -- and each
-    iteration's body is a vectorized slice rather than a per-element Python step. And the device
-    alternative is a segment compaction (a keep mask, a ``counts_to_offsets`` scan and a gather)
-    that only pays for itself on a mesh with many boundary loops that is also non-orientable.
+    The mirror filter costs nothing of its own: a cycle's start is its smallest dart, so the
+    ranking counts and places only the cycles whose start is even, and writes each dart out as its
+    vertex.
     """
     device = boundary_edges.device
     # Allocated with the sentinel rather than filled after: a buffer whose initial value matters
@@ -437,43 +433,92 @@ def _unoriented_boundary_cycles(
         device=device,
     )
 
-    boundary_vertices = tw.grouping.unique_1d(boundary_edges.flatten())
-    n_boundary = int(boundary_vertices.shape[0])
-    dart_edges = twt.empty_2d((2 * n_boundary, 2), wp.int32, device=device)
+    # Each edge end is one dart, and every successor is a dart or, where a rim ends on a vertex with
+    # one boundary edge, ``-1``: ``next_node`` is read only at darts and needs no fill.
+    n_edges = int(boundary_edges.shape[0])
+    tails = wp.empty(2 * n_edges, dtype=wp.int32, device=device)
+    next_node = wp.empty(2 * n_vertices, dtype=wp.int32, device=device)
     wp.launch(
-        kernel_boundary.build_dart_successors,
-        dim=(n_boundary, 2),
-        inputs=[boundary_vertices, neighbors, dart_edges],
+        kernel_boundary.dart_successors,
+        dim=(n_edges, 2),
+        inputs=[boundary_edges, neighbors, tails, next_node],
         device=device,
     )
+    return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_DARTS)
 
-    flat_darts, dart_offsets, _dart_sizes = tw.graph.successor_cycles(
-        dart_edges, 2 * n_vertices, validate=False
-    )
-    # ``wp.array.numpy()`` carries no return annotation, so pyright infers a shape-typed
-    # ``ndarray[tuple[()], ...]`` whose ``.shape`` indexes out of range and whose slices below
-    # type-check only by accident. The cast names the rank-1 int32 buffer this actually is.
-    darts_np = cast("npt.NDArray[np.int32]", flat_darts.numpy())
-    n_darts = darts_np.shape[0]
-    bounds_np = np.append(dart_offsets.numpy(), n_darts)
-    loops_np = [
-        darts_np[start:stop] // 2
-        for start, stop in itertools.pairwise(bounds_np)
-        if darts_np[start] % 2 == 0
-    ]
-    if not loops_np:
-        return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-        )
 
-    sizes_np = np.array([loop.shape[0] for loop in loops_np], dtype=np.int32)
-    return (
-        wp.array(np.concatenate(loops_np), dtype=wp.int32, device=device),
-        wp.array(np.concatenate([[0], np.cumsum(sizes_np)[:-1]]), dtype=wp.int32, device=device),
-        wp.array(sizes_np, dtype=wp.int32, device=device),
+def _closed_successor_cycles(
+    tails: wp.array[wp.int32],
+    next_node: wp.array[wp.int32],
+    mode: int,
+    faces: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+    """
+    Every cycle of a successor graph whose nodes are ``tails``, packed as ``successor_cycles`` does.
+
+    The boundary walks' ranking: [`successor_cycles`][triwarp.graph.successor_cycles]' answer --
+    each cycle from its smallest node in edge direction, the cycles in ascending order of it --
+    for a graph that is all cycles by construction, where each node is the tail of exactly one
+    edge. ``next_node`` is the node-sized successor table, ``-1`` wherever a successor can fail to
+    be a tail (the chains a mesh that is not edge-manifold leaves, which are dropped). ``mode``
+    (``kernels/boundary.CYCLE_*``) says what each ranked node is written out as; ``faces`` is read
+    by the halfedge walk.
+
+    Because the nodes and their count are known and no two tails share a successor, the general
+    function's node-list compaction, chain pass and component labelling all drop out: pointer
+    jumping finds each node's cycle start (its smallest node) and its distance to it together,
+    several pointers a launch (``kernels/graph.pointer_jump_schedule``), and one inclusive scan
+    over the cycle starts places every cycle. One readback, of the cycle and node counts.
+    """
+    device = tails.device
+    m = int(tails.shape[0])
+    node_count = int(next_node.shape[0])
+    hops, rounds = kernel_graph.pointer_jump_schedule(m)
+    windows = wp.empty(node_count, dtype=wp.vec3i, device=device)
+    # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
+    cycle_counts = wp.zeros(node_count, dtype=wp.vec2i, device=device)
+    wp.launch(
+        kernel_boundary.closed_cycle_windows,
+        dim=m,
+        inputs=[tails, next_node, hops, mode, windows, cycle_counts if rounds == 1 else None],
+        device=device,
     )
+    if rounds > 1:
+        spare = wp.empty(node_count, dtype=wp.vec3i, device=device)
+        window = hops
+        for r in range(1, rounds):
+            wp.launch(
+                kernel_boundary.closed_cycle_jump,
+                dim=m,
+                inputs=[
+                    tails,
+                    windows,
+                    window,
+                    hops,
+                    mode,
+                    spare,
+                    cycle_counts if r == rounds - 1 else None,
+                ],
+                device=device,
+            )
+            windows, spare = spare, windows
+            window *= hops
+    wp.utils.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
+    # Sizes both outputs: the cycle count and the ranked node count, in one read.
+    total = read_scalar(cycle_counts)
+    n_cycles, n_ranked = int(total[0]), int(total[1])
+    flat = wp.empty(n_ranked, dtype=wp.int32, device=device)
+    if n_cycles == 0:
+        return flat, wp.zeros(1, dtype=wp.int32, device=device)
+    # Every entry, the leading zero and the total included, is written by the cycle it bounds.
+    offsets = wp.empty(n_cycles + 1, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_boundary.scatter_closed_cycles,
+        dim=m,
+        inputs=[tails, windows, cycle_counts, mode, faces, flat, offsets],
+        device=device,
+    )
+    return flat, offsets
 
 
 def loop_perimeters(
@@ -522,24 +567,16 @@ def loop_perimeters(
     packed = _pack_loop_segments(vertices, loops)
     if packed is None:
         return wp.empty(0, dtype=wp.float32, device=vertices.device)
-    flat_loops, loop_id, starts, sizes, n_loops = packed
+    flat_loops, loop_id, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_perimeters,
-        wp.float32,
-        vertices,
-        flat_loops,
-        loop_id,
-        starts,
-        sizes,
-        n_loops,
+        kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, loop_id, offsets
     )
 
 
-def loop_perimeters_batched(
+def loop_perimeters_from_offsets(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
     *,
     loop_id: wp.array[wp.int32] | None = None,
     validate: bool = True,
@@ -548,9 +585,9 @@ def loop_perimeters_batched(
     Perimeter of every loop, taking the loops in the packed form rather than as a list.
 
     Same measure as [`loop_perimeters`][triwarp.boundary.loop_perimeters] and the same launch; the
-    three arguments after ``vertices`` are exactly what
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched] returns, in that order.
-    Reach for this whenever the loops are already packed, which is the form
+    two arguments after ``vertices`` are exactly what
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] returns, in that
+    order. Reach for this whenever the loops are already packed, which is the form
     [`triwarp.holes`][triwarp.holes] carries them in throughout: the list form would have to be
     split back out and repacked to be measured, and the split is a per-loop Python object.
 
@@ -561,22 +598,19 @@ def loop_perimeters_batched(
     flat_loops
         Concatenated ordered vertex indices of every loop.
     offsets
-        Length-``n_loops`` start of each loop in ``flat_loops``. Not total-terminated, matching
-        ``boundary_loops_batched``.
-    loop_sizes
-        Length-``n_loops`` vertex count per loop.
+        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` is
+        ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
         Optional precomputed length-``flat_loops`` label saying which loop each packed position
-        belongs to. Built here when ``None``, which costs an allocation, a copy and a launch --
-        **roughly doubling the call**, since the measure itself is one launch. Pass it when the
-        caller already holds it, as [`triwarp.holes`][triwarp.holes] does.
+        belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
+        doubling the call**, since the measure itself is one launch. Pass it when the caller
+        already holds it, as [`triwarp.holes`][triwarp.holes] does.
     validate
-        When ``True`` (default), check that ``offsets`` and ``loop_sizes`` agree in length and that
-        every ``(offset, size)`` pair stays within ``flat_loops`` before launching -- a real cost (a
-        host readback of both arrays), paid because a hand-built or stale packed triple otherwise
-        drives the kernel's per-loop index past ``flat_loops``'s end with no exception raised. Pass
-        ``False`` only when the triple is known correct by construction, as
-        [`triwarp.holes`][triwarp.holes]'s internal packing already is.
+        When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
+        ``flat_loops``' length before launching -- a real cost (a host readback of ``offsets``),
+        paid because a hand-built or stale pair otherwise drives the kernel's per-loop index past
+        ``flat_loops``'s end with no exception raised. Pass ``False`` only when the pair is known
+        correct by construction, as [`triwarp.holes`][triwarp.holes]'s internal packing already is.
 
     Returns
     -------
@@ -586,36 +620,27 @@ def loop_perimeters_batched(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``flat_loops``, ``offsets``, ``loop_sizes`` and ``loop_id`` are not all on
-        one device.
+        If ``vertices``, ``flat_loops``, ``offsets`` and ``loop_id`` are not all on one device.
     ValueError
-        If ``validate`` and the packed triple is malformed -- see ``validate`` above.
+        If ``validate`` and the packed pair is malformed -- see ``validate`` above.
 
     See Also
     --------
     [`loop_perimeters`][triwarp.boundary.loop_perimeters]
-        The list form, which packs and then calls this.
-    [`loop_directed_areas_batched`][triwarp.boundary.loop_directed_areas_batched]
+        The list form, which packs and then launches the same kernel.
+    [`loop_directed_areas_from_offsets`][triwarp.boundary.loop_directed_areas_from_offsets]
         The vector measure of the same packed loops.
     """
-    require_same_device(
-        vertices=vertices,
-        flat_loops=flat_loops,
-        offsets=offsets,
-        loop_sizes=loop_sizes,
-        loop_id=loop_id,
-    )
+    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
     if validate:
-        _validate_packed_loops(flat_loops, offsets, loop_sizes, "loop_perimeters_batched")
+        _validate_packed_loops(flat_loops, offsets, "loop_perimeters_from_offsets")
     return _launch_loop_measure(
         kernel_boundary.loop_perimeters,
         wp.float32,
         vertices,
         flat_loops,
-        _loop_owner_labels(flat_loops, offsets, loop_sizes) if loop_id is None else loop_id,
+        _loop_owner_labels(flat_loops, offsets) if loop_id is None else loop_id,
         offsets,
-        loop_sizes,
-        int(loop_sizes.shape[0]),
     )
 
 
@@ -665,24 +690,16 @@ def loop_directed_areas(
     packed = _pack_loop_segments(vertices, loops)
     if packed is None:
         return wp.empty(0, dtype=wp.vec3, device=vertices.device)
-    flat_loops, loop_id, starts, sizes, n_loops = packed
+    flat_loops, loop_id, offsets = packed
     return _launch_loop_measure(
-        kernel_boundary.loop_directed_areas,
-        wp.vec3,
-        vertices,
-        flat_loops,
-        loop_id,
-        starts,
-        sizes,
-        n_loops,
+        kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, loop_id, offsets
     )
 
 
-def loop_directed_areas_batched(
+def loop_directed_areas_from_offsets(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
     *,
     loop_id: wp.array[wp.int32] | None = None,
     validate: bool = True,
@@ -692,9 +709,9 @@ def loop_directed_areas_batched(
 
     The packed counterpart of
     [`loop_directed_areas`][triwarp.boundary.loop_directed_areas], exactly as
-    [`loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched] is of
+    [`loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets] is of
     [`loop_perimeters`][triwarp.boundary.loop_perimeters]; the arguments after ``vertices`` are what
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched] returns.
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets] returns.
 
     Parameters
     ----------
@@ -703,19 +720,18 @@ def loop_directed_areas_batched(
     flat_loops
         Concatenated ordered vertex indices of every loop.
     offsets
-        Length-``n_loops`` start of each loop in ``flat_loops``, not total-terminated.
-    loop_sizes
-        Length-``n_loops`` vertex count per loop.
+        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` is
+        ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
         Optional precomputed length-``flat_loops`` label saying which loop each packed position
-        belongs to. Built here when ``None``, which costs an allocation, a copy and a launch --
-        **roughly doubling the call**, since the measure itself is one launch. Pass it when the
-        caller already holds it, as [`triwarp.holes`][triwarp.holes] does.
+        belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
+        doubling the call**, since the measure itself is one launch. Pass it when the caller
+        already holds it, as [`triwarp.holes`][triwarp.holes] does.
     validate
-        When ``True`` (default), check that ``offsets`` and ``loop_sizes`` agree in length and that
-        every ``(offset, size)`` pair stays within ``flat_loops`` before launching -- see
-        [`loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched]'s docstring for the
-        cost and the reasoning.
+        When ``True`` (default), check that ``offsets`` is non-decreasing from ``0`` to
+        ``flat_loops``' length before launching -- see
+        [`loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets]'s docstring
+        for the cost and the reasoning.
 
     Returns
     -------
@@ -725,76 +741,55 @@ def loop_directed_areas_batched(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``flat_loops``, ``offsets``, ``loop_sizes`` and ``loop_id`` are not all on
-        one device.
+        If ``vertices``, ``flat_loops``, ``offsets`` and ``loop_id`` are not all on one device.
     ValueError
-        If ``validate`` and the packed triple is malformed -- see ``validate`` above.
+        If ``validate`` and the packed pair is malformed -- see ``validate`` above.
 
     See Also
     --------
     [`loop_directed_areas`][triwarp.boundary.loop_directed_areas]
-        The list form, which packs and then calls this.
-    [`loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched]
+        The list form, which packs and then launches the same kernel.
+    [`loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets]
         The scalar measure of the same packed loops.
     """
-    require_same_device(
-        vertices=vertices,
-        flat_loops=flat_loops,
-        offsets=offsets,
-        loop_sizes=loop_sizes,
-        loop_id=loop_id,
-    )
+    require_same_device(vertices=vertices, flat_loops=flat_loops, offsets=offsets, loop_id=loop_id)
     if validate:
-        _validate_packed_loops(flat_loops, offsets, loop_sizes, "loop_directed_areas_batched")
+        _validate_packed_loops(flat_loops, offsets, "loop_directed_areas_from_offsets")
     return _launch_loop_measure(
         kernel_boundary.loop_directed_areas,
         wp.vec3,
         vertices,
         flat_loops,
-        _loop_owner_labels(flat_loops, offsets, loop_sizes) if loop_id is None else loop_id,
+        _loop_owner_labels(flat_loops, offsets) if loop_id is None else loop_id,
         offsets,
-        loop_sizes,
-        int(loop_sizes.shape[0]),
     )
 
 
 def _validate_packed_loops(
-    flat_loops: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
-    name: str,
+    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32], name: str
 ) -> None:
     """
-    Raise if ``(offsets, loop_sizes)`` do not describe a set of segments that fits ``flat_loops``.
+    Raise if ``offsets`` does not describe a set of segments that tiles ``flat_loops``.
 
-    Shared by [`loop_perimeters_batched`][triwarp.boundary.loop_perimeters_batched] and
-    [`loop_directed_areas_batched`][triwarp.boundary.loop_directed_areas_batched] (its last
-    caller), whose ``validate=True`` default calls this before launching. A malformed triple
-    otherwise drives ``_launch_loop_measure``'s kernel to read ``flat_loops`` past its own end for
-    an inflated ``loop_sizes`` entry -- an out-of-bounds read with no exception, not merely a wrong
-    answer -- so this reads both arrays back to the host and checks the one invariant that matters
-    before that can happen.
+    Shared by [`loop_perimeters_from_offsets`][triwarp.boundary.loop_perimeters_from_offsets] and
+    [`loop_directed_areas_from_offsets`][triwarp.boundary.loop_directed_areas_from_offsets] (its
+    last caller), whose ``validate=True`` default calls this before launching. A malformed pair
+    otherwise drives ``_launch_loop_measure``'s kernel to read ``flat_loops`` past its own end -- an
+    out-of-bounds read with no exception, not merely a wrong answer -- so this reads ``offsets``
+    back to the host and checks the one invariant that matters before that can happen.
     """
-    n_loops = int(loop_sizes.shape[0])
-    if int(offsets.shape[0]) != n_loops:
-        raise ValueError(
-            f"{name}: offsets and loop_sizes must have the same length, got "
-            f"{int(offsets.shape[0])} and {n_loops}"
-        )
-    if n_loops == 0:
-        return
     total = int(flat_loops.shape[0])
+    if int(offsets.ndim) != 1 or int(offsets.shape[0]) == 0:
+        raise ValueError(f"{name}: offsets must be a non-empty rank-1 total-terminated array")
     offsets_np = offsets.numpy().astype(np.int64)
-    sizes_np = loop_sizes.numpy().astype(np.int64)
     if (
-        int(offsets_np.min()) < 0
-        or int(sizes_np.min()) < 0
-        or int((offsets_np + sizes_np).max()) > total
+        int(offsets_np[0]) != 0
+        or int(offsets_np[-1]) != total
+        or bool((offsets_np[1:] < offsets_np[:-1]).any())
     ):
         raise ValueError(
-            f"{name}: every (offset, size) pair must stay within flat_loops (length {total}); got "
-            f"offsets in [{int(offsets_np.min())}, {int(offsets_np.max())}] and sizes up to "
-            f"{int(sizes_np.max())}"
+            f"{name}: offsets must run non-decreasing from 0 to the length of flat_loops "
+            f"({total}); got {offsets_np.tolist()}"
         )
 
 
@@ -804,34 +799,28 @@ def _launch_loop_measure(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    starts: wp.array[wp.int32],
-    sizes: wp.array[wp.int32],
-    n_loops: int,
+    offsets: wp.array[wp.int32],
 ) -> twt.ArrayNd:
     """
     One segmented launch over every packed loop at once, shared by both measures and both forms.
 
     The two kernels differ only in what they accumulate -- an arc length into a ``float32`` or a
-    cross-product sum into a ``vec3`` -- and take the identical five inputs, so the launch is
+    cross-product sum into a ``vec3`` -- and take the identical four inputs, so the launch is
     written once here rather than four times above. ``wp.zeros`` rather than ``wp.empty``: both
     kernels accumulate into their output with an atomic add.
-
-    Bundling the launch's six arguments -- those five inputs plus the output -- into a
-    ``@wp.struct`` is not worth it here: this launches once per call rather than repeatedly inside
-    a loop, so there is little host-side argument-marshalling overhead to remove.
     """
-    out = wp.zeros(n_loops, dtype=dtype, device=vertices.device)
+    out = wp.zeros(int(offsets.shape[0]) - 1, dtype=dtype, device=vertices.device)
     wp.launch(
         kernel,
         dim=int(flat_loops.shape[0]),
-        inputs=[flat_loops, loop_id, starts, sizes, vertices, out],
+        inputs=[flat_loops, loop_id, offsets, vertices, out],
         device=vertices.device,
     )
     return out
 
 
 def _loop_owner_labels(
-    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32], loop_sizes: wp.array[wp.int32]
+    flat_loops: wp.array[wp.int32], offsets: wp.array[wp.int32]
 ) -> wp.array[wp.int32]:
     """
     Which loop each packed position belongs to, built on the device from ``offsets`` alone.
@@ -839,40 +828,32 @@ def _loop_owner_labels(
     The list form builds the same labels on the host with ``numpy.repeat``, because it already has
     the sizes there; the packed form does not, and reading them back to reuse that path would cost
     a synchronization this saves. So the two forms build ``loop_id`` differently on purpose, and
-    each is the cheaper one for the inputs it has. ``boundary_loops_batched`` returns unterminated
-    offsets, and the total is ``flat_loops.shape[0]`` -- known on the host -- so it is passed as a
-    scalar to ``segment_owner_labels`` rather than appended to a copy of the offsets.
+    each is the cheaper one for the inputs it has.
     """
-    n_loops = int(loop_sizes.shape[0])
+    n_loops = int(offsets.shape[0]) - 1
     device = flat_loops.device
     loop_id = wp.empty(int(flat_loops.shape[0]), dtype=wp.int32, device=device)
-    if n_loops == 0:
+    if n_loops <= 0:
         return loop_id
     wp.launch(
-        kernel_array.segment_owner_labels,
-        dim=n_loops,
-        inputs=[offsets, wp.int32(int(flat_loops.shape[0])), loop_id],
-        device=device,
+        kernel_array.segment_owner_labels, dim=n_loops, inputs=[offsets, loop_id], device=device
     )
     return loop_id
 
 
 def _pack_loop_segments(
     vertices: wp.array[wp.vec3], loops: Sequence[wp.array[wp.int32]]
-) -> (
-    tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32], int]
-    | None
-):
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]] | None:
     """
-    Pack a list of cycles into the four arrays a segmented per-loop kernel needs.
+    Pack a list of cycles into the three arrays a segmented per-loop kernel needs.
 
-    ``loop_id`` inverts ``starts`` so a ``dim=total`` launch finds its own loop without a search,
+    ``loop_id`` inverts ``offsets`` so a ``dim=total`` launch finds its own loop without a search,
     which is what lets both measures above run in one launch over every loop at once. ``None`` when
     there is nothing to measure.
     """
     # The NumPy here is host-side *metadata* -- one integer per loop, read off each loop's own
     # ``shape`` -- so it is the sanctioned kind and not a readback: nothing crosses the bus except
-    # the two uploads at the end, and there is no device buffer to reduce.
+    # the uploads at the end, and there is no device buffer to reduce.
     #
     # The sizes are already on the host, so ``numpy.repeat`` builds ``loop_id`` here where the
     # packed form, which has only device offsets, launches ``kernels/array.py``'s
@@ -887,13 +868,12 @@ def _pack_loop_segments(
     # ``copy=False``: nothing below writes into ``flat_loops``, and a caller's loops usually
     # come straight from ``boundary_loops``, which already sliced them out of one packed
     # buffer -- so the pack is free instead of one ``wp.copy`` per rim.
-    flat_loops, starts = tw.array.pack_1d_arrays(loops, copy=False)
+    flat_loops, offsets = tw.array.pack_1d_arrays(loops, copy=False)
     sizes_np = np.array([int(loop.shape[0]) for loop in loops], dtype=np.int32)
     loop_id = wp.array(
         np.repeat(np.arange(len(loops), dtype=np.int32), sizes_np), dtype=wp.int32, device=device
     )
-    sizes = wp.array(sizes_np, dtype=wp.int32, device=device)
-    return flat_loops, loop_id, starts, sizes, len(loops)
+    return flat_loops, loop_id, offsets
 
 
 def longest_boundary_loop(
@@ -912,7 +892,7 @@ def longest_boundary_loop(
     Parameters
     ----------
     vertices, faces, edges_sorted, edges
-        Forwarded to [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched].
+        Forwarded to [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets].
 
     Returns
     -------
@@ -930,27 +910,22 @@ def longest_boundary_loop(
     --------
     [`boundary_loops`][triwarp.boundary.boundary_loops]
         Every loop, not only the longest.
-    [`boundary_loops_batched`][triwarp.boundary.boundary_loops_batched]
+    [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]
     ``igl.boundary_loop``
     """
     require_same_device(vertices=vertices, faces=faces, edges_sorted=edges_sorted, edges=edges)
     device = faces.device
-    flat_loops, offsets, loop_sizes = boundary_loops_batched(vertices, faces, edges_sorted, edges)
-    n_loops = int(offsets.shape[0])
+    flat_loops, offsets = boundary_loops_with_offsets(vertices, faces, edges_sorted, edges)
+    n_loops = int(offsets.shape[0]) - 1
     if n_loops == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
-    # The sizes are already on the device, so the winner is an argmax there rather than a Python
-    # scan: unpacking the loops first would read the offsets back, build one array view per loop,
-    # and then recover from those views exactly the lengths ``loop_sizes`` already holds -- a cost
-    # linear in the rim count for an answer that is one loop. ``-1`` is below every packed key, so
-    # the reduction needs no separate seeding pass.
+    # The sizes are the offsets' differences on the device, so the winner is an argmax there
+    # rather than a Python scan: unpacking the loops first would read the offsets back, build one
+    # array view per loop, and then recover the lengths from those views -- a cost linear in the
+    # rim count for an answer that is one loop. ``-1`` is below every packed key, so the reduction
+    # needs no separate seeding pass.
     best = wp.array([wp.int64(-1)], dtype=wp.int64, device=device)
-    wp.launch(
-        kernel_boundary.longest_loop_key,
-        dim=n_loops,
-        inputs=[offsets, loop_sizes, best],
-        device=device,
-    )
+    wp.launch(kernel_boundary.longest_loop_key, dim=n_loops, inputs=[offsets, best], device=device)
     # One readback, because the key carries the winner's start in its low half as well as its
     # length in its high half -- see the kernel.
     key = int(read_scalar(best, 0))
@@ -1167,7 +1142,7 @@ class _BoundaryHalfedges:
         """
         Return the boundary edge count; the first call scans and reads the total back.
 
-        ``census`` is ``boundary_loops_batched``'s ``(table, n_vertices)``: the directed rows'
+        ``census`` is ``boundary_loops_with_offsets``'s ``(table, n_vertices)``: the directed rows'
         source and the vertex count. Given on the first call, the degree census runs in the
         flagging launch and its seam and pinch bits come back with the total, into ``defects``.
         """
@@ -1204,11 +1179,9 @@ class _BoundaryHalfedges:
                 self.defects = (bool(seam), bool(pinch))
         return self._count
 
-    def edges(
-        self, table: twt.Array2dInt32 | None, *, sort_pair: bool, with_rows: bool = False
-    ) -> tuple[twt.Array2dInt32, wp.array[wp.int32]]:
+    def edges(self, table: twt.Array2dInt32 | None, *, sort_pair: bool) -> twt.Array2dInt32:
         """
-        Emit the boundary edge rows in ascending key order, and (``with_rows``) their halfedges.
+        Emit the boundary edge rows in ascending key order.
 
         Rows are read from ``table`` when given, else from ``faces`` (ascending when
         ``sort_pair``).
@@ -1216,23 +1189,42 @@ class _BoundaryHalfedges:
         device = self.faces.device
         k = self.count()
         out_edges = twt.empty_2d((k, 2), wp.int32, device=device)
-        out_rows = wp.empty(k if with_rows else 0, dtype=wp.int32, device=device)
         if k > 0:
             wp.launch(
                 kernel_boundary.emit_boundary_edges,
                 dim=self.n,
-                inputs=[
-                    self._inclusive,
-                    self.order,
-                    self.faces,
-                    table,
-                    sort_pair,
-                    out_rows if with_rows else None,
-                    out_edges,
-                ],
+                inputs=[self._inclusive, self.order, self.faces, table, sort_pair, out_edges],
                 device=device,
             )
-        return out_edges, out_rows
+        return out_edges
+
+    def successors(
+        self,
+        table: twt.Array2dInt32 | None,
+        node_count: int,
+        *,
+        twins: wp.array[wp.int32] | None = None,
+    ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+        """
+        Return the boundary as a successor graph: its nodes, and the ``node_count``-sized table.
+
+        The nodes are the directed rows' tail vertices (read from ``table`` when given, else from
+        ``faces``), or with ``twins`` the boundary halfedges; see
+        ``kernels/boundary.emit_boundary_successors``. The table is ``-1`` off the nodes, which is
+        where a chain on a mesh that is not edge-manifold ends.
+        """
+        device = self.faces.device
+        k = self.count()
+        tails = wp.empty(k, dtype=wp.int32, device=device)
+        # ``-1`` off the nodes: the ranking reads it to tell where a chain ends.
+        next_node = wp.full(node_count, -1, dtype=wp.int32, device=device)
+        wp.launch(
+            kernel_boundary.emit_boundary_successors,
+            dim=self.n,
+            inputs=[self._inclusive, self.order, self.faces, table, twins, tails, next_node],
+            device=device,
+        )
+        return tails, next_node
 
     def vertex_indices(self, n_vertices: int) -> wp.array[wp.int32]:
         """Sorted unique boundary vertex indices, from a scan of per-vertex flags."""

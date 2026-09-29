@@ -361,9 +361,7 @@ def sample_surface_poisson_disk(
     r_min = r_max * beta * (1.0 - ratio**gamma)
 
     # 4. Neighbor lists (GPU, computed once for the full initial pool)
-    nbr_idx, nbr_dists, offsets = query_ball_with_offsets(
-        init_points, init_points, r_max, include_total=True
-    )
+    nbr_idx, nbr_dists, offsets = query_ball_with_offsets(init_points, init_points, r_max)
 
     # 5. Initial per-point weights (parallel)
     alive = wp.ones(init_count, dtype=wp.int32, device=device)

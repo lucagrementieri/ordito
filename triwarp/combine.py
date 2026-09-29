@@ -3,7 +3,8 @@ Assembling meshes from parts and splitting them back apart.
 
 [`concatenate`][triwarp.combine.concatenate] joins whole meshes into one buffer pair without
 touching their geometry, and [`split`][triwarp.combine.split] /
-[`split_batched`][triwarp.combine.split_batched] decompose one back into its connected components.
+[`split_with_offsets`][triwarp.combine.split_with_offsets] decompose one back into its connected
+components.
 Mirrors ``trimesh.util.concatenate`` and ``trimesh.Trimesh.split``.
 
 Nothing here welds anything: ``concatenate`` packs parts side by side and leaves any seam open.
@@ -14,7 +15,6 @@ they share with the hole fillers lives.
 
 from __future__ import annotations
 
-import itertools
 from collections.abc import Sequence
 
 import warp as wp
@@ -60,16 +60,16 @@ def concatenate(
         [`trimesh.util.concatenate`][], that one [`numpy.concatenate`][].
     [`trimesh.util.concatenate`][]
     """
-    require_same_device(meshes_data=list(meshes_data))
     if len(meshes_data) == 0:
         return wp.empty(0, dtype=wp.vec3), wp.empty(0, dtype=wp.int32)
 
+    require_same_device(meshes_data=meshes_data)
     device = meshes_data[0][0].device
     vertex_counts = [int(vertices.shape[0]) for vertices, _ in meshes_data]
 
     if sum(vertex_counts) == 0:
         concatenated_vertices = wp.empty(0, dtype=wp.vec3, device=device)
-        vertex_offsets = wp.zeros(len(meshes_data), dtype=wp.int32, device=device)
+        vertex_offsets = wp.zeros(len(meshes_data) + 1, dtype=wp.int32, device=device)
     else:
         concatenated_vertices, vertex_offsets = tw.array.pack_1d_arrays(
             [vertices for vertices, _ in meshes_data]
@@ -100,13 +100,14 @@ def split(
     result recovers the input mesh (up to vertex/face ordering within each body).
 
     All components are extracted in one batched pass
-    ([`split_batched`][triwarp.combine.split_batched]); this is the slicing wrapper over it.
+    ([`split_with_offsets`][triwarp.combine.split_with_offsets]); this is
+    [`array.split`][triwarp.array.split] over its two packed results.
 
     !!! note "The returned arrays are views"
-        Each pair slices the two shared buffers ``split_batched`` produced, which costs no device
-        memory and no launches. Two consequences: holding on to a single component keeps *both*
-        whole buffers alive, and writing into one component writes into the shared allocation. Pass
-        ``copy=True`` for independent buffers.
+        Each pair slices the two shared buffers ``split_with_offsets`` produced, which costs no
+        device memory and no launches. Two consequences: holding on to a single component keeps
+        *both* whole buffers alive, and writing into one component writes into the shared
+        allocation. Pass ``copy=True`` for independent buffers.
 
     Parameters
     ----------
@@ -116,8 +117,8 @@ def split(
         Length-``3 * n_faces`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     copy
-        Return independent buffers instead of views into the batched result. One clone per
-        component, so the returned list no longer pins the batched buffers.
+        Return independent buffers instead of views into the batched result. One allocation per
+        buffer of each component, so the returned list no longer pins the batched buffers.
 
     Returns
     -------
@@ -132,7 +133,8 @@ def split(
 
     See Also
     --------
-    [`split_batched`][triwarp.combine.split_batched]
+    [`split_with_offsets`][triwarp.combine.split_with_offsets]
+        The packed form this splits: every component in two buffers plus offsets.
     [`concatenate`][triwarp.combine.concatenate]
     [`face_connected_component_labels`][triwarp.adjacency.face_connected_component_labels]
     [`repair.remove_small_components`][triwarp.repair.remove_small_components]
@@ -141,25 +143,18 @@ def split(
     [`trimesh.graph.split`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    vertices_all, vertex_offsets, faces_all, face_offsets = split_batched(vertices, faces)
-    k = int(vertex_offsets.shape[0])
-    if k == 0:
-        return []
-
-    vertex_bounds = [*vertex_offsets.list(), int(vertices_all.shape[0])]
-    face_bounds = [*face_offsets.list(), int(faces_all.shape[0]) // 3]
-
-    meshes: list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = []
-    for (v_begin, v_end), (f_begin, f_end) in zip(
-        itertools.pairwise(vertex_bounds), itertools.pairwise(face_bounds), strict=True
-    ):
-        # A ``slice`` index builds a zero-copy ``wp.array`` view: pure Python, no device work.
-        component = (vertices_all[v_begin:v_end], faces_all[3 * f_begin : 3 * f_end])
-        meshes.append((wp.clone(component[0]), wp.clone(component[1])) if copy else component)
-    return meshes
+    vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(vertices, faces)
+    if int(vertex_offsets.shape[0]) == 2:
+        # One component is the whole of both buffers, so its offsets need no readback.
+        if copy:
+            return [(wp.clone(vertices_all), wp.clone(faces_all))]
+        return [(vertices_all, faces_all)]
+    component_vertices = tw.array.split(vertices_all, vertex_offsets, copy=copy)
+    component_faces = tw.array.split(faces_all, face_offsets, copy=copy, row_size=3)
+    return list(zip(component_vertices, component_faces, strict=True))
 
 
-def split_batched(
+def split_with_offsets(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]:
     """
@@ -182,17 +177,15 @@ def split_batched(
     vertices_all : wp.array[wp.vec3]
         Every component's compacted vertices, concatenated.
     vertex_offsets : wp.array[wp.int32]
-        Length-``k`` start of each component in ``vertices_all`` (no terminator; the last
-        component runs to the end).
+        Length-``k + 1`` total-terminated offsets: component ``g`` owns
+        ``vertices_all[vertex_offsets[g] : vertex_offsets[g + 1]]``.
     faces_all : wp.array[wp.int32]
         Every component's reindexed flat faces, concatenated.
     face_offsets : wp.array[wp.int32]
-        Length-``k`` start of each component in ``faces_all`` **in faces, not indices** (no
-        terminator, as for ``vertex_offsets``): component ``g`` owns
-        ``faces_all[3 * face_offsets[g] : 3 * face_offsets[g + 1]]``, and the last component runs
-        to the end of ``faces_all``.
+        Length-``k + 1`` total-terminated offsets **in faces, not indices**: component ``g`` owns
+        ``faces_all[3 * face_offsets[g] : 3 * face_offsets[g + 1]]``.
 
-    All four arrays are empty (and ``k == 0``) when ``n_faces == 0``.
+    When ``n_faces == 0`` the buffers are empty, ``k == 0`` and both offsets are ``[0]``.
 
     Raises
     ------
@@ -202,21 +195,26 @@ def split_batched(
     See Also
     --------
     [`split`][triwarp.combine.split]
+        The list form: [`array.split`][triwarp.array.split] over these buffers.
     [`submeshes_from_face_groups`][triwarp.selection.submeshes_from_face_groups]
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
-        empty_int32 = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.empty(0, dtype=wp.vec3, device=device), empty_int32, empty_int32, empty_int32
+        return (
+            wp.empty(0, dtype=wp.vec3, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
+            wp.empty(0, dtype=wp.int32, device=device),
+            wp.zeros(1, dtype=wp.int32, device=device),
+        )
 
     face_labels = tw.adjacency.face_connected_component_labels(faces)
 
     sorted_labels, sorted_face_ids = tw.array.sort_and_argsort(face_labels)
 
-    # Segment boundaries of the label-sorted array: position 0, plus every label change.
-    is_start = wp.empty(n_faces, dtype=wp.bool, device=device)
+    # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
+    is_start = wp.empty(n_faces + 1, dtype=wp.bool, device=device)
     wp.launch(
         kernel_combine.label_run_starts,
         dim=n_faces,
@@ -225,12 +223,14 @@ def split_batched(
     )
     face_offsets = tw.array.flatnonzero(is_start)
 
-    if int(face_offsets.shape[0]) == 1:
+    if int(face_offsets.shape[0]) == 2:
         component_vertices, component_faces = tw.selection.submesh_from_face_indices(
             vertices, faces, sorted_face_ids, unique_indices=True
         )
-        zero = wp.zeros(1, dtype=wp.int32, device=device)
-        return component_vertices, zero, component_faces, zero
+        vertex_offsets = wp.array(
+            [0, int(component_vertices.shape[0])], dtype=wp.int32, device=device
+        )
+        return component_vertices, vertex_offsets, component_faces, face_offsets
 
     vertices_all, vertex_offsets, faces_all = tw.selection.submeshes_from_face_groups(
         vertices, faces, sorted_face_ids, face_offsets

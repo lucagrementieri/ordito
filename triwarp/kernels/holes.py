@@ -50,22 +50,20 @@ COMBINE_MAX = wp.constant(wp.int32(1))
 MAX_MIN_ANGLE_SIN = wp.constant(wp.float32(0.86602540378443864676))
 
 
-# One convention for a loop's extent, and this is it: ``loop_starts[ell]`` and
-# ``loop_sizes[ell]``, both uploaded once by ``holes._PackedLoops``. Kernels here must not
-# re-derive the size from a ``total`` and an ``n_loops``, or the file answers one question two
-# ways and a new kernel picks a third.
+# One convention for a loop's extent, and this is it: the package's total-terminated
+# ``loop_offsets``, uploaded once by ``holes._PackedLoops`` -- loop ``ell`` is
+# ``[loop_offsets[ell], loop_offsets[ell + 1])``. Kernels here must not re-derive the size from a
+# ``total`` and an ``n_loops``, or the file answers one question two ways and a new kernel picks a
+# third.
 
 
 @wp.kernel
 def fan_faces(
-    flat_loops: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
-    out_faces: wp.array[wp.int32],
+    flat_loops: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], out_faces: wp.array[wp.int32]
 ) -> None:
     ell = wp.int32(wp.tid())
-    o = loop_starts[ell]
-    s = loop_sizes[ell]
+    o = loop_offsets[ell]
+    s = loop_offsets[ell + 1] - o
     # This loop contributes s - 2 fan triangles; earlier loops occupy o - 2 * ell of them.
     base = o - 2 * ell
     for k in range(1, s - 1):
@@ -79,8 +77,7 @@ def fan_faces(
 def cone_fill(
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     n_vertices: wp.int32,
     out_centroids: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
@@ -90,8 +87,8 @@ def cone_fill(
     # apex is an *index*, ``n_vertices + ell``), so nothing is shared but the loop's own bounds --
     # which is exactly what makes one launch enough.
     ell = wp.int32(wp.tid())
-    o = loop_starts[ell]
-    s = loop_sizes[ell]
+    o = loop_offsets[ell]
+    s = loop_offsets[ell + 1] - o
     acc = wp.vec3(0.0, 0.0, 0.0)
     for j in range(s):
         acc = acc + vertices[flat_loops[o + j]]
@@ -225,8 +222,7 @@ def char_area_from_max(max_edge_sq: wp.float32) -> wp.float32:
 def loop_rim_metrics(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     base: wp.uint64,
     out_max_edge_sq: wp.array[wp.float32],
@@ -245,7 +241,7 @@ def loop_rim_metrics(
     # edge's undirected key, which is ``rim_edge_keys``' output for the rim-opposite probe.
     t = wp.int32(wp.tid())
     ell = loop_id[t]
-    u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_starts, loop_sizes, t)
+    u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
     a = vertices[u]
     c = vertices[v]
     out_loop_pos[t] = a
@@ -271,7 +267,7 @@ def finalize_rim_metrics(
 
 @wp.kernel
 def init_dp_base(
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     active: wp.array[wp.int32],
     out_dp: wp.array[wp.float32],
@@ -285,7 +281,7 @@ def init_dp_base(
     ell, i = wp.tid()
     if active[ell] == 0:
         return
-    b = loop_sizes[ell]
+    b = loop_offsets[ell + 1] - loop_offsets[ell]
     if i >= b:
         return
     base = dp_offsets[ell]
@@ -443,8 +439,7 @@ class HoleFillTables:
     """
 
     loop_pos: wp.array[wp.vec3]
-    loop_starts: wp.array[wp.int32]
-    loop_sizes: wp.array[wp.int32]
+    loop_offsets: wp.array[wp.int32]
     dp_offsets: wp.array[wp.int32]
     active: wp.array[wp.int32]
     plane_normals: wp.array[wp.vec3]
@@ -554,7 +549,7 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     span = tables.span_base[0] + span_offset
     if tables.active[ell] == 0:
         return
-    b = tables.loop_sizes[ell]
+    b = tables.loop_offsets[ell + 1] - tables.loop_offsets[ell]
     if span >= b or i >= b - span:
         return
     j = i + span
@@ -572,7 +567,7 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
         tables.dp[base + i * b + j] = FLOAT32_INF_CONSTANT
         tables.prev[base + i * b + j] = -1
         return
-    o = tables.loop_starts[ell]
+    o = tables.loop_offsets[ell]
     plane_normal = tables.plane_normals[ell]
     char_area = tables.char_areas[ell]
     a_pos = tables.loop_pos[o + i]
@@ -628,7 +623,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # block returns together and the tile reductions never run in divergent control flow.
     if tables.active[ell] == 0:
         return
-    b = tables.loop_sizes[ell]
+    b = tables.loop_offsets[ell + 1] - tables.loop_offsets[ell]
     if span >= b or i >= b - span:
         return
     j = i + span
@@ -639,7 +634,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
             tables.dp[base + i * b + j] = FLOAT32_INF_CONSTANT
             tables.prev[base + i * b + j] = -1
         return
-    o = tables.loop_starts[ell]
+    o = tables.loop_offsets[ell]
     plane_normal = tables.plane_normals[ell]
     char_area = tables.char_areas[ell]
     a_pos = tables.loop_pos[o + i]
@@ -677,8 +672,7 @@ def advance_span_base(step: wp.int32, out_span_base: wp.array[wp.int32]) -> None
 @wp.kernel(enable_backward=False)
 def traceback_fill_triangles(
     flat_loops: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     triangle_offsets: wp.array[wp.int32],
     prev: wp.array[wp.int32],
@@ -700,14 +694,14 @@ def traceback_fill_triangles(
     # emitted order -- the same order for the same table on either device.
     #
     # ``stack`` is caller-owned scratch, one slot per packed loop vertex, so loop ``ell`` owns
-    # ``stack[loop_starts[ell] : + B]``. That is exactly enough: the walk starts one deep and each
+    # ``stack[loop_offsets[ell] : + B]``. That is exactly enough: the walk starts one deep and each
     # emitted triangle nets one entry, so the depth never passes ``B - 1``.
     ell = wp.int32(wp.tid())
-    b = loop_sizes[ell]
+    o = loop_offsets[ell]
+    b = loop_offsets[ell + 1] - o
     if b < 3:
         out_counts[ell] = 0
         return
-    o = loop_starts[ell]
     base = dp_offsets[ell]
     tri = triangle_offsets[ell]
     stack[o] = wp.vec2i(0, b - 1)
@@ -759,7 +753,7 @@ def compact_fill_triangles(
 
 @wp.kernel
 def flag_bad_triangulations(
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     dp: wp.array[wp.float32],
     out_retry: wp.array[wp.int32],
@@ -771,7 +765,7 @@ def flag_bad_triangulations(
     # caller's "does any loop need the fallback" test is one 4-byte read rather than a reduction
     # over the mask. Every writer stores the same value, so the race is benign.
     ell = wp.int32(wp.tid())
-    top = dp[dp_offsets[ell] + loop_sizes[ell] - 1]
+    top = dp[dp_offsets[ell] + loop_offsets[ell + 1] - loop_offsets[ell] - 1]
     bad = top >= BAD_METRIC
     out_retry[ell] = wp.where(bad, wp.int32(1), wp.int32(0))
     if bad:
@@ -782,8 +776,7 @@ def flag_bad_triangulations(
 def rim_edge_keys(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     base: wp.uint64,
     out_keys: wp.array[wp.uint64],
 ) -> None:
@@ -791,7 +784,7 @@ def rim_edge_keys(
     # slot ``t``: the table ``probe_rim_edges`` searches. The fill computes the same keys inside
     # ``loop_rim_metrics``; this is the stand-alone form for a caller with no rim metrics to take.
     t = wp.int32(wp.tid())
-    u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_starts, loop_sizes, t)
+    u, v = loop_rim_edge_vertices(flat_loops, loop_id, loop_offsets, t)
     out_keys[t] = kernel_array.pack_edge_key(u, v, base)
 
 
@@ -874,8 +867,7 @@ def mark_forbidden_chords(
     edges_sorted: wp.array2d[wp.int32],
     flat_slot: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     dp_offsets: wp.array[wp.int32],
     out_mask: wp.array[wp.int32],
 ) -> None:
@@ -891,8 +883,8 @@ def mark_forbidden_chords(
     ell = loop_id[tu]
     if ell != loop_id[tv]:
         return
-    b = loop_sizes[ell]
-    o = loop_starts[ell]
+    o = loop_offsets[ell]
+    b = loop_offsets[ell + 1] - o
     lo = wp.min(tu, tv) - o
     hi = wp.max(tu, tv) - o
     if hi - lo >= 2 and hi - lo <= b - 2:
@@ -1357,7 +1349,7 @@ def count_loop_vertices(
 def scatter_fillable_loop_slots(
     flat_loops: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     vertex_counts: wp.array[wp.int32],
     out_fillable: wp.array[wp.bool],
     out_loop_slots: wp.array[wp.vec2i],
@@ -1382,7 +1374,7 @@ def scatter_fillable_loop_slots(
     if vertex_counts[v] > 1:
         out_fillable[ell] = False
         return
-    out_loop_slots[v] = wp.vec2i(ell, t - loop_starts[ell])
+    out_loop_slots[v] = wp.vec2i(ell, t - loop_offsets[ell])
 
 
 @wp.func
@@ -1391,7 +1383,7 @@ def clear_loop_if_chord(
     b: wp.int32,
     vertex_counts: wp.array[wp.int32],
     loop_slots: wp.array[wp.vec2i],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     out_fillable: wp.array[wp.bool],
 ) -> None:
     # A *chord* is a mesh edge joining two vertices of one boundary loop that are not neighbours
@@ -1408,7 +1400,7 @@ def clear_loop_if_chord(
     loop = slot_a[0]
     if slot_b[0] != loop:
         return
-    size = loop_sizes[loop]
+    size = loop_offsets[loop + 1] - loop_offsets[loop]
     gap = slot_a[1] - slot_b[1]
     if gap < 0:
         gap = -gap
@@ -1421,7 +1413,7 @@ def clear_loops_with_chords(
     faces: wp.array[wp.int32],
     vertex_counts: wp.array[wp.int32],
     loop_slots: wp.array[wp.vec2i],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     out_fillable: wp.array[wp.bool],
 ) -> None:
     # The chord test over every face's three edges rather than over the unique edges: the only
@@ -1430,9 +1422,9 @@ def clear_loops_with_chords(
     # needed to deduplicate them.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
-    clear_loop_if_chord(a, b, vertex_counts, loop_slots, loop_sizes, out_fillable)
-    clear_loop_if_chord(b, c, vertex_counts, loop_slots, loop_sizes, out_fillable)
-    clear_loop_if_chord(c, a, vertex_counts, loop_slots, loop_sizes, out_fillable)
+    clear_loop_if_chord(a, b, vertex_counts, loop_slots, loop_offsets, out_fillable)
+    clear_loop_if_chord(b, c, vertex_counts, loop_slots, loop_offsets, out_fillable)
+    clear_loop_if_chord(c, a, vertex_counts, loop_slots, loop_offsets, out_fillable)
 
 
 @wp.kernel
@@ -1463,8 +1455,7 @@ def extend_rim_to_ring(
     vertices: wp.array[wp.vec3],
     loop_vertices: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
-    loop_starts: wp.array[wp.int32],
-    loop_sizes: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     plane_normal: wp.vec3,
     plane_origins: wp.array[wp.vec3],
     ring_base: wp.int32,
@@ -1495,7 +1486,7 @@ def extend_rim_to_ring(
     # Two triangles per rim edge, joining it to the corresponding edge of the projected ring. The
     # rim runs with the surface on its left, so the quad ``(a, b, b', a')`` is wound the other way
     # round to keep the extension's outward side the same as the mesh's.
-    next_slot = loop_next_slot(loop_id, loop_starts, loop_sizes, t)
+    next_slot = loop_next_slot(loop_id, loop_offsets, t)
     b = loop_vertices[next_slot]
     projected_a = ring_base + t
     projected_b = ring_base + next_slot

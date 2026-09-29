@@ -79,3 +79,21 @@ def test_homology_generators(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     loops = bench_case.run(lambda: tw.homology.homology_generators(vertices, faces))
     assert len(loops) == expected
+
+
+@pytest.mark.benchmark(group="homology_generators_with_offsets")
+@pytest.mark.benchaxis("genus")
+@pytest.mark.benchlibs("triwarp")
+def test_homology_generators_with_offsets(bench_case: BenchCase) -> None:
+    """
+    The packed basis: ``homology_generators`` without the per-loop views.
+
+    Read against that group's triwarp row; the difference is the list, which at genus 64 is 128
+    views.
+    """
+    expected = {"sphere_med": 0, "handles_1": 2, "handles_64": 128}[bench_case.mesh_name]
+    vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
+    _loops, offsets = bench_case.run(
+        lambda: tw.homology.homology_generators_with_offsets(vertices, faces)
+    )
+    assert int(offsets.shape[0]) == expected + 1

@@ -243,26 +243,27 @@ def hash_insert(
 def compact_from_table(
     slot_key: wp.array[wp.Int],
     slot_counts: wp.array[wp.int32],
-    occupied: wp.array[wp.int32],
-    scan_pos: wp.array[wp.int32],
+    occupied_scan: wp.array[wp.int32],
     out_keys: wp.array[wp.Int],
     out_counts: wp.array[wp.int32],
     out_perm: wp.array[wp.int32],
 ) -> None:
-    # ``scan_pos`` is the *inclusive* scan of ``occupied``, so an occupied slot's compact position
-    # is one less. Taking the -1 here rather than in a pass over the whole table is the other half
-    # of the saving described in ``hash_insert``, and it leaves the scan's last element reading
-    # ``n_unique`` outright.
+    # ``occupied_scan`` is ``hash_insert``'s 0/1 occupancy, scanned *in place* and inclusively, so
+    # a slot is occupied exactly where the scan steps and its compact position is the exclusive
+    # value (``array.scanned_count``) -- no second table-sized buffer for the scan, and the scan's
+    # last element reads ``n_unique`` outright.
     #
     # ``out_perm`` is the identity permutation the radix sort pairs with the keys. Writing it here
     # replaces an ``arange`` launch of its own, which cost about as much as the sort it feeds. Only
     # the leading ``n_unique`` entries are written; the rest of the buffer is the sort's
-    # double-buffer scratch, which it fills before reading.
+    # double-buffer scratch, which it fills before reading. ``out_counts`` may be a null
+    # descriptor (``None`` at the launch) for a caller that does not want the counts.
     h = wp.int32(wp.tid())
-    if occupied[h] == wp.int32(1):
-        pos = scan_pos[h] - wp.int32(1)
+    pos, occupied = kernel_array.scanned_count(occupied_scan, h)
+    if occupied != 0:
         out_keys[pos] = decode_key(slot_key[h])
-        out_counts[pos] = slot_counts[h]
+        if out_counts.shape[0] > 0:
+            out_counts[pos] = slot_counts[h]
         out_perm[pos] = pos
 
 
@@ -341,6 +342,19 @@ def pack_indices(
     out_packed[tid] = packed_value
 
 
+@wp.func
+def pack_index_triple(a: wp.int32, b: wp.int32, c: wp.int32, max_index: wp.uint64) -> wp.uint64:
+    # The key ``pack_indices`` gives the three-column row ``(a, b, c)``, for a caller holding the
+    # row in registers: ``pack_sorted_face_keys`` below and ``kernels/remesh.cluster_cell_keys``,
+    # which would otherwise write an ``(n, 3)`` table only for this packing to read.
+    packed = wp.uint64(0)
+    power = wp.uint64(1)
+    packed, power = pack_index_digit(packed, power, a, max_index)
+    packed, power = pack_index_digit(packed, power, b, max_index)
+    packed, power = pack_index_digit(packed, power, c, max_index)
+    return packed
+
+
 @wp.kernel
 def pack_sorted_face_keys(
     faces: wp.array[wp.int32], max_index: wp.uint64, out_packed: wp.array[wp.uint64]
@@ -352,12 +366,7 @@ def pack_sorted_face_keys(
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
     s0, s1, s2 = sort3(a, b, c)
-    packed = wp.uint64(0)
-    power = wp.uint64(1)
-    packed, power = pack_index_digit(packed, power, s0, max_index)
-    packed, power = pack_index_digit(packed, power, s1, max_index)
-    packed, power = pack_index_digit(packed, power, s2, max_index)
-    out_packed[f] = packed
+    out_packed[f] = pack_index_triple(s0, s1, s2, max_index)
 
 
 @wp.kernel
@@ -422,7 +431,6 @@ def _register_overloads() -> None:
         {
             d: [
                 wp.array[d],
-                wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[wp.int32],
                 wp.array[d],
