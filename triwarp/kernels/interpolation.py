@@ -3,6 +3,7 @@ from typing import Any
 import warp as wp
 
 from triwarp.kernels.array import OverloadTable, trilinear_cell, trilinear_corner, trilinear_weight
+from triwarp.kernels.neighbors import in_ball
 from triwarp.kernels.triangles import face_vertices, point_barycentric
 
 
@@ -87,51 +88,113 @@ def apply_transfer_operator(
 def gaussian_kernel_weight(distance: wp.float32, inverse_scale: wp.float32) -> wp.float32:
     # ``exp(-(sharpness * d / radius) ** 2)``, VTK's ``vtkGaussianKernel``, with the caller having
     # folded ``sharpness / radius`` into one reciprocal length. An unused neighbour slot arrives at
-    # distance ``inf`` and weighs exactly 0, which is what lets the padded k-nearest rows and the
-    # ragged ball rows share this kernel.
+    # distance ``inf`` and weighs exactly 0.
     scaled = distance * inverse_scale
     return wp.exp(-scaled * scaled)
 
 
-@wp.kernel
-def interpolate_from_points(
+@wp.func
+def accumulate_gaussian_neighbor(
     source_values: wp.array[Any],
-    neighbor_indices: wp.array[wp.int32],
-    neighbor_distances: wp.array[wp.float32],
-    offsets: wp.array[wp.int32],
+    index: wp.int32,
+    distance: wp.float32,
     inverse_scale: wp.float32,
+    accumulated: Any,
+    total: wp.float32,
+    coincident: wp.int32,
+) -> tuple[Any, wp.float32, wp.int32]:
+    # Fold one neighbour into a query's Gaussian-weighted mean. Both interpolation kernels call it,
+    # the one reading a neighbour CSR and the one walking the hash grid itself, so the two agree
+    # to the bit whenever they visit the same neighbours in the same order.
+    if distance <= wp.float32(0.0):
+        coincident = index
+    weight = gaussian_kernel_weight(distance, inverse_scale)
+    return accumulated + source_values[index] * weight, total + weight, coincident
+
+
+@wp.func
+def write_gaussian_mean(
+    source_values: wp.array[Any],
+    q: wp.int32,
+    accumulated: Any,
+    total: wp.float32,
+    coincident: wp.int32,
     out_values: wp.array[Any],
 ) -> None:
-    # Gaussian-weighted mean of one query's neighbours, over the CSR the neighbour queries return.
-    # A query with no neighbours, or whose every weight underflowed, is left at the null value the
-    # wrapper pre-filled -- so the miss case needs no per-dtype null argument here.
-    q = wp.int32(wp.tid())
-    start = offsets[q]
-    stop = offsets[q + 1]
-    if start >= stop:
-        return
-
-    # A zero of the field's own dtype, which a generic kernel cannot spell any other way.
-    accumulated = source_values[0] * wp.float32(0.0)
-    total = wp.float32(0.0)
-    coincident = wp.int32(-1)
-    for slot in range(start, stop):
-        index = neighbor_indices[slot]
-        if index < 0:
-            continue
-        distance = neighbor_distances[slot]
-        if distance <= wp.float32(0.0):
-            coincident = index
-        weight = gaussian_kernel_weight(distance, inverse_scale)
-        accumulated = accumulated + source_values[index] * weight
-        total += weight
-
     # VTK returns the source's own value where a query sits on a data point, rather than blending
-    # its neighbours in; the interpolant is then exact at the data.
+    # its neighbours in; the interpolant is then exact at the data. A query with no neighbours, or
+    # whose every weight underflowed, is left at the null value the wrapper pre-filled -- so the
+    # miss case needs no per-dtype null argument here.
     if coincident >= 0:
         out_values[q] = source_values[coincident]
     elif total > wp.float32(0.0):
         out_values[q] = accumulated / total
+
+
+@wp.kernel
+def interpolate_from_points_nearest(
+    source_values: wp.array[Any],
+    neighbor_indices: wp.array[wp.int32],
+    neighbor_distances: wp.array[wp.float32],
+    k: wp.int32,
+    inverse_scale: wp.float32,
+    out_values: wp.array[Any],
+) -> None:
+    # Gaussian-weighted mean of one query's ``k`` nearest sources, over the flattened ``(m, k)``
+    # rows ``query_nearest`` returns; a slot no neighbour was found for carries index -1 and is
+    # skipped. The radius footprint walks the grid in ``interpolate_from_points_in_ball`` instead,
+    # which differs from this only in where the neighbours come from.
+    q = wp.int32(wp.tid())
+    # A zero of the field's own dtype, which a generic kernel cannot spell any other way.
+    accumulated = source_values[0] * wp.float32(0.0)
+    total = wp.float32(0.0)
+    coincident = wp.int32(-1)
+    for slot in range(q * k, (q + 1) * k):
+        index = neighbor_indices[slot]
+        if index < 0:
+            continue
+        accumulated, total, coincident = accumulate_gaussian_neighbor(
+            source_values,
+            index,
+            neighbor_distances[slot],
+            inverse_scale,
+            accumulated,
+            total,
+            coincident,
+        )
+    write_gaussian_mean(source_values, q, accumulated, total, coincident, out_values)
+
+
+@wp.kernel
+def interpolate_from_points_in_ball(
+    source_points: wp.array[wp.vec3],
+    source_values: wp.array[Any],
+    query_points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    inverse_scale: wp.float32,
+    out_values: wp.array[Any],
+) -> None:
+    # The Gaussian-weighted mean over every source within ``radius``, reduced during the hash-grid
+    # walk instead of over a ball-query CSR. The walk, the predicate (``in_ball``) and the distance
+    # are ``kernels.neighbors.ball_collect``'s hash-grid branch, so a query folds exactly the
+    # neighbours, in exactly the order, that CSR would have listed -- with no count pass, scan,
+    # readback or two neighbour-sized buffers in between. What still differs is the body: the
+    # collect writes each neighbour out, this folds it in.
+    q = wp.int32(wp.tid())
+    p = query_points[q]
+    accumulated = source_values[0] * wp.float32(0.0)
+    total = wp.float32(0.0)
+    coincident = wp.int32(-1)
+    j = wp.int32(0)
+    query = wp.hash_grid_query(grid_id, p, radius)
+    while wp.hash_grid_query_next(query, j):
+        offset = source_points[j] - p
+        if in_ball(offset, radius):
+            accumulated, total, coincident = accumulate_gaussian_neighbor(
+                source_values, j, wp.length(offset), inverse_scale, accumulated, total, coincident
+            )
+    write_gaussian_mean(source_values, q, accumulated, total, coincident, out_values)
 
 
 @wp.kernel(enable_backward=False)
@@ -194,13 +257,14 @@ _FIELD_DTYPES = (wp.float32, wp.vec2, wp.vec3)
 APPLY_TRANSFER_OPERATOR: OverloadTable
 SAMPLE_GRID_TRILINEAR: OverloadTable
 TRANSFER_ONTO_VERTICES: OverloadTable
-INTERPOLATE_FROM_POINTS: OverloadTable
+INTERPOLATE_FROM_POINTS_NEAREST: OverloadTable
+INTERPOLATE_FROM_POINTS_IN_BALL: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global APPLY_TRANSFER_OPERATOR, SAMPLE_GRID_TRILINEAR
-    global TRANSFER_ONTO_VERTICES, INTERPOLATE_FROM_POINTS
+    global TRANSFER_ONTO_VERTICES, INTERPOLATE_FROM_POINTS_NEAREST, INTERPOLATE_FROM_POINTS_IN_BALL
     APPLY_TRANSFER_OPERATOR = OverloadTable(
         apply_transfer_operator,
         {
@@ -236,14 +300,29 @@ def _register_overloads() -> None:
             for d in _FIELD_DTYPES
         },
     )
-    INTERPOLATE_FROM_POINTS = OverloadTable(
-        interpolate_from_points,
+    INTERPOLATE_FROM_POINTS_NEAREST = OverloadTable(
+        interpolate_from_points_nearest,
         {
             d: [
                 wp.array[d],
                 wp.array[wp.int32],
                 wp.array[wp.float32],
-                wp.array[wp.int32],
+                wp.int32,
+                wp.float32,
+                wp.array[d],
+            ]
+            for d in _FIELD_DTYPES
+        },
+    )
+    INTERPOLATE_FROM_POINTS_IN_BALL = OverloadTable(
+        interpolate_from_points_in_ball,
+        {
+            d: [
+                wp.array[wp.vec3],
+                wp.array[d],
+                wp.array[wp.vec3],
+                wp.uint64,
+                wp.float32,
                 wp.float32,
                 wp.array[d],
             ]

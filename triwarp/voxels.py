@@ -64,7 +64,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import require_same_device
+from triwarp._device import read_scalar, require_same_device
 from triwarp.kernels import interpolation as kernel_interpolation
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.kernels import voxels as kernel_voxels
@@ -337,13 +337,141 @@ def voxel_down_sample(
     varies between launches. That costs one radix sort over the point count. ``"min"`` and ``"max"``
     use atomics directly, since those are order-independent for floats.
     """
-    grid = voxelize_points(points, voxel_size, origin=origin)
-    # The pooling pass already probes every point's voxel row, which is the inverse; reuse it
-    # rather than probing the grid a second time.
-    pooled, slots = _pool_by_voxel(grid, points, points, pooling, return_slots=return_inverse)
-    if not return_inverse:
+    device = points.device
+    n_points = int(points.shape[0])
+    # A derived origin sits below every point, so the cells are non-negative and the bound the
+    # box already gives says whether they fit one root tile; a caller's origin says nothing.
+    if origin is None:
+        voxel_size, origin, cell_bound = resolve_voxel_grid(
+            points, voxel_size, caller="voxel_down_sample", return_cell_bound=True
+        )
+    else:
+        voxel_size, origin = resolve_voxel_grid(
+            points, voxel_size, origin, caller="voxel_down_sample"
+        )
+        cell_bound = 0
+    if pooling not in ("mean", "min", "max", "sum"):
+        raise ValueError(f"pooling must be 'mean', 'sum', 'min' or 'max', got {pooling!r}")
+    if n_points == 0:
+        pooled = wp.empty(0, dtype=wp.vec3, device=device)
+        return (pooled, wp.empty(0, dtype=wp.int32, device=device)) if return_inverse else pooled
+    table = _VoxelTable(points, voxel_size, origin, one_root_tile=0 < cell_bound <= 4096)
+    n_voxels = table.n_voxels
+    slots = wp.empty(n_points, dtype=wp.int32, device=device) if return_inverse else None
+    if pooling in ("min", "max"):
+        # One sentinel bucket past the last voxel collects the points that probe outside the set.
+        counts = wp.zeros(n_voxels + 1, dtype=wp.int32, device=device)
+        largest = pooling == "max"
+        limit = -math.inf if largest else math.inf
+        pooled = wp.full(n_voxels, wp.vec3(limit, limit, limit), dtype=wp.vec3, device=device)
+        wp.launch(
+            kernel_voxels.pool_extremum_table,
+            dim=n_points,
+            inputs=[points, *table.probe_inputs(), largest],
+            outputs=[slots, counts, pooled],
+            device=device,
+        )
+        wp.launch(
+            kernel_voxels.zero_empty_voxels,
+            dim=n_voxels,
+            inputs=[counts],
+            outputs=[pooled],
+            device=device,
+        )
+    else:
+        buckets, order = table.buckets, table.order
+        wp.launch(
+            kernel_voxels.bucket_table_slots,
+            dim=n_points,
+            inputs=[points, *table.probe_inputs(), wp.int32(n_voxels)],
+            outputs=[slots, buckets, order],
+            device=device,
+        )
+        pooled = _segment_pool(points, buckets, order, n_voxels, average=pooling == "mean")
+    if slots is None:
         return pooled
-    return pooled, slots if slots is not None else _point_slots(grid, points)
+    return pooled, slots
+
+
+class _VoxelTable:
+    """
+    [`voxel_down_sample`][triwarp.voxels.voxel_down_sample]'s voxel set, without a ``wp.Volume``.
+
+    The rows [`voxelize_points`][triwarp.voxels.voxelize_points]' grid would have, in its order, and
+    the table its pooling probe resolves a point's row through. One open-addressing table of point
+    indices keyed on the cell each point inserts into (``voxel_cell_indices``' arithmetic); the
+    distinct cells are sorted into ``Volume.get_voxels()``'s order -- NanoVDB's tree order, one
+    36-bit in-tile key, plus a stable second pass over the root-tile key when the cells may span
+    more than one tile -- and each claimed slot is rewritten to its row. The pooling kernels then
+    probe it with the volume's own index transform, reproduced bit for bit, so every row, bucket
+    and pooled value is the one the volume path produces.
+
+    The mean/sum pooling's sort buffers are allocated here, because the table borrows them as
+    scratch before the pooling launch writes them: the appended slots live in the upper half of
+    ``buckets`` and the grid-order payload in ``order``.
+    """
+
+    def __init__(
+        self, points: wp.array[wp.vec3], voxel_size: float, origin: wp.vec3, *, one_root_tile: bool
+    ) -> None:
+        device = points.device
+        n_points = int(points.shape[0])
+        inverse_size = wp.float32(1.0 / voxel_size)
+        # At least twice ``n_points`` slots, a power of two: a cloud with no repeated cell fills it
+        # at most half full.
+        self.mask = (1 << max(3, (n_points - 1).bit_length() + 1)) - 1
+        # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
+        # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
+        self.table = wp.full(self.mask + 2, -1, dtype=wp.int32, device=device)
+        self.buckets = wp.empty(2 * n_points, dtype=wp.int32, device=device)
+        self.order = wp.empty(2 * n_points, dtype=wp.int32, device=device)
+        unique = self.buckets[n_points:]
+        wp.launch(
+            kernel_voxels.insert_point_cells,
+            dim=n_points,
+            inputs=[points, origin, inverse_size, self.mask, self.table],
+            outputs=[unique],
+            device=device,
+        )
+        # One readback, unavoidable: the voxel count sizes the output and every per-voxel buffer.
+        n_voxels = int(read_scalar(self.table)) + 1
+        self.n_voxels = n_voxels
+        keys = wp.empty(2 * n_voxels, dtype=wp.uint64, device=device)
+        rank = self.order
+        wp.launch(
+            kernel_voxels.unique_cell_keys,
+            dim=n_voxels,
+            inputs=[points, origin, inverse_size, self.table, unique],
+            outputs=[keys, rank],
+            device=device,
+        )
+        wp.utils.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=36)
+        if not one_root_tile:
+            # Stable, so the in-tile order survives within each root tile.
+            wp.launch(
+                kernel_voxels.unique_cell_root_keys,
+                dim=n_voxels,
+                inputs=[points, origin, inverse_size, self.table, unique, rank],
+                outputs=[keys],
+                device=device,
+            )
+            wp.utils.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=60)
+        self.row_cells = wp.empty(n_voxels, dtype=wp.vec3i, device=device)
+        wp.launch(
+            kernel_voxels.assign_voxel_rows,
+            dim=n_voxels,
+            inputs=[points, origin, inverse_size, unique, rank, self.table],
+            outputs=[self.row_cells],
+            device=device,
+        )
+        # The volume's own transform, as ``allocate_by_voxels`` stores it: a float32 translation
+        # half a cell above ``origin`` and the float32 inverse of the float32 cell width.
+        self.translation = wp.vec3(*_translation(origin, voxel_size))
+        self.probe_inverse = float(np.float32(1.0 / float(np.float32(voxel_size))))
+
+    def probe_inputs(self) -> list[object]:
+        """Return the pooling kernels' probe arguments, in ``table_point_slot``'s order."""
+        return [self.translation, self.probe_inverse, 0.0, self.mask, self.table, self.row_cells]
 
 
 def pool_by_voxel(
@@ -430,9 +558,9 @@ def _pool_by_voxel(
 
     # Only a caller asking for the inverse gets the slots written; neither branch reads them back.
     slots = wp.empty(n_points, dtype=wp.int32, device=device) if return_slots else None
-    # One sentinel bucket past the last voxel collects the points that fall outside the grid.
-    counts = wp.zeros(n_voxels + 1, dtype=wp.int32, device=device)
     if pooling in ("min", "max"):
+        # One sentinel bucket past the last voxel collects the points that fall outside the grid.
+        counts = wp.zeros(n_voxels + 1, dtype=wp.int32, device=device)
         largest = pooling == "max"
         limit = -math.inf if largest else math.inf
         # The atomics reduce from +-inf in the probe launch itself; the voxels no point reached are
@@ -461,25 +589,43 @@ def _pool_by_voxel(
         kernel_voxels.bucket_point_slots,
         dim=n_points,
         inputs=[grid.id, points, wp.int32(n_voxels)],
-        outputs=[slots, buckets, order, counts],
+        outputs=[slots, buckets, order],
         device=device,
     )
+    return _segment_pool(values, buckets, order, n_voxels, average=pooling == "mean"), slots
+
+
+def _segment_pool(
+    values: wp.array[wp.vec3],
+    buckets: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    n_voxels: int,
+    *,
+    average: bool,
+) -> wp.array[wp.vec3]:
+    """
+    Sort the bucketed points by voxel and reduce each voxel's segment in index order.
+
+    The mean/sum tail shared by [`pool_by_voxel`][triwarp.voxels.pool_by_voxel] and
+    [`voxel_down_sample`][triwarp.voxels.voxel_down_sample]: ``buckets`` / ``order`` are the two
+    ``2 * n_points`` sort buffers their bucketing launch seeded, a point outside the grid in the
+    sentinel bucket ``n_voxels``. The segments are read off the sorted buckets, so no histogram.
+    """
+    n_points = int(values.shape[0])
     # Stable, so each voxel's segment lists its points in index order.
     # Every bucket is at most ``n_voxels`` (the sentinel), so only those low bits are sorted.
     wp.utils.radix_sort_pairs(
         buckets, order, count=n_points, end_bit=max(1, int(n_voxels).bit_length())
     )
-    # Scanned in place: the inclusive scan carries each segment's start and length together.
-    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
-    pooled = wp.empty(n_voxels, dtype=wp.vec3, device=device)
+    pooled = wp.empty(n_voxels, dtype=wp.vec3, device=values.device)
     wp.launch(
         kernel_voxels.segment_reduce_vec3,
         dim=n_voxels,
-        inputs=[order, values, counts, pooling == "mean"],
+        inputs=[order, values, buckets[:n_points], average],
         outputs=[pooled],
-        device=device,
+        device=values.device,
     )
-    return pooled, slots
+    return pooled
 
 
 def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> twt.Array2dInt32:
@@ -2421,22 +2567,10 @@ def _empty_grid(voxel_size: float, origin: wp.vec3, device: wp.DeviceLike) -> wp
 
 # Three members of this trailing block have a single caller -- ``_cell_slots``
 # (``occupancy_at_cells``), ``_face_neighbors`` and ``_face_corner_table`` (both ``to_boxes``) --
-# and all three stay here rather than moving up to their caller. Each is one half of a pair whose
-# other half *is* cross-cutting: ``_cell_slots`` is the cell twin of ``_point_slots`` immediately
-# below, and the two face tables are the constant tables ``_stencil`` above them builds from.
-# Splitting a pair across the file to save a backward jump is the worse trade.
-
-
-def _point_slots(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
-    """Voxel row of each point, ``-1`` outside the grid."""
-    slots = wp.empty(int(points.shape[0]), dtype=wp.int32, device=points.device)
-    wp.launch(
-        kernel_voxels.lookup_point_slots,
-        dim=int(points.shape[0]),
-        inputs=[grid.id, points, slots],
-        device=points.device,
-    )
-    return slots
+# and all three stay here rather than moving up to their caller. The two face tables are one half
+# of a pair whose other half *is* cross-cutting -- the constant tables ``_stencil`` above them
+# builds from -- and splitting a pair across the file to save a backward jump is the worse trade.
+# ``_cell_slots`` lost its point twin when ``voxel_down_sample`` stopped building a volume.
 
 
 def _cell_slots(grid: wp.Volume, cells: twt.Array2dInt32) -> wp.array[wp.int32]:

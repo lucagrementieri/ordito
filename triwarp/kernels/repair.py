@@ -22,7 +22,6 @@ from triwarp.kernels.halfedge import (
 from triwarp.kernels.predicates import triangle_aspect_ratio, triangle_normal
 from triwarp.kernels.triangles import (
     QUALITY_AREA,
-    copy_scanned_face,
     corner_triple,
     face_vertices,
     triangle_cross,
@@ -395,22 +394,17 @@ def wins_degree3_conflict(
     return True
 
 
-@wp.kernel
-def degree3_fan_tables(
+@wp.func
+def record_degree3_halfedge(
     faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-    out_link_sums: wp.array[wp.int32],
-    out_fans: wp.array2d[wp.int32],
-    out_kept: wp.array[wp.int32],
-    out_defects: wp.array[wp.int32],
+    h: wp.int32,
+    counts: wp.array[wp.int32],
+    link_sums: wp.array[wp.int32],
+    fans: wp.array2d[wp.int32],
 ) -> None:
-    # One pass over the halfedges gathers everything ``remove_degree3_vertices`` asks of a vertex,
-    # in place of a whole one-ring CSR: its corner count (its face count), its first three outgoing
-    # halfedges in arrival order, and a telescoping sum over its link. It also sets every face's
-    # kept flag to ``1`` for ``emit_degree3_replacement`` to clear, one store per face from its
-    # first halfedge, in place of a fill.
+    # One halfedge's share of ``remove_degree3_vertices``' per-vertex tables, in place of a whole
+    # one-ring CSR: its origin's corner count (its face count), the origin's first three outgoing
+    # halfedges in arrival order, and a telescoping sum over its link.
     #
     # The link sum adds ``x - y`` for the edge ``x -> y`` opposite each outgoing halfedge. Around an
     # interior vertex those edges form a closed cycle, so every link vertex is added once and
@@ -421,27 +415,68 @@ def degree3_fan_tables(
     #
     # The table's row is arrival-ordered, so only its *contents* are meaningful;
     # ``interior_degree3_rim`` canonicalizes it.
-    #
-    # On the first pass ``sorted_keys`` / ``order`` are the input's sorted halfedge keys, one per
-    # thread, and each thread also counts its position's twin defect into ``out_defects`` -- the
-    # input validation, riding on this launch and on the pass's one readback. Later passes hand in
-    # empty keys and skip it.
-    h = wp.int32(wp.tid())
-    if sorted_keys.shape[0] > 0:
-        run = sorted_halfedge_run_class(faces, sorted_keys, order, h)
-        if run == HALFEDGE_RUN_NON_MANIFOLD:
-            wp.atomic_add(out_defects, 0, 1)
-        elif run == HALFEDGE_RUN_SAME_DIRECTION:
-            wp.atomic_add(out_defects, 1, 1)
     v = faces[h]
     x = halfedge_destination(faces, h)
     y = halfedge_destination(faces, halfedge_next(h))
-    slot = wp.atomic_add(out_counts, v, 1)
+    slot = wp.atomic_add(counts, v, 1)
     if slot < 3:
-        out_fans[v, slot] = h
-    wp.atomic_add(out_link_sums, v, x - y)
+        fans[v, slot] = h
+    wp.atomic_add(link_sums, v, x - y)
+
+
+@wp.kernel
+def degree3_fan_tables_input(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_link_sums: wp.array[wp.int32],
+    out_fans: wp.array2d[wp.int32],
+    out_faces: wp.array[wp.int32],
+    out_kept: wp.array[wp.int32],
+    out_defects: wp.array[wp.int32],
+) -> None:
+    # Pass 0 of ``remove_degree3_vertices``, over the input's halfedges: the fan tables, plus the
+    # three things only the first pass does. It copies the input into the front of the pass loop's
+    # fixed-capacity face buffer (``out_faces``) and sets its kept flags, one store per face from
+    # its first halfedge, in place of a copy and a fill; and it counts its position's twin defect
+    # on the input's sorted halfedge keys into ``out_defects`` -- the input validation, riding on
+    # this launch and on the pass's one readback. ``degree3_fan_tables`` is every later pass.
+    h = wp.int32(wp.tid())
+    run = sorted_halfedge_run_class(faces, sorted_keys, order, h)
+    if run == HALFEDGE_RUN_NON_MANIFOLD:
+        wp.atomic_add(out_defects, 0, 1)
+    elif run == HALFEDGE_RUN_SAME_DIRECTION:
+        wp.atomic_add(out_defects, 1, 1)
+    out_faces[h] = faces[h]
     if h % 3 == 0:
         out_kept[h // 3] = 1
+    record_degree3_halfedge(faces, h, out_counts, out_link_sums, out_fans)
+
+
+@wp.kernel
+def degree3_fan_tables(
+    faces: wp.array[wp.int32],
+    kept: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_link_sums: wp.array[wp.int32],
+    out_fans: wp.array2d[wp.int32],
+) -> None:
+    # Every pass of ``remove_degree3_vertices`` after the first, over the fixed-capacity face
+    # buffer's used rows: the fan tables of the faces still kept. A replaced fan's faces stay in the
+    # buffer with their flag cleared and the replacements are appended after the last used row, so
+    # no pass compacts; a cleared row exits here.
+    #
+    # Its fixed buffer makes every pass recordable, and recording passes 1 onward under
+    # ``_device.record_device_loop`` (``array.loop_advance`` closing each round, so no per-pass
+    # read) was built and declined: interleaved against the host loop of one small read per pass,
+    # it was 0.86x at ``dragon`` (two passes) and 0.87-0.96x at ``happy_buddha`` (three). The
+    # recording costs more than the reads it removes at one or two replayed passes, and no
+    # benchmark mesh takes more.
+    h = wp.int32(wp.tid())
+    if kept[h // 3] == 0:
+        return
+    record_degree3_halfedge(faces, h, out_counts, out_link_sums, out_fans)
 
 
 @wp.func
@@ -493,6 +528,7 @@ def emit_degree3_replacement(
     fans: wp.array2d[wp.int32],
     counts: wp.array[wp.int32],
     link_sums: wp.array[wp.int32],
+    n_input_faces: wp.int32,
     cursor: wp.array[wp.int32],
     out_lost: wp.array[wp.int32],
     out_kept: wp.array[wp.int32],
@@ -505,17 +541,22 @@ def emit_degree3_replacement(
     # edges. Nothing here needs another thread's *selection*, only its candidacy, which is
     # recomputed from the read-only tables, so no selection mask is written or read back.
     #
-    # ``cursor`` hands out the replacement row and, read after the launch, is the selection size.
+    # ``cursor`` is the count of replacements appended by every pass so far, so it hands out each
+    # replacement's row in ``out_new_faces`` -- the face buffer past the input's ``n_input_faces``
+    # rows, which ``faces`` also views -- and read at the end is the number of vertices removed.
+    # Rows are appended pass after pass, so the kept rows in buffer order are the order a
+    # compaction after every pass would have produced.
     #
-    # ``out_kept`` arrives all ``1`` and each fan face is cleared here, so it is the kept-face flag
-    # the caller scans in place into its ranks, with no mask to convert first.
+    # Each fan face's kept flag is cleared here and each replacement's set, so ``out_kept`` is the
+    # kept-face flag the caller scans in place into its ranks once the loop ends.
     #
     # ``out_next_candidates`` counts the rim vertices this pass may turn into candidates. Each
     # selected fan takes two of a rim vertex's faces and gives back one, so a rim vertex's count
     # falls by one per selected fan; a candidate needs it to land on exactly 3 with a closed link.
     # ``out_lost`` tallies the decrements, and the decrement that lands on 3 counts it -- a later
     # one taking it lower is not seen, so the signal is conservative (at worst one extra detection
-    # pass that finds nothing) but never misses a candidate. Only zero versus non-zero is read.
+    # pass that finds nothing) but never misses a candidate. Only zero versus non-zero is read, and
+    # non-zero implies this pass selected something, which is why it alone continues the loop.
     v = wp.int32(wp.tid())
     rim = interior_degree3_rim(faces, counts, fans, v)
     if rim[0] < 0:
@@ -525,6 +566,7 @@ def emit_degree3_replacement(
         if neighbour < v and interior_degree3_rim(faces, counts, fans, neighbour)[0] >= 0:
             return
     slot = wp.atomic_add(cursor, 0, 1)
+    out_kept[n_input_faces + slot] = 1
     for k in range(3):
         r = rim[k]
         out_kept[fans[v, k] // 3] = 0
@@ -535,23 +577,46 @@ def emit_degree3_replacement(
 
 
 @wp.kernel
-def compact_kept_faces(
+def mark_kept_face_vertices(
+    faces: wp.array[wp.int32], kept: wp.array[wp.int32], out_flags: wp.array[wp.int32]
+) -> None:
+    # ``mark_referenced`` over the kept faces of ``remove_degree3_vertices``' face buffer only.
+    h = wp.int32(wp.tid())
+    if kept[h // 3] != 0:
+        out_flags[faces[h]] = 1
+
+
+@wp.kernel
+def compact_kept_faces_and_vertices(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    inclusive_ranks: wp.array[wp.int32],
-    new_faces: wp.array2d[wp.int32],
+    kept_inclusive: wp.array[wp.int32],
+    referenced_inclusive: wp.array[wp.int32],
     n_kept: wp.int32,
-    n_new: wp.int32,
+    out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # Face ``f`` of the kept set to row ``inclusive_ranks[f] - 1`` of ``out_faces``, keeping their
-    # order, and replacement row ``f`` after them -- ``flatnonzero``, a row gather and the tail copy
-    # in one pass, with the row counts the caller already knows. ``inclusive_ranks`` is the in-place
-    # scan of 0/1 kept flags, so a face is kept exactly where its rank steps up.
-    f = wp.int32(wp.tid())
-    if f < n_new:
-        for k in range(3):
-            out_faces[3 * (n_kept + f) + k] = new_faces[f, k]
-    copy_scanned_face(faces, inclusive_ranks, f, out_faces)
+    # ``remove_degree3_vertices``' output in one pass: the kept faces in buffer order with their
+    # corners renumbered, and the referenced positions compacted -- a face compaction followed by
+    # ``remove_unreferenced_vertices``' mark, scan and ``compact_referenced`` would be two passes
+    # and a second face buffer. ``kept_inclusive`` and ``referenced_inclusive`` are two views of
+    # *one* in-place scan over the kept flags followed by the referenced flags, so the referenced
+    # ranks carry the ``n_kept`` total in front of them. Launched over ``max(n_vertices, n_used)``
+    # for the ``n_used`` face rows ever written.
+    t = wp.int32(wp.tid())
+    if t < kept_inclusive.shape[0]:
+        row, kept = scanned_count(kept_inclusive, t)
+        if kept != 0:
+            for k in range(3):
+                out_faces[3 * row + k] = referenced_inclusive[faces[3 * t + k]] - n_kept - 1
+    if t < vertices.shape[0]:
+        # The first referenced entry's predecessor in the one scan is the last kept flag's, whose
+        # value is the kept total.
+        start = n_kept
+        if t > 0:
+            start = referenced_inclusive[t - 1]
+        if referenced_inclusive[t] != start:
+            out_vertices[start - n_kept] = vertices[t]
 
 
 @wp.kernel

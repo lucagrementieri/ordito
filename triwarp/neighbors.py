@@ -67,6 +67,19 @@ _CELL_PROBE_POINTS = 600
 # second launch and the readback deciding them cost more than they save.
 _KNN_DEFER_MIN_POINTS = 8192
 
+# Default hash-grid resolution: ``wp.HashGrid`` folds cell coordinates modulo its bins, so a cloud
+# occupying more cells than the table has bins aliases unrelated cells onto one bucket and every
+# probe walks their points too. ``_resolve_grid_bins`` sizes the table so ``bins ** 3`` is at least
+# ``_GRID_BINS_PER_POINT`` bins a point -- occupied cells never exceed the point count, and at a
+# ball radius of a couple of spacings they are about a third of it -- and never below
+# ``_GRID_BINS_MIN``, which every cloud up to about a million points keeps. The cost of a table
+# too small grows with the cloud; past a few bins per occupied cell it is flat, while a build
+# clears both ``int32`` per-bin tables every time, so ``_GRID_BINS_MAX`` caps them at ~450 MB.
+_GRID_BINS_MIN = 128
+_GRID_BINS_MAX = 384
+_GRID_BINS_PER_POINT = 2
+_GRID_BINS_STEP = 32
+
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     """
@@ -144,7 +157,7 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
 
 
 def hashgrid_from_points(
-    points: wp.array[wp.vec3], radius: float, grid_bins: int = 128
+    points: wp.array[wp.vec3], radius: float, grid_bins: int | None = None
 ) -> wp.HashGrid:
     """
     Build a 3D hash grid over ``points`` for radius queries.
@@ -157,7 +170,11 @@ def hashgrid_from_points(
         Cell size passed to ``warp.HashGrid.build`` and used by
         the ``query_ball*`` and ``query_nearest`` kernels under ``backend="hashgrid"``.
     grid_bins
-        Resolution of the hash grid along each axis.
+        Resolution of the hash grid along each axis. ``None`` (the default) sizes it from the point
+        count: 128 up to about a million points, then growing with the cube root of the count so
+        the table keeps at least two bins a point, up to 384. The grid wraps cell coordinates
+        modulo this resolution, so a cloud spanning more cells than it has bins shares buckets
+        between distant cells; the answer of every query is unaffected, only its cost.
 
     Returns
     -------
@@ -175,7 +192,8 @@ def hashgrid_from_points(
     [`query_nearest`][triwarp.neighbors.query_nearest]
     """
     n = int(points.shape[0])
-    grid = wp.HashGrid(grid_bins, grid_bins, grid_bins, device=points.device)
+    bins = _resolve_grid_bins(grid_bins, n)
+    grid = wp.HashGrid(bins, bins, bins, device=points.device)
     grid.reserve(n)
     grid.build(points, radius)
     grid.cell_width = float(radius)
@@ -422,7 +440,7 @@ def query_ball(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
-    grid_bins: int = ...,
+    grid_bins: int | None = ...,
     leaf_size: int = ...,
     return_sorted: bool = ...,
     copy: bool = ...,
@@ -435,7 +453,7 @@ def query_ball(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
-    grid_bins: int = ...,
+    grid_bins: int | None = ...,
     leaf_size: int = ...,
     return_sorted: bool = ...,
     copy: bool = ...,
@@ -447,7 +465,7 @@ def query_ball(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
-    grid_bins: int = 128,
+    grid_bins: int | None = None,
     leaf_size: int = 4,
     return_sorted: bool = False,
     copy: bool = False,
@@ -494,8 +512,9 @@ def query_ball(
         enumerates the cells overlapping the query cube, ``"bvh"`` descends an AABB tree. The
         narrow phase and the answer are identical -- this is a cost choice, not a semantic one.
     grid_bins
-        Grid resolution when building a hash grid. Ignored under ``backend="bvh"`` and whenever
-        ``accelerator`` is given.
+        Grid resolution when building a hash grid; ``None`` sizes it from the point count, as in
+        [`hashgrid_from_points`][triwarp.neighbors.hashgrid_from_points]. Ignored under
+        ``backend="bvh"`` and whenever ``accelerator`` is given.
     leaf_size
         Maximum primitives per leaf when building a BVH. Ignored under ``backend="hashgrid"``,
         whenever ``accelerator`` is given, and at ``k == 1``, where the tree is a
@@ -574,7 +593,7 @@ def query_ball_count(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
-    grid_bins: int = 128,
+    grid_bins: int | None = None,
     leaf_size: int = 4,
 ) -> wp.array[wp.int32]:
     """
@@ -652,7 +671,7 @@ def query_ball_with_offsets(
     *,
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
-    grid_bins: int = 128,
+    grid_bins: int | None = None,
     leaf_size: int = 4,
     return_sorted: bool = False,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
@@ -902,7 +921,7 @@ def query_nearest(
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
-    grid_bins: int = ...,
+    grid_bins: int | None = ...,
     leaf_size: int = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
@@ -916,7 +935,7 @@ def query_nearest(
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
-    grid_bins: int = ...,
+    grid_bins: int | None = ...,
     leaf_size: int = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
@@ -932,7 +951,7 @@ def query_nearest(
     accelerator: wp.HashGrid | wp.Bvh | None = ...,
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
-    grid_bins: int = ...,
+    grid_bins: int | None = ...,
     leaf_size: int = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
@@ -945,7 +964,7 @@ def query_nearest(
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
     max_radius: float = math.inf,
-    grid_bins: int = 128,
+    grid_bins: int | None = None,
     leaf_size: int = 4,
     initial_radius: float | None = None,
     bounds: tuple[wp.vec3, wp.vec3] | None = None,
@@ -1002,8 +1021,9 @@ def query_nearest(
         Stop deepening past this distance and leave the remaining slots unfilled (index ``-1``,
         distance ``inf``). Defaults to unbounded.
     grid_bins
-        Grid resolution when building a hash grid. Ignored under ``backend="bvh"`` and whenever
-        ``accelerator`` is given.
+        Grid resolution when building a hash grid; ``None`` sizes it from the point count, as in
+        [`hashgrid_from_points`][triwarp.neighbors.hashgrid_from_points]. Ignored under
+        ``backend="bvh"`` and whenever ``accelerator`` is given.
     leaf_size
         Maximum primitives per leaf when building a BVH. Ignored under ``backend="hashgrid"`` and
         whenever ``accelerator`` is given.
@@ -1112,8 +1132,9 @@ def query_nearest(
         return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
     if resolved is None:
-        cell_size = _knn_cell_size(initial_radius, min_bound, max_bound, grid_bins)
-        grid = hashgrid_from_points(points, cell_size, grid_bins)
+        bins = _resolve_grid_bins(grid_bins, n)
+        cell_size = _knn_cell_size(initial_radius, min_bound, max_bound, bins)
+        grid = hashgrid_from_points(points, cell_size, bins)
     else:
         grid = resolved
         cell_size = float(getattr(grid, "cell_width", initial_radius))
@@ -1221,6 +1242,19 @@ def _finish_deferred_nearest(
         ],
         device=device,
     )
+
+
+def _resolve_grid_bins(grid_bins: int | None, n: int) -> int:
+    """
+    Resolve the hash-grid resolution: ``grid_bins`` itself, or the point-count default at ``None``.
+
+    The default is the smallest multiple of ``_GRID_BINS_STEP`` whose cube holds
+    ``_GRID_BINS_PER_POINT`` bins a point, clamped to ``[_GRID_BINS_MIN, _GRID_BINS_MAX]``.
+    """
+    if grid_bins is not None:
+        return int(grid_bins)
+    side = math.ceil((_GRID_BINS_PER_POINT * n) ** (1.0 / 3.0) / _GRID_BINS_STEP) * _GRID_BINS_STEP
+    return min(max(side, _GRID_BINS_MIN), _GRID_BINS_MAX)
 
 
 def _knn_cell_size(

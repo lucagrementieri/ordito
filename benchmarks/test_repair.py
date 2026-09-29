@@ -1043,6 +1043,14 @@ def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
     vertices it may turn into candidates and a zero skips the confirming pass outright; that signal
     is conservative (it cannot see a count that falls past 3) and ran no extra pass on a scan mesh.
 
+    **The passes append into one fixed buffer and compact once.** A replaced fan keeps its rows with
+    a cleared flag and the replacements go after the last used row, so no pass scans, compacts or
+    allocates, and one final launch writes the kept faces and the referenced vertices together:
+    6 / 9 / 12 launches and 12 / 13 / 14 allocations at ``bunny`` / ``dragon`` / ``happy_buddha``
+    became 5 / 7 / 9 and 7, scans 2-4 to 1, byte-identical on the CPU device; 1.13x / 1.16x /
+    1.20x (interleaved processes, min, shared box). Recording the passes after the first as one
+    device loop was built and declined -- see ``kernels/repair.degree3_fan_tables``.
+
     **The independent-set rewrite is declined, measured.** Every pass-0 candidate on all three scan
     meshes is selected -- no two candidates are adjacent (9, 1 285 and 1 839 candidates, zero
     candidate-candidate edges) -- so the selection is already the whole set and the later passes

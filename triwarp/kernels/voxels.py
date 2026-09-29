@@ -25,7 +25,13 @@ import warp as wp
 
 from triwarp.constants import INT32_MAX_CONSTANT
 from triwarp.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
-from triwarp.kernels.array import binary_search_index, lattice_position, ravel_index, scanned_count
+from triwarp.kernels.array import (
+    binary_search_index,
+    binary_search_index_left,
+    lattice_position,
+    ravel_index,
+)
+from triwarp.kernels.grouping import HASH_MULT_U64, hash_slot, next_slot
 from triwarp.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from triwarp.kernels.triangles import face_vertices, row_triple, write_row_triple
 
@@ -259,10 +265,10 @@ def cell_occupancy_flags(
 
 
 @wp.func
-def point_cell(volume: wp.uint64, position: wp.vec3) -> wp.vec3i:
-    # NanoVDB centres voxel ``i`` on index-space coordinate ``i``, so the cell containing a point
-    # is ``floor(uvw + 0.5)`` -- not ``round``, which sends ``-0.5`` to ``-1`` instead of ``0``.
-    uvw = wp.volume_world_to_index(volume, position)
+def index_space_cell(uvw: wp.vec3) -> wp.vec3i:
+    # NanoVDB centres voxel ``i`` on index-space coordinate ``i``, so the cell containing index
+    # position ``uvw`` is ``floor(uvw + 0.5)`` -- not ``round``, which sends ``-0.5`` to ``-1``
+    # instead of ``0``. Shared by ``point_cell`` and ``table_point_slot``.
     return wp.vec3i(
         wp.int32(wp.floor(uvw[0] + 0.5)),
         wp.int32(wp.floor(uvw[1] + 0.5)),
@@ -271,19 +277,35 @@ def point_cell(volume: wp.uint64, position: wp.vec3) -> wp.vec3i:
 
 
 @wp.func
+def map_world_to_index(
+    position: wp.vec3, translation: wp.vec3, inverse_size: wp.float32, zero: wp.float32
+) -> wp.vec3:
+    # ``wp.volume_world_to_index`` for an isotropic grid, bit for bit, without the volume:
+    # PNanoVDB's ``map_apply_inverse`` is ``(p - vecf) . invmatf`` row by row, and for a diagonal
+    # map each row is one product plus two exact zeros. ``zero`` is a *runtime* 0 so the compiler
+    # keeps that shape -- a literal would let ``product + 0.5`` in ``index_space_cell`` contract to
+    # an FMA, which rounds once where the volume's path rounds twice. ``translation`` is the float32
+    # of the volume's, ``inverse_size`` the float32 of ``1 / float64(float32(voxel_size))``.
+    s = position - translation
+    return wp.vec3(
+        s[0] * inverse_size + s[1] * zero + s[2] * zero,
+        s[0] * zero + s[1] * inverse_size + s[2] * zero,
+        s[0] * zero + s[1] * zero + s[2] * inverse_size,
+    )
+
+
+@wp.func
+def point_cell(volume: wp.uint64, position: wp.vec3) -> wp.vec3i:
+    # The cell containing a world position, read through the volume's own transform.
+    return index_space_cell(wp.volume_world_to_index(volume, position))
+
+
+@wp.func
 def point_slot(volume: wp.uint64, position: wp.vec3) -> wp.int32:
     # The point twin of ``cell_slot``, and shared for the same reason: a query's voxel row, or
     # ``-1`` outside the grid.
     cell = point_cell(volume, position)
     return wp.volume_lookup_index(volume, cell[0], cell[1], cell[2])
-
-
-@wp.kernel
-def lookup_point_slots(
-    volume: wp.uint64, points: wp.array[wp.vec3], out_slots: wp.array[wp.int32]
-) -> None:
-    p = wp.int32(wp.tid())
-    out_slots[p] = point_slot(volume, points[p])
 
 
 @wp.kernel
@@ -345,25 +367,238 @@ def lattice_points(lower: wp.vec3, step: wp.vec3, out_points: wp.array3d[wp.vec3
 
 
 @wp.func
-def count_point_bucket(
-    volume: wp.uint64,
-    points: wp.array[wp.vec3],
+def record_point_bucket(
+    slot: wp.int32,
     p: wp.int32,
     n_voxels: wp.int32,
     out_slots: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> wp.int32:
-    # The probe-and-histogram run both pooling kernels open with: point ``p``'s voxel row
-    # (``lookup_point_slots``' probe, done in the pooling launch so it pays one launch for the probe
-    # and the histogram), written to ``out_slots`` unless the caller passed a length-zero one, and
-    # counted into its bucket. A point outside the grid goes into a sentinel bucket past the last
-    # voxel -- so it sorts to the end and every real voxel's segment stays contiguous -- and keeps
-    # the slot ``-1``, which is what is returned.
-    slot = point_slot(volume, points[p])
+    # The histogram the min/max pooling opens with once it holds point ``p``'s voxel row --
+    # probed from a volume (``point_slot``) or from ``voxel_down_sample``'s cell table
+    # (``table_point_slot``): the row, written to ``out_slots`` unless the caller passed a
+    # length-zero one, counted into its bucket. A point outside the grid goes into a sentinel
+    # bucket past the last voxel and keeps the slot ``-1``. Returns the bucket.
     if out_slots.shape[0] > 0:
         out_slots[p] = slot
-    wp.atomic_add(out_counts, wp.where(slot < 0, n_voxels, slot), 1)
-    return slot
+    bucket = wp.where(slot < 0, n_voxels, slot)
+    wp.atomic_add(out_counts, bucket, 1)
+    return bucket
+
+
+@wp.func
+def write_point_bucket(
+    slot: wp.int32,
+    p: wp.int32,
+    n_voxels: wp.int32,
+    out_slots: wp.array[wp.int32],
+    out_buckets: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The mean/sum pooling's first launch after the probe: each point's bucket, with
+    # ``out_buckets`` / ``out_order`` the leading halves of ``radix_sort_pairs``' two double
+    # buffers, keys and identity payload, so the sort needs no key copy and no separate payload
+    # seed (the upper halves are scratch the sort fills before reading). No histogram: the
+    # segments are read off the sorted buckets (``segment_reduce_vec3``), so the per-point atomic
+    # into a few hot counters -- most of this launch at a coarse pitch -- is not paid. Shared by
+    # ``bucket_point_slots`` and ``bucket_table_slots``, which differ only in the probe.
+    if out_slots.shape[0] > 0:
+        out_slots[p] = slot
+    out_buckets[p] = wp.where(slot < 0, n_voxels, slot)
+    out_order[p] = p
+
+
+@wp.func
+def pool_point_extremum(
+    slot: wp.int32,
+    p: wp.int32,
+    values: wp.array[wp.vec3],
+    n_voxels: wp.int32,
+    largest: wp.bool,
+    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_values: wp.array[wp.vec3],
+) -> None:
+    # The min/max pooling in the probe launch itself: component-wise atomic min / max,
+    # order-independent for floats, so no sort is needed. ``out_values`` arrives filled with the
+    # +-inf the atomics reduce from; ``zero_empty_voxels`` then resets the voxels no point reached,
+    # which only ``counts`` -- final once the launch ends -- can name. Shared by
+    # ``pool_extremum_points`` and ``pool_extremum_table``, which differ only in the probe.
+    record_point_bucket(slot, p, n_voxels, out_slots, out_counts)
+    if slot < 0:
+        return
+    if largest:
+        wp.atomic_max(out_values, slot, values[p])
+    else:
+        wp.atomic_min(out_values, slot, values[p])
+
+
+@wp.func
+def cell_hash_slot(cell: wp.vec3i, mask: wp.int32) -> wp.int32:
+    # Home slot of a cell in ``voxel_down_sample``'s open-addressing table: x and y side by side in
+    # one 64-bit word, xor'ed with z spread by the Fibonacci multiplier, then ``hash_slot``'s own
+    # fold -- ``points.position_hash_slot``'s mixing over the cell's integers rather than a
+    # position's bits. A collision is resolved by comparing cells, never trusted.
+    x = wp.uint64(wp.uint32(cell[0]))
+    y = wp.uint64(wp.uint32(cell[1]))
+    z = wp.uint64(wp.uint32(cell[2]))
+    return hash_slot(wp.int64(((x << wp.uint64(32)) | y) ^ (z * HASH_MULT_U64)), mask)
+
+
+@wp.func
+def same_cell(a: wp.vec3i, b: wp.vec3i) -> wp.bool:
+    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2]
+
+
+@wp.func
+def grid_order_key(cell: wp.vec3i) -> wp.uint64:
+    # ``Volume.get_voxels()``'s order *within one root tile* (4096 cells a side), so sorting a
+    # tile's cells by it reproduces the rows ``allocate_by_voxels`` would number them in: NanoVDB
+    # lays out upper-node children (bits 11..7 of each coordinate), then lower-node children (bits
+    # 6..3), then leaf voxels (bits 2..0), each x-major. 36 bits. Verified against the builder on
+    # both devices, negative and multi-tile sets included (``tests/test_voxels.py``).
+    x = wp.uint64(wp.uint32(cell[0]))
+    y = wp.uint64(wp.uint32(cell[1]))
+    z = wp.uint64(wp.uint32(cell[2]))
+    five = wp.uint64(31)
+    four = wp.uint64(15)
+    three = wp.uint64(7)
+    key = (((x >> wp.uint64(7)) & five) << wp.uint64(31)) | (
+        ((y >> wp.uint64(7)) & five) << wp.uint64(26)
+    )
+    key = key | (((z >> wp.uint64(7)) & five) << wp.uint64(21))
+    key = key | (((x >> wp.uint64(3)) & four) << wp.uint64(17))
+    key = key | (((y >> wp.uint64(3)) & four) << wp.uint64(13))
+    key = key | (((z >> wp.uint64(3)) & four) << wp.uint64(9))
+    key = key | ((x & three) << wp.uint64(6)) | ((y & three) << wp.uint64(3)) | (z & three)
+    return key
+
+
+@wp.func
+def grid_root_key(cell: wp.vec3i) -> wp.uint64:
+    # The root tile a cell lies in, in the builder's tile order: the *signed* arithmetic shift of
+    # each coordinate by 12, lexicographic x-major (an unsigned ``uint32 >> 12`` key would put
+    # negative tiles last, which is not what the builder does). Biased into 20 bits an axis.
+    bias = wp.int32(1 << 19)
+    x = wp.uint64((cell[0] >> 12) + bias)
+    y = wp.uint64((cell[1] >> 12) + bias)
+    z = wp.uint64((cell[2] >> 12) + bias)
+    return (x << wp.uint64(40)) | (y << wp.uint64(20)) | z
+
+
+@wp.kernel
+def insert_point_cells(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    mask: wp.int32,
+    table: wp.array[wp.int32],
+    out_unique: wp.array[wp.int32],
+) -> None:
+    # ``voxel_down_sample``'s voxel set without a ``wp.Volume``: one open-addressing table of point
+    # indices, ``-1`` empty, keyed on the cell ``voxel_cell_indices`` would hand the builder. The
+    # point that claims an empty slot appends the slot to ``out_unique`` through the cursor in
+    # ``table``'s last element -- one past the ``mask + 1`` hashed slots, seeded ``-1`` by the same
+    # fill, so it ends at the count minus one. The append order is arbitrary and is sorted away
+    # afterwards (``unique_cell_keys``). A slot is read before it is claimed: a held slot never
+    # changes again, so a non-empty read is final and the atomic is paid only on an apparently
+    # empty slot -- most points repeat a cell a neighbour already claimed. ``table`` is scratch
+    # state carried into ``assign_voxel_rows``.
+    i = wp.int32(wp.tid())
+    cell = voxel_cell(points[i], origin, inverse_size)
+    h = cell_hash_slot(cell, mask)
+    while True:
+        held = table[h]
+        if held == -1:
+            held = wp.atomic_cas(table, h, wp.int32(-1), i)
+            if held == -1:
+                out_unique[wp.atomic_add(table, mask + 1, 1) + 1] = h
+                return
+        if same_cell(voxel_cell(points[held], origin, inverse_size), cell):
+            return
+        h = next_slot(h, mask)
+
+
+@wp.kernel
+def unique_cell_keys(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    table: wp.array[wp.int32],
+    unique: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The in-tile grid-order key of each distinct cell, keyed to its append position: the leading
+    # halves of a ``radix_sort_pairs`` double buffer. A cell is recovered from the point holding
+    # its slot, the same ``voxel_cell`` arithmetic that inserted it.
+    j = wp.int32(wp.tid())
+    cell = voxel_cell(points[table[unique[j]]], origin, inverse_size)
+    out_keys[j] = grid_order_key(cell)
+    out_order[j] = j
+
+
+@wp.kernel
+def unique_cell_root_keys(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    table: wp.array[wp.int32],
+    unique: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+) -> None:
+    # The second, stable pass of the two-key grid order, for a cell set that spans more than one
+    # root tile: the root key of the cell at each position of the in-tile sort.
+    r = wp.int32(wp.tid())
+    cell = voxel_cell(points[table[unique[order[r]]]], origin, inverse_size)
+    out_keys[r] = grid_root_key(cell)
+
+
+@wp.kernel
+def assign_voxel_rows(
+    points: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    unique: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    table: wp.array[wp.int32],
+    out_row_cells: wp.array[wp.vec3i],
+) -> None:
+    # Output row ``r`` is the ``r``-th distinct cell in grid order. Its table slot, which held the
+    # claiming point, is rewritten to hold ``r`` -- rows are non-negative, so the empty test the
+    # probe below walks by is unchanged -- and the row's cell is kept for that probe to compare.
+    r = wp.int32(wp.tid())
+    h = unique[order[r]]
+    out_row_cells[r] = voxel_cell(points[table[h]], origin, inverse_size)
+    table[h] = r
+
+
+@wp.func
+def table_point_slot(
+    position: wp.vec3,
+    translation: wp.vec3,
+    inverse_size: wp.float32,
+    zero: wp.float32,
+    mask: wp.int32,
+    table: wp.array[wp.int32],
+    row_cells: wp.array[wp.vec3i],
+) -> wp.int32:
+    # ``point_slot`` against the cell table instead of a volume: the row of the voxel a point
+    # *probes* into, ``-1`` when that cell is not in the set. The probe cell is ``point_cell``'s --
+    # the volume's index transform, not ``voxel_cell``'s -- because a point on a cell boundary can
+    # insert into one cell and probe into its neighbour, and ``pool_by_voxel`` has always pooled by
+    # the probe. ``map_world_to_index`` is that transform bit for bit.
+    cell = index_space_cell(map_world_to_index(position, translation, inverse_size, zero))
+    h = cell_hash_slot(cell, mask)
+    while True:
+        row = table[h]
+        if row == -1:
+            return -1
+        if same_cell(row_cells[row], cell):
+            return row
+        h = next_slot(h, mask)
+    return -1
 
 
 @wp.kernel
@@ -374,37 +609,58 @@ def bucket_point_slots(
     out_slots: wp.array[wp.int32],
     out_buckets: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
 ) -> None:
-    # The mean/sum pooling's first launch: each point's bucket and count (``count_point_bucket``),
-    # with ``out_buckets`` / ``out_order`` the leading halves of ``radix_sort_pairs``' two double
-    # buffers, keys and identity payload, so the sort needs no key copy and no separate payload
-    # seed (the upper halves are scratch the sort fills before reading). The min/max twin is
-    # ``pool_extremum_points``; the two differ only in what follows the shared probe.
+    # The mean/sum pooling's first launch over a volume; ``bucket_table_slots`` is the same over
+    # ``voxel_down_sample``'s cell table, ``pool_extremum_points`` the min/max twin.
     p = wp.int32(wp.tid())
-    slot = count_point_bucket(volume, points, p, n_voxels, out_slots, out_counts)
-    out_buckets[p] = wp.where(slot < 0, n_voxels, slot)
-    out_order[p] = p
+    slot = point_slot(volume, points[p])
+    write_point_bucket(slot, p, n_voxels, out_slots, out_buckets, out_order)
+
+
+@wp.kernel
+def bucket_table_slots(
+    points: wp.array[wp.vec3],
+    translation: wp.vec3,
+    inverse_size: wp.float32,
+    zero: wp.float32,
+    mask: wp.int32,
+    table: wp.array[wp.int32],
+    row_cells: wp.array[wp.vec3i],
+    n_voxels: wp.int32,
+    out_slots: wp.array[wp.int32],
+    out_buckets: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    p = wp.int32(wp.tid())
+    slot = table_point_slot(points[p], translation, inverse_size, zero, mask, table, row_cells)
+    write_point_bucket(slot, p, n_voxels, out_slots, out_buckets, out_order)
 
 
 @wp.kernel
 def segment_reduce_vec3(
     order: wp.array[wp.int32],
     values: wp.array[wp.vec3],
-    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.int32],
     average: wp.bool,
     out_values: wp.array[wp.vec3],
 ) -> None:
     # One thread per voxel walking its segment in index order: the sum is bitwise reproducible,
-    # which a float ``wp.atomic_add`` over the points would not be. ``ends`` is the in-place
-    # inclusive scan of the bucket counts, which carries both the segment start and its length.
+    # which a float ``wp.atomic_add`` over the points would not be. ``buckets`` is the sorted
+    # bucket prefix, so voxel ``v``'s segment is ``[lower_bound(v), lower_bound(v + 1))`` -- the
+    # same bounds the old histogram's inclusive scan carried, two binary searches per voxel
+    # instead of an atomic per point, a zeroed buffer and a scan launch.
+    #
+    # Serial per voxel on purpose, and starved at a coarse pitch (a few thousand voxels over
+    # millions of points): a lane-strided block sum would fill the device but sum in a different
+    # order, and the mean's bits are this function's contract.
     v = wp.int32(wp.tid())
-    start, count = scanned_count(ends, v)
+    start = binary_search_index_left(buckets, v)
+    end = binary_search_index_left(buckets, v + 1)
     total = wp.vec3(0.0, 0.0, 0.0)
-    for j in range(start, start + count):
+    for j in range(start, end):
         total = total + values[order[j]]
-    if average and count > 0:
-        total = total / wp.float32(count)
+    if average and end > start:
+        total = total / wp.float32(end - start)
     out_values[v] = total
 
 
@@ -419,18 +675,30 @@ def pool_extremum_points(
     out_counts: wp.array[wp.int32],
     out_values: wp.array[wp.vec3],
 ) -> None:
-    # The min/max pooling in the probe launch itself (``count_point_bucket``): component-wise atomic
-    # min / max, order-independent for floats, so no sort is needed. ``out_values`` arrives filled
-    # with the +-inf the atomics reduce from; ``zero_empty_voxels`` then resets the voxels no point
-    # reached, which only ``counts`` -- final once this launch ends -- can name.
     p = wp.int32(wp.tid())
-    slot = count_point_bucket(volume, points, p, n_voxels, out_slots, out_counts)
-    if slot < 0:
-        return
-    if largest:
-        wp.atomic_max(out_values, slot, values[p])
-    else:
-        wp.atomic_min(out_values, slot, values[p])
+    slot = point_slot(volume, points[p])
+    pool_point_extremum(slot, p, values, n_voxels, largest, out_slots, out_counts, out_values)
+
+
+@wp.kernel
+def pool_extremum_table(
+    points: wp.array[wp.vec3],
+    translation: wp.vec3,
+    inverse_size: wp.float32,
+    zero: wp.float32,
+    mask: wp.int32,
+    table: wp.array[wp.int32],
+    row_cells: wp.array[wp.vec3i],
+    largest: wp.bool,
+    out_slots: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+    out_values: wp.array[wp.vec3],
+) -> None:
+    # ``voxel_down_sample`` pools its own points, so the payload is ``points`` itself.
+    p = wp.int32(wp.tid())
+    slot = table_point_slot(points[p], translation, inverse_size, zero, mask, table, row_cells)
+    n_voxels = wp.int32(row_cells.shape[0])
+    pool_point_extremum(slot, p, points, n_voxels, largest, out_slots, out_counts, out_values)
 
 
 @wp.kernel

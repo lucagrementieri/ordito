@@ -1108,6 +1108,80 @@ def test_cluster_decimate_emits_no_degenerate_or_duplicated_faces(device: str) -
     assert len(np.unique(faces_np)) == int(decimated_vertices_wp.shape[0])
 
 
+@pytest.mark.parametrize("voxel_size", [1e-3, 0.1, 0.25])
+@pytest.mark.parametrize("contraction", ["average", "closest"])
+def test_cluster_decimate_matches_a_numpy_transcription(
+    device: str, voxel_size: float, contraction: str
+) -> None:
+    """
+    Class A against a NumPy transcription of the definition, pinning the output *numbering*.
+
+    Open3D fixes the counts and the vertex set but not the order, and the order is a contract:
+    output vertices are the kept cells in packed-cell-key order (``unique_1d``'s), faces are the
+    distinct welded faces in ``unique_faces``' order, each in its first occurrence's winding. The
+    kernel dedups with hash tables whose slots number the cells arbitrarily, so the order is
+    recovered by sorts that this checks against ``np.unique``. The three sizes cover: nothing
+    merging (more distinct faces than vertices, the branch where the face sort cannot reuse the
+    cell sort's buffers), and two where welding leaves duplicate faces, asserted below.
+    """
+    # Two concentric sheets a hair apart, the inner one reversed -- a thin shell. They weld into the
+    # same cells, so their faces map onto the same cluster triples in opposite windings, and the
+    # face dedup has duplicates to remove at every coarse size whose kept winding is observable.
+    sphere_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
+    n_sheet = sphere_tm.vertices.shape[0]
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.concatenate((sphere_tm.vertices, 1.002 * sphere_tm.vertices)),
+        np.concatenate((sphere_tm.faces, sphere_tm.faces[:, ::-1] + n_sheet)),
+        device,
+    )
+    out_vertices_wp, out_faces_wp = tw.remesh.cluster_decimate(
+        vertices_wp, faces_wp, voxel_size=voxel_size, contraction=contraction
+    )
+    voxel, origin, bound = tw.voxels.resolve_voxel_grid(
+        vertices_wp, voxel_size, return_cell_bound=True
+    )
+    vertices_np = vertices_wp.numpy()
+    local_np = (vertices_np - np.array(origin, dtype=np.float32)) * np.float32(1.0 / voxel)
+    cells_np = np.floor(local_np).astype(np.int64)
+    keys_np = cells_np[:, 0] + bound * (cells_np[:, 1] + bound * cells_np[:, 2])
+    _keys, labels_np = np.unique(keys_np, return_inverse=True)
+    remapped_np = labels_np[faces_wp.numpy().reshape(-1, 3)]
+    distinct = (
+        (remapped_np[:, 0] != remapped_np[:, 1])
+        & (remapped_np[:, 1] != remapped_np[:, 2])
+        & (remapped_np[:, 0] != remapped_np[:, 2])
+    )
+    surviving_np = remapped_np[distinct]
+    kept_np = np.unique(surviving_np)
+    ranked_np = np.searchsorted(kept_np, surviving_np)
+    n_kept = kept_np.shape[0]
+    sorted_np = np.sort(ranked_np, axis=1)
+    face_keys_np = sorted_np[:, 0] + n_kept * (sorted_np[:, 1] + n_kept * sorted_np[:, 2])
+    _face_keys, first_np = np.unique(face_keys_np, return_index=True)
+    expected_faces_np = ranked_np[first_np]
+    if voxel_size > 0.01:
+        assert first_np.shape[0] < surviving_np.shape[0]  # non-vacuity: welding made duplicates
+    else:
+        assert first_np.shape[0] > vertices_np.shape[0]  # non-vacuity: the wide face sort
+    assert np.array_equal(out_faces_wp.numpy().reshape(-1, 3), expected_faces_np)
+
+    rank_np = np.full(labels_np.max() + 1, -1)
+    rank_np[kept_np] = np.arange(n_kept)
+    vertex_rank_np = rank_np[labels_np]
+    if contraction == "average":
+        sums_np = np.zeros((n_kept, 3))
+        np.add.at(sums_np, vertex_rank_np[vertex_rank_np >= 0], vertices_np[vertex_rank_np >= 0])
+        counts_np = np.bincount(vertex_rank_np[vertex_rank_np >= 0], minlength=n_kept)
+        assert np.allclose(
+            out_vertices_wp.numpy(), sums_np / counts_np[:, None], rtol=1e-5, atol=1e-5
+        )
+    else:
+        # Every output vertex is an input vertex of its own cluster.
+        _distance, index_np = KDTree(vertices_np).query(out_vertices_wp.numpy())
+        assert np.array_equal(vertex_rank_np[index_np], np.arange(n_kept))
+    assert 2 * n_sheet == vertices_np.shape[0]
+
+
 def test_cluster_decimate_decimates_monotonically(device: str) -> None:
     """A wider cell can only ever produce fewer faces."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)

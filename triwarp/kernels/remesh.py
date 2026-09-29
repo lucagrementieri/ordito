@@ -10,15 +10,18 @@ from triwarp.kernels.array import (
     binary_search_sorted_contains,
     lowbias32,
     pack_edge_key,
+    sort3,
     to_vec2d,
     to_vec3,
     to_vec3d,
 )
 from triwarp.kernels.grouping import (
+    HASH_MULT_U64,
     hash_find,
     hash_find_or_insert,
     hash_slot,
     key_set_remove,
+    next_slot,
     pack_index_triple,
     sorted_run_of_length,
     sorted_run_start,
@@ -611,7 +614,7 @@ def outside_region_flags(region: wp.array[wp.bool], out_flags: wp.array[wp.int32
 def compact_scanned_faces(
     faces: wp.array[wp.int32], inclusive: wp.array[wp.int32], out_faces: wp.array[wp.int32]
 ) -> None:
-    # ``kernels/repair.compact_kept_faces`` without the appended replacement rows.
+    # A face compaction in input order: ``triangles.copy_scanned_face`` over every face.
     copy_scanned_face(faces, inclusive, wp.int32(wp.tid()), out_faces)
 
 
@@ -2362,33 +2365,211 @@ def fixup_twin_remap(
         twin[h] = remapped
 
 
+@wp.func
+def cluster_cell_key(
+    vertex: wp.vec3, origin: wp.vec3, inverse_size: wp.float32, cell_bound: wp.uint64
+) -> wp.uint64:
+    # A vertex's voxel cell packed into the ``uint64`` key ``remesh.cluster_decimate`` orders its
+    # clusters by: ``voxels.cell_indices`` and ``grouping.hash_indices_rows`` in one thread, the
+    # same ``voxel_cell`` and the same packing, so the keys are theirs bit for bit. Pure in its
+    # inputs, which is what lets ``cluster_insert_vertices`` recompute a stored vertex's key rather
+    # than keep a table of keys.
+    cell = voxel_cell(vertex, origin, inverse_size)
+    return pack_index_triple(cell[0], cell[1], cell[2], cell_bound)
+
+
 @wp.kernel
-def cluster_cell_keys(
+def cluster_insert_vertices(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inverse_size: wp.float32,
     cell_bound: wp.uint64,
-    out_keys: wp.array[wp.uint64],
+    mask: wp.int32,
+    out_cell_table: wp.array[wp.int32],
+    out_vertex_cell: wp.array[wp.int32],
 ) -> None:
-    # Each vertex's voxel cell, packed straight into the ``uint64`` key ``remesh.cluster_decimate``
-    # deduplicates: ``voxels.cell_indices`` and ``grouping.hash_indices_rows`` in one thread, so the
-    # ``(n, 3)`` cell table they pass between them is never written. The same ``voxel_cell`` and
-    # the same packing, so the keys are theirs bit for bit.
+    # Each vertex's cluster, as the slot its cell key occupies in one open-addressing table of
+    # vertex indices (``-1`` empty, caller-filled; the ``points.point_duplicate_first`` table with
+    # a cell key in place of a position). A vertex claims an empty slot with ``atomic_cas``; an
+    # occupied slot holds *some* vertex of its cell, whose key is recomputed to compare. Which
+    # member ends up stored is arrival order and nothing reads it but for its key, so no
+    # ``atomic_min`` is needed. The slots number the clusters arbitrarily: the output order is
+    # fixed later by sorting the keys of the cells a face keeps (``cluster_mark_faces``).
     v = wp.int32(wp.tid())
-    cell = voxel_cell(vertices[v], origin, inverse_size)
-    out_keys[v] = pack_index_triple(cell[0], cell[1], cell[2], cell_bound)
+    key = cluster_cell_key(vertices[v], origin, inverse_size, cell_bound)
+    h = hash_slot(wp.int64(key), mask)
+    while True:
+        # Read before claiming: a cluster's vertices all probe its slot, and once it is taken a
+        # plain load finds the occupant without the atomic (a stale ``-1`` only costs the CAS).
+        prev = out_cell_table[h]
+        if prev == wp.int32(-1):
+            prev = wp.atomic_cas(out_cell_table, h, wp.int32(-1), v)
+            if prev == wp.int32(-1):
+                break
+        if cluster_cell_key(vertices[prev], origin, inverse_size, cell_bound) == key:
+            break
+        h = next_slot(h, mask)
+    out_vertex_cell[v] = h
+
+
+@wp.func
+def sorted_cluster_triple(
+    faces: wp.array[wp.int32], vertex_cell: wp.array[wp.int32], f: wp.int32
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.bool]:
+    # Face ``f``'s three clusters in ascending order and whether they are distinct: the face's
+    # orientation-free identity after welding, which ``cluster_mark_faces`` compares exactly.
+    i0, i1, i2, distinct = remapped_corner_triple(faces, vertex_cell, f)
+    s0, s1, s2 = sort3(i0, i1, i2)
+    return s0, s1, s2, distinct
+
+
+@wp.func
+def claim_kept_cluster(
+    cell: wp.int32,
+    vertices: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    cell_bound: wp.uint64,
+    cell_table: wp.array[wp.int32],
+    cell_state: wp.array[wp.int32],
+    counters: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_cells: wp.array[wp.int32],
+) -> None:
+    # The first surviving face to name a cluster moves it off ``-1`` and appends its cell key and
+    # slot at a cursor. The cursor order is arrival order; the sort that follows is what orders
+    # them, and the keys are distinct, so the result does not depend on it.
+    # A plain read first: every surviving face names three clusters and most were claimed long
+    # ago, so the atomic is only for the few threads that still see ``-1``.
+    if cell_state[cell] != wp.int32(-1):
+        return
+    if wp.atomic_exch(cell_state, cell, wp.int32(0)) == wp.int32(-1):
+        p = wp.atomic_add(counters, 0, wp.int32(1))
+        out_keys[p] = cluster_cell_key(vertices[cell_table[cell]], origin, inverse_size, cell_bound)
+        out_cells[p] = cell
+
+
+@wp.kernel
+def cluster_mark_faces(
+    faces: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    origin: wp.vec3,
+    inverse_size: wp.float32,
+    cell_bound: wp.uint64,
+    cell_table: wp.array[wp.int32],
+    face_mask: wp.int32,
+    out_cell_state: wp.array[wp.int32],
+    out_face_table: wp.array[wp.int32],
+    out_counters: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_cells: wp.array[wp.int32],
+    out_face_slots: wp.array[wp.int32],
+) -> None:
+    # Everything ``cluster_decimate`` must count before it can size its outputs, in one pass over
+    # the faces: which faces survive the weld (three distinct clusters), which clusters a
+    # surviving face keeps (``claim_kept_cluster``), and which surviving faces are duplicates of
+    # one another. The last is a second ``point_duplicate_first``-style table, of face indices
+    # keyed on the sorted cluster triple and compared *exactly* by recomputing the stored face's
+    # triple, lowered to the class's smallest face index with ``atomic_min`` -- the first
+    # occurrence, whose winding the output keeps. A face that claims an empty slot appends it at
+    # the second cursor. ``out_cell_state``, ``out_face_table`` and ``out_counters`` arrive
+    # initialised by the caller (``-1``, ``-1``, ``0``) and leave holding the answer.
+    f = wp.int32(wp.tid())
+    s0, s1, s2, distinct = sorted_cluster_triple(faces, vertex_cell, f)
+    if not distinct:
+        return
+    claim_kept_cluster(
+        s0,
+        vertices,
+        origin,
+        inverse_size,
+        cell_bound,
+        cell_table,
+        out_cell_state,
+        out_counters,
+        out_keys,
+        out_cells,
+    )
+    claim_kept_cluster(
+        s1,
+        vertices,
+        origin,
+        inverse_size,
+        cell_bound,
+        cell_table,
+        out_cell_state,
+        out_counters,
+        out_keys,
+        out_cells,
+    )
+    claim_kept_cluster(
+        s2,
+        vertices,
+        origin,
+        inverse_size,
+        cell_bound,
+        cell_table,
+        out_cell_state,
+        out_counters,
+        out_keys,
+        out_cells,
+    )
+    mixed = (wp.uint64(wp.uint32(s0)) | (wp.uint64(wp.uint32(s1)) << wp.uint64(32))) ^ (
+        wp.uint64(wp.uint32(s2)) * HASH_MULT_U64
+    )
+    h = hash_slot(wp.int64(mixed), face_mask)
+    while True:
+        # Read before claiming, as for the clusters: a welded face is usually one of several
+        # duplicates, and all of them probe the same slot. A stale read is safe both ways -- a
+        # stale ``-1`` falls through to the ``atomic_cas``, which returns the real occupant, and a
+        # stale occupant is still a member of its class, only possibly not its smallest.
+        prev = out_face_table[h]
+        if prev == wp.int32(-1):
+            prev = wp.atomic_cas(out_face_table, h, wp.int32(-1), f)
+            if prev == wp.int32(-1):
+                out_face_slots[wp.atomic_add(out_counters, 1, wp.int32(1))] = h
+                break
+        t0, t1, t2, _distinct = sorted_cluster_triple(faces, vertex_cell, prev)
+        if t0 == s0 and t1 == s1 and t2 == s2:
+            if f < prev:
+                wp.atomic_min(out_face_table, h, f)
+            break
+        h = next_slot(h, face_mask)
+
+
+@wp.kernel
+def cluster_rank_cells(sorted_cells: wp.array[wp.int32], out_cell_rank: wp.array[wp.int32]) -> None:
+    # A kept cluster's output vertex index is its position in cell-key order, written over the
+    # claim flag ``cluster_mark_faces`` left in the same slot (which has no reader left); an
+    # unreferenced cluster keeps ``-1``.
+    i = wp.int32(wp.tid())
+    out_cell_rank[sorted_cells[i]] = i
+
+
+@wp.func
+def vertex_cluster_rank(
+    vertex_cell: wp.array[wp.int32], cell_rank: wp.array[wp.int32], v: wp.int32
+) -> wp.int32:
+    # Vertex ``v``'s output vertex, or ``-1`` when no surviving face keeps its cluster.
+    return cell_rank[vertex_cell[v]]
 
 
 @wp.kernel
 def cluster_accumulate(
-    labels: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     out_sum: wp.array[wp.vec3],
     out_count: wp.array[wp.int32],
 ) -> None:
+    # Sum and count of every kept cluster's vertices, indexed by output vertex. A cluster no face
+    # keeps has no output slot and contributes nothing.
     v = wp.int32(wp.tid())
-    wp.atomic_add(out_sum, labels[v], vertices[v])
-    wp.atomic_add(out_count, labels[v], 1)
+    r = vertex_cluster_rank(vertex_cell, cell_rank, v)
+    if r >= 0:
+        wp.atomic_add(out_sum, r, vertices[v])
+        wp.atomic_add(out_count, r, 1)
 
 
 @wp.func
@@ -2399,27 +2580,41 @@ def mean_from_sum(total: wp.vec3, count: wp.int32) -> wp.vec3:
 
 
 @wp.kernel
+def cluster_means(
+    sums: wp.array[wp.vec3], counts: wp.array[wp.int32], out_vertices: wp.array[wp.vec3]
+) -> None:
+    # Each output vertex's mean. Not in place over ``sums``: that would save one allocation at the
+    # price of an in-place allowlist entry for the naming check.
+    r = wp.int32(wp.tid())
+    out_vertices[r] = mean_from_sum(sums[r], counts[r])
+
+
+@wp.kernel
 def cluster_min_center_distance(
-    labels: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     voxel_size: wp.float32,
     out_min_distance: wp.array[wp.float32],
 ) -> None:
-    # Pass 1 of the "closest to the cell centre" representative: the winning *distance* per cluster.
-    # Split from the index pick so both passes use 32-bit atomics only; the two together are
-    # deterministic because pass 2 breaks ties by lowest vertex index.
+    # Pass 1 of the "closest to the cell centre" representative: the winning *distance* per kept
+    # cluster. Split from the index pick so both passes use 32-bit atomics only; the two together
+    # are deterministic because pass 2 breaks ties by lowest vertex index.
     v = wp.int32(wp.tid())
-    wp.atomic_min(
-        out_min_distance,
-        labels[v],
-        squared_distance_to_own_cell_center(vertices[v], origin, voxel_size),
-    )
+    r = vertex_cluster_rank(vertex_cell, cell_rank, v)
+    if r >= 0:
+        wp.atomic_min(
+            out_min_distance,
+            r,
+            squared_distance_to_own_cell_center(vertices[v], origin, voxel_size),
+        )
 
 
 @wp.kernel
 def cluster_pick_closest(
-    labels: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     voxel_size: wp.float32,
@@ -2428,11 +2623,73 @@ def cluster_pick_closest(
 ) -> None:
     # Pass 2: whichever vertices tie for their cluster's winning distance, the lowest index wins.
     v = wp.int32(wp.tid())
-    if (
-        squared_distance_to_own_cell_center(vertices[v], origin, voxel_size)
-        <= min_distance[labels[v]]
-    ):
-        wp.atomic_min(out_representative, labels[v], v)
+    r = vertex_cluster_rank(vertex_cell, cell_rank, v)
+    if r >= 0:
+        if squared_distance_to_own_cell_center(vertices[v], origin, voxel_size) <= min_distance[r]:
+            wp.atomic_min(out_representative, r, v)
+
+
+@wp.kernel
+def cluster_gather_representatives(
+    vertices: wp.array[wp.vec3], representative: wp.array[wp.int32], out_vertices: wp.array[wp.vec3]
+) -> None:
+    # ``cluster_means``' sibling for the closest-to-centre contraction: the representative
+    # vertex's own position.
+    r = wp.int32(wp.tid())
+    out_vertices[r] = vertices[representative[r]]
+
+
+@wp.func
+def ranked_face_corners(
+    faces: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
+    f: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.int32]:
+    # Face ``f``'s corners as output vertices, in its own winding.
+    a, b, c = corner_triple(faces, f)
+    return (
+        vertex_cluster_rank(vertex_cell, cell_rank, a),
+        vertex_cluster_rank(vertex_cell, cell_rank, b),
+        vertex_cluster_rank(vertex_cell, cell_rank, c),
+    )
+
+
+@wp.kernel
+def cluster_face_keys(
+    faces: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
+    face_table: wp.array[wp.int32],
+    face_slots: wp.array[wp.int32],
+    n_kept: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # One unique face per thread: its class representative (the smallest face index,
+    # ``cluster_mark_faces``) and the key ``grouping.unique_faces`` orders faces by -- the sorted
+    # output-vertex triple packed in radix ``n_kept`` -- so the sort that follows reproduces that
+    # function's output order.
+    i = wp.int32(wp.tid())
+    g = face_table[face_slots[i]]
+    r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, g)
+    s0, s1, s2 = sort3(r0, r1, r2)
+    out_keys[i] = pack_index_triple(s0, s1, s2, n_kept)
+    out_faces[i] = g
+
+
+@wp.kernel
+def cluster_emit_faces(
+    faces: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
+    sorted_faces: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # The unique faces in key order, each in its representative's winding.
+    j = wp.int32(wp.tid())
+    r0, r1, r2 = ranked_face_corners(faces, vertex_cell, cell_rank, sorted_faces[j])
+    write_corner_triple(out_faces, j, r0, r1, r2)
 
 
 @wp.func
@@ -2524,36 +2781,6 @@ def compact_collapse_vertices(
     out_positions[slot] = positions[v]
     out_low[slot] = low[v]
     out_high[slot] = high[v]
-
-
-@wp.kernel
-def cluster_compact_means(
-    sums: wp.array[wp.vec3],
-    counts: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    out_vertices: wp.array[wp.vec3],
-) -> None:
-    # The mean of every referenced cluster, written straight into its compacted slot. ``ranks`` is
-    # ``compact_surviving_faces``' scan of the referenced marks (``scanned_slot``).
-    c = wp.int32(wp.tid())
-    slot, kept = scanned_slot(ranks, c)
-    if kept:
-        out_vertices[slot] = mean_from_sum(sums[c], counts[c])
-
-
-@wp.kernel
-def cluster_compact_representatives(
-    vertices: wp.array[wp.vec3],
-    representative: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    out_vertices: wp.array[wp.vec3],
-) -> None:
-    # ``cluster_compact_means``' sibling for the closest-to-centre contraction: the representative
-    # vertex's own position, into the compacted slot.
-    c = wp.int32(wp.tid())
-    slot, kept = scanned_slot(ranks, c)
-    if kept:
-        out_vertices[slot] = vertices[representative[c]]
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a

@@ -85,22 +85,32 @@ _MIN_POSITIVE_FLOAT32 = 1.1754943508222875e-38
 # cap is that a thread stops *before* it becomes the launch's critical path.
 _QUERY_CANDIDATE_CAP = 64
 
-# Query points to draw from mesh A when deriving ``mesh_to_mesh_distance``'s own upper bound. The
-# bound only has to be an upper bound -- it seeds the broad phase's prune limit and nothing else --
-# so a *subsample* of A's vertices is as correct as all of them and merely looser, and the whole
-# question is what a looser bound costs the traversal it is paying for. On a large mesh this vertex
-# query can otherwise dominate the whole call, since it costs one closest-point query per vertex to
-# prune a broad phase that itself is comparatively cheap.
+# Query points to draw from mesh A when deriving ``mesh_to_mesh_distance``'s own upper bound: the
+# first corner of every ``n_faces_a // _BOUND_SAMPLE_TARGET``-th face. The bound only has to be an
+# upper bound -- it seeds the broad phase's prune limit and nothing else -- so a *subsample* of A's
+# surface is as correct as all of it and merely looser, and the whole question is what a looser
+# bound costs the traversal it is paying for.
 #
-# A subsample barely loosens the bound in practice -- the true minimum vertex-to-surface distance is
-# rarely realized by only a rare vertex -- so the traversal is handed almost the same limit for a
-# small fraction of the queries. The value is a *count* rather than a fraction, so the saving grows
-# with the mesh, which is where it is needed.
-#
-# A stride, not a random draw: it is deterministic, needs no RNG and no gather, and a strided view
-# is a legal kernel argument. A pathological vertex ordering can only make the bound looser, never
-# wrong.
+# Face corners rather than vertices, because a vertex no face references is not a point of A's
+# surface: a stray one near B gave a bound below the answer, and the walk then pruned the pair that
+# achieves it and returned ``inf``. A stride, not a random draw: it is deterministic and needs no
+# RNG, and a pathological face ordering can only make the bound looser, never wrong.
 _BOUND_SAMPLE_TARGET = 16_384
+
+# ...but never sparser than one face in this many. Once the queries are capped (next constant) a
+# sample point far from B costs next to nothing, and what a sparse sample costs instead is a looser
+# bound -- roughly the sample spacing -- which grows every face's query box in the walk. On the
+# largest scan mesh the count alone left a stride of ~1 700 faces and the walk paid ~1.6x for it;
+# on the meshes where the count already gives a stride under this, the sample is unchanged.
+_BOUND_SAMPLE_MAX_STRIDE = 128
+
+# Points per side of the brute-force corner sample that caps those bound queries' ``max_dist``.
+# Its only job is to be *some* surface-to-surface distance not far above the answer: an unbounded
+# closest-point query from a point far from B walks most of B's BVH, and on the largest scan mesh
+# that was nearly half the call. The brute force is ``_SEED_SAMPLE_TARGET ** 2`` pair tests, which
+# is negligible here, and a larger sample tightens a cap that is already within a few tens of
+# percent of the answer.
+_SEED_SAMPLE_TARGET = 1024
 
 # Block width for that second pass: one warp per straggler face. Wider blocks did not help, and a
 # warp is what [`ball_pivoting`][triwarp.reconstruction.ball_pivoting]'s pivot search settled on for
@@ -368,15 +378,16 @@ def mesh_to_mesh_distance(
     clearance between edge interiors, and every vertex of each is further from the other than
     that.
 
-    Two phases. An upper bound comes first -- the smallest distance from a *sample* of ``A``'s
-    vertices to ``B``, which is a real distance between the surfaces and therefore an upper bound on
-    their minimum. Then every face of ``A`` queries a BVH over ``B``'s faces with its own bounding
-    box grown by that bound, and each candidate pair gets the exact triangle-triangle distance. The
-    bound is what makes the broad phase sound rather than heuristic: the true minimum is at most the
-    bound, so the pair achieving it has boxes within that distance and cannot be culled -- and that
-    argument needs an upper bound rather than a *tight* one, which is why sampling is sound and why
-    supplying your own coarse ``upper_bound`` is too. The returned distance is exact either way; a
-    looser bound only leaves more candidates for the narrow phase to reject.
+    Two phases. An upper bound comes first -- the smallest distance from a *sample* of points on
+    ``A``'s faces to ``B``, which is a real distance between the surfaces and therefore an upper
+    bound on their minimum. Then every face of ``A`` queries a BVH over ``B``'s faces with its own
+    bounding box grown by that bound, and each candidate pair gets the exact triangle-triangle
+    distance. The bound is what makes the broad phase sound rather than heuristic: the true minimum
+    is at most the bound, so the pair achieving it has boxes within that distance and cannot be
+    culled -- and that argument needs an upper bound rather than a *tight* one, which is why
+    sampling is sound and why supplying your own coarse ``upper_bound`` is too. The returned
+    distance is exact either way; a looser bound only leaves more candidates for the narrow phase to
+    reject.
 
     Parameters
     ----------
@@ -386,7 +397,7 @@ def mesh_to_mesh_distance(
         Second mesh, same layout.
     upper_bound
         A distance known to be at least the answer, which prunes the broad phase. Supply one when
-        you have it -- from a previous frame, or from a bounding-volume gap -- and the vertex query
+        you have it -- from a previous frame, or from a bounding-volume gap -- and the sampled query
         that would otherwise derive it is skipped. **Too small a bound gives a wrong answer**, not a
         slow one: it culls the pair that would have won. ``None`` derives a sound bound.
 
@@ -444,17 +455,44 @@ def mesh_to_mesh_distance(
     mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
 
     if upper_bound is None:
-        # A vertex-to-surface distance is a distance between the surfaces, so its minimum bounds the
-        # answer from above. One readback, and it is what lets the broad phase cull at all.
-        #
-        # Over a *subsample* of A's vertices, because a minimum over a subset is still an upper
-        # bound and this query can otherwise dominate the whole call on a large mesh -- see
-        # ``_BOUND_SAMPLE_TARGET``. A looser limit prunes less, so the traversal examines a
-        # superset of the candidates it did before and its minimum is the same value.
-        stride = max(1, int(vertices_a.shape[0]) // _BOUND_SAMPLE_TARGET)
-        probe = vertices_a if stride == 1 else vertices_a[::stride]
-        _points, distances, _faces = closest_point_on_mesh(vertices_b, faces_b, probe, mesh=mesh_b)
-        upper_bound = float(tw.reduce.min(distances))
+        # The smallest distance from a *sample* of A's surface to B is a real distance between the
+        # surfaces, so it bounds the answer from above. One readback, and it is what lets the broad
+        # phase cull at all. A subsample because a minimum over a subset is still an upper bound
+        # and this query can otherwise dominate the call on a large mesh -- see
+        # ``_BOUND_SAMPLE_TARGET``; face corners rather than vertices, because a vertex no face
+        # references is not a point of A's surface and would bound nothing.
+        sample_stride = min(max(1, n_faces_a // _BOUND_SAMPLE_TARGET), _BOUND_SAMPLE_MAX_STRIDE)
+        n_samples = (n_faces_a + sample_stride - 1) // sample_stride
+        # Unbounded, a closest-point query from a point far from B walks most of B's BVH. So the
+        # queries are capped by a cheap, loose upper bound first -- the closest pair between two
+        # small corner samples, brute force -- and a point farther than it is a miss that stops at
+        # the top of the tree. See ``_SEED_SAMPLE_TARGET``.
+        seed_step = max(1, n_samples // _SEED_SAMPLE_TARGET)
+        target_stride = max(1, n_faces_b // _SEED_SAMPLE_TARGET)
+        seed_sq = wp.full(1, math.inf, dtype=wp.float32, device=device)
+        wp.launch(
+            kernel_proximity.sampled_corner_gap_sq,
+            dim=(kernel_proximity.SEED_SLICES, (n_samples + seed_step - 1) // seed_step),
+            inputs=[
+                vertices_a,
+                faces_a,
+                sample_stride * seed_step,
+                vertices_b,
+                faces_b,
+                target_stride,
+                (n_faces_b + target_stride - 1) // target_stride,
+                seed_sq,
+            ],
+            device=device,
+        )
+        bound = wp.full(1, math.inf, dtype=wp.float32, device=device)
+        wp.launch(
+            kernel_proximity.sampled_corner_distance_min,
+            dim=n_samples,
+            inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, seed_sq, bound],
+            device=device,
+        )
+        upper_bound = float(read_scalar(bound, 0))
 
     # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
     # input to a build. There is no second acceleration structure built over them -- the kernels
@@ -469,7 +507,7 @@ def mesh_to_mesh_distance(
     )
     distance_sq = wp.empty(n_faces_a, dtype=wp.float32, device=device)
     witness = wp.empty(n_faces_a, dtype=wp.int32, device=device)
-    # Seeded at the bound the vertex query already paid for, so every thread prunes against it from
+    # Seeded at the bound the sampled query already paid for, so every thread prunes against it from
     # its first candidate instead of waiting for some other thread to publish one.
     #
     # Seeded at *exactly* ``upper_bound ** 2`` this is wrong: the prune skips a candidate whose box

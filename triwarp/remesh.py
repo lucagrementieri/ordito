@@ -34,7 +34,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_nonempty_mesh, require_same_device
+from triwarp._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
 from triwarp.constants import TOLERANCE_MOLLIFY, UINT64_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import array as kernel_array
@@ -1351,12 +1351,11 @@ def cluster_decimate(
     unreferenced vertices. So the face counts agree exactly and the vertex counts can differ by the
     number of such cells — usually zero, and never in a way that changes the surface.
 
-    The binning is [`triwarp.voxels.cell_indices`][triwarp.voxels.cell_indices]' cell assignment,
-    but the *dedup* deliberately stays on the packed cell keys
-    ([`triwarp.grouping.unique_1d`][triwarp.grouping.unique_1d]) rather than moving onto a NanoVDB
-    grid: a grid numbers its clusters leaf-major, so preserving today's vertex order would need a
-    restoring sort that gives back most of any gain, and it is not worth changing the public output
-    convention for what remains.
+    The binning is [`triwarp.voxels.cell_indices`][triwarp.voxels.cell_indices]' cell assignment.
+    Output vertices are numbered in the order of their packed cell keys -- the order
+    [`triwarp.grouping.unique_1d`][triwarp.grouping.unique_1d] would sort them in -- rather than a
+    NanoVDB grid's leaf-major order, and the faces come out in
+    [`triwarp.grouping.unique_faces`][triwarp.grouping.unique_faces]' order over them.
     """
     require_same_device(vertices=vertices, faces=faces)
     if contraction not in ("average", "closest"):
@@ -1371,101 +1370,203 @@ def cluster_decimate(
     # One definition of "the default voxel grid for these points", shared with ``triwarp.voxels``
     # so the two modules cannot drift on the cell size or on Open3D's half-cell anchor.
     # The origin is always derived here, so every cell coordinate is non-negative and below the
-    # bound the grid reports, which is what lets the cell hash skip its validating reduction.
+    # bound the grid reports, which is the radix the cell keys are packed in.
     voxel_size, origin, cell_bound = tw.voxels.resolve_voxel_grid(
         vertices, voxel_size, caller="cluster_decimate", return_cell_bound=True
     )
-    # Each vertex's cell, packed into its row key in one launch -- ``voxels.cell_indices`` and
-    # ``grouping.hash_indices_rows`` without the cell table between them. The unique cell keys
-    # *are* the clusters, so their count is the answer. Only the keys and the inverse are wanted,
-    # so this is ``unique_rows`` without its representative-row gather.
-    keys = wp.empty(n_vertices, dtype=wp.uint64, device=device)
+    inverse_size = wp.float32(1.0 / voxel_size)
+    bound = wp.uint64(cell_bound)
+    cell_mask = _cluster_table_mask(n_vertices)
+    face_mask = _cluster_table_mask(n_faces)
+    n_cells = cell_mask + 1
+    # Three ``-1``-filled tables in one allocation: the cell table (a vertex index per cluster),
+    # each cluster's state (unreferenced, kept, then its output vertex) and the face table (the
+    # first occurrence of each distinct surviving face).
+    tables = wp.full(2 * n_cells + face_mask + 1, -1, dtype=wp.int32, device=device)
+    cell_table = twt.as_dense(tables[:n_cells])
+    cell_rank = twt.as_dense(tables[n_cells : 2 * n_cells])
+    face_table = twt.as_dense(tables[2 * n_cells :])
+    # Every vertex's cluster, then the kept clusters (sized for the sort that orders them, at most
+    # one per vertex), then the distinct surviving faces' table slots.
+    scratch = wp.empty(3 * n_vertices + n_faces, dtype=wp.int32, device=device)
+    vertex_cell = twt.as_dense(scratch[:n_vertices])
+    kept_cells = twt.as_dense(scratch[n_vertices : 3 * n_vertices])
+    face_slots = twt.as_dense(scratch[3 * n_vertices :])
+    # The kept clusters' cell keys, at the sort's double width.
+    sort_keys = wp.empty(2 * n_vertices, dtype=wp.uint64, device=device)
+    counters = wp.zeros(2, dtype=wp.int32, device=device)
     wp.launch(
-        kernel_remesh.cluster_cell_keys,
+        kernel_remesh.cluster_insert_vertices,
         dim=n_vertices,
-        inputs=[vertices, origin, wp.float32(1.0 / voxel_size), wp.uint64(cell_bound), keys],
+        inputs=[vertices, origin, inverse_size, bound, wp.int32(cell_mask), cell_table],
+        outputs=[vertex_cell],
         device=device,
     )
-    cell_keys, labels = tw.grouping.unique_1d(
-        keys, return_inverse=True, max_value=min(cell_bound**3, 1 << 64) - 1
-    )
-    n_clusters = int(cell_keys.shape[0])
-
     # Welding can map two distinct input faces onto the same triple, which would leave a duplicated
-    # face rather than a manifold one, so the dedup below is part of the algorithm rather than
-    # polish. It runs over the *surviving* faces only, compacted first: at a coarse voxel size
-    # nearly every face collapses, and a dedup over all of them -- padding the collapsed ones into
-    # a class of their own -- hashes and searches the whole input for an answer the size of the
-    # output. A dropped duplicate names the same three vertices as the copy that is kept, so the
-    # vertex compaction stands.
-    ranks, compacted, n_kept = _compact_remapped_faces(faces, labels, n_clusters)
+    # face rather than a manifold one, so the face dedup is part of the algorithm rather than
+    # polish. It happens here, before any count is read, in a table of surviving faces only: at a
+    # coarse voxel size nearly every face collapses, and a collapsed face never enters it.
+    wp.launch(
+        kernel_remesh.cluster_mark_faces,
+        dim=n_faces,
+        inputs=[
+            faces,
+            vertex_cell,
+            vertices,
+            origin,
+            inverse_size,
+            bound,
+            cell_table,
+            wp.int32(face_mask),
+            cell_rank,
+            face_table,
+            counters,
+        ],
+        outputs=[sort_keys, kept_cells, face_slots],
+        device=device,
+    )
+    # The two counts size both outputs, so they come back together, in one copy; nothing after
+    # this reads the host.
+    n_kept, n_unique = read_values(counters, 0, 2)
     if n_kept == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
             wp.empty(0, dtype=wp.int32, device=device),
         )
-    kept_vertices = _cluster_positions(
-        vertices, labels, n_clusters, origin, voxel_size, contraction, ranks, n_kept
+    # The output vertices are the kept clusters in cell-key order, which is the order the sorted
+    # unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the
+    # permutation does not depend on the order the claims arrived in.
+    wp.utils.radix_sort_pairs(
+        sort_keys,
+        kept_cells,
+        count=n_kept,
+        end_bit=max(1, (min(cell_bound**3, 1 << 64) - 1).bit_length()),
     )
-    # Every entry is a compacted rank below ``n_kept`` by construction, which is the bound the face
-    # dedup would otherwise reduce the buffer to find.
-    return kept_vertices, tw.grouping.unique_faces(compacted, max_index=n_kept)
+    wp.launch(
+        kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
+    )
+    kept_vertices = _cluster_positions(
+        vertices, vertex_cell, cell_rank, origin, voxel_size, contraction, n_kept
+    )
+    return kept_vertices, _cluster_faces(
+        faces,
+        vertex_cell,
+        cell_rank,
+        face_table,
+        face_slots,
+        n_kept,
+        n_unique,
+        sort_keys,
+        kept_cells,
+    )
+
+
+def _cluster_table_mask(n: int) -> int:
+    """Slot mask of an open-addressing table for ``n`` keys: at least twice ``n`` slots."""
+    return (1 << max(3, math.ceil(math.log2(max(n, 1))) + 1)) - 1
 
 
 def _cluster_positions(
     vertices: wp.array[wp.vec3],
-    labels: wp.array[wp.int32],
-    n_clusters: int,
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
     origin: wp.vec3,
     voxel_size: float,
     contraction: Literal["average", "closest"],
-    ranks: wp.array[wp.int32],
     n_kept: int,
 ) -> wp.array[wp.vec3]:
-    """
-    One representative position per referenced cell, by cell mean or by nearest-to-centre.
-
-    Written straight into the compacted slot ``ranks`` gives each cell (see
-    ``_compact_remapped_faces``).
-    """
+    """One representative position per kept cluster, by cell mean or by nearest-to-centre."""
     device = vertices.device
     n_vertices = int(vertices.shape[0])
-    out = wp.empty(n_kept, dtype=wp.vec3, device=device)
     if contraction == "average":
-        sums = wp.zeros(n_clusters, dtype=wp.vec3, device=device)
-        counts = wp.zeros(n_clusters, dtype=wp.int32, device=device)
+        sums = wp.zeros(n_kept, dtype=wp.vec3, device=device)
+        counts = wp.zeros(n_kept, dtype=wp.int32, device=device)
         wp.launch(
             kernel_remesh.cluster_accumulate,
             dim=n_vertices,
-            inputs=[labels, vertices, sums, counts],
+            inputs=[vertex_cell, cell_rank, vertices],
+            outputs=[sums, counts],
             device=device,
         )
+        out = wp.empty(n_kept, dtype=wp.vec3, device=device)
         wp.launch(
-            kernel_remesh.cluster_compact_means,
-            dim=n_clusters,
-            inputs=[sums, counts, ranks, out],
+            kernel_remesh.cluster_means,
+            dim=n_kept,
+            inputs=[sums, counts],
+            outputs=[out],
             device=device,
         )
         return out
 
-    min_distance = wp.full(n_clusters, float("inf"), dtype=wp.float32, device=device)
+    min_distance = wp.full(n_kept, float("inf"), dtype=wp.float32, device=device)
     wp.launch(
         kernel_remesh.cluster_min_center_distance,
         dim=n_vertices,
-        inputs=[labels, vertices, origin, wp.float32(voxel_size), min_distance],
+        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size)],
+        outputs=[min_distance],
         device=device,
     )
-    representative = wp.full(n_clusters, n_vertices, dtype=wp.int32, device=device)
+    representative = wp.full(n_kept, n_vertices, dtype=wp.int32, device=device)
     wp.launch(
         kernel_remesh.cluster_pick_closest,
         dim=n_vertices,
-        inputs=[labels, vertices, origin, wp.float32(voxel_size), min_distance, representative],
+        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size), min_distance],
+        outputs=[representative],
         device=device,
     )
+    out = wp.empty(n_kept, dtype=wp.vec3, device=device)
     wp.launch(
-        kernel_remesh.cluster_compact_representatives,
-        dim=n_clusters,
-        inputs=[vertices, representative, ranks, out],
+        kernel_remesh.cluster_gather_representatives,
+        dim=n_kept,
+        inputs=[vertices, representative],
+        outputs=[out],
+        device=device,
+    )
+    return out
+
+
+def _cluster_faces(
+    faces: wp.array[wp.int32],
+    vertex_cell: wp.array[wp.int32],
+    cell_rank: wp.array[wp.int32],
+    face_table: wp.array[wp.int32],
+    face_slots: wp.array[wp.int32],
+    n_kept: int,
+    n_unique: int,
+    sort_keys: wp.array[wp.uint64],
+    kept_cells: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """
+    Distinct surviving faces over the kept clusters, in ``grouping.unique_faces``' order.
+
+    That is the order of the sorted output-vertex triple packed in radix ``n_kept``, each face in
+    its first occurrence's winding. The kept-cluster sort's buffers are free by now and serve the
+    face sort whenever they are wide enough, which they are unless almost nothing merged.
+    """
+    device = faces.device
+    if 2 * n_unique > int(sort_keys.shape[0]):
+        sort_keys = wp.empty(2 * n_unique, dtype=wp.uint64, device=device)
+        kept_cells = wp.empty(2 * n_unique, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_remesh.cluster_face_keys,
+        dim=n_unique,
+        inputs=[faces, vertex_cell, cell_rank, face_table, face_slots, wp.uint64(n_kept)],
+        outputs=[sort_keys, kept_cells],
+        device=device,
+    )
+    # Three sorted indices below ``n_kept`` pack below ``n_kept ** 3``.
+    wp.utils.radix_sort_pairs(
+        sort_keys,
+        kept_cells,
+        count=n_unique,
+        end_bit=max(1, (min(n_kept**3, 1 << 64) - 1).bit_length()),
+    )
+    out = wp.empty(3 * n_unique, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_remesh.cluster_emit_faces,
+        dim=n_unique,
+        inputs=[faces, vertex_cell, cell_rank, kept_cells],
+        outputs=[out],
         device=device,
     )
     return out

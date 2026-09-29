@@ -33,6 +33,15 @@ from triwarp.kernels.reduce import block_argmin
 # tight bound is never pruned by another thread's, at a prune strength cost too small to measure.
 _GLOBAL_BEST_RELAX = wp.float32(1.0 + 1e-4)
 
+# ...and a floor under that publication, for the one distance the relaxation cannot loosen: ``0``.
+# The prune skips a candidate whose box gap is ``>=`` the limit, so once some thread publishes an
+# exact zero every other thread's zero-gap candidates -- the crossings of every other face that
+# touches the target -- are skipped, and which face comes back as ``face_a`` is whichever thread
+# published first rather than the lowest index. The wrapper floors its seed at the same value for
+# the same reason. Measured before the floor: CUDA returned a different ``face_a`` than the cpu
+# device on overlapping pairs, and not always the same one twice.
+_MIN_POSITIVE_FLOAT32 = wp.float32(1.1754943508222875e-38)
+
 
 @wp.func
 def closest_point_query(
@@ -232,9 +241,86 @@ def update_nearest_face_pair(
         wp.min(best, global_best_sq[0]),
     )
     if distance_sq < best:
-        wp.atomic_min(global_best_sq, 0, distance_sq * _GLOBAL_BEST_RELAX)
+        wp.atomic_min(
+            global_best_sq, 0, wp.max(distance_sq * _GLOBAL_BEST_RELAX, _MIN_POSITIVE_FLOAT32)
+        )
         return distance_sq, candidate
     return best, witness
+
+
+# Relative slack on the seeded ``max_dist`` of the sampled closest-point queries below. The seed is
+# a corner-to-corner distance, so the sample point it was measured from has its own closest point
+# *within* it -- but at the boundary, and ``mesh_query_point_no_sign`` reports distances a few
+# times 1e-5 off an exact oracle (CLAUDE.md section 12.4). The slack keeps that point a hit.
+_SEED_RELAX = wp.float32(1.0 + 1e-4)
+
+# Slices the target sample is split into by ``sampled_corner_gap_sq``'s second grid dimension.
+SEED_SLICES = 32
+
+
+@wp.func
+def sampled_corner(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], stride: wp.int32, k: wp.int32
+) -> wp.vec3:
+    # The ``k``-th point of a strided face sample: the first corner of face ``k * stride``. A face
+    # corner rather than a vertex, because a vertex no face references is not a point of the
+    # surface, and the upper bound these points feed has to be a distance between surfaces.
+    return vertices[faces[3 * k * stride]]
+
+
+@wp.kernel
+def sampled_corner_gap_sq(
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    query_stride: wp.int32,
+    target_vertices: wp.array[wp.vec3],
+    target_faces: wp.array[wp.int32],
+    target_stride: wp.int32,
+    n_target_samples: wp.int32,
+    out_min_sq: wp.array[wp.float32],
+) -> None:
+    # Brute force over two small corner samples: the smallest squared distance between a sample
+    # point of the query surface and one of the target surface. Both are surface points, so it is
+    # an upper bound on the surfaces' distance -- a loose one, but it is only the ``max_dist`` that
+    # lets ``sampled_corner_distance_min`` stop a far query early instead of walking the BVH.
+    #
+    # ``dim=(slices, query samples)``: the query sample is the lane index, so every lane of a warp
+    # reads the same target sample at each step and the load broadcasts; the slices split the
+    # target samples so the launch is not a thousand threads each walking a thousand points. The
+    # minimum is order-free, so the result does not depend on the split.
+    s, i = wp.tid()
+    p = sampled_corner(query_vertices, query_faces, query_stride, i)
+    best = FLOAT32_INF_CONSTANT
+    for j in range(s, n_target_samples, SEED_SLICES):
+        q = sampled_corner(target_vertices, target_faces, target_stride, j)
+        best = wp.min(best, wp.length_sq(p - q))
+    if best < out_min_sq[0]:
+        wp.atomic_min(out_min_sq, 0, best)
+
+
+@wp.kernel
+def sampled_corner_distance_min(
+    target_mesh: wp.uint64,
+    query_vertices: wp.array[wp.vec3],
+    query_faces: wp.array[wp.int32],
+    query_stride: wp.int32,
+    seed_sq: wp.array[wp.float32],
+    out_bound: wp.array[wp.float32],
+) -> None:
+    # The smallest distance from a sample point of the query surface to the target -- the upper
+    # bound the broad phase is grown by. ``max_dist`` is ``sampled_corner_gap_sq``'s seed, so a
+    # point farther than it is a miss that stops near the top of the BVH and returns ``max_dist``,
+    # which is still a valid upper bound; and the seed's own query point is a sample here too, so
+    # the minimum never rests on a miss.
+    #
+    # The ``<`` read before the atomic keeps the single-slot contention to the points that improve
+    # it; ``atomic_min`` is exact, so the minimum is the one a reduction would return.
+    p = sampled_corner(query_vertices, query_faces, query_stride, wp.int32(wp.tid()))
+    _closest, distance, _face = closest_point_query(
+        target_mesh, p, wp.sqrt(seed_sq[0]) * _SEED_RELAX
+    )
+    if distance < out_bound[0]:
+        wp.atomic_min(out_bound, 0, distance)
 
 
 @wp.kernel

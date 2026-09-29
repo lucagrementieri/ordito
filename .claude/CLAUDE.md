@@ -3745,7 +3745,9 @@ The `nnz`-is-a-capacity rule and its consequences are §3.7. Three further behav
 empty point set raises `RuntimeError` rather than aborting the process, but still guard it.
 
 - **`Volume.allocate_by_voxels(world_points, voxel_size, translation)` deduplicates**, and beats a
-  hand-rolled `unique_rows` dedup by ~2.3x on both devices.
+  hand-rolled `unique_rows` dedup by ~2.3x on both devices -- **but loses to a one-`atomic_cas`
+  cell table** (1.3-3.2x on `voxel_down_sample`, byte-identical, §16.28), which reproduces
+  `get_voxels()`' leaf-major order with a 36-bit in-tile sort plus a root-tile pass.
 - **`volume_lookup_index(grid, i, j, k)` is the `k`-th row of `get_voxels()`**, and `-1` when absent
   — the grid and the cell array share one canonical numbering, so a per-voxel payload is just a
   `wp.array(n_voxels)`. No side table, no hash map, O(1) membership.
@@ -7238,4 +7240,70 @@ and `hashgrid_from_points`' 128^3 bins are far fewer than `lucy`'s occupied cell
 - **The rest of the census is functional**: `crease_edges`' 1.9 GB at `lucy` is the radix sort's
   double-width keys and payload (the key needs 48 bits there), `cluster_decimate`'s hash tables and
   face buffer, `mesh_to_mesh_distance`'s 963 MB of per-face and per-vertex buffers.
+
+### 16.28 Round 25: round 24's remaining items (2026-09-29)
+
+R24-1, -3, -4, -5, -6 and -7 against a detached `ca02aa3` worktree (`/tmp/tw25base`,
+`plans/baseshim25.py`); probes and harness A/Bs in `plans/benchmark-round-25-data/` (one pytest
+process per module, min of 2-4 alternating rounds). Five of the six agents stopped mid-pass on an
+API spend limit; each partial tree was finished and re-gated before anything below was counted.
+
+- **R24-1: the hash grid's default resolution follows the point count** (`grid_bins=None`: the
+  smallest multiple of 32 whose cube holds two bins a point, clamped to 128-384). Below ~1 M
+  points it is 128 as before; `lucy`'s 14 M points occupy 4.6 M cells, which a 128^3 table folds
+  onto 2.1 M buckets. **And `interpolate_from_points`' radius path no longer materializes a
+  ball-query CSR**: `interpolate_from_points_in_ball` reduces each query's Gaussian mean during
+  the grid walk, with the same `in_ball` predicate and visit order as `ball_collect`, so it is
+  byte-identical on both devices -- 3 launches / 4 allocs / 1 readback to 1 / 1 / 0, and the
+  64-neighbour row runs on `lucy` (it had been skipped for a multi-GB CSR). Harness: 1.8-2.0x on the
+  bunnies, 3.1-6.1x at `dragon` / `happy_buddha`, **7.5-7.9x at `lucy`** (the 0.66x regression is
+  gone). The only CUDA difference from baseline is `lucy`'s `k = 8` tied neighbour indices at
+  finer bins; distances are identical, and the identity of a tie is unspecified.
+- **R24-3: `cluster_decimate` clusters and deduplicates with two `atomic_cas` tables**, and sorts
+  only what sets the output order: the kept clusters' cell keys (`end_bit` from the cell bound)
+  and the distinct surviving faces' ranked triples. The face table keys the sorted cluster triple
+  and lowers each class to its smallest face index with `atomic_min`, so the first occurrence's
+  winding is kept exactly as `unique_faces` did. 19 / 21 / 4 / 3 launches / allocs / readbacks /
+  copies to 10 / 9 / 2 / 1 at every mesh; `lucy` device 8.4 -> 5.8 ms; harness 1.6-2.1x and 1.28x
+  at `lucy`. CPU byte-identical over five meshes x two factors x both contractions; on CUDA
+  `closest` is identical and `average` moves by its float atomics, as baseline does against
+  itself. `test_cluster_decimate_matches_a_numpy_transcription` pins the numbering on a two-sheet
+  shell (the inner sheet reversed) -- a single sphere never welds two faces onto one triple, which
+  made the first version of that test's non-vacuity assert false; keeping the largest index
+  instead of the smallest fails its four coarse arms.
+- **R24-4: `voxel_down_sample` builds no `wp.Volume`** (`voxels._VoxelTable`): a point-index CAS
+  table keyed on the cell, the distinct cells sorted into `Volume.get_voxels()`' order (a 36-bit
+  in-tile key, plus a stable root-tile pass when the cells can span more than one 4096-cell root
+  tile), then the pooling probes through the volume's own float32 transform, reproduced bit for
+  bit. Byte-identical on both devices, `lucy` included, for every pooling and an explicit origin;
+  harness 1.3-1.8x and 2.4-3.2x at `lucy`. The histogram and scan went too: segments are read off
+  the sorted buckets.
+- **R24-5: the per-face lower-bound filter is refuted** (`probes/r25d_filter2.txt`): it prunes 0-50
+  % of faces and the walk moves 0.93-1.10x, since the pruned faces were cheap walks already.
+  **What paid was the bound phase**: sample A by *face corners* (a stride capped at 128 faces), cap
+  each sampled closest-point query's `max_dist` with a brute-force 1 024 x 1 024 corner-pair seed,
+  and reduce with one `atomic_min` and one `read_scalar`. `lucy` device 54 -> 30-35 ms; harness
+  1.1-2.3x, 1.5-1.6x at `lucy`. **Two correctness fixes rode with it**: an unreferenced vertex of A
+  near B used to give a bound *below* the answer (a vertex no face references is not a point of the
+  surface), and the published global best is floored at the smallest positive float32 -- at an
+  exact zero every other zero-gap candidate was pruned and CUDA returned whichever face published
+  first. CUDA now returns the lowest face index on overlapping pairs, as CPU did.
+- **R24-6**: the host link reads the kept keys and endpoints back in one buffer and gathers on the
+  host, and every host result (offsets, closed flags, host-link points) is uploaded as one byte
+  buffer addressed by typed views; `split_faces_along_field` emits every class in one launch.
+  Byte-identical on both devices over 1 336 arrays; `marching_triangles` 1.1x,
+  `split_faces_along_field` 1.15x. **The crossover did not move** (still ~1 000 segments, both
+  paths faster), so `_LINK_ON_DEVICE_FROM` stays 1024.
+- **R24-7: `remove_degree3_vertices` writes into one fixed-capacity face buffer** (replacements
+  appended after the last used row, replaced rows' kept flags cleared, `n + n // 2` rows since each
+  removal nets two faces fewer), so the per-pass compaction and the tail
+  `remove_unreferenced_vertices` are one final launch: 6/9/12 -> 5/7/9 launches and 12-14 -> 7
+  allocations at bunny / dragon / happy_buddha, byte-identical on CPU. **Recording the passes
+  lost** (0.86x at 2 passes, 0.87-0.96x at 3) -- §16.20's ~2-replay break-even from the losing
+  side. `delete_region_keep_boundary`'s four readbacks have launches between every pair, two of
+  them in `boundary.py`, so none merge.
+- **Order effect, again**: `flatten_degree3_vertices[dragon]` read 0.86x in four harness rounds
+  with its code and kernel unchanged, and 0.78 / 0.78 ms wall, 0.12 / 0.12 ms device in an isolated
+  alternating-process probe. A row whose code did not change but whose *module* did is §15.7's
+  order effect until an isolated probe says otherwise.
 

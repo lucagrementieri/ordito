@@ -1398,111 +1398,116 @@ def remove_degree3_vertices(
     if max_iter < 0:
         raise ValueError(f"max_iter must be non-negative, got {max_iter}")
     device = faces.device
-    removed = 0
     n_vertices = int(vertices.shape[0])
-    n_faces0 = int(faces.shape[0]) // 3
+    n_input = int(faces.shape[0]) // 3
+    if n_input == 0 or max_iter == 0:
+        return (vertices, faces, 0) if return_count else (vertices, faces)
     # The documented edge-manifold check, on the input only: the run-length test on the sorted
     # halfedge keys, counted inside pass 0's first launch and read back with that pass's counters,
     # rather than a twin table the pass never reads. Replacing an interior degree-3 fan by the one
     # triangle over its rim keeps every rim edge at two faces with the same orientation, so a pass
     # cannot make a valid mesh invalid and later passes do not re-prove it.
-    input_keys, input_order = (
-        tw.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
-        if n_faces0 > 0 and max_iter > 0
-        else (None, None)
-    )
-    # Scratch hoisted to the pass-0 size and sliced, rather than reallocated per pass: the vertex
-    # count is constant across the loop (compaction is deferred to the end, below) and the face
-    # count only ever shrinks, so one allocation each serves every pass. ``state`` holds each
-    # vertex's corner count, link sum and decrement tally (``degree3_fan_tables`` and
-    # ``emit_degree3_replacement`` say what each means), then the emit cursor -- the selection
-    # size -- the next-pass candidate count and pass 0's two twin-defect counts, all read back
-    # together; one fill zeroes all of it per pass.
-    state = wp.zeros(3 * n_vertices + 4, dtype=wp.int32, device=device)
-    counts = state[:n_vertices]
-    link_sums = state[n_vertices : 2 * n_vertices]
-    lost = state[2 * n_vertices : 3 * n_vertices]
-    counters = twt.as_dense(state[3 * n_vertices :])
-    cursor, next_candidates, defects = counters[0:1], counters[1:2], counters[2:4]
+    input_keys, input_order = tw.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    # The passes run over one fixed-capacity face buffer rather than compacting after each: a
+    # replaced fan's three faces keep their rows with their kept flag cleared, and the replacements
+    # are appended after the last used row. Each removal takes three kept faces and adds one, so at
+    # most ``n_input // 2`` rows are ever appended; kept rows in buffer order are exactly the order
+    # a compaction after every pass gives, so the output is compacted once, after the loop, with no
+    # per-pass scan, compaction or allocation.
+    #
+    # The loop stays on the host, with one small read per pass: recording the passes costs more
+    # than those reads at the pass counts real meshes take (``kernels/repair.degree3_fan_tables``).
+    n_slots = n_input + max(n_input // 2, 1)
+    # One zeroed buffer: the kept flags; the referenced flags the final compaction scans with them
+    # (one in-place scan over both); the append cursor (the removed count, adjacent to the scan's
+    # tail so the final read takes both) and pass 0's two twin-defect counts; then, zeroed per
+    # pass, the next-pass candidate count and each vertex's corner count, link sum and decrement
+    # tally (``degree3_fan_tables`` and ``emit_degree3_replacement`` say what each means). The
+    # cursor through the candidate count is what each pass reads, in one copy.
+    tail = n_slots + n_vertices
+    per_pass = tail + 3
+    state = wp.zeros(per_pass + 1 + 3 * n_vertices, dtype=wp.int32, device=device)
+    kept = state[:n_slots]
+    cursor, defects = state[tail : tail + 1], state[tail + 1 : tail + 3]
+    tables = state[per_pass:]
+    next_candidates = state[per_pass : per_pass + 1]
+    counts = state[per_pass + 1 : per_pass + n_vertices + 1]
+    link_sums = state[per_pass + n_vertices + 1 : per_pass + 2 * n_vertices + 1]
+    lost = state[per_pass + 2 * n_vertices + 1 :]
     fans = twt.empty_2d((n_vertices, 3), wp.int32, device=device)
-    new_faces = twt.empty_2d((max(n_faces0 // 3, 1), 3), wp.int32, device=device)
-    # The kept-face flags, scanned in place into their inclusive ranks.
-    keep_ranks = wp.empty(n_faces0, dtype=wp.int32, device=device)
-    for pass_index in range(max_iter):
-        n_faces = int(faces.shape[0]) // 3
-        if n_faces == 0:
+    face_slots = wp.empty(3 * n_slots, dtype=wp.int32, device=device)
+    new_faces = face_slots[3 * n_input :].reshape((n_slots - n_input, 3))
+    emit_inputs = [
+        face_slots,
+        fans,
+        counts,
+        link_sums,
+        n_input,
+        cursor,
+        lost,
+        kept,
+        new_faces,
+        next_candidates,
+    ]
+    wp.launch(
+        kernel_repair.degree3_fan_tables_input,
+        dim=3 * n_input,
+        inputs=[faces, input_keys, input_order, counts, link_sums, fans, face_slots, kept, defects],
+        device=device,
+    )
+    wp.launch(
+        kernel_repair.emit_degree3_replacement, dim=n_vertices, inputs=emit_inputs, device=device
+    )
+    # One readback per pass, carrying both of the loop's host decisions: the removed count, which
+    # ends the call when pass 0 found nothing and sizes the next pass, and the next-pass candidate
+    # count, which skips the pass that would only learn it finds nothing. Pass 0's also carries the
+    # input validation, whose failure discards that pass.
+    removed, n_nonmanifold, n_misoriented, n_next = read_values(state, tail, 4)
+    _raise_degree3_defects(n_nonmanifold, n_misoriented)
+    if removed == 0:
+        return (vertices, faces, 0) if return_count else (vertices, faces)
+    for _pass_index in range(1, max_iter):
+        if n_next == 0:
             break
-        if pass_index > 0:
-            state.zero_()
-        # Every face starts kept (the table pass sets the flags) and the emit pass clears the fans
-        # it replaces, so the kept flags come straight out of those two passes.
-        ranks = keep_ranks[:n_faces]
+        tables.zero_()
         wp.launch(
             kernel_repair.degree3_fan_tables,
-            dim=3 * n_faces,
-            inputs=[
-                faces,
-                input_keys if pass_index == 0 else None,
-                input_order if pass_index == 0 else None,
-                counts,
-                link_sums,
-                fans,
-                ranks,
-                defects,
-            ],
+            dim=3 * (n_input + removed),
+            inputs=[face_slots, kept, counts, link_sums, fans],
             device=device,
         )
         wp.launch(
             kernel_repair.emit_degree3_replacement,
             dim=n_vertices,
-            inputs=[
-                faces,
-                fans,
-                counts,
-                link_sums,
-                cursor,
-                lost,
-                ranks,
-                new_faces,
-                next_candidates,
-            ],
+            inputs=emit_inputs,
             device=device,
         )
-        # One readback per pass, carrying both of the loop's host decisions: the selection size
-        # sizes the output and ends the loop on a pass that finds nothing (only pass 0 can: every
-        # later pass runs because the previous one counted a possible candidate), and the
-        # next-pass count skips the pass that would only learn it finds nothing. Pass 0's also
-        # carries the input validation, whose failure discards that pass.
-        if pass_index == 0:
-            n_selected, n_next, n_nonmanifold, n_misoriented = read_values(state, 3 * n_vertices, 4)
-            _raise_degree3_defects(n_nonmanifold, n_misoriented)
-        else:
-            n_selected, n_next = read_values(state, 3 * n_vertices, 2)
-        if n_selected == 0:
-            break
-        # The fans are disjoint and each is three faces, so the kept count is known without reading
-        # it back, and the kept faces and the new ones are written into one buffer: kept first, in
-        # order, then the replacements.
-        n_kept = n_faces - 3 * n_selected
-        out_faces = wp.empty(3 * (n_kept + n_selected), dtype=wp.int32, device=device)
-        wp.utils.array_scan(ranks, out_array=ranks, inclusive=True)
-        wp.launch(
-            kernel_repair.compact_kept_faces,
-            dim=n_faces,
-            inputs=[faces, ranks, new_faces, n_kept, n_selected, out_faces],
-            device=device,
-        )
-        faces = out_faces
-        removed += n_selected
-        if n_next == 0:
-            break
-    if removed == 0:
-        return (vertices, faces, 0) if return_count else (vertices, faces)
-    # Compacted **once**, after the loop rather than inside it. A dead vertex has an empty ring and
-    # so is never a candidate, which is what makes deferring safe; doing it per pass added a full
-    # vertex-and-face pass to every iteration for no change in the answer.
-    vertices, faces, _index = remove_unreferenced_vertices(vertices, faces)
-    return (vertices, faces, removed) if return_count else (vertices, faces)
+        removed, _nonmanifold, _misoriented, n_next = read_values(state, tail, 4)
+    n_used = n_input + removed
+    # Compacted **once**, after the loop rather than inside it -- the kept faces and, as
+    # ``remove_unreferenced_vertices`` would, the vertices they reference. A dead vertex has an
+    # empty ring and so is never a candidate, which is what makes deferring safe.
+    wp.launch(
+        kernel_repair.mark_kept_face_vertices,
+        dim=3 * n_used,
+        inputs=[face_slots, kept, state[n_slots:tail]],
+        device=device,
+    )
+    scanned = state[:tail]
+    wp.utils.array_scan(scanned, out_array=scanned, inclusive=True)
+    # The scan's tail is the kept total -- known -- plus the referenced count, which sizes the
+    # vertex output and is the call's last readback.
+    n_kept = n_input - 2 * removed
+    n_referenced = int(read_scalar(state, tail - 1)) - n_kept
+    out_vertices = wp.empty(n_referenced, dtype=wp.vec3, device=device)
+    out_faces = wp.empty(3 * n_kept, dtype=wp.int32, device=device)
+    wp.launch(
+        kernel_repair.compact_kept_faces_and_vertices,
+        dim=max(n_vertices, n_used),
+        inputs=[vertices, face_slots, kept, state[n_slots:tail], n_kept, out_vertices, out_faces],
+        device=device,
+    )
+    return (out_vertices, out_faces, removed) if return_count else (out_vertices, out_faces)
 
 
 def _raise_degree3_defects(n_nonmanifold: int, n_misoriented: int) -> None:

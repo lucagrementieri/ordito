@@ -883,19 +883,18 @@ def classify_faces_for_split(
     write_class_flags(face_class, f, faces.shape[0] // 3, SPLIT_CLASSES, out_flags)
 
 
-@wp.kernel
-def emit_split_uncut_faces(
+@wp.func
+def emit_split_uncut_face(
     faces: wp.array[wp.int32],
     uncut_indices: wp.array[wp.int32],
     n_positive: wp.int32,
+    k: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
-    # The faces no cut touches, copied through with their side label. ``uncut_indices`` is the
+    # A face no cut touches, copied through with its side label. ``uncut_indices`` is the
     # partition's index buffer, whose first two blocks are the positive and then the negative
-    # faces, so row ``k`` belongs to the positive side exactly when ``k < n_positive`` -- both
-    # blocks in one launch, reading the buffer from its start rather than through a view per block.
-    k = wp.int32(wp.tid())
+    # faces, so row ``k`` belongs to the positive side exactly when ``k < n_positive``.
     i0, i1, i2 = kernel_triangles.corner_triple(faces, uncut_indices[k])
     out_new_faces[k, 0] = i0
     out_new_faces[k, 1] = i1
@@ -978,20 +977,23 @@ def split_crossed_edge_vertices(
         out_points[slot] = canonical_edge_crossing(vertices, vertex_dots, low, high)
 
 
-@wp.kernel
+@wp.func
 def emit_split_cut_edges(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     face_signs: wp.array2d[wp.int32],
     cut_vertices: wp.array[wp.int32],
+    tid: wp.int32,
+    cut: wp.int32,
+    row: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
     # The generic cut: the level set enters through one edge and leaves through another, so the face
     # becomes a corner triangle plus a quad -- three triangles sharing the two crossing vertices.
     # Windings match ``emit_tri_cut`` and ``emit_quad_cut``, which emit these same triangles one
-    # side at a time; the difference is that both sides are kept here.
-    tid = wp.int32(wp.tid())
+    # side at a time; the difference is that both sides are kept here. ``tid`` is the face's slot
+    # in the partition, ``cut`` its rank among the cut faces and ``row`` its first output row.
     face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
     lone = find_unique_sign_vertex(s0, s1, s2)
     next_corner = (lone + wp.int32(1)) % wp.int32(3)
@@ -999,12 +1001,11 @@ def emit_split_cut_edges(
     # ``p0`` on the edge leaving the lone corner, ``p1`` on the edge arriving at it.
     # ``cut_vertices`` holds the new vertex on each of this cut face's edges, edge ``k`` joining
     # corners ``k`` and ``k + 1``.
-    p0 = cut_vertices[3 * tid + lone]
-    p1 = cut_vertices[3 * tid + last_corner]
+    p0 = cut_vertices[3 * cut + lone]
+    p1 = cut_vertices[3 * cut + last_corner]
     v_next = faces[base + next_corner]
     v_last = faces[base + last_corner]
 
-    row = wp.int32(3) * tid
     out_new_faces[row, 0] = faces[base + lone]
     out_new_faces[row, 1] = p0
     out_new_faces[row, 2] = p1
@@ -1021,19 +1022,21 @@ def emit_split_cut_edges(
     out_positive[row + wp.int32(2)] = not lone_is_positive
 
 
-@wp.kernel
+@wp.func
 def emit_split_cut_corner(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     face_signs: wp.array2d[wp.int32],
     cut_vertices: wp.array[wp.int32],
+    tid: wp.int32,
+    cut: wp.int32,
+    row: wp.int32,
     out_new_faces: wp.array2d[wp.int32],
     out_positive: wp.array[wp.bool],
 ) -> None:
     # One corner sits exactly on the level set, so the cut runs from it to the single crossing on
     # the opposite edge: two triangles, no quad. Emitting three the other kernel's way would put a
     # zero-area sliver in the output, which is the only reason this class exists separately.
-    tid = wp.int32(wp.tid())
     face_index, base, s0, s1, s2 = cut_face_context(face_indices, face_signs, tid)
     # Exactly one of the three corners is on the level set here, which is the precondition
     # ``find_corner_with_sign`` states: it tests corners 0 and 1 and falls through to 2, which
@@ -1042,9 +1045,8 @@ def emit_split_cut_corner(
     on_level = find_corner_with_sign(s0, s1, s2, SLICE_SIGN_ON_PLANE)
     next_corner = (on_level + wp.int32(1)) % wp.int32(3)
     last_corner = (on_level + wp.int32(2)) % wp.int32(3)
-    crossing = cut_vertices[3 * tid + next_corner]
+    crossing = cut_vertices[3 * cut + next_corner]
 
-    row = wp.int32(2) * tid
     out_new_faces[row, 0] = faces[base + on_level]
     out_new_faces[row, 1] = faces[base + next_corner]
     out_new_faces[row, 2] = crossing
@@ -1053,6 +1055,54 @@ def emit_split_cut_corner(
     out_new_faces[row + wp.int32(1), 2] = faces[base + last_corner]
     out_positive[row] = face_signs[face_index, next_corner] == SLICE_SIGN_INSIDE
     out_positive[row + wp.int32(1)] = face_signs[face_index, last_corner] == SLICE_SIGN_INSIDE
+
+
+@wp.kernel
+def emit_split_faces(
+    faces: wp.array[wp.int32],
+    class_indices: wp.array[wp.int32],
+    face_signs: wp.array2d[wp.int32],
+    cut_vertices: wp.array[wp.int32],
+    n_positive: wp.int32,
+    n_uncut: wp.int32,
+    n_edges: wp.int32,
+    out_new_faces: wp.array2d[wp.int32],
+    out_positive: wp.array[wp.bool],
+) -> None:
+    # Every face's output rows in one launch, one thread per partition slot. The partition lists
+    # the uncut faces (positive, then negative), then the edge cuts, then the corner cuts, and the
+    # output rows follow the same order -- one row per uncut face, three per edge cut, two per
+    # corner cut -- so each class's rows start where the previous class's end, and cut face ``j``'s
+    # crossing vertices sit at ``3 j``. Replaces one launch per class and the views they took.
+    k = wp.int32(wp.tid())
+    if k < n_uncut:
+        emit_split_uncut_face(faces, class_indices, n_positive, k, out_new_faces, out_positive)
+        return
+    cut = k - n_uncut
+    if cut < n_edges:
+        emit_split_cut_edges(
+            faces,
+            class_indices,
+            face_signs,
+            cut_vertices,
+            k,
+            cut,
+            n_uncut + 3 * cut,
+            out_new_faces,
+            out_positive,
+        )
+        return
+    emit_split_cut_corner(
+        faces,
+        class_indices,
+        face_signs,
+        cut_vertices,
+        k,
+        cut,
+        n_uncut + 3 * n_edges + 2 * (cut - n_edges),
+        out_new_faces,
+        out_positive,
+    )
 
 
 @wp.kernel
@@ -1280,23 +1330,17 @@ def copy_cut_segment(
 def compact_cut_segments(
     inclusive: wp.array[wp.int32],
     segments: wp.array2d[wp.vec3],
-    edges: wp.array2d[wp.int64],
     out_segments: wp.array2d[wp.vec3],
-    out_edges: wp.array2d[wp.int64],
     out_rows: wp.array[wp.int32],
 ) -> None:
     # The cut rows of the two per-face segment producers above, in row order, from the in-place
     # inclusive scan of their ``0`` / ``1`` flags: ``flatnonzero`` and one gather per buffer in one
-    # pass. ``edges`` / ``out_edges`` (``marching_triangles_segments``' crossing keys) and
-    # ``out_rows`` (the source row of each kept segment) are optional -- a caller that has no use
-    # for one passes ``None``, whose shape reads 0.
+    # pass. ``out_rows`` (the source row of each kept segment) is optional -- a caller that has no
+    # use for it passes ``None``, whose shape reads 0.
     i = wp.int32(wp.tid())
     slot = copy_cut_segment(inclusive, segments, i, out_segments)
     if slot < 0:
         return
-    if out_edges.shape[0] > 0:
-        out_edges[slot, 0] = edges[i, 0]
-        out_edges[slot, 1] = edges[i, 1]
     if out_rows.shape[0] > 0:
         out_rows[slot] = i
 
@@ -1310,17 +1354,20 @@ def compact_cut_segment_keys(
     out_keys: wp.array[wp.int64],
     out_endpoints: wp.array[wp.int32],
 ) -> None:
-    # ``compact_cut_segments`` for the device link: the crossing key of endpoint ``e`` of kept
-    # segment ``s`` goes straight into slot ``2 s + e`` of a radix sort's double-width key buffer,
-    # with the endpoint id ``2 s + e`` as its payload, so the sort needs no staging pass.
+    # ``compact_cut_segments`` with the crossing keys: the key of endpoint ``e`` of kept segment
+    # ``s`` goes to slot ``2 s + e`` of ``out_keys``. The device link hands it a radix sort's
+    # double-width key buffer and the endpoint ids ``2 s + e`` as the sort's payload, so the sort
+    # needs no staging pass; the host link passes ``None`` for the payload and reads keys and
+    # segments back together, ``out_segments`` aliasing the tail of ``out_keys``' buffer.
     i = wp.int32(wp.tid())
     slot = copy_cut_segment(inclusive, segments, i, out_segments)
     if slot < 0:
         return
     out_keys[2 * slot] = edges[i, 0]
     out_keys[2 * slot + 1] = edges[i, 1]
-    out_endpoints[2 * slot] = 2 * slot
-    out_endpoints[2 * slot + 1] = 2 * slot + 1
+    if out_endpoints.shape[0] > 0:
+        out_endpoints[2 * slot] = 2 * slot
+        out_endpoints[2 * slot + 1] = 2 * slot + 1
 
 
 # The device link of ``marching_triangles``: pair endpoints through the sorted crossing keys, then

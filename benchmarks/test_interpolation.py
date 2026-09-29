@@ -12,12 +12,12 @@ Three axes, because the module holds three different kinds of function:
 * **scale** for ``transfer_onto_vertices``, which is not a scatter at all: it is a closest-point
   query per target vertex plus a barycentric blend, so its cost is the BVH's and nothing this module
   owns.
-* **neighbourhood size** for ``interpolate_from_points``, whose kernel is one pass over the CSR a
-  ball query returns -- so the row is really the query's output size, and the radius is derived from
-  the mean edge length to hold the neighbour count fixed across meshes; triwarp leads pyvista by
-  well over an order of magnitude at both widths. The 64-neighbour case is capped at
-  ``happy_buddha`` because the CSR is ``n_queries * neighborhood`` pairs and lucy would ask for
-  several gigabytes.
+* **neighbourhood size** for ``interpolate_from_points``, whose kernel reduces each query's mean
+  during the hash-grid walk -- so the row is really the number of neighbours visited, and the
+  radius is derived from the mean edge length to hold the neighbour count fixed across meshes;
+  triwarp leads pyvista by well over an order of magnitude at both widths. No neighbour list is
+  materialized, so both widths run on every mesh: the 64-neighbour case over lucy used to be a
+  ball-query CSR of several gigabytes.
 
 ``average_onto_vertices`` and ``transfer_onto_vertices`` were previously timed in
 [`test_vertices.py`](test_vertices.py). They moved here with their group names unchanged, because
@@ -47,9 +47,9 @@ happens.
 
 **pyvista**'s ``DataSet.interpolate`` is ``interpolate_from_points``'s reference: a
 ``vtkPointInterpolator`` with a ``vtkGaussianKernel``, given the identical radius and sharpness, so
-the two compute the same weighted mean and differ only in the locator (a ``vtkStaticPointLocator``
-against triwarp's BVH). It is the module's only pyvista row -- VTK has no per-element averaging
-filter, so the three ``average_*`` groups keep libigl.
+the two compute the same weighted mean and differ only in the locator (a
+``vtkStaticPointLocator`` against triwarp's hash grid). It is the module's only pyvista row -- VTK
+has no per-element averaging filter, so the three ``average_*`` groups keep libigl.
 
 trimesh and open3d have no equivalent for any of the four mesh-side functions: attribute averaging
 over a mesh's incidence structure is not something either exposes as a function.
@@ -355,18 +355,17 @@ def test_interpolate_from_points(bench_case: BenchCase, neighborhood: int) -> No
     The mesh's own vertices are both the source cloud and the queries, so the row scales with the
     mesh; the radius is set from the mean edge length so that a query sees roughly ``neighborhood``
     sources on every mesh, which is what makes the two points comparable across the sweep rather
-    than measuring the cloud's density. The kernel's cost is one pass over the CSR the ball query
-    returns, so the sweep is really over that query's output size.
+    than measuring the cloud's density. The kernel reduces each query's mean during the hash-grid
+    walk, so the sweep is really over the number of neighbours visited. The grid's default
+    resolution grows with the cloud past about a million points: lucy occupies about twice as many
+    cells as a 128-bin grid has buckets, so at that resolution every probe also walked the points
+    of an unrelated cell.
 
     pyvista's ``DataSet.interpolate`` is ``vtkPointInterpolator`` with the identical Gaussian kernel
-    and the same radius, its locator being a ``vtkStaticPointLocator`` where triwarp uses a BVH.
+    and the same radius, its locator being a ``vtkStaticPointLocator`` where triwarp uses a hash
+    grid.
     """
     radius = float(np.sqrt(neighborhood / np.pi)) * _mean_edge_length(bench_case)
-    if neighborhood > 8:
-        # The ball query materializes ``n_queries * neighborhood`` (index, distance) pairs before
-        # the kernel reduces them: 8 bytes each, so lucy at 64 asks for several gigabytes and the
-        # allocation fails outright. The cap is on the *product*, not on the mesh.
-        skip_larger_than(bench_case, "happy_buddha", "a 64-neighbour CSR over lucy is gigabytes")
     if bench_case.kind == "pyvista":
         skip_larger_than(bench_case, "bunny", "VTK's point interpolator is a serial locator walk")
         source_pv = pv.PolyData(np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))

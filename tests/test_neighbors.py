@@ -64,6 +64,38 @@ def test_mesh_from_points_answers_the_nearest_point(device: str) -> None:
         tw.neighbors.mesh_from_points(points_to_warp(np.zeros((0, 3), np.float32), device))
 
 
+def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device: str) -> None:
+    """
+    Not a library comparison for the resolution, which no reference has; Class A for the answer.
+
+    ``grid_bins=None`` keeps 128 bins up to ``128 ** 3 / 2`` points and grows past it (the next
+    multiple of 32 whose cube holds two bins a point), while an explicit resolution is honoured
+    as given. The resolution is read off Warp's own ``HashGrid`` dimensions. The answer must not
+    depend on it: a three-bin grid folds every cell of the cloud onto 27 buckets, and its ball
+    counts still equal ``KDTree``'s and the default grid's.
+    """
+    at_threshold = tw.neighbors.hashgrid_from_points(
+        points_to_warp(np.zeros((128**3 // 2, 3), np.float32), device), 1.0
+    )
+    past_threshold = tw.neighbors.hashgrid_from_points(
+        points_to_warp(np.zeros((128**3 // 2 + 1, 3), np.float32), device), 1.0
+    )
+    assert (at_threshold._dim_x, at_threshold._dim_y, at_threshold._dim_z) == (128, 128, 128)
+    assert (past_threshold._dim_x, past_threshold._dim_y, past_threshold._dim_z) == (160,) * 3
+
+    rng = np.random.default_rng(11)
+    points = rng.random((2_000, 3), dtype=np.float32) * 4.0
+    radius = 0.3
+    counts_kd = KDTree(points).query_ball_point(points, radius, return_length=True)
+    assert np.ptp(counts_kd) > 0
+    points_wp = points_to_warp(points, device)
+    for grid_bins in (None, 3):
+        grid = tw.neighbors.hashgrid_from_points(points_wp, radius, grid_bins)
+        assert grid._dim_x == (128 if grid_bins is None else grid_bins)
+        counts_wp = tw.neighbors.query_ball_count(points_wp, points_wp, radius, grid_bins=grid_bins)
+        assert np.array_equal(counts_wp.numpy(), counts_kd)
+
+
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 def test_query_ball_single(device: str, backend: Literal["bvh", "hashgrid"]):
     rng = np.random.default_rng(0)

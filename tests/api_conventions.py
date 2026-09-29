@@ -440,6 +440,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # scattered edge lands in -- the ``scatter_vertex_faces`` case exactly, under a name that says
     # what it holds. The answer is ``out_neighbors``.
     ("boundary", "scatter_boundary_neighbors"): frozenset({"slot_count"}),
+    # ``table`` is ``voxels._VoxelTable``'s open-addressing cell table: filled with point indices
+    # by the insert, rewritten to voxel rows by the ordering pass, then probed by the pooling
+    # kernels. Neither an input nor the answer, so it keeps the name of what it holds.
+    ("voxels", "insert_point_cells"): frozenset({"table"}),
+    ("voxels", "assign_voxel_rows"): frozenset({"table"}),
     # The hull sweep's working set: the boundary polygon it carries between insertions, the buffer
     # it rebuilds that polygon into, and the per-boundary-edge orientations of one insertion.
     # Caller-allocated because the sweep is one thread over an ``n``-sized problem, so none of the

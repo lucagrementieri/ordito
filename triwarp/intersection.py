@@ -23,7 +23,7 @@ its result splats straight into any of them.
 from __future__ import annotations
 
 import math
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 import numpy as np
 import warp as wp
@@ -167,7 +167,7 @@ def mesh_with_plane(
         device=device,
     )
 
-    lines, _, hit_faces = _compact_cut_segments(cut, segments, return_rows=return_faces)
+    lines, hit_faces = _compact_cut_segments(cut, segments, return_rows=return_faces)
     if not return_faces:
         return lines
     assert hit_faces is not None
@@ -250,6 +250,8 @@ def marching_triangles(
     if linked is None:
         return [], []
     points, bounds, closed = linked
+    if isinstance(points, np.ndarray):
+        points = wp.array(points, dtype=wp.vec3, device=vertices.device)
     return tw.array.split(points, bounds), closed
 
 
@@ -334,11 +336,44 @@ def marching_triangles_with_offsets(
             wp.zeros(1, dtype=wp.int32, device=device),
             wp.empty(0, dtype=wp.bool, device=device),
         )
-    points, bounds, closed = linked
-    # Both links finish with the curve bounds on the host (they size the output), so the offsets
-    # and flags are one upload each.
-    offsets = wp.array(bounds, dtype=wp.int32, device=device)
-    return points, offsets, wp.array(closed, dtype=wp.bool, device=device)
+    return _upload_curves(*linked, device)
+
+
+def _upload_curves(
+    points: wp.array[wp.vec3] | np.ndarray,
+    bounds: list[int],
+    closed: list[bool],
+    device: wp.context.Device,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
+    """
+    Upload a link's host-side results -- offsets, closed flags, host-link points -- in one copy.
+
+    Both links finish with the curve bounds on the host (they size the output), so the offsets and
+    flags -- and the host link's points -- are packed into one byte buffer, uploaded once and
+    addressed through typed views that keep it alive: offsets first (4-byte aligned), the points'
+    ``float32`` words after them, the one-byte flags last.
+    """
+    parts = [np.asarray(bounds, dtype=np.int32).view(np.uint8)]
+    n_points = 0
+    if isinstance(points, np.ndarray):
+        n_points = int(points.shape[0])
+        parts.append(np.ascontiguousarray(points, dtype=np.float32).reshape(-1).view(np.uint8))
+    parts.append(np.asarray(closed, dtype=np.bool_).view(np.uint8))
+    buffer = wp.array(np.concatenate(parts), dtype=wp.uint8, device=device)
+    offsets_bytes = 4 * len(bounds)
+    offsets = _byte_view(buffer, 0, wp.int32, len(bounds))
+    if isinstance(points, np.ndarray):
+        points = _byte_view(buffer, offsets_bytes, wp.vec3, n_points)
+    flags = _byte_view(buffer, offsets_bytes + 12 * n_points, wp.bool, len(closed))
+    return points, offsets, flags
+
+
+def _byte_view(buffer: wp.array[wp.uint8], start: int, dtype: type, count: int) -> wp.array[Any]:
+    """Return ``count`` ``dtype`` elements of ``buffer`` from byte ``start`` as a view of it."""
+    view = wp.array(ptr=int(buffer.ptr) + start, dtype=dtype, shape=(count,), device=buffer.device)
+    # Warp's own back-reference from a view to the array it keeps alive, as ``flatten`` sets it.
+    view._ref = buffer
+    return view
 
 
 def _marching_curves(
@@ -347,8 +382,14 @@ def _marching_curves(
     values: wp.array[wp.float32] | wp.array[wp.float64],
     isovalue: float,
     n_vertices: int | None,
-) -> tuple[wp.array[wp.vec3], list[int], list[bool]] | None:
-    """Cut and link the level set into ``(points, bounds, closed)``, ``None`` when it is empty."""
+) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]] | None:
+    """
+    Cut and link the level set into ``(points, bounds, closed)``, ``None`` when it is empty.
+
+    ``points`` is a device array from the device link and the ``(n_points, 3)`` ``float32`` host
+    array from the host link, which leaves the upload to the caller so that everything it returns
+    can travel in one copy (``_upload_curves``).
+    """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
     n_faces = int(faces.shape[0]) // 3
@@ -389,7 +430,7 @@ def _link_curves(
     segment_edges: wp.array[wp.int64, Literal[2]],
     n_segments: int,
     key_base: int,
-) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
+) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
     """
     Compact the cut segments and chain them into curves: ``(points, bounds, closed)``.
 
@@ -399,14 +440,29 @@ def _link_curves(
     walk -- and on the CPU device, whose serial launches never beat NumPy's walk, through
     ``_link_segments``; both produce the identical packing.
     """
-    if _links_on_device(inclusive.device, n_segments):
+    device = inclusive.device
+    if _links_on_device(device, n_segments):
         return _link_on_device(inclusive, segments, segment_edges, n_segments, key_base)
-    hit_segments, hit_edges, _ = _compact_cut_segments(
-        inclusive, segments, segment_edges, n_kept=n_segments
+    n = n_segments
+    # The host link needs the kept segments' keys *and* their endpoints, so both are compacted into
+    # one buffer and read back together: ``2 n`` keys, then the ``2 n`` endpoint positions in the
+    # remaining ``24 n`` bytes, which the ``wp.vec3`` view below addresses. The host then gathers
+    # the curves' points itself and the caller uploads them, where a device gather would need the
+    # slots uploaded, an output allocated and an indexed copy.
+    record = wp.empty(5 * n, dtype=wp.int64, device=device)
+    record_points = wp.array(
+        ptr=int(record.ptr) + 16 * n, dtype=wp.vec3, shape=(n, 2), device=device
     )
-    assert hit_edges is not None
-    # The one readback of the host link: an ``int64`` key pair per kept segment.
-    return _link_on_host(hit_segments, hit_edges.numpy())
+    wp.launch(
+        kernel_intersections.compact_cut_segment_keys,
+        dim=int(inclusive.shape[0]),
+        inputs=[inclusive, segments, segment_edges, record_points, record, None],
+        device=device,
+    )
+    # The one readback of the host link.
+    table = record.numpy()
+    points_np = table[2 * n :].view(np.float32).reshape(2 * n, 3)
+    return _link_on_host(points_np, table[: 2 * n].reshape(n, 2))
 
 
 def _links_on_device(device: wp.context.Device, n_segments: int) -> bool:
@@ -420,7 +476,7 @@ def _link_on_device(
     segment_edges: wp.array[wp.int64, Literal[2]],
     n_segments: int,
     key_base: int,
-) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
+) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
     """
     Device counterpart of ``_link_on_host``, with the same result.
 
@@ -486,7 +542,8 @@ def _link_on_device(
         # Undo the sort to recover each endpoint's key, and let the host link decide.
         edges_np = np.empty(m, dtype=np.int64)
         np.put(edges_np, twt.as_dense(endpoints[:m]).numpy(), twt.as_dense(keys[:m]).numpy())
-        return _link_on_host(hit_segments, edges_np.reshape(n, 2))
+        points_np = hit_segments.numpy().reshape(m, 3)
+        return _link_on_host(points_np, edges_np.reshape(n, 2))
     scan = table[:m]
     names = np.flatnonzero(np.diff(scan, prepend=0))
     points = wp.empty(int(scan[-1]), dtype=wp.vec3, device=device)
@@ -500,16 +557,17 @@ def _link_on_device(
 
 
 def _link_on_host(
-    hit_segments: twt.Array2dVec3, edges_np: np.ndarray
-) -> tuple[wp.array[wp.vec3], list[int], list[bool]]:
-    """Link ``_link_segments``' curves on the host and gather their points in one launch."""
-    n_segments = int(hit_segments.shape[0])
+    points_np: np.ndarray, edges_np: np.ndarray
+) -> tuple[wp.array[wp.vec3] | np.ndarray, list[int], list[bool]]:
+    """
+    Link ``_link_segments``' curves on the host and gather their points there.
+
+    ``points_np`` is the ``(2 n, 3)`` ``float32`` endpoint buffer the slots index: endpoint ``e``
+    of kept segment ``i`` at row ``2 i + e``. The packed points stay on the host for the caller's
+    one upload.
+    """
     slots_np, starts_np, closed = _link_segments(edges_np)
-    # One gather assembles every curve: the slots index the flattened endpoint buffer.
-    endpoints = hit_segments.reshape((2 * n_segments,))
-    slots = wp.array(slots_np, dtype=wp.int32, device=hit_segments.device)
-    packed = tw.array.gather(endpoints, slots)
-    return packed, [*starts_np.tolist(), int(slots_np.shape[0])], closed
+    return points_np[slots_np], [*starts_np.tolist(), int(slots_np.shape[0])], closed
 
 
 def _link_segments(segment_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[bool]]:
@@ -1472,10 +1530,10 @@ def _split_with_vertex_field(
         inputs=[faces, vertex_dots, face_classes, face_signs, class_flags],
         device=device,
     )
-    blocks, counts, class_indices = _slice_class_partition(
-        class_flags, n_faces, kernel_intersections.SPLIT_CLASSES
+    # The one emit launch reads the partition's index buffer whole, so no per-class view is built.
+    _, counts, class_indices = _slice_class_partition(
+        class_flags, n_faces, kernel_intersections.SPLIT_CLASSES, views=False
     )
-    _, _, edges_idx, corner_idx = blocks
     n_positive, n_negative, n_edges, n_corner = counts
     if n_edges + n_corner == 0:
         # Nothing crossed, so the mesh is untouched and only the side labels are new.
@@ -1535,41 +1593,22 @@ def _split_with_vertex_field(
 
     all_faces = wp.empty(3 * n_emitted, dtype=wp.int32, device=device)
     positive = wp.empty(n_emitted, dtype=wp.bool, device=device)
-    face_rows = all_faces.reshape((n_emitted, 3))
-    if n_uncut > 0:
-        # Both uncut blocks at once: they are the head of the partition's index buffer, positive
-        # first, and each row carries its side.
-        wp.launch(
-            kernel_intersections.emit_split_uncut_faces,
-            dim=n_uncut,
-            inputs=[faces, class_indices, wp.int32(n_positive), face_rows, positive],
-            device=device,
-        )
-
-    face_base = n_uncut
-    cut_base = 0
-    for count, index_block, emit, rows_per_cut in (
-        (n_edges, edges_idx, kernel_intersections.emit_split_cut_edges, 3),
-        (n_corner, corner_idx, kernel_intersections.emit_split_cut_corner, 2),
-    ):
-        if count == 0:
-            continue
-        emitted = rows_per_cut * count
-        wp.launch(
-            emit,
-            dim=count,
-            inputs=[
-                faces,
-                index_block,
-                face_signs,
-                cut_vertices[3 * cut_base :],
-                face_rows[face_base : face_base + emitted],
-                positive[face_base : face_base + emitted],
-            ],
-            device=device,
-        )
-        face_base += emitted
-        cut_base += count
+    wp.launch(
+        kernel_intersections.emit_split_faces,
+        dim=n_faces,
+        inputs=[
+            faces,
+            class_indices,
+            face_signs,
+            cut_vertices,
+            wp.int32(n_positive),
+            wp.int32(n_uncut),
+            wp.int32(n_edges),
+            all_faces.reshape((n_emitted, 3)),
+            positive,
+        ],
+        device=device,
+    )
 
     return all_vertices, all_faces, positive
 
@@ -1671,7 +1710,7 @@ def _clip_with_vertex_field(
 
 
 def _slice_class_partition(
-    flags: wp.array[wp.int32], n_faces: int, n_classes: int
+    flags: wp.array[wp.int32], n_faces: int, n_classes: int, *, views: bool = True
 ) -> tuple[list[wp.array[wp.int32]], list[int], wp.array[wp.int32]]:
     """
     Split the classified faces into one index array per kept class.
@@ -1682,7 +1721,8 @@ def _slice_class_partition(
     contiguously, and the running totals at the block ends give the counts in a single small
     readback. Each returned array is a contiguous view of one ``n_faces`` buffer, ascending in face
     index like the [`flatnonzero`][triwarp.array.flatnonzero] calls it replaces; that buffer is
-    returned too, for a caller that wants several leading blocks at once.
+    returned too, for a caller that wants several leading blocks at once -- or, with
+    ``views=False``, instead of them (the block list is then empty).
     """
     device = flags.device
     blocked = n_classes * n_faces
@@ -1707,43 +1747,37 @@ def _slice_class_partition(
             return wp.empty(0, dtype=wp.int32, device=device)
         return twt.as_dense(indices[start : start + count])
 
+    if not views:
+        return [], class_counts, indices
     starts = [sum(class_counts[:block_index]) for block_index in range(n_classes)]
     blocks = [block(start, count) for start, count in zip(starts, class_counts, strict=True)]
     return blocks, class_counts, indices
 
 
 def _compact_cut_segments(
-    cut: wp.array[wp.int32],
-    segments: twt.Array2dVec3,
-    edges: wp.array[wp.int64, Literal[2]] | None = None,
-    *,
-    return_rows: bool = False,
-    n_kept: int | None = None,
-) -> tuple[twt.Array2dVec3, wp.array[wp.int64, Literal[2]] | None, wp.array[wp.int32] | None]:
+    cut: wp.array[wp.int32], segments: twt.Array2dVec3, *, return_rows: bool = False
+) -> tuple[twt.Array2dVec3, wp.array[wp.int32] | None]:
     """
-    Keep the rows of ``segments`` (and ``edges``) whose ``0`` / ``1`` ``cut`` flag is set, in order.
+    Keep the rows of ``segments`` whose ``0`` / ``1`` ``cut`` flag is set, in order.
 
     ``cut`` is scanned in place (``_scan_cut_flags``), and its tail -- the kept count, the one
     readback -- sizes the outputs, which one ``compact_cut_segments`` launch fills; with
-    ``return_rows`` it also writes the source row of each kept segment. A caller that has already
-    scanned ``cut`` passes the count as ``n_kept``. Returns ``(segments, edges, rows)``, the last
-    two ``None`` when not asked for.
+    ``return_rows`` it also writes the source row of each kept segment. Returns
+    ``(segments, rows)``, the second ``None`` when not asked for.
     """
     device = cut.device
     n = int(cut.shape[0])
-    if n_kept is None:
-        n_kept = _scan_cut_flags(cut)
+    n_kept = _scan_cut_flags(cut)
     out_segments = twt.empty_2d((n_kept, 2), wp.vec3, device=device)
-    out_edges = twt.empty_2d((n_kept, 2), wp.int64, device=device) if edges is not None else None
     out_rows = wp.empty(n_kept, dtype=wp.int32, device=device) if return_rows else None
     if n_kept > 0:
         wp.launch(
             kernel_intersections.compact_cut_segments,
             dim=n,
-            inputs=[cut, segments, edges, out_segments, out_edges, out_rows],
+            inputs=[cut, segments, out_segments, out_rows],
             device=device,
         )
-    return out_segments, out_edges, out_rows
+    return out_segments, out_rows
 
 
 def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:

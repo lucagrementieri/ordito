@@ -178,6 +178,15 @@ def query_bvh_box_neighbors(
 
 
 @wp.func
+def in_ball(offset: wp.vec3, radius: wp.float32) -> wp.bool:
+    # The ball predicate every hash-grid ball walk applies to a candidate ``points[j] - q``: the
+    # squared form, for the reasons ``ball_count_in_radius`` gives. The count, the collect and
+    # ``kernels.interpolation.interpolate_from_points_in_ball`` all call it, since a count that
+    # accepts what the collect rejects leaves the CSR it sized with unwritten slots.
+    return wp.length_sq(offset) <= radius * radius
+
+
+@wp.func
 def ball_count_in_radius(
     points: wp.array[wp.vec3], accel: wp.int32, accel_id: wp.uint64, q: wp.vec3, radius: wp.float32
 ) -> wp.int32:
@@ -211,7 +220,7 @@ def ball_count_in_radius(
     if accel == ACCEL_HASHGRID:
         query = wp.hash_grid_query(accel_id, q, radius)
         while wp.hash_grid_query_next(query, j):
-            if wp.length_sq(points[j] - q) <= radius * radius:
+            if in_ball(points[j] - q, radius):
                 c = c + 1
     else:
         # No narrow phase: on degenerate point bounds the sphere-AABB test is the ball test, so
@@ -259,7 +268,7 @@ def ball_collect(
         query = wp.hash_grid_query(accel_id, q, radius)
         while wp.hash_grid_query_next(query, j):
             offset = points[j] - q
-            if wp.length_sq(offset) <= radius * radius:
+            if in_ball(offset, radius):
                 out_indices[base + c] = j
                 out_distances[base + c] = wp.length(offset)
                 c = c + 1

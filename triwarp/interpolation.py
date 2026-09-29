@@ -526,28 +526,40 @@ def interpolate_from_points(
     if n_query == 0 or n_source == 0:
         return out_values
 
+    inverse_scale = wp.float32(float(sharpness) / float(radius))
     if k is None:
-        indices, distances, offsets = tw.neighbors.query_ball_with_offsets(
-            source_points, query_points, float(radius)
+        # The mean is reduced during the grid walk, so no neighbour list is ever materialized: the
+        # same hash grid and predicate ``query_ball_with_offsets`` uses, visiting the neighbours in
+        # the order its list would hold them.
+        grid = tw.neighbors.hashgrid_from_points(source_points, float(radius))
+        wp.launch(
+            kernel_interpolation.INTERPOLATE_FROM_POINTS_IN_BALL[source_values.dtype],
+            dim=n_query,
+            inputs=[
+                source_points,
+                source_values,
+                query_points,
+                grid.id,
+                wp.float32(radius),
+                inverse_scale,
+                out_values,
+            ],
+            device=device,
         )
-    else:
-        # The padded rows carry index -1 at distance ``inf``, which the kernel skips, so a
-        # fixed-width row is a CSR whose offsets are a constant stride.
-        row_indices, row_distances = tw.neighbors.query_nearest(source_points, query_points, int(k))
-        n_slots = n_query * int(k)
-        indices = row_indices.reshape((n_slots,))
-        distances = row_distances.reshape((n_slots,))
-        offsets = tw.array.arange(0, (n_query + 1) * int(k), int(k), device=device)
+        return out_values
 
+    # The unfilled slots of a row carry index -1, which the kernel skips.
+    row_indices, row_distances = tw.neighbors.query_nearest(source_points, query_points, int(k))
+    n_slots = n_query * int(k)
     wp.launch(
-        kernel_interpolation.INTERPOLATE_FROM_POINTS[source_values.dtype],
+        kernel_interpolation.INTERPOLATE_FROM_POINTS_NEAREST[source_values.dtype],
         dim=n_query,
         inputs=[
             source_values,
-            indices,
-            distances,
-            offsets,
-            wp.float32(float(sharpness) / float(radius)),
+            row_indices.reshape((n_slots,)),
+            row_distances.reshape((n_slots,)),
+            wp.int32(k),
+            inverse_scale,
             out_values,
         ],
         device=device,
