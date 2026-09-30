@@ -8,6 +8,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INDEX_RADIX_PAIR
 from triwarp.halfedge import halfedge_twins, require_matching_twins
@@ -82,32 +83,32 @@ def region_boundary_edges(
     # halfedge in ascending key order -- no unique-edge table, and one readback, of the seam size.
     n = 3 * n_faces
     radix = n_vertices if n_vertices else INDEX_RADIX_PAIR
-    keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
-    order = wp.empty(2 * n, dtype=wp.int32, device=device)
-    wp.launch(
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_adjacency.face_edge_keys_and_order,
         dim=n_faces,
         inputs=[faces, wp.uint64(radix), keys, order],
         device=device,
     )
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
     )
     # The sort leaves its result in the leading halves, so the payload buffer's upper half is free
     # scratch: the seam flags are written and scanned there instead of in a fresh ``n`` buffer.
     inclusive = twt.as_dense(order[n:])
-    wp.launch(
+    _launch.launch(
         kernel_selection.mark_region_seam,
         dim=n,
         inputs=[keys, order, face_mask, wp.int32(n), inclusive],
         device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback.
     n_seam = int(read_scalar(inclusive))
     out_edges = twt.empty_2d((n_seam, 2), wp.int32, device=device)
     if n_seam > 0:
-        wp.launch(
+        _launch.launch(
             kernel_selection.emit_region_seam,
             dim=n,
             inputs=[inclusive, order, faces, face_mask, oriented, out_edges],
@@ -199,7 +200,7 @@ def faces_left_of_contour(
     n_faces = faces.size // 3
     n_contour = int(contour_edges.shape[0])
     if n_faces == 0 or n_contour == 0:
-        return wp.zeros(n_faces, dtype=wp.bool, device=device)
+        return _launch.zeros(n_faces, dtype=wp.bool, device=device)
     if twins is None:
         twins = halfedge_twins(faces, n_vertices=n_vertices)
     # The directed keys pack against the pair radix, which needs no vertex bound and cannot alias a
@@ -209,15 +210,15 @@ def faces_left_of_contour(
     # Directed contour keys, sorted, and small: the kernels probe this once or twice per halfedge,
     # so a `k`-entry binary search replaces sorting a key per halfedge to look 320 of them up. The
     # keys are packed straight into the sort's double-width buffer; the payload is never read.
-    contour_keys = wp.empty(2 * n_contour, dtype=wp.uint64, device=device)
-    wp.launch(
+    contour_keys = _launch.empty(2 * n_contour, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_grouping.pack_directed_index_keys,
         dim=n_contour,
         inputs=[contour_edges, base, contour_keys],
         device=device,
     )
-    wp.utils.radix_sort_pairs(
-        contour_keys, wp.empty(2 * n_contour, dtype=wp.int32, device=device), count=n_contour
+    _launch.radix_sort_pairs(
+        contour_keys, _launch.empty(2 * n_contour, dtype=wp.int32, device=device), count=n_contour
     )
     contour_keys = twt.as_dense(contour_keys[:n_contour])
 
@@ -225,15 +226,15 @@ def faces_left_of_contour(
     # formed across ``twins`` in the thread rather than listed: a pre-hook (with the seeding), a
     # hook, and a flatten that also flags each seeded root.
     n_halfedges = 3 * n_faces
-    seeds = wp.zeros(n_faces, dtype=wp.bool, device=device)
+    seeds = _launch.zeros(n_faces, dtype=wp.bool, device=device)
     parents = tw.array.arange(n_faces, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_selection.seed_and_prehook_dual,
         dim=n_halfedges,
         inputs=[faces, twins, contour_keys, base, parents, seeds],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_selection.hook_dual,
         dim=n_halfedges,
         inputs=[faces, twins, contour_keys, base, parents],
@@ -244,8 +245,8 @@ def faces_left_of_contour(
     # answer, and every entry the gather below reads -- a root's -- ends ``True`` exactly when its
     # component holds a seed. The labels cannot overwrite ``parents`` the same way: another
     # thread's path halving may write a stale ancestor over a label already stored.
-    labels = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.label_flagged_components,
         dim=n_faces,
         inputs=[parents, seeds, True, labels, seeds],
@@ -253,8 +254,8 @@ def faces_left_of_contour(
     )
     # A label names a representative face, so the per-face answer is a gather of the per-label flag,
     # and it writes every entry.
-    left = wp.empty(n_faces, dtype=wp.bool, device=device)
-    wp.copy(left, seeds[labels])
+    left = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.copy(left, seeds[labels])
     return left
 
 
@@ -302,7 +303,7 @@ def exclude_fully_selected_components(
         )
     device = mask.device
     if n_vertices == 0:
-        return wp.clone(mask)
+        return _launch.clone(mask)
     # A union-find labels every component by its smallest vertex whatever the order and
     # multiplicity of the unions, so the faces' own edges, formed in the thread, give the identical
     # labels without an edge table. The endpoints are the face buffer's indices, which this
@@ -312,13 +313,13 @@ def exclude_fully_selected_components(
         n_faces = faces.size // 3
         if n_faces > 0:
             for kernel in (kernel_selection.prehook_face_edges, kernel_selection.hook_face_edges):
-                wp.launch(kernel, dim=n_faces, inputs=[faces, parents], device=device)
+                _launch.launch(kernel, dim=n_faces, inputs=[faces, parents], device=device)
     elif int(unique_edges.shape[0]) > 0:
         for kernel in (
             kernel_connected_components.ecl_init_parent_edges,
             kernel_connected_components.ecl_hook_edges,
         ):
-            wp.launch(
+            _launch.launch(
                 kernel,
                 dim=int(unique_edges.shape[0]),
                 inputs=[unique_edges, parents],
@@ -326,16 +327,16 @@ def exclude_fully_selected_components(
             )
     # One flatten that also flags each component holding an unselected vertex -- one that is not
     # fully selected, and so keeps its selection.
-    labels = wp.empty(n_vertices, dtype=wp.int32, device=device)
-    keep = wp.zeros(n_vertices, dtype=wp.bool, device=device)
-    wp.launch(
+    labels = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    keep = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_selection.label_flagged_components,
         dim=n_vertices,
         inputs=[parents, mask, False, labels, keep],
         device=device,
     )
-    out = wp.empty(n_vertices, dtype=wp.bool, device=device)
-    wp.launch(
+    out = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_selection.keep_selected_by_component,
         dim=n_vertices,
         inputs=[mask, labels, keep, out],
@@ -420,10 +421,10 @@ def submesh_from_face_indices(
     device = vertices.device
     k = face_indices.size
     if k == 0:
-        empty_vertices = wp.empty(0, dtype=wp.vec3, device=device)
-        empty_faces = wp.empty(0, dtype=wp.int32, device=device)
+        empty_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        empty_faces = _launch.empty(0, dtype=wp.int32, device=device)
         if return_index:
-            return empty_vertices, empty_faces, wp.empty(0, dtype=wp.int32, device=device)
+            return empty_vertices, empty_faces, _launch.empty(0, dtype=wp.int32, device=device)
         return empty_vertices, empty_faces
 
     # The referenced vertices are a mask over the vertex count, and its in-place scan is both the
@@ -431,19 +432,19 @@ def submesh_from_face_indices(
     # face reaches the vertices it already reached, and keeps its own row), no face gather and no
     # ``unique_1d``. One readback, of the vertex count.
     n_vertices = vertices.size
-    inclusive = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    inclusive = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.mark_indexed_face_vertices,
         dim=k,
         inputs=[faces, face_indices, inclusive],
         device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     n_sub = int(read_scalar(inclusive))
-    sub_vertices = wp.empty(n_sub, dtype=wp.vec3, device=device)
-    sub_faces = wp.empty(3 * k, dtype=wp.int32, device=device)
-    vertex_index = wp.empty(n_sub, dtype=wp.int32, device=device) if return_index else None
-    wp.launch(
+    sub_vertices = _launch.empty(n_sub, dtype=wp.vec3, device=device)
+    sub_faces = _launch.empty(3 * k, dtype=wp.int32, device=device)
+    vertex_index = _launch.empty(n_sub, dtype=wp.int32, device=device) if return_index else None
+    _launch.launch(
         kernel_selection.compact_indexed_submesh,
         dim=max(k, n_vertices),
         inputs=[vertices, faces, face_indices, inclusive, sub_faces, sub_vertices, vertex_index],
@@ -531,9 +532,9 @@ def submeshes_from_face_groups(
     n_vertices = vertices.size
     if k == 0 or n_selected == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.zeros(k + 1, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.zeros(k + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
     radix = max(n_vertices, 1)
     if k * radix >= 1 << 62:
@@ -542,8 +543,8 @@ def submeshes_from_face_groups(
         )
 
     n_corners = 3 * n_selected
-    keys = wp.empty(n_corners, dtype=wp.int64, device=device)
-    wp.launch(
+    keys = _launch.empty(n_corners, dtype=wp.int64, device=device)
+    _launch.launch(
         kernel_selection.pack_group_vertex_keys,
         dim=n_corners,
         inputs=[faces, group_face_indices, group_offsets, wp.int64(radix), keys],
@@ -556,22 +557,22 @@ def submeshes_from_face_groups(
     # One decode per unique slot answers everything its key is needed for: the slot's group, the
     # group's vertex count (a histogram, so an empty group still gets a zero-length entry and no
     # host synchronisation is needed to size it), and the source position it names.
-    slot_groups = wp.empty(n_slots, dtype=wp.int32, device=device)
+    slot_groups = _launch.empty(n_slots, dtype=wp.int32, device=device)
     # The counts land behind the leading zero of the ``k + 1`` offsets buffer and are scanned there
     # in place, which leaves the total-terminated vertex offsets with no second buffer.
-    vertex_offsets = wp.zeros(k + 1, dtype=wp.int32, device=device)
+    vertex_offsets = _launch.zeros(k + 1, dtype=wp.int32, device=device)
     group_counts = twt.as_dense(vertex_offsets[1:])
-    vertices_all = wp.empty(n_slots, dtype=wp.vec3, device=device)
-    wp.launch(
+    vertices_all = _launch.empty(n_slots, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_selection.decode_group_vertex_keys,
         dim=n_slots,
         inputs=[unique_keys, wp.int64(radix), vertices, slot_groups, group_counts, vertices_all],
         device=device,
     )
-    wp.utils.array_scan(group_counts, out_array=group_counts, inclusive=True)
+    _launch.array_scan(group_counts, out_array=group_counts, inclusive=True)
 
-    faces_all = wp.empty(n_corners, dtype=wp.int32, device=device)
-    wp.launch(
+    faces_all = _launch.empty(n_corners, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.local_corner_indices,
         dim=n_corners,
         inputs=[inverse, slot_groups, vertex_offsets, faces_all],
@@ -843,8 +844,8 @@ def _delete_region_loops(
         return (
             kept_vertices,
             kept_faces,
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
             [] if host_bounds else None,
         )
 
@@ -875,17 +876,17 @@ def _delete_region_loops(
     n_deleted_keys = 3 * (n_faces - n_kept)
     # The keys are written into the leading half of the radix sort's double-width scratch, and the
     # payload is never read, so neither is seeded: only the sorted keys are wanted.
-    key_buffer = wp.empty(2 * n_deleted_keys, dtype=wp.uint64, device=device)
-    wp.launch(
+    key_buffer = _launch.empty(2 * n_deleted_keys, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_selection.deleted_face_edge_keys,
         dim=n_faces,
         inputs=[faces, face_mask, kept_ranks, base, key_buffer],
         device=device,
     )
-    payload = wp.empty(2 * n_deleted_keys, dtype=wp.int32, device=device)
+    payload = _launch.empty(2 * n_deleted_keys, dtype=wp.int32, device=device)
     # A key is ``min + max * n_vertices``, below ``n_vertices ** 2``: only those bits are sorted.
     n_vertices = vertices.size
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         key_buffer,
         payload,
         count=n_deleted_keys,
@@ -893,8 +894,8 @@ def _delete_region_loops(
     )
     deleted_keys = twt.as_dense(key_buffer[:n_deleted_keys])
 
-    kept_counts = wp.empty(n_loops, dtype=wp.vec3i, device=device)
-    wp.launch(
+    kept_counts = _launch.empty(n_loops, dtype=wp.vec3i, device=device)
+    _launch.launch(
         kernel_selection.loops_are_input_rims,
         dim=n_loops,
         inputs=[flat_loops, loop_offsets, vertex_index, deleted_keys, base, kept_counts],
@@ -910,15 +911,15 @@ def _delete_region_loops(
             if kept
         ]
         return kept_vertices, kept_faces, flat_loops, loop_offsets, views
-    wp.utils.array_scan(kept_counts, out_array=kept_counts, inclusive=True)
+    _launch.array_scan(kept_counts, out_array=kept_counts, inclusive=True)
     # The packed form's one readback: the scan's tail sizes the kept loops.
     tail = read_scalar(kept_counts)
     n_new, n_values = int(tail[0]), int(tail[1])
     if n_new == 0:
         return no_loops()
-    loops = wp.empty(n_values, dtype=wp.int32, device=device)
-    offsets = wp.zeros(n_new + 1, dtype=wp.int32, device=device)
-    wp.launch(
+    loops = _launch.empty(n_values, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(n_new + 1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.compact_kept_loops,
         dim=n_loops,
         inputs=[flat_loops, loop_offsets, kept_counts, loops, offsets],
@@ -947,29 +948,29 @@ def _submesh_from_mask(
     n_faces = face_mask.size
     n_vertices = vertices.size
     if n_faces == 0:
-        empty_index = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, empty_index
+        empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, empty_index
 
-    ranks = wp.zeros(n_faces + n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    ranks = _launch.zeros(n_faces + n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.mark_submesh_faces_and_vertices,
         dim=n_faces,
         inputs=[faces, face_mask, keep_masked, ranks],
         device=device,
     )
-    wp.utils.array_scan(ranks, out_array=ranks, inclusive=True)
-    counts = wp.empty(2, dtype=wp.int32, device=device)
-    wp.launch(
+    _launch.array_scan(ranks, out_array=ranks, inclusive=True)
+    counts = _launch.empty(2, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.submesh_counts, dim=1, inputs=[ranks, n_faces, counts], device=device
     )
     # One readback sizes both outputs.
     n_kept_faces, n_kept_vertices = read_values(counts, 0, 2)
 
-    sub_vertices = wp.empty(n_kept_vertices, dtype=wp.vec3, device=device)
-    sub_faces = wp.empty(3 * n_kept_faces, dtype=wp.int32, device=device)
-    vertex_index = wp.empty(n_kept_vertices, dtype=wp.int32, device=device)
+    sub_vertices = _launch.empty(n_kept_vertices, dtype=wp.vec3, device=device)
+    sub_faces = _launch.empty(3 * n_kept_faces, dtype=wp.int32, device=device)
+    vertex_index = _launch.empty(n_kept_vertices, dtype=wp.int32, device=device)
     if n_kept_faces > 0:
-        wp.launch(
+        _launch.launch(
             kernel_selection.compact_submesh,
             dim=max(n_faces, n_vertices),
             inputs=[
@@ -1113,11 +1114,11 @@ def _face_mask_from_vertex_mask(
 
     device = faces.device
     n_faces = faces.size // 3
-    out_face_mask = wp.empty(n_faces, dtype=wp.bool, device=device)
+    out_face_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     if n_faces == 0:
         return out_face_mask
 
-    wp.launch(
+    _launch.launch(
         kernel_selection.face_mask_from_vertex_mask,
         dim=n_faces,
         inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), out_face_mask],
@@ -1169,7 +1170,7 @@ def expand_vertex_mask(
     require_same_device(faces=faces, mask=mask)
     n = mask.size
     if hops <= 0 or n == 0:
-        return wp.clone(mask)
+        return _launch.clone(mask)
     return _dilate_vertex_mask(faces, mask, hops, value=True)
 
 
@@ -1213,7 +1214,7 @@ def shrink_vertex_mask(
     require_same_device(faces=faces, mask=mask)
     n = mask.size
     if hops <= 0 or n == 0:
-        return wp.clone(mask)
+        return _launch.clone(mask)
     # The dilation of the complement, run on the mask itself with the polarity flipped: a face with
     # an unselected corner clears all three. No complement is formed on either side.
     return _dilate_vertex_mask(faces, mask, hops, value=False)
@@ -1238,12 +1239,12 @@ def _dilate_vertex_mask(
     owned = False
     for _ in range(hops):
         if spare is None:
-            nxt = wp.clone(current)
+            nxt = _launch.clone(current)
         else:
-            wp.copy(spare, current)
+            _launch.copy(spare, current)
             nxt = spare
         if n_faces > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_selection.dilate_vertex_mask,
                 dim=n_faces,
                 inputs=[faces, current, value, nxt],
@@ -1299,26 +1300,26 @@ def face_indices_from_vertex_indices(
     device = faces.device
     n_faces = faces.size // 3
     if vertex_indices.size == 0 or n_faces == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
     # A membership mask over the vertices, read per corner, is the ``isin`` over the index list;
     # its reads are range-guarded, so a mask only as long as the listed indices need is exact.
     if n_vertices is None:
         n_vertices = max(tw.array.index_bound(vertex_indices), 0)
     vertex_mask = tw.array.indices_to_mask(vertex_indices, n_vertices, device=device)
-    inclusive = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_selection.face_flags_from_vertex_mask,
         dim=n_faces,
         inputs=[faces, vertex_mask, wp.bool(face_mode == "all"), inclusive],
         device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback when ``n_vertices`` is supplied.
     n_selected = int(read_scalar(inclusive))
-    selected = wp.empty(n_selected, dtype=wp.int32, device=device)
+    selected = _launch.empty(n_selected, dtype=wp.int32, device=device)
     if n_selected > 0:
-        wp.launch(
+        _launch.launch(
             kernel_scatter.scatter_index_where_scanned,
             dim=n_faces,
             inputs=[inclusive, selected],

@@ -40,6 +40,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import INT32_MAX, TILE_1D, TOLERANCE_MERGE
 from triwarp.kernels import array as kernel_array
@@ -340,7 +341,7 @@ def box(
         vertices_np -= 0.5
 
     vertices = _upload_points(vertices_np, wp.vec3, device)
-    faces = wp.array(_BOX_FACES, dtype=wp.int32, device=device)
+    faces = _launch.array(_BOX_FACES, dtype=wp.int32, device=device)
     return _apply_transform(vertices, faces, transform)
 
 
@@ -407,9 +408,9 @@ def grid(
     if width < 0.0 or height < 0.0:
         raise ValueError(f"extents must be non-negative, got {extents}")
 
-    vertices = wp.empty(nx * ny, dtype=wp.vec3, device=device)
-    faces = wp.empty(6 * (nx - 1) * (ny - 1), dtype=wp.int32, device=device)
-    wp.launch(
+    vertices = _launch.empty(nx * ny, dtype=wp.vec3, device=device)
+    faces = _launch.empty(6 * (nx - 1) * (ny - 1), dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.grid_mesh,
         dim=(nx, ny),
         inputs=[
@@ -446,7 +447,7 @@ def icosahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     [`trimesh.creation.icosahedron`][]
     """
     vertices = _upload_points(_ICOSAHEDRON_VERTICES, wp.vec3, device)
-    faces = wp.array(_ICOSAHEDRON_FACES, dtype=wp.int32, device=device)
+    faces = _launch.array(_ICOSAHEDRON_FACES, dtype=wp.int32, device=device)
     return vertices, faces
 
 
@@ -476,7 +477,7 @@ def tetrahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     """
     return (
         _upload_points(_TETRAHEDRON_VERTICES, wp.vec3, device),
-        wp.array(_TETRAHEDRON_FACES, dtype=wp.int32, device=device),
+        _launch.array(_TETRAHEDRON_FACES, dtype=wp.int32, device=device),
     )
 
 
@@ -505,7 +506,7 @@ def octahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arra
     """
     return (
         _upload_points(_OCTAHEDRON_VERTICES, wp.vec3, device),
-        wp.array(_OCTAHEDRON_FACES, dtype=wp.int32, device=device),
+        _launch.array(_OCTAHEDRON_FACES, dtype=wp.int32, device=device),
     )
 
 
@@ -539,7 +540,7 @@ def dodecahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.ar
     """
     return (
         _upload_points(_DODECAHEDRON_VERTICES, wp.vec3, device),
-        wp.array(_DODECAHEDRON_FACES, dtype=wp.int32, device=device),
+        _launch.array(_DODECAHEDRON_FACES, dtype=wp.int32, device=device),
     )
 
 
@@ -597,18 +598,18 @@ def icosphere(
     radius_f = float(radius)
 
     table, corners = _icosphere_tables(wp.get_device(device).alias)
-    vertices = wp.empty(10 * 4**levels + 2, dtype=wp.vec3, device=corners.device)
-    faces = wp.empty(20 * n * n * 3, dtype=wp.int32, device=vertices.device)
+    vertices = _launch.empty(10 * 4**levels + 2, dtype=wp.vec3, device=corners.device)
+    faces = _launch.empty(20 * n * n * 3, dtype=wp.int32, device=vertices.device)
     # The face buffer and level 0 -- the 12 base corners, which occupy the first block of the
     # numbering, scaled to `radius` -- in one launch; each level after that refines the last.
-    wp.launch(
+    _launch.launch(
         kernel_creation.icosphere_base,
         dim=(20, n, n),
         inputs=[table, corners, wp.int32(n), radius_f, vertices, faces],
         device=vertices.device,
     )
     for level in range(1, levels + 1):
-        wp.launch(
+        _launch.launch(
             kernel_creation.icosphere_generation,
             dim=(20, (1 << level) + 1, (1 << level) + 1),
             inputs=[table, wp.int32(n), wp.int32(1 << level), radius_f, vertices],
@@ -625,7 +626,7 @@ def _icosphere_tables(device: str) -> tuple[wp.array[wp.int32], wp.array[wp.vec3
     Unlike the Platonic-solid tables, which are *returned* and so must be fresh per call, these are
     read-only kernel inputs, so one copy per device serves every call.
     """
-    table = wp.array(_ICOSPHERE_FACE_TABLE, dtype=wp.int32, device=device)
+    table = _launch.array(_ICOSPHERE_FACE_TABLE, dtype=wp.int32, device=device)
     return table, _upload_points(_ICOSAHEDRON_VERTICES, wp.vec3, device)
 
 
@@ -771,9 +772,9 @@ def sphere_cap(
     # ``parametric_surface`` already took. The host build it replaces looped over rings in Python
     # and was quadratic in the ring count, against a flat device cost -- so the device path wins at
     # every resolution and needs no size gate.
-    vertices_wp = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    vertices_wp = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces_wp = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.sphere_cap_mesh,
         dim=max(n_vertices, n_faces),
         inputs=[wp.int32(n_rings), wp.float64(angle), wp.float64(radius), vertices_wp, faces_wp],
@@ -933,10 +934,10 @@ def cylinder(
         [[0.0, -half], [radius_f, -half], [radius_f, half], [0.0, half]], dtype=np.float64
     )
     keep_caps, keep_sides = _closed_form_template(profile, n_sections)
-    vertices = wp.empty(2 * n_sections + 2, dtype=wp.vec3, device=device)
+    vertices = _launch.empty(2 * n_sections + 2, dtype=wp.vec3, device=device)
     n_face_slots = (2 * keep_caps + 2 * keep_sides) * n_sections * 3
-    faces = wp.empty(n_face_slots, dtype=wp.int32, device=device)
-    wp.launch(
+    faces = _launch.empty(n_face_slots, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.cylinder_mesh,
         dim=n_sections,
         inputs=[
@@ -990,9 +991,9 @@ def cone(
     n_sections = _resolve_sections(sections)
     profile = np.array([[0.0, 0.0], [float(radius), 0.0], [0.0, float(height)]], dtype=np.float64)
     keep_caps, keep_sides = _closed_form_template(profile, n_sections)
-    vertices = wp.empty(n_sections + 2, dtype=wp.vec3, device=device)
-    faces = wp.empty((keep_caps + keep_sides) * n_sections * 3, dtype=wp.int32, device=device)
-    wp.launch(
+    vertices = _launch.empty(n_sections + 2, dtype=wp.vec3, device=device)
+    faces = _launch.empty((keep_caps + keep_sides) * n_sections * 3, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.cone_mesh,
         dim=n_sections,
         inputs=[
@@ -1248,7 +1249,7 @@ def revolve(
     n_keep = keep_np.size
     # One upload: the three per-point tables and the kept template, in the order ``revolve_mesh``
     # reads them.
-    layout = wp.array(
+    layout = _launch.array(
         np.concatenate((column_np, offsets_np, on_axis_np, keep_np)).astype(np.int32),
         dtype=wp.int32,
         device=device,
@@ -1257,16 +1258,16 @@ def revolve(
     cap_faces = None
     n_cap = 0
     if cap and not closed:
-        profile_3d = wp.empty(per, dtype=wp.vec3, device=device)
-        wp.map(kernel_array.lift_vec2, linestring, wp.float32(0.0), out=profile_3d)
+        profile_3d = _launch.empty(per, dtype=wp.vec3, device=device)
+        _launch.map(kernel_array.lift_vec2, linestring, wp.float32(0.0), out=profile_3d)
         # Ear clipping introduces no new vertices, so its indices address profile points directly --
         # the guarantee trimesh gets from ``triangulate_polygon(force_vertices=True)``.
         cap_faces = tw.polyline.polyline_triangulate(profile_3d).reshape((-1,))
         n_cap = cap_faces.size // 3
 
-    vertices = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    faces = wp.empty((n_slices * n_keep + 2 * n_cap) * 3, dtype=wp.int32, device=device)
-    wp.launch(
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty((n_slices * n_keep + 2 * n_cap) * 3, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.revolve_mesh,
         dim=n_kept_slices * per + n_slices * n_keep + 2 * n_cap,
         inputs=[
@@ -1524,12 +1525,14 @@ def _extrude(
         raise ValueError(f"height must be nonzero, got {height_f}")
 
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
+            0, dtype=wp.int32, device=device
+        )
 
     # Both layers, ``z = 0`` then ``z = height``, and the triangulation's signed area in one pass.
-    layers = wp.empty(2 * n, dtype=wp.vec3, device=device)
-    area = wp.zeros(1, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    layers = _launch.empty(2 * n, dtype=wp.vec3, device=device)
+    area = _launch.zeros(1, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_creation.lift_layers_and_signed_area,
         dim=kernel_reduce.chunks_1d(max(n, n_faces)),
         inputs=[vertices, faces, wp.float32(height_f), layers, area],
@@ -1546,8 +1549,8 @@ def _extrude(
         n_boundary = int(boundary.shape[0])
 
     # Bottom cap winding is reversed; the top cap keeps it and is offset by one vertex block.
-    out_faces = wp.empty((2 * n_faces + 2 * n_boundary) * 3, dtype=wp.int32, device=device)
-    wp.launch(
+    out_faces = _launch.empty((2 * n_faces + 2 * n_boundary) * 3, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.extrude_faces,
         dim=2 * n_faces + n_boundary,
         inputs=[faces, boundary, wp.int32(n), height_f < 0.0, area, out_faces],
@@ -1627,7 +1630,7 @@ def sweep_polygon(
         # the ring edges. ``oriented_boundary_edges`` only uses the vertex count, as its row-hash
         # base, so a zero buffer of the right length is enough.
         boundary = tw.boundary.oriented_boundary_edges(
-            wp.zeros(stride, dtype=wp.vec3, device=device), cap_faces
+            _launch.zeros(stride, dtype=wp.vec3, device=device), cap_faces
         )
         n_boundary = int(boundary.shape[0])
         if n_boundary != stride:
@@ -1647,9 +1650,11 @@ def sweep_polygon(
     n_slices = n_path - 1
     n_vertices = (n_slices if connect_closed else n_path) * stride
     n_cap = 0 if connect_closed or not cap else cap_faces.size // 3
-    vertices = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    faces = wp.empty((2 * n_slices * n_boundary + 2 * n_cap) * 3, dtype=wp.int32, device=device)
-    wp.launch(
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(
+        (2 * n_slices * n_boundary + 2 * n_cap) * 3, dtype=wp.int32, device=device
+    )
+    _launch.launch(
         kernel_creation.sweep_mesh,
         dim=n_vertices + n_slices * n_boundary + 2 * n_cap,
         inputs=[
@@ -1722,7 +1727,9 @@ def truncated_prisms(
         raise ValueError(f"faces size must be a multiple of 3, got {faces.size}")
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
+            0, dtype=wp.int32, device=device
+        )
 
     if origin is None:
         transform_np = np.eye(4)
@@ -1731,14 +1738,14 @@ def truncated_prisms(
             raise ValueError("normal is required when origin is given")
         transform_np = _plane_transform(np.array(origin), np.array(normal))
 
-    out_vertices = wp.empty(6 * n_faces, dtype=wp.vec3, device=device)
-    out_faces = wp.empty(24 * n_faces, dtype=wp.int32, device=device)
+    out_vertices = _launch.empty(6 * n_faces, dtype=wp.vec3, device=device)
+    out_faces = _launch.empty(24 * n_faces, dtype=wp.int32, device=device)
     # Inverted in NumPy, on the matrix that is already in hand, rather than with ``wp.inverse``:
     # a Warp builtin at Python scope routes through builtin dispatch and is several times dearer,
     # and the two agree to float32 rounding (``wp.inverse`` works in float32). Section 13.1.
     to_plane = wp.mat44(*transform_np.flatten())
     from_plane = wp.mat44(*np.linalg.inv(transform_np).flatten())
-    wp.launch(
+    _launch.launch(
         kernel_creation.truncated_prism_geometry,
         dim=n_faces,
         inputs=[vertices, faces, to_plane, from_plane, out_vertices, out_faces],
@@ -2125,15 +2132,15 @@ def random_hills(
         size=(max(int(n_hills), 0), 2),
     )
 
-    vertices = wp.empty(first.size, dtype=wp.vec3, device=device)
-    wp.launch(
+    vertices = _launch.empty(first.size, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_creation.random_hills_vertices,
         dim=vertices.size,
         inputs=[
             wp.float32(amplitude),
             wp.float32(x_variance),
             wp.float32(y_variance),
-            wp.array(centers, dtype=wp.vec2, device=device),
+            _launch.array(centers, dtype=wp.vec2, device=device),
             first,
             tables,
             wp.int32(int(v_resolution)),
@@ -2176,10 +2183,10 @@ def random_soup(
     [`trimesh.creation.random_soup`][]
     """
     n = 3 * max(int(face_count), 0)
-    vertices = wp.empty(n, dtype=wp.vec3, device=device)
+    vertices = _launch.empty(n, dtype=wp.vec3, device=device)
     if n > 0:
         resolved_seed = tw.sample.resolve_seed(seed)
-        wp.launch(
+        _launch.launch(
             kernel_creation.random_soup_vertices,
             dim=n,
             inputs=[wp.int32(resolved_seed), vertices],
@@ -2354,8 +2361,8 @@ def _parametric_surface(
     # collapsed pole row reach the same point through different expressions, so they agree only to
     # rounding).
     first, tables, faces = _parametric_samples(spec, u_resolution, v_resolution, device)
-    vertices = wp.empty(first.size, dtype=wp.vec3, device=device)
-    wp.launch(
+    vertices = _launch.empty(first.size, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_creation.parametric_vertices,
         dim=first.size,
         inputs=[
@@ -2401,7 +2408,7 @@ def _parametric_samples(
     # enough of it -- and loses below that to its own launch and readback floor, which is flat where
     # the host cost is quadratic in the resolution. Both paths produce byte-identical vertices and
     # faces, so the gate is purely a cost choice; see ``_PARAMETRIC_LATTICE_DEVICE_FROM``.
-    tables = wp.array(
+    tables = _launch.array(
         np.concatenate((np.linspace(*spec.u_range, n_u), np.linspace(*spec.v_range, n_v))),
         dtype=wp.float32,
         device=device,
@@ -2412,9 +2419,9 @@ def _parametric_samples(
 
     first_np, faces_np = _parametric_lattice_host(spec, n_u, n_v)
     return (
-        wp.array(first_np, dtype=wp.int32, device=device),
+        _launch.array(first_np, dtype=wp.int32, device=device),
         tables,
-        wp.array(faces_np, dtype=wp.int32, device=device),
+        _launch.array(faces_np, dtype=wp.int32, device=device),
     )
 
 
@@ -2574,18 +2581,18 @@ def _parametric_lattice_device(
     # The lattice's canonical keys marked, then each triangle's survival, in one buffer and one
     # inclusive scan: the lattice prefix numbers the vertices and the triangle tail ranks the
     # survivors. The two counts are the only readbacks, and they size the outputs.
-    scan = wp.zeros(n_rows, dtype=wp.int32, device=device)
+    scan = _launch.zeros(n_rows, dtype=wp.int32, device=device)
     inputs = [wp.int32(n_u), wp.int32(n_v), wp.int32(gluing)]
-    wp.launch(
+    _launch.launch(
         kernel_creation.parametric_lattice_flags, dim=n_rows, inputs=[*inputs, scan], device=device
     )
-    wp.utils.array_scan(scan, out_array=scan, inclusive=True)
+    _launch.array_scan(scan, out_array=scan, inclusive=True)
     n_vertices = int(read_scalar(scan, n_lattice - 1))
     n_faces = int(read_scalar(scan, n_rows - 1)) - n_vertices
 
-    first = wp.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
-    faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    first = _launch.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.parametric_lattice_emit,
         dim=n_rows,
         inputs=[*inputs, scan, first, faces],
@@ -2706,9 +2713,9 @@ def _revolve_regular(
     n_vertices = (
         int(axis_first) + (n_columns - int(axis_first) - int(axis_last)) * sections + int(axis_last)
     )
-    vertices = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    faces = wp.empty(faces_per_slice * sections * 3, dtype=wp.int32, device=device)
-    wp.launch(
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(faces_per_slice * sections * 3, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_creation.revolve_uniform,
         dim=(sections, n_columns),
         inputs=[
@@ -2790,4 +2797,6 @@ def _upload_points(points_np: np.ndarray, dtype: type, device: wp.DeviceLike) ->
     [`revolve`][triwarp.creation.revolve]'s weld tolerance — while ``float64`` keeps the gap near
     ``1e-16``. These tables are tiny; the per-slice work they drive is what runs on the device.
     """
-    return wp.array(np.ascontiguousarray(points_np, dtype=np.float32), dtype=dtype, device=device)
+    return _launch.array(
+        np.ascontiguousarray(points_np, dtype=np.float32), dtype=dtype, device=device
+    )

@@ -50,6 +50,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.edges import edges_unique, edges_unique_length
 from triwarp.kernels import energies as kernel_energies
@@ -107,8 +108,10 @@ def edge_length_loss(
     lengths = edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=False)
     if lengths.size == 0:
         return 0.0
-    deviations = wp.empty(lengths.size, dtype=wp.float32, device=lengths.device)
-    wp.map(kernel_energies.squared_deviation, lengths, wp.float32(target_length), out=deviations)
+    deviations = _launch.empty(lengths.size, dtype=wp.float32, device=lengths.device)
+    _launch.map(
+        kernel_energies.squared_deviation, lengths, wp.float32(target_length), out=deviations
+    )
     return float(tw.reduce.mean(deviations))
 
 
@@ -157,8 +160,8 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     angles = tw.adjacency.face_adjacency_angles(vertices, faces)
     if angles.size == 0:
         return 0.0
-    terms = wp.empty(angles.size, dtype=wp.float32, device=angles.device)
-    wp.map(kernel_energies.one_minus_cosine, angles, out=terms)
+    terms = _launch.empty(angles.size, dtype=wp.float32, device=angles.device)
+    _launch.map(kernel_energies.one_minus_cosine, angles, out=terms)
     return float(tw.reduce.mean(terms))
 
 
@@ -235,29 +238,29 @@ def laplacian_smoothing_loss(
     # ``wp.empty`` where a launch writes every element, ``wp.zeros`` where the value is zero.
     if method == "uniform":
         operator = tw.laplacian.laplacian(vertices, faces, equal_weight=True)
-        row_scale = wp.full(n_vertices, 1.0, dtype=wp.float32, device=device)
-        self_scale = wp.full(n_vertices, -1.0, dtype=wp.float32, device=device)
+        row_scale = _launch.full(n_vertices, 1.0, dtype=wp.float32, device=device)
+        self_scale = _launch.full(n_vertices, -1.0, dtype=wp.float32, device=device)
     else:
         operator = cotmatrix(vertices, faces)
-        row_scale = wp.empty(n_vertices, dtype=wp.float32, device=device)
+        row_scale = _launch.empty(n_vertices, dtype=wp.float32, device=device)
         if method == "cot":
-            self_scale = wp.empty(n_vertices, dtype=wp.float32, device=device)
-            wp.launch(
+            self_scale = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+            _launch.launch(
                 kernel_energies.cot_row_scales,
                 dim=n_vertices,
                 inputs=[operator.offsets, operator.columns, operator.values, row_scale, self_scale],
                 device=device,
             )
         else:
-            wp.map(
+            _launch.map(
                 kernel_energies.reciprocal_scaled_or_zero,
                 mass_matrix_entries(vertices, faces),
                 wp.float32(1.0 / 6.0),
                 out=row_scale,
             )
-            self_scale = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    norms = wp.empty(n_vertices, dtype=wp.float32, device=device)
-    wp.launch(
+            self_scale = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_energies.laplacian_residual_norms,
         dim=n_vertices,
         inputs=[
@@ -344,12 +347,12 @@ def k_harmonic(
     n_rows = int(laplacian.nrow)
     device = laplacian.values.device
     if mass is None:
-        inverse_mass = wp.ones(n_rows, dtype=dtype, device=device)
+        inverse_mass = _launch.ones(n_rows, dtype=dtype, device=device)
     else:
         if mass.dtype != dtype:
             mass = tw.array.astype(mass, dtype)
-        inverse_mass = wp.empty(n_rows, dtype=dtype, device=device)
-        wp.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
+        inverse_mass = _launch.empty(n_rows, dtype=dtype, device=device)
+        _launch.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
 
     operator = negated
     for _ in range(k - 1):
@@ -371,8 +374,8 @@ def _diagonal_sandwich(
     """
     n_rows = int(a.nrow)
     device = inverse_mass.device
-    counts = wp.empty(n_rows, dtype=wp.int32, device=device)
-    wp.launch(
+    counts = _launch.empty(n_rows, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_energies.SANDWICH_ROW_COUNTS[inverse_mass.dtype],
         dim=n_rows,
         inputs=[a.offsets, b.offsets, inverse_mass, counts],
@@ -384,7 +387,7 @@ def _diagonal_sandwich(
     dtype = a.values.dtype
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
     if n_triplets > 0:
-        wp.launch(
+        _launch.launch(
             kernel_energies.SANDWICH_ROW_TRIPLETS[dtype],
             dim=n_rows,
             inputs=[
@@ -476,10 +479,10 @@ def hessian_energy(
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
 
-    gradients = wp.empty(3 * n_faces, dtype=wp.vec3d, device=device)
-    areas = wp.empty(n_faces, dtype=wp.float64, device=device)
-    mass = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    wp.launch(
+    gradients = _launch.empty(3 * n_faces, dtype=wp.vec3d, device=device)
+    areas = _launch.empty(n_faces, dtype=wp.float64, device=device)
+    mass = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_energies.hessian_face_terms,
         dim=n_faces,
         inputs=[vertices, faces, gradients, areas, mass],
@@ -493,9 +496,9 @@ def hessian_energy(
         if vertex_faces is not None
         else tw.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    inverse_mass = wp.empty(n_vertices, dtype=wp.float64, device=device)
-    counts = wp.empty(n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    inverse_mass = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    counts = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_energies.hessian_energy_counts,
         dim=n_vertices,
         inputs=[vf_offsets, mass, inverse_mass, counts],
@@ -506,7 +509,7 @@ def hessian_energy(
 
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
     if n_triplets > 0:
-        wp.launch(
+        _launch.launch(
             kernel_energies.HESSIAN_ENERGY_TRIPLETS[dtype],
             dim=n_vertices,
             inputs=[
@@ -594,9 +597,9 @@ def curved_hessian_energy(
     unique_edges, inverse = edges_unique(faces, edges_sorted, n_vertices=n_vertices, validate=False)
     n_edges = int(unique_edges.shape[0])
 
-    angles = wp.empty((n_faces, 3), dtype=wp.float64, device=device)
-    angle_sums = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    wp.launch(
+    angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)
+    angle_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
         inputs=[vertices, faces, angles, angle_sums],
@@ -605,26 +608,26 @@ def curved_hessian_energy(
     # ``angle_defect / angle_sum``, zeroed on the boundary (curvature is only corrected at interior
     # vertices) and for a non-positive angle sum -- igl::cr_vector_curvature_correction's kappa
     # scaling.
-    scaled_kappa = wp.empty(n_vertices, dtype=wp.float64, device=device)
-    wp.map(kernel_energies.scaled_angle_defect, angle_sums, out=scaled_kappa)
+    scaled_kappa = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    _launch.map(kernel_energies.scaled_angle_defect, angle_sums, out=scaled_kappa)
     _zero_at_boundary(vertices, faces, scaled_kappa)
 
     mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
-    inverse_mass = wp.empty(n_edges, dtype=wp.float64, device=device)
-    wp.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
+    inverse_mass = _launch.empty(n_edges, dtype=wp.float64, device=device)
+    _launch.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
 
-    edge_halfedges = wp.full((n_edges, 2), -1, dtype=wp.int32, device=device)
-    cursor = wp.zeros(n_edges, dtype=wp.int32, device=device)
-    wp.launch(
+    edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
+    cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_energies.scatter_edge_halfedges,
         dim=3 * n_faces,
         inputs=[inverse, cursor, edge_halfedges],
         device=device,
     )
-    vertex_slots = wp.full((n_edges, 4), -1, dtype=wp.int32, device=device)
-    par = wp.zeros((n_edges, 4), dtype=wp.float64, device=device)
-    perp = wp.zeros((n_edges, 4), dtype=wp.float64, device=device)
-    wp.launch(
+    vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)
+    par = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
+    perp = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_energies.cr_gradient_rows,
         dim=n_edges,
         inputs=[vertices, faces, unique_edges, edge_halfedges, vertex_slots, par, perp],
@@ -633,7 +636,7 @@ def curved_hessian_energy(
 
     n_triplets = 144 * n_faces
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
-    wp.launch(
+    _launch.launch(
         kernel_energies.CURVED_HESSIAN_TRIPLETS[dtype],
         dim=n_faces,
         inputs=[
@@ -745,7 +748,7 @@ def crouzeix_raviart_cotmatrix(
 
     n_triplets = 12 * n_faces
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, dtype, device)
-    wp.launch(
+    _launch.launch(
         kernel_energies.CROUZEIX_RAVIART_COTMATRIX_TRIPLETS[cot_entries.dtype, dtype],
         dim=n_faces,
         inputs=[edge_map, cot_entries, rows, cols, vals],
@@ -833,9 +836,9 @@ def _cr_mass_diagonal(
     masses -- the latter's derivation assumes they are the same one.
     """
     n_faces = faces.size // 3
-    mass = wp.zeros(n_edges, dtype=dtype, device=faces.device)
+    mass = _launch.zeros(n_edges, dtype=dtype, device=faces.device)
     if n_faces > 0:
-        wp.launch(
+        _launch.launch(
             kernel_energies.CROUZEIX_RAVIART_MASS_DIAG[dtype],
             dim=n_faces,
             inputs=[vertices, faces, edge_map, mass],
@@ -901,7 +904,7 @@ def lscm_hessian(
     # boundary edge (the vector-area cross-quadrant terms). Every slot is written, so wp.empty.
     total = 2 * n_entries + 4 * n_be
     rows, cols, vals = tw.array.triplet_buffers(total, wp.float64, device)
-    wp.launch(
+    _launch.launch(
         kernel_energies.neg_repdiag2_triplets,
         dim=n,
         inputs=[
@@ -995,7 +998,7 @@ def _vector_area_triplets(
     ([`vector_area_matrix`][triwarp.energies.vector_area_matrix]); ``scale = -2`` builds the
     ``-2 A`` term of the LSCM Hessian ([`lscm_hessian`][triwarp.energies.lscm_hessian]).
     """
-    wp.launch(
+    _launch.launch(
         kernel_energies.vector_area_triplets,
         dim=int(boundary_edges.shape[0]),
         inputs=[
@@ -1038,7 +1041,7 @@ def _zero_at_boundary(
     boundary = tw.boundary.boundary_vertex_indices(vertices, faces)
     n_boundary = boundary.size
     if n_boundary > 0:
-        wp.launch(
+        _launch.launch(
             kernel_energies.ZERO_AT_INDICES[values.dtype],
             dim=n_boundary,
             inputs=[boundary, values],

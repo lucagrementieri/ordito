@@ -38,6 +38,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import prefers_tiled_reduction, require_same_device, slice_count
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -792,7 +793,7 @@ def _square(distances: wp.array[wp.float32]) -> twt.Array1dFloat32:
     n = distances.size
     squared = twt.empty_1d(n, wp.float32, device=distances.device)
     if n > 0:
-        wp.map(kernel_array.square_scalar, distances, out=squared)
+        _launch.map(kernel_array.square_scalar, distances, out=squared)
     return squared
 
 
@@ -944,9 +945,9 @@ def _backward_nearest(
     if not wp.get_device(device).is_cuda or n < _GRID_BACKWARD_MIN_POINTS:
         return _nearest(points, queries), None
     m = queries.size
-    scale = wp.array(_SCALE_SEED, dtype=wp.float32, device=device)
-    hits = wp.zeros(m, dtype=wp.int32, device=device)
-    wp.launch(
+    scale = _launch.array(_SCALE_SEED, dtype=wp.float32, device=device)
+    hits = _launch.zeros(m, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_metrics.pair_search_scale,
         dim=kernel_reduce.chunks_1d(n),
         inputs=[points, forward_distances, forward_assignment, faces, int(faces is not None), hits],
@@ -1045,7 +1046,7 @@ def _reduction_scale(point_reduction: _DiffReduction, count: int) -> float:
 
 
 def _zero_loss(device: wp.DeviceLike) -> twt.Array1dFloat32:
-    zeros = wp.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
+    zeros = _launch.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
     return cast(twt.Array1dFloat32, zeros)
 
 
@@ -1132,7 +1133,7 @@ def _launch_reduction_pair(
     difference is which kernel pair and argument list they carry.
     """
     if prefers_tiled_reduction(device):
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_tiled,
             dim=[(n + TILE_1D - 1) // TILE_1D],
             inputs=[*common_inputs, loss],
@@ -1141,7 +1142,7 @@ def _launch_reduction_pair(
         )
     else:
         slices = slice_count(n, device)
-        wp.launch(
+        _launch.launch(
             kernel_sliced,
             dim=slices,
             inputs=[*common_inputs, wp.int32(slices), loss],

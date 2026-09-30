@@ -9,6 +9,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar
 from triwarp.array import bitcast_from_int, bitcast_to_int, gather, sort_pair_indices
 from triwarp.constants import INDEX_RADIX_PAIR
@@ -55,33 +56,33 @@ def group(values: wp.array[wp.Int], length: int) -> twt.Array2dInt32:
         return twt.as_array2d(twt.empty_2d((0, max(length, 0)), wp.int32, device=device), wp.int32)
 
     sort_dtype = twt.sortable_dtype(values.dtype)
-    values_buffer = wp.empty(2 * n, dtype=sort_dtype, device=device)
+    values_buffer = _launch.empty(2 * n, dtype=sort_dtype, device=device)
     if sort_dtype == values.dtype:
-        wp.copy(values_buffer, values, count=n)
+        _launch.copy(values_buffer, values, count=n)
     else:
         wp.utils.array_cast(values, values_buffer, count=n)
     indices_buffer = sort_pair_indices(n, -1, device)
-    wp.utils.radix_sort_pairs(values_buffer, indices_buffer, count=n)
+    _launch.radix_sort_pairs(values_buffer, indices_buffer, count=n)
 
     # Scan compaction: flag run starts, scan the flags, then emit one right-sized row per group
     # (deterministic ascending-value order, no atomic counter and no (n, length) over-allocation).
     # The emit reads each flag back as a step in the scan, so it compacts and writes in one launch.
     # The flags are written straight into the tail of the total-terminated offsets buffer and
     # scanned in place, so its leading zero makes it the exclusive scan with the total at the end.
-    offsets = wp.zeros(n + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     flags = offsets[1:]
-    wp.launch(
+    _launch.launch(
         kernel_grouping.MARK_GROUP_STARTS[values_buffer.dtype],
         dim=n,
         inputs=[values_buffer, wp.int32(n), wp.int32(length), flags],
         device=device,
     )
-    wp.utils.array_scan(flags, flags, inclusive=True)
+    _launch.array_scan(flags, flags, inclusive=True)
     # The group count sizes the output, so it has to come back to the host.
     n_groups = int(read_scalar(offsets))
     groups = twt.empty_2d((n_groups, length), wp.int32, device=device)
     if n_groups > 0:
-        wp.launch(
+        _launch.launch(
             kernel_grouping.emit_groups,
             dim=n,
             inputs=[offsets, indices_buffer, groups],
@@ -230,8 +231,8 @@ def unique_1d(
     n = data.size
 
     if n == 0:
-        empty_unique = wp.empty(0, dtype=data.dtype, device=device)
-        empty_i32 = wp.empty(0, dtype=wp.int32, device=device)
+        empty_unique = _launch.empty(0, dtype=data.dtype, device=device)
+        empty_i32 = _launch.empty(0, dtype=wp.int32, device=device)
         return _pack_unique_result(
             empty_unique,
             inverse=empty_i32 if return_inverse else None,
@@ -281,7 +282,7 @@ def _unique_hash(
 
     # Phase 2: prefix-scan the occupancy in place to get compact positions -- nothing reads the
     # flags afterwards except the compaction, which recovers each one as a step of the scan.
-    wp.utils.array_scan(occupied, occupied, inclusive=True)
+    _launch.array_scan(occupied, occupied, inclusive=True)
     # An inclusive scan of 0/1 flags ends at the number set, so one 4-byte tail read sizes the
     # output where ``reduce.max`` would scan all ``cap`` (~2n) slots. The same idiom as
     # ``array.flatnonzero`` and ``array.counts_to_offsets``.
@@ -296,10 +297,10 @@ def _unique_hash(
     # copies the keys into it -- an allocation and a full copy, to move bytes that could have been
     # written here in the first place.
     sort_dtype = twt.sortable_dtype(original_dtype)
-    keys_compact = wp.empty(2 * n_unique, dtype=key_dtype, device=device)
-    cnts_compact = wp.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
-    perm_buf = wp.empty(2 * n_unique, dtype=wp.int32, device=device)
-    wp.launch(
+    keys_compact = _launch.empty(2 * n_unique, dtype=key_dtype, device=device)
+    cnts_compact = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    perm_buf = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_grouping.COMPACT_FROM_TABLE[key_dtype],
         dim=cap,
         inputs=[slot_key, slot_counts, occupied, keys_compact, cnts_compact, perm_buf],
@@ -316,7 +317,7 @@ def _unique_hash(
         if wp.types.type_size_in_bytes(sort_dtype) == wp.types.type_size_in_bytes(key_dtype)
         else bitcast_from_int(keys_compact, sort_dtype, count=2 * n_unique)
     )
-    wp.utils.radix_sort_pairs(keys_buf, perm_buf, count=n_unique, end_bit=end_bit)
+    _launch.radix_sort_pairs(keys_buf, perm_buf, count=n_unique, end_bit=end_bit)
 
     if sort_dtype == original_dtype:
         # The sorted prefix of the sort's own scratch, handed back as a view rather than copied out:
@@ -343,14 +344,14 @@ def _unique_hash(
             # here (the ``uint64`` edge and row keys every ``edges_unique`` call packs) all take it.
             sorted_dense = unique_values
         else:
-            sorted_dense = wp.empty(n_unique, dtype=sort_dtype, device=device)
-            wp.copy(sorted_dense, keys_buf, count=n_unique)
+            sorted_dense = _launch.empty(n_unique, dtype=sort_dtype, device=device)
+            _launch.copy(sorted_dense, keys_buf, count=n_unique)
         # The binary search has to probe in the same space the keys were sorted in.
         data_sorted_space = (
             data if data.dtype == sort_dtype else bitcast_from_int(data_int, sort_dtype, count=n)
         )
-        unique_inverse = wp.empty(n, dtype=wp.int32, device=device)
-        wp.launch(
+        unique_inverse = _launch.empty(n, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_array.MAP_SORTED_INVERSE[data_sorted_space.dtype],
             dim=n,
             inputs=[data_sorted_space, sorted_dense, unique_inverse],
@@ -409,11 +410,11 @@ def _hash_insert(
     """
     cap = int(mask) + 2
     device = keys.device
-    slot_key = wp.zeros(cap, dtype=keys.dtype, device=device)
-    counts_and_occupied = wp.zeros(2 * cap, dtype=wp.int32, device=device)
+    slot_key = _launch.zeros(cap, dtype=keys.dtype, device=device)
+    counts_and_occupied = _launch.zeros(2 * cap, dtype=wp.int32, device=device)
     slot_counts = twt.as_dense(counts_and_occupied[:cap])
     occupied = twt.as_dense(counts_and_occupied[cap:])
-    wp.launch(
+    _launch.launch(
         kernel_grouping.HASH_INSERT[keys.dtype],
         dim=n,
         inputs=[keys, slot_key, slot_counts, mask, occupied],
@@ -533,7 +534,7 @@ def unique_rows(
 
     if n == 0:
         if is_vec3:
-            empty_unique = wp.empty(0, dtype=wp.vec3, device=device)
+            empty_unique = _launch.empty(0, dtype=wp.vec3, device=device)
         else:
             # Same dtype check ``hash_rows`` performs on the non-empty path below, so a caller who
             # only ever exercises this function on empty input still gets the documented raise
@@ -545,7 +546,7 @@ def unique_rows(
                 empty_unique = twt.empty_2d((0, int(data.shape[1])), wp.float32, device=device)
             else:
                 raise ValueError(f"unique_rows unsupported dtype {data.dtype}")
-        empty_i32 = wp.empty(0, dtype=wp.int32, device=device)
+        empty_i32 = _launch.empty(0, dtype=wp.int32, device=device)
         return _pack_unique_result(
             empty_unique,
             inverse=empty_i32 if return_inverse else None,
@@ -618,9 +619,9 @@ def unique_faces(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        empty_faces = wp.empty(0, dtype=wp.int32, device=device)
+        empty_faces = _launch.empty(0, dtype=wp.int32, device=device)
         if return_inverse:
-            return empty_faces, wp.empty(0, dtype=wp.int32, device=device)
+            return empty_faces, _launch.empty(0, dtype=wp.int32, device=device)
         return empty_faces
 
     if max_index is None:
@@ -630,8 +631,8 @@ def unique_faces(
         if min_index < 0:
             raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
         max_index = max_value + 1
-    row_keys = wp.empty(n_faces, dtype=wp.uint64, device=device)
-    wp.launch(
+    row_keys = _launch.empty(n_faces, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_grouping.pack_sorted_face_keys,
         dim=n_faces,
         inputs=[faces, wp.uint64(max_index), row_keys],
@@ -723,9 +724,9 @@ def first_occurrence_indices(
     n = inverse.size
     if n_unique is None:
         n_unique = int(tw.reduce.max(inverse)) + 1 if n > 0 else 0
-    first = wp.full(n_unique, n, dtype=wp.int32, device=device)
+    first = _launch.full(n_unique, n, dtype=wp.int32, device=device)
     if n > 0 and n_unique > 0:
-        wp.launch(
+        _launch.launch(
             kernel_grouping.scatter_first_occurrence, dim=n, inputs=[inverse, first], device=device
         )
     return first
@@ -775,7 +776,7 @@ def hash_rows(
             # The ``(n, 3)`` rows *are* ``wp.vec3`` values in memory, so a zero-copy view reads
             # them as such; the copy below is only for a strided table, which a view cannot retype.
             return hash_vector_rows(data.view(wp.vec3))
-        vec = wp.empty(n, dtype=wp.vec3, device=data.device)
+        vec = _launch.empty(n, dtype=wp.vec3, device=data.device)
         wp.utils.array_cast(data, vec)
         return hash_vector_rows(vec)
     raise ValueError(f"hash_rows unsupported dtype {data.dtype}")
@@ -845,7 +846,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
     n = data.size
     if epsilon > 0.0:
         if n == 0:
-            return wp.empty(0, dtype=wp.uint64, device=data.device)
+            return _launch.empty(0, dtype=wp.uint64, device=data.device)
         # `hash_indices_rows` packs each row as digits in a positive radix, so negative cell indices
         # -- which every mesh spanning the origin produces -- cannot be packed. Snapping relative to
         # the data's own minimum corner makes them non-negative *by construction*: subtracting the
@@ -855,7 +856,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
         # is only injective while ``radix ** 3`` fits a ``uint64``.
         min_bound, max_bound = tw.bounds.aabb(data)
         rounded = twt.empty_2d((n, 3), wp.int32, device=data.device)
-        wp.launch(
+        _launch.launch(
             kernel_grouping.round_vec3_scaled,
             dim=n,
             inputs=[data, min_bound, wp.float32(1.0 / epsilon), rounded],
@@ -866,8 +867,8 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
         # the half-cell of rounding covers the difference, and an over-wide radix is harmless.
         radix = int(extent * (1.0 + 1e-6)) + 3
         return hash_indices_rows(rounded, max_index=radix, validate=False)
-    hashes = wp.empty(data.size, dtype=wp.uint64, device=data.device)
-    wp.map(kernel_grouping.pack_vec3, data, out=hashes)
+    hashes = _launch.empty(data.size, dtype=wp.uint64, device=data.device)
+    _launch.map(kernel_grouping.pack_vec3, data, out=hashes)
     return hashes
 
 
@@ -975,9 +976,9 @@ def hash_indices_rows(
             )
         if max_index is None:
             max_index = max_data + 1
-    hashes = wp.empty(n, dtype=wp.uint64, device=data.device)
+    hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
     if n > 0:
-        wp.launch(
+        _launch.launch(
             kernel_grouping.pack_indices,
             dim=n,
             inputs=[data, wp.uint64(max_index), hashes],
@@ -1010,22 +1011,22 @@ def sorted_undirected_edge_keys(edges: twt.Array2dInt32, n_vertices: int) -> wp.
     device = edges.device
     n_edges = int(edges.shape[0])
     if n_edges == 0:
-        return wp.empty(0, dtype=wp.uint64, device=device)
+        return _launch.empty(0, dtype=wp.uint64, device=device)
     # The keys are packed straight into the leading half of the radix sort's double-width buffer,
     # and the payload the sort insists on is left uninitialized: nothing reads the permutation, so
     # seeding it with an identity (``sort_and_argsort``) and staging the keys in a buffer of their
     # own would be an allocation, a fill and a copy for an answer that is thrown away.
-    keys = wp.empty(2 * n_edges, dtype=wp.uint64, device=device)
-    wp.launch(
+    keys = _launch.empty(2 * n_edges, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_grouping.pack_undirected_edge_keys,
         dim=n_edges,
         inputs=[edges, wp.uint64(n_vertices), keys],
         device=device,
     )
     # Every key is below ``n_vertices ** 2``, so the sort orders only that many low bits.
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys,
-        wp.empty(2 * n_edges, dtype=wp.int32, device=device),
+        _launch.empty(2 * n_edges, dtype=wp.int32, device=device),
         count=n_edges,
         end_bit=max(1, (n_vertices * n_vertices - 1).bit_length()),
     )

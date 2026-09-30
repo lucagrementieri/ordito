@@ -25,6 +25,7 @@ import warp.sparse as wps
 import triwarp as tw
 import triwarp.linalg as twl
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import parametrization as kernel_parametrization
 from triwarp.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass_matrix_entries
@@ -83,10 +84,10 @@ def face_flipped_mask(vertices: wp.array[wp.vec2], faces: wp.array[wp.int32]) ->
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
-    out_mask = wp.empty(n_faces, dtype=wp.bool, device=device)
-    wp.launch(
+    out_mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_parametrization.face_flipped_mask,
         dim=n_faces,
         inputs=[vertices, faces, out_mask],
@@ -177,20 +178,20 @@ def map_vertices_to_circle(
     require_same_device(vertices=vertices, boundary=boundary)
     device = vertices.device
     n_boundary = boundary.size
-    out_uv = wp.empty(n_boundary, dtype=wp.vec2, device=device)
+    out_uv = _launch.empty(n_boundary, dtype=wp.vec2, device=device)
     if n_boundary == 0:
         return out_uv
 
-    segment_lengths = wp.empty(n_boundary, dtype=wp.float32, device=device)
-    wp.launch(
+    segment_lengths = _launch.empty(n_boundary, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_parametrization.boundary_edge_lengths,
         dim=n_boundary,
         inputs=[boundary, vertices, segment_lengths],
         device=device,
     )
-    cumulative = wp.empty(n_boundary, dtype=wp.float32, device=device)
-    wp.utils.array_scan(segment_lengths, out_array=cumulative, inclusive=True)
-    wp.launch(
+    cumulative = _launch.empty(n_boundary, dtype=wp.float32, device=device)
+    _launch.array_scan(segment_lengths, out_array=cumulative, inclusive=True)
+    _launch.launch(
         kernel_parametrization.circle_positions,
         dim=n_boundary,
         inputs=[boundary, vertices, cumulative, out_uv],
@@ -272,7 +273,7 @@ def harmonic(
         vertices, faces, boundary_indices, boundary_uv, k, "harmonic"
     )
     if n_vertices == 0:
-        return wp.empty(0, dtype=wp.vec2, device=device)
+        return _launch.empty(0, dtype=wp.vec2, device=device)
     laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
     mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
     return _solve_fixed_boundary(
@@ -338,7 +339,7 @@ def tutte(
         vertices, faces, boundary_indices, boundary_uv, k, "tutte"
     )
     if n_vertices == 0:
-        return wp.empty(0, dtype=wp.vec2, device=device)
+        return _launch.empty(0, dtype=wp.vec2, device=device)
     laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
     return _solve_fixed_boundary(
         laplacian, None, k, n_vertices, boundary_indices, boundary_uv, device
@@ -417,8 +418,8 @@ def _solve_fixed_boundary(
         preconditioner="auto" if k >= 2 else "chebyshev",
     )
 
-    out_uv = wp.empty(n_vertices, dtype=wp.vec2, device=device)
-    wp.launch(
+    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
+    _launch.launch(
         kernel_parametrization.scatter_solution,
         dim=n_vertices,
         inputs=[fixed_mask, free_map, sol, fixed_values, out_uv],
@@ -448,19 +449,19 @@ def _solve_biharmonic(
     device = fixed_mask.device
     fixed_values_2d = twt.as_array2d(fixed_values, wp.float64)
     free_map, n_free = twl.free_partition(fixed_mask)
-    sol = twt.as_array2d(wp.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
+    sol = twt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
     if n_free > 0:
         q_uu, rhs = twl.assemble_interior_system(q, fixed_mask, free_map, fixed_values_2d, n_free)
         neg_l = wps.bsr_axpy(x=laplacian, alpha=-1.0)
         no_values = twt.as_array2d(
-            wp.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
+            _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
         )
         l_ff, _ = twl.assemble_interior_system(neg_l, fixed_mask, free_map, no_values, n_free)
         if mass_diag is None:
-            roots = wp.full(n_free, 1.0, dtype=wp.float64, device=device)
+            roots = _launch.full(n_free, 1.0, dtype=wp.float64, device=device)
         else:
-            roots = wp.empty(n_free, dtype=wp.float64, device=device)
-            wp.launch(
+            roots = _launch.empty(n_free, dtype=wp.float64, device=device)
+            _launch.launch(
                 kernel_parametrization.free_mass_roots,
                 dim=n_vertices,
                 inputs=[fixed_mask, free_map, mass_diag, roots],
@@ -473,8 +474,8 @@ def _solve_biharmonic(
             tol=_CG_TOLERANCE,
             preconditioner=twl.squared_laplacian_preconditioner(l_ff, roots),
         )
-    out_uv = wp.empty(n_vertices, dtype=wp.vec2, device=device)
-    wp.launch(
+    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
+    _launch.launch(
         kernel_parametrization.scatter_solution,
         dim=n_vertices,
         inputs=[fixed_mask, free_map, sol, fixed_values_2d, out_uv],
@@ -593,7 +594,7 @@ def arap(
     device = vertices.device
     n_vertices = vertices.size
     if n_vertices == 0:
-        return wp.empty(0, dtype=wp.vec2, device=device)
+        return _launch.empty(0, dtype=wp.vec2, device=device)
 
     # Interior vertices with nothing pinned leave the ARAP global system translation-invariant
     # (singular) -- and since n_vertices > 0, an empty ``fixed_indices`` always means at least one
@@ -620,7 +621,7 @@ def arap(
     fixed_values_2d = twt.as_array2d(fixed_values, wp.float64)
     interior_map, n_interior = twl.free_partition(fixed_mask)
 
-    out_uv = wp.empty(n_vertices, dtype=wp.vec2, device=device)
+    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     if n_interior == 0:
         # Every vertex pinned: the prescribed positions are the whole answer, no solve. This is the
         # same shape `min_quad_with_fixed`'s own `n_free == 0` branch returns (an empty `(n_rhs,
@@ -633,8 +634,8 @@ def arap(
         # upstream of any solve: `q_uu`/`rhs_const`/`rest_edges`/the CG solver state below are built
         # only for a loop that would immediately do nothing on an empty system, so skipping them
         # here is the point, not a shortcut around composition.
-        empty_sol = wp.zeros((2, 0), dtype=wp.float64, device=device)
-        wp.launch(
+        empty_sol = _launch.zeros((2, 0), dtype=wp.float64, device=device)
+        _launch.launch(
             kernel_parametrization.scatter_solution,
             dim=n_vertices,
             inputs=[fixed_mask, interior_map, empty_sol, fixed_values_2d, out_uv],
@@ -653,8 +654,8 @@ def arap(
 
     # Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain
     # wp.empty; kernels index it as wp.array2d per CLAUDE.md).
-    rest_edges = wp.empty((n_faces, 3), dtype=wp.vec2d, device=device)
-    wp.launch(
+    rest_edges = _launch.empty((n_faces, 3), dtype=wp.vec2d, device=device)
+    _launch.launch(
         kernel_parametrization.arap_rest_edges,
         dim=n_faces,
         inputs=[vertices, faces, cot_entries, rest_edges],
@@ -665,16 +666,16 @@ def arap(
     # warm-started CG solution per column; one launch seeds it from ``uv_init``'s interior values
     # and writes the working ``out_uv`` with the constraints enforced for iteration 1. Every row of
     # ``sol`` is seeded, so it is allocated uninitialised.
-    sol = wp.empty((2, n_interior), dtype=wp.float64, device=device)
-    wp.launch(
+    sol = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_parametrization.gather_interior_uv,
         dim=n_vertices,
         inputs=[fixed_mask, interior_map, uv_init, fixed_values_2d, sol, out_uv],
         device=device,
     )
-    rhs_rot_x = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    rhs_rot_y = wp.zeros(n_vertices, dtype=wp.float64, device=device)
-    b = wp.empty((2, n_interior), dtype=wp.float64, device=device)
+    rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    rhs_rot_y = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    b = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
 
     # One batched CG state for both UV columns, built once outside the loop: its temporaries and
     # batch layout are reused across iterations, and it reads ``b`` / writes ``sol`` in place, so
@@ -689,17 +690,17 @@ def arap(
     )
 
     for _ in range(max_iterations):
-        rhs_rot_x.zero_()
-        rhs_rot_y.zero_()
+        _launch.zero_(rhs_rot_x)
+        _launch.zero_(rhs_rot_y)
         # Local step: fit per-face rotations from ``out_uv`` and scatter the rotation RHS.
-        wp.launch(
+        _launch.launch(
             kernel_parametrization.arap_local_step,
             dim=n_faces,
             inputs=[faces, out_uv, rest_edges, rhs_rot_x, rhs_rot_y],
             device=device,
         )
         # Global step RHS: constant boundary term + rotation term, restricted to interior rows.
-        wp.launch(
+        _launch.launch(
             kernel_parametrization.arap_interior_rhs,
             dim=n_vertices,
             inputs=[fixed_mask, interior_map, rhs_const, rhs_rot_x, rhs_rot_y, b],
@@ -708,7 +709,7 @@ def arap(
         # Both UV columns in one batched symmetric-PD solve, warm-started from the previous ``sol``.
         solver()
         # Reconstruct the full UV field, re-enforcing the pinned constraints for the next iteration.
-        wp.launch(
+        _launch.launch(
             kernel_parametrization.scatter_solution,
             dim=n_vertices,
             inputs=[fixed_mask, interior_map, sol, fixed_values_2d, out_uv],
@@ -739,10 +740,10 @@ def _scatter_constraints(
     if uv.size != n_fixed:
         raise ValueError(f"indices and uv must have the same length, got {n_fixed} and {uv.size}.")
     # One scatter marks the mask and writes the values, skipping an out-of-range index in both.
-    fixed_mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
-    fixed_values = wp.zeros((2, n_vertices), dtype=wp.float64, device=device)
+    fixed_mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    fixed_values = _launch.zeros((2, n_vertices), dtype=wp.float64, device=device)
     if n_fixed > 0:
-        wp.launch(
+        _launch.launch(
             kernel_parametrization.scatter_fixed_uv,
             dim=n_fixed,
             inputs=[indices, uv, fixed_mask, fixed_values],
@@ -820,7 +821,7 @@ def lscm(
     device = vertices.device
     n = vertices.size
     if n == 0:
-        return wp.empty(0, dtype=wp.vec2, device=device)
+        return _launch.empty(0, dtype=wp.vec2, device=device)
 
     n_pinned = pinned_indices.size
     _require_fixed_vertices(
@@ -839,10 +840,10 @@ def lscm(
         )
 
     q = tw.energies.lscm_hessian(vertices, faces)
-    fixed_mask = wp.zeros(2 * n, dtype=wp.bool, device=device)
-    fixed_values = wp.zeros((1, 2 * n), dtype=wp.float64, device=device)
+    fixed_mask = _launch.zeros(2 * n, dtype=wp.bool, device=device)
+    fixed_values = _launch.zeros((1, 2 * n), dtype=wp.float64, device=device)
     if n_pinned > 0:
-        wp.launch(
+        _launch.launch(
             kernel_parametrization.scatter_pinned_stacked,
             dim=n_pinned,
             inputs=[pinned_indices, pinned_uv, wp.int32(n), fixed_mask, fixed_values],
@@ -859,8 +860,8 @@ def lscm(
         preconditioner="chebyshev",
     )
 
-    out_uv = wp.empty(n, dtype=wp.vec2, device=device)
-    wp.launch(
+    out_uv = _launch.empty(n, dtype=wp.vec2, device=device)
+    _launch.launch(
         kernel_parametrization.scatter_solution_stacked,
         dim=n,
         inputs=[fixed_mask, free_map, sol[0], fixed_values[0], out_uv],

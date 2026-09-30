@@ -132,6 +132,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -346,7 +347,7 @@ def min_quad_with_fixed(
     n_rhs = int(fixed_values.shape[0])
     free_map, n_free = free_partition(fixed_mask)
 
-    solution = wp.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
+    solution = _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
     if n_free == 0:
         return twt.as_array2d(solution, wp.float64), free_map, n_free
 
@@ -454,9 +455,9 @@ def assemble_interior_system(
     n_rhs = int(fixed_values.shape[0])
     # Every free row writes its own count exactly once (``free_map`` is a bijection onto
     # ``[0, n_free)``), so there is nothing to pre-zero.
-    counts = wp.empty(n_free, dtype=wp.int32, device=device)
-    rhs = wp.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
-    wp.launch(
+    counts = _launch.empty(n_free, dtype=wp.int32, device=device)
+    rhs = _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_linalg.interior_row_counts,
         dim=n_dofs,
         inputs=[q.offsets, q.columns, q.values, fixed_mask, free_map, fixed_values, counts, rhs],
@@ -465,9 +466,9 @@ def assemble_interior_system(
     # The total-terminated form *is* the CSR offsets array, and the one host read it costs is what
     # sizes ``columns`` / ``values`` for their final use at allocation time.
     row_offsets, nnz_uu = tw.array.counts_to_offsets(counts)
-    columns = wp.empty(nnz_uu, dtype=wp.int32, device=device)
-    values = wp.empty(nnz_uu, dtype=wp.float64, device=device)
-    wp.launch(
+    columns = _launch.empty(nnz_uu, dtype=wp.int32, device=device)
+    values = _launch.empty(nnz_uu, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_linalg.interior_system_csr,
         dim=n_dofs,
         inputs=[q.offsets, q.columns, q.values, fixed_mask, free_map, row_offsets, columns, values],
@@ -704,13 +705,13 @@ def _scalar_expansion(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[wp.float64]:
     device = matrix.device
     n_rows = int(matrix.nrow)
     capacity = 4 * matrix.values.size
-    offsets = wp.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(capacity, dtype=wp.int32, device=device)
-    values = wp.empty(capacity, dtype=wp.float64, device=device)
+    offsets = _launch.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
     if n_rows == 0:
-        offsets.zero_()
+        _launch.zero_(offsets)
     else:
-        wp.launch(
+        _launch.launch(
             kernel_linalg.expand_block_csr_2x2,
             dim=n_rows,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
@@ -1327,11 +1328,13 @@ def _cg_one_block(
         factor, factor_t = preconditioner._factor, preconditioner._factor_t
         factor_values, factor_t_values = preconditioner.narrowed()
         steps = preconditioner._steps
-        narrow = wp.empty(kernel_cg.ONE_BLOCK_NARROW_SLOTS * total, dtype=wp.float32, device=device)
+        narrow = _launch.empty(
+            kernel_cg.ONE_BLOCK_NARROW_SLOTS * total, dtype=wp.float32, device=device
+        )
     # One buffer for the working vectors and the three per-column results -- residual, threshold
     # and round count -- which the kernel writes before anything reads them. The integer count is
     # only needed as a device array, so a host caller allocates none and reads one buffer.
-    scratch = wp.empty(
+    scratch = _launch.empty(
         kernel_cg.ONE_BLOCK_SLOTS * total + 3 * n_columns, dtype=wp.float64, device=device
     )
     results = twt.as_dense(scratch[kernel_cg.ONE_BLOCK_SLOTS * total :])
@@ -1339,8 +1342,8 @@ def _cg_one_block(
     threshold = twt.as_dense(results[n_columns : 2 * n_columns])
     steps_out = twt.as_dense(results[2 * n_columns :])
     device_result = check_every == 0 and device.is_cuda
-    iterations = wp.zeros(1, dtype=wp.int32, device=device) if device_result else None
-    wp.launch_tiled(
+    iterations = _launch.zeros(1, dtype=wp.int32, device=device) if device_result else None
+    _launch.launch_tiled(
         kernel_cg.cg_one_block,
         dim=[n_columns],
         inputs=[
@@ -1488,7 +1491,7 @@ def _offdiagonal_dominance(matrix: wps.BsrMatrix[wp.float64]) -> float:
     n_rows = int(matrix.nrow)
     device = matrix.values.device
     ratios = twt.empty_1d(n_rows, wp.float64, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_linalg.offdiagonal_dominance_rows,
         dim=n_rows,
         # ``nnz`` is a stale capacity, but ``offsets``/``columns``/``values`` are indexed through
@@ -1726,7 +1729,7 @@ class _BatchedCg:
         # preconditioner read the operator as stored.
         self._round_values = matrix.values
         if narrow_values and matrix.values.dtype == wp.float64 and not self._heavy:
-            self._round_values = wp.empty(matrix.values.shape, dtype=wp.float32, device=device)
+            self._round_values = _launch.empty(matrix.values.shape, dtype=wp.float32, device=device)
             wp.utils.array_cast(matrix.values, self._round_values)
 
         self._rhs = rhs
@@ -1747,14 +1750,14 @@ class _BatchedCg:
         # ``r``, ``u = M^-1 r``, ``w = A u``, the search direction ``p`` and ``s = A p``, in one
         # allocation: a view is a third of a ``wp.zeros``.
         dofs = self._dofs
-        vectors = wp.zeros(5 * dofs, dtype=dtype, device=device)
+        vectors = _launch.zeros(5 * dofs, dtype=dtype, device=device)
         self._r, self._u, self._w, self._p, self._s = (
             twt.as_dense(vectors[k * dofs : (k + 1) * dofs]) for k in range(5)
         )
         # First-stage partials of the three dots ``cg_matvec_dots`` reduces: ``r.u``, ``w.u``,
         # ``r.r`` (and of ``||b||^2`` in row 0 at the start of a solve). ``wp.empty``: every entry a
         # fold reads, ``[0, blocks)`` of each row, is written by the partials launch before it.
-        self._partials = wp.empty(
+        self._partials = _launch.empty(
             (3, self._n_columns, self._blocks), dtype=wp.float64, device=device
         )
         # Every per-column ``float64`` scalar in one ``(10, n_columns)`` allocation, rows viewed
@@ -1771,7 +1774,7 @@ class _BatchedCg:
         # The loop's integer state leads the same allocation, two ``float64`` words holding the
         # ``int32`` words (``_INT_WORDS``), so the loop condition, the count and rows 0-1 are one
         # contiguous span a host result reads in one readback (``host_result``).
-        head = wp.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
+        head = _launch.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
         self._head = twt.as_dense(head[: _INT_WORDS + 2 * self._n_columns])
         scalars = twt.as_dense(head[_INT_WORDS:]).reshape((10, self._n_columns))
         self._residual_tolerance = twt.as_array2d(scalars[0:2], wp.float64)
@@ -1825,8 +1828,8 @@ class _BatchedCg:
         self._inv_diag = None
         self._scaled = self._u
         if self._cycle is None:
-            self._inv_diag = wp.empty(self._n, dtype=dtype, device=device)
-            wp.launch(
+            self._inv_diag = _launch.empty(self._n, dtype=dtype, device=device)
+            _launch.launch(
                 kernel_linalg.JACOBI_INVERSE_DIAGONAL[dtype],
                 dim=self._n,
                 inputs=[matrix.offsets, matrix.columns, matrix.values],
@@ -1854,8 +1857,10 @@ class _BatchedCg:
         # needs none, since the first check never stops (``SETTLE_PREVIOUS``).
         self._settle = settle
         if settle is not None:
-            self._settle_previous = wp.zeros(self._n_columns * self._n, dtype=dtype, device=device)
-            self._settle_state = wp.zeros(
+            self._settle_previous = _launch.zeros(
+                self._n_columns * self._n, dtype=dtype, device=device
+            )
+            self._settle_state = _launch.zeros(
                 kernel_cg.SETTLE_STATE_SIZE, dtype=wp.float64, device=device
             )
 
@@ -1884,7 +1889,7 @@ class _BatchedCg:
             assert isinstance(self._cycle, _JacobiChebyshevApply)
             ratios = self._cycle.owner.ratios
         if self._n > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_linalg.refresh_pooled_operator,
                 dim=self._n,
                 inputs=[
@@ -1916,7 +1921,7 @@ class _BatchedCg:
         assert self._settle is not None
         check_rounds, change_tolerance, settle_rounds = self._settle
         n = self._n_columns * self._n
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_cg.cg_settle_change,
             dim=[kernel_reduce.blocks_1d(n)],
             inputs=[self._solution_flat, self._settle_previous],
@@ -1924,7 +1929,7 @@ class _BatchedCg:
             block_dim=TILE_1D,
             device=self._device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_cg.cg_settle_decide,
             dim=1,
             inputs=[
@@ -1958,7 +1963,7 @@ class _BatchedCg:
         if self._heavy:
             for u_column, w_column in self._uw_columns:
                 wps.bsr_mv(self._matrix, u_column, w_column, tile_size=self._mv_tile)
-            wp.launch_tiled(
+            _launch.launch_tiled(
                 kernel_cg.CG_ROUND_DOTS[self._dtype],
                 dim=grid,
                 inputs=[
@@ -1975,7 +1980,7 @@ class _BatchedCg:
                 device=self._device,
             )
         else:
-            wp.launch_tiled(
+            _launch.launch_tiled(
                 kernel_cg.CG_MATVEC_DOTS[self._dtype, self._round_values.dtype],
                 dim=grid,
                 inputs=[
@@ -1995,7 +2000,7 @@ class _BatchedCg:
                 device=self._device,
             )
         if not self._fold:
-            wp.launch_tiled(
+            _launch.launch_tiled(
                 kernel_cg.cg_coefficients,
                 dim=(self._n_columns,),
                 inputs=[
@@ -2021,7 +2026,7 @@ class _BatchedCg:
         jacobi = self._inv_diag is not None
         # One tile a block whatever ``span`` is: the update reduces nothing unless it folds (and it
         # folds only at one tile a block), so it is a pure stream, which wants the most blocks.
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_cg.CG_UPDATE[self._dtype],
             dim=(self._n_columns, self._stride // tile),
             inputs=[
@@ -2074,7 +2079,7 @@ class _BatchedCg:
         """
         tile = int(kernel_cg.CG_TILE)
         jacobi = self._inv_diag is not None
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_cg.CG_INITIAL[self._dtype, self._round_values.dtype],
             dim=(self._n_columns, self._blocks),
             inputs=[
@@ -2112,7 +2117,7 @@ class _BatchedCg:
         the Jacobi-Chebyshev polynomial that is a dozen launches a solve.
         """
         tile = int(kernel_cg.CG_TILE)
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_cg.cg_seed,
             dim=(self._n_columns,),
             inputs=[
@@ -2136,7 +2141,7 @@ class _BatchedCg:
         elif self._cycle is not None:
             self._cycle.apply(self._r, self._u)
         if self._settle is not None:
-            self._settle_state.zero_()
+            _launch.zero_(self._settle_state)
 
     def __call__(self, initial: wp.array[Any] | None = None):
         """
@@ -2187,7 +2192,7 @@ class _BatchedCg:
         finally:
             # Not held past the call: the caller's right-hand side is not this solver's to keep.
             self._rhs_flat = None
-        wp.copy(solution, self._solution_flat)
+        _launch.copy(solution, self._solution_flat)
         return result
 
     def _run_with_host_checks(self, check_every: int) -> tuple[int, float, float]:
@@ -2417,9 +2422,9 @@ def _owned_copy(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[Any]:
     return _bsr_over(
         int(matrix.nrow),
         int(matrix.ncol),
-        wp.clone(matrix.offsets),
-        wp.clone(matrix.columns),
-        wp.clone(matrix.values),
+        _launch.clone(matrix.offsets),
+        _launch.clone(matrix.columns),
+        _launch.clone(matrix.values),
         int(matrix.nnz),
     )
 
@@ -2562,16 +2567,16 @@ def block_diag(matrices: Sequence[wps.BsrMatrix[Any]]) -> wps.BsrMatrix[wp.float
         descriptor.values = block.values
         descriptor.n_rows = int(block.nrow)
         descriptors.append(descriptor)
-    offsets = wp.empty(n_rows + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(capacity, dtype=wp.int32, device=device)
-    values = wp.empty(capacity, dtype=wp.float64, device=device)
+    offsets = _launch.empty(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    values = _launch.empty(capacity, dtype=wp.float64, device=device)
     if n_rows == 0:
-        offsets.zero_()
+        _launch.zero_(offsets)
     else:
-        wp.launch(
+        _launch.launch(
             kernel_linalg.stack_block_diagonal,
             dim=n_rows,
-            inputs=[wp.array(descriptors, dtype=kernel_linalg.CsrBlock, device=device)],
+            inputs=[_launch.array(descriptors, dtype=kernel_linalg.CsrBlock, device=device)],
             outputs=[offsets, columns, values],
             device=device,
         )
@@ -2656,7 +2661,7 @@ def replicated_operator(
         for column in range(n_columns):
             base.matvec(x_blocks[column], y_blocks[column], z_blocks[column], alpha, beta)
 
-    offsets = wp.array(
+    offsets = _launch.array(
         [column * n for column in range(n_columns + 1)], dtype=wp.int32, device=base.device
     )
     total = n_columns * n
@@ -2943,7 +2948,7 @@ class SquaredLaplacianPreconditioner:
         self._n = int(laplacian.nrow)
         self._device = laplacian.values.device
         self._factor = wps.bsr_copy(laplacian)
-        wp.launch(
+        _launch.launch(
             kernel_mg.scale_rows,
             dim=self._n,
             inputs=[self._factor.offsets, weight_sums, wp.float64(1.0), 1, self._factor.values],
@@ -2963,7 +2968,7 @@ class SquaredLaplacianPreconditioner:
         # the interval is ``[min(SQUARED_LAPLACIAN_INTERVAL / n, SQUARED_LAPLACIAN_INTERVAL_CAP) *
         # upper / 2, upper]`` with ``upper = max(bound, 2)``.
         ratios = twt.empty_1d(self._n, wp.float64, device=self._device)
-        wp.launch(
+        _launch.launch(
             kernel_linalg.scaled_row_abs_sums,
             dim=self._n,
             inputs=[laplacian.offsets, laplacian.values, weight_sums, ratios],
@@ -3050,11 +3055,11 @@ class SquaredLaplacianPreconditioner:
         copy._device = self._device
         copy._factor = _owned_copy(self._factor)
         copy._factor_t = (
-            bsr_with_values(copy._factor, wp.clone(self._factor_t.values))
+            bsr_with_values(copy._factor, _launch.clone(self._factor_t.values))
             if self._shares_pattern()
             else _owned_copy(self._factor_t)
         )
-        copy._steps = wp.clone(self._steps)
+        copy._steps = _launch.clone(self._steps)
         copy._narrowed = None
         return copy
 
@@ -3063,10 +3068,10 @@ class SquaredLaplacianPreconditioner:
         factors = [(self._factor, other._factor), (self._factor_t, other._factor_t)]
         for index, (mine, theirs) in enumerate(factors):
             if index == 0 or not other._shares_pattern():
-                wp.copy(mine.offsets, theirs.offsets)
-                wp.copy(mine.columns, theirs.columns)
-            wp.copy(mine.values, theirs.values)
-        wp.copy(self._steps, other._steps)
+                _launch.copy(mine.offsets, theirs.offsets)
+                _launch.copy(mine.columns, theirs.columns)
+            _launch.copy(mine.values, theirs.values)
+        _launch.copy(self._steps, other._steps)
         self._narrowed = None
 
     def narrowed(self) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
@@ -3105,7 +3110,7 @@ class _ChebyshevApply:
         # Zeroed: every step writes the ``n`` live rows of a column and nothing in the pad, which
         # the conjugate-gradient state reduces over.
         self._dofs = n_columns * stride
-        self._spare = [wp.zeros(self._dofs, dtype=wp.float64, device=device) for _ in range(3)]
+        self._spare = [_launch.zeros(self._dofs, dtype=wp.float64, device=device) for _ in range(3)]
 
     def _polynomial(
         self,
@@ -3129,7 +3134,7 @@ class _ChebyshevApply:
         n_steps = steps.size
         for index in range(n_steps):
             target = destination if index == n_steps - 1 else free.pop()
-            wp.launch(
+            _launch.launch(
                 kernel_mg.chebyshev_step,
                 dim=self._dim,
                 inputs=[
@@ -3161,7 +3166,7 @@ class _SquaredLaplacianApply(_ChebyshevApply):
     def __init__(self, owner: SquaredLaplacianPreconditioner, n_columns: int, stride: int) -> None:
         super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)
         self._owner = owner
-        self._middle = wp.zeros(self._dofs, dtype=wp.float64, device=self._device)
+        self._middle = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
 
     @property
     def owner(self) -> SquaredLaplacianPreconditioner:
@@ -3184,9 +3189,9 @@ class _JacobiChebyshev:
         # is the same arithmetic without the copy -- and ``bsr_copy`` is most of what a setup would
         # otherwise cost.
         self._matrix = matrix
-        self._inverse_diagonal = wp.empty(self._n, dtype=wp.float64, device=self._device)
+        self._inverse_diagonal = _launch.empty(self._n, dtype=wp.float64, device=self._device)
         self.ratios = twt.empty_1d(self._n, wp.float64, device=self._device)
-        wp.launch(
+        _launch.launch(
             kernel_linalg.jacobi_dominance_rows,
             dim=self._n,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
@@ -3224,7 +3229,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
     def __init__(self, owner: _JacobiChebyshev, n_columns: int, stride: int) -> None:
         super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)
         self._owner = owner
-        self._scaled = wp.zeros(self._dofs, dtype=wp.float64, device=self._device)
+        self._scaled = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
 
     @property
     def owner(self) -> _JacobiChebyshev:
@@ -3249,7 +3254,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
 
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
         """``destination = p(D⁻¹ A) D⁻¹ source``: the Jacobi scaling, then the polynomial."""
-        wp.launch(
+        _launch.launch(
             kernel_cg.scaled_diagonal_apply,
             dim=self._dofs,
             inputs=[
@@ -3284,17 +3289,17 @@ def _device_chebyshev_steps(
     """
     device = ratios.device
     n = ratios.size
-    bound = wp.full(1, -math.inf, dtype=wp.float64, device=device)
+    bound = _launch.full(1, -math.inf, dtype=wp.float64, device=device)
     if n > 0:
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_reduce.MAX1D_TILED[wp.float64],
             dim=[kernel_reduce.blocks_1d(n)],
             inputs=[ratios, bound],
             block_dim=TILE_1D,
             device=device,
         )
-    steps = wp.empty(degree - 1, dtype=wp.vec4d, device=device) if out is None else out
-    wp.launch(
+    steps = _launch.empty(degree - 1, dtype=wp.vec4d, device=device) if out is None else out
+    _launch.launch(
         kernel_linalg.chebyshev_steps,
         dim=1,
         inputs=[
@@ -3423,8 +3428,8 @@ def _multigrid_hierarchy(
         label, n_aggregates = _multigrid_aggregate(operator, diag, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
-        diagonal = wp.empty(level.n, dtype=wp.float64, device=operator.device)
-        wp.map(kernel_array.inverse_or_one, diag, out=diagonal)
+        diagonal = _launch.empty(level.n, dtype=wp.float64, device=operator.device)
+        _launch.map(kernel_array.inverse_or_one, diag, out=diagonal)
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
         level.inverse_diagonal = _multigrid_damped_diagonal(operator, diagonal, seed)
@@ -3466,30 +3471,30 @@ def _multigrid_aggregate(
     # per edge. One ``(n,)`` buffer and one map, read by both walks. The ``diagonal`` argument is
     # the caller's, because the hierarchy needs the same extraction for the smoother and must not
     # repeat it here.
-    scaled_diagonal = wp.empty(n, dtype=wp.float64, device=device)
-    wp.map(kernel_array.sqrt_abs, diagonal, out=scaled_diagonal)
+    scaled_diagonal = _launch.empty(n, dtype=wp.float64, device=device)
+    _launch.map(kernel_array.sqrt_abs, diagonal, out=scaled_diagonal)
 
-    priority = wp.empty(n, dtype=wp.uint32, device=device)
-    wp.launch(
+    priority = _launch.empty(n, dtype=wp.uint32, device=device)
+    _launch.launch(
         kernel_array.random_priorities, dim=n, inputs=[wp.int32(seed), priority], device=device
     )
-    state = wp.full(n, int(kernel_mg.MG_UNDECIDED), dtype=wp.int32, device=device)
-    next_state = wp.empty(n, dtype=wp.int32, device=device)
-    key = wp.empty(n, dtype=wp.int64, device=device)
-    next_key = wp.empty(n, dtype=wp.int64, device=device)
-    undecided = wp.zeros(1, dtype=wp.int32, device=device)
+    state = _launch.full(n, int(kernel_mg.MG_UNDECIDED), dtype=wp.int32, device=device)
+    next_state = _launch.empty(n, dtype=wp.int32, device=device)
+    key = _launch.empty(n, dtype=wp.int64, device=device)
+    next_key = _launch.empty(n, dtype=wp.int64, device=device)
+    undecided = _launch.zeros(1, dtype=wp.int32, device=device)
     for _ in range(_MULTIGRID_MIS_ROUNDS):
-        wp.launch(kernel_mg.mis_seed_keys, dim=n, inputs=[state, priority, key], device=device)
+        _launch.launch(kernel_mg.mis_seed_keys, dim=n, inputs=[state, priority, key], device=device)
         for _ in range(2):
-            wp.launch(
+            _launch.launch(
                 kernel_mg.mis_propagate,
                 dim=n,
                 inputs=[key, offsets, columns, values, scaled_diagonal, theta, next_key],
                 device=device,
             )
             key, next_key = next_key, key
-        undecided.zero_()
-        wp.launch(
+        _launch.zero_(undecided)
+        _launch.launch(
             kernel_mg.mis_decide,
             dim=n,
             inputs=[key, priority, state, next_state, undecided],
@@ -3501,17 +3506,17 @@ def _multigrid_aggregate(
         if int(read_scalar(undecided, 0)) == 0:
             break
 
-    flags = wp.empty(n, dtype=wp.int32, device=device)
-    wp.map(kernel_mg.mis_root_flag, state, out=flags)
-    scan_pos = wp.empty(n, dtype=wp.int32, device=device)
-    wp.utils.array_scan(flags, scan_pos, inclusive=True)
+    flags = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.map(kernel_mg.mis_root_flag, state, out=flags)
+    scan_pos = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.array_scan(flags, scan_pos, inclusive=True)
     n_aggregates = int(read_scalar(scan_pos))
 
-    label = wp.empty(n, dtype=wp.int32, device=device)
-    next_label = wp.empty(n, dtype=wp.int32, device=device)
-    wp.map(kernel_mg.aggregate_label, state, scan_pos, out=label)
+    label = _launch.empty(n, dtype=wp.int32, device=device)
+    next_label = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.map(kernel_mg.aggregate_label, state, scan_pos, out=label)
     for _ in range(2):
-        wp.launch(
+        _launch.launch(
             kernel_mg.spread_aggregate_labels,
             dim=n,
             inputs=[label, offsets, columns, values, scaled_diagonal, theta, next_label],
@@ -3543,11 +3548,11 @@ def _multigrid_damped_diagonal(
     """
     device = matrix.device
     n = int(matrix.nrow)
-    x = wp.empty(n, dtype=wp.float64, device=device)
-    y = wp.empty(n, dtype=wp.float64, device=device)
-    wp.launch(kernel_mg.random_signs, dim=n, inputs=[wp.int32(seed), x], device=device)
+    x = _launch.empty(n, dtype=wp.float64, device=device)
+    y = _launch.empty(n, dtype=wp.float64, device=device)
+    _launch.launch(kernel_mg.random_signs, dim=n, inputs=[wp.int32(seed), x], device=device)
     for _ in range(_MULTIGRID_POWER_STEPS):
-        wp.launch(
+        _launch.launch(
             kernel_mg.power_step,
             dim=n,
             inputs=[inverse_diagonal, matrix.offsets, matrix.columns, matrix.values, x, y],
@@ -3557,10 +3562,10 @@ def _multigrid_damped_diagonal(
     # How much the iterate grew over ``K`` steps of ``D^-1 A`` is ``rho ** K`` to the accuracy this
     # needs, and it stays on the device. The start is exact: every entry of a sign vector is +-1,
     # so its squared norm is exactly n.
-    growth = wp.empty(1, dtype=wp.float64, device=device)
+    growth = _launch.empty(1, dtype=wp.float64, device=device)
     wp.utils.array_inner(x, x, out=growth)
-    damped = wp.empty(n, dtype=wp.float64, device=device)
-    wp.launch(
+    damped = _launch.empty(n, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_mg.damped_inverse_diagonal,
         dim=n,
         inputs=[
@@ -3585,12 +3590,12 @@ def _multigrid_prolongator(
     """Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``."""
     device = matrix.device
     n = int(matrix.nrow)
-    sizes = wp.zeros(n_aggregates, dtype=wp.int32, device=device)
-    wp.launch(kernel_mg.aggregate_sizes, dim=n, inputs=[label, sizes], device=device)
-    offsets = wp.empty(n + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(n, dtype=wp.int32, device=device)
-    values = wp.empty(n, dtype=wp.float64, device=device)
-    wp.launch(
+    sizes = _launch.zeros(n_aggregates, dtype=wp.int32, device=device)
+    _launch.launch(kernel_mg.aggregate_sizes, dim=n, inputs=[label, sizes], device=device)
+    offsets = _launch.empty(n + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(n, dtype=wp.int32, device=device)
+    values = _launch.empty(n, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_mg.tentative_prolongator,
         dim=n,
         inputs=[label, sizes, offsets, columns, values],
@@ -3601,7 +3606,7 @@ def _multigrid_prolongator(
     smoothed = wps.bsr_mm(matrix, tentative)
     # Row-scale by ``-omega D^-1`` in place: one pass over the product's values, where a ``bsr_mm``
     # against a diagonal matrix would be a second sparse product.
-    wp.launch(
+    _launch.launch(
         kernel_mg.scale_rows,
         dim=n,
         inputs=[smoothed.offsets, damped_inverse_diagonal, wp.float64(-1.0), 0, smoothed.values],
@@ -3667,7 +3672,7 @@ def _multigrid_dense_inverse(matrix: wps.BsrMatrix[wp.float64]) -> twt.ArrayNd |
         # being symmetric makes exact and considerably cheaper.
         block = np.linalg.pinv(dense[np.ix_(active, active)], rcond=1e-12, hermitian=True)
         inverse[np.ix_(active, active)] = block
-    return wp.array(inverse, dtype=wp.float64, device=matrix.device)
+    return _launch.array(inverse, dtype=wp.float64, device=matrix.device)
 
 
 class _MultigridCycle:
@@ -3706,12 +3711,12 @@ class _MultigridCycle:
             level.stride = stride if top else level.n
             level.dim = n_columns * level.stride
             level.matvec_dim = n_columns * level.n
-            level.ax = wp.zeros(level.dim, dtype=wp.float64, device=self._device)
-            level.r = wp.zeros(level.dim, dtype=wp.float64, device=self._device)
+            level.ax = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
+            level.r = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
             if top:
                 continue
-            level.b = wp.zeros(level.dim, dtype=wp.float64, device=self._device)
-            level.x = wp.zeros(level.dim, dtype=wp.float64, device=self._device)
+            level.b = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
+            level.x = _launch.zeros(level.dim, dtype=wp.float64, device=self._device)
         for depth, level in enumerate(levels[:-1]):
             child = levels[depth + 1]
             level.restrict_dim = n_columns * child.n
@@ -3739,7 +3744,7 @@ class _MultigridCycle:
         y: wp.array[wp.float64],
         accumulate: bool = False,
     ) -> None:
-        wp.launch(
+        _launch.launch(
             kernel_mg.csr_matvec,
             dim=dim,
             inputs=[
@@ -3768,7 +3773,7 @@ class _MultigridCycle:
                 level.x,
                 level.ax,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_mg.jacobi_sweep,
                 dim=level.dim,
                 inputs=[
@@ -3786,7 +3791,7 @@ class _MultigridCycle:
     def _cycle(self, depth: int) -> None:
         level = self._levels[depth]
         if level.prolongator is None:
-            wp.launch(
+            _launch.launch(
                 kernel_mg.dense_solve,
                 dim=level.dim,
                 inputs=[
@@ -3801,7 +3806,7 @@ class _MultigridCycle:
             return
         # The first sweep from a zero initial guess is a *write*, so nothing has to be zeroed and
         # that sweep costs no mat-vec.
-        wp.launch(
+        _launch.launch(
             kernel_cg.scaled_diagonal_apply,
             dim=level.dim,
             inputs=[
@@ -3818,7 +3823,7 @@ class _MultigridCycle:
         self._matvec(
             level.operator, level.matvec_dim, level.n, level.stride, level.stride, level.x, level.ax
         )
-        wp.launch(
+        _launch.launch(
             kernel_mg.residual,
             dim=level.dim,
             inputs=[wp.int32(level.n), wp.int32(level.stride), level.b, level.ax, level.r],

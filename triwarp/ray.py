@@ -7,6 +7,7 @@ import math
 import warp as wp
 
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.bounds import aabb
 from triwarp.constants import TOLERANCE_PLANAR
@@ -71,17 +72,17 @@ def intersects_location(
     n = ray_origins.size
     device = ray_origins.device
     if n == 0:
-        empty_int = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
+        empty_int = _launch.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
 
     if max_t is None:
         max_t = math.inf
 
-    index_ray = wp.empty(n, dtype=wp.int32, device=device)
-    index_tri = wp.empty(n, dtype=wp.int32, device=device)
-    locations = wp.empty(n, dtype=wp.vec3, device=device)
-    counter = wp.zeros(1, dtype=wp.int32, device=device)
-    wp.launch(
+    index_ray = _launch.empty(n, dtype=wp.int32, device=device)
+    index_tri = _launch.empty(n, dtype=wp.int32, device=device)
+    locations = _launch.empty(n, dtype=wp.vec3, device=device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_ray.first_hit_append,
         dim=n,
         inputs=[
@@ -100,8 +101,8 @@ def intersects_location(
     # three copies fewer, at the price of the returned arrays keeping ``n``-long storage alive.
     n_hits = int(read_scalar(counter, 0))
     if n_hits == 0:
-        empty_int = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
+        empty_int = _launch.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device), empty_int, empty_int
     return (
         twt.as_dense(locations[:n_hits]),
         twt.as_dense(index_ray[:n_hits]),
@@ -151,17 +152,17 @@ def intersects_first(
     _validate_ray_inputs(ray_origins, ray_directions)
     n = ray_origins.size
     if n == 0:
-        return wp.empty(0, dtype=wp.int32, device=ray_origins.device)
+        return _launch.empty(0, dtype=wp.int32, device=ray_origins.device)
     if max_t is None:
         max_t = math.inf
 
-    out_triangle_index = wp.empty(n, dtype=wp.int32, device=ray_origins.device)
+    out_triangle_index = _launch.empty(n, dtype=wp.int32, device=ray_origins.device)
     # ``first_hit`` returns ``(face, location)`` and ``wp.map`` wants one ``out=`` per returned
     # value, so the location is written and dropped. Kept rather than given a face-only
     # ``@wp.func`` of its own: that would generate a second ``map_*`` module to save one
     # allocation and an (n,) vec3 store, well under a percent of a call this size.
-    locations_scratch = wp.empty(n, dtype=wp.vec3, device=ray_origins.device)
-    wp.map(
+    locations_scratch = _launch.empty(n, dtype=wp.vec3, device=ray_origins.device)
+    _launch.map(
         kernel_ray.first_hit,
         wp.uint64(mesh.id),
         ray_origins,
@@ -214,12 +215,12 @@ def intersects_any(
     _validate_ray_inputs(ray_origins, ray_directions)
     n = ray_origins.size
     if n == 0:
-        return wp.empty(0, dtype=wp.bool, device=ray_origins.device)
+        return _launch.empty(0, dtype=wp.bool, device=ray_origins.device)
     if max_t is None:
         max_t = math.inf
 
-    out_hit = wp.empty(n, dtype=wp.bool, device=ray_origins.device)
-    wp.map(
+    out_hit = _launch.empty(n, dtype=wp.bool, device=ray_origins.device)
+    _launch.map(
         kernel_ray.any_hit,
         wp.uint64(mesh.id),
         ray_origins,
@@ -279,12 +280,12 @@ def longest_ray(
     _validate_ray_inputs(ray_origins, ray_directions)
     n = ray_origins.size
     if n == 0:
-        return wp.empty(0, dtype=wp.float32, device=ray_origins.device)
+        return _launch.empty(0, dtype=wp.float32, device=ray_origins.device)
     if max_t is None:
         max_t = math.inf
 
-    out_distances = wp.empty(n, dtype=wp.float32, device=ray_origins.device)
-    wp.map(
+    out_distances = _launch.empty(n, dtype=wp.float32, device=ray_origins.device)
+    _launch.map(
         kernel_ray.longest_ray_distance,
         wp.uint64(mesh.id),
         ray_origins,
@@ -369,7 +370,7 @@ def contains_points(
     require_same_device(mesh=mesh, points=points)
     n = points.size
     if n == 0:
-        return wp.empty(0, dtype=wp.bool, device=points.device)
+        return _launch.empty(0, dtype=wp.bool, device=points.device)
     # One reduction, not two: ``enclosing_diagonal(mesh.points)`` would recompute exactly these
     # corners, and the parity kernel needs both them and the diagonal, so compute the AABB once
     # and derive the diagonal from it directly.
@@ -379,8 +380,8 @@ def contains_points(
     # computes in float64 where ``wp.length`` is float32, i.e. the correctly-rounded answer for
     # float32 corners. Section 13.1.
     max_dist = math.dist(mesh_min, mesh_max)
-    out_contains = wp.empty(n, dtype=wp.bool, device=points.device)
-    wp.launch(
+    out_contains = _launch.empty(n, dtype=wp.bool, device=points.device)
+    _launch.launch(
         kernel_proximity.contains_points_sign_parity,
         dim=n,
         inputs=[

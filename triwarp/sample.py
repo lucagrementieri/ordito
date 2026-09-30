@@ -37,6 +37,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.array import arange, flatnonzero, gather
 from triwarp.kernels import sample as kernel_sample
@@ -174,9 +175,9 @@ def _fibonacci_lattice(count: int, z_span: float, device: wp.DeviceLike) -> wp.a
         ``(count,)`` unit vectors. Empty when ``count`` is 0.
     """
     if count <= 0:
-        return wp.empty(0, dtype=wp.vec3, device=device)
-    out_directions = wp.empty(count, dtype=wp.vec3, device=device)
-    wp.launch(
+        return _launch.empty(0, dtype=wp.vec3, device=device)
+    out_directions = _launch.empty(count, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_sample.fibonacci_lattice,
         dim=count,
         inputs=[count, wp.float32(z_span), out_directions],
@@ -239,8 +240,8 @@ def sample_surface(
         )
     if count == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=vertices.device),
-            wp.empty(0, dtype=wp.int32, device=vertices.device),
+            _launch.empty(0, dtype=wp.vec3, device=vertices.device),
+            _launch.empty(0, dtype=wp.int32, device=vertices.device),
         )
     if n_faces == 0:
         # Without this, an empty ``weights``/``cdf`` reaches ``read_scalar``'s tail read below and
@@ -255,16 +256,16 @@ def sample_surface(
     # ``array_scan`` is inclusive by default, so the total is the scan's last element -- a 4-byte
     # tail read instead of a whole second reduction over the weights. Same trick as
     # ``array.flatnonzero`` and ``array.counts_to_offsets``.
-    cdf = wp.empty(n_faces, dtype=wp.float32, device=vertices.device)
-    wp.utils.array_scan(weights, out_array=cdf)
+    cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
+    _launch.array_scan(weights, out_array=cdf)
     total = float(read_scalar(cdf))
     if total <= 0.0:
         raise ValueError("total face weight must be positive")
-    wp.map(wp.div, cdf, wp.float32(total), out=cdf)
+    _launch.map(wp.div, cdf, wp.float32(total), out=cdf)
 
-    out_points = wp.empty(count, dtype=wp.vec3, device=vertices.device)
-    out_face_indices = wp.empty(count, dtype=wp.int32, device=vertices.device)
-    wp.launch(
+    out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
+    out_face_indices = _launch.empty(count, dtype=wp.int32, device=vertices.device)
+    _launch.launch(
         kernel_sample.sample_surface,
         dim=count,
         inputs=[vertices, faces, cdf, resolve_seed(seed), out_points, out_face_indices],
@@ -331,8 +332,8 @@ def sample_surface_poisson_disk(
 
     if count == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
 
     init_count = max(math.ceil(init_factor * count), count)
@@ -364,9 +365,9 @@ def sample_surface_poisson_disk(
     nbr_idx, nbr_dists, offsets = query_ball_with_offsets(init_points, init_points, r_max)
 
     # 5. Initial per-point weights (parallel)
-    alive = wp.ones(init_count, dtype=wp.int32, device=device)
-    weights = wp.zeros(init_count, dtype=wp.float32, device=device)
-    wp.launch(
+    alive = _launch.ones(init_count, dtype=wp.int32, device=device)
+    weights = _launch.zeros(init_count, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_sample.compute_poisson_weights,
         dim=init_count,
         inputs=[nbr_idx, nbr_dists, offsets, alive, r_max, r_min, alpha, weights],
@@ -375,12 +376,12 @@ def sample_surface_poisson_disk(
 
     # 6. Parallel round-based elimination
     alive_count = init_count
-    is_max = wp.zeros(init_count, dtype=wp.int32, device=device)
+    is_max = _launch.zeros(init_count, dtype=wp.int32, device=device)
     # The round's maxima count, accumulated by the flagging pass itself and re-zeroed once read.
-    max_count = wp.zeros(1, dtype=wp.int32, device=device)
+    max_count = _launch.zeros(1, dtype=wp.int32, device=device)
 
     while alive_count > count:
-        wp.launch(
+        _launch.launch(
             kernel_sample.find_local_maxima,
             dim=init_count,
             inputs=[weights, alive, nbr_idx, offsets, is_max, max_count],
@@ -389,7 +390,7 @@ def sample_surface_poisson_disk(
 
         # The one readback per round: every branch below depends on the count.
         n_max = int(read_scalar(max_count, 0))
-        max_count.zero_()
+        _launch.zero_(max_count)
         excess = alive_count - count
         if n_max == 0:
             # Nothing is flagged only when no alive point has an alive neighbour inside ``r_max``
@@ -405,7 +406,7 @@ def sample_surface_poisson_disk(
             deleted_mask = _top_maxima_by_weight(is_max, weights, excess)
             n_max = excess
 
-        wp.launch(
+        _launch.launch(
             kernel_sample.apply_deletions,
             dim=init_count,
             inputs=[deleted_mask, nbr_idx, nbr_dists, offsets, r_max, r_min, alpha, alive, weights],
@@ -460,8 +461,8 @@ def _top_maxima_by_weight(
     flagged = flatnonzero(candidates)
     # Ascending on the negated weight is descending on the weight, and ``sort_and_argsort`` is the
     # package's one radix-sort spelling.
-    descending = wp.empty(flagged.size, dtype=wp.float32, device=candidates.device)
-    wp.map(wp.neg, gather(weights, flagged), out=descending)
+    descending = _launch.empty(flagged.size, dtype=wp.float32, device=candidates.device)
+    _launch.map(wp.neg, gather(weights, flagged), out=descending)
     _sorted, order = tw.array.sort_and_argsort(descending)
     # No clone: ``order`` need not outlive this frame (no further sort call reuses its scratch),
     # and ``gather`` only requires a contiguous index array, which a prefix slice already is.
@@ -531,8 +532,8 @@ def sample_surface_blue_noise(
 
     if n_faces == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
 
     _, areas = face_normals_and_areas(vertices, faces)
@@ -575,14 +576,17 @@ def _dart_throw_blue_noise(
     """
     device = pool_points.device
     n_pool = pool_points.size
-    empty = (wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device))
+    empty = (
+        _launch.empty(0, dtype=wp.vec3, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+    )
     if n_pool == 0:
         return empty
 
     # Background grid at cell size ``radius``, so a 3x3x3 neighbourhood covers the disk exactly.
     bbox_min, _ = tw.bounds.aabb(pool_points)
-    grid_coords = wp.empty(n_pool, dtype=wp.vec3i, device=device)
-    wp.map(
+    grid_coords = _launch.empty(n_pool, dtype=wp.vec3i, device=device)
+    _launch.map(
         kernel_blue_noise.grid_coord,
         pool_points,
         bbox_min,
@@ -590,23 +594,23 @@ def _dart_throw_blue_noise(
         out=grid_coords,
     )
     grid_w = int(tw.reduce.max(cast(twt.Array2dInt32, grid_coords.view(wp.int32)))) + 1
-    cell_keys = wp.empty(n_pool, dtype=wp.int64, device=device)
-    wp.map(kernel_blue_noise.grid_cell_key, grid_coords, wp.int32(grid_w), out=cell_keys)
+    cell_keys = _launch.empty(n_pool, dtype=wp.int64, device=device)
+    _launch.map(kernel_blue_noise.grid_cell_key, grid_coords, wp.int32(grid_w), out=cell_keys)
 
     # Bucket the pool by cell: one radix sort gives both the per-cell membership lists and, through
     # the run starts of the sorted keys, the sentinel-terminated bounds that index them.
     # ``sort_and_argsort`` allocates its scratch per call, so its two views are this call's own and
     # need no clone to stay valid for the rest of it.
     sorted_keys, bucket = tw.array.sort_and_argsort(cell_keys, fill_value=n_pool)
-    is_start = wp.empty(n_pool, dtype=wp.bool, device=device)
-    wp.launch(
+    is_start = _launch.empty(n_pool, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_blue_noise.cell_run_starts, dim=n_pool, inputs=[sorted_keys, is_start], device=device
     )
     run_starts = flatnonzero(is_start)
     n_cells = run_starts.size
-    unique_keys = wp.empty(n_cells, dtype=wp.int64, device=device)
-    cell_offsets = wp.empty(n_cells + 1, dtype=wp.int32, device=device)
-    wp.launch(
+    unique_keys = _launch.empty(n_cells, dtype=wp.int64, device=device)
+    cell_offsets = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_blue_noise.cell_table,
         dim=n_cells + 1,
         inputs=[sorted_keys, run_starts, n_pool, unique_keys, cell_offsets],
@@ -621,8 +625,8 @@ def _dart_throw_blue_noise(
     # original-index tie-break (see ``dart_select_minima``) and as the map back at the end. The
     # per-point cell table is born sorted, read off the sorted keys.
     sorted_points = gather(pool_points, bucket)
-    sorted_cell = wp.empty(n_pool, dtype=wp.int32, device=device)
-    wp.launch(
+    sorted_cell = _launch.empty(n_pool, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_blue_noise.sorted_point_cells,
         dim=n_pool,
         inputs=[sorted_keys, unique_keys, sorted_cell],
@@ -631,7 +635,7 @@ def _dart_throw_blue_noise(
     cell_neighbors = twt.empty_2d(
         (n_cells, kernel_blue_noise.DART_SHELL_CELLS), wp.int32, device=device
     )
-    wp.launch(
+    _launch.launch(
         kernel_blue_noise.dart_cell_neighbors,
         dim=(n_cells, kernel_blue_noise.DART_SHELL_CELLS),
         inputs=[unique_keys, wp.int32(grid_w), cell_neighbors],
@@ -641,35 +645,35 @@ def _dart_throw_blue_noise(
     # Keyed on the *original* pool index even though it is stored in sorted space: the priority a
     # point holds is what decides the packing, so it has to stay the same function of the seed and
     # the point rather than of where the sort happened to put it.
-    priority = wp.empty(n_pool, dtype=wp.uint32, device=device)
-    wp.launch(
+    priority = _launch.empty(n_pool, dtype=wp.uint32, device=device)
+    _launch.launch(
         kernel_blue_noise.sorted_random_priorities,
         dim=n_pool,
         inputs=[wp.int32(seed), bucket, priority],
         device=device,
     )
-    state = wp.zeros(n_pool, dtype=wp.int32, device=device)
+    state = _launch.zeros(n_pool, dtype=wp.int32, device=device)
 
     # Per-cell summaries that let each round's two sweeps skip a shell cell whole; see the kernel
     # module for what each one summarises and why the accepted set is unchanged. Both are refilled
     # per round rather than accumulated, so a cell stops pruning the moment it stops being empty.
-    cell_min_priority = wp.empty(n_cells, dtype=wp.uint32, device=device)
-    cell_accepted = wp.empty(n_cells, dtype=wp.bool, device=device)
+    cell_min_priority = _launch.empty(n_cells, dtype=wp.uint32, device=device)
+    cell_accepted = _launch.empty(n_cells, dtype=wp.bool, device=device)
 
     # Work-list buffers sized for their final use once: the first round's list is the whole pool and
     # every later one is a prefix of it, so nothing here is reallocated per round.
     alive = arange(n_pool, device=device)
-    next_alive = wp.empty(n_pool, dtype=wp.int32, device=device)
-    survivor_flag = wp.empty(n_pool, dtype=wp.int32, device=device)
-    positions = wp.empty(n_pool, dtype=wp.int32, device=device)
+    next_alive = _launch.empty(n_pool, dtype=wp.int32, device=device)
+    survivor_flag = _launch.empty(n_pool, dtype=wp.int32, device=device)
+    positions = _launch.empty(n_pool, dtype=wp.int32, device=device)
     alive_count = n_pool
     rr = wp.float32(radius * radius)
 
     # The first round's priority summary is built here; every later one is folded into the
     # compaction that produces its work list (see ``dart_compact_alive``). Fills rather than a reset
     # kernel: a memset is cheaper than a full launch.
-    cell_min_priority.fill_(kernel_blue_noise.DART_NO_PRIORITY)
-    wp.launch(
+    _launch.fill_(cell_min_priority, kernel_blue_noise.DART_NO_PRIORITY)
+    _launch.launch(
         kernel_blue_noise.dart_cell_min_priority,
         dim=n_pool,
         inputs=[priority, sorted_cell, alive, cell_min_priority],
@@ -677,11 +681,11 @@ def _dart_throw_blue_noise(
     )
     while alive_count > 0:
         view = alive[:alive_count]
-        cell_accepted.fill_(False)
+        _launch.fill_(cell_accepted, False)
         # The survivor flags are written by the covering sweep itself, as each thread's last word
         # on its point's state this round.
         alive_flags = survivor_flag[:alive_count]
-        wp.launch(
+        _launch.launch(
             kernel_blue_noise.dart_select_minima,
             dim=alive_count,
             inputs=[
@@ -699,7 +703,7 @@ def _dart_throw_blue_noise(
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_blue_noise.dart_cover_neighbors,
             dim=alive_count,
             inputs=[
@@ -728,11 +732,11 @@ def _dart_throw_blue_noise(
         # ``wp.array.__getitem__`` calls where two do; and ``read_scalar`` takes its own one-element
         # slice internally, so handing it the index rather than a pre-sliced view drops a sixth.
         alive_positions = positions[:alive_count]
-        wp.utils.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
+        _launch.array_scan(alive_flags, out_array=alive_positions, inclusive=True)
         total = int(read_scalar(positions, alive_count - 1))
         if total > 0:
-            cell_min_priority.fill_(kernel_blue_noise.DART_NO_PRIORITY)
-            wp.launch(
+            _launch.fill_(cell_min_priority, kernel_blue_noise.DART_NO_PRIORITY)
+            _launch.launch(
                 kernel_blue_noise.dart_compact_alive,
                 dim=alive_count,
                 inputs=[
@@ -752,8 +756,8 @@ def _dart_throw_blue_noise(
     # ``state`` is indexed by sorted position; scattering the accepted flags through ``bucket``
     # permutes them back to pool order, which is what keeps the returned points in the pool's own
     # order rather than the cell sort's.
-    accepted_mask = wp.zeros(n_pool, dtype=wp.bool, device=device)
-    wp.launch(
+    accepted_mask = _launch.zeros(n_pool, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_blue_noise.dart_accepted_pool_mask,
         dim=n_pool,
         inputs=[state, bucket, accepted_mask],
@@ -831,22 +835,22 @@ def sample_volume(
         )
 
     if count == 0:
-        return wp.empty(0, dtype=wp.vec3, device=vertices.device)
+        return _launch.empty(0, dtype=wp.vec3, device=vertices.device)
 
     if n_faces == 0:
         # Without this, an empty ``signed_vols``/``cdf`` reaches ``read_scalar``'s tail read below
         # and raises an unrelated ``IndexError`` (CPU) or a Warp slicing error (CUDA) instead.
         raise ValueError("mesh has no faces; cannot sample its volume")
 
-    cdf = wp.empty(n_faces, dtype=wp.float32, device=vertices.device)
-    wp.utils.array_scan(signed_vols, out_array=cdf)
+    cdf = _launch.empty(n_faces, dtype=wp.float32, device=vertices.device)
+    _launch.array_scan(signed_vols, out_array=cdf)
     total_vol = float(read_scalar(cdf))
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
-    wp.map(wp.div, cdf, wp.float32(total_vol), out=cdf)
+    _launch.map(wp.div, cdf, wp.float32(total_vol), out=cdf)
 
-    out_points = wp.empty(count, dtype=wp.vec3, device=vertices.device)
-    wp.launch(
+    out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
         kernel_sample.sample_volume_tetrahedra,
         dim=count,
         inputs=[vertices, faces, center, cdf, resolve_seed(seed), out_points],

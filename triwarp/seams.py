@@ -33,6 +33,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import seams as kernel_seams
@@ -112,31 +113,31 @@ def crease_edges(
     # those bits are sorted.
     n_vertices = vertices.size
     n = 3 * n_faces
-    keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
-    order = wp.empty(2 * n, dtype=wp.int32, device=device)
-    wp.launch(
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_adjacency.face_edge_keys_and_order,
         dim=n_faces,
         inputs=[faces, wp.uint64(n_vertices), keys, order],
         device=device,
     )
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys, order, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
     )
     flags = twt.empty_2d((2 if include_boundary else 1, n), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_seams.crease_flags,
         dim=n,
         inputs=[vertices, faces, keys, order, n, wp.float32(math.radians(angle)), flags],
         device=device,
     )
     inclusive = flags.flatten()
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback.
     n_edges = int(read_scalar(inclusive))
     edges = twt.empty_2d((n_edges, 2), wp.int32, device=device)
     if n_edges > 0:
-        wp.launch(
+        _launch.launch(
             kernel_seams.emit_crease_edges,
             dim=inclusive.size,
             inputs=[inclusive, order, n, faces, edges],
@@ -227,7 +228,7 @@ def cut_along_edges(
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     n_vertices = vertices.size
     if twins is None:
@@ -246,10 +247,10 @@ def cut_along_edges(
     union_inputs = [faces, twins, marked_keys, key_base]
     parents = tw.array.arange(n_halfedges, device=device)
     for kernel in (kernel_seams.corner_union_prehook, kernel_seams.corner_union_hook):
-        wp.launch(kernel, dim=n_halfedges, inputs=[*union_inputs, parents], device=device)
-    roots = wp.empty(n_halfedges, dtype=wp.int32, device=device)
-    root_ranks = wp.empty(n_halfedges, dtype=wp.int32, device=device)
-    wp.launch(
+        _launch.launch(kernel, dim=n_halfedges, inputs=[*union_inputs, parents], device=device)
+    roots = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    root_ranks = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_seams.corner_roots,
         dim=n_halfedges,
         inputs=[parents, roots, root_ranks],
@@ -257,12 +258,12 @@ def cut_along_edges(
     )
     # Scanned in place, a root's flag becomes its rank plus one among the roots in ascending order,
     # which numbers the output vertices by their smallest corner; the total is the last entry.
-    wp.utils.array_scan(root_ranks, out_array=root_ranks, inclusive=True)
-    out_vertices = wp.empty(int(read_scalar(root_ranks)), dtype=vertices.dtype, device=device)
+    _launch.array_scan(root_ranks, out_array=root_ranks, inclusive=True)
+    out_vertices = _launch.empty(int(read_scalar(root_ranks)), dtype=vertices.dtype, device=device)
     # The union-find is done with ``parents``, so it takes the new face buffer: corner ``h`` of the
     # flat layout is entry ``h``.
     corner_index = parents
-    wp.launch(
+    _launch.launch(
         kernel_seams.SCATTER_CORNER_VALUES[vertices.dtype],
         dim=n_halfedges,
         inputs=[faces, roots, root_ranks, vertices, corner_index, out_vertices],
@@ -395,7 +396,7 @@ def uv_seam_edges(
     # flattened table, in place, numbers all three blocks, and its last column holds the running
     # totals that size them -- read back together in one copy.
     flags = twt.empty_2d((3, n_halfedges), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_seams.classify_uv_halfedges,
         dim=n_halfedges,
         inputs=[
@@ -411,7 +412,7 @@ def uv_seam_edges(
         device=device,
     )
     inclusive = flags.flatten()
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     totals = flags[:, n_halfedges - 1].numpy()
     n_seams = int(totals[0])
     n_boundaries = int(totals[1]) - n_seams
@@ -420,7 +421,7 @@ def uv_seam_edges(
     boundaries = twt.empty_2d((n_boundaries, 2), wp.int32, device=device)
     foldovers = twt.empty_2d((n_foldovers, 4), wp.int32, device=device)
     if int(totals[2]) > 0:
-        wp.launch(
+        _launch.launch(
             kernel_seams.scatter_uv_halfedges,
             dim=n_halfedges,
             inputs=[faces, twins, inclusive, seams, boundaries, foldovers],
@@ -479,7 +480,7 @@ def seam_edge_vertices(
     n_rows = int(face_corners.shape[0])
     edges = twt.empty_2d((n_rows, 2), wp.int32, device=device)
     if n_rows > 0:
-        wp.launch(
+        _launch.launch(
             kernel_seams.face_corner_edge_vertices,
             dim=n_rows,
             inputs=[faces, face_corners, edges],
@@ -553,14 +554,14 @@ def uv_seam_vertex_mask(
     device = faces.device
     if n_vertices is None:
         n_vertices = tw.array.index_bound(faces)
-    mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
+    mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     n_halfedges = faces.size // 3 * 3
     if n_halfedges == 0 or n_vertices == 0:
         return mask
     twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
     # The same per-halfedge classification ``uv_seam_edges`` compacts, marked straight onto the
     # vertices: a seam row's endpoints are its halfedge's own, so no row needs to exist.
-    wp.launch(
+    _launch.launch(
         kernel_seams.mark_uv_seam_vertices,
         dim=n_halfedges,
         inputs=[

@@ -64,6 +64,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.kernels import interpolation as kernel_interpolation
 from triwarp.kernels import scatter as kernel_scatter
@@ -184,9 +185,9 @@ def voxelize_mesh(
     if n_faces == 0:
         return _empty_grid(voxel_size, origin, device)
 
-    counts = wp.empty(n_faces, dtype=wp.int32, device=device)
-    counts_f32 = wp.empty(n_faces, dtype=wp.float32, device=device)
-    wp.launch(
+    counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    counts_f32 = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_voxels.count_triangle_candidates,
         dim=n_faces,
         inputs=[vertices, faces, origin, wp.float32(1.0 / voxel_size), counts, counts_f32],
@@ -207,8 +208,8 @@ def voxelize_mesh(
         return _empty_grid(voxel_size, origin, device)
 
     candidate_cells = twt.empty_2d((total, 3), wp.int32, device=device)
-    accepted = wp.empty(total, dtype=wp.int32, device=device)
-    wp.launch(
+    accepted = _launch.empty(total, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.test_triangle_candidates,
         dim=total,
         inputs=[
@@ -353,25 +354,27 @@ def voxel_down_sample(
     if pooling not in ("mean", "min", "max", "sum"):
         raise ValueError(f"pooling must be 'mean', 'sum', 'min' or 'max', got {pooling!r}")
     if n_points == 0:
-        pooled = wp.empty(0, dtype=wp.vec3, device=device)
-        return (pooled, wp.empty(0, dtype=wp.int32, device=device)) if return_inverse else pooled
+        pooled = _launch.empty(0, dtype=wp.vec3, device=device)
+        return (
+            (pooled, _launch.empty(0, dtype=wp.int32, device=device)) if return_inverse else pooled
+        )
     table = _VoxelTable(points, voxel_size, origin, one_root_tile=0 < cell_bound <= 4096)
     n_voxels = table.n_voxels
-    slots = wp.empty(n_points, dtype=wp.int32, device=device) if return_inverse else None
+    slots = _launch.empty(n_points, dtype=wp.int32, device=device) if return_inverse else None
     if pooling in ("min", "max"):
         # One sentinel bucket past the last voxel collects the points that probe outside the set.
-        counts = wp.zeros(n_voxels + 1, dtype=wp.int32, device=device)
+        counts = _launch.zeros(n_voxels + 1, dtype=wp.int32, device=device)
         largest = pooling == "max"
         limit = -math.inf if largest else math.inf
-        pooled = wp.full(n_voxels, wp.vec3(limit, limit, limit), dtype=wp.vec3, device=device)
-        wp.launch(
+        pooled = _launch.full(n_voxels, wp.vec3(limit, limit, limit), dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_voxels.pool_extremum_table,
             dim=n_points,
             inputs=[points, *table.probe_inputs(), largest],
             outputs=[slots, counts, pooled],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_voxels.zero_empty_voxels,
             dim=n_voxels,
             inputs=[counts],
@@ -380,7 +383,7 @@ def voxel_down_sample(
         )
     else:
         buckets, order = table.buckets, table.order
-        wp.launch(
+        _launch.launch(
             kernel_voxels.bucket_table_slots,
             dim=n_points,
             inputs=[points, *table.probe_inputs(), wp.int32(n_voxels)],
@@ -422,11 +425,11 @@ class _VoxelTable:
         self.mask = (1 << max(3, (n_points - 1).bit_length() + 1)) - 1
         # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
         # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
-        self.table = wp.full(self.mask + 2, -1, dtype=wp.int32, device=device)
-        self.buckets = wp.empty(2 * n_points, dtype=wp.int32, device=device)
-        self.order = wp.empty(2 * n_points, dtype=wp.int32, device=device)
+        self.table = _launch.full(self.mask + 2, -1, dtype=wp.int32, device=device)
+        self.buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+        self.order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
         unique = self.buckets[n_points:]
-        wp.launch(
+        _launch.launch(
             kernel_voxels.insert_point_cells,
             dim=n_points,
             inputs=[points, origin, inverse_size, self.mask, self.table],
@@ -436,28 +439,28 @@ class _VoxelTable:
         # One readback, unavoidable: the voxel count sizes the output and every per-voxel buffer.
         n_voxels = int(read_scalar(self.table)) + 1
         self.n_voxels = n_voxels
-        keys = wp.empty(2 * n_voxels, dtype=wp.uint64, device=device)
+        keys = _launch.empty(2 * n_voxels, dtype=wp.uint64, device=device)
         rank = self.order
-        wp.launch(
+        _launch.launch(
             kernel_voxels.unique_cell_keys,
             dim=n_voxels,
             inputs=[points, origin, inverse_size, self.table, unique],
             outputs=[keys, rank],
             device=device,
         )
-        wp.utils.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=36)
+        _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=36)
         if not one_root_tile:
             # Stable, so the in-tile order survives within each root tile.
-            wp.launch(
+            _launch.launch(
                 kernel_voxels.unique_cell_root_keys,
                 dim=n_voxels,
                 inputs=[points, origin, inverse_size, self.table, unique, rank],
                 outputs=[keys],
                 device=device,
             )
-            wp.utils.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=60)
-        self.row_cells = wp.empty(n_voxels, dtype=wp.vec3i, device=device)
-        wp.launch(
+            _launch.radix_sort_pairs(keys, rank, count=n_voxels, end_bit=60)
+        self.row_cells = _launch.empty(n_voxels, dtype=wp.vec3i, device=device)
+        _launch.launch(
             kernel_voxels.assign_voxel_rows,
             dim=n_voxels,
             inputs=[points, origin, inverse_size, unique, rank, self.table],
@@ -551,28 +554,28 @@ def _pool_by_voxel(
     n_points = points.size
     n_voxels = _voxel_count(grid)
     if n_voxels == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device), None
+        return _launch.empty(0, dtype=wp.vec3, device=device), None
     if n_points == 0:
-        return wp.zeros(n_voxels, dtype=wp.vec3, device=device), None
+        return _launch.zeros(n_voxels, dtype=wp.vec3, device=device), None
 
     # Only a caller asking for the inverse gets the slots written; neither branch reads them back.
-    slots = wp.empty(n_points, dtype=wp.int32, device=device) if return_slots else None
+    slots = _launch.empty(n_points, dtype=wp.int32, device=device) if return_slots else None
     if pooling in ("min", "max"):
         # One sentinel bucket past the last voxel collects the points that fall outside the grid.
-        counts = wp.zeros(n_voxels + 1, dtype=wp.int32, device=device)
+        counts = _launch.zeros(n_voxels + 1, dtype=wp.int32, device=device)
         largest = pooling == "max"
         limit = -math.inf if largest else math.inf
         # The atomics reduce from +-inf in the probe launch itself; the voxels no point reached are
         # reset to zero afterwards, once ``counts`` is final.
-        pooled = wp.full(n_voxels, wp.vec3(limit, limit, limit), dtype=wp.vec3, device=device)
-        wp.launch(
+        pooled = _launch.full(n_voxels, wp.vec3(limit, limit, limit), dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_voxels.pool_extremum_points,
             dim=n_points,
             inputs=[grid.id, points, values, wp.int32(n_voxels), largest],
             outputs=[slots, counts, pooled],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_voxels.zero_empty_voxels,
             dim=n_voxels,
             inputs=[counts],
@@ -582,9 +585,9 @@ def _pool_by_voxel(
         return pooled, slots
 
     # The launch seeds the sort's two double buffers, keys and identity payload.
-    buckets = wp.empty(2 * n_points, dtype=wp.int32, device=device)
-    order = wp.empty(2 * n_points, dtype=wp.int32, device=device)
-    wp.launch(
+    buckets = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+    order = _launch.empty(2 * n_points, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.bucket_point_slots,
         dim=n_points,
         inputs=[grid.id, points, wp.int32(n_voxels)],
@@ -613,11 +616,11 @@ def _segment_pool(
     n_points = values.size
     # Stable, so each voxel's segment lists its points in index order.
     # Every bucket is at most ``n_voxels`` (the sentinel), so only those low bits are sorted.
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         buckets, order, count=n_points, end_bit=max(1, int(n_voxels).bit_length())
     )
-    pooled = wp.empty(n_voxels, dtype=wp.vec3, device=values.device)
-    wp.launch(
+    pooled = _launch.empty(n_voxels, dtype=wp.vec3, device=values.device)
+    _launch.launch(
         kernel_voxels.segment_reduce_vec3,
         dim=n_voxels,
         inputs=[order, values, buckets[:n_points], average],
@@ -685,8 +688,8 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> twt.
     # The corner pair stays on the device: ``pack_cell_keys`` derives the per-axis shift and the
     # radix from these two three-element buffers itself, so this whole stage is readback-free.
     lower, upper = tw.reduce.minmax(rows, axis=0)
-    keys = wp.empty(n_voxels, dtype=wp.uint64, device=grid.device)
-    wp.launch(
+    keys = _launch.empty(n_voxels, dtype=wp.uint64, device=grid.device)
+    _launch.launch(
         kernel_voxels.pack_cell_keys,
         dim=n_voxels,
         inputs=[rows, lower, upper, keys],
@@ -737,7 +740,7 @@ def from_cells(cells: twt.Array2dInt32, voxel_size: float, origin: wp.vec3) -> w
     if int(cells.shape[0]) == 0:
         return _empty_grid(voxel_size, origin, cells.device)
     # The builder reads the buffer as if contiguous, so a strided view has to be densified first.
-    rows = cells if cells.is_contiguous else wp.clone(cells)
+    rows = cells if cells.is_contiguous else _launch.clone(cells)
     return wp.Volume.allocate_by_voxels(
         rows,
         voxel_size=voxel_size,
@@ -960,7 +963,7 @@ def cell_indices(
     out_cells = twt.empty_2d((n_points, 3), wp.int32, device=points.device)
     if n_points == 0:
         return out_cells
-    wp.launch(
+    _launch.launch(
         kernel_voxels.voxel_cell_indices,
         dim=n_points,
         inputs=[points, origin, wp.float32(1.0 / voxel_size), out_cells],
@@ -996,10 +999,10 @@ def cell_centers(grid: wp.Volume) -> wp.array[wp.vec3]:
     _require_index_grid(grid)
     voxels = cells(grid)
     n_voxels = int(voxels.shape[0])
-    centers = wp.empty(n_voxels, dtype=wp.vec3, device=grid.device)
+    centers = _launch.empty(n_voxels, dtype=wp.vec3, device=grid.device)
     if n_voxels == 0:
         return centers
-    wp.launch(
+    _launch.launch(
         kernel_voxels.cell_center_positions,
         dim=n_voxels,
         inputs=[grid.id, voxels, centers],
@@ -1043,10 +1046,10 @@ def occupancy_at_points(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[
     require_same_device(grid=grid, points=points)
     _require_index_grid(grid)
     n_points = points.size
-    mask = wp.empty(n_points, dtype=wp.bool, device=points.device)
+    mask = _launch.empty(n_points, dtype=wp.bool, device=points.device)
     if n_points == 0:
         return mask
-    wp.launch(
+    _launch.launch(
         kernel_voxels.point_occupancy,
         dim=n_points,
         inputs=[grid.id, points, True, mask],
@@ -1096,10 +1099,10 @@ def occupancy_at_cells(grid: wp.Volume, cells: twt.Array2dInt32) -> wp.array[wp.
     if int(cells.shape[1]) != 3:
         raise ValueError(f"cells must have three columns, got {int(cells.shape[1])}")
     n_cells = int(cells.shape[0])
-    mask = wp.empty(n_cells, dtype=wp.bool, device=cells.device)
+    mask = _launch.empty(n_cells, dtype=wp.bool, device=cells.device)
     if n_cells == 0:
         return mask
-    wp.launch(
+    _launch.launch(
         kernel_voxels.cell_occupancy,
         dim=n_cells,
         inputs=[grid.id, cells, True, mask],
@@ -1211,18 +1214,20 @@ def splat_onto_grid(
         raise ValueError(f"min_weight must be positive, got {min_weight}")
     dims = (int(shape[0]), int(shape[1]), int(shape[2]))
     device = points.device
-    field = cast("wp.array[DType, Literal[3]]", wp.zeros(dims, dtype=values.dtype, device=device))
-    density = twt.as_array3d(wp.zeros(dims, dtype=wp.float32, device=device), wp.float32)
+    field = cast(
+        "wp.array[DType, Literal[3]]", _launch.zeros(dims, dtype=values.dtype, device=device)
+    )
+    density = twt.as_array3d(_launch.zeros(dims, dtype=wp.float32, device=device), wp.float32)
     if points.size == 0:
         return field, density
     lower, inverse_spacing = _lattice_transform(dims, bounds)
-    wp.launch(
+    _launch.launch(
         kernel_scatter.SPLAT_GRID_TRILINEAR[values.dtype],
         dim=points.size,
         inputs=[points, values, lower, inverse_spacing, field, density],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_scatter.DIVIDE_BY_DENSITY[field.dtype],
         dim=dims,
         inputs=[density, wp.float32(min_weight), field],
@@ -1295,11 +1300,11 @@ def sample_grid_trilinear(
     if field.ndim != 3:
         raise ValueError(f"field must be a rank-3 lattice, got ndim {field.ndim}")
     dims = (int(field.shape[0]), int(field.shape[1]), int(field.shape[2]))
-    values = wp.empty(points.size, dtype=field.dtype, device=points.device)
+    values = _launch.empty(points.size, dtype=field.dtype, device=points.device)
     if points.size == 0:
         return values
     lower, inverse_spacing = _lattice_transform(dims, bounds)
-    wp.launch(
+    _launch.launch(
         kernel_interpolation.SAMPLE_GRID_TRILINEAR[field.dtype],
         dim=points.size,
         inputs=[field, lower, inverse_spacing, points, values],
@@ -1393,8 +1398,10 @@ def grid_points(
         raise ValueError(f"shape must be three positive integers, got {shape!r}")
     dims = (int(shape[0]), int(shape[1]), int(shape[2]))
     lower, step = _lattice_step(dims, bounds)
-    lattice = wp.empty(dims, dtype=wp.vec3, device=device)
-    wp.launch(kernel_voxels.lattice_points, dim=dims, inputs=[lower, step, lattice], device=device)
+    lattice = _launch.empty(dims, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_voxels.lattice_points, dim=dims, inputs=[lower, step, lattice], device=device
+    )
     return lattice.reshape((dims[0] * dims[1] * dims[2],))
 
 
@@ -1449,9 +1456,9 @@ def union(a: wp.Volume, b: wp.Volume) -> wp.Volume:
     n_b = int(rows_b.shape[0])
     both = twt.empty_2d((n_a + n_b, 3), wp.int32, device=rows_a.device)
     if n_a > 0:
-        wp.copy(both[:n_a], rows_a)
+        _launch.copy(both[:n_a], rows_a)
     if n_b > 0:
-        wp.copy(both[n_a:], rows_b)
+        _launch.copy(both[n_a:], rows_b)
     return from_cells(both, voxel_size, origin)
 
 
@@ -1652,8 +1659,8 @@ def revoxelize(
         ),
     )
     candidates = twt.empty_2d((total, 3), wp.int32, device=grid.device)
-    mask = wp.empty(total, dtype=wp.int32, device=grid.device)
-    wp.launch(
+    mask = _launch.empty(total, dtype=wp.int32, device=grid.device)
+    _launch.launch(
         kernel_voxels.resampled_cell_candidates,
         dim=dims,
         inputs=[grid.id, lower, step, wp.vec3i(*dims), wp.vec3i(*base_cell), candidates, mask],
@@ -1719,14 +1726,18 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     dims = (int(occupancy.shape[0]), int(occupancy.shape[1]), int(occupancy.shape[2]))
     n_nodes = dims[0] * dims[1] * dims[2]
 
-    parents = wp.empty(n_nodes, dtype=wp.int32, device=device)
-    wp.launch(kernel_voxels.flood_init_parent, dim=dims, inputs=[occupancy, parents], device=device)
-    wp.launch(kernel_voxels.flood_hook, dim=dims, inputs=[occupancy, parents], device=device)
-    labels = wp.empty(n_nodes, dtype=wp.int32, device=device)
-    wp.launch(kernel_components.ecl_flatten, dim=n_nodes, inputs=[parents, labels], device=device)
+    parents = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_voxels.flood_init_parent, dim=dims, inputs=[occupancy, parents], device=device
+    )
+    _launch.launch(kernel_voxels.flood_hook, dim=dims, inputs=[occupancy, parents], device=device)
+    labels = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_components.ecl_flatten, dim=n_nodes, inputs=[parents, labels], device=device
+    )
 
-    outside = wp.zeros(n_nodes, dtype=wp.bool, device=device)
-    wp.launch(
+    outside = _launch.zeros(n_nodes, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_voxels.mark_outside_roots,
         dim=dims,
         inputs=[occupancy, labels, outside],
@@ -1735,8 +1746,8 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     # The filled set goes straight to the builder as candidates plus a keep mask -- the pair
     # ``from_dense`` would derive from a filled lattice -- so that lattice is never stored.
     candidates = twt.empty_2d((n_nodes, 3), wp.int32, device=device)
-    mask = wp.empty(n_nodes, dtype=wp.int32, device=device)
-    wp.launch(
+    mask = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.enclosed_cell_candidates,
         dim=dims,
         inputs=[occupancy, labels, outside, wp.vec3i(*origin_cell), candidates, mask],
@@ -1796,7 +1807,7 @@ def fill_orthographic(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume
     filled = twt.empty_3d(dims, wp.bool, device=device)
     for axis in range(3):
         other = [dims[a] for a in range(3) if a != axis]
-        wp.launch(
+        _launch.launch(
             kernel_voxels.fill_axis_span,
             dim=(other[0], other[1]),
             inputs=[occupancy, wp.int32(axis), wp.int32(dims[axis]), axis > 0, filled],
@@ -1863,7 +1874,7 @@ def dilate(
         stencil = _stencil(connectivity, device, include_self=True)
         n_offsets = int(stencil.shape[0])
         candidates = twt.empty_2d((n_voxels * n_offsets, 3), wp.int32, device=device)
-        wp.launch(
+        _launch.launch(
             kernel_voxels.neighborhood_candidates,
             dim=(n_voxels, n_offsets),
             inputs=[voxels, stencil, candidates],
@@ -2134,7 +2145,7 @@ def to_dense(
     if len(dims) != 3 or min(dims) < 1:
         raise ValueError(f"shape must be three positive integers, got {shape!r}")
     occupancy = twt.empty_3d(dims, wp.bool, device=grid.device)
-    wp.launch(
+    _launch.launch(
         kernel_voxels.dense_occupancy,
         dim=dims,
         inputs=[grid.id, wp.vec3i(*(int(c) for c in origin_cell)), occupancy],
@@ -2194,8 +2205,8 @@ def from_dense(
         return _empty_grid(voxel_size, origin, device)
 
     candidates = twt.empty_2d((n_cells, 3), wp.int32, device=device)
-    mask = wp.empty(n_cells, dtype=wp.int32, device=device)
-    wp.launch(
+    mask = _launch.empty(n_cells, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.occupied_cells,
         dim=dims,
         inputs=[occupancy, wp.vec3i(*(int(c) for c in origin_cell)), candidates, mask],
@@ -2257,7 +2268,7 @@ def to_field(
     base = (lower_cell[0] - pad, lower_cell[1] - pad, lower_cell[2] - pad)
     dims = (extent[0] + 2 * pad, extent[1] + 2 * pad, extent[2] + 2 * pad)
     field = twt.empty_3d(dims, wp.float32, device=grid.device)
-    wp.launch(
+    _launch.launch(
         kernel_voxels.dense_field,
         dim=dims,
         inputs=[grid.id, wp.vec3i(*(int(c) for c in base)), field],
@@ -2323,10 +2334,10 @@ def to_boxes(
     corner_cells, cell_corners = voxel_corners(grid)
     n_corners = int(corner_cells.shape[0])
     n_voxels = int(cell_corners.shape[0])
-    vertices = wp.empty(n_corners, dtype=wp.vec3, device=device)
+    vertices = _launch.empty(n_corners, dtype=wp.vec3, device=device)
     if n_voxels == 0:
-        return vertices, wp.empty(0, dtype=wp.int32, device=device)
-    wp.launch(
+        return vertices, _launch.empty(0, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.corner_positions,
         dim=n_corners,
         inputs=[grid.id, corner_cells, vertices],
@@ -2335,16 +2346,16 @@ def to_boxes(
 
     voxels = cells(grid)
     neighbors = _face_neighbors(device)
-    counts = wp.empty(n_voxels, dtype=wp.int32, device=device)
-    wp.launch(
+    counts = _launch.empty(n_voxels, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.count_box_faces,
         dim=n_voxels,
         inputs=[grid.id, voxels, neighbors, cull_internal, counts],
         device=device,
     )
     offsets, n_quads = tw.array.counts_to_offsets(counts)
-    faces = wp.empty(n_quads * 6, dtype=wp.int32, device=device)
-    wp.launch(
+    faces = _launch.empty(n_quads * 6, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_voxels.emit_box_faces,
         dim=n_voxels,
         inputs=[
@@ -2427,7 +2438,7 @@ def voxel_corners(grid: wp.Volume) -> tuple[twt.Array2dInt32, twt.Array2dInt32]:
     n_corners = int(corner_grid.get_active_stats().voxel_count)
     corner_cells = twt.as_array2d(corner_grid.get_voxels()[:n_corners], wp.int32)
     cell_corners = twt.empty_2d((n_voxels, 8), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_voxels.cell_corner_indices,
         dim=n_voxels,
         inputs=[corner_grid.id, voxels, cell_corners],
@@ -2484,8 +2495,8 @@ def _select_cells(
     #
     # The flags go to the builder as its ``point_mask`` over the unfiltered rows, which is what the
     # kept rows would have been compacted for: no scan, count readback or gathered copy.
-    flags = wp.empty(n_cells, dtype=wp.int32, device=rows.device)
-    wp.launch(
+    flags = _launch.empty(n_cells, dtype=wp.int32, device=rows.device)
+    _launch.launch(
         kernel_voxels.cell_occupancy_flags,
         dim=n_cells,
         inputs=[b.id, rows, present, flags],
@@ -2555,10 +2566,10 @@ def _empty_grid(voxel_size: float, origin: wp.vec3, device: wp.DeviceLike) -> wp
     one-point set that ``point_mask`` rejects builds a legal empty topology.
     """
     return wp.Volume.allocate_by_voxels(
-        wp.zeros((1, 3), dtype=wp.int32, device=device),
+        _launch.zeros((1, 3), dtype=wp.int32, device=device),
         voxel_size=voxel_size,
         translation=_translation(origin, voxel_size),
-        point_mask=wp.zeros(1, dtype=wp.int32, device=device),
+        point_mask=_launch.zeros(1, dtype=wp.int32, device=device),
         device=device,
     )
 
@@ -2635,8 +2646,8 @@ def _interior_flags(
     n_voxels = int(voxels.shape[0])
     if n_voxels == 0:
         return None
-    flags = wp.empty(n_voxels, dtype=wp.int32, device=grid.device)
-    wp.launch(
+    flags = _launch.empty(n_voxels, dtype=wp.int32, device=grid.device)
+    _launch.launch(
         kernel_voxels.neighborhood_complete,
         dim=n_voxels,
         inputs=[
@@ -2672,7 +2683,7 @@ def _stencil(connectivity: int, device: wp.DeviceLike, *, include_self: bool) ->
         if (abs(i) + abs(j) + abs(k) <= rank) and (include_self or (i, j, k) != (0, 0, 0))
     ]
     stencil = twt.as_array2d(
-        wp.array(np.array(offsets, dtype=np.int32), dtype=wp.int32, device=device), wp.int32
+        _launch.array(np.array(offsets, dtype=np.int32), dtype=wp.int32, device=device), wp.int32
     )
     _STENCIL_CACHE[key] = stencil
     return stencil
@@ -2683,7 +2694,9 @@ def _face_neighbors(device: wp.DeviceLike) -> twt.Array2dInt32:
     key = (str(device), 0, False)
     cached = _STENCIL_CACHE.get(key)
     if cached is None:
-        cached = twt.as_array2d(wp.array(_FACE_NEIGHBORS, dtype=wp.int32, device=device), wp.int32)
+        cached = twt.as_array2d(
+            _launch.array(_FACE_NEIGHBORS, dtype=wp.int32, device=device), wp.int32
+        )
         _STENCIL_CACHE[key] = cached
     return cached
 
@@ -2693,6 +2706,8 @@ def _face_corner_table(device: wp.DeviceLike) -> twt.Array2dInt32:
     key = (str(device), 1, False)
     cached = _STENCIL_CACHE.get(key)
     if cached is None:
-        cached = twt.as_array2d(wp.array(_FACE_CORNERS, dtype=wp.int32, device=device), wp.int32)
+        cached = twt.as_array2d(
+            _launch.array(_FACE_CORNERS, dtype=wp.int32, device=device), wp.int32
+        )
         _STENCIL_CACHE[key] = cached
     return cached

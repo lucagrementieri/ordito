@@ -34,6 +34,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device, run_device_loop
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -97,9 +98,9 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
 
     faces_np = _lexicographic_triangulation(points)
     if faces_np.shape[0] == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
-    faces = wp.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
+    faces = _launch.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
 
     def launch(
         adjacency,
@@ -112,7 +113,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
         out_flip,
         out_quad,
     ):
-        wp.launch(
+        _launch.launch(
             kernel_remesh.incircle_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
@@ -157,15 +158,15 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> np.ndarray:
 
     # A triangulation of n points has 2n - 2 - h <= 2n - 5 triangles; 2n is the guard capacity.
     max_faces = 2 * n
-    points_cpu = wp.array(np.ascontiguousarray(points_np), dtype=wp.vec2d, device="cpu")
-    order_cpu = wp.array(order_np, dtype=wp.int32, device="cpu")
-    boundary = wp.empty(n + 1, dtype=wp.int32, device="cpu")
-    boundary_next = wp.empty(n + 1, dtype=wp.int32, device="cpu")
-    orientations = wp.empty(n, dtype=wp.float64, device="cpu")
-    faces_cpu = wp.empty(3 * max_faces, dtype=wp.int32, device="cpu")
-    counts = wp.zeros(2, dtype=wp.int32, device="cpu")
+    points_cpu = _launch.array(np.ascontiguousarray(points_np), dtype=wp.vec2d, device="cpu")
+    order_cpu = _launch.array(order_np, dtype=wp.int32, device="cpu")
+    boundary = _launch.empty(n + 1, dtype=wp.int32, device="cpu")
+    boundary_next = _launch.empty(n + 1, dtype=wp.int32, device="cpu")
+    orientations = _launch.empty(n, dtype=wp.float64, device="cpu")
+    faces_cpu = _launch.empty(3 * max_faces, dtype=wp.int32, device="cpu")
+    counts = _launch.zeros(2, dtype=wp.int32, device="cpu")
 
-    wp.launch(
+    _launch.launch(
         kernel_reconstruction.lexicographic_triangulation,
         dim=1,
         inputs=[
@@ -284,7 +285,7 @@ def triangulate_point_cloud(
         # own buffer on the populated path (`_clean_reconstruction`), so handing
         # back the caller's array here would make the degenerate input the one case where mutating
         # the result mutates the input.
-        return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
     k = num_neighbours if num_neighbours > 0 else max_neighbours
     k = min(k, max_neighbours)
@@ -301,9 +302,9 @@ def triangulate_point_cloud(
         normals = tw.points.estimate_normals(points, neighbor_idx)
 
     # Per-point local fan triangulation: point ``v``'s fan fills ``out_tris[v, :count]``.
-    out_tris = wp.empty((n, k, 3), dtype=wp.int32, device=device)
-    fan_counts = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(
+    out_tris = _launch.empty((n, k, 3), dtype=wp.int32, device=device)
+    fan_counts = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_reconstruction.build_local_triangulations,
         dim=n,
         inputs=[
@@ -321,15 +322,15 @@ def triangulate_point_cloud(
     )
     # Scanned in place: each fan's packed offset is its predecessor's inclusive total, and the last
     # entry sizes the candidate buffers.
-    wp.utils.array_scan(fan_counts, out_array=fan_counts, inclusive=True)
+    _launch.array_scan(fan_counts, out_array=fan_counts, inclusive=True)
     # Readback: the candidate count sizes the sort buffers.
     n_candidates = int(read_scalar(fan_counts))
     if n_candidates == 0:
-        return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
     faces = _repeated_oriented_triangles(out_tris, fan_counts, n_candidates, n)
     if faces.size == 0:
-        return wp.clone(points), faces
+        return _launch.clone(points), faces
     # Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.
     # Orientation is not re-derived (``orient=False``): the fans are wound from the trusted normals,
     # and ``make_normals_outward`` would rewind a whole inward-normal cloud's mesh outward, silently
@@ -367,32 +368,32 @@ def _repeated_oriented_triangles(
     """
     device = tris.device
     # Double-width, as ``warp.utils.radix_sort_pairs`` wants: the upper halves are its scratch.
-    keys = wp.empty(2 * n_candidates, dtype=wp.uint64, device=device)
-    slots = wp.empty(2 * n_candidates, dtype=wp.int32, device=device)
-    wp.launch(
+    keys = _launch.empty(2 * n_candidates, dtype=wp.uint64, device=device)
+    slots = _launch.empty(2 * n_candidates, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_reconstruction.candidate_triangle_keys,
         dim=(int(tris.shape[0]), int(tris.shape[1])),
         inputs=[tris, inclusive_counts, wp.uint64(n), keys, slots],
         device=device,
     )
     # Three indices below ``n`` pack below ``n ** 3``, so the sort orders only those low bits.
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys, slots, count=n_candidates, end_bit=min(64, max(1, (n**3 - 1).bit_length()))
     )
 
-    flags = wp.empty(n_candidates, dtype=wp.int32, device=device)
-    wp.launch(
+    flags = _launch.empty(n_candidates, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_reconstruction.repeated_triangle_flags,
         dim=n_candidates,
         inputs=[keys, wp.int32(n_candidates), flags],
         device=device,
     )
-    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
     # Readback: the confirmed-triangle count sizes the face buffer.
     n_faces = int(read_scalar(flags))
-    faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     if n_faces > 0:
-        wp.launch(
+        _launch.launch(
             kernel_reconstruction.emit_repeated_triangles,
             dim=n_candidates,
             inputs=[flags, slots, tris.reshape((-1, 3)), faces],
@@ -582,8 +583,8 @@ def screened_poisson(
             device,
         )
         inv_cell = float(res - 1) / cube_size
-        sampled = wp.empty(n, dtype=wp.float32, device=device)
-        wp.launch(
+        sampled = _launch.empty(n, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_reconstruction.sample_field_trilinear,
             dim=n,
             inputs=[solution, res, cube_lower, inv_cell, points, sampled],
@@ -634,7 +635,7 @@ def _poisson_iso_value(
     if not confidence:
         return tw.reduce.mean(sampled)
     lengths = twt.empty_1d(normals.size, wp.float32, device=normals.device)
-    wp.map(wp.length, normals, out=lengths)
+    _launch.map(wp.length, normals, out=lengths)
     total_weight = tw.reduce.sum(lengths)
     if total_weight <= 0.0:
         return 0.0
@@ -680,17 +681,17 @@ def _poisson_dense_solve(
     # level: a read between levels would stall the host until that level's solve drained, where
     # without it the next level's splat, setup and graph recording are issued while it runs.
     levels = range(full_depth, depth + 1)
-    counts = wp.empty(len(levels), dtype=wp.int32, device=device)
+    counts = _launch.empty(len(levels), dtype=wp.int32, device=device)
     level_results: list[tuple[int, wp.array[wp.float64]]] = []
     for k, level in enumerate(levels):
         res = (1 << level) + 1
         inv_cell = float(res - 1) / cube_size
         n_nodes = res * res * res
         if prev_solution is None:
-            initial = wp.zeros(n_nodes, dtype=wp.float32, device=device)
+            initial = _launch.zeros(n_nodes, dtype=wp.float32, device=device)
         else:
-            initial = wp.empty(n_nodes, dtype=wp.float32, device=device)
-            wp.launch(
+            initial = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+            _launch.launch(
                 kernel_reconstruction.prolong_grid,
                 dim=(res, res, res),
                 inputs=[prev_solution, prev_res, res, initial],
@@ -758,9 +759,9 @@ def _poisson_solve_level(
     """
     n_nodes = res * res * res
     # The splat's four accumulators in one zeroed allocation.
-    splat = wp.zeros(4 * n_nodes, dtype=wp.float32, device=device)
+    splat = _launch.zeros(4 * n_nodes, dtype=wp.float32, device=device)
     vx, vy, vz, weights = (twt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
-    wp.launch(
+    _launch.launch(
         kernel_reconstruction.splat_normals,
         dim=points.size,
         inputs=[
@@ -777,9 +778,9 @@ def _poisson_solve_level(
         ],
         device=device,
     )
-    rhs = wp.empty(n_nodes, dtype=wp.float32, device=device)
-    smoother = wp.empty(n_nodes, dtype=wp.float32, device=device)
-    wp.launch(
+    rhs = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    smoother = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_reconstruction.poisson_level_setup,
         dim=(res, res, res),
         inputs=[vx, vy, vz, weights, wp.float32(screen), res, wp.float32(_MG_OMEGA)],
@@ -831,28 +832,28 @@ def _solve_screened_poisson(
     span, blocks, fold = kernel_cg.cg_layout(n, tw.linalg.CG_FOLD_MAX_BLOCKS)
     stride = blocks * span
     # The five vectors in one allocation; every entry is written by ``poisson_cg_initial``.
-    vectors = wp.empty(5 * stride, dtype=wp.float32, device=device)
+    vectors = _launch.empty(5 * stride, dtype=wp.float32, device=device)
     r, u, w, p, s = (twt.as_dense(vectors[k * stride : (k + 1) * stride]) for k in range(5))
     # Every entry a fold reads, ``[0, blocks)``, is written by the partials launch before it.
-    partials = wp.empty((3, 1, blocks), dtype=wp.float64, device=device)
+    partials = _launch.empty((3, 1, blocks), dtype=wp.float64, device=device)
     # The per-solve scalars in one allocation, the squared threshold and the dots' ``(r.r, gamma)``
     # leading so the pair the caller tests is contiguous, then the coefficients and the
     # recurrence's four scalars.
-    scalars = wp.empty((10, 1), dtype=wp.float64, device=device)
+    scalars = _launch.empty((10, 1), dtype=wp.float64, device=device)
     atol_sq = twt.as_dense(scalars[0, 0:1])
     dots = twt.as_array2d(scalars[1:3], wp.float64)
     coefficients = twt.as_array2d(scalars[3:6], wp.float64)
     gamma_old, alpha_old, gamma_new, alpha_new = (
         twt.as_dense(scalars[row, 0:1]) for row in range(6, 10)
     )
-    state = wp.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    state = _launch.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
     screen_f = wp.float32(screen)
     multigrid = _PoissonMultigrid(weights, screen, res, smoother, device)
     # The V-cycle's first pre-smoothing sweep is pointwise, so the launches that produce the
     # residual write it too -- this one and every round's ``cg_update``, whose Jacobi apply with
     # ``smoother`` as the scaling is that sweep exactly.
     start = multigrid.start
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_reconstruction.poisson_cg_initial,
         dim=(blocks,),
         inputs=[n, span, res, weights, screen_f, rhs, solution, smoother],
@@ -860,7 +861,7 @@ def _solve_screened_poisson(
         block_dim=tile,
         device=device,
     )
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_cg.cg_seed,
         dim=(1,),
         inputs=[wp.float64(tol * tol), wp.float64(0.0), blocks, partials],
@@ -871,7 +872,7 @@ def _solve_screened_poisson(
     multigrid.apply(r, u)
 
     def round_() -> None:
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_reconstruction.poisson_cg_matvec_dots,
             dim=(blocks,),
             inputs=[n, span, res, weights, screen_f, r, u, gamma_new, alpha_new],
@@ -880,7 +881,7 @@ def _solve_screened_poisson(
             device=device,
         )
         if not fold:
-            wp.launch_tiled(
+            _launch.launch_tiled(
                 kernel_cg.cg_coefficients,
                 dim=(1,),
                 inputs=[1, maxiter, blocks, partials, gamma_old, alpha_old, atol_sq, state],
@@ -888,7 +889,7 @@ def _solve_screened_poisson(
                 block_dim=tile,
                 device=device,
             )
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_cg.CG_UPDATE[wp.float32],
             # One tile a block: a pure stream unless it folds; see ``linalg._BatchedCg``.
             dim=(1, stride // tile),
@@ -993,7 +994,7 @@ class _PoissonMultigrid:
         while True:
             n = res**3
             owned = 3 if finest else 5
-            vectors = [wp.empty(n, dtype=wp.float32, device=device) for _ in range(owned)]
+            vectors = [_launch.empty(n, dtype=wp.float32, device=device) for _ in range(owned)]
             b, x = (None, None) if finest else (vectors.pop(), vectors.pop())
             self._levels.append(_GridLevel(res, wp.float32(lap), w, smooth, b, x, *vectors))
             finest = False
@@ -1001,9 +1002,9 @@ class _PoissonMultigrid:
                 break
             res_c = (res - 1) // 2 + 1
             lap *= 2.0
-            w_c = wp.empty(res_c**3, dtype=wp.float32, device=device)
-            smooth_c = wp.empty(res_c**3, dtype=wp.float32, device=device)
-            wp.launch(
+            w_c = _launch.empty(res_c**3, dtype=wp.float32, device=device)
+            smooth_c = _launch.empty(res_c**3, dtype=wp.float32, device=device)
+            _launch.launch(
                 kernel_reconstruction.poisson_mg_coarsen,
                 dim=(res_c, res_c, res_c),
                 inputs=[w, res, res_c, wp.float32(lap), self._screen, wp.float32(_MG_OMEGA)],
@@ -1026,7 +1027,7 @@ class _PoissonMultigrid:
     ) -> None:
         """One damped-Jacobi sweep at ``level`` from ``x`` into ``out``."""
         res = level.res
-        wp.launch(
+        _launch.launch(
             kernel_reconstruction.poisson_mg_smooth,
             dim=(res, res, res),
             inputs=[res, level.lap, level.weights, self._screen, level.smoother, b, x],
@@ -1063,7 +1064,7 @@ class _PoissonMultigrid:
             nxt = level.tmp if sweep % 2 == 1 else out
             self._smooth(level, b, cur, nxt)
             cur = nxt
-        wp.launch(
+        _launch.launch(
             kernel_reconstruction.poisson_mg_residual,
             dim=(res, res, res),
             inputs=[res, level.lap, level.weights, self._screen, b, cur],
@@ -1074,7 +1075,7 @@ class _PoissonMultigrid:
         assert coarse.b is not None
         assert coarse.x is not None
         res_c = coarse.res
-        wp.launch(
+        _launch.launch(
             kernel_reconstruction.poisson_mg_restrict,
             dim=(res_c, res_c, res_c),
             inputs=[level.residual, res, res_c, coarse.smoother],
@@ -1085,7 +1086,7 @@ class _PoissonMultigrid:
         # Corrected into whichever of ``tmp`` / ``out`` lets the post-smoothing's alternation end in
         # ``out``; in place when ``cur`` is already that vector, which the kernel allows.
         corrected = level.tmp if _MG_SWEEPS % 2 == 1 else out
-        wp.launch(
+        _launch.launch(
             kernel_reconstruction.poisson_mg_prolong_add,
             dim=(res, res, res),
             inputs=[coarse.x, res_c, res, cur],
@@ -1154,24 +1155,24 @@ def _screened_poisson_adaptive(
         scale_to_index = float(res_fine) / cube_size
 
         # Index-space sample positions, unit normals, and per-sample quadrature measures.
-        positions = wp.empty(n, dtype=wp.vec3, device=device)
-        wp.map(
+        positions = _launch.empty(n, dtype=wp.vec3, device=device)
+        _launch.map(
             kernel_poisson_fem.world_to_index,
             points,
             cube_lower,
             wp.float32(scale_to_index),
             out=positions,
         )
-        unit_normals = wp.empty(n, dtype=wp.vec3, device=device)
+        unit_normals = _launch.empty(n, dtype=wp.vec3, device=device)
         # These maps are independent and the same width, so they would merge into one
         # multi-output call -- declined because it saves one launch on a function whose body is a
         # finite-element Poisson solve, which is orders of magnitude more work.
-        wp.map(wp.normalize, normals, out=unit_normals)
+        _launch.map(wp.normalize, normals, out=unit_normals)
         if confidence:
-            measures = wp.empty(n, dtype=wp.float32, device=device)
-            wp.map(wp.length, normals, out=measures)
+            measures = _launch.empty(n, dtype=wp.float32, device=device)
+            _launch.map(wp.length, normals, out=measures)
         else:
-            measures = wp.full(n, wp.float32(1.0), device=device)
+            measures = _launch.full(n, wp.float32(1.0), device=device)
 
         # Match the finest near-surface cell size to the sample spacing (PoissonRecon-style): a
         # point-source weak form rings if cells are much finer than the sampling, so cap the
@@ -1199,7 +1200,7 @@ def _screened_poisson_adaptive(
         # axis. Without it the domain is ``[-coarse_voxel/2, ...]`` and the outer lattice shell
         # falls outside; failed lookups leave zeros marching cubes reads as a spurious surface.
         coarse_grid = wp.Volume.allocate_by_voxels(
-            wp.array(ijk.astype(np.int32), dtype=wp.vec3i, device=device),
+            _launch.array(ijk.astype(np.int32), dtype=wp.vec3i, device=device),
             voxel_size=coarse_voxel,
             translation=(0.5 * coarse_voxel, 0.5 * coarse_voxel, 0.5 * coarse_voxel),
             device=device,
@@ -1241,7 +1242,7 @@ def _screened_poisson_adaptive(
             output_dtype=float,
         )
 
-        solution = wp.zeros_like(rhs)
+        solution = _launch.zeros_like(rhs)
         # ``linalg``'s own conjugate gradient on the ``float32`` system as assembled, where Warp's
         # records a new conditional graph per call. The default cadence, so that a solve which runs
         # out of iterations above its tolerance warns, on either device.
@@ -1256,7 +1257,7 @@ def _screened_poisson_adaptive(
         field = space.make_field()
         field.dof_values = solution
 
-        sampled = wp.zeros(n, dtype=wp.float32, device=device)
+        sampled = _launch.zeros(n, dtype=wp.float32, device=device)
         fem.interpolate(
             kernel_poisson_fem.sample_field,
             at=domain,
@@ -1299,14 +1300,14 @@ def _extract_poisson_surface_fem(
 
     res = (1 << min(depth, 9)) + 1
     step_index = float(res_fine) / float(res - 1)
-    positions = wp.empty(res * res * res, dtype=wp.vec3, device=device)
-    wp.launch(
+    positions = _launch.empty(res * res * res, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_poisson_fem.lattice_positions,
         dim=(res, res, res),
         inputs=[wp.float32(step_index), res, wp.float32(float(res_fine) - 1e-3), positions],
         device=device,
     )
-    values = wp.zeros(res * res * res, dtype=wp.float32, device=device)
+    values = _launch.zeros(res * res * res, dtype=wp.float32, device=device)
     fem.interpolate(
         kernel_poisson_fem.sample_field,
         at=domain,
@@ -1389,7 +1390,7 @@ def resample_uniform(
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     lower, upper = tw.bounds.aabb(vertices)
     # ``math.dist`` rather than ``float(wp.length(upper - lower))``: a Warp operator and a
@@ -1422,8 +1423,8 @@ def resample_uniform(
     )
 
     n_points = n_x * n_y * n_z
-    points = wp.empty(n_points, dtype=wp.vec3, device=device)
-    wp.launch(
+    points = _launch.empty(n_points, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_reconstruction.lattice_points,
         dim=(n_x, n_y, n_z),
         inputs=[resolution, grid_lower, spacing, points],
@@ -1556,7 +1557,7 @@ def ball_pivoting(
     device = points.device
     n = points.size
     if n < 3:
-        return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.clone(points), _launch.empty(0, dtype=wp.int32, device=device)
 
     # Nearest-neighbour table drives both the radius auto-guess and (if needed) normal estimation.
     neighbor_idx, neighbor_dist = tw.neighbors.query_nearest(points, points, k=7)
@@ -1583,7 +1584,7 @@ def ball_pivoting(
     _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
 
     count = int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
-    faces = wp.clone(state.all_faces[: count * 3])
+    faces = _launch.clone(state.all_faces[: count * 3])
     return _clean_reconstruction(points, faces, crit_hole_length)
 
 
@@ -1617,49 +1618,49 @@ class _BpaState:
         self.n = points.size
         self.key_base = wp.uint64(self.n)
 
-        self.counters = wp.zeros(kernel_bpa.BPA_COUNTERS, dtype=wp.int32, device=self.device)
-        self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1].fill_(1)
-        self.point_used = wp.zeros(self.n, dtype=wp.bool, device=self.device)
+        self.counters = _launch.zeros(kernel_bpa.BPA_COUNTERS, dtype=wp.int32, device=self.device)
+        _launch.fill_(self.counters[kernel_bpa.CNT_SEEDING : kernel_bpa.CNT_SEEDING + 1], 1)
+        self.point_used = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
         # Persists across every seeding wave for the run's whole lifetime -- see
         # ``kernel_bpa.seed_triangles`` for why a point that once exhausted its candidates without
         # seeding can never succeed later (its candidate set only shrinks), which is what makes
         # never resetting this safe.
-        self.seed_failed = wp.zeros(self.n, dtype=wp.bool, device=self.device)
+        self.seed_failed = _launch.zeros(self.n, dtype=wp.bool, device=self.device)
         # The orphan each point last deferred to, or whether it can ever seed; see the same kernel.
-        self.seed_blocker = wp.full(
+        self.seed_blocker = _launch.full(
             self.n, int(kernel_bpa.SEED_UNKNOWN), dtype=wp.int32, device=self.device
         )
-        self.boundary_degree = wp.zeros(self.n, dtype=wp.int32, device=self.device)
+        self.boundary_degree = _launch.zeros(self.n, dtype=wp.int32, device=self.device)
         # ``uint64`` because the per-wave vertex claim is a ``wp.atomic_min`` over a *packed vertex
         # pair* rather than over a proposal index — see ``kernel_bpa.proposal_key``, which is what
         # makes a run reproducible. Doubling one n-sized buffer is the whole memory cost.
-        self.owner = wp.empty(self.n, dtype=wp.uint64, device=self.device)
+        self.owner = _launch.empty(self.n, dtype=wp.uint64, device=self.device)
         self._allocate_budget(max_faces)
 
     def _allocate_budget(self, max_faces: int) -> None:
         """(Re)size everything that scales with the triangle budget."""
         self.max_faces = max_faces
-        self.all_faces = wp.empty(max_faces * 3, dtype=wp.int32, device=self.device)
+        self.all_faces = _launch.empty(max_faces * 3, dtype=wp.int32, device=self.device)
         # A triangle soup of ``max_faces`` faces has at most ``3 * max_faces`` distinct edges, and
         # the insert probe does not terminate on a full table, so the hash is sized for a load
         # factor of at most 1/2. The front and the proposal list share the same bound.
         capacity = 1 << (6 * max_faces - 1).bit_length()
         self.edge_mask = wp.int32(capacity - 1)
-        self.edge_key = wp.zeros(capacity, dtype=wp.uint64, device=self.device)
-        self.edge_count = wp.zeros(capacity, dtype=wp.int32, device=self.device)
-        self.edge_src = wp.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_tgt = wp.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_opp = wp.empty(capacity, dtype=wp.int32, device=self.device)
-        self.edge_state = wp.zeros(capacity, dtype=wp.int32, device=self.device)
-        self.edge_cand = wp.empty(capacity, dtype=wp.int32, device=self.device)
+        self.edge_key = _launch.zeros(capacity, dtype=wp.uint64, device=self.device)
+        self.edge_count = _launch.zeros(capacity, dtype=wp.int32, device=self.device)
+        self.edge_src = _launch.empty(capacity, dtype=wp.int32, device=self.device)
+        self.edge_tgt = _launch.empty(capacity, dtype=wp.int32, device=self.device)
+        self.edge_opp = _launch.empty(capacity, dtype=wp.int32, device=self.device)
+        self.edge_state = _launch.zeros(capacity, dtype=wp.int32, device=self.device)
+        self.edge_cand = _launch.empty(capacity, dtype=wp.int32, device=self.device)
         self._bind_edge_table()
 
         front_capacity = 3 * max_faces + self.n
-        self.front_in = wp.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.front_out = wp.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_a = wp.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_b = wp.empty(front_capacity, dtype=wp.int32, device=self.device)
-        self.tri_c = wp.empty(front_capacity, dtype=wp.int32, device=self.device)
+        self.front_in = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
+        self.front_out = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
+        self.tri_a = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
+        self.tri_b = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
+        self.tri_c = _launch.empty(front_capacity, dtype=wp.int32, device=self.device)
         # Grid-stride bounds: fixed launch dimensions, which a captured graph requires. Sized from
         # the cloud, not from the budget — the live front peaks well below the point count, and a
         # fixed 64k-wide launch spent most of a small mesh's wave scheduling no-op threads.
@@ -1712,8 +1713,8 @@ class _BpaState:
             # (the destination is twice the size) and unreachable today, since the initial budget
             # is ``4 n + 16`` and a wave proposes at most one triangle per front edge -- but the
             # count is derived from device state, which is exactly the shape that rule is about.
-            wp.copy(self.all_faces, old_faces, count=old_count * 3)
-        wp.launch(
+            _launch.copy(self.all_faces, old_faces, count=old_count * 3)
+        _launch.launch(
             kernel_bpa.rehash_edges,
             dim=old_capacity,
             inputs=[
@@ -1735,7 +1736,7 @@ class _BpaState:
         counters[kernel_bpa.CNT_NEXT_FRONT] = 0
         counters[kernel_bpa.CNT_GROW] = 0
         self.counters.assign(counters)
-        wp.launch(
+        _launch.launch(
             kernel_bpa.collect_front_from_table,
             dim=self.edge_key.size,
             inputs=[wp.int32(self.front_capacity), self.counters, self.edge_table],
@@ -1746,8 +1747,8 @@ class _BpaState:
 
     def compact(self) -> None:
         """Drop closed and retired edges from the front list."""
-        self.counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1].zero_()
-        wp.launch(
+        _launch.zero_(self.counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1])
+        _launch.launch(
             kernel_bpa.compact_front,
             dim=self.front_grid,
             inputs=[
@@ -1764,7 +1765,7 @@ class _BpaState:
         self._adopt_next_front()
 
     def _adopt_next_front(self) -> None:
-        wp.copy(
+        _launch.copy(
             self.counters[kernel_bpa.CNT_FRONT : kernel_bpa.CNT_FRONT + 1],
             self.counters[kernel_bpa.CNT_NEXT_FRONT : kernel_bpa.CNT_NEXT_FRONT + 1],
         )
@@ -1784,8 +1785,8 @@ def _mean_positive_finite(values: wp.array[wp.float32]) -> float | None:
     n = values.size
     if n == 0:
         return None
-    sum_and_count = wp.zeros(2, dtype=wp.float64, device=device)
-    wp.launch_tiled(
+    sum_and_count = _launch.zeros(2, dtype=wp.float64, device=device)
+    _launch.launch_tiled(
         kernel_reconstruction.positive_finite_sum_and_count,
         dim=[kernel_reduce.blocks_1d(n)],
         inputs=[values, sum_and_count],
@@ -1835,7 +1836,7 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
     waves that ran, and the batch's counter readback is already paid for, so the correction is a
     parity test on a number the host is holding.
     """
-    state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1].fill_(1)
+    _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
     waves_run = 0
     for _ in range(_BPA_MAX_BATCHES):
         for _ in range(_BPA_WAVES_PER_BATCH):
@@ -1854,14 +1855,14 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
             state.grow()
         else:
             state.compact()
-        state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1].fill_(1)
+        _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
 
 
 def _bpa_wave(state: _BpaState, max_waves: int) -> None:
     """Queue one wave: seed or pivot, claim, commit, advance. No allocations, no readbacks."""
     device = state.device
-    wp.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
-    wp.launch(
+    _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
+    _launch.launch(
         kernel_bpa.seed_triangles,
         dim=state.n,
         inputs=[
@@ -1882,7 +1883,7 @@ def _bpa_wave(state: _BpaState, max_waves: int) -> None:
         ],
         device=device,
     )
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_bpa.pivot_front_edges,
         dim=[state.front_grid],
         block_dim=kernel_bpa.BPA_PIVOT_BLOCK,
@@ -1909,7 +1910,7 @@ def _bpa_wave(state: _BpaState, max_waves: int) -> None:
         ],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_bpa.claim_triangle_vertices,
         dim=state.claim_grid,
         inputs=[
@@ -1923,7 +1924,7 @@ def _bpa_wave(state: _BpaState, max_waves: int) -> None:
         ],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_bpa.commit_triangles,
         dim=state.claim_grid,
         inputs=[
@@ -1943,7 +1944,7 @@ def _bpa_wave(state: _BpaState, max_waves: int) -> None:
         ],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_bpa.end_wave, dim=1, inputs=[wp.int32(max_waves), state.counters], device=device
     )
 
@@ -1969,7 +1970,7 @@ def _clean_reconstruction(
     unoriented-key order* -- the order that stage emits -- so the result is unchanged.
     """
     if faces.size == 0:
-        return wp.clone(points), faces
+        return _launch.clone(points), faces
 
     if deduplicate:
         faces, _ = tw.repair.resolve_duplicated_faces(faces)

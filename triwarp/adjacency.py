@@ -27,6 +27,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from triwarp.kernels import adjacency as kernel_adjacency
@@ -147,7 +148,7 @@ def face_adjacency(
     adjacency = twt.empty_2d((n_pairs, 2), wp.int32, device=device)
     adjacency_edges = twt.empty_2d((n_pairs, 2), wp.int32, device=device) if return_edges else None
     if n_pairs > 0:
-        wp.launch(
+        _launch.launch(
             kernel,
             dim=dim,
             inputs=[faces, None, *sources, adjacency, adjacency_edges],
@@ -241,13 +242,13 @@ def _sorted_pair_scan(
     """
     keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
     inclusive = twt.as_dense(order[n:])
-    wp.launch(
+    _launch.launch(
         kernel_grouping.MARK_GROUP_STARTS[keys.dtype],
         dim=n,
         inputs=[keys, n, 2, inclusive],
         device=faces.device,
     )
-    wp.utils.array_scan(inclusive, inclusive, inclusive=True)
+    _launch.array_scan(inclusive, inclusive, inclusive=True)
     # The pair count sizes the output, so it has to come back to the host.
     return order, inclusive, int(read_scalar(inclusive))
 
@@ -298,29 +299,29 @@ def vertex_face_adjacency(
     n_faces = faces.size // 3
     row_count = tw.array.index_bound(faces) if n_vertices is None else int(n_vertices)
 
-    offsets = wp.zeros(row_count + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(row_count + 1, dtype=wp.int32, device=device)
     if n_faces == 0 or row_count == 0:
         # ``row_count == 0`` with faces present (reachable only via an explicit ``n_vertices=0``)
         # would otherwise hand back an unwritten ``3 * n_faces`` buffer of allocator garbage.
-        return wp.zeros(3 * n_faces, dtype=wp.int32, device=device), offsets
+        return _launch.zeros(3 * n_faces, dtype=wp.int32, device=device), offsets
 
-    vertex_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
+    vertex_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
 
-    counts = wp.zeros(row_count, dtype=wp.int32, device=device)
+    counts = _launch.zeros(row_count, dtype=wp.int32, device=device)
     # A flat face buffer *is* the corner -> vertex map, so one launch over all 3 * n_faces corners
     # gives each vertex its incident-face count.
-    wp.launch(
+    _launch.launch(
         kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
     )
     # Deliberately NOT tw.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 3 * n_faces, known on the host). Converting for
     # symmetry would add a device synchronization where there is currently none.
-    wp.utils.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
     # The counts are spent once scanned, so their buffer becomes the scatter's per-row cursor:
     # re-zeroing it in stream order is a memset where a second zeroed buffer was an allocation too.
     cursor = counts
-    cursor.zero_()
-    wp.launch(
+    _launch.zero_(cursor)
+    _launch.launch(
         kernel_adjacency.scatter_vertex_faces,
         dim=n_faces,
         inputs=[faces, offsets, cursor, vertex_faces],
@@ -426,7 +427,7 @@ def face_adjacency_unshared(
 
     unshared = twt.empty_2d((m, 2), wp.int32, device=device)
     if m > 0:
-        wp.launch(kernel, dim=dim, inputs=[faces, *tables, unshared], device=device)
+        _launch.launch(kernel, dim=dim, inputs=[faces, *tables, unshared], device=device)
     return twt.as_array2d(unshared, wp.int32)
 
 
@@ -487,7 +488,7 @@ def face_adjacency_angles(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
     if face_adjacency is None:
         face_adjacency = tw.adjacency.face_adjacency(faces, n_vertices=vertices.size)
@@ -496,10 +497,10 @@ def face_adjacency_angles(
 
     m = int(face_adjacency.shape[0])
     if m == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
-    out_angles = wp.empty(m, dtype=wp.float32, device=device)
-    wp.launch(
+    out_angles = _launch.empty(m, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_adjacency.face_adjacency_angles,
         dim=m,
         inputs=[face_normals, face_adjacency, out_angles],
@@ -582,9 +583,9 @@ def face_adjacency_projections(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
     )
     if tables is None:
-        return wp.empty(0, dtype=wp.float32, device=faces.device)
-    out_projections = wp.empty(int(tables[1].shape[0]), dtype=wp.float32, device=faces.device)
-    wp.launch(
+        return _launch.empty(0, dtype=wp.float32, device=faces.device)
+    out_projections = _launch.empty(int(tables[1].shape[0]), dtype=wp.float32, device=faces.device)
+    _launch.launch(
         kernel_adjacency.face_adjacency_projections,
         dim=out_projections.size,
         inputs=[vertices, *tables, out_projections],
@@ -660,12 +661,12 @@ def face_adjacency_convex(
         vertices, faces, face_adjacency, face_adjacency_edges, face_adjacency_unshared, face_normals
     )
     if tables is None:
-        return wp.empty(0, dtype=wp.bool, device=faces.device)
+        return _launch.empty(0, dtype=wp.bool, device=faces.device)
     # The projection and its threshold in one launch rather than the projections array plus a
     # ``wp.map`` comparison over it; the shared ``adjacency_projection`` keeps the two answers
     # row-for-row consistent.
-    out_convex = wp.empty(int(tables[1].shape[0]), dtype=wp.bool, device=faces.device)
-    wp.launch(
+    out_convex = _launch.empty(int(tables[1].shape[0]), dtype=wp.bool, device=faces.device)
+    _launch.launch(
         kernel_adjacency.face_adjacency_convex,
         dim=out_convex.size,
         inputs=[vertices, *tables, TOLERANCE_MERGE_CONSTANT, out_convex],
@@ -763,7 +764,7 @@ def face_connected_component_labels(
     """
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.int32, device=faces.device)
+        return _launch.empty(0, dtype=wp.int32, device=faces.device)
     # The adjacency pairs straight off the sorted edge keys, one union-find edge per halfedge (a
     # self-loop where no pair starts), formed inside the pre-hook and hook kernels: no compacted
     # table, no host read of its length, and no per-halfedge edge table written only to be read
@@ -774,11 +775,11 @@ def face_connected_component_labels(
     # Trimmed: the run classification reads its length off the keys' shape.
     sorted_keys = twt.as_dense(keys[:n])
     parents = twt.as_dense(order[n : n + n_faces])
-    wp.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
+    _launch.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
     for kernel in (kernel_adjacency.sorted_pair_prehook, kernel_adjacency.sorted_pair_hook):
-        wp.launch(kernel, dim=n, inputs=[sorted_keys, order, parents], device=device)
-    labels = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+        _launch.launch(kernel, dim=n, inputs=[sorted_keys, order, parents], device=device)
+    labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=n_faces,
         inputs=[parents, labels],
@@ -844,17 +845,17 @@ def _sorted_face_edge_buffers(
     # The keys and the identity payload are written straight into the leading halves of the radix
     # sort's double-width buffers in one launch, so no staging copy of every halfedge key is made
     # and the scratch halves are never filled; a known radix bounds the sorted bits.
-    keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
-    order = wp.empty(2 * n, dtype=wp.int32, device=device)
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
     if n == 0:
         return keys, order, 0
-    wp.launch(
+    _launch.launch(
         kernel_adjacency.face_edge_keys_and_order,
         dim=n // 3,
         inputs=[faces, wp.uint64(radix), keys, order],
         device=device,
     )
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
     )
     return keys, order, n

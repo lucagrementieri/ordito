@@ -29,6 +29,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.halfedge import halfedge_twins, require_matching_twins, vertex_one_rings
 from triwarp.kernels import tangent_space as kernel_tangent_space
@@ -89,8 +90,8 @@ def vertex_tangent_frames(
     require_same_device(vertices=vertices, faces=faces, normals=normals, rings=rings)
     device = vertices.device
     n = vertices.size
-    basis_x = wp.empty(n, dtype=wp.vec3, device=device)
-    basis_y = wp.empty(n, dtype=wp.vec3, device=device)
+    basis_x = _launch.empty(n, dtype=wp.vec3, device=device)
+    basis_y = _launch.empty(n, dtype=wp.vec3, device=device)
     if normals is None:
         normals = tw.vertices.vertex_normals(vertices, faces, weighting="angle")
     if n == 0:
@@ -100,7 +101,7 @@ def vertex_tangent_frames(
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, _ = rings
 
-    wp.launch(
+    _launch.launch(
         kernel_tangent_space.vertex_tangent_frames,
         dim=n,
         inputs=[vertices, faces, normals, ring_offsets, ring_halfedges, basis_x, basis_y],
@@ -155,19 +156,19 @@ def face_tangent_frames(
     require_same_device(vertices=vertices, faces=faces, normals=normals)
     device = vertices.device
     n_faces = faces.size // 3
-    basis_x = wp.empty(n_faces, dtype=wp.vec3, device=device)
-    basis_y = wp.empty(n_faces, dtype=wp.vec3, device=device)
+    basis_x = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    basis_y = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     if n_faces == 0:
         if normals is None:
-            normals = wp.empty(0, dtype=wp.vec3, device=device)
+            normals = _launch.empty(0, dtype=wp.vec3, device=device)
         return basis_x, basis_y, normals
 
     if normals is None:
         # Derived here rather than through ``triangles.face_normals_and_areas``: the frame needs one
         # cross product the producer already forms, and routing through it costs a launch, a round
         # trip of the normals through global memory and an areas buffer nothing below reads.
-        normals = wp.empty(n_faces, dtype=wp.vec3, device=device)
-        wp.launch(
+        normals = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_tangent_space.face_tangent_frames_and_normals,
             dim=n_faces,
             inputs=[vertices, faces, basis_x, basis_y, normals],
@@ -175,7 +176,7 @@ def face_tangent_frames(
         )
         return basis_x, basis_y, normals
 
-    wp.launch(
+    _launch.launch(
         kernel_tangent_space.face_tangent_frames,
         dim=n_faces,
         inputs=[vertices, faces, normals, basis_x, basis_y],
@@ -233,7 +234,7 @@ def halfedge_tangent_angles(
     device = vertices.device
     n = vertices.size
     n_halfedges = faces.size // 3 * 3
-    angles = wp.zeros(n_halfedges, dtype=wp.float32, device=device)
+    angles = _launch.zeros(n_halfedges, dtype=wp.float32, device=device)
     if n_halfedges == 0 or n == 0:
         return angles
 
@@ -243,7 +244,7 @@ def halfedge_tangent_angles(
         rings = vertex_one_rings(faces, n_vertices=n)
     ring_halfedges, ring_offsets, is_boundary = rings
 
-    wp.launch(
+    _launch.launch(
         kernel_tangent_space.halfedge_tangent_angles,
         dim=n,
         inputs=[face_angles, ring_offsets, ring_halfedges, is_boundary, angles],
@@ -314,7 +315,7 @@ def halfedge_transport_angles(
     require_matching_twins(faces, twins)
     device = vertices.device
     n_halfedges = faces.size // 3 * 3
-    rho = wp.empty(n_halfedges, dtype=wp.float32, device=device)
+    rho = _launch.empty(n_halfedges, dtype=wp.float32, device=device)
     if n_halfedges == 0:
         return rho
 
@@ -325,7 +326,7 @@ def halfedge_transport_angles(
         rings = vertex_one_rings(faces, twins=twins, n_vertices=n)
         tangent_angles = halfedge_tangent_angles(vertices, faces, rings=rings)
 
-    wp.launch(
+    _launch.launch(
         kernel_tangent_space.halfedge_transport_angles,
         dim=n_halfedges,
         inputs=[twins, tangent_angles, rho],

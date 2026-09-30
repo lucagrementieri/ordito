@@ -29,6 +29,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import predicates as kernel_predicates
@@ -196,10 +197,12 @@ def _accumulate_and_normalize(
     """
     device = faces.device
     n_faces = faces.size // 3
-    sums = wp.zeros((n_vertices, 3), dtype=_ACCUMULATOR_DTYPE, device=device)
-    wp.launch(scatter_table[_ACCUMULATOR_DTYPE], dim=n_faces, inputs=[*inputs, sums], device=device)
-    vec_normals = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    wp.launch(
+    sums = _launch.zeros((n_vertices, 3), dtype=_ACCUMULATOR_DTYPE, device=device)
+    _launch.launch(
+        scatter_table[_ACCUMULATOR_DTYPE], dim=n_faces, inputs=[*inputs, sums], device=device
+    )
+    vec_normals = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_vertices.NORMALIZE_ACCUMULATED_ROWS[_ACCUMULATOR_DTYPE],
         dim=n_vertices,
         inputs=[sums, vec_normals],
@@ -303,7 +306,7 @@ def vertex_normals(
 
     if weighting == "mwselr":
         if n_faces == 0:
-            return wp.zeros(n_vertices, dtype=wp.vec3, device=device)
+            return _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
         # A supplied ``face_normals`` is unit length; a derived one is the raw cross product, and
         # the weight depends on which, because the sine it divides out is already in the cross
         # product's magnitude. Either way one kernel forms the weights in registers and scatters
@@ -404,9 +407,9 @@ def vertex_defects(
     require_same_device(faces=faces, face_angles=face_angles)
     n_faces = faces.size // 3
     _require_face_rows(n_faces, face_angles=face_angles)
-    angle_sum = wp.zeros(n_vertices, dtype=wp.float32, device=faces.device)
+    angle_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=faces.device)
     faces2d = faces.reshape((-1, 3))
-    wp.launch(
+    _launch.launch(
         kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
         dim=n_faces,
         inputs=[face_angles, faces2d, angle_sum],
@@ -414,7 +417,7 @@ def vertex_defects(
     )
     # In place over the accumulator: ``angle_sum`` is scratch, and the operator spelling
     # ``TWO_PI - angle_sum`` would run the same wp.map into a second allocation.
-    wp.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
+    _launch.map(kernel_predicates.angle_defect, angle_sum, out=angle_sum)
     return angle_sum
 
 

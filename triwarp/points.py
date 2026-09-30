@@ -57,6 +57,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device, slice_count
 from triwarp.constants import TILE_1D, TOLERANCE_ZERO
 from triwarp.kernels import array as kernel_array
@@ -111,8 +112,8 @@ def point_plane_distance(
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
     n = points.size
-    out_distances = wp.empty(n, dtype=wp.float32, device=points.device)
-    wp.map(
+    out_distances = _launch.empty(n, dtype=wp.float32, device=points.device)
+    _launch.map(
         kernel_points.point_plane_distance, points, plane_normal, plane_origin, out=out_distances
     )
     return out_distances
@@ -170,11 +171,11 @@ def half_space_mask(
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
     n = points.size
-    out_mask = wp.empty(n, dtype=wp.bool, device=points.device)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=points.device)
     if n == 0:
         return out_mask
 
-    wp.map(kernel_points.is_in_half_space, points, plane_normal, plane_origin, out=out_mask)
+    _launch.map(kernel_points.is_in_half_space, points, plane_normal, plane_origin, out=out_mask)
     return out_mask
 
 
@@ -197,7 +198,7 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     out = _point_sum(points)
     if n == 0:
         return out
-    wp.map(wp.div, out, wp.float32(n), out=out)
+    _launch.map(wp.div, out, wp.float32(n), out=out)
     return out
 
 
@@ -268,8 +269,8 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     gram = gram_matrix(points)
 
     # Pass 2: SVD of the 3x3 matrix and axis extraction (single thread).
-    out_axis = wp.empty(1, dtype=wp.vec3, device=device)
-    wp.launch(kernel_points.finalize_fit_line, dim=1, inputs=[gram, out_axis], device=device)
+    out_axis = _launch.empty(1, dtype=wp.vec3, device=device)
+    _launch.launch(kernel_points.finalize_fit_line, dim=1, inputs=[gram, out_axis], device=device)
     return cast(wp.vec3, out_axis.list()[0])
 
 
@@ -358,8 +359,8 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     # results land in one buffer and cross to the host in one readback: they are two rows of three
     # floats, so what a second readback would buy is nothing and what it costs is another
     # synchronization.
-    out_plane = wp.empty(2, dtype=wp.vec3, device=device)
-    wp.launch(
+    out_plane = _launch.empty(2, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_points.finalize_fit_plane,
         dim=1,
         inputs=[point_sum, wp.float32(n), cov, out_plane],
@@ -429,7 +430,7 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     if n - ddof <= 0:
         raise ValueError(f"covariance requires n > ddof, got n={n}, ddof={ddof}")
     out = centered_covariance(points)
-    wp.map(wp.div, out, wp.float32(n - ddof), out=out)
+    _launch.map(wp.div, out, wp.float32(n - ddof), out=out)
     return out
 
 
@@ -489,8 +490,8 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     scatter = _scatter_matrix(points, point_sum, float(n))
     # All three results in one buffer, read back once: fifteen floats is less than a single
     # readback's fixed cost, so three of them bought three synchronizations and nothing else.
-    out_frame = wp.empty(5, dtype=wp.vec3, device=device)
-    wp.launch(
+    out_frame = _launch.empty(5, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_points.finalize_principal_axes,
         dim=1,
         inputs=[point_sum, wp.float32(n), scatter, out_frame],
@@ -581,7 +582,7 @@ def estimate_normals(
             f"neighbor_idx must have one row per point, got {neighbor_idx.shape} for {n} points"
         )
     if n == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device)
 
     if camera_location is not None:
         orient_mode = kernel_points.ORIENT_CAMERA
@@ -597,8 +598,8 @@ def estimate_normals(
     # kernel; the other two modes pass a null array and skip the reduction.
     centroid_mode = camera_location is None and orient_reference is None
     point_sum = _point_sum(points) if centroid_mode else None
-    out_normals = wp.empty(n, dtype=wp.vec3, device=device)
-    wp.launch(
+    out_normals = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_points.estimate_point_normals,
         dim=n,
         inputs=[points, neighbor_idx, point_sum, wp.float32(n), orient_mode, reference],
@@ -612,10 +613,10 @@ def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     """``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty."""
     device = points.device
     n = points.size
-    out = wp.zeros(1, dtype=wp.vec3, device=device)
+    out = _launch.zeros(1, dtype=wp.vec3, device=device)
     if n == 0:
         return out
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_reduce.sum_vec3_1d_tiled,
         dim=[kernel_reduce.blocks_1d(n)],
         inputs=[points, out],
@@ -636,10 +637,10 @@ def _scatter_matrix(
     """
     device = points.device
     n = points.size
-    out = wp.zeros(1, dtype=wp.mat33, device=device)
+    out = _launch.zeros(1, dtype=wp.mat33, device=device)
     if n == 0:
         return out
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_points.centered_covariance,
         dim=[kernel_reduce.blocks_1d(n)],
         inputs=[points, center, wp.float32(center_divisor), out],
@@ -722,13 +723,13 @@ def outlier_probability(
     device = neighbor_idx.device
     n = int(neighbor_idx.shape[0])
     if n == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
     _mean, standard_distance, _count = _neighbor_distance_moments(
         neighbor_distance, mean_and_count=False, rms=True
     )
-    plof = wp.empty(n, dtype=wp.float32, device=device)
-    wp.launch(
+    plof = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_points.local_outlier_factor,
         dim=n,
         inputs=[standard_distance, neighbor_idx, plof],
@@ -737,10 +738,10 @@ def outlier_probability(
 
     # nplof = scale * sqrt(E[plof^2]) over the whole cloud: one fused sum-of-squares reduction,
     # left on the device -- the probability kernel reads it and forms the normalizer itself.
-    plof_sum_squares = wp.empty(1, dtype=wp.float32, device=device)
+    plof_sum_squares = _launch.empty(1, dtype=wp.float32, device=device)
     wp.utils.array_inner(plof, plof, out=plof_sum_squares)
-    out_probability = wp.empty(n, dtype=wp.float32, device=device)
-    wp.launch(
+    out_probability = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_points.outlier_probabilities,
         dim=n,
         inputs=[plof, plof_sum_squares, wp.float64(scale), wp.float32(n)],
@@ -796,7 +797,7 @@ def statistical_outlier_mask(
     device = neighbor_distance.device
     n = int(neighbor_distance.shape[0])
     # `wp.empty`, not `wp.zeros`: the mask launch below writes every slot of `out_mask`.
-    out_mask = wp.empty(n, dtype=wp.bool, device=device)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
 
@@ -805,11 +806,11 @@ def statistical_outlier_mask(
     # The three slots -- counted rows, distance total, squared deviation -- stay on the device:
     # the moments pass folds the first two, the deviation pass reads the mean from them and the
     # mask launch the threshold from all three, so nothing is read back.
-    totals = wp.zeros(3, dtype=wp.float64, device=device)
+    totals = _launch.zeros(3, dtype=wp.float64, device=device)
     mean_distance, _rms, count = _neighbor_distance_moments(
         neighbor_distance, mean_and_count=True, rms=False, totals=totals
     )
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_points.accumulate_counted_deviation,
         dim=[kernel_reduce.blocks_1d(n)],
         inputs=[count, mean_distance],
@@ -817,7 +818,7 @@ def statistical_outlier_mask(
         block_dim=TILE_1D,
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_points.statistical_outlier_from_totals,
         dim=n,
         inputs=[mean_distance, count, totals, wp.float64(std_ratio)],
@@ -842,11 +843,11 @@ def _neighbor_distance_moments(
     """
     device = neighbor_distance.device
     n = int(neighbor_distance.shape[0])
-    out_mean = wp.empty(n, dtype=wp.float32, device=device) if mean_and_count else None
-    out_rms = wp.empty(n, dtype=wp.float32, device=device) if rms else None
-    out_count = wp.empty(n, dtype=wp.int32, device=device) if mean_and_count else None
+    out_mean = _launch.empty(n, dtype=wp.float32, device=device) if mean_and_count else None
+    out_rms = _launch.empty(n, dtype=wp.float32, device=device) if rms else None
+    out_count = _launch.empty(n, dtype=wp.int32, device=device) if mean_and_count else None
     rows_per_block = kernel_points.MOMENT_ROWS_PER_BLOCK
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_points.neighbor_distance_moments,
         dim=[(n + rows_per_block - 1) // rows_per_block],
         inputs=[neighbor_distance],
@@ -928,14 +929,14 @@ def radius_outlier_mask(
 
     device = points.device
     n = points.size
-    out_mask = wp.zeros(n, dtype=wp.bool, device=device)
+    out_mask = _launch.zeros(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
 
     # A self-query counts the point itself once, at distance 0 -- which is what makes
     # ``min_neighbors`` comparable with Open3D's ``nb_points`` without an off-by-one correction.
     counts = tw.neighbors.query_ball_count(points, points, radius, accelerator=grid)
-    wp.map(kernel_array.less_equal, counts, wp.int32(min_neighbors), out=out_mask)
+    _launch.map(kernel_array.less_equal, counts, wp.int32(min_neighbors), out=out_mask)
     return out_mask
 
 
@@ -975,11 +976,11 @@ def point_finite_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     """
     device = points.device
     n = points.size
-    out_mask = wp.empty(n, dtype=wp.bool, device=device)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
 
-    wp.map(kernel_points.is_finite_point, points, out=out_mask)
+    _launch.map(kernel_points.is_finite_point, points, out=out_mask)
     return out_mask
 
 
@@ -1035,23 +1036,23 @@ def point_duplicate_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     """
     device = points.device
     n = points.size
-    out_mask = wp.empty(n, dtype=wp.bool, device=device)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
 
     # One open-addressing table of point indices, at least twice ``n`` slots, a power of two;
     # the first pass leaves each class slot holding its smallest index and each point its slot.
     slot_mask = (1 << max(3, (n - 1).bit_length() + 1)) - 1
-    first = wp.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
-    slot = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(
+    first = _launch.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
+    slot = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_points.point_duplicate_first,
         dim=n,
         inputs=[points, slot_mask],
         outputs=[first, slot],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_points.point_duplicate_from_first,
         dim=n,
         inputs=[first, slot],
@@ -1129,14 +1130,14 @@ def farthest_point_sample(
     if not 0 <= count <= n:
         raise ValueError(f"count must be in [0, {n}], got {count}")
 
-    out_selected = wp.empty(count, dtype=wp.int32, device=device)
+    out_selected = _launch.empty(count, dtype=wp.int32, device=device)
     if count == 0:
         return out_selected
     if not 0 <= start < n:
         raise ValueError(f"start must be in [0, {n}), got {start}")
 
     # Scratch for the running squared distance to the chosen set; the kernel initializes it.
-    min_distance_sq = wp.empty(n, dtype=wp.float32, device=device)
+    min_distance_sq = _launch.empty(n, dtype=wp.float32, device=device)
     if n >= kernel_points.FARTHEST_BLOCK_LARGE_FROM:
         block_dim = kernel_points.FARTHEST_BLOCK_LARGE
     elif n >= kernel_points.FARTHEST_BLOCK_MID_FROM:
@@ -1144,7 +1145,7 @@ def farthest_point_sample(
     else:
         block_dim = kernel_points.FARTHEST_BLOCK_SMALL
     # The whole greedy sweep runs as one persistent block; see the kernel for why.
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_points.farthest_point_sample_block,
         dim=(1,),
         inputs=[points, wp.int32(start), wp.int32(count), min_distance_sq, out_selected],
@@ -1235,14 +1236,14 @@ def convex_subset_mask(
     device = points.device
     n_points = points.size
     if n_points == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
     n_dir = int(n_directions)
     directions = tw.sample.sample_fibonacci_hemisphere(n_dir, device=device)
     best_max, best_min = _support_extremes(points, directions)
 
-    out_mask = wp.zeros(n_points, dtype=wp.bool, device=device)
-    wp.launch(
+    out_mask = _launch.zeros(n_points, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_points.mark_hull_support,
         dim=(n_dir, n_points),
         inputs=[points, directions, best_max, best_min, wp.float32(tolerance), out_mask],
@@ -1365,10 +1366,10 @@ def convex_superset_mask(
     device = points.device
     n_points = points.size
     if n_points == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
     if n_points < 4:
         # No tetrahedron exists, so nothing can be certified interior.
-        return wp.full(n_points, value=True, dtype=wp.bool, device=device)
+        return _launch.full(n_points, value=True, dtype=wp.bool, device=device)
 
     directions, shell_faces = tw.creation.icosphere(subdivisions=int(subdivisions), device=device)
     n_dir = directions.size
@@ -1377,8 +1378,8 @@ def convex_superset_mask(
 
     # Seeded with the last index rather than a sentinel: a direction that somehow marks nothing
     # then yields a real point, which keeps the gather in range and the tetrahedra valid.
-    support = wp.full(n_dir, value=n_points - 1, dtype=wp.int32, device=device)
-    wp.launch(
+    support = _launch.full(n_dir, value=n_points - 1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_points.support_indices,
         dim=(n_dir, n_points),
         inputs=[points, directions, best_max, best_min, SUPPORT_TIE_SLACK, support],
@@ -1387,25 +1388,25 @@ def convex_superset_mask(
 
     # A view, not a copy: ``support`` is a dense index array, and both kernels read the view.
     shell_vertices = points[support]
-    centroid = wp.empty(1, dtype=wp.vec3, device=device)
-    radius = wp.empty(1, dtype=wp.float32, device=device)
-    wp.launch(
+    centroid = _launch.empty(1, dtype=wp.vec3, device=device)
+    radius = _launch.empty(1, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_points.shell_bounds, dim=1, inputs=[shell_vertices, centroid, radius], device=device
     )
 
     # `wp.empty`: a flat tetrahedron writes no planes, and `mark_hull_superset` reads a row
     # only where `valid` is set.
-    planes = wp.empty((n_tetra, 4), dtype=wp.vec4, device=device)
-    valid = wp.empty(n_tetra, dtype=wp.bool, device=device)
-    wp.launch(
+    planes = _launch.empty((n_tetra, 4), dtype=wp.vec4, device=device)
+    valid = _launch.empty(n_tetra, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_points.tetrahedron_planes,
         dim=n_tetra,
         inputs=[shell_vertices, shell_faces, centroid, TETRAHEDRON_FLATNESS, planes, valid],
         device=device,
     )
 
-    out_mask = wp.empty(n_points, dtype=wp.bool, device=device)
-    wp.launch(
+    out_mask = _launch.empty(n_points, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_points.mark_hull_superset,
         dim=n_points,
         inputs=[points, planes, valid, radius, wp.float32(margin), out_mask],
@@ -1432,9 +1433,9 @@ def _support_extremes(
     n_dir = directions.size
     n_slices = slice_count(n_points, device)
 
-    best_max = wp.full(n_dir, value=-float("inf"), dtype=wp.float32, device=device)
-    best_min = wp.full(n_dir, value=float("inf"), dtype=wp.float32, device=device)
-    wp.launch(
+    best_max = _launch.full(n_dir, value=-float("inf"), dtype=wp.float32, device=device)
+    best_min = _launch.full(n_dir, value=float("inf"), dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_points.hull_support_extremes,
         dim=(n_dir, n_slices),
         inputs=[points, directions, n_slices, best_max, best_min],
@@ -1483,10 +1484,10 @@ def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.floa
         raise ValueError(f"a and b must have the same length, got {n} and {b.size}")
 
     if n == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
-    out_angles = wp.empty(n, dtype=wp.float32, device=device)
-    wp.map(kernel_predicates.vector_angle, a, b, out=out_angles)
+    out_angles = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.map(kernel_predicates.vector_angle, a, b, out=out_angles)
     return out_angles
 
 
@@ -1527,7 +1528,7 @@ def radial_sort(
     device = points.device
     n = points.size
     if n == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device)
 
     # Build two axes perpendicular to each other and the normal, onto which the
     # points are projected to recover an angle. Done on the host since the axes
@@ -1564,8 +1565,8 @@ def radial_sort(
         axis0 = twt.cross(unit_start, unit_normal)
         axis1 = twt.cross(axis0, unit_normal)
 
-    out_keys = wp.empty(n, dtype=wp.float32, device=device)
-    wp.map(kernel_points.radial_sort_key, points, origin, axis0, axis1, out=out_keys)
+    out_keys = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.map(kernel_points.radial_sort_key, points, origin, axis0, axis1, out=out_keys)
 
     # Ascending radix sort of the negated angles yields the descending-angle order.
     _sorted_keys, order = tw.array.sort_and_argsort(out_keys, fill_value=n)

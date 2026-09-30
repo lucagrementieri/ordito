@@ -269,6 +269,7 @@ select = [
     "N",   # Pep8-naming (Mathematical & PEP8 naming conventions)
     "PT",  # Pytest-style (Clean testing framework)
     "RUF", # Ruff-specific internal rules
+    "TID251", # Banned APIs (see flake8-tidy-imports.banned-api below)
     "UP",  # Pyupgrade (Keeps syntax modern and performant)
     "W",   # Pycodestyle (Standard PEP 8 formatting)
     "YTT", # Sys.version checks (Prevents compatibility bugs)
@@ -286,6 +287,11 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "triwarp/reduce.py" = ["A001"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+# Tests patch and assert through pytest alone (CLAUDE.md section 7.1): ``monkeypatch`` restores what
+# it patched at teardown, and ``monkeypatch.context()`` scopes a patch to a block.
+"unittest".msg = "use pytest: the monkeypatch fixture (monkeypatch.context() for a scoped patch)"
 
 [tool.ruff.lint.isort]
 known-first-party = ["triwarp"]

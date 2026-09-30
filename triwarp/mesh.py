@@ -11,6 +11,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_nonempty_mesh
 
 _R = TypeVar("_R")
@@ -1805,9 +1806,9 @@ class Trimesh:
             cached = self._cache.get(key)
             if cached is not None:
                 normals = cast("wp.array[wp.vec3]", cached)
-                flipped = wp.empty(normals.size, dtype=wp.vec3, device=normals.device)
+                flipped = _launch.empty(normals.size, dtype=wp.vec3, device=normals.device)
                 if normals.size > 0:
-                    wp.map(wp.neg, normals, out=flipped)
+                    _launch.map(wp.neg, normals, out=flipped)
                 survived[key] = flipped
         return Trimesh(
             self._vertices, tw.repair.reverse_winding(self._faces), initial_cache=survived
@@ -1949,7 +1950,7 @@ class Trimesh:
         [`invalidate`][triwarp.mesh.Trimesh.invalidate]
         [`trimesh.Trimesh.copy`][]
         """
-        return Trimesh(wp.clone(self._vertices), wp.clone(self._faces))
+        return Trimesh(_launch.clone(self._vertices), _launch.clone(self._faces))
 
     def __add__(self, other: Trimesh) -> Trimesh:
         """

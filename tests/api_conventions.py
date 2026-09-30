@@ -141,6 +141,7 @@ _EXTRA_TEST_FILES = frozenset(
         "map_uniform_probe",  # a Warp-behaviour probe, not a module's coverage
         "array_indexing_probe",  # ditto: Python-scope gather semantics, section 3.4
         "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
+        "launch",  # covers triwarp._launch, the private launcher every wrapper module calls
     }
 )
 _EXTRA_BENCHMARK_FILES = frozenset({"meshes"})  # mesh-fixture invariants, nothing timed
@@ -287,6 +288,12 @@ _WARP_VERSION_SCAN_ROOTS: tuple[tuple[Path, str], ...] = (
 # The Python-scope allocators that take a ``device`` keyword. ``wp.clone`` and the ``*_like``
 # family inherit the source array's device and so cannot get this wrong.
 _ALLOCATORS = frozenset({"array", "empty", "full", "ones", "zeros"})
+
+# The call prefixes check 10 and check 15 read: Warp's own allocators and launchers, and
+# ``triwarp._launch``'s cached versions of them, which the wrapper layer calls instead and which
+# take the same ``device`` keyword. Without the second, rewriting a call site onto the cached path
+# would take it out of both checks' view with nothing going red.
+_DEVICE_CALL_OWNERS = frozenset({("wp",), ("_launch",)})
 
 # Allocations that deliberately fall back to Warp's current device, keyed by ``(module, call)``
 # with the call spelled exactly as ``ast.unparse`` renders it. The value is the reason, and the
@@ -640,7 +647,7 @@ def _bare_allocations(tree: ast.Module) -> list[tuple[str, int]]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
             continue
-        if node.func.attr not in _ALLOCATORS or _dotted(node.func)[:1] != ("wp",):
+        if node.func.attr not in _ALLOCATORS or _dotted(node.func)[:1] not in _DEVICE_CALL_OWNERS:
             continue
         if any(keyword.arg in ("device", None) for keyword in node.keywords):
             continue
@@ -1332,7 +1339,9 @@ def launch_device_problems() -> list[str]:
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
                 continue
-            if node.func.attr not in _LAUNCHERS or _dotted(node.func)[:1] != ("wp",):
+            if node.func.attr not in _LAUNCHERS:
+                continue
+            if _dotted(node.func)[:1] not in _DEVICE_CALL_OWNERS:
                 continue
             if any(keyword.arg in ("device", None) for keyword in node.keywords):
                 continue  # a **kwargs splat may be forwarding one; miss it rather than misfire

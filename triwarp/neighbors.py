@@ -44,6 +44,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INT64_MAX, TILE_1D
 from triwarp.kernels import neighbors as kernel_neighbors
@@ -145,8 +146,8 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
     n = points.size
     if n == 0:
         raise ValueError("mesh_from_points needs at least one point")
-    corners = wp.empty(3 * n, dtype=wp.int32, device=points.device)
-    wp.launch(
+    corners = _launch.empty(3 * n, dtype=wp.int32, device=points.device)
+    _launch.launch(
         kernel_neighbors.point_triangle_indices, dim=3 * n, inputs=[corners], device=points.device
     )
     # ``lbvh``: the other constructors build this tree several times slower, for no faster query.
@@ -294,18 +295,18 @@ def query_bvh_ball(
 
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
         )
 
     # The counts land behind the leading zero of the ``m + 1`` offsets buffer and are scanned there
     # in place, so no separate count buffer is allocated.
-    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     hit_counts = twt.as_dense(offsets[1:])
     # ``wp.uint64(bvh.id)`` explicitly: unlike ``wp.launch``, ``wp.map`` infers a bare Python int
     # scalar's dtype as ``wp.int32`` rather than matching the mapped @wp.func's declared parameter
     # type, and a mismatched dtype is a codegen-time TypeError, not a silent truncation.
-    wp.map(
+    _launch.map(
         kernel_neighbors.ball_count_in_bounds,
         wp.uint64(bvh.id),
         queries,
@@ -313,13 +314,13 @@ def query_bvh_ball(
         out=hit_counts,
     )
 
-    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
     total_hits = int(read_scalar(offsets))
     if total_hits == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), offsets
+        return _launch.empty(0, dtype=wp.int32, device=device), offsets
 
-    candidate_indices_flat = wp.empty(total_hits, dtype=wp.int32, device=device)
-    wp.launch(
+    candidate_indices_flat = _launch.empty(total_hits, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_neighbors.query_bvh_ball_neighbors,
         dim=m,
         inputs=[queries, bvh.id, wp.float32(radius), offsets, candidate_indices_flat],
@@ -394,15 +395,15 @@ def query_bvh_box(
 
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
         )
 
-    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     hit_counts = twt.as_dense(offsets[1:])
     # ``wp.uint64(bvh.id)`` explicitly -- see the same cast in ``query_bvh_ball``
     # above.
-    wp.map(
+    _launch.map(
         kernel_neighbors.aabb_count_in_bounds,
         wp.uint64(bvh.id),
         query_lower,
@@ -410,13 +411,13 @@ def query_bvh_box(
         out=hit_counts,
     )
 
-    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
     total_hits = int(read_scalar(offsets))
     if total_hits == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), offsets
+        return _launch.empty(0, dtype=wp.int32, device=device), offsets
 
-    candidate_indices_flat = wp.empty(total_hits, dtype=wp.int32, device=device)
-    wp.launch(
+    candidate_indices_flat = _launch.empty(total_hits, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_neighbors.query_bvh_box_neighbors,
         dim=m,
         inputs=[query_lower, query_upper, bvh.id, offsets, candidate_indices_flat],
@@ -566,7 +567,7 @@ def query_ball(
 
     single_query = isinstance(queries, wp.vec3)
     if single_query:
-        queries = wp.array([queries], dtype=wp.vec3, device=device)
+        queries = _launch.array([queries], dtype=wp.vec3, device=device)
 
     neighbor_indices_flat, neighbor_distances_flat, offsets = query_ball_with_offsets(
         points,
@@ -643,9 +644,9 @@ def query_ball_count(
     n = points.size
     m = queries.size
     if n == 0:
-        return wp.zeros(m, dtype=wp.int32, device=device)
+        return _launch.zeros(m, dtype=wp.int32, device=device)
 
-    neighbor_counts = wp.empty(m, dtype=wp.int32, device=device)
+    neighbor_counts = _launch.empty(m, dtype=wp.int32, device=device)
     if kind == "hashgrid":
         if accelerator is None:
             accelerator = hashgrid_from_points(points, r, grid_bins)
@@ -655,7 +656,7 @@ def query_ball_count(
             accelerator = bvh_from_points(points, leaf_size)
         accel_selector = kernel_neighbors.ACCEL_BVH
 
-    wp.launch(
+    _launch.launch(
         kernel_neighbors.query_ball_count,
         dim=m,
         inputs=[points, queries, accel_selector, accelerator.id, wp.float32(r), neighbor_counts],
@@ -784,40 +785,40 @@ def _ball_with_offsets(
     device = points.device
 
     if isinstance(queries, wp.vec3):
-        queries = wp.array([queries], dtype=wp.vec3, device=device)
+        queries = _launch.array([queries], dtype=wp.vec3, device=device)
     m = queries.size
 
     if points.size == 0 or m == 0:
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
-            wp.zeros(m + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
+            _launch.zeros(m + 1, dtype=wp.int32, device=device),
         )
 
     accelerator = build_accelerator()
     # The total-terminated offsets are also the segment-bounds array ``segmented_sort_pairs``
     # wants below.
-    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     neighbor_counts = twt.as_dense(offsets[1:])
-    wp.launch(
+    _launch.launch(
         kernel_neighbors.query_ball_count,
         dim=m,
         inputs=[points, queries, accel, accelerator.id, wp.float32(r), neighbor_counts],
         device=device,
     )
-    wp.utils.array_scan(neighbor_counts, out_array=neighbor_counts, inclusive=True)
+    _launch.array_scan(neighbor_counts, out_array=neighbor_counts, inclusive=True)
     total_neighbors = int(read_scalar(offsets))
     if total_neighbors == 0:
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
             offsets,
         )
 
     flat_len = total_neighbors * (2 if return_sorted else 1)
-    neighbor_indices_flat = wp.empty(flat_len, dtype=wp.int32, device=device)
-    neighbor_distances_flat = wp.empty(flat_len, dtype=wp.float32, device=device)
-    wp.launch(
+    neighbor_indices_flat = _launch.empty(flat_len, dtype=wp.int32, device=device)
+    neighbor_distances_flat = _launch.empty(flat_len, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_neighbors.query_ball_neighbors,
         dim=m,
         inputs=[
@@ -841,8 +842,8 @@ def _ball_with_offsets(
     )
     # The sort needs a second half of scratch; copying the sorted half out lets it go.
     return (
-        wp.clone(neighbor_indices_flat[:total_neighbors]),
-        wp.clone(neighbor_distances_flat[:total_neighbors]),
+        _launch.clone(neighbor_indices_flat[:total_neighbors]),
+        _launch.clone(neighbor_distances_flat[:total_neighbors]),
         offsets,
     )
 
@@ -1081,7 +1082,7 @@ def query_nearest(
     device = points.device
     single_query = isinstance(queries, wp.vec3)
     if single_query:
-        queries = wp.array([queries], dtype=wp.vec3, device=device)
+        queries = _launch.array([queries], dtype=wp.vec3, device=device)
 
     m = queries.size
     n = points.size
@@ -1103,7 +1104,7 @@ def query_nearest(
         # on-surface one does. The distances are the radius search's to the bit. A caller's
         # ``wp.Bvh`` cannot take this path, since the query needs a ``wp.Mesh``.
         mesh = mesh_from_points(points)
-        wp.launch(
+        _launch.launch(
             kernel_neighbors.query_nearest_via_mesh,
             dim=m,
             inputs=[mesh.id, points, queries, wp.float32(max_radius)],
@@ -1123,7 +1124,7 @@ def query_nearest(
     if kind == "bvh":
         bvh = resolved if resolved is not None else bvh_from_points(points, leaf_size)
         # The BVH follows an unbounded radius, so it needs no linear-scan cutover argument.
-        wp.launch(
+        _launch.launch(
             kernel_neighbors.bvh_nearest_kernel(k),
             dim=m,
             inputs=[*search, bvh.id, *shared, min_bound, max_bound, wp.int32(0), *outputs],
@@ -1156,8 +1157,8 @@ def query_nearest(
     defer = k == 1 or (k <= kernel_neighbors.KNN_ROW_BUCKETS[-1] and n >= _KNN_DEFER_MIN_POINTS)
     # The deferral counter exists only when rows may be deferred; otherwise the kernel never
     # touches it and takes a null descriptor.
-    deferred = wp.zeros(1, dtype=wp.int32, device=device) if defer else None
-    wp.launch(
+    deferred = _launch.zeros(1, dtype=wp.int32, device=device) if defer else None
+    _launch.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
         dim=m,
         inputs=[
@@ -1217,7 +1218,7 @@ def _finish_deferred_nearest(
     m = queries.size
     if k == 1:
         mesh = mesh_from_points(points)
-        wp.launch(
+        _launch.launch(
             kernel_neighbors.nearest_point_via_mesh,
             dim=m,
             inputs=[mesh.id, points, queries, wp.float32(max_radius)],
@@ -1226,7 +1227,7 @@ def _finish_deferred_nearest(
         )
         return
     bvh = bvh_from_points(points, leaf_size)
-    wp.launch(
+    _launch.launch(
         kernel_neighbors.bvh_nearest_kernel(k),
         dim=m,
         inputs=[
@@ -1342,8 +1343,8 @@ def _empty_nearest(
     [`_shape_nearest`][triwarp.neighbors._shape_nearest] rather than returning rank-2 directly, so
     that the rank a caller sees does not depend on whether the answer happened to be empty.
     """
-    neighbor_indices = wp.full((m, k), -1, dtype=wp.int32, device=device)
-    neighbor_distances = wp.full((m, k), math.inf, dtype=wp.float32, device=device)
+    neighbor_indices = _launch.full((m, k), -1, dtype=wp.int32, device=device)
+    neighbor_distances = _launch.full((m, k), math.inf, dtype=wp.float32, device=device)
     return _shape_nearest(neighbor_indices, neighbor_distances, k, single_query)
 
 
@@ -1482,13 +1483,13 @@ def query_weighted_nearest(
 
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
         )
     if n == 0:
         return (
-            wp.full(m, -1, dtype=wp.int32, device=device),
-            wp.full(m, float("inf"), dtype=wp.float32, device=device),
+            _launch.full(m, -1, dtype=wp.int32, device=device),
+            _launch.full(m, float("inf"), dtype=wp.float32, device=device),
         )
 
     if accelerator is None:
@@ -1502,9 +1503,9 @@ def query_weighted_nearest(
         max_weight, 0.0
     )
 
-    out_indices = wp.empty(m, dtype=wp.int32, device=device)
-    out_distances = wp.empty(m, dtype=wp.float32, device=device)
-    wp.launch(
+    out_indices = _launch.empty(m, dtype=wp.int32, device=device)
+    out_distances = _launch.empty(m, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_neighbors.query_weighted_nearest_neighbors,
         dim=m,
         inputs=[
@@ -1563,14 +1564,14 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     device = points.device
     n = points.size
     if n < 2:
-        return wp.full(n, math.inf, dtype=wp.float32, device=device)
+        return _launch.full(n, math.inf, dtype=wp.float32, device=device)
 
     _indices, distances = query_nearest(points, points, k=2)
     # Column 1 of the ``(n, 2)`` table, which is a *strided* view -- so it is copied into a dense
     # buffer rather than returned, both because callers expect a plain ``wp.array`` and because a
     # strided array is the shape that silently corrupts a downstream Python-scope gather.
-    nearest = wp.empty(n, dtype=wp.float32, device=device)
-    wp.copy(nearest, distances[:, 1])
+    nearest = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.copy(nearest, distances[:, 1])
     return nearest
 
 
@@ -1628,15 +1629,15 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
     indices, distances = query_nearest(points, points, k=2)
     # Column 1 of the table, as strided views -- column 0 is each point itself. The two kernels only
     # index them, so neither needs a dense copy.
-    result = wp.full(2, INT64_MAX, dtype=wp.int64, device=device)
-    wp.launch_tiled(
+    result = _launch.full(2, INT64_MAX, dtype=wp.int64, device=device)
+    _launch.launch_tiled(
         kernel_neighbors.nearest_key_argmin,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[distances[:, 1], result],
         block_dim=TILE_1D,
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_neighbors.nearest_key_partner,
         dim=1,
         inputs=[result, indices[:, 1], result],
@@ -1714,9 +1715,9 @@ def geodesic_ball(
     if n == 0:
         # A single zero rather than an empty buffer: the CSR row-bounds form is ``n + 1`` long.
         return (
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
 
     # ``sort_rows=True`` is load-bearing, not tidiness. The ball is a geometric predicate and is
@@ -1731,8 +1732,8 @@ def geodesic_ball(
         n, unique_edges, validate=False, sort_rows=True
     )
 
-    reference_neighbors = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(
+    reference_neighbors = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_neighbors.geodesic_ball_reference_neighbors,
         dim=n,
         inputs=[adj_offsets, adj_columns, reference_neighbors],
@@ -1743,16 +1744,16 @@ def geodesic_ball(
     # (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small
     # nearest-fallback pool) instead of kilobytes of per-thread local arrays.
     chunk = min(n, 1 << 15)
-    queue_pool = wp.empty(
+    queue_pool = _launch.empty(
         (chunk, kernel_bfs._PER_SOURCE_MAX_NEIGHBORS), dtype=wp.int32, device=device
     )
-    visited_pool = wp.full(
+    visited_pool = _launch.full(
         (chunk, kernel_bfs._VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
     )
     ext_dist_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.float32, device=device)
     ext_idx_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.int32, device=device)
 
-    counts = wp.empty(n, dtype=wp.int32, device=device)
+    counts = _launch.empty(n, dtype=wp.int32, device=device)
     # CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first
     # exclusive offset and the inclusive scan fills the rest, so ``offsets[n]`` holds the total --
     # ``array.counts_to_offsets``' convention, open-coded here because that helper reads the total
@@ -1764,23 +1765,23 @@ def geodesic_ball(
     # sits right after the total -- in the offsets' own buffer on one chunk, beside the chunk total
     # on several -- so the last chunk reads both in one copy.
     if single_chunk:
-        totals = wp.zeros(n + 2, dtype=wp.int32, device=device)
+        totals = _launch.zeros(n + 2, dtype=wp.int32, device=device)
         total_at = n
         offsets = twt.as_dense(totals[: n + 1])
         local_offsets = twt.as_dense(offsets[:n])
     else:
-        totals = wp.zeros(2, dtype=wp.int32, device=device)
+        totals = _launch.zeros(2, dtype=wp.int32, device=device)
         total_at = 0
-        offsets = wp.zeros(n + 1, dtype=wp.int32, device=device)
-        local_offsets = wp.empty(chunk, dtype=wp.int32, device=device)
+        offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
+        local_offsets = _launch.empty(chunk, dtype=wp.int32, device=device)
     overflow = twt.as_dense(totals[total_at + 1 : total_at + 2])
     chunk_flats: list[wp.array[wp.int32]] = []
     n_overflow = 0
     for start in range(0, n, chunk):
         m = min(chunk, n - start)
         if start > 0:
-            visited_pool.fill_(-1)
-        wp.launch(
+            _launch.fill_(visited_pool, -1)
+        _launch.launch(
             kernel_neighbors.query_geodesic_ball_collect,
             dim=m,
             inputs=[
@@ -1803,21 +1804,21 @@ def geodesic_ball(
         # exclusive scan of counts, one 4-byte readback for the chunk total, then a coalesced
         # 2D copy into the chunk's flat buffer.
         if single_chunk:
-            wp.utils.array_scan(counts, out_array=offsets[1:], inclusive=True)
+            _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
         else:
-            wp.utils.array_scan(
+            _launch.array_scan(
                 counts[start : start + m], out_array=local_offsets[:m], inclusive=False
             )
-            wp.map(
+            _launch.map(
                 wp.add, local_offsets[m - 1 : m], counts[start + m - 1 : start + m], out=totals[:1]
             )
         if start + m == n:
             chunk_total, n_overflow = read_values(totals, total_at, 2)
         else:
             chunk_total = int(read_scalar(totals, 0))
-        flat_chunk = wp.empty(chunk_total, dtype=wp.int32, device=device)
+        flat_chunk = _launch.empty(chunk_total, dtype=wp.int32, device=device)
         if chunk_total > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_neighbors.gather_queue_rows,
                 dim=(m, kernel_bfs._PER_SOURCE_MAX_NEIGHBORS),
                 inputs=[queue_pool, counts, local_offsets, wp.int32(start), flat_chunk],
@@ -1836,7 +1837,7 @@ def geodesic_ball(
         # Single chunk (n <= chunk): the chunk buffer already is the global CSR neighbor buffer.
         return chunk_flats[0], offsets, reference_neighbors
 
-    wp.utils.array_scan(counts, out_array=offsets[1:], inclusive=True)
+    _launch.array_scan(counts, out_array=offsets[1:], inclusive=True)
 
     # Chunk order equals ascending source order, so concatenation lines up with the global scan.
     # Same per-segment ``wp.copy`` loop either way -- that is the packing floor -- one call for it.

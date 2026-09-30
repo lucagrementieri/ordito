@@ -8,7 +8,6 @@ Mesh AABB queries against a brute-force reference; closest-on-mesh tests compare
 from __future__ import annotations
 
 import math
-import unittest.mock
 
 import igl
 import numpy as np
@@ -40,6 +39,7 @@ from tests.conversions import (
     trimesh_to_pyvista,
     trimesh_to_warp,
 )
+from triwarp import _launch
 from triwarp.constants import TOLERANCE_MERGE
 from triwarp.kernels import proximity as kernel_proximity
 
@@ -654,7 +654,9 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
     assert np.isclose(distance, minimum_pml, rtol=1e-5, atol=1e-6)
 
 
-def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(device: str) -> None:
+def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     Triwarp against triwarp: the block-cooperative second pass against the thread pass alone.
 
@@ -687,23 +689,31 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(device: str
         device,
     )
     tiled_launches = []
-    real_launch_tiled = wp.launch_tiled
     tiled_kernel = kernel_proximity.face_to_mesh_distance_tiled
 
-    def counting_launch_tiled(*args, **kwargs):
-        # Keyed on the kernel, not on the call: ``tw.reduce.min`` derives this function's upper
-        # bound through a tiled launch of its own, so counting every ``launch_tiled`` would make
-        # the non-vacuity assertion below pass with the split disabled -- measured, it did.
-        if kwargs.get("kernel", args[0] if args else None) is tiled_kernel:
-            tiled_launches.append(kwargs.get("dim", None))
-        return real_launch_tiled(*args, **kwargs)
+    def counting(real_launch_tiled):
+        def counting_launch_tiled(*args, **kwargs):
+            # Keyed on the kernel, not on the call: ``tw.reduce.min`` derives this function's
+            # upper bound through a tiled launch of its own, so counting every ``launch_tiled``
+            # would make the non-vacuity assertion below pass with the split disabled --
+            # measured, it did.
+            if kwargs.get("kernel", args[0] if args else None) is tiled_kernel:
+                tiled_launches.append(kwargs.get("dim", None))
+            return real_launch_tiled(*args, **kwargs)
 
-    with unittest.mock.patch.object(tw.proximity, "_QUERY_CANDIDATE_CAP", 1):
-        with unittest.mock.patch.object(wp, "launch_tiled", counting_launch_tiled):
-            split = tw.proximity.mesh_to_mesh_distance(
-                a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
-            )
-    with unittest.mock.patch.object(tw.proximity, "_QUERY_CANDIDATE_CAP", 1 << 30):
+        return counting_launch_tiled
+
+    # The wrapper launches through ``triwarp._launch``, whose CPU path falls back to
+    # ``wp.launch_tiled``; wrap both, the cached one only when it is reached directly.
+    with monkeypatch.context() as patch:
+        patch.setattr(tw.proximity, "_QUERY_CANDIDATE_CAP", 1)
+        patch.setattr(_launch, "launch_tiled", counting(_launch.launch_tiled))
+        patch.setattr(wp, "launch_tiled", counting(wp.launch_tiled))
+        split = tw.proximity.mesh_to_mesh_distance(
+            a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
+        )
+    with monkeypatch.context() as patch:
+        patch.setattr(tw.proximity, "_QUERY_CANDIDATE_CAP", 1 << 30)
         whole = tw.proximity.mesh_to_mesh_distance(
             a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
         )

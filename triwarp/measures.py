@@ -30,6 +30,7 @@ import numpy as np
 import warp as wp
 
 import triwarp as tw
+from triwarp import _launch
 from triwarp._device import prefers_tiled_reduction, require_same_device, slice_count
 from triwarp.constants import TILE_1D
 from triwarp.kernels import measures as kernel_measures
@@ -129,9 +130,9 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     device = vertices.device
     # One accumulator, read once: slots 0-2 hold the area-weighted centroid sum and slot 3 the
     # area sum. See the kernel.
-    totals = wp.zeros(4, dtype=wp.float32, device=device)
+    totals = _launch.zeros(4, dtype=wp.float32, device=device)
     if prefers_tiled_reduction(device):
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_measures.centroid_tiled,
             dim=[(f + TILE_1D - 1) // TILE_1D],
             inputs=[vertices, faces, wp.int32(f), totals],
@@ -140,7 +141,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         )
     else:
         n_slices = slice_count(f, device)
-        wp.launch(
+        _launch.launch(
             kernel_measures.centroid_sliced,
             dim=n_slices,
             inputs=[vertices, faces, wp.int32(f), wp.int32(n_slices), totals],
@@ -232,9 +233,9 @@ def moments(
     # commits into a single ``(10,)`` accumulator, so there are no per-face buffers to allocate and
     # no per-group reduction to launch. ``wp.zeros`` rather than ``wp.empty`` because the kernel
     # accumulates into it.
-    totals = wp.zeros(10, dtype=wp.float64, device=device)
+    totals = _launch.zeros(10, dtype=wp.float64, device=device)
     chunk_faces = _moment_chunk_faces(n_faces)
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_measures.moment_integrals,
         dim=[(n_faces + chunk_faces - 1) // chunk_faces],
         inputs=[vertices, faces, chunk_faces, totals],

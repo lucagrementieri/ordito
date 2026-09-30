@@ -36,6 +36,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.halfedge import halfedge_twins, vertex_one_rings
 from triwarp.kernels import array as kernel_array
@@ -126,7 +127,7 @@ def trace_from_vertex(
     n_rays = start_vertices.size
     n_vertices = vertices.size
     if n_rays == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device), wp.zeros(
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.zeros(
             max(n_rays + 1, 1), dtype=wp.int32, device=device
         )
     # No short-circuit on ``faces.shape[0] == 0``: unlike ``trace_from_face``, a start *vertex* is
@@ -228,7 +229,7 @@ def trace_from_face(
     device = vertices.device
     n_rays = start_faces.size
     if n_rays == 0 or faces.size == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device), wp.zeros(
+        return _launch.empty(0, dtype=wp.vec3, device=device), _launch.zeros(
             max(n_rays + 1, 1), dtype=wp.int32, device=device
         )
 
@@ -369,8 +370,8 @@ def descend_field(
     n_paths = starts.size
     if n_paths == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
         )
 
     if twins is None:
@@ -701,8 +702,8 @@ def shorten_loop_with_offsets(
         if consecutive_unchanged == 0:
             # An unchanged sweep leaves `packed` and `loop_offsets` as they were, so the owner
             # labels and the per-position scratch carry over; rebuild them only after a rewrite.
-            position_loop = wp.empty(n_positions, dtype=wp.int32, device=device)
-            wp.launch(
+            position_loop = _launch.empty(n_positions, dtype=wp.int32, device=device)
+            _launch.launch(
                 kernel_array.segment_owner_labels,
                 dim=n_loops,
                 inputs=[loop_offsets, position_loop],
@@ -713,18 +714,18 @@ def shorten_loop_with_offsets(
             # and entry ``n`` the total, so the total and the flag come back in one read. The flag
             # stays zero across unchanged sweeps -- that is what unchanged means -- so it is never
             # re-zeroed, and the leading zero is outside the scan.
-            positions = wp.zeros(n_positions + 2, dtype=wp.int32, device=device)
+            positions = _launch.zeros(n_positions + 2, dtype=wp.int32, device=device)
             counts = twt.as_dense(positions[1 : n_positions + 1])
             changed = twt.as_dense(positions[n_positions + 1 :])
-            arc_slot = wp.empty(n_positions, dtype=wp.int32, device=device)
-            arc_step = wp.empty(n_positions, dtype=wp.int32, device=device)
+            arc_slot = _launch.empty(n_positions, dtype=wp.int32, device=device)
+            arc_step = _launch.empty(n_positions, dtype=wp.int32, device=device)
         assert position_loop is not None
         assert positions is not None
         assert counts is not None
         assert changed is not None
         assert arc_slot is not None
         assert arc_step is not None
-        wp.launch(
+        _launch.launch(
             kernel_geodesic_walk.shorten_loop_counts,
             dim=n_positions,
             inputs=[
@@ -746,7 +747,7 @@ def shorten_loop_with_offsets(
             device=device,
         )
         sweeps = sweep + 1
-        wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+        _launch.array_scan(counts, out_array=counts, inclusive=True)
         # One readback per sweep, and the only way to stop early: whether any replacement was
         # accepted is a device-side fact, and the alternative -- always running `max_iter` sweeps --
         # costs a full pass over every loop for each one that would have been skipped. The same
@@ -792,8 +793,8 @@ def _rewrite_loops(
     ``len(packed) + 1`` entries are the exclusive offsets, entry ``len(packed)`` the ``total``).
     """
     device = packed.device
-    rewritten = wp.empty(max(total, 1), dtype=wp.int32, device=device)
-    wp.launch(
+    rewritten = _launch.empty(max(total, 1), dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_geodesic_walk.shorten_loop_write,
         dim=packed.size,
         inputs=[
@@ -832,8 +833,8 @@ def _compact_repeats(
     n_positions = packed.size
     if n_positions == 0:
         return packed, loop_offsets
-    position_loop = wp.empty(n_positions, dtype=wp.int32, device=device)
-    wp.launch(
+    position_loop = _launch.empty(n_positions, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_array.segment_owner_labels,
         dim=n_loops,
         inputs=[loop_offsets, position_loop],
@@ -841,21 +842,21 @@ def _compact_repeats(
     )
     # The 0/1 counts are written behind a zeroed head and scanned in place, so the buffer is the
     # exclusive offsets with the total at its end: ``counts_to_offsets`` without the counts buffer.
-    positions = wp.zeros(n_positions + 1, dtype=wp.int32, device=device)
+    positions = _launch.zeros(n_positions + 1, dtype=wp.int32, device=device)
     counts = twt.as_dense(positions[1:])
-    wp.launch(
+    _launch.launch(
         kernel_geodesic_walk.distinct_from_predecessor,
         dim=n_positions,
         inputs=[packed, position_loop, loop_offsets, counts],
         device=device,
     )
-    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
     # Sizes the output: the one host readback of the compaction.
     total = int(read_scalar(positions))
     if total == n_positions:
         return packed, loop_offsets
-    kept = wp.empty(max(total, 1), dtype=wp.int32, device=device)
-    wp.launch(
+    kept = _launch.empty(max(total, 1), dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_geodesic_walk.compact_kept,
         dim=n_positions,
         inputs=[packed, positions, kept],
@@ -868,8 +869,8 @@ def _offsets_through(
     positions: wp.array[wp.int32], loop_offsets: wp.array[wp.int32]
 ) -> wp.array[wp.int32]:
     """Map old per-loop offsets through a position remap -- a Python-scope gather."""
-    mapped = wp.empty(loop_offsets.size, dtype=wp.int32, device=positions.device)
-    wp.copy(mapped, positions[loop_offsets])
+    mapped = _launch.empty(loop_offsets.size, dtype=wp.int32, device=positions.device)
+    _launch.copy(mapped, positions[loop_offsets])
     return mapped
 
 
@@ -938,13 +939,15 @@ def _trace(
     sizing the output exactly beats reserving ``max_steps`` points per ray, which at the default cap
     would be tens of megabytes for a few thousand rays.
     """
-    counts = wp.empty(n_rays, dtype=wp.int32, device=device)
-    no_offsets = wp.empty(0, dtype=wp.int32, device=device)
-    no_points = wp.empty(0, dtype=wp.vec3, device=device)
-    wp.launch(kernel, dim=n_rays, inputs=[*inputs, no_offsets, counts, no_points], device=device)
+    counts = _launch.empty(n_rays, dtype=wp.int32, device=device)
+    no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
+    no_points = _launch.empty(0, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel, dim=n_rays, inputs=[*inputs, no_offsets, counts, no_points], device=device
+    )
 
     # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
     offsets, total = tw.array.counts_to_offsets(counts)
-    points = wp.empty(total, dtype=wp.vec3, device=device)
-    wp.launch(kernel, dim=n_rays, inputs=[*inputs, offsets, counts, points], device=device)
+    points = _launch.empty(total, dtype=wp.vec3, device=device)
+    _launch.launch(kernel, dim=n_rays, inputs=[*inputs, offsets, counts, points], device=device)
     return points, offsets

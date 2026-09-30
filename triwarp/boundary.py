@@ -29,6 +29,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INDEX_RADIX_PAIR, INT32_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
@@ -250,7 +251,9 @@ def boundary_loops_with_offsets(
 
 def _no_loops(device: wp.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """Return the packed answer of a mesh with no boundary: no loop vertices, offsets ``[0]``."""
-    return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(1, dtype=wp.int32, device=device)
+    return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
+        1, dtype=wp.int32, device=device
+    )
 
 
 def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
@@ -318,8 +321,8 @@ def _pinched_boundary_cycles(
     # detection's own sort: the same keys against the same radix, sorted stably, so the pairing
     # kernel sees the identical sorted list and the mesh-sized key build and sort are not repeated.
     n = boundary.n
-    twins = wp.full(n, -1, dtype=wp.int32, device=faces.device)
-    wp.launch(
+    twins = _launch.full(n, -1, dtype=wp.int32, device=faces.device)
+    _launch.launch(
         kernel_halfedge.pair_sorted_halfedges,
         dim=n,
         inputs=[
@@ -327,7 +330,7 @@ def _pinched_boundary_cycles(
             twt.as_dense(boundary.keys[:n]),
             boundary.order,
             twins,
-            wp.zeros(2, dtype=wp.int32, device=faces.device),
+            _launch.zeros(2, dtype=wp.int32, device=faces.device),
         ],
         device=faces.device,
     )
@@ -368,16 +371,16 @@ def _unoriented_boundary_cycles(
     # is created holding it, so there is no window in which it holds garbage and no second
     # statement to keep in step with the first.
     neighbors = twt.as_array2d(
-        wp.full((n_vertices, 2), -1, dtype=wp.int32, device=device), wp.int32
+        _launch.full((n_vertices, 2), -1, dtype=wp.int32, device=device), wp.int32
     )
-    slot_count = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    slot_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_boundary.scatter_boundary_neighbors,
         dim=int(boundary_edges.shape[0]),
         inputs=[boundary_edges, slot_count, neighbors],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_boundary.sort_boundary_neighbor_slots,
         dim=n_vertices,
         inputs=[neighbors],
@@ -387,9 +390,9 @@ def _unoriented_boundary_cycles(
     # Each edge end is one dart, and every successor is a dart or, where a rim ends on a vertex with
     # one boundary edge, ``-1``: ``next_node`` is read only at darts and needs no fill.
     n_edges = int(boundary_edges.shape[0])
-    tails = wp.empty(2 * n_edges, dtype=wp.int32, device=device)
-    next_node = wp.empty(2 * n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    tails = _launch.empty(2 * n_edges, dtype=wp.int32, device=device)
+    next_node = _launch.empty(2 * n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_boundary.dart_successors,
         dim=(n_edges, 2),
         inputs=[boundary_edges, neighbors, tails, next_node],
@@ -425,20 +428,20 @@ def _closed_successor_cycles(
     m = tails.size
     node_count = next_node.size
     hops, rounds = kernel_graph.pointer_jump_schedule(m)
-    windows = wp.empty(node_count, dtype=wp.vec3i, device=device)
+    windows = _launch.empty(node_count, dtype=wp.vec3i, device=device)
     # Per cycle start, ``(1, length)``, accumulated by the last round and scanned in place.
-    cycle_counts = wp.zeros(node_count, dtype=wp.vec2i, device=device)
-    wp.launch(
+    cycle_counts = _launch.zeros(node_count, dtype=wp.vec2i, device=device)
+    _launch.launch(
         kernel_boundary.closed_cycle_windows,
         dim=m,
         inputs=[tails, next_node, hops, mode, windows, cycle_counts if rounds == 1 else None],
         device=device,
     )
     if rounds > 1:
-        spare = wp.empty(node_count, dtype=wp.vec3i, device=device)
+        spare = _launch.empty(node_count, dtype=wp.vec3i, device=device)
         window = hops
         for r in range(1, rounds):
-            wp.launch(
+            _launch.launch(
                 kernel_boundary.closed_cycle_jump,
                 dim=m,
                 inputs=[
@@ -454,16 +457,16 @@ def _closed_successor_cycles(
             )
             windows, spare = spare, windows
             window *= hops
-    wp.utils.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
+    _launch.array_scan(cycle_counts, out_array=cycle_counts, inclusive=True)
     # Sizes both outputs: the cycle count and the ranked node count, in one read.
     total = read_scalar(cycle_counts)
     n_cycles, n_ranked = int(total[0]), int(total[1])
-    flat = wp.empty(n_ranked, dtype=wp.int32, device=device)
+    flat = _launch.empty(n_ranked, dtype=wp.int32, device=device)
     if n_cycles == 0:
-        return flat, wp.zeros(1, dtype=wp.int32, device=device)
+        return flat, _launch.zeros(1, dtype=wp.int32, device=device)
     # Every entry, the leading zero and the total included, is written by the cycle it bounds.
-    offsets = wp.empty(n_cycles + 1, dtype=wp.int32, device=device)
-    wp.launch(
+    offsets = _launch.empty(n_cycles + 1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_boundary.scatter_closed_cycles,
         dim=m,
         inputs=[tails, windows, cycle_counts, mode, faces, flat, offsets],
@@ -517,7 +520,7 @@ def loop_perimeters(
     require_same_device(vertices=vertices, loops=loops)
     packed = _pack_loop_segments(vertices, loops)
     if packed is None:
-        return wp.empty(0, dtype=wp.float32, device=vertices.device)
+        return _launch.empty(0, dtype=wp.float32, device=vertices.device)
     flat_loops, loop_id, offsets = packed
     return _launch_loop_measure(
         kernel_boundary.loop_perimeters, wp.float32, vertices, flat_loops, loop_id, offsets
@@ -640,7 +643,7 @@ def loop_directed_areas(
     require_same_device(vertices=vertices, loops=loops)
     packed = _pack_loop_segments(vertices, loops)
     if packed is None:
-        return wp.empty(0, dtype=wp.vec3, device=vertices.device)
+        return _launch.empty(0, dtype=wp.vec3, device=vertices.device)
     flat_loops, loop_id, offsets = packed
     return _launch_loop_measure(
         kernel_boundary.loop_directed_areas, wp.vec3, vertices, flat_loops, loop_id, offsets
@@ -760,8 +763,8 @@ def _launch_loop_measure(
     written once here rather than four times above. ``wp.zeros`` rather than ``wp.empty``: both
     kernels accumulate into their output with an atomic add.
     """
-    out = wp.zeros(offsets.size - 1, dtype=dtype, device=vertices.device)
-    wp.launch(
+    out = _launch.zeros(offsets.size - 1, dtype=dtype, device=vertices.device)
+    _launch.launch(
         kernel,
         dim=flat_loops.size,
         inputs=[flat_loops, loop_id, offsets, vertices, out],
@@ -783,10 +786,10 @@ def _loop_owner_labels(
     """
     n_loops = offsets.size - 1
     device = flat_loops.device
-    loop_id = wp.empty(flat_loops.size, dtype=wp.int32, device=device)
+    loop_id = _launch.empty(flat_loops.size, dtype=wp.int32, device=device)
     if n_loops <= 0:
         return loop_id
-    wp.launch(
+    _launch.launch(
         kernel_array.segment_owner_labels, dim=n_loops, inputs=[offsets, loop_id], device=device
     )
     return loop_id
@@ -821,7 +824,7 @@ def _pack_loop_segments(
     # buffer -- so the pack is free instead of one ``wp.copy`` per rim.
     flat_loops, offsets = tw.array.pack_1d_arrays(loops, copy=False)
     sizes_np = np.array([loop.size for loop in loops], dtype=np.int32)
-    loop_id = wp.array(
+    loop_id = _launch.array(
         np.repeat(np.arange(len(loops), dtype=np.int32), sizes_np), dtype=wp.int32, device=device
     )
     return flat_loops, loop_id, offsets
@@ -866,21 +869,23 @@ def longest_boundary_loop(
     flat_loops, offsets = boundary_loops_with_offsets(vertices, faces)
     n_loops = offsets.size - 1
     if n_loops == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
     # The sizes are the offsets' differences on the device, so the winner is an argmax there
     # rather than a Python scan: unpacking the loops first would read the offsets back, build one
     # array view per loop, and then recover the lengths from those views -- a cost linear in the
     # rim count for an answer that is one loop. ``-1`` is below every packed key, so the reduction
     # needs no separate seeding pass.
-    best = wp.array([wp.int64(-1)], dtype=wp.int64, device=device)
-    wp.launch(kernel_boundary.longest_loop_key, dim=n_loops, inputs=[offsets, best], device=device)
+    best = _launch.full(1, -1, dtype=wp.int64, device=device)
+    _launch.launch(
+        kernel_boundary.longest_loop_key, dim=n_loops, inputs=[offsets, best], device=device
+    )
     # One readback, because the key carries the winner's start in its low half as well as its
     # length in its high half -- see the kernel.
     key = int(read_scalar(best, 0))
     start = INT32_MAX - (key & 0xFFFFFFFF)
     size = key >> 32
     # Only the winner is materialized: the rest of the packed buffer is never copied.
-    return wp.clone(flat_loops[start : start + size])
+    return _launch.clone(flat_loops[start : start + size])
 
 
 def boundary_vertex_indices(
@@ -912,7 +917,7 @@ def boundary_vertex_indices(
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size // 3 == 0:
-        return wp.empty(0, dtype=wp.int32, device=faces.device)
+        return _launch.empty(0, dtype=wp.int32, device=faces.device)
     # The endpoints are vertex indices below ``len(vertices)``, so a per-vertex flag array and its
     # scan give the sorted unique set directly -- no edge list and no ``unique_1d``.
     n_vertices = vertices.size
@@ -979,7 +984,7 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     """
     n_faces = faces.size // 3
     device = faces.device
-    empty = wp.empty(0, dtype=wp.int32, device=device)
+    empty = _launch.empty(0, dtype=wp.int32, device=device)
     if n_faces == 0:
         return empty, empty
 
@@ -987,18 +992,18 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     edge_boundary = _BoundaryHalfedges(faces).halfedge_mask()
 
     # Flag, scan in place, and emit at the scan's steps: ascending face order, one readback.
-    inclusive = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_boundary.mark_ears, dim=n_faces, inputs=[edge_boundary, inclusive], device=device
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback.
     n_ears = int(read_scalar(inclusive))
     if n_ears == 0:
         return empty, empty
-    ear = wp.empty(n_ears, dtype=wp.int32, device=device)
-    ear_opp = wp.empty(n_ears, dtype=wp.int32, device=device)
-    wp.launch(
+    ear = _launch.empty(n_ears, dtype=wp.int32, device=device)
+    ear_opp = _launch.empty(n_ears, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_boundary.emit_ears,
         dim=n_faces,
         inputs=[edge_boundary, inclusive, ear, ear_opp],
@@ -1026,19 +1031,19 @@ class _BoundaryHalfedges:
         n = faces.size // 3 * 3
         self.faces = faces
         self.n = n
-        self.keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
-        self.order = wp.empty(2 * n, dtype=wp.int32, device=device)
+        self.keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+        self.order = _launch.empty(2 * n, dtype=wp.int32, device=device)
         radix = n_vertices if n_vertices else INDEX_RADIX_PAIR
         base = wp.uint64(radix)
         # The sort's double-width buffers are kept whole: every reader here passes ``n``, so the
         # trimmed views ``adjacency.sorted_face_edge_keys`` hands back would be pure host cost.
-        wp.launch(
+        _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
             dim=n // 3,
             inputs=[faces, base, self.keys, self.order],
             device=device,
         )
-        wp.utils.radix_sort_pairs(
+        _launch.radix_sort_pairs(
             self.keys,
             self.order,
             count=n,
@@ -1061,22 +1066,22 @@ class _BoundaryHalfedges:
             n = self.n
             degrees: twt.Array2dInt32 | None = None
             if census is None:
-                flags = wp.empty(n, dtype=wp.int32, device=device)
+                flags = _launch.empty(n, dtype=wp.int32, device=device)
             else:
                 n_vertices = census
                 # One zeroed buffer: the scanned flags, the census' two defect bits beyond them,
                 # and the ``(n_vertices, 2)`` degree table after those -- one allocation, and the
                 # total and both bits adjacent for the single readback.
-                flags = wp.zeros(n + 2 + 2 * n_vertices, dtype=wp.int32, device=device)
+                flags = _launch.zeros(n + 2 + 2 * n_vertices, dtype=wp.int32, device=device)
                 degrees = twt.as_array2d(flags[n + 2 :].reshape((n_vertices, 2)), wp.int32)
-            wp.launch(
+            _launch.launch(
                 kernel_boundary.mark_boundary_runs,
                 dim=n,
                 inputs=[self.keys, self.order, wp.int32(n), self.faces, degrees, flags],
                 device=device,
             )
             inclusive = flags if census is None else twt.as_dense(flags[:n])
-            wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+            _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
             self._inclusive = inclusive
             # Sizes every output below: the one host readback of the boundary detection, which
             # carries the census' two bits alongside the total when there is one.
@@ -1094,7 +1099,7 @@ class _BoundaryHalfedges:
         k = self.count()
         out_edges = twt.empty_2d((k, 2), wp.int32, device=device)
         if k > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_boundary.emit_boundary_edges,
                 dim=self.n,
                 inputs=[self._inclusive, self.order, self.faces, sort_pair, out_edges],
@@ -1115,10 +1120,10 @@ class _BoundaryHalfedges:
         """
         device = self.faces.device
         k = self.count()
-        tails = wp.empty(k, dtype=wp.int32, device=device)
+        tails = _launch.empty(k, dtype=wp.int32, device=device)
         # ``-1`` off the nodes: the ranking reads it to tell where a chain ends.
-        next_node = wp.full(node_count, -1, dtype=wp.int32, device=device)
-        wp.launch(
+        next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_boundary.emit_boundary_successors,
             dim=self.n,
             inputs=[self._inclusive, self.order, self.faces, twins, tails, next_node],
@@ -1129,21 +1134,21 @@ class _BoundaryHalfedges:
     def vertex_indices(self, n_vertices: int) -> wp.array[wp.int32]:
         """Sorted unique boundary vertex indices, from a scan of per-vertex flags."""
         device = self.faces.device
-        flags = wp.zeros(n_vertices, dtype=wp.int32, device=device)
+        flags = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
         if n_vertices == 0:
             return flags
-        wp.launch(
+        _launch.launch(
             kernel_boundary.mark_boundary_vertices,
             dim=self.n,
             inputs=[self.keys, self.order, wp.int32(self.n), self.faces, flags],
             device=device,
         )
-        wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+        _launch.array_scan(flags, out_array=flags, inclusive=True)
         # Sizes the output: the one host readback of this path.
         n_out = int(read_scalar(flags))
-        out = wp.empty(n_out, dtype=wp.int32, device=device)
+        out = _launch.empty(n_out, dtype=wp.int32, device=device)
         if n_out > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_scatter.scatter_index_where_scanned,
                 dim=n_vertices,
                 inputs=[flags, out],
@@ -1154,8 +1159,8 @@ class _BoundaryHalfedges:
     def halfedge_mask(self) -> wp.array[wp.bool]:
         """Per halfedge, whether its edge is a boundary edge; no scan and no readback."""
         device = self.faces.device
-        mask = wp.empty(self.n, dtype=wp.bool, device=device)
-        wp.launch(
+        mask = _launch.empty(self.n, dtype=wp.bool, device=device)
+        _launch.launch(
             kernel_boundary.boundary_halfedge_mask,
             dim=self.n,
             inputs=[self.keys, self.order, wp.int32(self.n), mask],

@@ -67,6 +67,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device, require_valid_faces
 from triwarp.constants import INDEX_RADIX_PAIR, TILE_1D
 from triwarp.grouping import hash_vector_rows, unique_1d, unique_faces
@@ -302,27 +303,27 @@ def remove_unreferenced_vertices(
     # The referenced flags are marked as ``int32`` and scanned in place, and one pass reads the scan
     # to write all three maps and the remapped faces: the tail of the scan is the referenced count,
     # which sizes the outputs and is the one readback.
-    remap = wp.empty(n_vertices, dtype=wp.int32, device=device)
+    remap = _launch.empty(n_vertices, dtype=wp.int32, device=device)
     if n_vertices == 0:
-        new_vertices = wp.empty(0, dtype=wp.vec3, device=device)
-        inverse = wp.empty(0, dtype=wp.int32, device=device)
+        new_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        inverse = _launch.empty(0, dtype=wp.int32, device=device)
         new_faces = tw.array.remap_indices(faces, remap)
     else:
-        inclusive = wp.zeros(n_vertices, dtype=wp.int32, device=device)
+        inclusive = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
         n_indices = faces.size
         if n_indices > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_repair.mark_referenced,
                 dim=n_indices,
                 inputs=[faces, inclusive],
                 device=device,
             )
-        wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+        _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
         n_referenced = int(read_scalar(inclusive))
-        new_vertices = wp.empty(n_referenced, dtype=wp.vec3, device=device)
-        inverse = wp.empty(n_referenced, dtype=wp.int32, device=device)
-        new_faces = wp.empty(n_indices, dtype=wp.int32, device=device)
-        wp.launch(
+        new_vertices = _launch.empty(n_referenced, dtype=wp.vec3, device=device)
+        inverse = _launch.empty(n_referenced, dtype=wp.int32, device=device)
+        new_faces = _launch.empty(n_indices, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_repair.compact_referenced,
             dim=max(n_vertices, n_indices),
             inputs=[vertices, faces, inclusive, remap, new_vertices, inverse, new_faces],
@@ -445,7 +446,7 @@ def _vertex_classes(vertices: wp.array[wp.vec3], epsilon: float) -> tuple[int, w
     """Return the coincident-vertex class count and each vertex's class, as ``unique_1d`` does."""
     device = vertices.device
     if vertices.size == 0:
-        return 0, wp.empty(0, dtype=wp.int32, device=device)
+        return 0, _launch.empty(0, dtype=wp.int32, device=device)
     # One key per vertex and one ``unique_1d`` over it, at either tolerance: ``hash_vector_rows``
     # quantizes at ``epsilon > 0`` and packs the relative float buckets at ``0`` -- the same key
     # ``unique_rows`` would hash the vertices to, without the representative gather it would then
@@ -487,7 +488,7 @@ def resolve_duplicated_faces(
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        empty = wp.empty(0, dtype=wp.int32, device=device)
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
         return empty, empty
 
     faces2d = faces.reshape((-1, 3))
@@ -496,12 +497,12 @@ def resolve_duplicated_faces(
 
     # Per-group orientation stats scattered on device: member/signed counts plus the smallest
     # member index of each sign class (seeded with the ``n_faces`` sentinel).
-    member_count = wp.zeros(num_unique, dtype=wp.int32, device=device)
-    signed_count = wp.zeros(num_unique, dtype=wp.int32, device=device)
-    first_member = wp.full(num_unique, n_faces, dtype=wp.int32, device=device)
-    first_positive = wp.full(num_unique, n_faces, dtype=wp.int32, device=device)
-    first_negative = wp.full(num_unique, n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    member_count = _launch.zeros(num_unique, dtype=wp.int32, device=device)
+    signed_count = _launch.zeros(num_unique, dtype=wp.int32, device=device)
+    first_member = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
+    first_positive = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
+    first_negative = _launch.full(num_unique, n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_repair.scatter_duplicate_face_stats,
         dim=n_faces,
         inputs=[
@@ -517,10 +518,10 @@ def resolve_duplicated_faces(
         device=device,
     )
 
-    keep = wp.empty(num_unique, dtype=wp.int32, device=device)
-    keep_mask = wp.empty(num_unique, dtype=wp.bool, device=device)
-    error_group = wp.full(1, num_unique, dtype=wp.int32, device=device)
-    wp.launch(
+    keep = _launch.empty(num_unique, dtype=wp.int32, device=device)
+    keep_mask = _launch.empty(num_unique, dtype=wp.bool, device=device)
+    error_group = _launch.full(1, num_unique, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_repair.resolve_duplicate_groups,
         dim=num_unique,
         inputs=[
@@ -546,7 +547,7 @@ def resolve_duplicated_faces(
     # Compact kept decisions in ascending group order (matches the reference emission order).
     kept_slots = tw.array.flatnonzero(keep_mask)
     if kept_slots.size == 0:
-        empty = wp.empty(0, dtype=wp.int32, device=device)
+        empty = _launch.empty(0, dtype=wp.int32, device=device)
         return empty, empty
 
     kept_wp = tw.array.gather(keep, kept_slots)
@@ -598,7 +599,7 @@ def remove_degenerate_faces(
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     keep_mask = tw.triangles.face_nondegenerate_mask(vertices, faces)
     return tw.selection.submesh_from_face_mask(vertices, faces, keep_mask)
@@ -692,7 +693,7 @@ def remove_degenerate_and_non_manifold_faces(
     """
     require_same_device(vertices=vertices, faces=faces)
     if faces.size == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
     keep = tw.triangles.face_nondegenerate_mask(vertices, faces)
     survivors, keep = _edge_manifold_survivors(faces, keep, vertices.size, max_iter)
     assert keep is not None
@@ -836,13 +837,13 @@ def remove_small_components(
         return vertices, faces
 
     labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
-    keep = wp.empty(n_faces, dtype=wp.bool, device=device)
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=device)
 
     if min_area is not None:
         # Each face's area is summed into its component where it is computed, rather than written
         # to a per-face buffer for a scatter pass to read back.
-        statistic = wp.zeros(n_faces, dtype=wp.float32, device=device)
-        wp.launch(
+        statistic = _launch.zeros(n_faces, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_repair.scatter_face_area_by_group,
             dim=n_faces,
             inputs=[vertices, faces, labels, statistic],
@@ -854,28 +855,30 @@ def remove_small_components(
         # uses it). ``labels`` is a dense array, so the strided-index hazard -- which applies to a
         # *column* of a rank-2 buffer -- does not arise. The bound is inclusive at every criterion,
         # matching both references.
-        wp.map(kernel_array.greater_equal, statistic[labels], wp.float32(min_area), out=keep)
+        _launch.map(kernel_array.greater_equal, statistic[labels], wp.float32(min_area), out=keep)
     elif min_diameter is not None:
         diagonals = _component_diagonals(vertices, faces, labels)
-        wp.map(kernel_array.greater_equal, diagonals[labels], wp.float32(min_diameter), out=keep)
+        _launch.map(
+            kernel_array.greater_equal, diagonals[labels], wp.float32(min_diameter), out=keep
+        )
     else:
-        counts = wp.zeros(n_faces, dtype=wp.int32, device=device)
-        wp.launch(
+        counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_scatter.count_occurrences, dim=n_faces, inputs=[labels, counts], device=device
         )
         if min_faces is not None:
-            wp.map(kernel_array.greater_equal, counts[labels], wp.int32(min_faces), out=keep)
+            _launch.map(kernel_array.greater_equal, counts[labels], wp.int32(min_faces), out=keep)
         else:
             # ``-1`` is below every packed key, so the reduction needs no separate seeding pass and
             # the winning label never reaches the host -- the mask kernel recomputes its key.
-            best = wp.array([wp.int64(-1)], dtype=wp.int64, device=device)
-            wp.launch(
+            best = _launch.full(1, -1, dtype=wp.int64, device=device)
+            _launch.launch(
                 kernel_repair.reduce_largest_group,
                 dim=n_faces,
                 inputs=[counts, best],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_repair.mark_largest_group_mask,
                 dim=n_faces,
                 inputs=[labels, counts, best, keep],
@@ -894,15 +897,15 @@ def _component_diagonals(
     # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner negated
     # so every update is a ``wp.atomic_min``, and a component no face names stays at the seed, which
     # ``packed_box_diagonals`` reports as a zero diagonal rather than as ``nan``.
-    corners = wp.full(6 * n_faces, value=math.inf, dtype=wp.float32, device=device)
-    wp.launch(
+    corners = _launch.full(6 * n_faces, value=math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_scatter.scatter_group_bounds,
         dim=n_faces,
         inputs=[vertices, faces, labels, corners],
         device=device,
     )
-    diagonals = wp.empty(n_faces, dtype=wp.float32, device=device)
-    wp.launch(
+    diagonals = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_bounds.packed_box_diagonals, dim=n_faces, inputs=[corners, diagonals], device=device
     )
     return diagonals
@@ -998,8 +1001,8 @@ def split_non_manifold_vertices(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        empty_index = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
+        empty_index = _launch.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
 
     n_corners = 3 * n_faces
     _unique_edges, edge_of_corner = tw.edges.edges_unique(
@@ -1007,11 +1010,11 @@ def split_non_manifold_vertices(
     )
     n_unique = int(_unique_edges.shape[0])
 
-    forward_count = wp.zeros(n_unique, dtype=wp.int32, device=device)
-    backward_count = wp.zeros(n_unique, dtype=wp.int32, device=device)
-    forward_corner = wp.full(n_unique, -1, dtype=wp.int32, device=device)
-    backward_corner = wp.full(n_unique, -1, dtype=wp.int32, device=device)
-    wp.launch(
+    forward_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
+    backward_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
+    forward_corner = _launch.full(n_unique, -1, dtype=wp.int32, device=device)
+    backward_corner = _launch.full(n_unique, -1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_repair.halfedge_orientation_slots,
         dim=n_corners,
         inputs=[
@@ -1026,7 +1029,7 @@ def split_non_manifold_vertices(
     )
 
     links = twt.empty_2d((2 * n_unique, 2), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_repair.corner_merge_links,
         dim=n_unique,
         inputs=[forward_count, backward_count, forward_corner, backward_corner, links],
@@ -1108,7 +1111,7 @@ def collapse_small_triangles(
     device = faces.device
     n_faces = faces.size // 3
     if n_faces == 0 or vertices.size == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     bbd = tw.bounds.enclosing_diagonal(vertices)
     min_dbl_area = wp.float32(2.0 * epsilon * bbd * bbd)
@@ -1119,15 +1122,15 @@ def collapse_small_triangles(
     # One small-face counter for the whole loop, zeroed per pass: the kernel that finds the small
     # faces counts them, so the stopping test is one 4-byte read rather than a per-face flag buffer
     # reduced on the device first.
-    n_small = wp.zeros(1, dtype=wp.int32, device=device)
+    n_small = _launch.zeros(1, dtype=wp.int32, device=device)
     for _ in range(max_iterations):
         n_current = current_faces.size // 3
         if n_current == 0:
             break
 
-        n_small.zero_()
+        _launch.zero_(n_small)
         pairs = twt.empty_2d((n_current, 2), wp.int32, device=device)
-        wp.launch(
+        _launch.launch(
             kernel_repair.small_triangle_collapse_edges,
             dim=n_current,
             inputs=[current_vertices, current_faces, min_dbl_area, pairs, n_small],
@@ -1251,22 +1254,22 @@ def straighten_boundary(
     added = 0
     # One emit cursor for the whole loop, zeroed per pass rather than reallocated: a four-byte
     # buffer per iteration is an allocation where a memset does.
-    cursor = wp.zeros(1, dtype=wp.int32, device=device)
+    cursor = _launch.zeros(1, dtype=wp.int32, device=device)
     for _ in range(iterations):
-        cursor.zero_()
+        _launch.zero_(cursor)
         n_faces = faces.size // 3
         n_halfedges = 3 * n_faces
         twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
         # Keyed by halfedge, not by vertex: a bowtie rim vertex carries two rim loops and has no
         # single successor, and edge-manifoldness -- all `halfedge_twins` checks -- does not
         # exclude one. One slot per halfedge gives each loop its own links and one writer each.
-        rim_next = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
-        rim_prev = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
-        candidate = wp.zeros(n_halfedges, dtype=wp.bool, device=device)
+        rim_next = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
+        rim_prev = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
+        candidate = _launch.zeros(n_halfedges, dtype=wp.bool, device=device)
         # One launch: a halfedge's notch test needs only the successor this same thread computes,
         # so linking the rim and classifying it are one pass rather than two with the link table
         # written out and read back between them.
-        wp.launch(
+        _launch.launch(
             kernel_repair.collect_rim_links_and_candidates,
             dim=n_halfedges,
             inputs=[
@@ -1286,7 +1289,7 @@ def straighten_boundary(
         # the mesh has vertices, so the bound is the halfedge count. Trimmed to the real count
         # below, so the slack never leaves this loop.
         new_faces = twt.empty_2d((n_halfedges, 3), wp.int32, device=device)
-        wp.launch(
+        _launch.launch(
             kernel_repair.emit_straighten_faces,
             dim=n_halfedges,
             inputs=[faces, rim_next, rim_prev, candidate, cursor, new_faces],
@@ -1426,7 +1429,7 @@ def remove_degree3_vertices(
     # cursor through the candidate count is what each pass reads, in one copy.
     tail = n_slots + n_vertices
     per_pass = tail + 3
-    state = wp.zeros(per_pass + 1 + 3 * n_vertices, dtype=wp.int32, device=device)
+    state = _launch.zeros(per_pass + 1 + 3 * n_vertices, dtype=wp.int32, device=device)
     kept = state[:n_slots]
     cursor, defects = state[tail : tail + 1], state[tail + 1 : tail + 3]
     tables = state[per_pass:]
@@ -1435,7 +1438,7 @@ def remove_degree3_vertices(
     link_sums = state[per_pass + n_vertices + 1 : per_pass + 2 * n_vertices + 1]
     lost = state[per_pass + 2 * n_vertices + 1 :]
     fans = twt.empty_2d((n_vertices, 3), wp.int32, device=device)
-    face_slots = wp.empty(3 * n_slots, dtype=wp.int32, device=device)
+    face_slots = _launch.empty(3 * n_slots, dtype=wp.int32, device=device)
     new_faces = face_slots[3 * n_input :].reshape((n_slots - n_input, 3))
     emit_inputs = [
         face_slots,
@@ -1449,13 +1452,13 @@ def remove_degree3_vertices(
         new_faces,
         next_candidates,
     ]
-    wp.launch(
+    _launch.launch(
         kernel_repair.degree3_fan_tables_input,
         dim=3 * n_input,
         inputs=[faces, input_keys, input_order, counts, link_sums, fans, face_slots, kept, defects],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_repair.emit_degree3_replacement, dim=n_vertices, inputs=emit_inputs, device=device
     )
     # One readback per pass, carrying both of the loop's host decisions: the removed count, which
@@ -1469,14 +1472,14 @@ def remove_degree3_vertices(
     for _pass_index in range(1, max_iter):
         if n_next == 0:
             break
-        tables.zero_()
-        wp.launch(
+        _launch.zero_(tables)
+        _launch.launch(
             kernel_repair.degree3_fan_tables,
             dim=3 * (n_input + removed),
             inputs=[face_slots, kept, counts, link_sums, fans],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_repair.emit_degree3_replacement,
             dim=n_vertices,
             inputs=emit_inputs,
@@ -1487,21 +1490,21 @@ def remove_degree3_vertices(
     # Compacted **once**, after the loop rather than inside it -- the kept faces and, as
     # ``remove_unreferenced_vertices`` would, the vertices they reference. A dead vertex has an
     # empty ring and so is never a candidate, which is what makes deferring safe.
-    wp.launch(
+    _launch.launch(
         kernel_repair.mark_kept_face_vertices,
         dim=3 * n_used,
         inputs=[face_slots, kept, state[n_slots:tail]],
         device=device,
     )
     scanned = state[:tail]
-    wp.utils.array_scan(scanned, out_array=scanned, inclusive=True)
+    _launch.array_scan(scanned, out_array=scanned, inclusive=True)
     # The scan's tail is the kept total -- known -- plus the referenced count, which sizes the
     # vertex output and is the call's last readback.
     n_kept = n_input - 2 * removed
     n_referenced = int(read_scalar(state, tail - 1)) - n_kept
-    out_vertices = wp.empty(n_referenced, dtype=wp.vec3, device=device)
-    out_faces = wp.empty(3 * n_kept, dtype=wp.int32, device=device)
-    wp.launch(
+    out_vertices = _launch.empty(n_referenced, dtype=wp.vec3, device=device)
+    out_faces = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_repair.compact_kept_faces_and_vertices,
         dim=max(n_vertices, n_used),
         inputs=[vertices, face_slots, kept, state[n_slots:tail], n_kept, out_vertices, out_faces],
@@ -1608,7 +1611,7 @@ def flatten_degree3_vertices(
     device = faces.device
     n_vertices = vertices.size
     if n_vertices == 0 or faces.size == 0 or max_iter == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
     if region is not None and (
         len(region.shape) != 1 or region.size != n_vertices or region.dtype is not wp.bool
     ):
@@ -1620,8 +1623,8 @@ def flatten_degree3_vertices(
     ring_halfedges, ring_offsets, is_boundary = (
         rings if rings is not None else tw.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
     )
-    candidate = wp.empty(n_vertices, dtype=wp.bool, device=device)
-    wp.map(
+    candidate = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    _launch.map(
         kernel_repair.is_interior_degree3,
         ring_offsets[:-1],
         ring_offsets[1:],
@@ -1629,14 +1632,14 @@ def flatten_degree3_vertices(
         out=candidate,
     )
     if region is not None:
-        wp.map(kernel_array.mask_and, candidate, region, out=candidate)
+        _launch.map(kernel_array.mask_and, candidate, region, out=candidate)
 
     positions = vertices
     # Scratch hoisted out of the loop: the connectivity and the vertex count are both invariant
     # here, so a pass reuses these rather than allocating. The two position buffers alternate so
     # the caller's own ``vertices`` is never written -- pass 0 reads it and writes ``buffers[0]``,
     # pass 1 reads that and writes ``buffers[1]``, and so on.
-    selected = wp.zeros(n_vertices, dtype=wp.bool, device=device)
+    selected = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     # Allocated on first use, not upfront: the common mesh has no two candidates adjacent, so the
     # loop runs a single pass and only ever needs one of the two.
     buffers: dict[int, wp.array[wp.vec3]] = {}
@@ -1645,15 +1648,15 @@ def flatten_degree3_vertices(
         # for what flattening both ends of an edge at once does to a tetrahedron. The lowest
         # remaining index always wins its own conflict, so every pass retires at least one
         # candidate and the loop cannot spin.
-        selected.zero_()
+        _launch.zero_(selected)
         slot = iteration % 2
         if slot not in buffers:
-            buffers[slot] = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+            buffers[slot] = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         flattened = buffers[slot]
         # One launch: choosing the independent set and moving the vertices it chose are the same
         # thread's decision about the same vertex, so a second pass would only re-read the mask
         # the first had just written to learn what it already knew.
-        wp.launch(
+        _launch.launch(
             kernel_repair.select_and_flatten_degree3,
             dim=n_vertices,
             inputs=[positions, faces, ring_offsets, ring_halfedges, candidate, selected, flattened],
@@ -1662,7 +1665,7 @@ def flatten_degree3_vertices(
         positions = flattened
         if iteration + 1 == max_iter:
             break
-        wp.map(kernel_array.mask_and_not, candidate, selected, out=candidate)
+        _launch.map(kernel_array.mask_and_not, candidate, selected, out=candidate)
         # One readback per pass beyond the first, and it is the loop's own termination test: how
         # many candidates are still unflattened is a device-side fact and a Python loop cannot
         # branch on it otherwise. It is taken *after* the pass rather than before so that a mesh
@@ -1729,10 +1732,10 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     [`make_normals_outward`][triwarp.repair.make_normals_outward]
     [`triwarp.validation.is_winding_consistent`][]
     """
-    reversed_faces = wp.empty(faces.size, dtype=wp.int32, device=faces.device)
+    reversed_faces = _launch.empty(faces.size, dtype=wp.int32, device=faces.device)
     n_faces = faces.size // 3
     if n_faces > 0:
-        wp.launch(
+        _launch.launch(
             kernel_repair.reverse_face_winding,
             dim=n_faces,
             inputs=[faces, reversed_faces],
@@ -1785,13 +1788,13 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
     # The flip mask solves the bits straight off the sorted halfedge keys, with no adjacency table
     # and no host read of its length -- the bits ``face_orientation_bits`` gives.
     flip = tw.validation.face_flip_mask(faces)
-    out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_repair.flip_faces_masked, dim=n_faces, inputs=[faces, flip, out_faces], device=device
     )
     return out_faces
@@ -1852,14 +1855,14 @@ def make_volume(
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
     if multibody:
-        out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
+        out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
         signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
         labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
-        accum = wp.zeros(n_faces, dtype=wp.float32, device=device)
-        wp.launch(
+        accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_scatter.SCATTER_ADD[signed_volumes.dtype],
             dim=n_faces,
             inputs=[signed_volumes, labels, accum],
@@ -1867,7 +1870,7 @@ def make_volume(
         )
         # One launch: each face reads its own component's signed volume through its label, where
         # gathering that into a per-face flag buffer first cost a map, a launch and the buffer.
-        wp.launch(
+        _launch.launch(
             kernel_repair.flip_faces_by_component_volume,
             dim=n_faces,
             inputs=[faces, labels, accum, out_faces],
@@ -1882,14 +1885,16 @@ def make_volume(
     if not tw.validation.is_edge_manifold(
         faces, allow_boundary_edges=False, n_vertices=vertices.size
     ):
-        return wp.clone(faces)
+        return _launch.clone(faces)
 
     signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
     if tw.reduce.sum(signed_volumes) >= 0.0:
-        return wp.clone(faces)
+        return _launch.clone(faces)
 
-    out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
-    wp.launch(kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device)
+    out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_repair.flip_all_faces, dim=n_faces, inputs=[faces, out_faces], device=device
+    )
     return out_faces
 
 
@@ -1989,12 +1994,12 @@ def remove_folded_faces(
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
     folded = tw.validation.face_defective_mask(
         vertices, faces, min_quality=None, max_fold_angle=angle
     )
-    keep = wp.empty(n_faces, dtype=wp.bool, device=faces.device)
-    wp.map(kernel_array.mask_not, folded, out=keep)
+    keep = _launch.empty(n_faces, dtype=wp.bool, device=faces.device)
+    _launch.map(kernel_array.mask_not, folded, out=keep)
     return tw.selection.submesh_from_face_mask(vertices, faces, keep)
 
 
@@ -2110,7 +2115,7 @@ def fix_self_intersections(
         raise ValueError("max_iter must be at least 1")
 
     if faces.size == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     if method == "voxel":
         spacing = voxel_size
@@ -2142,7 +2147,7 @@ def fix_self_intersections(
         if current_faces.size == 0:
             break
     if current_faces is faces:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
     return current_vertices, current_faces
 
 
@@ -2187,28 +2192,28 @@ def _dilate_face_mask(
     # vertex mask followed by marking the corners it selected. A hop's two launches read and write
     # different buffers, so every hop grows from the previous hop's complete mask. ``grown`` is the
     # hops' face scratch as well as the answer: the last lookup writes every face.
-    vertex_mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
-    grown = wp.empty(n_faces, dtype=wp.bool, device=device)
-    wp.launch(
+    vertex_mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    grown = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_selection.mark_incident_vertices,
         dim=n_faces,
         inputs=[faces, face_mask, vertex_mask],
         device=device,
     )
     for _ in range(hops):
-        wp.launch(
+        _launch.launch(
             kernel_selection.face_mask_from_vertex_mask,
             dim=n_faces,
             inputs=[faces, vertex_mask, wp.bool(False), grown],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_selection.mark_incident_vertices,
             dim=n_faces,
             inputs=[faces, grown, vertex_mask],
             device=device,
         )
-    wp.launch(
+    _launch.launch(
         kernel_selection.face_mask_from_vertex_mask,
         dim=n_faces,
         inputs=[faces, vertex_mask, wp.bool(False), grown],
@@ -2361,8 +2366,8 @@ def _measure_loops(
     """
     device = vertices.device
     n_loops = offsets.size - 1
-    lengths = wp.empty(n_loops, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    lengths = _launch.empty(n_loops, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_polyline.packed_closed_loop_lengths,
         dim=n_loops,
         inputs=[vertices, packed, offsets],
@@ -2421,15 +2426,15 @@ def _cut_face_labels(
     device = faces.device
     adjacency, shared = tw.adjacency.face_adjacency(faces, return_edges=True)
     cut_edges = np.concatenate([_cycle_edges(loop) for loop in loops]).astype(np.uint64)
-    barrier_keys = wp.array(
+    barrier_keys = _launch.array(
         np.sort(cut_edges[:, 0] + cut_edges[:, 1] * np.uint64(INDEX_RADIX_PAIR)),
         dtype=wp.uint64,
         device=device,
     )
     n_pairs = int(adjacency.shape[0])
     severed = twt.empty_2d((n_pairs, 2), wp.int32, device=device)
-    barrier = wp.empty(n_pairs, dtype=wp.bool, device=device)
-    wp.launch(
+    barrier = _launch.empty(n_pairs, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_repair.sever_barrier_pairs,
         dim=n_pairs,
         inputs=[shared, barrier_keys, adjacency, severed, barrier],
@@ -2490,7 +2495,7 @@ def _cut_along_loops(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], loops: list[np.ndarray]
 ) -> tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32]]:
     """Cut the mesh along the edges of a family of closed vertex-index cycles."""
-    cut_edges = wp.array(
+    cut_edges = _launch.array(
         np.concatenate([_cycle_edges(loop) for loop in loops]), dtype=wp.int32, device=faces.device
     )
     return tw.seams.cut_along_edges(vertices, faces, twt.as_array2d(cut_edges, wp.int32))
@@ -2498,8 +2503,8 @@ def _cut_along_loops(
 
 def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> float:
     """Length of a closed vertex-index cycle, gathered onto its positions."""
-    points = wp.empty(loop.size, dtype=wp.vec3, device=vertices.device)
-    wp.copy(points, vertices[loop])
+    points = _launch.empty(loop.size, dtype=wp.vec3, device=vertices.device)
+    _launch.copy(points, vertices[loop])
     return tw.polyline.polyline_length(points, closed=True)
 
 

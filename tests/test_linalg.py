@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import gc
-import unittest.mock
 import warnings
 import weakref
 
@@ -941,7 +940,9 @@ def test_multigrid_preconditioner_auto_matches_the_forced_modes(device: str) -> 
     )
 
 
-def test_multigrid_preconditioner_auto_converges_past_the_probe(device: str) -> None:
+def test_multigrid_preconditioner_auto_converges_past_the_probe(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """
     Not a library comparison: this pins ``"auto"``'s escalating branch, which is the risky one.
 
@@ -952,10 +953,10 @@ def test_multigrid_preconditioner_auto_converges_past_the_probe(device: str) -> 
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    with unittest.mock.patch.object(tw.linalg, "CG_PROBE_ITERATIONS", 1):
-        tw.linalg.solve_spd_columns(
-            matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
-        )
+    monkeypatch.setattr(tw.linalg, "CG_PROBE_ITERATIONS", 1)
+    tw.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
+    )
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )

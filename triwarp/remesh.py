@@ -34,6 +34,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
 from triwarp.constants import TOLERANCE_MOLLIFY, UINT64_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
@@ -250,8 +251,8 @@ def isotropic_remesh(
     n_faces = faces.size // 3
     device = vertices.device
     n_vertices = vertices.size
-    current_vertices = wp.clone(vertices)
-    current_faces = wp.clone(faces)
+    current_vertices = _launch.clone(vertices)
+    current_faces = _launch.clone(faces)
     if n_faces == 0 or iterations <= 0:
         return current_vertices, current_faces
 
@@ -305,7 +306,7 @@ def isotropic_remesh(
             wp.uint64(0),
             wp.float32(0.0),
             wp.float32(0.0),
-            out=wp.empty_like(current_vertices),
+            out=_launch.empty_like(current_vertices),
             return_kernel=True,
         )
 
@@ -363,8 +364,8 @@ def isotropic_remesh(
                     current_vertices, codes, original_mesh, query_radius
                 )
         if clamp_kernel is not None and original_mesh is not None:
-            bounded = wp.empty_like(current_vertices)
-            wp.launch(
+            bounded = _launch.empty_like(current_vertices)
+            _launch.launch(
                 clamp_kernel,
                 dim=current_vertices.size,
                 inputs=[
@@ -411,14 +412,14 @@ def _length_bands(
     case is literally the constant field, letting the collapse kernel keep a single code path.
     """
     if sizing is None:
-        low = wp.full(n_vertices, 4.0 / 5.0 * target, dtype=wp.float32, device=device)
-        high = wp.full(n_vertices, 4.0 / 3.0 * target, dtype=wp.float32, device=device)
+        low = _launch.full(n_vertices, 4.0 / 5.0 * target, dtype=wp.float32, device=device)
+        high = _launch.full(n_vertices, 4.0 / 3.0 * target, dtype=wp.float32, device=device)
         return low, high
-    low = wp.empty(n_vertices, dtype=wp.float32, device=device)
-    high = wp.empty(n_vertices, dtype=wp.float32, device=device)
+    low = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    high = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     # One map, two outputs: both bands are one scale of the same entry, so a second pass would
     # only re-read the sizing field to multiply it by the other constant.
-    wp.map(kernel_remesh.hysteresis_bands, sizing, out=[low, high])
+    _launch.map(kernel_remesh.hysteresis_bands, sizing, out=[low, high])
     return low, high
 
 
@@ -444,19 +445,19 @@ def _classify(
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    boundary_vertex = wp.zeros(n_vertices, dtype=wp.bool, device=device)
+    boundary_vertex = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
     if n_faces == 0:
-        return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
+        return _launch.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
     if incidence is None:
         incidence = _edge_incidence(faces, n_vertices)
     m = int(incidence.unique_edges.shape[0])
     if m == 0:
-        return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
+        return _launch.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
     # The feature counts become the codes in place.
-    feature_count = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-    wp.launch(
+    feature_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.scatter_feature_edge_counts,
         dim=m,
         inputs=[
@@ -471,7 +472,7 @@ def _classify(
         ],
         device=device,
     )
-    wp.map(kernel_remesh.finalize_vertex_codes, feature_count, out=feature_count)
+    _launch.map(kernel_remesh.finalize_vertex_codes, feature_count, out=feature_count)
     return feature_count, boundary_vertex
 
 
@@ -487,10 +488,10 @@ def _edge_incidence(faces: wp.array[wp.int32], n_vertices: int) -> _EdgeIncidenc
     device = faces.device
     unique_edges, inverse = tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     m = int(unique_edges.shape[0])
-    face_count = wp.zeros(m, dtype=wp.int32, device=device)
+    face_count = _launch.zeros(m, dtype=wp.int32, device=device)
     edge_faces = twt.empty_2d((m, 2), wp.int32, device=device)
     if m > 0:
-        wp.launch(
+        _launch.launch(
             kernel_scatter.scatter_edge_incidence,
             dim=inverse.size,
             inputs=[inverse, face_count, edge_faces],
@@ -521,7 +522,7 @@ def _collapse_pass(
     device = vertices.device
     # One commit counter for the whole loop, never reset: it accumulates across passes and a pass
     # committed nothing exactly when it did not move.
-    count = wp.zeros(1, dtype=wp.int32, device=device)
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
     committed = 0
     current: _EdgeIncidence | None = None
     for _ in range(max_passes):
@@ -553,16 +554,16 @@ def _collapse_pass(
             faces, n_vertices=n_vertices
         )
 
-        survivor = wp.empty(m, dtype=wp.int32, device=device)
-        removed = wp.empty(m, dtype=wp.int32, device=device)
-        target_pos = wp.empty(m, dtype=wp.vec3, device=device)
+        survivor = _launch.empty(m, dtype=wp.int32, device=device)
+        removed = _launch.empty(m, dtype=wp.int32, device=device)
+        target_pos = _launch.empty(m, dtype=wp.vec3, device=device)
         # Seeded by ``collapse_candidates``: unclaimed keys (64-bit, because the lock key is -- see
         # ``kernel_remesh.scramble_index`` for why it has to be injective), the identity map and the
         # working positions.
-        claim = wp.empty(n_vertices, dtype=wp.int64, device=device)
-        remap = wp.empty(n_vertices, dtype=wp.int32, device=device)
-        positions = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-        wp.launch(
+        claim = _launch.empty(n_vertices, dtype=wp.int64, device=device)
+        remap = _launch.empty(n_vertices, dtype=wp.int32, device=device)
+        positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_remesh.collapse_candidates,
             dim=m,
             inputs=[
@@ -593,13 +594,13 @@ def _collapse_pass(
         # candidate kernel itself, so it would fuse -- but a pass is a topology rebuild plus a
         # handful of launches around one readback, and this is one of them. The claim/commit pair
         # after it is not fusible at all.
-        wp.launch(
+        _launch.launch(
             kernel_remesh.claim_collapse_key,
             dim=m,
             inputs=[survivor, removed, ring_offsets, ring_neighbors, claim],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_remesh.commit_collapses,
             dim=m,
             inputs=[
@@ -625,11 +626,11 @@ def _collapse_pass(
         # scan: the positions and both length bands are compacted together, so neither band is
         # re-sampled.
         ranks, faces, n_kept = _compact_remapped_faces(faces, remap, n_vertices)
-        vertices = wp.empty(n_kept, dtype=wp.vec3, device=device)
-        kept_low = wp.empty(n_kept, dtype=wp.float32, device=device)
-        kept_high = wp.empty(n_kept, dtype=wp.float32, device=device)
+        vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+        kept_low = _launch.empty(n_kept, dtype=wp.float32, device=device)
+        kept_high = _launch.empty(n_kept, dtype=wp.float32, device=device)
         if n_kept > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.compact_collapse_vertices,
                 dim=n_vertices,
                 inputs=[positions, low, high, ranks, vertices, kept_low, kept_high],
@@ -661,7 +662,7 @@ def _valence_flip_pass(
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
     # and kept current by every committed flip (a flip moves one edge from ``a``, ``c`` to ``b``,
     # ``d``), rather than recounted from a re-sort each round.
-    valence = wp.empty(n_vertices, dtype=wp.int32, device=device)
+    valence = _launch.empty(n_vertices, dtype=wp.int32, device=device)
 
     def launch(
         adjacency,
@@ -674,7 +675,7 @@ def _valence_flip_pass(
         out_flip,
         out_quad,
     ):
-        wp.launch(
+        _launch.launch(
             kernel_remesh.valence_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
@@ -725,16 +726,16 @@ def _smooth_pass(
     # reason: ``unique_edges`` above carries a vertex's *neighbours*, never its faces.
     vertex_faces, face_offsets = tw.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
 
-    ring_sum = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
-    ring_weight = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    wp.launch(
+    ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    ring_weight = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_remesh.accumulate_one_ring,
         dim=int(unique_edges.shape[0]),
         inputs=[unique_edges, vertices, vertex_areas, ring_sum, ring_weight],
         device=device,
     )
-    out_positions = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    wp.launch(
+    out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_remesh.smooth_free_vertices,
         dim=n_vertices,
         inputs=[
@@ -760,10 +761,10 @@ def _reproject_pass(
     """Snap free vertices onto the closest point of the original surface."""
     device = vertices.device
     n_vertices = vertices.size
-    out_positions = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    out_positions = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     # ``wp.uint64(...)`` is required: a bare ``wp.Mesh.id`` is a Python int and ``wp.map`` would
     # infer ``int32`` for it (see tests/test_map_uniform_probe.py).
-    wp.map(
+    _launch.map(
         kernel_remesh.reproject_vertices,
         vertices,
         codes,
@@ -857,7 +858,7 @@ def _flip_interior_edges(
         # A refresh re-arms both claim tables for the round after it, so only a round that follows
         # a build or another issued round fills them itself.
         topology.arm_claims()
-        wp.launch(
+        _launch.launch(
             kernel_remesh.claim_flips,
             dim=m,
             inputs=[
@@ -872,7 +873,7 @@ def _flip_interior_edges(
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_remesh.commit_flips,
             dim=m,
             inputs=[
@@ -904,7 +905,7 @@ def _flip_interior_edges(
 
     # The commits accumulate across rounds and are never reset: a round's flips are what the
     # running total moved by.
-    count = wp.zeros(1, dtype=wp.int32, device=device)
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
     graph = None
     capturable = wp.get_device(device).is_cuda
     total = 0
@@ -1043,13 +1044,13 @@ class _FlipTopology:
         n = self._n_corners
         # ``radix_sort_pairs`` ping-pongs through the upper half of both buffers, so each is
         # double width and only ``[:n]`` is data.
-        self._keys = wp.empty(2 * n, dtype=wp.uint64, device=self._device)
-        self._order = wp.empty(2 * n, dtype=wp.int32, device=self._device)
-        self._starts = wp.empty(n, dtype=wp.int32, device=self._device)
-        self._ranks = wp.empty(n, dtype=wp.int32, device=self._device)
+        self._keys = _launch.empty(2 * n, dtype=wp.uint64, device=self._device)
+        self._order = _launch.empty(2 * n, dtype=wp.int32, device=self._device)
+        self._starts = _launch.empty(n, dtype=wp.int32, device=self._device)
+        self._ranks = _launch.empty(n, dtype=wp.int32, device=self._device)
         self._ranks_tail = self._ranks[n - 1 :]
         self.sorted_keys = self._keys[:n]
-        self.face_claim = wp.empty(self._n_faces, dtype=wp.uint64, device=self._device)
+        self.face_claim = _launch.empty(self._n_faces, dtype=wp.uint64, device=self._device)
         # Whether both claim tables hold the unclaimed key: a refresh arms them for the next round,
         # a commit spends them.
         self.claims_armed = False
@@ -1104,11 +1105,13 @@ class _FlipTopology:
         self.incremental = self.incremental or incremental
         if self.incremental:
             if self.halfedge_row is None:
-                self.halfedge_row = wp.empty(n, dtype=wp.int32, device=self._device)
-                self.edge_set = wp.zeros(self._edge_set_table, dtype=wp.uint64, device=self._device)
+                self.halfedge_row = _launch.empty(n, dtype=wp.int32, device=self._device)
+                self.edge_set = _launch.zeros(
+                    self._edge_set_table, dtype=wp.uint64, device=self._device
+                )
             else:
-                self.edge_set.zero_()
-        wp.launch(
+                _launch.zero_(self.edge_set)
+        _launch.launch(
             kernel_remesh.mark_edge_pair_starts,
             dim=n,
             inputs=[
@@ -1124,7 +1127,7 @@ class _FlipTopology:
         )
         # Inclusive, so the row count is one 4-byte tail read and the emit kernel's row is
         # ``ranks[i] - 1`` -- the contract ``array.flatnonzero`` uses for the same reason.
-        wp.utils.array_scan(self._starts, out_array=self._ranks, inclusive=True)
+        _launch.array_scan(self._starts, out_array=self._ranks, inclusive=True)
         if read_count:
             m = int(read_scalar(self._ranks_tail, 0))
             if m != self._rows:
@@ -1138,7 +1141,7 @@ class _FlipTopology:
         if self.incremental and (self.row_halfedges is None or self.row_halfedges.shape[0] != m):
             self.row_halfedges = twt.empty_2d((m, 2), wp.int32, device=self._device)
         if m > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.emit_flip_topology,
                 dim=n,
                 inputs=[
@@ -1155,8 +1158,8 @@ class _FlipTopology:
                 device=self._device,
             )
         if self.valence is not None:
-            self.valence.zero_()
-            wp.launch(
+            _launch.zero_(self.valence)
+            _launch.launch(
                 kernel_scatter.scatter_valence_from_sorted_edge_keys,
                 dim=n,
                 inputs=[self._keys, wp.int32(n), self._radix, self.valence],
@@ -1169,13 +1172,13 @@ class _FlipTopology:
         n = self._n_corners
         # Keys and identity payload in one launch, into the leading halves only: the upper halves
         # are the sort's scratch and need no fill.
-        wp.launch(
+        _launch.launch(
             kernel_adjacency.face_edge_keys_and_order,
             dim=self._n_faces,
             inputs=[self._faces, self._radix, self._keys, self._order],
             device=self._device,
         )
-        wp.utils.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
+        _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
         self._sorted_stale = False
 
     def refresh(self) -> None:
@@ -1184,7 +1187,7 @@ class _FlipTopology:
 
         The same launch re-arms both claim tables for the next round.
         """
-        wp.launch(
+        _launch.launch(
             kernel_remesh.refresh_flip_rows,
             dim=self._rows,
             inputs=[
@@ -1203,8 +1206,8 @@ class _FlipTopology:
     def arm_claims(self) -> None:
         """Fill both claim tables with the unclaimed key, unless a refresh already did."""
         if not self.claims_armed:
-            self.face_claim.fill_(UINT64_MAX)
-            self.edge_claim.fill_(UINT64_MAX)
+            _launch.fill_(self.face_claim, UINT64_MAX)
+            _launch.fill_(self.edge_claim, UINT64_MAX)
             self.claims_armed = True
 
     @property
@@ -1239,18 +1242,18 @@ class _FlipTopology:
             # Only the sort is stale: the rows, the halfedge maps and the key set were kept current.
             self._sort()
         n = self._n_corners
-        wp.launch(
+        _launch.launch(
             kernel_remesh.mark_sorted_run_starts,
             dim=n,
             inputs=[self._keys, self._starts],
             device=self._device,
         )
-        wp.utils.array_scan(self._starts, out_array=self._ranks, inclusive=True)
+        _launch.array_scan(self._starts, out_array=self._ranks, inclusive=True)
         # The edge count sizes the returned table.
         n_edges = int(read_scalar(self._ranks_tail, 0))
         unique_edges = twt.empty_2d((n_edges, 2), wp.int32, device=self._device)
-        inverse = wp.empty(n, dtype=wp.int32, device=self._device)
-        wp.launch(
+        inverse = _launch.empty(n, dtype=wp.int32, device=self._device)
+        _launch.launch(
             kernel_remesh.emit_sorted_unique_edges,
             dim=n,
             inputs=[self._faces, self._order, self._starts, self._ranks, unique_edges, inverse],
@@ -1264,12 +1267,12 @@ class _FlipTopology:
         self.adjacency = twt.empty_2d((m, 2), wp.int32, device=self._device)
         self.adjacency_edges = twt.empty_2d((m, 2), wp.int32, device=self._device)
         self.unshared = twt.empty_2d((m, 2), wp.int32, device=self._device)
-        self.flip = wp.empty(m, dtype=wp.bool, device=self._device)
+        self.flip = _launch.empty(m, dtype=wp.bool, device=self._device)
         self.quad = twt.empty_2d((m, 4), wp.int32, device=self._device)
         table = 1
         while table < 4 * m + 1:
             table <<= 1
-        self.edge_claim = wp.empty(table, dtype=wp.uint64, device=self._device)
+        self.edge_claim = _launch.empty(table, dtype=wp.uint64, device=self._device)
         self.edge_claim_mask = table - 1
         self.claims_armed = False
 
@@ -1366,7 +1369,7 @@ def cluster_decimate(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     # One definition of "the default voxel grid for these points", shared with ``triwarp.voxels``
     # so the two modules cannot drift on the cell size or on Open3D's half-cell anchor.
@@ -1383,20 +1386,20 @@ def cluster_decimate(
     # Three ``-1``-filled tables in one allocation: the cell table (a vertex index per cluster),
     # each cluster's state (unreferenced, kept, then its output vertex) and the face table (the
     # first occurrence of each distinct surviving face).
-    tables = wp.full(2 * n_cells + face_mask + 1, -1, dtype=wp.int32, device=device)
+    tables = _launch.full(2 * n_cells + face_mask + 1, -1, dtype=wp.int32, device=device)
     cell_table = twt.as_dense(tables[:n_cells])
     cell_rank = twt.as_dense(tables[n_cells : 2 * n_cells])
     face_table = twt.as_dense(tables[2 * n_cells :])
     # Every vertex's cluster, then the kept clusters (sized for the sort that orders them, at most
     # one per vertex), then the distinct surviving faces' table slots.
-    scratch = wp.empty(3 * n_vertices + n_faces, dtype=wp.int32, device=device)
+    scratch = _launch.empty(3 * n_vertices + n_faces, dtype=wp.int32, device=device)
     vertex_cell = twt.as_dense(scratch[:n_vertices])
     kept_cells = twt.as_dense(scratch[n_vertices : 3 * n_vertices])
     face_slots = twt.as_dense(scratch[3 * n_vertices :])
     # The kept clusters' cell keys, at the sort's double width.
-    sort_keys = wp.empty(2 * n_vertices, dtype=wp.uint64, device=device)
-    counters = wp.zeros(2, dtype=wp.int32, device=device)
-    wp.launch(
+    sort_keys = _launch.empty(2 * n_vertices, dtype=wp.uint64, device=device)
+    counters = _launch.zeros(2, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.cluster_insert_vertices,
         dim=n_vertices,
         inputs=[vertices, origin, inverse_size, bound, wp.int32(cell_mask), cell_table],
@@ -1407,7 +1410,7 @@ def cluster_decimate(
     # face rather than a manifold one, so the face dedup is part of the algorithm rather than
     # polish. It happens here, before any count is read, in a table of surviving faces only: at a
     # coarse voxel size nearly every face collapses, and a collapsed face never enters it.
-    wp.launch(
+    _launch.launch(
         kernel_remesh.cluster_mark_faces,
         dim=n_faces,
         inputs=[
@@ -1431,19 +1434,19 @@ def cluster_decimate(
     n_kept, n_unique = read_values(counters, 0, 2)
     if n_kept == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
     # The output vertices are the kept clusters in cell-key order, which is the order the sorted
     # unique cell keys of a whole-mesh dedup would give them. The keys are distinct, so the
     # permutation does not depend on the order the claims arrived in.
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         sort_keys,
         kept_cells,
         count=n_kept,
         end_bit=max(1, (min(cell_bound**3, 1 << 64) - 1).bit_length()),
     )
-    wp.launch(
+    _launch.launch(
         kernel_remesh.cluster_rank_cells, dim=n_kept, inputs=[kept_cells, cell_rank], device=device
     )
     kept_vertices = _cluster_positions(
@@ -1480,17 +1483,17 @@ def _cluster_positions(
     device = vertices.device
     n_vertices = vertices.size
     if contraction == "average":
-        sums = wp.zeros(n_kept, dtype=wp.vec3, device=device)
-        counts = wp.zeros(n_kept, dtype=wp.int32, device=device)
-        wp.launch(
+        sums = _launch.zeros(n_kept, dtype=wp.vec3, device=device)
+        counts = _launch.zeros(n_kept, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_remesh.cluster_accumulate,
             dim=n_vertices,
             inputs=[vertex_cell, cell_rank, vertices],
             outputs=[sums, counts],
             device=device,
         )
-        out = wp.empty(n_kept, dtype=wp.vec3, device=device)
-        wp.launch(
+        out = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_remesh.cluster_means,
             dim=n_kept,
             inputs=[sums, counts],
@@ -1499,16 +1502,16 @@ def _cluster_positions(
         )
         return out
 
-    closest = wp.full(n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
-    wp.launch(
+    closest = _launch.full(n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_remesh.cluster_pick_closest,
         dim=n_vertices,
         inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size)],
         outputs=[closest],
         device=device,
     )
-    out = wp.empty(n_kept, dtype=wp.vec3, device=device)
-    wp.launch(
+    out = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_remesh.cluster_gather_representatives,
         dim=n_kept,
         inputs=[vertices, closest],
@@ -1538,9 +1541,9 @@ def _cluster_faces(
     """
     device = faces.device
     if 2 * n_unique > sort_keys.size:
-        sort_keys = wp.empty(2 * n_unique, dtype=wp.uint64, device=device)
-        kept_cells = wp.empty(2 * n_unique, dtype=wp.int32, device=device)
-    wp.launch(
+        sort_keys = _launch.empty(2 * n_unique, dtype=wp.uint64, device=device)
+        kept_cells = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.cluster_face_keys,
         dim=n_unique,
         inputs=[faces, vertex_cell, cell_rank, face_table, face_slots, wp.uint64(n_kept)],
@@ -1548,14 +1551,14 @@ def _cluster_faces(
         device=device,
     )
     # Three sorted indices below ``n_kept`` pack below ``n_kept ** 3``.
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         sort_keys,
         kept_cells,
         count=n_unique,
         end_bit=max(1, (min(n_kept**3, 1 << 64) - 1).bit_length()),
     )
-    out = wp.empty(3 * n_unique, dtype=wp.int32, device=device)
-    wp.launch(
+    out = _launch.empty(3 * n_unique, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.cluster_emit_faces,
         dim=n_unique,
         inputs=[faces, vertex_cell, cell_rank, kept_cells],
@@ -1586,16 +1589,16 @@ def _compact_remapped_faces(
     n_faces = faces.size // 3
     # Behind a leading zero: the face flags, then the target marks, so one inclusive scan of the
     # tail makes each half an exclusive scan ending in its running total.
-    scan = wp.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
+    scan = _launch.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
     marks = scan[1:]
-    wp.launch(
+    _launch.launch(
         kernel_remesh.mark_surviving_faces, dim=n_faces, inputs=[faces, remap, marks], device=device
     )
-    wp.utils.array_scan(marks, marks, inclusive=True)
+    _launch.array_scan(marks, marks, inclusive=True)
     ranks = twt.as_dense(scan[n_faces:])
-    compacted = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
-    totals = wp.empty(2, dtype=wp.int32, device=device)
-    wp.launch(
+    compacted = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    totals = _launch.empty(2, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.compact_surviving_faces,
         dim=n_faces,
         inputs=[faces, remap, scan[: n_faces + 1], ranks, compacted, totals],
@@ -1604,7 +1607,7 @@ def _compact_remapped_faces(
     # Both counts size what the caller allocates next, so they come back -- together, in one copy.
     n_kept, n_surviving = (int(count) for count in totals.numpy())
     if n_surviving == 0:
-        return ranks, wp.empty(0, dtype=wp.int32, device=device), n_kept
+        return ranks, _launch.empty(0, dtype=wp.int32, device=device), n_kept
     return ranks, twt.as_dense(compacted[: 3 * n_surviving]), n_kept
 
 
@@ -1865,40 +1868,42 @@ class _DecimationBuffers:
 
         # The dummy vertex lives one past the capacity, so every per-vertex buffer is one longer.
         v_cap = self.n_vertices + 1
-        self.vertices = wp.zeros(v_cap, dtype=wp.vec3, device=device)
-        wp.copy(self.vertices, vertices, count=self.n_vertices)
-        self._faces_store = wp.empty(self.n_corners, dtype=wp.int32, device=device)
-        wp.copy(self._faces_store, faces, count=self.n_corners)
+        self.vertices = _launch.zeros(v_cap, dtype=wp.vec3, device=device)
+        _launch.copy(self.vertices, vertices, count=self.n_vertices)
+        self._faces_store = _launch.empty(self.n_corners, dtype=wp.int32, device=device)
+        _launch.copy(self._faces_store, faces, count=self.n_corners)
         # Allocated holding its seed rather than zeroed and then assigned: the zeroing is
         # discarded and the assign is a second upload of the same bytes. ``[faces, vertices,
         # edges, commits]``: the last slot is the pass's collapse count, which the pass kernels
         # reach through the ``_count`` view, so the one readback a pass ends with answers both
         # "did it commit anything" and the next pass's size test.
-        self.state = wp.array([self.n_faces, self.n_vertices, 0, 0], dtype=wp.int32, device=device)
+        self.state = _launch.array(
+            [self.n_faces, self.n_vertices, 0, 0], dtype=wp.int32, device=device
+        )
         self._host_state = None
         self._count = self.state[3:4]
 
         n = self.n_corners
-        self._keys_store = wp.empty(2 * n, dtype=wp.uint64, device=device)
-        self._order_store = wp.empty(2 * n, dtype=wp.int32, device=device)
-        self._starts_store = wp.empty(n, dtype=wp.int32, device=device)
-        self._corner_slots_store = wp.empty(n, dtype=wp.int32, device=device)
-        self._remapped_store = wp.empty(n, dtype=wp.int32, device=device)
+        self._keys_store = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+        self._order_store = _launch.empty(2 * n, dtype=wp.int32, device=device)
+        self._starts_store = _launch.empty(n, dtype=wp.int32, device=device)
+        self._corner_slots_store = _launch.empty(n, dtype=wp.int32, device=device)
+        self._remapped_store = _launch.empty(n, dtype=wp.int32, device=device)
         # Per-vertex state the pass accumulates into or starts from; ``begin_decimation_pass``
         # resets all of it.
-        self._positions = wp.empty(v_cap, dtype=wp.vec3, device=device)
-        self._collapse_remap = wp.empty(v_cap, dtype=wp.int32, device=device)
-        self._feature_count = wp.empty(v_cap, dtype=wp.int32, device=device)
-        self._quadrics = wp.empty(v_cap, dtype=wp.mat44d, device=device)
-        self._locked = wp.empty(v_cap, dtype=wp.int32, device=device)
-        self._min_key = wp.empty(v_cap, dtype=wp.int64, device=device)
-        self._vertex_remap = wp.empty(self.n_vertices, dtype=wp.int32, device=device)
+        self._positions = _launch.empty(v_cap, dtype=wp.vec3, device=device)
+        self._collapse_remap = _launch.empty(v_cap, dtype=wp.int32, device=device)
+        self._feature_count = _launch.empty(v_cap, dtype=wp.int32, device=device)
+        self._quadrics = _launch.empty(v_cap, dtype=wp.mat44d, device=device)
+        self._locked = _launch.empty(v_cap, dtype=wp.int32, device=device)
+        self._min_key = _launch.empty(v_cap, dtype=wp.int64, device=device)
+        self._vertex_remap = _launch.empty(self.n_vertices, dtype=wp.int32, device=device)
         # Vertex-vertex then vertex-face incidence counts, one row per vertex each and a closing
         # zero, so one exclusive scan yields both CSRs' offset tables (see ``kernels/remesh.py``).
-        self._adjacency_counts = wp.empty(2 * v_cap + 1, dtype=wp.int32, device=device)
+        self._adjacency_counts = _launch.empty(2 * v_cap + 1, dtype=wp.int32, device=device)
         self._adjacency_scan = _ExclusiveScan(2 * v_cap + 1, device)
-        self._adjacency_offsets = wp.empty(2 * v_cap + 1, dtype=wp.int32, device=device)
-        self._round_state = wp.empty(
+        self._adjacency_offsets = _launch.empty(2 * v_cap + 1, dtype=wp.int32, device=device)
+        self._round_state = _launch.empty(
             kernel_remesh.COLLAPSE_STATE_SIZE, dtype=wp.int32, device=device
         )
 
@@ -1910,17 +1915,17 @@ class _DecimationBuffers:
         self.vertex_index = (
             tw.array.arange(self.n_vertices, device=device)
             if track_index
-            else wp.empty(0, dtype=wp.int32, device=device)
+            else _launch.empty(0, dtype=wp.int32, device=device)
         )
         self._face_source_store = (
             tw.array.arange(self.n_faces, device=device)
             if track_index
-            else wp.empty(0, dtype=wp.int32, device=device)
+            else _launch.empty(0, dtype=wp.int32, device=device)
         )
         self._face_source_scratch_store = (
-            wp.empty(self.n_faces, dtype=wp.int32, device=device)
+            _launch.empty(self.n_faces, dtype=wp.int32, device=device)
             if track_index
-            else wp.empty(0, dtype=wp.int32, device=device)
+            else _launch.empty(0, dtype=wp.int32, device=device)
         )
         self.face_source = self._face_source_store
         self._face_source_scratch = self._face_source_scratch_store
@@ -1951,7 +1956,7 @@ class _DecimationBuffers:
         self._remapped = twt.as_dense(self._remapped_store[:n])
         self._start_scan = _ExclusiveScan(n, device)
         # The compaction's keep flags, faces first and vertices after, and their one scan.
-        self._compact_flags = wp.empty(faces + self.n_vertices, dtype=wp.int32, device=device)
+        self._compact_flags = _launch.empty(faces + self.n_vertices, dtype=wp.int32, device=device)
         self._compact_scan = _ExclusiveScan(faces + self.n_vertices, device)
         if self._track_index:
             self.face_source = twt.as_dense(self._face_source_store[:faces])
@@ -1968,22 +1973,22 @@ class _DecimationBuffers:
         self.n_edges = edges
         self._unique_edges = twt.empty_2d((edges, 2), wp.int32, device=device)
         # One row longer than the edge capacity: the dummy slot an overflowing corner lands in.
-        self._edge_face_count = wp.empty(edges + 1, dtype=wp.int32, device=device)
+        self._edge_face_count = _launch.empty(edges + 1, dtype=wp.int32, device=device)
         self._edge_faces = twt.empty_2d((edges + 1, 2), wp.int32, device=device)
-        self._edge_slots = wp.empty(edges, dtype=wp.vec2i, device=device)
+        self._edge_slots = _launch.empty(edges, dtype=wp.vec2i, device=device)
         # Vertex-vertex entries (two per edge) followed by vertex-face entries (one per corner).
-        self._adjacency = wp.empty(2 * edges + self.n_corners, dtype=wp.int32, device=device)
-        self._candidates = wp.empty(edges, dtype=wp.int32, device=device)
-        self._survivor = wp.empty(edges, dtype=wp.int32, device=device)
-        self._removed = wp.empty(edges, dtype=wp.int32, device=device)
-        self._target_pos = wp.empty(edges, dtype=wp.vec3, device=device)
-        self._cost = wp.empty(edges, dtype=wp.float32, device=device)
-        self._cost_rank = wp.empty(edges, dtype=wp.int32, device=device)
+        self._adjacency = _launch.empty(2 * edges + self.n_corners, dtype=wp.int32, device=device)
+        self._candidates = _launch.empty(edges, dtype=wp.int32, device=device)
+        self._survivor = _launch.empty(edges, dtype=wp.int32, device=device)
+        self._removed = _launch.empty(edges, dtype=wp.int32, device=device)
+        self._target_pos = _launch.empty(edges, dtype=wp.vec3, device=device)
+        self._cost = _launch.empty(edges, dtype=wp.float32, device=device)
+        self._cost_rank = _launch.empty(edges, dtype=wp.int32, device=device)
         # ``radix_sort_pairs`` wants double-width key and payload buffers.
-        self._sort_keys = wp.empty(2 * edges, dtype=wp.float32, device=device)
-        self._sort_order = wp.empty(2 * edges, dtype=wp.int32, device=device)
+        self._sort_keys = _launch.empty(2 * edges, dtype=wp.float32, device=device)
+        self._sort_order = _launch.empty(2 * edges, dtype=wp.int32, device=device)
         # Two bitmasks of the round's winners, in cost order and in edge order, one word per 32.
-        self._winner_words = wp.empty(2 * (-(-edges // 32)), dtype=wp.uint32, device=device)
+        self._winner_words = _launch.empty(2 * (-(-edges // 32)), dtype=wp.uint32, device=device)
         self._winner_scan = _ExclusiveScan(self._winner_words.size, device)
 
     def run_pass(self) -> bool:
@@ -2046,17 +2051,17 @@ class _DecimationBuffers:
         """Copy the live prefixes out of the fixed buffers, which is the only place a size leaks."""
         counts = self._host_state if self._host_state is not None else self.state.numpy()
         n_faces, n_vertices = int(counts[0]), int(counts[1])
-        vertices = wp.empty(n_vertices, dtype=wp.vec3, device=self._device)
-        faces = wp.empty(3 * n_faces, dtype=wp.int32, device=self._device)
+        vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=self._device)
+        faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=self._device)
         if n_vertices > 0:
-            wp.copy(vertices, self.vertices, count=n_vertices)
+            _launch.copy(vertices, self.vertices, count=n_vertices)
         if n_faces > 0:
-            wp.copy(faces, self.faces, count=3 * n_faces)
-        face_source = wp.empty(0, dtype=wp.int32, device=self._device)
+            _launch.copy(faces, self.faces, count=3 * n_faces)
+        face_source = _launch.empty(0, dtype=wp.int32, device=self._device)
         if self._track_index:
-            face_source = wp.empty(n_faces, dtype=wp.int32, device=self._device)
+            face_source = _launch.empty(n_faces, dtype=wp.int32, device=self._device)
             if n_faces > 0:
-                wp.copy(face_source, self.face_source, count=n_faces)
+                _launch.copy(face_source, self.face_source, count=n_faces)
         return vertices, faces, face_source
 
     def _issue_pass(self) -> None:
@@ -2069,7 +2074,7 @@ class _DecimationBuffers:
         """
         device = self._device
         v_cap = self.n_vertices + 1
-        wp.launch(
+        _launch.launch(
             kernel_remesh.begin_decimation_pass,
             dim=max(self.n_faces, self.n_edges + 1, 2 * v_cap + 1),
             inputs=[
@@ -2096,7 +2101,7 @@ class _DecimationBuffers:
         offsets = self._group_edges()
         csr_offsets = offsets[: v_cap + 1]
         face_offsets = offsets[v_cap:]
-        wp.launch(
+        _launch.launch(
             kernel_remesh.quadric_collapse_candidates,
             dim=self.n_edges,
             inputs=[
@@ -2128,8 +2133,8 @@ class _DecimationBuffers:
         # locking each winner's closed 2-ring under a **hashed** key -- see ``scramble_index`` for
         # why the obvious keys (edge index, or the cost itself) both collapse to one winner a pass
         # on a structured mesh.
-        wp.utils.radix_sort_pairs(self._sort_keys, self._sort_order, count=self.n_edges)
-        wp.launch(
+        _launch.radix_sort_pairs(self._sort_keys, self._sort_order, count=self.n_edges)
+        _launch.launch(
             kernel_remesh.drop_past_half,
             dim=self.n_edges,
             inputs=[self._sort_order, self.state, self._cost_rank, self._candidates],
@@ -2153,15 +2158,15 @@ class _DecimationBuffers:
         device = self._device
         n = self.n_corners
         v_cap = self.n_vertices + 1
-        wp.utils.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
-        wp.launch(
+        _launch.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
+        _launch.launch(
             kernel_remesh.mark_unique_edge_starts,
             dim=n,
             inputs=[self._keys, self.state, self._starts],
             device=device,
         )
         self._start_scan.launch(self._starts)
-        wp.launch(
+        _launch.launch(
             kernel_remesh.emit_pass_edges,
             dim=n,
             inputs=[
@@ -2182,7 +2187,7 @@ class _DecimationBuffers:
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_remesh.count_pass_edges,
             dim=self.n_edges,
             inputs=[
@@ -2200,7 +2205,7 @@ class _DecimationBuffers:
             device=device,
         )
         self._adjacency_scan.launch(self._adjacency_counts)
-        wp.launch(
+        _launch.launch(
             kernel_remesh.scatter_pass_adjacency,
             dim=max(n, 2 * v_cap + 1),
             inputs=[
@@ -2244,7 +2249,7 @@ class _DecimationBuffers:
         width = max(m, self.n_vertices + 1)
 
         def round_body() -> None:
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.drop_locked_and_claim,
                 dim=max(m, self._winner_words.size),
                 inputs=[
@@ -2259,7 +2264,7 @@ class _DecimationBuffers:
                 ],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.mark_collapse_winners,
                 dim=m,
                 inputs=[
@@ -2275,7 +2280,7 @@ class _DecimationBuffers:
                 device=device,
             )
             self._winner_scan.launch(self._winner_words, words=True)
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.commit_budgeted_collapses,
                 dim=width,
                 inputs=[
@@ -2300,7 +2305,7 @@ class _DecimationBuffers:
                 ],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.end_collapse_round,
                 dim=1,
                 inputs=[wp.int32(_QUADRIC_ROUNDS), self._count, self._round_state],
@@ -2320,14 +2325,14 @@ class _DecimationBuffers:
         renumbered -- and the surviving vertices together.
         """
         device = self._device
-        wp.launch(
+        _launch.launch(
             kernel_remesh.remap_and_mark_faces,
             dim=self.n_faces,
             inputs=[self.faces, self._collapse_remap, self._remapped, self._compact_flags],
             device=device,
         )
         self._compact_scan.launch(self._compact_flags)
-        wp.launch(
+        _launch.launch(
             kernel_remesh.compact_decimation_pass,
             dim=max(self.n_faces, self.n_vertices),
             inputs=[
@@ -2347,8 +2352,8 @@ class _DecimationBuffers:
         if self._track_index:
             # Both maps fold *this* pass into the running answer, so they run after the compaction
             # that produced the face ranks and ``_vertex_remap``.
-            wp.copy(self._face_source_scratch, self.face_source)
-            wp.launch(
+            _launch.copy(self._face_source_scratch, self.face_source)
+            _launch.launch(
                 kernel_remesh.compact_face_provenance,
                 dim=self.n_faces,
                 inputs=[
@@ -2360,7 +2365,7 @@ class _DecimationBuffers:
                 ],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_remesh.compose_vertex_index,
                 dim=self.n_vertices,
                 inputs=[self._collapse_remap, self._vertex_remap, self.vertex_index],
@@ -2384,9 +2389,9 @@ class _ExclusiveScan:
         """Allocate the scan of an ``n``-element buffer on ``device``."""
         chunks = max(1, -(-n // int(kernel_remesh.SCAN_CHUNK)))
         self._device = device
-        self.prefix = wp.empty(n, dtype=wp.int32, device=device)
-        self.chunk_totals = wp.empty(chunks, dtype=wp.int32, device=device)
-        self.chunk_offsets = wp.empty(chunks, dtype=wp.int32, device=device)
+        self.prefix = _launch.empty(n, dtype=wp.int32, device=device)
+        self.chunk_totals = _launch.empty(chunks, dtype=wp.int32, device=device)
+        self.chunk_offsets = _launch.empty(chunks, dtype=wp.int32, device=device)
 
     def launch(self, values: wp.array[Any], *, words: bool = False) -> None:
         """
@@ -2395,7 +2400,7 @@ class _ExclusiveScan:
         With ``words`` the input is a ``uint32`` bitmask and the scan is of its words' set-bit
         counts.
         """
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_remesh.scan_word_counts_exclusive
             if words
             else kernel_remesh.scan_chunks_exclusive,
@@ -2404,7 +2409,7 @@ class _ExclusiveScan:
             block_dim=kernel_remesh.SCAN_BLOCK_DIM,
             device=self._device,
         )
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_remesh.scan_chunk_totals_exclusive,
             dim=[1],
             inputs=[self.chunk_totals, self.chunk_offsets],
@@ -2493,7 +2498,7 @@ def flip_to_delaunay(
     device = faces.device
     setup = _flip_setup(faces, region)
     if setup is None:
-        return wp.clone(faces)
+        return _launch.clone(faces)
     out_faces, n_vertices, region_flags = setup
     mac, mdsq, car = _flip_gates(max_angle_change, max_deviation, critical_aspect_ratio)
 
@@ -2508,7 +2513,7 @@ def flip_to_delaunay(
         out_flip,
         out_quad,
     ):
-        wp.launch(
+        _launch.launch(
             kernel_remesh.delone_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
@@ -2648,7 +2653,7 @@ def flip_by_objective(
     device = faces.device
     setup = _flip_setup(faces, region)
     if setup is None:
-        return wp.clone(faces)
+        return _launch.clone(faces)
     out_faces, n_vertices, region_flags = setup
 
     objective_flag = {
@@ -2671,7 +2676,7 @@ def flip_by_objective(
         out_flip,
         out_quad,
     ):
-        wp.launch(
+        _launch.launch(
             kernel_remesh.objective_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[
@@ -2735,10 +2740,10 @@ def _flip_setup(
         raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
 
     if region is None:
-        region_flags = wp.full(n_faces, 1, dtype=wp.int32, device=device)
+        region_flags = _launch.full(n_faces, 1, dtype=wp.int32, device=device)
     else:
         region_flags = tw.array.astype(region, wp.int32)
-    return wp.clone(faces), tw.array.index_bound(faces), region_flags
+    return _launch.clone(faces), tw.array.index_bound(faces), region_flags
 
 
 def intrinsic_delaunay(
@@ -2814,7 +2819,7 @@ def intrinsic_delaunay(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
-    intrinsic_faces = wp.clone(faces)
+    intrinsic_faces = _launch.clone(faces)
     if n_faces == 0:
         return intrinsic_faces, lengths, 0
 
@@ -2825,9 +2830,9 @@ def intrinsic_delaunay(
     # make the vertex-pair key ambiguous (see ``kernel_remesh.build_intrinsic_twins``).
     initial = _FlipTopology(intrinsic_faces, n_vertices)
     m0 = initial.rebuild()
-    twin = wp.full(n_half, -1, dtype=wp.int32, device=device)
+    twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
     if m0 > 0:
-        wp.launch(
+        _launch.launch(
             kernel_remesh.build_intrinsic_twins,
             dim=m0,
             inputs=[intrinsic_faces, initial.adjacency, initial.unshared, twin],
@@ -2835,14 +2840,14 @@ def intrinsic_delaunay(
         )
     del initial  # its vertex-pair-keyed tables cannot represent what a flip may do from here on
 
-    flip = wp.empty(n_half, dtype=wp.bool, device=device)
+    flip = _launch.empty(n_half, dtype=wp.bool, device=device)
     quad = twt.empty_2d((n_half, 4), wp.int32, device=device)
-    new_length = wp.empty(n_half, dtype=wp.float32, device=device)
+    new_length = _launch.empty(n_half, dtype=wp.float32, device=device)
     neighbors = twt.empty_2d((n_half, 4), wp.int32, device=device)
-    face_claim = wp.empty(n_faces, dtype=wp.int32, device=device)
-    remap = wp.empty(n_half, dtype=wp.int32, device=device)
-    no_remap = wp.zeros(n_half, dtype=wp.bool, device=device)
-    count = wp.zeros(1, dtype=wp.int32, device=device)
+    face_claim = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    remap = _launch.empty(n_half, dtype=wp.int32, device=device)
+    no_remap = _launch.zeros(n_half, dtype=wp.bool, device=device)
+    count = _launch.zeros(1, dtype=wp.int32, device=device)
 
     total = 0
     for _ in range(max_iter):
@@ -2851,7 +2856,7 @@ def intrinsic_delaunay(
         # candidate pass, ``remap`` / ``no_remap`` / ``count`` in the claim pass. Each is a whole
         # device pass over a buffer that scales with the mesh, sitting immediately next to a launch
         # at exactly the right ``dim``; see those kernels for why no barrier is needed.
-        wp.launch(
+        _launch.launch(
             kernel_remesh.intrinsic_delaunay_candidates,
             dim=n_half,
             inputs=[intrinsic_faces, lengths, twin, flip, quad, new_length, neighbors, face_claim],
@@ -2859,13 +2864,13 @@ def intrinsic_delaunay(
         )
         # Independent-set selection over just the flipping pair -- ``claim_intrinsic_flips``'s own
         # docstring says why that is enough here, unlike the vertex-pair-keyed flip loops.
-        wp.launch(
+        _launch.launch(
             kernel_remesh.claim_intrinsic_flips,
             dim=n_half,
             inputs=[flip, twin, face_claim, remap, no_remap, count],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_remesh.commit_intrinsic_flips,
             dim=n_half,
             inputs=[
@@ -2883,7 +2888,7 @@ def intrinsic_delaunay(
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_remesh.fixup_twin_remap,
             dim=n_half,
             inputs=[remap, no_remap, twin],
@@ -2935,16 +2940,16 @@ def subdivide(
     if n_faces == 0:
         # Cloned, not aliased: every other entry point in this module returns independent buffers,
         # and a caller that mutates a "subdivided" mesh must not reach back into its own input.
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     unique_edges, inverse = tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_unique = int(unique_edges.shape[0])
 
     # One buffer sized for its final use: the originals copied into the prefix and one midpoint per
     # unique edge written straight into the tail, which is the layout ``_split_faces_four`` indexes.
-    new_vertices = wp.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
-    wp.copy(new_vertices, vertices, count=n_vertices)
-    wp.launch(
+    new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    _launch.copy(new_vertices, vertices, count=n_vertices)
+    _launch.launch(
         kernel_remesh.compute_midpoints,
         dim=n_unique,
         inputs=[vertices, unique_edges],
@@ -3064,33 +3069,33 @@ def subdivide_loop(
         # returns independent buffers all the same, as every other entry point here does.
         if return_operator:
             return (
-                wp.clone(vertices),
-                wp.clone(faces),
+                _launch.clone(vertices),
+                _launch.clone(faces),
                 cast(
                     "wps.BsrMatrix[wp.float32]",
                     wps.bsr_identity(n_vertices, wp.float32, device=device),
                 ),
             )
-        return wp.clone(vertices), wp.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces)
 
     unique_edges, inverse = tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_unique = int(unique_edges.shape[0])
 
     # How many faces each edge carries, and the sum of the vertices opposite it.
-    edge_opposite_sum = wp.zeros(n_unique, dtype=wp.vec3, device=device)
-    edge_face_count = wp.zeros(n_unique, dtype=wp.int32, device=device)
-    wp.launch(
+    edge_opposite_sum = _launch.zeros(n_unique, dtype=wp.vec3, device=device)
+    edge_face_count = _launch.zeros(n_unique, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.loop_edge_opposites,
         dim=n_faces,
         inputs=[vertices, faces, inverse, edge_opposite_sum, edge_face_count],
         device=device,
     )
 
-    valence = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-    ring_sum = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
-    boundary_count = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-    boundary_sum = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
-    wp.launch(
+    valence = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    boundary_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    boundary_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_remesh.loop_vertex_rings,
         dim=n_unique,
         inputs=[
@@ -3108,15 +3113,15 @@ def subdivide_loop(
     # One buffer sized for its final use, written through two views: the relocated originals in the
     # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
     # assumes and the one ``igl.loop`` returns.
-    new_vertices = wp.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
-    wp.launch(
+    new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_remesh.loop_even_positions,
         dim=n_vertices,
         inputs=[vertices, valence, ring_sum, boundary_count, boundary_sum],
         outputs=[new_vertices[:n_vertices]],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_remesh.loop_odd_positions,
         dim=n_unique,
         inputs=[vertices, unique_edges, edge_opposite_sum, edge_face_count],
@@ -3159,13 +3164,13 @@ def _loop_operator(
     face_base = edge_base + 4 * n_unique
     rows, cols, values = tw.array.triplet_buffers(face_base + 3 * n_faces, wp.float32, device)
 
-    wp.launch(
+    _launch.launch(
         kernel_remesh.loop_even_self_triplets,
         dim=n_vertices,
         inputs=[valence, boundary_count, rows, cols, values],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_remesh.loop_edge_triplets,
         dim=n_unique,
         inputs=[
@@ -3181,7 +3186,7 @@ def _loop_operator(
         ],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_remesh.loop_opposite_triplets,
         dim=n_faces,
         inputs=[
@@ -3212,8 +3217,8 @@ def _split_faces_four(
     """
     device = faces.device
     n_faces = faces.size // 3
-    out_new_faces = wp.empty(n_faces * 12, dtype=wp.int32, device=device)
-    wp.launch(
+    out_new_faces = _launch.empty(n_faces * 12, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.subdivide_faces,
         dim=n_faces,
         inputs=[faces, inverse, wp.int32(n_vertices), out_new_faces],
@@ -3315,8 +3320,8 @@ def subdivide_to_size(
 
     if n_faces == 0:
         if return_index:
-            return wp.clone(vertices), wp.clone(faces), index
-        return wp.clone(vertices), wp.clone(faces)
+            return _launch.clone(vertices), _launch.clone(faces), index
+        return _launch.clone(vertices), _launch.clone(faces)
 
     for i in range(max_iter + 1):
         n_vertices = current_vertices.size
@@ -3327,9 +3332,9 @@ def subdivide_to_size(
         m = int(unique_edges.shape[0])
 
         # Flag the edges that are longer than the target length, measuring each where it is tested.
-        long_mask = wp.empty(m, dtype=wp.bool, device=device)
-        rank_buffer = wp.zeros(m + 1, dtype=wp.int32, device=device)
-        wp.launch(
+        long_mask = _launch.empty(m, dtype=wp.bool, device=device)
+        rank_buffer = _launch.zeros(m + 1, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_remesh.mark_long_edges,
             dim=m,
             inputs=[
@@ -3390,7 +3395,7 @@ def subdivide_to_size(
     # than up front keeps the path that *did* split free, since ``split_edges`` already handed back
     # fresh buffers there.
     if current_vertices is vertices:
-        current_vertices, current_faces = wp.clone(vertices), wp.clone(faces)
+        current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
     if return_index:
         return current_vertices, current_faces, index
     return current_vertices, current_faces
@@ -3416,9 +3421,9 @@ def _extend_sizing_field(
     # Sized for its final use: the current field copied into the prefix and the new values written
     # straight into the tail, in the same order the split appends the midpoints.
     n_vertices = sizing.size
-    extended = wp.empty(n_vertices + n_split, dtype=wp.float32, device=device)
-    wp.copy(extended, sizing, count=n_vertices)
-    wp.launch(
+    extended = _launch.empty(n_vertices + n_split, dtype=wp.float32, device=device)
+    _launch.copy(extended, sizing, count=n_vertices)
+    _launch.launch(
         kernel_remesh.fill_edge_mean_sizing,
         dim=int(unique_edges.shape[0]),
         inputs=[sizing, unique_edges, split_mask, offsets],
@@ -3509,7 +3514,7 @@ def subdivide_region_to_size(
     if region.size != n_faces:
         raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
     if n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces), wp.clone(region)
+        return _launch.clone(vertices), _launch.clone(faces), _launch.clone(region)
 
     max_edge_f = wp.float32(max_edge)
     current_vertices = vertices
@@ -3532,9 +3537,9 @@ def subdivide_region_to_size(
             )
         m = int(unique_edges.shape[0])
 
-        long_mask = wp.zeros(m, dtype=wp.bool, device=device)
-        rank_buffer = wp.zeros(m + 1, dtype=wp.int32, device=device)
-        wp.launch(
+        long_mask = _launch.zeros(m, dtype=wp.bool, device=device)
+        rank_buffer = _launch.zeros(m + 1, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_remesh.mark_long_region_edges,
             dim=3 * n_faces,
             inputs=[current_vertices, unique_edges, region_flags, inverse, max_edge_f],
@@ -3607,7 +3612,7 @@ def subdivide_region_to_size(
     # *above* the closing flip pass, not below it: ``_flip_region_faces`` rewrites its face buffer
     # in place, so cloning afterwards would hand back a copy of an already-mutated input.
     if current_vertices is vertices:
-        current_vertices, current_faces = wp.clone(vertices), wp.clone(faces)
+        current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
 
     if delaunay:
         _flip_region_faces(
@@ -3650,8 +3655,8 @@ def _keep_longest_edges(
     # is the case CLAUDE.md section 3.4 says a gather may index through directly -- it is a column
     # (``arr[:, k]``) or a step slice whose stride Warp ignores. Cloning it dense first is a
     # measurable loss on the gather for byte-identical output.
-    descending = wp.empty(eligible.size, dtype=wp.float32, device=device)
-    wp.map(wp.neg, tw.array.gather(lengths, eligible), out=descending)
+    descending = _launch.empty(eligible.size, dtype=wp.float32, device=device)
+    _launch.map(wp.neg, tw.array.gather(lengths, eligible), out=descending)
     _sorted, order = tw.array.sort_and_argsort(descending)
     keep = tw.array.gather(eligible, order[:remaining])
     return tw.array.indices_to_mask(keep, m, device=device)
@@ -3761,7 +3766,7 @@ def refine_region_to_density(
     if region.size != n_faces:
         raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
     if n_faces == 0:
-        return wp.clone(vertices), wp.clone(faces), wp.clone(region)
+        return _launch.clone(vertices), _launch.clone(faces), _launch.clone(region)
 
     alpha_f = wp.float32(alpha)
     current_vertices = vertices
@@ -3773,8 +3778,8 @@ def refine_region_to_density(
         n_faces = current_faces.size // 3
         # The flags are written into the tail of the ranks buffer and scanned there, so the emit
         # reads each face's verdict back as a step in the scan.
-        split_offsets = wp.zeros(n_faces + 1, dtype=wp.int32, device=device)
-        wp.launch(
+        split_offsets = _launch.zeros(n_faces + 1, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_remesh.mark_density_splits,
             dim=n_faces,
             inputs=[current_vertices, current_faces, current_region, scale, alpha_f],
@@ -3790,14 +3795,16 @@ def refine_region_to_density(
         # grown mesh, whose prefixes are the current ones.
         n_vertices = current_vertices.size
         n_out_faces = n_faces + 2 * n_split
-        new_vertices = wp.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
-        new_scale = wp.empty(n_vertices + n_split, dtype=wp.float32, device=device)
-        wp.copy(new_vertices, current_vertices, count=n_vertices)
-        wp.copy(new_scale, scale, count=n_vertices)
-        out_faces = wp.empty(3 * n_out_faces, dtype=wp.int32, device=device)
-        out_region = wp.empty(n_out_faces, dtype=wp.bool, device=device)
-        region_flags = wp.empty(n_out_faces, dtype=wp.int32, device=device) if delaunay else None
-        wp.launch(
+        new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
+        new_scale = _launch.empty(n_vertices + n_split, dtype=wp.float32, device=device)
+        _launch.copy(new_vertices, current_vertices, count=n_vertices)
+        _launch.copy(new_scale, scale, count=n_vertices)
+        out_faces = _launch.empty(3 * n_out_faces, dtype=wp.int32, device=device)
+        out_region = _launch.empty(n_out_faces, dtype=wp.bool, device=device)
+        region_flags = (
+            _launch.empty(n_out_faces, dtype=wp.int32, device=device) if delaunay else None
+        )
+        _launch.launch(
             kernel_remesh.emit_density_splits,
             dim=n_faces,
             inputs=[
@@ -3831,9 +3838,9 @@ def refine_region_to_density(
     # aliases ``region`` outright, with no ``astype`` in between. See ``subdivide_to_size``'s tail.
     if current_vertices is vertices:
         current_vertices, current_faces, current_region = (
-            wp.clone(vertices),
-            wp.clone(faces),
-            wp.clone(region),
+            _launch.clone(vertices),
+            _launch.clone(faces),
+            _launch.clone(region),
         )
     return current_vertices, current_faces, current_region
 
@@ -3866,29 +3873,29 @@ def _vertex_scale_attribute(
     # attribute measures is chosen on the device and nothing is compacted or read back. The sort's
     # buffers are double width, the upper halves its scratch; its payload is carried and never
     # read, so it is not initialized.
-    keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
-    order = wp.empty(2 * n, dtype=wp.int32, device=device)
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
     base = wp.uint64(n_vertices)
-    wp.launch(
+    _launch.launch(
         kernel_remesh.scale_attribute_edge_keys,
         dim=n_faces,
         inputs=[faces, region, base, keys],
         device=device,
     )
-    wp.utils.radix_sort_pairs(
+    _launch.radix_sort_pairs(
         keys, order, count=n, end_bit=max(1, (2 * n_vertices * n_vertices - 1).bit_length())
     )
     # The sum and the valence share one zeroed buffer.
-    sums = wp.zeros(2 * n_vertices, dtype=wp.float32, device=device)
+    sums = _launch.zeros(2 * n_vertices, dtype=wp.float32, device=device)
     total = twt.as_dense(sums[:n_vertices])
     valence = twt.as_dense(sums[n_vertices:])
-    wp.launch(
+    _launch.launch(
         kernel_remesh.scatter_scale_attribute,
         dim=n,
         inputs=[vertices, keys, base, total, valence],
         device=device,
     )
-    wp.map(kernel_array.divide_if_positive, total, valence, out=total)
+    _launch.map(kernel_array.divide_if_positive, total, valence, out=total)
     return total
 
 
@@ -3903,7 +3910,7 @@ def _ranks_from_flags(rank_buffer: wp.array[wp.int32]) -> tuple[wp.array[wp.int3
     """
     n = rank_buffer.size - 1
     flags = twt.as_dense(rank_buffer[1:])
-    wp.utils.array_scan(flags, flags, inclusive=True)
+    _launch.array_scan(flags, flags, inclusive=True)
     # The count sizes the split's outputs and decides whether the loop stops, so it has to come
     # back to the host.
     return twt.as_dense(rank_buffer[:n]), int(read_scalar(rank_buffer))
@@ -4116,16 +4123,16 @@ def _split_ranked_edges(
         # copied for the same reason ``vertices`` and ``faces`` are: every return is independently
         # owned on the no-split path exactly as on the splitting one. When ``index`` was ``None``
         # the ``arange`` already allocated it fresh.
-        owned = wp.clone(carried) if return_index and carried is index else carried
-        return wp.clone(vertices), wp.clone(faces), owned
+        owned = _launch.clone(carried) if return_index and carried is index else carried
+        return _launch.clone(vertices), _launch.clone(faces), owned
 
     # One buffer sized for its final use: the originals in the prefix and the new vertices written
     # straight into the tail, so the face emission below resolves every index against it.
-    new_vertices = wp.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
+    new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
     if n_vertices > 0:
-        wp.copy(new_vertices, vertices, count=n_vertices)
+        _launch.copy(new_vertices, vertices, count=n_vertices)
     if split_positions is None:
-        wp.launch(
+        _launch.launch(
             kernel_remesh.fill_edge_midpoints,
             dim=n_edges,
             inputs=[vertices, edges, split_mask, offsets],
@@ -4138,13 +4145,13 @@ def _split_ranked_edges(
                 f"split_positions must have one entry per flagged edge ({n_split}), "
                 f"got {split_positions.size}."
             )
-        wp.copy(new_vertices, split_positions, dest_offset=n_vertices, count=n_split)
+        _launch.copy(new_vertices, split_positions, dest_offset=n_vertices, count=n_split)
 
     # Each face's child count, scanned, is its first output row -- so the emission writes the
     # compact face buffer directly and the provenance with it, rather than four fixed slots per face
     # and a compaction of both.
-    child_counts = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    child_counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.split_face_child_counts,
         dim=n_faces,
         inputs=[corner_edge, split_mask, child_counts],
@@ -4152,8 +4159,8 @@ def _split_ranked_edges(
     )
     face_offsets, n_out_faces = tw.array.counts_to_offsets(child_counts)
     out_faces = twt.empty_2d((n_out_faces, 3), wp.int32, device=device)
-    out_index = wp.empty(n_out_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    out_index = _launch.empty(n_out_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_remesh.emit_size_faces,
         dim=n_faces,
         inputs=[
@@ -4204,7 +4211,7 @@ def _flip_region_faces(
         out_flip,
         out_quad,
     ):
-        wp.launch(
+        _launch.launch(
             kernel_remesh.delone_flip_candidates,
             dim=int(adjacency.shape[0]),
             inputs=[

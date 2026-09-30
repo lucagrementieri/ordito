@@ -31,6 +31,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import interpolation as kernel_interpolation
@@ -77,10 +78,10 @@ def average_onto_faces(
     n_faces = faces.size // 3
     device = vertex_values.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
-    out_face_values = wp.empty(n_faces, dtype=wp.float32, device=device)
-    wp.launch(
+    out_face_values = _launch.empty(n_faces, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_interpolation.average_onto_faces,
         dim=n_faces,
         inputs=[faces, vertex_values, out_face_values],
@@ -135,15 +136,15 @@ def average_onto_vertices(
             f"face_values must have one entry per face, got {face_values.size} for {n_faces} faces"
         )
 
-    out_sum = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    out_valence = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    wp.launch(
+    out_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    out_valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_scatter.scatter_face_values_sum_and_valence,
         dim=n_faces,
         inputs=[faces, face_values, out_sum, out_valence],
         device=device,
     )
-    wp.map(wp.div, out_sum, out_valence, out=out_sum)
+    _launch.map(wp.div, out_sum, out_valence, out=out_sum)
     return out_sum
 
 
@@ -214,15 +215,15 @@ def average_from_edges_onto_vertices(
                 f"{name} must be ({n_faces}, 3), one row per face, got {tuple(table.shape)}"
             )
 
-    out_sum = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    out_valence = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    wp.launch(
+    out_sum = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    out_valence = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_scatter.scatter_edges_sum_and_valence,
         dim=n_faces,
         inputs=[faces, edges, edges_orientation, edge_values, out_sum, out_valence],
         device=device,
     )
-    wp.map(kernel_array.divide_if_positive, out_sum, out_valence, out=out_sum)
+    _launch.map(kernel_array.divide_if_positive, out_sum, out_valence, out=out_sum)
     return out_sum
 
 
@@ -305,14 +306,14 @@ def transfer_onto_vertices(
             f"{source_values.size} for {n_source} vertices"
         )
 
-    out_values = wp.zeros(n_target, dtype=source_values.dtype, device=device)
+    out_values = _launch.zeros(n_target, dtype=source_values.dtype, device=device)
     if n_target == 0 or source_faces.size == 0:
-        return out_values, wp.full(n_target, float("inf"), dtype=wp.float32, device=device)
+        return out_values, _launch.full(n_target, float("inf"), dtype=wp.float32, device=device)
 
     closest, distance, face_id = tw.proximity.closest_point_on_mesh(
         source_vertices, source_faces, target_vertices, max_dist=max_dist
     )
-    wp.launch(
+    _launch.launch(
         kernel_interpolation.TRANSFER_ONTO_VERTICES[source_values.dtype],
         dim=n_target,
         inputs=[
@@ -410,11 +411,11 @@ def transfer_through_operator(
     if int(operator.ncol) != n_source:
         raise ValueError(f"operator has {operator.ncol} columns but values has {n_source} entries")
 
-    out_values = wp.zeros(n_out, dtype=values.dtype, device=device)
+    out_values = _launch.zeros(n_out, dtype=values.dtype, device=device)
     if n_out == 0 or n_source == 0:
         return out_values
 
-    wp.launch(
+    _launch.launch(
         kernel_interpolation.APPLY_TRANSFER_OPERATOR[values.dtype],
         dim=n_out,
         inputs=[operator.offsets, operator.columns, operator.values, values, out_values],
@@ -521,7 +522,7 @@ def interpolate_from_points(
     if k is not None and int(k) <= 0:
         raise ValueError(f"k must be positive when given, got {k}")
 
-    out_values = wp.full(n_query, null_value, dtype=source_values.dtype, device=device)
+    out_values = _launch.full(n_query, null_value, dtype=source_values.dtype, device=device)
     if n_query == 0 or n_source == 0:
         return out_values
 
@@ -531,7 +532,7 @@ def interpolate_from_points(
         # same hash grid and predicate ``query_ball_with_offsets`` uses, visiting the neighbours in
         # the order its list would hold them.
         grid = tw.neighbors.hashgrid_from_points(source_points, float(radius))
-        wp.launch(
+        _launch.launch(
             kernel_interpolation.INTERPOLATE_FROM_POINTS_IN_BALL[source_values.dtype],
             dim=n_query,
             inputs=[
@@ -550,7 +551,7 @@ def interpolate_from_points(
     # The unfilled slots of a row carry index -1, which the kernel skips.
     row_indices, row_distances = tw.neighbors.query_nearest(source_points, query_points, int(k))
     n_slots = n_query * int(k)
-    wp.launch(
+    _launch.launch(
         kernel_interpolation.INTERPOLATE_FROM_POINTS_NEAREST[source_values.dtype],
         dim=n_query,
         inputs=[

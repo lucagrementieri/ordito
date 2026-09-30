@@ -13,6 +13,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import ALLCLOSE_ATOL, ALLCLOSE_RTOL, TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -90,13 +91,13 @@ def arange(
     if n > 0:
         _check_int32_fits(start, "start")
         _check_int32_fits(start + (n - 1) * step, "stop")
-    out = wp.empty(n, dtype=wp.int32, device=device)
+    out = _launch.empty(n, dtype=wp.int32, device=device)
     if n == 0:
         return out
     if start == 0 and step == 1:
-        wp.launch(kernel_array.ARANGE[wp.int32], dim=n, inputs=[out], device=device)
+        _launch.launch(kernel_array.ARANGE[wp.int32], dim=n, inputs=[out], device=device)
     else:
-        wp.launch(
+        _launch.launch(
             kernel_array.ARANGE_AFFINE[wp.int32],
             dim=n,
             inputs=[wp.int32(start), wp.int32(step), out],
@@ -141,9 +142,9 @@ def arange_repeat(count: int, repeats: int, device: wp.DeviceLike) -> wp.array[w
         raise ValueError(f"repeats must be positive, got {repeats}")
     if count > 0:
         _check_int32_fits((count - 1) // repeats, "count // repeats")
-    out = wp.empty(count, dtype=wp.int32, device=device)
+    out = _launch.empty(count, dtype=wp.int32, device=device)
     if count > 0:
-        wp.launch(
+        _launch.launch(
             kernel_array.ARANGE_REPEAT[wp.int32],
             dim=count,
             inputs=[wp.int32(repeats), out],
@@ -189,9 +190,9 @@ def sort_pair_indices(n: int, fill_value: int, device: wp.DeviceLike) -> wp.arra
     if n > 0:
         _check_int32_fits(n - 1, "n")
     _check_int32_fits(fill_value, "fill_value")
-    out = wp.empty(2 * n, dtype=wp.int32, device=device)
+    out = _launch.empty(2 * n, dtype=wp.int32, device=device)
     if n > 0:
-        wp.launch(
+        _launch.launch(
             kernel_array.SORT_PAIR_INDICES[wp.int32],
             dim=2 * n,
             inputs=[wp.int32(n), wp.int32(fill_value), out],
@@ -266,7 +267,7 @@ def pack_1d_arrays(
     [`concatenate`][triwarp.array.concatenate]
     """
     flat, offsets = _pack_segments(arrays, caller="pack_1d_arrays", copy=copy)
-    return flat, wp.array([*offsets, flat.size], dtype=wp.int32, device=flat.device)
+    return flat, _launch.array([*offsets, flat.size], dtype=wp.int32, device=flat.device)
 
 
 def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.array[DType]:
@@ -433,7 +434,7 @@ def _segment_views(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
         return [
             twt.as_dense(array[begin:end])
             if end > begin
-            else wp.empty(0, dtype=array.dtype, device=array.device)
+            else _launch.empty(0, dtype=array.dtype, device=array.device)
             for begin, end in itertools.pairwise(bounds)
         ]
     template = array[0:1].__dict__
@@ -476,18 +477,18 @@ def _copy_segments(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
         or array.requires_grad
         or not array.is_contiguous
     ):
-        return [wp.clone(segment) for segment in _segment_views(array, bounds)]
+        return [_launch.clone(segment) for segment in _segment_views(array, bounds)]
     device = array.device
     sizes = [end - begin for begin, end in itertools.pairwise(bounds)]
     segments = [
-        wp.empty(size, dtype=array.dtype, device=device, pinned=array.pinned) for size in sizes
+        _launch.empty(size, dtype=array.dtype, device=device, pinned=array.pinned) for size in sizes
     ]
     table = _word_segment_table(
         [segment.ptr or 0 for segment in segments], sizes, bounds[:-1], words_per_element, device
     )
     if table is not None:
         descriptor, width = table
-        wp.launch(
+        _launch.launch(
             kernel_array.unpack_segment_words,
             dim=(n_segments, width),
             inputs=[_as_words(array, words_per_element), wp.int32(width)],
@@ -547,7 +548,7 @@ def _pack_segments(
         if already_packed is not None:
             return already_packed, offsets
 
-    flat = wp.empty(total, dtype=dtype, device=device)
+    flat = _launch.empty(total, dtype=dtype, device=device)
     if not _pack_in_one_launch(arrays, sizes, offsets, flat):
         # One ``wp.copy`` per segment: the fallback, and the right answer below the threshold above
         # (a copy is cheaper than a launch, so a handful of segments never earns the descriptor).
@@ -556,7 +557,7 @@ def _pack_segments(
         # segments.
         for arr, offset, n in zip(arrays, offsets, sizes, strict=True):
             if n > 0:
-                wp.copy(flat, arr, dest_offset=offset, count=n)
+                _launch.copy(flat, arr, dest_offset=offset, count=n)
     return flat, offsets
 
 
@@ -608,7 +609,7 @@ def _pack_in_one_launch(
     if table is None:
         return False
     descriptor, width = table
-    wp.launch(
+    _launch.launch(
         kernel_array.pack_segment_words,
         dim=(n_segments, width),
         inputs=[descriptor, wp.int32(width)],
@@ -655,7 +656,7 @@ def _word_segment_table(
     record_np["data"]["ndim"] = 1
     record_np["offset"] = np.asarray(offsets, dtype=np.int64) * words_per_element
     record_np["count"] = word_counts
-    descriptor = wp.array(record_np, dtype=kernel_array.WordSegment, device=device, copy=True)
+    descriptor = _launch.array(record_np, dtype=kernel_array.WordSegment, device=device, copy=True)
     return descriptor, min(longest, _PACK_SEGMENTS_MAX_WIDTH)
 
 
@@ -782,8 +783,8 @@ def allclose(
     # than a ``wp.map`` into an ``(n,)`` mask and a whole ``reduce.all`` over it. See
     # ``kernels/reduce.ALLCLOSE_1D_TILED``, including why it is a table of concrete kernels.
     tolerance = wp.float32 if a.dtype == wp.vec3 else a.dtype
-    flag = wp.ones(1, dtype=wp.int32, device=a.device)
-    wp.launch_tiled(
+    flag = _launch.ones(1, dtype=wp.int32, device=a.device)
+    _launch.launch_tiled(
         kernel_reduce.ALLCLOSE_1D_TILED[a.dtype],
         dim=kernel_reduce.blocks_1d(n),
         inputs=[a, b, tolerance(rtol), tolerance(atol)],
@@ -845,11 +846,11 @@ def sort_and_argsort(
     device = keys.device
     n = keys.size
     if n == 0:
-        return keys, wp.empty(0, dtype=wp.int32, device=device)
-    keys_buffer = wp.empty(2 * n, dtype=keys.dtype, device=device)
-    wp.copy(keys_buffer, keys, count=n)
+        return keys, _launch.empty(0, dtype=wp.int32, device=device)
+    keys_buffer = _launch.empty(2 * n, dtype=keys.dtype, device=device)
+    _launch.copy(keys_buffer, keys, count=n)
     order_buffer = sort_pair_indices(n, fill_value, device)
-    wp.utils.radix_sort_pairs(keys_buffer, order_buffer, count=n)
+    _launch.radix_sort_pairs(keys_buffer, order_buffer, count=n)
     return twt.as_dense(keys_buffer[:n]), twt.as_dense(order_buffer[:n])
 
 
@@ -897,7 +898,7 @@ def sort_rows(data: twt.Array2dInt32 | twt.Array2dFloat32) -> None:
     if n_rows == 0 or n_cols < 2:
         return
     if n_cols <= SORT_ROWS_INSERTION_MAX_COLS:
-        wp.launch(
+        _launch.launch(
             kernel_array.SORT_ROWS_INSERTION[data.dtype],
             dim=n_rows,
             inputs=[data],
@@ -905,14 +906,14 @@ def sort_rows(data: twt.Array2dInt32 | twt.Array2dFloat32) -> None:
         )
         return
 
-    data_buffer = wp.empty(n * 2, dtype=data.dtype, device=data.device)
-    wp.copy(data_buffer, data, count=n)
+    data_buffer = _launch.empty(n * 2, dtype=data.dtype, device=data.device)
+    _launch.copy(data_buffer, data, count=n)
     indices_buffer = sort_pair_indices(n, -1, data.device)
     segment_start_indices = arange(0, (n // n_cols + 1) * n_cols, n_cols, device=data.device)
     wp.utils.segmented_sort_pairs(
         data_buffer, indices_buffer, n, segment_start_indices=segment_start_indices
     )
-    wp.copy(data, data_buffer, count=n)
+    _launch.copy(data, data_buffer, count=n)
 
 
 def triplet_buffers(
@@ -954,9 +955,9 @@ def triplet_buffers(
     --------
     [`index_sparse`][triwarp.array.index_sparse]
     """
-    rows = wp.empty(n_triplets, dtype=wp.int32, device=device)
-    cols = wp.empty(n_triplets, dtype=wp.int32, device=device)
-    values = wp.empty(n_triplets, dtype=dtype, device=device)
+    rows = _launch.empty(n_triplets, dtype=wp.int32, device=device)
+    cols = _launch.empty(n_triplets, dtype=wp.int32, device=device)
+    values = _launch.empty(n_triplets, dtype=dtype, device=device)
     return rows, cols, values
 
 
@@ -996,9 +997,9 @@ def empty_square_bsr(n_rows: int, dtype: type, device: wp.DeviceLike) -> wps.Bsr
     return bsr_from_csr(
         n_rows,
         n_rows,
-        wp.zeros(n_rows + 1, dtype=wp.int32, device=device),
-        wp.empty(0, dtype=wp.int32, device=device),
-        wp.empty(0, dtype=dtype, device=device),
+        _launch.zeros(n_rows + 1, dtype=wp.int32, device=device),
+        _launch.empty(0, dtype=wp.int32, device=device),
+        _launch.empty(0, dtype=dtype, device=device),
         nnz=0,
     )
 
@@ -1097,8 +1098,8 @@ def csr_key_buffers(
     --------
     [`csr_from_keys`][triwarp.array.csr_from_keys]
     """
-    keys = wp.empty(2 * count, dtype=wp.uint64, device=device)
-    order = wp.empty(2 * count, dtype=wp.int32, device=device)
+    keys = _launch.empty(2 * count, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
     return keys, order
 
 
@@ -1143,23 +1144,23 @@ def csr_from_keys(
     [`bsr_from_csr`][triwarp.array.bsr_from_csr]
     """
     device = keys.device
-    offsets = wp.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(count, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(count, dtype=wp.int32, device=device)
     if count == 0:
-        return offsets, columns, wp.zeros(1, dtype=wp.int32, device=device)
-    starts = wp.empty(count + 1, dtype=wp.int32, device=device)
+        return offsets, columns, _launch.zeros(1, dtype=wp.int32, device=device)
+    starts = _launch.empty(count + 1, dtype=wp.int32, device=device)
     sentinel = n_rows * n_cols
-    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # The run flags and their scan live in the payload buffer's upper half, which is sort scratch.
     inclusive = order[count:]
-    wp.launch(
+    _launch.launch(
         kernel_array.csr_run_flags,
         dim=count,
         inputs=[keys, wp.uint64(sentinel), inclusive],
         device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    wp.launch(
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.launch(
         kernel_array.csr_from_runs,
         dim=count,
         inputs=[
@@ -1238,15 +1239,15 @@ def csr_from_triplets(
             f"{values.shape[0]}"
         )
     device = rows.device
-    offsets = wp.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(count, dtype=wp.int32, device=device)
-    summed = wp.empty(count, dtype=values.dtype, device=device)
+    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(count, dtype=wp.int32, device=device)
+    summed = _launch.empty(count, dtype=values.dtype, device=device)
     if count == 0:
         return bsr_from_csr(n_rows, n_cols, offsets, columns, summed)
     keys, order = csr_key_buffers(count, device)
     if prune_numerical_zeros:
         # Zero-valued triplets are never sorted: they cannot change a sum, so this only saves work.
-        wp.launch(
+        _launch.launch(
             kernel_array.COO_KEYS_NONZERO[values.dtype],
             dim=count,
             inputs=[
@@ -1262,34 +1263,34 @@ def csr_from_triplets(
             device=device,
         )
     else:
-        wp.launch(
+        _launch.launch(
             kernel_array.coo_keys,
             dim=count,
             inputs=[rows, cols, wp.int32(n_rows), wp.int32(n_cols), keys, order],
             device=device,
         )
     sentinel = n_rows * n_cols
-    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and
     # one pass places them, summing each run where it lands; the flags and their scan live in the
     # payload buffer's upper half, which is sort scratch.
     flags = order[count:]
     if prune_numerical_zeros:
-        wp.launch(
+        _launch.launch(
             kernel_array.CSR_NONZERO_RUN_FLAGS[values.dtype],
             dim=count,
             inputs=[keys, order, values, wp.uint64(sentinel), values.dtype(), flags],
             device=device,
         )
     else:
-        wp.launch(
+        _launch.launch(
             kernel_array.csr_run_flags,
             dim=count,
             inputs=[keys, wp.uint64(sentinel), flags],
             device=device,
         )
-    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
-    wp.launch(
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    _launch.launch(
         kernel_array.CSR_FROM_FLAGGED_RUNS[values.dtype],
         dim=count,
         inputs=[
@@ -1354,7 +1355,7 @@ def index_sparse(
     require_same_device(indices=indices, data=data)
     prune_numerical_zeros = prune_numerical_zeros and data is not None
     if data is None:
-        data = wp.ones(
+        data = _launch.ones(
             indices.size, dtype=dtype if dtype is not None else wp.float32, device=indices.device
         )
     else:
@@ -1467,7 +1468,7 @@ def isin(
 
     k = test_elements.size
     if k == 0 or int(elements.size) == 0:
-        return wp.zeros(elements.shape, dtype=wp.bool, device=device)
+        return _launch.zeros(elements.shape, dtype=wp.bool, device=device)
 
     is_flat = int(elements.ndim) == 1
     elements_flat = elements if is_flat else elements.flatten()
@@ -1489,13 +1490,13 @@ def isin(
     # buffer already holds, so launching it once per input yields the joint bounds for a single
     # readback, where two ``reduce.minmax`` calls allocate and read back once each.
     reduce_dtype = elements_flat.dtype
-    bounds = wp.array(
+    bounds = _launch.array(
         [twt.dtype_max(reduce_dtype), twt.dtype_min(reduce_dtype)],
         dtype=reduce_dtype,
         device=device,
     )
     for values in (elements_flat, test_elements):
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_reduce.MINMAX1D_TILED[reduce_dtype],
             dim=[kernel_reduce.blocks_1d(values.size)],
             inputs=[values, bounds],
@@ -1539,15 +1540,15 @@ def _isin_lookup_mask(
     dtype = elements_flat.dtype
     anchor = dtype(offset)
     last = dtype(offset + span - 1)
-    membership_wp = wp.zeros(span, dtype=wp.bool, device=device)
-    wp.launch(
+    membership_wp = _launch.zeros(span, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_array.ISIN_MARK_TABLE[dtype],
         dim=test_elements.size,
         inputs=[test_elements, anchor, last, membership_wp],
         device=device,
     )
-    out_mask = wp.empty(elements_flat.size, dtype=wp.bool, device=device)
-    wp.launch(
+    out_mask = _launch.empty(elements_flat.size, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_array.ISIN_LOOKUP_MASK[dtype],
         dim=elements_flat.size,
         inputs=[elements_flat, anchor, last, membership_wp, out_mask],
@@ -1561,8 +1562,8 @@ def _isin_lookup_sorted(
 ) -> wp.array[wp.bool]:
     device = elements_flat.device
     sorted_test_wp = _sorted_copy(test_elements)
-    out_wp = wp.empty(elements_flat.shape, dtype=wp.bool, device=device)
-    wp.launch(
+    out_wp = _launch.empty(elements_flat.shape, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_array.ISIN_LOOKUP_SORTED[elements_flat.dtype],
         dim=elements_flat.size,
         inputs=[elements_flat, sorted_test_wp, out_wp],
@@ -1581,7 +1582,7 @@ def _sorted_copy(values: wp.array[DType]) -> wp.array[DType]:
     """
     if values.size <= 1:
         return values
-    return wp.clone(sort_and_argsort(values)[0])
+    return _launch.clone(sort_and_argsort(values)[0])
 
 
 def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.int32]:
@@ -1620,32 +1621,32 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     device = values.device
     n = values.size
     if n == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
     # One buffer for the flags and their scan: the flags are written into it and scanned in place,
     # which ``wp.utils.array_scan`` supports on both devices -- the host scan is a sequential loop
     # that reads each element before overwriting it, and CUB's device scan accepts aliased input
     # and output. The scatter then recovers each flag as the step between neighbouring scan values.
-    inclusive = wp.empty(n, dtype=wp.int32, device=device)
+    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     if values.dtype == wp.bool:
         # A mask needs its own kernel: ``wp.Scalar`` does not instantiate for ``wp.bool``, so
         # ``nonzero_flag`` cannot serve one. For every other dtype the plain cast that kernel
         # replaces would copy the *values*, and the scan below would then sum them instead of
         # counting them.
-        wp.launch(kernel_array.bool_flags, dim=n, inputs=[values, inclusive], device=device)
+        _launch.launch(kernel_array.bool_flags, dim=n, inputs=[values, inclusive], device=device)
     else:
-        wp.map(kernel_array.nonzero_flag, values, out=inclusive)
+        _launch.map(kernel_array.nonzero_flag, values, out=inclusive)
 
     # Inclusive scan: the total is its last element, so one 4-byte tail read sizes the output
     # (the scatter kernel derives each exclusive position as inclusive[i] - 1).
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     n_out = int(read_scalar(inclusive))
 
     if n_out == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
 
-    out_indices = wp.empty(n_out, dtype=wp.int32, device=device)
-    wp.launch(
+    out_indices = _launch.empty(n_out, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_scatter.scatter_index_where_scanned,
         dim=n,
         inputs=[inclusive, out_indices],
@@ -1699,9 +1700,9 @@ def gather(
     require_same_device(src=src, indices=indices)
     k = indices.size
     out_shape = (k, *(int(dim) for dim in src.shape[1:]))
-    out = wp.empty(out_shape, dtype=src.dtype, device=src.device)
+    out = _launch.empty(out_shape, dtype=src.dtype, device=src.device)
     if k > 0:
-        wp.copy(out, src[indices])
+        _launch.copy(out, src[indices])
     return out
 
 
@@ -1749,7 +1750,7 @@ def astype(values: twt.ArrayNd, dtype: type) -> twt.ArrayNd:
     [`bitcast_to_int`][triwarp.array.bitcast_to_int]
         Reinterpret the *bits* rather than convert the value.
     """
-    out = wp.empty(values.shape, dtype=dtype, device=values.device)
+    out = _launch.empty(values.shape, dtype=dtype, device=values.device)
     source, target = values, out
     if int(values.ndim) != 1:
         if not values.is_contiguous:
@@ -1762,7 +1763,7 @@ def astype(values: twt.ArrayNd, dtype: type) -> twt.ArrayNd:
     if kernel is None:
         wp.utils.array_cast(source, target)
     elif n > 0:
-        wp.launch(kernel, dim=n, inputs=[source, target], device=values.device)
+        _launch.launch(kernel, dim=n, inputs=[source, target], device=values.device)
     return out
 
 
@@ -1846,10 +1847,12 @@ def indices_to_mask(
     [`isin`][triwarp.array.isin]
     """
     device = device if device is not None else indices.device
-    mask = wp.zeros(n, dtype=wp.bool, device=device)
+    mask = _launch.zeros(n, dtype=wp.bool, device=device)
     k = indices.size
     if k > 0:
-        wp.launch(kernel_scatter.mark_membership_mask, dim=k, inputs=[indices, mask], device=device)
+        _launch.launch(
+            kernel_scatter.mark_membership_mask, dim=k, inputs=[indices, mask], device=device
+        )
     return mask
 
 
@@ -1888,16 +1891,16 @@ def mask_to_compact_ranks(
     device = mask.device
     n = mask.size
     if n == 0:
-        return wp.zeros(0, dtype=wp.int32, device=device), 0
+        return _launch.zeros(0, dtype=wp.int32, device=device), 0
     # The flags are written straight into the tail of the ``n + 1`` offsets buffer and scanned
     # there in place, so the separate flag buffer ``counts_to_offsets`` would take them from is
     # never allocated.
-    buffer = wp.zeros(n + 1, dtype=wp.int32, device=device)
+    buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     flags = twt.as_dense(buffer[1:])
     if invert:
-        wp.map(kernel_array.complement_flag, mask, out=flags)
+        _launch.map(kernel_array.complement_flag, mask, out=flags)
     else:
-        wp.launch(kernel_array.bool_flags, dim=n, inputs=[mask, flags], device=device)
+        _launch.launch(kernel_array.bool_flags, dim=n, inputs=[mask, flags], device=device)
     return twt.as_dense(buffer[:n]), _scan_into_tail(buffer, flags, flags)
 
 
@@ -1946,10 +1949,10 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     n = counts.size
     device = counts.device
     if n == 0:
-        return wp.zeros(1, dtype=wp.int32, device=device), 0
+        return _launch.zeros(1, dtype=wp.int32, device=device), 0
     # The leading zero from ``wp.zeros`` is the first exclusive offset; the inclusive scan fills the
     # rest, so ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets.
-    buffer = wp.zeros(n + 1, dtype=wp.int32, device=device)
+    buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
     return buffer, _scan_into_tail(buffer, counts, buffer[1:])
 
 
@@ -1965,7 +1968,7 @@ def _scan_into_tail(
     [`flatnonzero`][triwarp.array.flatnonzero]), which is what lets the mask form skip its own flag
     buffer.
     """
-    wp.utils.array_scan(counts, out_array=tail, inclusive=True)
+    _launch.array_scan(counts, out_array=tail, inclusive=True)
     return int(read_scalar(buffer))
 
 
@@ -2006,9 +2009,9 @@ def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.
     n = indices.size
     device = indices.device
     if n == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
-    out = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(
+        return _launch.empty(0, dtype=wp.int32, device=device)
+    out = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_array.gather_1d_skip_negative, dim=n, inputs=[indices, remap, out], device=device
     )
     return out
@@ -2051,9 +2054,9 @@ def trim_to_count(
     trimmed = []
     for buffer in buffers:
         out_shape = (n_out, *(int(dim) for dim in buffer.shape[1:]))
-        out = wp.empty(out_shape, dtype=buffer.dtype, device=buffer.device)
+        out = _launch.empty(out_shape, dtype=buffer.dtype, device=buffer.device)
         if n_out > 0:
-            wp.copy(out, buffer[:n_out])
+            _launch.copy(out, buffer[:n_out])
         trimmed.append(out)
     return n_out, trimmed
 
@@ -2106,20 +2109,20 @@ def bitcast_to_int(
     # unsupported operand type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the
     # empty allocation here is both the right answer and the only way to state it.
     if copy_count == 0:
-        return wp.empty(count, dtype=target, device=data.device)
+        return _launch.empty(count, dtype=target, device=data.device)
 
     if n_bits > 32:
-        reinterpreted = wp.empty(count, dtype=wp.int64, device=data.device)
-        wp.copy(reinterpreted, data, count=copy_count)
+        reinterpreted = _launch.empty(count, dtype=wp.int64, device=data.device)
+        _launch.copy(reinterpreted, data, count=copy_count)
         return reinterpreted
 
-    reinterpreted = wp.empty(count, dtype=wp.int32, device=data.device)
+    reinterpreted = _launch.empty(count, dtype=wp.int32, device=data.device)
     if wp.types.type_is_float(data.dtype):
         src = data
         if n_bits < 32:
-            src = wp.empty(copy_count, dtype=wp.float32, device=data.device)
+            src = _launch.empty(copy_count, dtype=wp.float32, device=data.device)
             wp.utils.array_cast(data, src, count=copy_count)
-        wp.copy(reinterpreted, src, count=copy_count)
+        _launch.copy(reinterpreted, src, count=copy_count)
     else:
         wp.utils.array_cast(data, reinterpreted, count=copy_count)
     return reinterpreted
@@ -2162,21 +2165,21 @@ def bitcast_from_int(
     count = n if count is None else count
     copy_count = min(n, count)
     if copy_count == 0:
-        return wp.empty(count, dtype=dtype, device=data.device)
+        return _launch.empty(count, dtype=dtype, device=data.device)
 
     if n_bits == n_target_bits:
-        reinterpreted = wp.empty(count, dtype=dtype, device=data.device)
-        wp.copy(reinterpreted, data, count=copy_count)
+        reinterpreted = _launch.empty(count, dtype=dtype, device=data.device)
+        _launch.copy(reinterpreted, data, count=copy_count)
         return reinterpreted
 
     if wp.types.type_is_float(dtype) and n_bits > n_target_bits:
         wide_dtype = getattr(wp, f"float{n_bits}")
-        wide = wp.empty(count, dtype=wide_dtype, device=data.device)
-        wp.copy(wide, data, count=copy_count)
-        reinterpreted_casted = wp.empty(count, dtype=dtype, device=data.device)
+        wide = _launch.empty(count, dtype=wide_dtype, device=data.device)
+        _launch.copy(wide, data, count=copy_count)
+        reinterpreted_casted = _launch.empty(count, dtype=dtype, device=data.device)
         wp.utils.array_cast(wide, reinterpreted_casted, count=copy_count)
     else:
-        reinterpreted_casted = wp.empty(count, dtype=dtype, device=data.device)
+        reinterpreted_casted = _launch.empty(count, dtype=dtype, device=data.device)
         wp.utils.array_cast(data, reinterpreted_casted, count=copy_count)
     return reinterpreted_casted
 

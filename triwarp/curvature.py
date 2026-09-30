@@ -21,6 +21,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import curvature as kernel_curvature
 from triwarp.kernels import scatter as kernel_scatter
@@ -130,12 +131,12 @@ def principal_curvature(
 
     # Fit quadric and extract principal curvature per vertex. ``wp.empty``: every exit of the
     # kernel -- the three declines included, through ``_write_no_curvature`` -- writes all four.
-    pd1 = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    pd2 = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    pv1 = wp.empty(n_vertices, dtype=wp.float32, device=device)
-    pv2 = wp.empty(n_vertices, dtype=wp.float32, device=device)
+    pd1 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    pd2 = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    pv1 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
+    pv2 = _launch.empty(n_vertices, dtype=wp.float32, device=device)
 
-    wp.launch(
+    _launch.launch(
         kernel_curvature.fit_principal_curvature,
         dim=n_vertices,
         inputs=[
@@ -208,8 +209,8 @@ def discrete_gaussian_curvature(
         vertices, points, radius
     )
     defects = vertex_defects(vertices.size, faces, face_angles)
-    gauss_curvature = wp.zeros(points.size, dtype=wp.float32, device=points.device)
-    wp.launch(
+    gauss_curvature = _launch.zeros(points.size, dtype=wp.float32, device=points.device)
+    _launch.launch(
         kernel_scatter.SCATTER_OFFSET_SUM[defects.dtype],
         dim=nearest_indices.size,
         inputs=[defects, nearest_indices, nearest_offsets, gauss_curvature],
@@ -282,11 +283,11 @@ def discrete_mean_curvature(
     # resolve after the two guards, so an empty input does not allocate tables nothing reads.
     tw.adjacency.require_paired_adjacency(face_adjacency, face_adjacency_edges)
     if n_points == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
     n_faces = faces.size // 3
     if n_faces == 0:
-        return wp.zeros(n_points, dtype=wp.float32, device=device)
+        return _launch.zeros(n_points, dtype=wp.float32, device=device)
 
     if face_adjacency is None:
         face_adjacency, face_adjacency_edges = tw.adjacency.face_adjacency(
@@ -296,14 +297,14 @@ def discrete_mean_curvature(
 
     m = int(face_adjacency.shape[0])
     if m == 0:
-        return wp.zeros(n_points, dtype=wp.float32, device=device)
+        return _launch.zeros(n_points, dtype=wp.float32, device=device)
 
     # Per adjacent pair: the dihedral angle signed by convexity, and the shared edge's bounds for
     # the BVH -- one launch over the pairs, reading one set of face normals.
-    signed_angles = wp.empty(m, dtype=wp.float32, device=device)
-    edge_lower = wp.empty(m, dtype=wp.vec3, device=device)
-    edge_upper = wp.empty(m, dtype=wp.vec3, device=device)
-    wp.launch(
+    signed_angles = _launch.empty(m, dtype=wp.float32, device=device)
+    edge_lower = _launch.empty(m, dtype=wp.vec3, device=device)
+    edge_upper = _launch.empty(m, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_curvature.face_pair_dihedrals,
         dim=m,
         inputs=[
@@ -326,10 +327,10 @@ def discrete_mean_curvature(
     # then have to reject.
     candidate_edges, offsets = tw.neighbors.query_bvh_ball(bvh, points, radius)
 
-    mean_curvature = wp.zeros(n_points, dtype=wp.float32, device=device)
+    mean_curvature = _launch.zeros(n_points, dtype=wp.float32, device=device)
     n_candidates = candidate_edges.size
     if n_candidates > 0:
-        wp.launch(
+        _launch.launch(
             kernel_curvature.accumulate_mean_curvature,
             dim=n_candidates,
             inputs=[

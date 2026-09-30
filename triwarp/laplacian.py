@@ -39,6 +39,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.constants import TOLERANCE_MOLLIFY
 from triwarp.edges import edges_unique, face_edge_lengths, faces_to_edges
@@ -128,13 +129,13 @@ def face_gradients(
     )
     device = vertices.device
     n_faces = faces.size // 3
-    gradients = wp.empty(n_faces, dtype=wp.vec3d, device=device)
+    gradients = _launch.empty(n_faces, dtype=wp.vec3d, device=device)
     if n_faces == 0:
         return gradients
 
     if face_normals is None or face_areas is None:
         face_normals, face_areas = face_normals_and_areas(vertices, faces)
-    wp.launch(
+    _launch.launch(
         kernel_triangles.face_gradients,
         dim=n_faces,
         inputs=[vertices, faces, face_normals, face_areas, values, gradients],
@@ -197,7 +198,7 @@ def cotmatrix_entries(
         return twt.empty_2d((0, 3), dtype, device=device)
 
     out_cot = twt.empty_2d((n_faces, 3), dtype, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_laplacian.COTMATRIX_ENTRIES[dtype],
         dim=n_faces,
         inputs=[vertices, faces, out_cot],
@@ -254,7 +255,7 @@ def cotmatrix_entries_intrinsic(
         return twt.empty_2d((0, 3), dtype, device=device)
 
     out_cot = twt.empty_2d((n_faces, 3), dtype, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_laplacian.COTMATRIX_ENTRIES_INTRINSIC[dtype],
         dim=n_faces,
         inputs=[edge_lengths, out_cot],
@@ -383,8 +384,8 @@ def cotmatrix(
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
-    values = wp.empty(columns.size, dtype=dtype, device=device)
-    wp.launch(
+    values = _launch.empty(columns.size, dtype=dtype, device=device)
+    _launch.launch(
         kernel_laplacian.COTMATRIX_ROWS[cot_entries.dtype, dtype],
         dim=n_vertices,
         inputs=[offsets, columns, run_start, keys, wp.int32(count), order, cot_entries, values],
@@ -520,7 +521,7 @@ def mollify_intrinsic(
     # delta far past what any degenerate face on the rest of the mesh actually needs.
     scale = float(reduce_mean(edge_lengths))
     slack = twt.empty_1d(n_faces, wp.float32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_laplacian.triangle_inequality_slack,
         dim=n_faces,
         inputs=[edge_lengths, wp.float32(epsilon * scale), slack],
@@ -531,7 +532,7 @@ def mollify_intrinsic(
         return twt.as_array2d(edge_lengths, wp.float32), 0.0
 
     mollified = twt.empty_2d((n_faces, 3), wp.float32, device=device)
-    wp.map(kernel_laplacian.add_constant, edge_lengths, wp.float32(delta), out=mollified)
+    _launch.map(kernel_laplacian.add_constant, edge_lengths, wp.float32(delta), out=mollified)
     return twt.as_array2d(mollified, wp.float32), delta
 
 
@@ -634,8 +635,8 @@ def connection_laplacian(
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
-    values = wp.empty(columns.size, dtype=wp.mat22d, device=device)
-    wp.launch(
+    values = _launch.empty(columns.size, dtype=wp.mat22d, device=device)
+    _launch.launch(
         kernel_laplacian.CONNECTION_LAPLACIAN_ROWS[cot_entries.dtype],
         dim=n_vertices,
         inputs=[
@@ -787,7 +788,7 @@ def _mesh_operator_pattern(
     if halfedges:
         count = 3 * n_faces
         keys, order = tw.array.csr_key_buffers(count, device)
-        wp.launch(
+        _launch.launch(
             kernel_laplacian.mesh_halfedge_keys,
             dim=count,
             inputs=[faces, wp.int32(n_vertices), keys, order],
@@ -806,8 +807,8 @@ def _mesh_operator_pattern(
         if mode == 1 and n_vertices > 0:
             # The diagonal slots start as the sentinel: a vertex no face references stays out of
             # the pattern, so its row is empty, as ``cotmatrix``'s callers rely on.
-            keys[6 * n_faces : count].fill_(n_vertices * n_vertices)
-        wp.launch(
+            _launch.fill_(keys[6 * n_faces : count], n_vertices * n_vertices)
+        _launch.launch(
             kernel_laplacian.mesh_operator_keys,
             dim=max(n_faces, n_vertices) if mode == 2 else n_faces,
             inputs=[faces, wp.int32(n_vertices), wp.int32(mode), keys, order],
@@ -822,16 +823,16 @@ def _mesh_operator_pattern(
     sentinel = n_vertices * n_vertices
     keys, order = tw.array.csr_key_buffers(count, device)
     # Rows: per-vertex upper-half count, lower-half count, referenced flag; then their scan.
-    tallies = wp.zeros((3, n_vertices), dtype=wp.int32, device=device)
+    tallies = _launch.zeros((3, n_vertices), dtype=wp.int32, device=device)
     upper, lower, referenced = tallies[0], tallies[1], tallies[2]
     mark = {"self": 2, "referenced": 1, "all": 3}[diagonal]
-    wp.launch(
+    _launch.launch(
         kernel_laplacian.mesh_edge_keys,
         dim=max(n_faces, n_vertices) if mark == 3 else n_faces,
         inputs=[faces, wp.int32(n_vertices), wp.int32(mark), keys, order, referenced],
         device=device,
     )
-    wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
+    _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # Scratch in the first sort's upper halves, free once it has run: the edge flags in the
     # payload's, and the second sort's 32-bit keys in the key buffer's (``count`` 8-byte slots are
     # exactly ``2 * count`` 4-byte ones). ``keys`` holds the storage, so the alias cannot outlive
@@ -841,8 +842,8 @@ def _mesh_operator_pattern(
     second_keys = wp.array(
         ptr=keys.ptr + count * 8, dtype=wp.int32, shape=(2 * count,), device=device
     )
-    second_order = wp.empty(2 * count, dtype=wp.int32, device=device)
-    wp.launch(
+    second_order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_laplacian.mesh_edge_runs,
         dim=count,
         inputs=[
@@ -857,19 +858,19 @@ def _mesh_operator_pattern(
         ],
         device=device,
     )
-    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
     # One exclusive scan of the three tally rows taken as one array places every part of every row
     # (``kernels/laplacian.mesh_row_start``); ``mesh_place_lower`` writes the offsets from it.
-    before = wp.empty((3, n_vertices), dtype=wp.int32, device=device)
-    wp.utils.array_scan(tallies.flatten(), out_array=before.flatten(), inclusive=False)
-    wp.utils.radix_sort_pairs(
+    before = _launch.empty((3, n_vertices), dtype=wp.int32, device=device)
+    _launch.array_scan(tallies.flatten(), out_array=before.flatten(), inclusive=False)
+    _launch.radix_sort_pairs(
         second_keys, second_order, count=count, end_bit=max(1, n_vertices.bit_length())
     )
     capacity = 2 * count + n_vertices
-    offsets = wp.empty(n_vertices + 1, dtype=wp.int32, device=device)
-    columns = wp.empty(capacity, dtype=wp.int32, device=device)
-    run_start = wp.empty(capacity, dtype=wp.int32, device=device)
-    wp.launch(
+    offsets = _launch.empty(n_vertices + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    run_start = _launch.empty(capacity, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_laplacian.mesh_place_upper,
         dim=count,
         inputs=[
@@ -884,7 +885,7 @@ def _mesh_operator_pattern(
         ],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_laplacian.mesh_place_lower,
         dim=max(count, n_vertices),
         inputs=[
@@ -1006,7 +1007,7 @@ def laplacian_entries(
         m = int(edges.shape[0])
         rows, cols, vals = tw.array.triplet_buffers(m, dtype, device)
         if m > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_laplacian.LAPLACIAN_TRIPLETS_DIRECTED[dtype],
                 dim=m,
                 inputs=[edges, vertices, equal_weight_flag, rows, cols, vals],
@@ -1028,7 +1029,7 @@ def laplacian_entries(
     m_unique = int(edges.shape[0])
     rows, cols, vals = tw.array.triplet_buffers(2 * m_unique, dtype, device)
     if m_unique > 0:
-        wp.launch(
+        _launch.launch(
             kernel_laplacian.LAPLACIAN_TRIPLETS_SYMMETRIC[dtype],
             dim=m_unique,
             inputs=[edges, vertices, equal_weight_flag, rows, cols, vals],
@@ -1139,8 +1140,8 @@ def laplacian(
         if pattern is None:
             pattern = mesh_operator_pattern(faces, n_vertices, operator=operator)
         _, _, offsets, columns, run_start, keys, count, _ = pattern
-        values = wp.empty(columns.size, dtype=dtype, device=device)
-        wp.launch(
+        values = _launch.empty(columns.size, dtype=dtype, device=device)
+        _launch.launch(
             kernel_laplacian.LAPLACIAN_ROWS[dtype],
             dim=n_vertices,
             inputs=[
@@ -1168,7 +1169,7 @@ def laplacian(
     )
     matrix = tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
     if n_vertices > 0 and matrix.nnz > 0:
-        wp.launch(
+        _launch.launch(
             kernel_laplacian.ROW_NORMALIZE[matrix.values.dtype],
             dim=n_vertices,
             inputs=[matrix.offsets, matrix.values],
@@ -1233,8 +1234,8 @@ def graph_laplacian(
     # pattern with every vertex's diagonal (an unreferenced vertex keeps a zero one), and one row
     # kernel writing the ones and minus their count.
     offsets, columns, _, _, _, _ = _mesh_operator_pattern(faces, n_vertices, diagonal="all")
-    values = wp.empty(columns.size, dtype=dtype, device=device)
-    wp.launch(
+    values = _launch.empty(columns.size, dtype=dtype, device=device)
+    _launch.launch(
         kernel_laplacian.GRAPH_LAPLACIAN_ROWS[dtype],
         dim=n_vertices,
         inputs=[offsets, columns, values],
@@ -1318,7 +1319,7 @@ def mass_matrix_entries(
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
     n_vertices = vertices.size
     device = vertices.device
-    mass = wp.zeros(n_vertices, dtype=dtype, device=device)
+    mass = _launch.zeros(n_vertices, dtype=dtype, device=device)
     n_faces = faces.size // 3
     if n_faces > 0:
         if face_areas is not None and face_areas.size != n_faces:
@@ -1330,7 +1331,7 @@ def mass_matrix_entries(
             # scatter_face_thirds shares one dtype across areas/count/mass; cast whenever the
             # caller-supplied (or freshly computed float32) areas don't already match ``dtype``.
             areas = tw.array.astype(areas, dtype)
-        wp.launch(
+        _launch.launch(
             kernel_scatter.SCATTER_FACE_THIRDS[dtype],
             dim=n_faces,
             inputs=[faces, areas, dtype(3.0), mass],

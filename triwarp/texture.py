@@ -23,6 +23,7 @@ from typing import Literal
 import warp as wp
 
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import INT32_MAX
 from triwarp.kernels import texture as kernel_texture
@@ -84,13 +85,13 @@ def rasterize_attribute(
     _check_rasterize_inputs(uv, int(attribute.shape[0]), resolution)
 
     device = uv.device
-    image = wp.zeros((resolution, resolution, n_channels), dtype=wp.float32, device=device)
+    image = _launch.zeros((resolution, resolution, n_channels), dtype=wp.float32, device=device)
     n_faces = faces.size // 3
     if n_faces == 0:
         return twt.as_array3d(image, wp.float32)
 
     owner = _rasterize_owner(uv, faces, resolution)
-    wp.launch(
+    _launch.launch(
         kernel_texture.rasterize_scatter,
         dim=n_faces,
         inputs=[uv, faces, attribute, n_channels, owner, image],
@@ -148,13 +149,13 @@ def rasterize_discrete_attribute(
     _check_rasterize_inputs(uv, n_vertices, resolution, labels=attribute)
 
     device = uv.device
-    labels_image = wp.full((resolution, resolution), -1, dtype=wp.int32, device=device)
+    labels_image = _launch.full((resolution, resolution), -1, dtype=wp.int32, device=device)
     n_faces = faces.size // 3
     if n_faces == 0:
         return twt.as_array2d(labels_image, wp.int32)
 
     owner = _rasterize_owner(uv, faces, resolution)
-    wp.launch(
+    _launch.launch(
         kernel_texture.rasterize_labels,
         dim=n_faces,
         inputs=[uv, faces, attribute, owner, labels_image],
@@ -200,8 +201,8 @@ def _check_rasterize_inputs(
         return
     if n_vertices == 0:
         return
-    flags = wp.zeros(2, dtype=wp.int32, device=uv.device)
-    wp.launch(
+    flags = _launch.zeros(2, dtype=wp.int32, device=uv.device)
+    _launch.launch(
         kernel_texture.check_uv_range_and_labels,
         dim=n_vertices,
         inputs=[uv, labels, flags],
@@ -240,8 +241,8 @@ def _rasterize_owner(
         ``(resolution, resolution)`` owning face index, ``_OWNER_SENTINEL`` where uncovered.
     """
     device = uv.device
-    owner = wp.full((resolution, resolution), _OWNER_SENTINEL, dtype=wp.int32, device=device)
-    wp.launch(
+    owner = _launch.full((resolution, resolution), _OWNER_SENTINEL, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_texture.rasterize_owner,
         dim=faces.size // 3,
         inputs=[uv, faces, resolution, owner],
@@ -318,7 +319,7 @@ def remap_attribute_from_uv(
         # sampled nearest-neighbour for every off-menu value, so a caller whose interpolation
         # order arrived through a variable got a plausible image and no error.
         mode = kernel_texture.SAMPLE_BILINEAR if order == 1 else kernel_texture.SAMPLE_NEAREST
-        wp.launch(
+        _launch.launch(
             kernel_texture.sample_texture,
             dim=n_vertices,
             inputs=[uv, image3d, n_channels, mode, out_values],
@@ -372,7 +373,7 @@ def remap_discrete_attribute_from_uv(
     n_vertices = uv.size
     out_labels = twt.empty_1d(n_vertices, wp.int32, device=device)
     if n_vertices > 0:
-        wp.launch(
+        _launch.launch(
             kernel_texture.sample_class_image,
             dim=n_vertices,
             inputs=[uv, class_image, out_labels],
@@ -401,7 +402,9 @@ def _check_uv_in_range(uv: wp.array[wp.vec2]) -> None:
     n_vertices = uv.size
     if n_vertices == 0:
         return
-    flag = wp.zeros(1, dtype=wp.int32, device=uv.device)
-    wp.launch(kernel_texture.check_uv_range, dim=n_vertices, inputs=[uv, flag], device=uv.device)
+    flag = _launch.zeros(1, dtype=wp.int32, device=uv.device)
+    _launch.launch(
+        kernel_texture.check_uv_range, dim=n_vertices, inputs=[uv, flag], device=uv.device
+    )
     if int(read_scalar(flag, 0)) != 0:
         raise ValueError("UV coordinates must be in the range [0, 1]")

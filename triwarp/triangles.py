@@ -20,6 +20,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import triangles as kernel_triangles
 
@@ -57,9 +58,9 @@ def face_normals_and_areas(
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
-    out_normal = wp.empty(f, dtype=wp.vec3, device=vertices.device)
-    out_area = wp.empty(f, dtype=wp.float32, device=vertices.device)
-    wp.launch(
+    out_normal = _launch.empty(f, dtype=wp.vec3, device=vertices.device)
+    out_area = _launch.empty(f, dtype=wp.float32, device=vertices.device)
+    _launch.launch(
         kernel_triangles.face_normals_and_areas,
         dim=f,
         inputs=[vertices, faces, out_normal, out_area],
@@ -97,7 +98,7 @@ def face_angles(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> twt.A
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
     out_angle = twt.empty_2d((f, 3), wp.float32, device=vertices.device)
-    wp.launch(
+    _launch.launch(
         kernel_triangles.angles, dim=f, inputs=[vertices, faces, out_angle], device=vertices.device
     )
     return twt.as_array2d(out_angle, wp.float32)
@@ -235,7 +236,7 @@ def corner_normals(
     if twins is None:
         twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
 
-    crease_keys = wp.empty(0, dtype=wp.uint64, device=device)
+    crease_keys = _launch.empty(0, dtype=wp.uint64, device=device)
     if crease_edges is not None:
         twt.ensure_edge_pairs(crease_edges, "crease_edges")
         if int(crease_edges.shape[0]) > 0:
@@ -256,7 +257,7 @@ def corner_normals(
         raise ValueError(f"weighting must be 'angle' or 'area', got {weighting!r}")
 
     normals = twt.empty_2d((n_faces, 3), wp.vec3, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_triangles.corner_normals,
         dim=3 * n_faces,
         inputs=[
@@ -338,8 +339,8 @@ def face_quality(
     if metric not in _QUALITY_METRICS:
         raise ValueError(f"unknown metric {metric!r}, expected one of {sorted(_QUALITY_METRICS)}")
     f = faces.size // 3
-    out_quality = wp.empty(f, dtype=wp.float32, device=vertices.device)
-    wp.launch(
+    out_quality = _launch.empty(f, dtype=wp.float32, device=vertices.device)
+    _launch.launch(
         kernel_triangles.face_quality,
         dim=f,
         inputs=[vertices, faces, _QUALITY_METRICS[metric], out_quality],
@@ -381,10 +382,10 @@ def face_centroids(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
-    out_centroids = wp.empty(n_faces, dtype=wp.vec3, device=vertices.device)
+    out_centroids = _launch.empty(n_faces, dtype=wp.vec3, device=vertices.device)
     if n_faces == 0:
         return out_centroids
-    wp.launch(
+    _launch.launch(
         kernel_triangles.face_centroids,
         dim=n_faces,
         inputs=[vertices, faces, out_centroids],
@@ -443,12 +444,12 @@ def face_signed_volumes(
     n_faces = faces.size // 3
     device = vertices.device
     scalar = wp.float64 if vertices.dtype is wp.vec3d else wp.float32
-    volumes = wp.empty(n_faces, dtype=scalar, device=device)
+    volumes = _launch.empty(n_faces, dtype=scalar, device=device)
     if n_faces == 0:
         return volumes
     if apex is None:
         apex = wp.vec3d(0.0, 0.0, 0.0) if vertices.dtype is wp.vec3d else wp.vec3(0.0, 0.0, 0.0)
-    wp.launch(
+    _launch.launch(
         kernel_triangles.FACE_SIGNED_VOLUMES[vertices.dtype],
         dim=n_faces,
         inputs=[vertices, faces, apex, volumes],
@@ -487,8 +488,8 @@ def face_nondegenerate_mask(
     """
     require_same_device(vertices=vertices, faces=faces)
     f = faces.size // 3
-    out_nondegenerate = wp.empty(f, dtype=wp.bool, device=vertices.device)
-    wp.launch(
+    out_nondegenerate = _launch.empty(f, dtype=wp.bool, device=vertices.device)
+    _launch.launch(
         kernel_triangles.face_nondegenerate_mask,
         dim=f,
         inputs=[vertices, faces, out_nondegenerate],
@@ -535,8 +536,8 @@ def barycentric_to_points(
     """
     require_same_device(vertices=vertices, faces=faces, barycentric=barycentric)
     f = faces.size // 3
-    out_points = wp.empty(f, dtype=wp.vec3, device=vertices.device)
-    wp.launch(
+    out_points = _launch.empty(f, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
         kernel_triangles.barycentric_to_points,
         dim=f,
         inputs=[vertices, faces, barycentric, out_points],
@@ -595,8 +596,8 @@ def points_to_barycentric(
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     f = faces.size // 3
-    out_barycentric = wp.empty(f, dtype=wp.vec3, device=vertices.device)
-    wp.launch(
+    out_barycentric = _launch.empty(f, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
         kernel_triangles.points_to_barycentric,
         dim=f,
         inputs=[vertices, faces, points, out_barycentric],
@@ -642,8 +643,8 @@ def closest_point(
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     f = faces.size // 3
-    out_closest = wp.empty(f, dtype=wp.vec3, device=vertices.device)
-    wp.launch(
+    out_closest = _launch.empty(f, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
         kernel_triangles.closest_point,
         dim=f,
         inputs=[vertices, faces, points, out_closest],

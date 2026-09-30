@@ -40,6 +40,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.bounds import enclosing_diagonal
 from triwarp.kernels import reduce as kernel_reduce
@@ -233,14 +234,14 @@ def _occlusion_bundle(
     normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, name)
     # `wp.empty`, not `wp.zeros`: `obscurance` writes `out_occlusion[i]` unconditionally for every
     # block, so nothing ever reads the zero-fill.
-    out_occlusion = wp.empty(m, dtype=wp.float32, device=device)
+    out_occlusion = _launch.empty(m, dtype=wp.float32, device=device)
     if m == 0:
         return out_occlusion
 
     directions = tw.sample.sample_fibonacci_hemisphere(n_rays, device=device)
     # One block per point, lanes over the bundle -- see ``kernel_visibility.BUNDLE_BLOCK`` for why
     # this wins over a thread per point, and why the width is 64.
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_visibility.obscurance,
         dim=(m,),
         inputs=[
@@ -359,14 +360,14 @@ def shape_diameter(
     # mismatched `normals` length is caught even when there is nothing to measure.
     normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, "shape_diameter")
     if m == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
     directions = tw.sample.sample_fibonacci_cone(n_rays, cone_angle, device=device)
     # Distances are kept so the trimming pass can revisit them against a mean the first pass had not
     # finished computing; re-tracing instead would double the only expensive part of the kernel.
     scratch = twt.empty_2d((m, n_rays), wp.float32, device=device)
-    out_diameter = wp.empty(m, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    out_diameter = _launch.empty(m, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_visibility.shape_diameter,
         dim=(m,),
         inputs=[
@@ -448,7 +449,7 @@ def thickness(
 
     if method == "max_sphere":
         _centers, radii = max_tangent_sphere(mesh, points, inwards=not exterior, normals=normals)
-        wp.map(wp.mul, radii, wp.float32(2.0), out=radii)
+        _launch.map(wp.mul, radii, wp.float32(2.0), out=radii)
         return radii
 
     # No ray length: an unbounded ``longest_ray`` finds the same first hit as one bounded by the
@@ -456,8 +457,8 @@ def thickness(
     normals = _resolve_normals(mesh, points, normals, "thickness")
     ray_dirs = normals
     if not exterior:
-        ray_dirs = wp.empty(points.size, dtype=wp.vec3, device=points.device)
-        wp.map(wp.neg, normals, out=ray_dirs)
+        ray_dirs = _launch.empty(points.size, dtype=wp.vec3, device=points.device)
+        _launch.map(wp.neg, normals, out=ray_dirs)
     return tw.ray.longest_ray(mesh, points, ray_dirs)
 
 
@@ -521,8 +522,8 @@ def max_tangent_sphere(
     normals = _resolve_normals(mesh, points, normals, "max_tangent_sphere")
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
         )
     # Every ray-bundle measure in this module normalizes defensively per-thread (see
     # `hemisphere_frame`); this path shrinks a sphere along `normals` directly with no such guard,
@@ -531,8 +532,8 @@ def max_tangent_sphere(
     # iterative loop; `normals_at_closest_faces`'s own output is already unit, so this is a no-op
     # there, but cheap enough not to special-case.
     # The sign for ``inwards`` rides in the same map (``ray_direction``), which is exact.
-    ray_dirs = wp.empty(m, dtype=wp.vec3, device=device)
-    wp.map(
+    ray_dirs = _launch.empty(m, dtype=wp.vec3, device=device)
+    _launch.map(
         kernel_visibility.ray_direction, normals, wp.float32(-1.0 if inwards else 1.0), out=ray_dirs
     )
 
@@ -544,11 +545,11 @@ def max_tangent_sphere(
     # ``max_t`` is part of the answer, not only a bound: the shrink step's closest-point query is
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
-    corners = wp.full(12, math.inf, dtype=wp.float32, device=device)
+    corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
     for cloud, box in ((mesh.points, corners), (points, twt.as_dense(corners[6:]))):
         n_cloud = cloud.size
         if n_cloud > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_reduce.minmax_vec3_chunked,
                 dim=kernel_reduce.chunks_1d(n_cloud),
                 inputs=[cloud, box],
@@ -568,11 +569,11 @@ def max_tangent_sphere(
     distances = tw.ray.longest_ray(mesh, points, ray_dirs, max_t=max_t)
 
     n_verts = mesh.points.size
-    radii = wp.empty(m, dtype=wp.float32, device=device)
-    not_converged = wp.empty(m, dtype=wp.bool, device=device)
-    needs_support = wp.empty(m, dtype=wp.bool, device=device)
-    centers = wp.empty(m, dtype=wp.vec3, device=device)
-    wp.map(
+    radii = _launch.empty(m, dtype=wp.float32, device=device)
+    not_converged = _launch.empty(m, dtype=wp.bool, device=device)
+    needs_support = _launch.empty(m, dtype=wp.bool, device=device)
+    centers = _launch.empty(m, dtype=wp.vec3, device=device)
+    _launch.map(
         kernel_visibility.init_sphere_radii_finite,
         distances,
         points,
@@ -587,8 +588,8 @@ def max_tangent_sphere(
     k = support_indices.size
     if k > 0:
         n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
-        packed_support = wp.zeros(k, dtype=wp.uint64, device=device)
-        wp.launch(
+        packed_support = _launch.zeros(k, dtype=wp.uint64, device=device)
+        _launch.launch(
             kernel_visibility.support_argmax_sliced,
             dim=(k, n_vert_slices),
             inputs=[
@@ -601,7 +602,7 @@ def max_tangent_sphere(
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_visibility.init_sphere_radii_support,
             dim=k,
             inputs=[
@@ -623,13 +624,13 @@ def max_tangent_sphere(
     # every lane, passing converged state through). The convergence count is checked every
     # iteration on purpose: an extra iteration runs a BVH closest-point query for every point still
     # shrinking, far more expensive than the 8-byte readback the check costs.
-    new_radii = wp.empty(m, dtype=wp.float32, device=device)
-    new_centers = wp.empty(m, dtype=wp.vec3, device=device)
-    new_nc = wp.empty(m, dtype=wp.bool, device=device)
+    new_radii = _launch.empty(m, dtype=wp.float32, device=device)
+    new_centers = _launch.empty(m, dtype=wp.vec3, device=device)
+    new_nc = _launch.empty(m, dtype=wp.bool, device=device)
     # Slot ``r`` is the not-converged count after round ``r - 1``, accumulated by the step kernel
     # itself, so each round's test is one 4-byte read with no reduction launch in front of it.
     # Slot 0 is the seed's count, the one reduction the loop still needs.
-    n_not_converged = wp.zeros(max_iter + 1, dtype=wp.int32, device=device)
+    n_not_converged = _launch.zeros(max_iter + 1, dtype=wp.int32, device=device)
     n_active = tw.reduce.sum(not_converged)
 
     for round_index in range(max_iter):
@@ -638,7 +639,7 @@ def max_tangent_sphere(
         if n_active == 0:
             break
 
-        wp.launch(
+        _launch.launch(
             kernel_visibility.step_sphere_shrink,
             dim=m,
             inputs=[

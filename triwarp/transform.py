@@ -46,6 +46,7 @@ import numpy as np
 import warp as wp
 
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import repair as kernel_repair
 from triwarp.kernels import transform as kernel_transform
@@ -167,14 +168,14 @@ def transform_points(
                 "transform_points: matrix must be a length-1 wp.array[wp.mat44], got shape "
                 f"{tuple(matrix.shape)}"
             )
-        wp.launch(
+        _launch.launch(
             kernel_transform.apply_transform_mat44,
             dim=points.size,
             inputs=[points, matrix, result],
             device=points.device,
         )
         return result
-    wp.map(kernel_transform.transform_point_mat44, points, matrix, out=result)
+    _launch.map(kernel_transform.transform_point_mat44, points, matrix, out=result)
     return result
 
 
@@ -224,7 +225,7 @@ def transform_vectors(
     result = _alloc_or_out(out, vectors.size, wp.vec3, vectors.device)
     if vectors.size == 0:
         return result
-    wp.map(kernel_transform.transform_vector_mat44, vectors, as_mat44(matrix), out=result)
+    _launch.map(kernel_transform.transform_vector_mat44, vectors, as_mat44(matrix), out=result)
     return result
 
 
@@ -286,7 +287,7 @@ def transform_normals(
     result = _alloc_or_out(out, normals.size, wp.vec3, normals.device)
     if normals.size == 0:
         return result
-    wp.map(kernel_transform.transform_normal_mat33, normals, linear_normal_matrix, out=result)
+    _launch.map(kernel_transform.transform_normal_mat33, normals, linear_normal_matrix, out=result)
     return result
 
 
@@ -355,14 +356,14 @@ def transform_mesh(
     n_faces = faces.size // 3
     if reverses_orientation(matrix):
         if n_faces > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_repair.reverse_face_winding,
                 dim=n_faces,
                 inputs=[faces, new_faces],
                 device=faces.device,
             )
     elif new_faces.ptr != faces.ptr:
-        wp.copy(new_faces, faces)
+        _launch.copy(new_faces, faces)
     return new_vertices, new_faces
 
 
@@ -854,4 +855,4 @@ def _alloc_or_out(
     differ enough between them (a `ValueError` on some, none on others) that folding those in too
     would obscure rather than simplify.
     """
-    return wp.empty(n, dtype=dtype, device=device) if out is None else out
+    return _launch.empty(n, dtype=dtype, device=device) if out is None else out

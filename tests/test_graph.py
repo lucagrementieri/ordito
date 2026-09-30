@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from collections.abc import Callable
 
 import igl
 import numpy as np
@@ -17,6 +18,7 @@ import triwarp as tw
 import triwarp.typing as twt
 from tests.comparisons import same_partition
 from tests.conversions import meshlib_bitset_to_numpy, trimesh_to_meshlib, trimesh_to_pymeshlab
+from triwarp import _launch
 
 
 def test_edges_to_csr_roundtrip(device: str) -> None:
@@ -692,27 +694,34 @@ def test_successor_cycles_validates_before_launching(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    The range check must run before *any* kernel launch, not merely before returning.
+    The range check runs before any kernel that indexes by an endpoint.
 
     ``scatter_successor`` indexes a ``node_count``-element buffer by the raw edge endpoint, so a
     check that runs after it has already let an out-of-range endpoint write past the end — on the
     CPU device that is a host-heap overwrite which aborts the process much later, somewhere
     unrelated. Asserting only that ``ValueError`` is raised does not catch that: the exception is
-    raised either way. Counting launches is what pins the ordering.
+    raised either way. Recording what launched pins the ordering: the only kernels allowed before
+    the raise are the read-only range reduction's, from ``triwarp.kernels.reduce`` (none on the CPU
+    device, which reads the bounds back on the host).
     """
-    launches = 0
-    real_launch = wp.launch
+    launched: list[str] = []
+    real_launches = {"wp": wp.launch, "_launch": _launch.launch}
 
-    def counting_launch(*args: object, **kwargs: object) -> object:
-        nonlocal launches
-        launches += 1
-        return real_launch(*args, **kwargs)
+    def recording(owner: str) -> Callable[..., object]:
+        def recording_launch(kernel: wp.Kernel, *args: object, **kwargs: object) -> object:
+            launched.append(kernel.module.name)
+            return real_launches[owner](kernel, *args, **kwargs)
 
-    monkeypatch.setattr(wp, "launch", counting_launch)
+        return recording_launch
+
+    # The wrapper layer launches through ``triwarp._launch``, which falls back to ``wp.launch``
+    # and routes ``launch_tiled`` through its own ``launch``; record every path.
+    monkeypatch.setattr(wp, "launch", recording("wp"))
+    monkeypatch.setattr(_launch, "launch", recording("_launch"))
     edges_wp = wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
         tw.graph.successor_cycles(edges_wp, 4)
-    assert launches == 0
+    assert set(launched) <= {"triwarp.kernels.reduce"}, launched
 
 
 def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:

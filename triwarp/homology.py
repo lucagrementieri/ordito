@@ -25,6 +25,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device, run_device_loop
 from triwarp.constants import INT32_MAX, TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -148,9 +149,9 @@ def homology_generators_with_offsets(
         # A face carries three edges, so no edges means no faces: vacuously closed, nothing to span
         # and nothing left over.
         return _no_loops(device)
-    edge_face_count = wp.zeros(n_edges, dtype=wp.int32, device=device)
+    edge_face_count = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     edge_faces = twt.empty_2d((n_edges, 2), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_scatter.scatter_edge_incidence,
         dim=inverse.size,
         inputs=[inverse, edge_face_count, edge_faces],
@@ -167,8 +168,8 @@ def homology_generators_with_offsets(
     # and a separate readback apiece would serialise the pipeline twice more. The interior-edge
     # count rides in the candidate mask below, which already tests ``edge_face_count == 2``, so
     # neither guard costs a pass of its own.
-    counts = wp.zeros(kernel_homology.COUNT_SIZE, dtype=wp.int32, device=device)
-    wp.launch_tiled(
+    counts = _launch.zeros(kernel_homology.COUNT_SIZE, dtype=wp.int32, device=device)
+    _launch.launch_tiled(
         kernel_homology.count_reached_and_referenced,
         dim=kernel_reduce.blocks_1d(n_vertices),
         inputs=[offsets, distances, counts],
@@ -181,8 +182,8 @@ def homology_generators_with_offsets(
     # removes the ones it took, so the leftovers need no predicate of their own. It is issued
     # *before* the readback so both guards read one buffer; on the raising path that is one wasted
     # launch, and on every other path it is one fewer.
-    candidate = wp.empty(n_edges, dtype=wp.bool, device=device)
-    wp.launch_tiled(
+    candidate = _launch.empty(n_edges, dtype=wp.bool, device=device)
+    _launch.launch_tiled(
         kernel_homology.dual_candidate_mask,
         # One *tile* per block, not one reduce-module chunk: this kernel writes a mask entry per
         # edge as well as folding the count, so its per-edge dimension has to stay in the grid.
@@ -235,13 +236,13 @@ def _primal_spanning_tree(
     """
     device = unique_edges.device
     n_vertices = offsets.size - 1
-    parents = wp.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
-    distances = wp.full(n_vertices, -1, dtype=wp.int32, device=device)
+    parents = _launch.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
+    distances = _launch.full(n_vertices, -1, dtype=wp.int32, device=device)
     # Level 1 is the first to claim; the condition starts true because ``wp.capture_while`` reads
     # it before the first round; nothing claimed yet. Allocated holding those values rather than
     # zeroed and then assigned -- the zeroing is thrown away and the assign is a second upload.
-    state = wp.array([1, 1, 0], dtype=wp.int32, device=device)
-    wp.launch(
+    state = _launch.array([1, 1, 0], dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_scatter.scatter_index, dim=1, inputs=[unique_edges[0], distances], device=device
     )
 
@@ -250,13 +251,13 @@ def _primal_spanning_tree(
     max_levels = wp.int32(n_vertices + 1)
 
     def level() -> None:
-        wp.launch(
+        _launch.launch(
             kernel_homology.bfs_push_level,
             dim=n_vertices,
             inputs=[offsets, columns, state, parents, distances],
             device=device,
         )
-        wp.launch(kernel_array.loop_advance, dim=1, inputs=[max_levels, state], device=device)
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_levels, state], device=device)
 
     run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], level)
     return parents, distances
@@ -287,35 +288,35 @@ def _remove_dual_spanning_forest(
     if n_candidates == 0 or n_faces == 0:
         return
     labels = tw.array.arange(n_faces, device=device)
-    roots = wp.empty(n_faces, dtype=wp.int32, device=device)
-    proposal = wp.empty(n_faces, dtype=wp.int32, device=device)
+    roots = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    proposal = _launch.empty(n_faces, dtype=wp.int32, device=device)
     # The condition starts true because ``wp.capture_while`` reads it before the first round;
     # allocated holding that seed rather than zeroed and then assigned.
-    state = wp.array([0, 1, 0], dtype=wp.int32, device=device)
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     # The component count at least halves per round, so ``bit_length`` -- ``ceil(log2)`` plus one --
     # caps a loop the halving argument already bounds; it can only be reached by a logic error.
     max_rounds = wp.int32(max(1, n_faces.bit_length()) + 1)
 
     def round_of_boruvka() -> None:
-        wp.launch(
+        _launch.launch(
             kernel_homology.forest_round_setup,
             dim=n_faces,
             inputs=[labels, roots, proposal],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_homology.forest_propose,
             dim=n_candidates,
             inputs=[candidate, edge_faces, roots, proposal],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_homology.forest_link,
             dim=n_candidates,
             inputs=[candidate, edge_faces, roots, proposal, labels, state],
             device=device,
         )
-        wp.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
+        _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
     run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], round_of_boruvka)
 
@@ -338,23 +339,23 @@ def _trace_generator_loops(
     """
     device = unique_edges.device
     n_edges = candidate.size
-    apex = wp.empty(n_edges, dtype=wp.int32, device=device)
-    counts = wp.empty(n_edges, dtype=wp.vec2i, device=device)
-    wp.launch(
+    apex = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    counts = _launch.empty(n_edges, dtype=wp.vec2i, device=device)
+    _launch.launch(
         kernel_homology.generator_loop_counts,
         dim=n_edges,
         inputs=[candidate, unique_edges, parents, distances, apex, counts],
         device=device,
     )
-    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
     # Sizes both outputs: the generator count and the packed length, in one read.
     total = read_scalar(counts)
     n_generators, n_packed = int(total[0]), int(total[1])
     if n_generators == 0:
         return _no_loops(device)
-    offsets = wp.empty(n_generators + 1, dtype=wp.int32, device=device)
-    loops = wp.empty(n_packed, dtype=wp.int32, device=device)
-    wp.launch(
+    offsets = _launch.empty(n_generators + 1, dtype=wp.int32, device=device)
+    loops = _launch.empty(n_packed, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_homology.write_generator_loops,
         dim=n_edges,
         inputs=[candidate, unique_edges, parents, apex, counts, offsets, loops],
@@ -365,4 +366,6 @@ def _trace_generator_loops(
 
 def _no_loops(device: wp.context.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """Return the empty packed basis: no loop vertices and ``[0]`` offsets."""
-    return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(1, dtype=wp.int32, device=device)
+    return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
+        1, dtype=wp.int32, device=device
+    )

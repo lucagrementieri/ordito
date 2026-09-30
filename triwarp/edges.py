@@ -19,6 +19,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.array import arange_repeat
 from triwarp.constants import INDEX_RADIX_PAIR
@@ -54,7 +55,7 @@ def faces_to_edges(
     """
     n_faces = faces.size // 3
     edges = twt.empty_2d((n_faces * 3, 2), wp.int32, device=faces.device)
-    wp.launch(
+    _launch.launch(
         kernel_edges.faces_to_edges,
         dim=n_faces,
         inputs=[faces, wp.bool(sorted), edges],
@@ -155,7 +156,7 @@ def edges_unique(
 
     if n_faces == 0:
         empty_edges = twt.empty_2d((0, 2), wp.int32, device=device)
-        empty_inv = wp.empty(0, dtype=wp.int32, device=device)
+        empty_inv = _launch.empty(0, dtype=wp.int32, device=device)
         return empty_edges, empty_inv
 
     if edges_sorted is None:
@@ -212,8 +213,8 @@ def _face_edge_keys(
             )
     elif n_vertices is None:
         n_vertices = INDEX_RADIX_PAIR
-    keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
-    wp.launch(
+    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
+    _launch.launch(
         kernel_adjacency.face_edge_keys,
         dim=n_faces,
         inputs=[faces, wp.uint64(n_vertices), keys],
@@ -236,7 +237,7 @@ def _unique_edges_from_keys(
     # ``first_occurrence_indices`` scatter, an ``array.gather`` and the first-occurrence buffer
     # between them all disappear. Row order is unchanged -- both forms index by the same unique id.
     unique_edges_out = twt.empty_2d((unique_keys.size, 2), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_edges.edges_from_keys,
         dim=unique_edges_out.shape[0],
         inputs=[unique_keys, wp.uint64(n_vertices), unique_edges_out],
@@ -383,9 +384,9 @@ def edges_length(
         return _edge_lengths(vertices, edges_in, "edges_in")
     # Without a table the rows are the halfedges, so the lengths come straight off ``faces``.
     n_halfedges = faces.size // 3 * 3
-    out = wp.empty(n_halfedges, dtype=wp.float32, device=vertices.device)
+    out = _launch.empty(n_halfedges, dtype=wp.float32, device=vertices.device)
     if n_halfedges > 0:
-        wp.launch(
+        _launch.launch(
             kernel_edges.halfedge_lengths,
             dim=n_halfedges,
             inputs=[vertices, faces, out],
@@ -415,10 +416,10 @@ def _edge_lengths(
     m = int(edges.shape[0])
     device = vertices.device
     if m == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
 
-    out = wp.empty(m, dtype=wp.float32, device=device)
-    wp.launch(kernel_edges.edge_lengths, dim=m, inputs=[vertices, edges, out], device=device)
+    out = _launch.empty(m, dtype=wp.float32, device=device)
+    _launch.launch(kernel_edges.edge_lengths, dim=m, inputs=[vertices, edges, out], device=device)
     return out
 
 
@@ -460,7 +461,7 @@ def face_edge_lengths(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     lengths = twt.empty_2d((n_faces, 3), wp.float32, device=device)
     if n_faces == 0:
         return twt.as_array2d(lengths, wp.float32)
-    wp.launch(
+    _launch.launch(
         kernel_edges.face_edge_lengths,
         dim=n_faces,
         inputs=[vertices, faces, lengths],

@@ -43,6 +43,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device, run_device_loop
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -110,8 +111,8 @@ def _endpoints_coincide_flag(polyline: wp.array[wp.vec3]) -> wp.array[wp.int32]:
     a ``wp.map`` into a mask plus a whole reduction over it, to compare six floats. Needs at least
     two points.
     """
-    flag = wp.empty(1, dtype=wp.int32, device=polyline.device)
-    wp.launch(
+    flag = _launch.empty(1, dtype=wp.int32, device=polyline.device)
+    _launch.launch(
         kernel_polyline.endpoints_coincide,
         dim=1,
         inputs=[polyline],
@@ -179,9 +180,9 @@ def _append_first_point(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     returns, without the segment table that function builds for an arbitrary list.
     """
     n = polyline.size
-    closed = wp.empty(n + 1, dtype=wp.vec3, device=polyline.device)
-    wp.copy(closed, polyline, count=n)
-    wp.copy(closed, polyline, dest_offset=n, count=1)
+    closed = _launch.empty(n + 1, dtype=wp.vec3, device=polyline.device)
+    _launch.copy(closed, polyline, count=n)
+    _launch.copy(closed, polyline, dest_offset=n, count=1)
     return closed
 
 
@@ -219,8 +220,8 @@ def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> flo
     # buffer and a separate reduction over it -- one launch, one allocation and one readback
     # instead of two of each. See ``kernels/polyline.polyline_total_length``, including why the
     # answer's last bits move.
-    total = wp.zeros(1, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    total = _launch.zeros(1, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_polyline.polyline_total_length,
         dim=kernel_reduce.blocks_1d(n_segments),
         inputs=[polyline, wp.int32(n_segments)],
@@ -361,12 +362,12 @@ def polyline_point_distance(
     n_points = points.size
     m = polyline.size
     if m == 0:
-        return wp.full(n_points, float("inf"), dtype=wp.float32, device=device)
+        return _launch.full(n_points, float("inf"), dtype=wp.float32, device=device)
     if n_points == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
     if m == 1:
-        out_distances = wp.empty(n_points, dtype=wp.float32, device=device)
-        wp.launch(
+        out_distances = _launch.empty(n_points, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_polyline.distance_to_first_point,
             dim=n_points,
             inputs=[points, polyline, out_distances],
@@ -386,16 +387,16 @@ def polyline_point_distance(
             -(-n_open // kernel_polyline.POINT_DISTANCE_MIN_SLICE),
         )
     if n_slices <= 1:
-        out_distances = wp.empty(n_points, dtype=wp.float32, device=device)
-        wp.launch(
+        out_distances = _launch.empty(n_points, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_polyline.distance_to_segments,
             dim=n_points,
             inputs=[points, polyline, wp.int32(closed), out_distances],
             device=device,
         )
         return out_distances
-    out_distances = wp.full(n_points, math.inf, dtype=wp.float32, device=device)
-    wp.launch(
+    out_distances = _launch.full(n_points, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_polyline.distance_to_segment_slices,
         dim=(n_slices, n_points),
         inputs=[points, polyline, wp.int32(closed), wp.int32(-(-n_open // n_slices))],
@@ -511,8 +512,8 @@ def _upsample(
         return polyline
     n_segments = n_points if closed else n_points - 1
 
-    steps = wp.empty(n_segments, dtype=wp.int32, device=device)
-    wp.launch(
+    steps = _launch.empty(n_segments, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_polyline.segment_step_counts,
         dim=n_segments,
         inputs=[polyline, wp.float32(step_size), wp.int32(closed), steps],
@@ -520,8 +521,8 @@ def _upsample(
     )
     offsets, total = tw.array.counts_to_offsets(steps)
 
-    out_points = wp.empty(total, dtype=wp.vec3, device=device)
-    wp.launch(
+    out_points = _launch.empty(total, dtype=wp.vec3, device=device)
+    _launch.launch(
         gather_kernel,
         dim=total,
         inputs=[polyline, offsets, steps, *extra_inputs, out_points],
@@ -559,7 +560,7 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     n_points = polyline.size
     if n_points < 2:
         # No segment to sum: a single vertex is at arc length 0, an empty polyline has no entry.
-        return wp.zeros(n_points, dtype=wp.float32, device=polyline.device)
+        return _launch.zeros(n_points, dtype=wp.float32, device=polyline.device)
     return _arc_length_table(polyline, closed=False)
 
 
@@ -603,11 +604,11 @@ def polyline_downsample(
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
     cumulative = _arc_length_table(polyline, closed=closed)
     n_table = cumulative.size
-    keep = wp.zeros(n_table, dtype=wp.int32, device=device)
+    keep = _launch.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
         _greedy_downsample_doubling(cumulative, step_size, polyline, closed, keep)
     else:
-        wp.launch(
+        _launch.launch(
             kernel_polyline.greedy_downsample_mask,
             dim=1,
             inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), keep],
@@ -638,20 +639,20 @@ def _greedy_downsample_doubling(
     """
     device = cumulative.device
     n = cumulative.size
-    successor = wp.empty(n, dtype=wp.int32, device=device)
+    successor = _launch.empty(n, dtype=wp.int32, device=device)
     # Also marks the first point kept, which the walk always does; the caller zeroed the rest.
-    wp.launch(
+    _launch.launch(
         kernel_polyline.greedy_successors,
         dim=n,
         inputs=[cumulative, wp.float32(step_size), polyline, wp.int32(closed), successor, out_keep],
         device=device,
     )
-    squared = wp.empty(n, dtype=wp.int32, device=device)
+    squared = _launch.empty(n, dtype=wp.int32, device=device)
     # Several pointers a round (``kernels/graph.pointer_jump_schedule``): the orbit is at most
     # ``n`` long and a round multiplies the covered prefix of it by ``hops``.
     hops, rounds = kernel_graph.pointer_jump_schedule(n + 1)
     for _ in range(rounds):
-        wp.launch(
+        _launch.launch(
             kernel_polyline.double_greedy_orbit,
             dim=n,
             inputs=[successor, out_keep, hops, squared, out_keep],
@@ -723,7 +724,7 @@ def polyline_simplify(
     device = polyline.device
     n = polyline.size
     if n == 0:
-        return polyline, wp.empty(0, dtype=wp.int32, device=device)
+        return polyline, _launch.empty(0, dtype=wp.int32, device=device)
     # ``closed`` runs over ``n + 1`` entries, the last being the first point again, reached by
     # wrapping the index rather than through a ``polyline_close`` copy; when the input already
     # repeats its first point that entry is a dead slot, decided on the device
@@ -739,7 +740,7 @@ def polyline_simplify(
         # conditional graph it records on every call.
         spans = twt.empty_2d((4, n_entries), wp.int32, device=device)
         span_values = twt.empty_2d((2, n_entries), wp.float32, device=device)
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_polyline.rdp_simplify_block,
             dim=[1],
             inputs=[polyline, wp.int32(wrap_open), squared_tolerance],
@@ -750,44 +751,44 @@ def polyline_simplify(
         simplified, indices = _gather_kept(twt.as_dense(spans[3]), polyline, return_indices=True)
         assert indices is not None
         return simplified, indices
-    span_lo = wp.empty(n_entries, dtype=wp.int32, device=device)
-    span_hi = wp.empty(n_entries, dtype=wp.int32, device=device)
-    keep = wp.empty(n_entries, dtype=wp.int32, device=device)
+    span_lo = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    span_hi = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    keep = _launch.empty(n_entries, dtype=wp.int32, device=device)
     # state = [levels run, loop condition], seeded by ``rdp_seed_spans`` and then written on device
     # so the round loop needs no readback -- ``polyline_triangulate``'s ear rounds are driven the
     # same way.
-    state = wp.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
-    wp.launch(
+    state = _launch.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_polyline.rdp_seed_spans,
         dim=n_entries,
         inputs=[polyline, wp.int32(wrap_open), span_lo, span_hi, keep, state],
         device=device,
     )
     if n_entries > 2:  # fewer than three entries have no interior to drop
-        span_max = wp.empty(n_entries, dtype=wp.float32, device=device)
-        span_argmax = wp.empty(n_entries, dtype=wp.int32, device=device)
-        squared_distances = wp.empty(n_entries, dtype=wp.float32, device=device)
+        span_max = _launch.empty(n_entries, dtype=wp.float32, device=device)
+        span_argmax = _launch.empty(n_entries, dtype=wp.int32, device=device)
+        squared_distances = _launch.empty(n_entries, dtype=wp.float32, device=device)
 
         def split_round() -> None:
-            wp.launch(
+            _launch.launch(
                 kernel_polyline.rdp_begin_round,
                 dim=n_entries,
                 inputs=[state, span_max, span_argmax],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_polyline.rdp_span_max,
                 dim=n_entries,
                 inputs=[polyline, span_lo, span_hi, squared_distances, span_max],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_polyline.rdp_span_argmax,
                 dim=n_entries,
                 inputs=[span_lo, squared_distances, span_max, span_argmax],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_polyline.rdp_split_spans,
                 dim=n_entries,
                 inputs=[squared_tolerance, span_max, span_argmax, span_lo, span_hi, state, keep],
@@ -814,11 +815,11 @@ def _gather_kept(
     first point again (``kernels/polyline.gather_kept_points``).
     """
     device = polyline.device
-    wp.utils.array_scan(flags, out_array=flags, inclusive=True)
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
     n_kept = int(read_scalar(flags))
-    out_points = wp.empty(n_kept, dtype=wp.vec3, device=device)
-    out_indices = wp.empty(n_kept, dtype=wp.int32, device=device) if return_indices else None
-    wp.launch(
+    out_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    out_indices = _launch.empty(n_kept, dtype=wp.int32, device=device) if return_indices else None
+    _launch.launch(
         kernel_polyline.gather_kept_points,
         dim=flags.size,
         inputs=[flags, polyline, out_points, out_indices],
@@ -862,9 +863,9 @@ def polyline_resample(
     n = polyline.size
     if n == 0:
         return polyline
-    out_points = wp.empty(num_points, dtype=wp.vec3, device=device)
+    out_points = _launch.empty(num_points, dtype=wp.vec3, device=device)
     if n == 1:
-        wp.launch(
+        _launch.launch(
             kernel_polyline.broadcast_first_point,
             dim=num_points,
             inputs=[polyline, out_points],
@@ -876,7 +877,7 @@ def polyline_resample(
     # the duplicated seam, so the result has ``num_points`` *distinct* points and is a clean cyclic
     # ring. The closure is decided on the device (``kernels/polyline.resample_interp``).
     cumulative = _arc_length_table(polyline, closed=closed)
-    wp.launch(
+    _launch.launch(
         kernel_polyline.resample_interp,
         dim=num_points,
         inputs=[
@@ -905,15 +906,15 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
     device = polyline.device
     n_points = polyline.size
     n_segments = n_points if closed else n_points - 1
-    cumulative = wp.empty(n_segments + 1, dtype=wp.float32, device=device)
-    wp.launch(
+    cumulative = _launch.empty(n_segments + 1, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_polyline.arc_segment_lengths,
         dim=n_segments,
         inputs=[polyline, wp.int32(closed), cumulative],
         device=device,
     )
     lengths = cumulative[1:]
-    wp.utils.array_scan(lengths, out_array=lengths, inclusive=True)
+    _launch.array_scan(lengths, out_array=lengths, inclusive=True)
     return cumulative
 
 
@@ -1024,7 +1025,7 @@ def polyline_radius(
     ]
     if reduction == "median":
         distances = twt.empty_1d(n_segments, wp.float32, device=device)
-        wp.launch(
+        _launch.launch(
             kernel_polyline.radius_distances,
             dim=n_segments,
             inputs=plane,
@@ -1036,8 +1037,10 @@ def polyline_radius(
     # (``kernels/polyline.radius_reduce``): no distance buffer, no reduction launch over it, and one
     # readback of the value and, for the mean, the segment count the kernel decided.
     kind, identity = _RADIUS_REDUCTIONS[reduction]
-    result = wp.full(kernel_polyline.RADIUS_RESULT_SIZE, identity, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    result = _launch.full(
+        kernel_polyline.RADIUS_RESULT_SIZE, identity, dtype=wp.float32, device=device
+    )
+    _launch.launch_tiled(
         kernel_polyline.radius_reduce,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[*plane, wp.int32(closed), kind, result],
@@ -1063,8 +1066,8 @@ def _accumulate_frame(
     ``with_normal``, Newell's sum over the loop.
     """
     device = polyline.device
-    frame = wp.zeros(kernel_polyline.RADIUS_FRAME_SIZE, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    frame = _launch.zeros(kernel_polyline.RADIUS_FRAME_SIZE, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_polyline.accumulate_radius_frame,
         dim=kernel_reduce.blocks_1d(polyline.size),
         inputs=[
@@ -1109,14 +1112,14 @@ def polyline_angles(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.
     device = polyline.device
     n = polyline.size
     if n < 2:
-        return wp.zeros(n, dtype=wp.float32, device=device)
+        return _launch.zeros(n, dtype=wp.float32, device=device)
 
     # One launch writes every angle in its final slot, deciding the closure on the device: no
     # readback decides the wrap-around, and ``closed=True`` reaches the closing segment by wrapping
     # the index rather than through a ``polyline_close`` copy. See
     # ``kernels/polyline.vertex_turning_angles``.
-    angles = wp.empty(n, dtype=wp.float32, device=device)
-    wp.launch(
+    angles = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_polyline.vertex_turning_angles,
         dim=n,
         inputs=[polyline, wp.int32(1 if closed else 0)],
@@ -1189,16 +1192,16 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> twt.Array2dInt32:
     # The plane frame is built and consumed entirely on device: one accumulation pass, which also
     # decides whether the last point repeats the first, then a projection whose threads each derive
     # the frame from the accumulated sums.
-    sums = wp.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
-    wp.launch_tiled(
+    sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
         kernel_polyline.accumulate_loop_frame,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[polyline, sums],
         block_dim=TILE_1D,
         device=device,
     )
-    points2d = wp.empty(n, dtype=wp.vec2, device=device)
-    wp.launch(
+    points2d = _launch.empty(n, dtype=wp.vec2, device=device)
+    _launch.launch(
         kernel_polyline.project_polyline_to_plane,
         dim=n,
         inputs=[polyline, sums, points2d],
@@ -1250,9 +1253,9 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     device = polygon.device
     n = polygon.size
     if n < 3:
-        return polygon, wp.empty(0, dtype=wp.int32, device=device)
+        return polygon, _launch.empty(0, dtype=wp.int32, device=device)
 
-    sums = wp.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
+    sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
     n_ring, faces = _triangulate_ring(polygon, sums, detect_closing=True)
     # The ring is the input minus any repeated closing point, i.e. a prefix of it.
     return polygon[:n_ring].contiguous(), faces.reshape((-1,))
@@ -1273,7 +1276,7 @@ def _triangulate_ring(
     """
     device = points2d.device
     n = points2d.size
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_polyline.accumulate_turning_angle,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[points2d, wp.int32(1 if detect_closing else 0), sums],
@@ -1295,23 +1298,23 @@ def _triangulate_ring(
     clockwise = turning < 0.0
     if (reflex_mirrored if clockwise else reflex) == 0.0:
         # The fan's faces are index triples, so a convex ring needs no orientation fix-up at all.
-        wp.launch(
+        _launch.launch(
             kernel_polyline.fan_triangulate, dim=n_ring - 2, inputs=[out_faces], device=device
         )
         return n_ring, twt.as_array2d(out_faces, wp.int32)
 
     if clockwise:
         if detect_closing:
-            points2d = wp.clone(points2d)
-        wp.launch(kernel_polyline.orient_ccw, dim=n_ring, inputs=[points2d], device=device)
+            points2d = _launch.clone(points2d)
+        _launch.launch(kernel_polyline.orient_ccw, dim=n_ring, inputs=[points2d], device=device)
 
     # One block runs every round (see ``ear_clip_block``): no graph to record, one launch. On the
     # CPU device a launch grid is a serial loop either way, so the block form does the same walk
     # without a launch and a readback per round, and it is taken at every size.
     if n_ring <= kernel_polyline.EAR_ONE_BLOCK_MAX or not wp.get_device(device).is_cuda:
         ring = twt.empty_2d((5, n_ring), wp.int32, device=device)
-        count_wp = wp.empty(1, dtype=wp.int32, device=device)
-        wp.launch_tiled(
+        count_wp = _launch.empty(1, dtype=wp.int32, device=device)
+        _launch.launch_tiled(
             kernel_polyline.ear_clip_block,
             dim=1,
             inputs=[points2d, out_faces, ring, count_wp],
@@ -1321,37 +1324,37 @@ def _triangulate_ring(
         count = int(read_scalar(count_wp, 0))
         return n_ring, twt.as_array2d(out_faces[0:count], wp.int32)
 
-    left = wp.empty(n_ring, dtype=wp.int32, device=device)
-    right = wp.empty(n_ring, dtype=wp.int32, device=device)
-    active = wp.empty(n_ring, dtype=wp.int32, device=device)
-    is_ear = wp.empty(n_ring, dtype=wp.int32, device=device)
-    selected = wp.empty(n_ring, dtype=wp.int32, device=device)
+    left = _launch.empty(n_ring, dtype=wp.int32, device=device)
+    right = _launch.empty(n_ring, dtype=wp.int32, device=device)
+    active = _launch.empty(n_ring, dtype=wp.int32, device=device)
+    is_ear = _launch.empty(n_ring, dtype=wp.int32, device=device)
+    selected = _launch.empty(n_ring, dtype=wp.int32, device=device)
     # [rounds run, loop condition, face count], seeded by ``init_ring``.
-    state = wp.empty(kernel_polyline.EAR_STATE_SIZE, dtype=wp.int32, device=device)
-    wp.launch(
+    state = _launch.empty(kernel_polyline.EAR_STATE_SIZE, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_polyline.init_ring, dim=n_ring, inputs=[left, right, active, state], device=device
     )
 
     def clip_round() -> None:
-        wp.launch(
+        _launch.launch(
             kernel_polyline.compute_ears,
             dim=n_ring,
             inputs=[points2d, left, right, active, is_ear],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_polyline.select_independent,
             dim=n_ring,
             inputs=[is_ear, left, right, selected],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_polyline.clip_selected,
             dim=n_ring,
             inputs=[selected, left, right, active, out_faces, state],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_polyline.ear_loop_continue,
             dim=1,
             inputs=[wp.int32(n_ring - 2), wp.int32(n_ring), state],

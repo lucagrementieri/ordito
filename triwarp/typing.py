@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar, cast, overlo
 
 import warp as wp
 
+from triwarp import _launch
+
 T = TypeVar("T")
 DType = TypeVar("DType")
 NDim = TypeVar("NDim", bound=int)
@@ -592,4 +594,4 @@ def _empty_ranked(
     dims = tuple(int(extent) for extent in shape)
     if len(dims) != ndim:
         raise ValueError(f"{ndim}D shape must have length {ndim}, got {shape!r}")
-    return cast("wp.array[DType, Any]", wp.empty(dims, dtype=dtype, device=device))
+    return cast("wp.array[DType, Any]", _launch.empty(dims, dtype=dtype, device=device))

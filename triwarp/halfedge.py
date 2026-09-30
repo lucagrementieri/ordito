@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import warp as wp
 
 import triwarp as tw
+from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.constants import INT32_MAX
 from triwarp.kernels import halfedge as kernel_halfedge
@@ -87,7 +88,7 @@ def halfedge_twins(
     [`face_adjacency`][triwarp.adjacency.face_adjacency]
     [`oriented_boundary_edges`][triwarp.boundary.oriented_boundary_edges]
     """
-    defect_counts = wp.zeros(2, dtype=wp.int32, device=faces.device)
+    defect_counts = _launch.zeros(2, dtype=wp.int32, device=faces.device)
     twins = _pair_halfedges(faces, n_vertices, defect_counts)
     if validate and twins.size > 0:
         _raise_twin_defects(read_values(defect_counts, 0, 2))
@@ -159,8 +160,8 @@ def require_matching_twins(faces: wp.array[wp.int32], twins: wp.array[wp.int32] 
     if n_halfedges == 0:
         return
     device = faces.device
-    mispaired = wp.zeros(1, dtype=wp.int32, device=device)
-    wp.launch(
+    mispaired = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_halfedge.count_mispaired_twins,
         dim=n_halfedges,
         inputs=[faces, twins, mispaired],
@@ -256,18 +257,18 @@ def vertex_one_rings(
     # Slots 0-1 are the twin table's two rejections when this call derives it, slot 2 the pinch
     # count below: one buffer, so a validated call reads all three back once rather than once for
     # the twins and again for the rings. The twin rejections are still raised first.
-    defect_counts = wp.zeros(3, dtype=wp.int32, device=device)
+    defect_counts = _launch.zeros(3, dtype=wp.int32, device=device)
     check_twins = twins is None and validate
     if twins is None:
         # The pairing writes only the first two slots, so it takes the buffer whole.
         twins = _pair_halfedges(faces, n_vertices, defect_counts)
 
-    offsets = wp.zeros(n_vertices + 1, dtype=wp.int32, device=device)
-    ring_halfedges = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    ring_halfedges = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0 or n_vertices == 0:
         if check_twins and n_halfedges > 0:
             _raise_twin_defects(read_values(defect_counts, 0, 2))
-        return ring_halfedges, offsets, wp.zeros(n_vertices, dtype=wp.bool, device=device)
+        return ring_halfedges, offsets, _launch.zeros(n_vertices, dtype=wp.bool, device=device)
 
     # One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row
     # 0 over all outgoing halfedges, row 1 over the boundary ones): every face contributes exactly
@@ -275,8 +276,8 @@ def vertex_one_rings(
     # flat face buffer -- no walk needed. The degrees are counted straight into ``offsets[1:]``,
     # already zeroed, and scanned there in place.
     counts = offsets[1:]
-    candidate_starts = wp.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
-    wp.launch(
+    candidate_starts = _launch.full((2, n_vertices), INT32_MAX, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_halfedge.ring_degrees_and_starts,
         dim=n_halfedges,
         inputs=[faces, twins, counts, candidate_starts],
@@ -286,13 +287,13 @@ def vertex_one_rings(
     # Deliberately NOT tw.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is n_halfedges, known on the host). Converting for symmetry
     # would add a device synchronization where there is currently none.
-    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+    _launch.array_scan(counts, out_array=counts, inclusive=True)
 
     # The walk resolves each vertex's start and boundary flag from the candidates itself, and
     # writes the flag for every vertex, so ``is_boundary`` needs no initial value.
-    is_boundary = wp.empty(n_vertices, dtype=wp.bool, device=device)
+    is_boundary = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     incomplete = defect_counts[2:3]
-    wp.launch(
+    _launch.launch(
         kernel_halfedge.write_one_rings,
         dim=n_vertices,
         inputs=[candidate_starts, twins, offsets, ring_halfedges, is_boundary, incomplete],
@@ -324,7 +325,7 @@ def _pair_halfedges(
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
-    twins = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
+    twins = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0:
         return twins
 
@@ -339,7 +340,7 @@ def _pair_halfedges(
 
     # Slot 0 counts edge-non-manifold edges, slot 1 edges whose two halfedges run the same way;
     # one buffer so the two rejections cost one readback between them rather than two.
-    wp.launch(
+    _launch.launch(
         kernel_halfedge.pair_sorted_halfedges,
         dim=n_halfedges,
         inputs=[faces, sorted_keys, order, twins, defect_counts],

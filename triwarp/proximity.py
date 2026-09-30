@@ -37,6 +37,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import (
     prefers_tiled_reduction,
     read_scalar,
@@ -188,15 +189,15 @@ def closest_point_on_mesh(
     n_faces = faces.size // 3
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
     if n_faces == 0:
         nan = float("nan")
-        out_closest = wp.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
-        out_distance = wp.full(m, float("inf"), dtype=wp.float32, device=device)
-        out_face = wp.full(m, -1, dtype=wp.int32, device=device)
+        out_closest = _launch.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
+        out_distance = _launch.full(m, float("inf"), dtype=wp.float32, device=device)
+        out_face = _launch.full(m, -1, dtype=wp.int32, device=device)
         return out_closest, out_distance, out_face
 
     if mesh is None:
@@ -206,10 +207,10 @@ def closest_point_on_mesh(
     if max_dist is None:
         max_dist = math.inf
 
-    out_closest = wp.empty(m, dtype=wp.vec3, device=device)
-    out_distance = wp.empty(m, dtype=wp.float32, device=device)
-    out_face = wp.empty(m, dtype=wp.int32, device=device)
-    wp.launch(
+    out_closest = _launch.empty(m, dtype=wp.vec3, device=device)
+    out_distance = _launch.empty(m, dtype=wp.float32, device=device)
+    out_face = _launch.empty(m, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_proximity.closest_point_on_mesh,
         dim=m,
         inputs=[mesh.id, points, wp.float32(max_dist), out_closest, out_distance, out_face],
@@ -304,21 +305,21 @@ def closest_point_on_edges(
 
     if m == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.empty(0, dtype=wp.float32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.empty(0, dtype=wp.float32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
         )
     if n_edges == 0:
         return (
-            wp.clone(queries),
-            wp.full(m, float("inf"), dtype=wp.float32, device=device),
-            wp.full(m, -1, dtype=wp.int32, device=device),
+            _launch.clone(queries),
+            _launch.full(m, float("inf"), dtype=wp.float32, device=device),
+            _launch.full(m, -1, dtype=wp.int32, device=device),
         )
 
     if bvh is None:
-        lower = wp.empty(n_edges, dtype=wp.vec3, device=device)
-        upper = wp.empty(n_edges, dtype=wp.vec3, device=device)
-        wp.launch(
+        lower = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        upper = _launch.empty(n_edges, dtype=wp.vec3, device=device)
+        _launch.launch(
             kernel_edges.edge_aabb_bounds,
             dim=n_edges,
             inputs=[vertices, edges, lower, upper],
@@ -338,10 +339,10 @@ def closest_point_on_edges(
         union_upper = np.maximum(np.array(max_bound, np.float32), np.array(query_upper, np.float32))
         max_dist = float(np.linalg.norm(union_upper - union_lower))
 
-    out_closest = wp.empty(m, dtype=wp.vec3, device=device)
-    out_distance = wp.empty(m, dtype=wp.float32, device=device)
-    out_edge = wp.empty(m, dtype=wp.int32, device=device)
-    wp.launch(
+    out_closest = _launch.empty(m, dtype=wp.vec3, device=device)
+    out_distance = _launch.empty(m, dtype=wp.float32, device=device)
+    out_edge = _launch.empty(m, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_proximity.closest_point_on_edges,
         dim=m,
         inputs=[
@@ -472,8 +473,8 @@ def mesh_to_mesh_distance(
         # the top of the tree. See ``_SEED_SAMPLE_TARGET``.
         seed_step = max(1, n_samples // _SEED_SAMPLE_TARGET)
         target_stride = max(1, n_faces_b // _SEED_SAMPLE_TARGET)
-        bounds = wp.full(3, math.inf, dtype=wp.float32, device=device)
-        wp.launch(
+        bounds = _launch.full(3, math.inf, dtype=wp.float32, device=device)
+        _launch.launch(
             kernel_proximity.sampled_corner_gap_sq,
             dim=(kernel_proximity.SEED_SLICES, (n_samples + seed_step - 1) // seed_step),
             inputs=[
@@ -488,7 +489,7 @@ def mesh_to_mesh_distance(
             ],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_proximity.sampled_corner_distance_min,
             dim=n_samples,
             inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, bounds],
@@ -507,7 +508,7 @@ def mesh_to_mesh_distance(
         # nothing measurable. ``max`` covers touching meshes, where the bound is ``0`` and any
         # positive limit keeps the exactly-zero-gap pair. The sampled bound above is published
         # into the limit by the identical rule, on the device (``publish_best_sq``).
-        bounds = wp.array(
+        bounds = _launch.array(
             np.array(
                 [
                     max(upper_bound * upper_bound * (1.0 + 1e-4), _MIN_POSITIVE_FLOAT32),
@@ -523,16 +524,16 @@ def mesh_to_mesh_distance(
     # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
     # input to a build. There is no second acceleration structure built over them -- the kernels
     # read the ``wp.Mesh`` built above's own BVH directly with ``wp.mesh_get_bvh``.
-    lower = wp.empty(n_faces_b, dtype=wp.vec3, device=device)
-    upper = wp.empty(n_faces_b, dtype=wp.vec3, device=device)
-    wp.launch(
+    lower = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
+    upper = _launch.empty(n_faces_b, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_triangles.face_aabb_bounds,
         dim=n_faces_b,
         inputs=[vertices_b, faces_b, lower, upper],
         device=device,
     )
-    distance_sq = wp.empty(n_faces_a, dtype=wp.float32, device=device)
-    witness = wp.empty(n_faces_a, dtype=wp.int32, device=device)
+    distance_sq = _launch.empty(n_faces_a, dtype=wp.float32, device=device)
+    witness = _launch.empty(n_faces_a, dtype=wp.int32, device=device)
     # The broad phase is wildly unbalanced -- most query faces return no candidate at all, while a
     # few carry most of the traversal -- so the walk runs in two passes on CUDA: a thread per face,
     # capped, then a *block* per face that exceeded the cap. See ``_QUERY_CANDIDATE_CAP``. On the
@@ -540,9 +541,9 @@ def mesh_to_mesh_distance(
     # re-walk; there the cap is disabled and the first pass settles every face instead.
     tiled = prefers_tiled_reduction(device)
     candidate_cap = _QUERY_CANDIDATE_CAP if tiled else INT32_MAX
-    overflow = wp.empty(n_faces_a if tiled else 1, dtype=wp.int32, device=device)
-    counter = wp.zeros(1, dtype=wp.int32, device=device)
-    wp.launch(
+    overflow = _launch.empty(n_faces_a if tiled else 1, dtype=wp.int32, device=device)
+    counter = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_proximity.face_to_mesh_distance,
         dim=n_faces_a,
         inputs=[
@@ -567,7 +568,7 @@ def mesh_to_mesh_distance(
         # ``n_faces_a`` blocks would put an empty block on nearly all of them.
         n_overflow = int(read_scalar(counter, 0))
         if n_overflow > 0:
-            wp.launch_tiled(
+            _launch.launch_tiled(
                 kernel_proximity.face_to_mesh_distance_tiled,
                 dim=n_overflow,
                 inputs=[
@@ -589,15 +590,15 @@ def mesh_to_mesh_distance(
     # One launch reduces the packed ``(distance_sq, face_a)`` key -- low half the winning face, high
     # half its squared distance's own float32 bits -- and a second writes that face's witness beside
     # it, so all three answers come back in one 16-byte readback.
-    result = wp.full(2, INT64_MAX, dtype=wp.int64, device=device)
-    wp.launch_tiled(
+    result = _launch.full(2, INT64_MAX, dtype=wp.int64, device=device)
+    _launch.launch_tiled(
         kernel_neighbors.nearest_key_argmin,
         dim=kernel_reduce.blocks_1d(n_faces_a),
         inputs=[distance_sq, result],
         block_dim=TILE_1D,
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_neighbors.nearest_key_partner, dim=1, inputs=[result, witness, result], device=device
     )
     key, face_b = (int(value) for value in result.numpy())
@@ -658,28 +659,28 @@ def normals_at_closest_faces(
     device = points.device
     m = points.size
     if m == 0:
-        return wp.empty(0, dtype=wp.vec3, device=device)
+        return _launch.empty(0, dtype=wp.vec3, device=device)
     if mesh.indices.size == 0:
         # Every query misses a mesh with no faces, and the kernel below maps a miss to face 0 -- of
         # a face_normals array that has no face 0, an out-of-bounds read that segfaults rather than
         # raising. Match closest_point_on_mesh's own zero-face convention instead.
         nan = float("nan")
-        return wp.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
+        return _launch.full(m, wp.vec3(nan, nan, nan), dtype=wp.vec3, device=device)
 
     if max_dist is None:
         max_dist = math.inf
-    out_normals = wp.empty(m, dtype=wp.vec3, device=device)
+    out_normals = _launch.empty(m, dtype=wp.vec3, device=device)
     if face_normals is None:
         # No table: the hit face's normal is formed in the query's thread, the same value the
         # per-face table would hold.
-        wp.launch(
+        _launch.launch(
             kernel_proximity.normals_at_closest_faces_computed,
             dim=m,
             inputs=[mesh.id, points, wp.float32(max_dist), mesh.points, mesh.indices, out_normals],
             device=device,
         )
         return out_normals
-    wp.launch(
+    _launch.launch(
         kernel_proximity.normals_at_closest_faces,
         dim=m,
         inputs=[mesh.id, points, wp.float32(max_dist), face_normals, out_normals],
@@ -802,9 +803,9 @@ def signed_distance_on_mesh(
     m = points.size
     n_faces = faces.size // 3
     if m == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
-        return wp.full(m, float("inf"), dtype=wp.float32, device=device)
+        return _launch.full(m, float("inf"), dtype=wp.float32, device=device)
 
     if mesh is not None and sign_mode == "winding":
         # wp.Mesh exposes no way to read back support_winding_number, so a supplied mesh cannot be
@@ -827,9 +828,9 @@ def signed_distance_on_mesh(
         )
     if max_dist is None:
         max_dist = math.inf
-    out_distance = wp.empty(m, dtype=wp.float32, device=device)
+    out_distance = _launch.empty(m, dtype=wp.float32, device=device)
     if sign_mode == "winding":
-        wp.launch(
+        _launch.launch(
             kernel_proximity.signed_distance_on_mesh_winding,
             dim=m,
             inputs=[
@@ -843,7 +844,7 @@ def signed_distance_on_mesh(
             device=device,
         )
         return out_distance
-    wp.launch(
+    _launch.launch(
         kernel_proximity.signed_distance_on_mesh,
         dim=m,
         inputs=[
@@ -1030,18 +1031,18 @@ def winding_number(
     n_queries = points.size
     n_faces = faces.size // 3
     if n_queries == 0:
-        return wp.empty(0, dtype=wp.float32, device=device)
+        return _launch.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
-        return wp.zeros(n_queries, dtype=wp.float32, device=device)
+        return _launch.zeros(n_queries, dtype=wp.float32, device=device)
 
     out_winding = (
-        wp.zeros(n_queries, dtype=wp.float32, device=device)
+        _launch.zeros(n_queries, dtype=wp.float32, device=device)
         if tiled
-        else wp.empty(n_queries, dtype=wp.float32, device=device)
+        else _launch.empty(n_queries, dtype=wp.float32, device=device)
     )
     if tiled:
         n_face_slices = max(1, (n_faces + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
-        wp.launch(
+        _launch.launch(
             kernel_proximity.winding_number_tiled,
             dim=(n_queries, n_face_slices),
             inputs=[
@@ -1055,7 +1056,7 @@ def winding_number(
             device=device,
         )
     else:
-        wp.launch(
+        _launch.launch(
             kernel_proximity.winding_number,
             dim=n_queries,
             inputs=[vertices, faces, wp.int32(n_faces), points, out_winding],
@@ -1117,29 +1118,29 @@ def query_mesh_aabb_with_offsets(
         raise ValueError("max_hits must be >= 1")
 
     if m == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+        return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
             1, dtype=wp.int32, device=device
         )
 
     # The counts are written behind the leading zero of the ``m + 1`` offsets buffer and scanned
     # there in place, so no separate count buffer is allocated; an all-zero count scans to all-zero
     # offsets, which is exactly what the empty case wants to return.
-    offsets = wp.zeros(m + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     hit_counts = twt.as_dense(offsets[1:])
-    wp.launch(
+    _launch.launch(
         kernel_proximity.query_mesh_aabb_count,
         dim=m,
         inputs=[query_lower, query_upper, mesh.id, wp.int32(max_hits), hit_counts],
         device=device,
     )
-    wp.utils.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
+    _launch.array_scan(hit_counts, out_array=hit_counts, inclusive=True)
     # One 4-byte read of the total sizes the candidate buffer.
     total_hits = int(read_scalar(offsets))
     if total_hits == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), offsets
+        return _launch.empty(0, dtype=wp.int32, device=device), offsets
 
-    candidate_indices_flat = wp.empty(total_hits, dtype=wp.int32, device=device)
-    wp.launch(
+    candidate_indices_flat = _launch.empty(total_hits, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_proximity.query_mesh_aabb_neighbors,
         dim=m,
         inputs=[
@@ -1222,20 +1223,20 @@ def containing_faces_2d(
     m = points.size
     n_faces = faces.size // 3
     if m == 0:
-        return wp.empty(0, dtype=wp.int32, device=device)
+        return _launch.empty(0, dtype=wp.int32, device=device)
     if n_faces == 0:
-        return wp.full(m, -1, dtype=wp.int32, device=device)
+        return _launch.full(m, -1, dtype=wp.int32, device=device)
 
-    lifted = wp.empty(vertices.size, dtype=wp.vec3, device=device)
-    wp.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
+    lifted = _launch.empty(vertices.size, dtype=wp.vec3, device=device)
+    _launch.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
     # One readback: the search radius has to be in the triangulation's own units and nothing else
     # knows its scale.
     search_radius = _CONTAINMENT_SEARCH_SCALE * tw.bounds.enclosing_diagonal(lifted)
     require_nonempty_mesh(faces, "containing_faces_2d")
     # Both buffers are local to this call (``lifted`` is built above), so no copy is needed.
     mesh = wp.Mesh(points=lifted, indices=faces)
-    out_face = wp.empty(m, dtype=wp.int32, device=device)
-    wp.launch(
+    out_face = _launch.empty(m, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_proximity.face_containing_point_2d,
         dim=m,
         inputs=[

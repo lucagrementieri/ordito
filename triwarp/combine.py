@@ -20,6 +20,7 @@ from collections.abc import Sequence
 import warp as wp
 
 import triwarp as tw
+from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import combine as kernel_combine
 
@@ -68,8 +69,8 @@ def concatenate(
     vertex_counts = [vertices.size for vertices, _ in meshes_data]
 
     if sum(vertex_counts) == 0:
-        concatenated_vertices = wp.empty(0, dtype=wp.vec3, device=device)
-        vertex_offsets = wp.zeros(len(meshes_data) + 1, dtype=wp.int32, device=device)
+        concatenated_vertices = _launch.empty(0, dtype=wp.vec3, device=device)
+        vertex_offsets = _launch.zeros(len(meshes_data) + 1, dtype=wp.int32, device=device)
     else:
         concatenated_vertices, vertex_offsets = tw.array.pack_1d_arrays(
             [vertices for vertices, _ in meshes_data]
@@ -78,7 +79,7 @@ def concatenate(
     concatenated_faces, piece_starts = tw.array.pack_1d_arrays([faces for _, faces in meshes_data])
     total_indices = concatenated_faces.size
     if total_indices > 0:
-        wp.launch(
+        _launch.launch(
             kernel_combine.offset_packed_faces,
             dim=total_indices,
             inputs=[piece_starts, vertex_offsets, concatenated_faces],
@@ -147,7 +148,7 @@ def split(
     if vertex_offsets.size == 2:
         # One component is the whole of both buffers, so its offsets need no readback.
         if copy:
-            return [(wp.clone(vertices_all), wp.clone(faces_all))]
+            return [(_launch.clone(vertices_all), _launch.clone(faces_all))]
         return [(vertices_all, faces_all)]
     component_vertices = tw.array.split(vertices_all, vertex_offsets, copy=copy)
     component_faces = tw.array.split(faces_all, face_offsets, copy=copy, row_size=3)
@@ -203,10 +204,10 @@ def split_with_offsets(
     n_faces = faces.size // 3
     if n_faces == 0:
         return (
-            wp.empty(0, dtype=wp.vec3, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
-            wp.empty(0, dtype=wp.int32, device=device),
-            wp.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.vec3, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
         )
 
     face_labels = tw.adjacency.face_connected_component_labels(faces)
@@ -214,8 +215,8 @@ def split_with_offsets(
     sorted_labels, sorted_face_ids = tw.array.sort_and_argsort(face_labels)
 
     # Segment boundaries of the label-sorted array: position 0, every label change, and the end.
-    is_start = wp.empty(n_faces + 1, dtype=wp.bool, device=device)
-    wp.launch(
+    is_start = _launch.empty(n_faces + 1, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_combine.label_run_starts,
         dim=n_faces,
         inputs=[sorted_labels, is_start],
@@ -227,7 +228,7 @@ def split_with_offsets(
         component_vertices, component_faces = tw.selection.submesh_from_face_indices(
             vertices, faces, sorted_face_ids
         )
-        vertex_offsets = wp.array([0, component_vertices.size], dtype=wp.int32, device=device)
+        vertex_offsets = _launch.array([0, component_vertices.size], dtype=wp.int32, device=device)
         return component_vertices, vertex_offsets, component_faces, face_offsets
 
     vertices_all, vertex_offsets, faces_all = tw.selection.submeshes_from_face_groups(

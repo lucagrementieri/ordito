@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import warp as wp
 
+from triwarp import _launch
 from triwarp._device import require_nonempty_mesh, require_valid_faces
 from triwarp.mesh import Trimesh
 
@@ -69,25 +70,25 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[st
     result: dict[str, wp.array[Any]] = {}
 
     points = np.ascontiguousarray(mesh.points, dtype=np.float32)
-    result["vertices"] = wp.array(points, dtype=wp.vec3, device=device)
+    result["vertices"] = _launch.array(points, dtype=wp.vec3, device=device)
 
     faces_np = mesh.cells_dict.get("triangle")
     if faces_np is not None and len(faces_np) > 0:
         faces_flat = np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32)
-        result["faces"] = wp.array(faces_flat, dtype=wp.int32, device=device)
+        result["faces"] = _launch.array(faces_flat, dtype=wp.int32, device=device)
 
     point_data = mesh.point_data
 
     normals = _stack_columns(point_data, _NORMAL_COLUMNS)
     if normals is not None:
-        result["vertex_normals"] = wp.array(
+        result["vertex_normals"] = _launch.array(
             np.ascontiguousarray(normals, dtype=np.float32), dtype=wp.vec3, device=device
         )
 
     for names in _UV_COLUMN_SETS:
         uv = _stack_columns(point_data, names)
         if uv is not None:
-            result["uv"] = wp.array(
+            result["uv"] = _launch.array(
                 np.ascontiguousarray(uv, dtype=np.float32), dtype=wp.vec2, device=device
             )
             break
@@ -101,13 +102,13 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[st
         colors = colors_raw.astype(np.float32)
         if np.issubdtype(colors_raw.dtype, np.integer):
             colors /= 255.0
-        result["colors"] = wp.array(
+        result["colors"] = _launch.array(
             np.ascontiguousarray(colors, dtype=np.float32), dtype=color_dtype, device=device
         )
 
     face_normals = _face_normals_from_cell_data(mesh)
     if face_normals is not None:
-        result["face_normals"] = wp.array(
+        result["face_normals"] = _launch.array(
             np.ascontiguousarray(face_normals, dtype=np.float32), dtype=wp.vec3, device=device
         )
 
@@ -221,10 +222,10 @@ def mesh_from_numpy(
     --------
     [`load_mesh`][triwarp.io.load_mesh]
     """
-    vertices_wp = wp.array(
+    vertices_wp = _launch.array(
         np.ascontiguousarray(vertices, dtype=np.float32), dtype=wp.vec3, device=device
     )
-    faces_wp = wp.array(
+    faces_wp = _launch.array(
         np.ascontiguousarray(faces.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
     # This is the trust boundary where an external caller's raw NumPy connectivity first enters

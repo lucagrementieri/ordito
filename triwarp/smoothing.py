@@ -59,7 +59,7 @@ import warp.sparse as wps
 import triwarp as tw
 import triwarp.linalg as twl
 import triwarp.typing as twt
-from triwarp import laplacian
+from triwarp import _launch, laplacian
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
@@ -154,7 +154,7 @@ def filter_laplacian(
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
     positions = _as_vec3d(vertices)
@@ -181,7 +181,7 @@ def filter_laplacian(
         # gradient needs. So each pass is a fixed number of fused launches with no reduction and
         # no convergence test, the same launch sequence every pass: issued once, then recorded and
         # replayed where the device has graphs.
-        scratch = [wp.empty(n, dtype=wp.vec3d, device=device) for _ in range(2)]
+        scratch = [_launch.empty(n, dtype=wp.vec3d, device=device) for _ in range(2)]
         coeff = wp.float64(lamb)
         graph = None
         for index in range(iterations):
@@ -207,9 +207,9 @@ def filter_laplacian(
         component_rows = [components[column] for column in range(3)]
         solution_rows = [solutions[column] for column in range(3)]
         for _ in range(iterations):
-            wp.map(kernel_smoothing.extract_components, positions, out=component_rows)
+            _launch.map(kernel_smoothing.extract_components, positions, out=component_rows)
             # Seeded with the right-hand side, which is the current position component.
-            wp.copy(solutions, components)
+            _launch.copy(solutions, components)
             for column in range(3):
                 wpl.bicgstab(
                     system,
@@ -220,7 +220,7 @@ def filter_laplacian(
                     maxiter=10 * n,
                     M=preconditioner,
                 )
-            wp.map(
+            _launch.map(
                 kernel_smoothing.combine_components,
                 solution_rows[0],
                 solution_rows[1],
@@ -230,7 +230,7 @@ def filter_laplacian(
             if constraint is not None:
                 _apply_volume_constraint(positions, faces, vol_ini, center_ini, constraint)
     else:
-        nxt = wp.empty(n, dtype=wp.vec3d, device=device)
+        nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
         coeff = wp.float64(lamb)
         for _ in range(iterations):
             _diffuse_pass(operator, positions, coeff, nxt)
@@ -252,7 +252,7 @@ def _implicit_fixed_point_steps(operator: wps.BsrMatrix[wp.float32], lamb: float
     """
     n_rows = int(operator.nrow)
     sums = twt.empty_1d(n_rows, wp.float64, device=operator.values.device)
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.operator_row_abs_sums,
         dim=n_rows,
         inputs=[operator.offsets, operator.values, sums],
@@ -280,7 +280,7 @@ def _implicit_fixed_point_pass(
     for step in range(steps):
         source = positions if step == 0 else scratch[(step - 1) % 2]
         target = positions if step == steps - 1 else scratch[step % 2]
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.implicit_laplacian_step,
             dim=positions.size,
             inputs=[operator.offsets, operator.columns, operator.values, coeff, positions, source],
@@ -303,7 +303,7 @@ def _build_implicit_system(
     nnz = operator.nnz_sync()
     n_triplets = nnz + n
     rows, cols, vals = tw.array.triplet_buffers(n_triplets, wp.float64, device)
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.implicit_laplacian_triplets,
         dim=n,
         inputs=[
@@ -348,7 +348,7 @@ def _apply_volume_constraint(
     # the pass count is the whole point of this loop. ``rescale_to_volume`` forms the ratio itself
     # and applies the same two skip conditions.
     scratch.accumulate(positions, faces)
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.rescale_to_volume,
         dim=positions.size,
         inputs=[wp.float64(vol_ini), scratch.volume, center, positions],
@@ -438,9 +438,9 @@ def inflate(
     device = faces.device
     n_vertices = vertices.size
     if n_vertices == 0 or faces.size == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
-    positions = wp.clone(vertices)
+    positions = _launch.clone(vertices)
     # The relaxation operator is hoisted for the same reason the step kernel below is, and it is the
     # larger of the two: ``filter_laplacian`` builds the uniform operator per call, and at
     # ``equal_weight=True`` that operator is the mesh's topology, which no pass changes.
@@ -462,11 +462,11 @@ def inflate(
     # Allocated once beside the hoisted kernel, for the same reason: the vertex count is fixed, and
     # the buffer is dead by the end of the pass that writes it, so a fresh one each pass is an
     # allocation per iteration and nothing else.
-    displaced = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    displaced = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for step in range(iterations):
         amount = pressure * (step + 1) / iterations if gradual else pressure
         normals = tw.vertices.vertex_normals(positions, faces)
-        wp.launch(
+        _launch.launch(
             step_kernel,
             dim=n_vertices,
             inputs=[positions, normals, wp.float32(amount)],
@@ -530,15 +530,15 @@ def filter_humphrey(
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
     positions = _as_vec3d(vertices)
-    original = wp.clone(positions)
+    original = _launch.clone(positions)
 
-    lv = wp.empty(n, dtype=wp.vec3d, device=device)
-    b = wp.empty(n, dtype=wp.vec3d, device=device)
-    nxt = wp.empty(n, dtype=wp.vec3d, device=device)
+    lv = _launch.empty(n, dtype=wp.vec3d, device=device)
+    b = _launch.empty(n, dtype=wp.vec3d, device=device)
+    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     alpha64 = wp.float64(alpha)
     beta64 = wp.float64(beta)
     rows = (operator.offsets, operator.columns, operator.values)
@@ -547,14 +547,14 @@ def filter_humphrey(
         # row. ``lv`` still crosses between them -- the update needs ``L.v`` *and* ``L.b`` -- but
         # ``L.b`` never leaves a register. ``positions`` doubles as the previous-iterate ``q`` (it
         # is only read this pass).
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.humphrey_residual_pass,
             dim=n,
             inputs=[*rows, positions, original, alpha64],
             outputs=[lv, b],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.humphrey_update_pass,
             dim=n,
             inputs=[*rows, lv, b, beta64],
@@ -637,12 +637,12 @@ def filter_spikes(
     device = faces.device
     n_vertices = vertices.size
     if n_vertices == 0 or faces.size == 0 or max_iter == 0:
-        cloned = wp.clone(vertices)
+        cloned = _launch.clone(vertices)
         return (cloned, 0) if return_count else cloned
 
-    positions = wp.clone(vertices)
+    positions = _launch.clone(vertices)
     flattened = 0
-    spikes = wp.empty(n_vertices, dtype=wp.bool, device=device)
+    spikes = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     # Built once and handed to every pass. ``filter_neighborhood_average`` would build it per call,
     # and at ``equal_weight=True`` -- its default, and what ``_resolved_operator`` asks for -- the
     # operator reads no positions at all: every off-diagonal weight is ``1`` before the row
@@ -657,7 +657,9 @@ def filter_spikes(
         # ``2 * pi - angle_sum`` instead: the condition becomes ``defect > 2 * pi - min_angle_sum``,
         # and the defect is the quantity ``vertices.vertex_defects`` already returns -- re-deriving
         # the sum would mean scattering the same corner angles a second time.
-        wp.map(kernel_array.greater, defects, wp.float32(2.0 * math.pi - min_angle_sum), out=spikes)
+        _launch.map(
+            kernel_array.greater, defects, wp.float32(2.0 * math.pi - min_angle_sum), out=spikes
+        )
         # One readback per pass, and it is the stopping test: whether any vertex is still a spike is
         # a device-side fact that a Python loop cannot branch on otherwise. ``reduce.sum`` counts a
         # ``wp.bool`` mask directly, so widening it to ``int32`` first would allocate ``4n`` bytes
@@ -668,7 +670,7 @@ def filter_spikes(
         smoothed = filter_neighborhood_average(
             positions, faces, iterations=1, laplacian_operator=operator
         )
-        wp.map(kernel_smoothing.select_position, smoothed, positions, spikes, out=positions)
+        _launch.map(kernel_smoothing.select_position, smoothed, positions, spikes, out=positions)
         flattened += n_spikes
     return (positions, flattened) if return_count else positions
 
@@ -764,22 +766,22 @@ def equalize_triangle_areas(
     n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     vf_indices, offsets = (
         vertex_faces
         if vertex_faces is not None
         else tw.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    positions = wp.clone(vertices)
-    normals = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
-    nxt = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    positions = _launch.clone(vertices)
+    normals = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for _ in range(iterations):
         if no_shrinkage:
             # Recomputed per pass rather than hoisted: the tangent plane the solve is confined to is
             # the one through the vertex *now*, and after a pass that is a different plane.
             normals = tw.vertices.vertex_normals(positions, faces)
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.equalize_area_step,
             dim=n_vertices,
             inputs=[
@@ -870,22 +872,22 @@ def relax_keep_volume(
     n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     unique_edges, _ = tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     adjacency = tw.graph.edges_to_csr(n_vertices, unique_edges)
     offsets, columns = adjacency.offsets, adjacency.columns
-    positions = wp.clone(vertices)
-    push = wp.empty(n_vertices, dtype=wp.vec3, device=device)
-    nxt = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    positions = _launch.clone(vertices)
+    push = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for _ in range(iterations):
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.ring_push_forces,
             dim=n_vertices,
             inputs=[positions, offsets, columns, flags, wp.float32(force), push],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.apply_push_keeping_volume,
             dim=n_vertices,
             inputs=[positions, offsets, columns, flags, push, vertices, limit, nxt],
@@ -990,7 +992,7 @@ def relax_approx(
     n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     # Built once from the input positions: which vertices are in the ball is a decision about the
     # surface's connectivity, and the relaxation moves everything by less than the radius anyway.
@@ -999,10 +1001,10 @@ def relax_approx(
     neighbor_indices, neighbor_offsets, _ = tw.neighbors.geodesic_ball(
         vertices, faces, dilate_radius, min_count=1
     )
-    positions = wp.clone(vertices)
-    nxt = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    positions = _launch.clone(vertices)
+    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for _ in range(iterations):
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.relax_approx_step,
             dim=n_vertices,
             inputs=[
@@ -1054,7 +1056,7 @@ def _relaxation_state(
     if n_vertices == 0 or iterations == 0:
         return None, limit
     if region is None:
-        return wp.full(n_vertices, True, dtype=wp.bool, device=vertices.device), limit
+        return _launch.full(n_vertices, True, dtype=wp.bool, device=vertices.device), limit
     return region, limit
 
 
@@ -1140,7 +1142,7 @@ def filter_taubin(
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     operator = None if recompute else _resolved_operator(vertices, faces, laplacian_operator)
     # The recompute path reassembles the operator every pass from *moved* positions, but over
@@ -1152,7 +1154,7 @@ def filter_taubin(
         else None
     )
     positions = _as_vec3d(vertices)
-    nxt = wp.empty(n, dtype=wp.vec3d, device=device)
+    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     for index in range(iterations):
         pass_operator = (
             laplacian.laplacian(_as_vec3(positions), faces, equal_weight=False, pattern=pattern)
@@ -1215,17 +1217,17 @@ def filter_neighborhood_average(
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     # Symmetric adjacency (undirected 1-ring) so boundary vertices average over all their
     # neighbors, matching Open3D's ``adjacency_list``; the directed default is asymmetric there.
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
     positions = _as_vec3d(vertices)
-    nxt = wp.empty(n, dtype=wp.vec3d, device=device)
+    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     for _ in range(iterations):
         # The kernel reads its own degree off the CSR row it is already walking:
         # degree(i) = offsets[i + 1] - offsets[i].
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.neighborhood_average_pass,
             dim=n,
             inputs=[operator.offsets, operator.columns, operator.values, positions],
@@ -1309,7 +1311,7 @@ def filter_mut_dif_laplacian(
     device = vertices.device
     n = vertices.size
     if n == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     operator = _resolved_operator(vertices, faces, laplacian_operator)
     positions = _as_vec3d(vertices)
@@ -1321,10 +1323,10 @@ def filter_mut_dif_laplacian(
     normals = mean_vertex_normals(n, faces, face_normals)
     eps = 0.01 * float(tw.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
-    lv = wp.empty(n, dtype=wp.vec3d, device=device)
-    adil = wp.empty(n, dtype=wp.float64, device=device)
-    adil_sum = wp.zeros(1, dtype=wp.float64, device=device)
-    nxt = wp.empty(n, dtype=wp.vec3d, device=device)
+    lv = _launch.empty(n, dtype=wp.vec3d, device=device)
+    adil = _launch.empty(n, dtype=wp.float64, device=device)
+    adil_sum = _launch.zeros(1, dtype=wp.float64, device=device)
+    nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
     # (fixed), this pass's, and the eps-probe's, with the calibrated slope beside them. Reading any
     # of them back cost a full pipeline drain per smoothing pass -- and the pass count is the whole
@@ -1336,9 +1338,11 @@ def filter_mut_dif_laplacian(
     # rather than in the last bits.
     constraint = None
     if volume_constraint:
-        probe = wp.empty(n, dtype=wp.vec3d, device=device)
+        probe = _launch.empty(n, dtype=wp.vec3d, device=device)
         scratch = _VolumeScratch.for_faces(faces, device)
-        vol_ini, vol_probe, slope = (wp.zeros(1, dtype=wp.float64, device=device) for _ in range(3))
+        vol_ini, vol_probe, slope = (
+            _launch.zeros(1, dtype=wp.float64, device=device) for _ in range(3)
+        )
         scratch.accumulate(positions, faces, vol_ini)
         constraint = (probe, scratch, vol_ini, vol_probe, slope)
     inv_n = wp.float64(1.0 / n)
@@ -1346,22 +1350,22 @@ def filter_mut_dif_laplacian(
     for index in range(iterations):
         # The mean diffusion coefficient is reduced on device and consumed by the step kernel
         # directly, so the loop body issues no host synchronisation.
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.mut_dif_adil_pass,
             dim=n,
             inputs=[operator.offsets, operator.columns, operator.values, positions, normals],
             outputs=[lv, adil],
             device=device,
         )
-        adil_sum.zero_()
-        wp.launch_tiled(
+        _launch.zero_(adil_sum)
+        _launch.launch_tiled(
             kernel_reduce.SUM1D_TILED[wp.float64],
             dim=[n_blocks],
             inputs=[adil, adil_sum],
             block_dim=TILE_1D,
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
             inputs=[positions, lv, adil, adil_sum, inv_n, wp.float64(lamb)],
@@ -1374,7 +1378,7 @@ def filter_mut_dif_laplacian(
             vol_cur = scratch.volume
             scratch.accumulate(positions, faces)
             if index == 0:
-                wp.map(
+                _launch.map(
                     kernel_smoothing.add_scaled_normal,
                     positions,
                     normals,
@@ -1382,13 +1386,13 @@ def filter_mut_dif_laplacian(
                     out=probe,
                 )
                 scratch.accumulate(probe, faces, vol_probe)
-                wp.launch(
+                _launch.launch(
                     kernel_smoothing.mut_dif_volume_slope,
                     dim=1,
                     inputs=[vol_cur, vol_probe, wp.float64(eps), slope],
                     device=device,
                 )
-            wp.launch(
+            _launch.launch(
                 kernel_smoothing.mut_dif_volume_correct,
                 dim=n,
                 inputs=[normals, vol_ini, vol_cur, slope],
@@ -1416,8 +1420,8 @@ class _VolumeScratch(NamedTuple):
         """Allocate the scratch for ``faces``' face count."""
         n_faces = faces.size // 3
         return cls(
-            wp.empty(n_faces, dtype=wp.float64, device=device),
-            wp.empty(1, dtype=wp.float64, device=device),
+            _launch.empty(n_faces, dtype=wp.float64, device=device),
+            _launch.empty(1, dtype=wp.float64, device=device),
         )
 
     def accumulate(
@@ -1437,9 +1441,9 @@ class _VolumeScratch(NamedTuple):
         out = self.volume if out_volume is None else out_volume
         n_faces = self.face_volumes.size
         if n_faces == 0:
-            out.zero_()
+            _launch.zero_(out)
             return
-        wp.launch(
+        _launch.launch(
             kernel_triangles.FACE_SIGNED_VOLUMES[wp.vec3d],
             dim=n_faces,
             inputs=[positions, faces, _ORIGIN_D, self.face_volumes],
@@ -1458,7 +1462,7 @@ def _diffuse_pass(
     # thread, so no intermediate ``L.v`` buffer is written or read back. Shared by the explicit
     # branch of `filter_laplacian` and by `filter_taubin`, whose only difference is that its
     # ``coeff`` alternates sign.
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.diffuse_vec3_pass,
         dim=positions.size,
         inputs=[operator.offsets, operator.columns, operator.values, positions, coeff],
@@ -1532,7 +1536,7 @@ def filter_implicit_fairing(
     n = vertices.size
     n_faces = faces.size // 3
     if n == 0 or n_faces == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     positions = _as_vec3d(vertices)
     rhs = _component_columns(n, device)
@@ -1574,7 +1578,7 @@ def filter_implicit_fairing(
             # left there. One batched solve advances all three columns together; the operator is
             # rebuilt every pass, so there is no state to hoist. The Dirichlet branch below forms
             # its own right-hand side over the free rows, so it takes neither.
-            wp.map(
+            _launch.map(
                 kernel_smoothing.seed_and_mass_weight_components,
                 positions,
                 mass,
@@ -1590,7 +1594,7 @@ def filter_implicit_fairing(
                 maxiter=10 * n,
                 preconditioner="chebyshev",
             )
-            wp.map(
+            _launch.map(
                 kernel_smoothing.combine_components,
                 solution_rows[0],
                 solution_rows[1],
@@ -1605,7 +1609,7 @@ def filter_implicit_fairing(
         interior_system, interior_rhs = twl.assemble_interior_system(
             system, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.pinned, dirichlet.n_free
         )
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.add_interior_mass_rhs,
             dim=n,
             inputs=[dirichlet.fixed_mask, dirichlet.free_map, mass, positions, interior_rhs],
@@ -1615,7 +1619,7 @@ def filter_implicit_fairing(
         # Seed CG with the free vertices' current positions, exactly as the unreduced branch above
         # does -- the right-hand side is not a position, and an unreferenced vertex whose row and
         # right-hand side are both zero would be left wherever the seed put it.
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.gather_free_positions_2d,
             dim=n,
             inputs=[dirichlet.fixed_mask, dirichlet.free_map, positions, solution_2d],
@@ -1629,7 +1633,7 @@ def filter_implicit_fairing(
             maxiter=10 * dirichlet.n_free,
             preconditioner="chebyshev",
         )
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.scatter_free_positions,
             dim=n,
             inputs=[
@@ -1681,8 +1685,8 @@ def _dirichlet_state(
     # on the boundary (a single triangle, a fan, a strip, a small hole patch) would then have the
     # unconstrained flow move every vertex the caller asked to pin. The caller reads ``n_free`` and
     # returns the input unchanged instead.
-    pinned = wp.zeros((3, n), dtype=wp.float64, device=device)
-    wp.map(
+    pinned = _launch.zeros((3, n), dtype=wp.float64, device=device)
+    _launch.map(
         kernel_smoothing.extract_components, positions, out=[pinned[column] for column in range(3)]
     )
     return _Dirichlet(
@@ -1690,7 +1694,7 @@ def _dirichlet_state(
         free_map,
         n_free,
         twt.as_array2d(pinned, wp.float64),
-        twt.as_array2d(wp.zeros((3, n_free), dtype=wp.float64, device=device), wp.float64),
+        twt.as_array2d(_launch.zeros((3, n_free), dtype=wp.float64, device=device), wp.float64),
     )
 
 
@@ -1704,7 +1708,7 @@ def _component_columns(n: int, device: wp.DeviceLike) -> twt.Array2dFloat64:
     worst column's rather than the sum of three separate solves. Both that solver and ``wp.map``'s
     multi-output form read the rows as contiguous slices of this one allocation.
     """
-    return twt.as_array2d(wp.empty((3, n), dtype=wp.float64, device=device), wp.float64)
+    return twt.as_array2d(_launch.empty((3, n), dtype=wp.float64, device=device), wp.float64)
 
 
 def smooth_region_fixed_rim(
@@ -1762,7 +1766,7 @@ def smooth_region_fixed_rim(
     require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
     region = _region_topology(vertices, faces, free_mask)
     if region is None:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
     return _solve_region_fixed_rim(vertices, faces, free_mask, region, stabilizer)
 
 
@@ -1820,7 +1824,7 @@ def smooth_region(
     require_same_device(vertices=vertices, faces=faces, free_mask=free_mask)
     region = _region_topology(vertices, faces, free_mask)
     if region is None:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
     return _solve_region_smooth(vertices, faces, free_mask, region, edge_weights)
 
 
@@ -1924,16 +1928,16 @@ def refine_and_smooth_region(
 
     n = vertices.size
     # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
-    new_verts = wp.zeros(n, dtype=wp.bool, device=device)
+    new_verts = _launch.zeros(n, dtype=wp.bool, device=device)
     # Warp rejects a zero-length slice, and subdivision may have added no vertices at all.
     if n > n_vertices_before:
-        new_verts[n_vertices_before:].fill_(True)
+        _launch.fill_(new_verts[n_vertices_before:], True)
     # One edge grouping serves the boundary mask and both regions' topology: the solves move
     # vertices, never connectivity.
     edges = tw.edges.edges_unique(faces, n_vertices=n, validate=False)
     bd_mask = _boundary_verts_mask(n, edges, device)
-    free = wp.empty(n, dtype=wp.bool, device=device)
-    wp.map(kernel_array.mask_and_not, new_verts, bd_mask, out=free)
+    free = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.map(kernel_array.mask_and_not, new_verts, bd_mask, out=free)
 
     # Both solves run over one region of one connectivity, so it is derived once for the pair.
     region = _region_topology(vertices, faces, free, edges)
@@ -1947,7 +1951,7 @@ def refine_and_smooth_region(
 
     if natural_smooth:
         edges_bd = tw.selection.region_boundary_edges(faces, patch_face_mask, n_vertices=n)
-        endpoints = wp.clone(twt.as_array2d(edges_bd, wp.int32).reshape(-1))
+        endpoints = _launch.clone(twt.as_array2d(edges_bd, wp.int32).reshape(-1))
         incident = tw.array.indices_to_mask(endpoints, n, device=device)
         incident = tw.selection.expand_vertex_mask(faces, incident, 5)
         incident = tw.selection.shrink_vertex_mask(faces, incident, 2)
@@ -1958,8 +1962,8 @@ def refine_and_smooth_region(
         # readback.
         if tw.reduce.any(incident):
             # ``bd_mask`` is still this mesh's: the solves above moved vertices, not connectivity.
-            free2 = wp.empty(n, dtype=wp.bool, device=device)
-            wp.map(kernel_array.mask_and_not, incident, bd_mask, out=free2)
+            free2 = _launch.empty(n, dtype=wp.bool, device=device)
+            _launch.map(kernel_array.mask_and_not, incident, bd_mask, out=free2)
             region = _region_topology(vertices, faces, free2, edges, incidence)
             if region is not None:
                 vertices = _solve_region_fixed_rim(vertices, faces, free2, region, 0.0)
@@ -1978,12 +1982,12 @@ def _boundary_verts_mask(
     are a histogram of the grouping's ``inverse``, and no second edge grouping is built.
     """
     unique_edges, inverse = edges
-    counts = wp.zeros(int(unique_edges.shape[0]), dtype=wp.int32, device=device)
-    wp.launch(
+    counts = _launch.zeros(int(unique_edges.shape[0]), dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_scatter.count_occurrences, dim=inverse.size, inputs=[inverse, counts], device=device
     )
-    mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
-    wp.launch(
+    mask = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_smoothing.mark_single_use_edge_vertices,
         dim=int(unique_edges.shape[0]),
         inputs=[counts, unique_edges],
@@ -2053,26 +2057,26 @@ def _region_topology(
         # A counting sort with no global sort in it -- degrees, a scan, a ranked fill -- and one
         # per-row sort, which puts each row in neighbour order (see ``kernels/smoothing``). The
         # offsets are scanned in place and the total, ``2 m`` less any self-loops, is never read.
-        incidence_offsets = wp.zeros(n + 1, dtype=wp.int32, device=device)
+        incidence_offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
         counts = twt.as_dense(incidence_offsets[1:])
         ranks = twt.empty_2d((m, 2), wp.int32, device=device)
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.incident_edge_counts,
             dim=m,
             inputs=[unique_edges],
             outputs=[counts, ranks],
             device=device,
         )
-        wp.utils.array_scan(counts, counts, inclusive=True)
-        incident_edges = wp.empty(2 * m, dtype=wp.int32, device=device)
-        wp.launch(
+        _launch.array_scan(counts, counts, inclusive=True)
+        incident_edges = _launch.empty(2 * m, dtype=wp.int32, device=device)
+        _launch.launch(
             kernel_smoothing.scatter_incident_edges,
             dim=m,
             inputs=[unique_edges, incidence_offsets, ranks],
             outputs=[incident_edges],
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_array.sort_segments,
             dim=n,
             inputs=[incidence_offsets, incident_edges],
@@ -2083,20 +2087,20 @@ def _region_topology(
     # The free-free pattern, sized without a readback: a free row holds its diagonal and at most
     # its degree of neighbours, so ``n_free + 2 m`` bounds the whole. Every reader walks rows
     # through the offsets, so the unused tail is never touched.
-    pattern_offsets = wp.zeros(n_free + 1, dtype=wp.int32, device=device)
+    pattern_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     pattern_counts = twt.as_dense(pattern_offsets[1:])
     pattern_inputs = [incidence_offsets, incident_edges, unique_edges, free_mask, free_map]
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.free_pattern_counts,
         dim=n,
         inputs=pattern_inputs,
         outputs=[pattern_counts],
         device=device,
     )
-    wp.utils.array_scan(pattern_counts, pattern_counts, inclusive=True)
+    _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
     capacity = n_free + 2 * m
-    pattern_columns = wp.empty(capacity, dtype=wp.int32, device=device)
-    wp.launch(
+    pattern_columns = _launch.empty(capacity, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_smoothing.free_pattern_columns,
         dim=n,
         inputs=[*pattern_inputs, pattern_offsets],
@@ -2128,19 +2132,19 @@ def _solve_region_fixed_rim(
     n = vertices.size
     free_map, n_free = region.free_map, region.n_free
     weights, unit = _edge_weights(vertices, faces, "unit", region)
-    values = wp.empty(region.pattern_capacity, dtype=wp.float64, device=device)
+    values = _launch.empty(region.pattern_capacity, dtype=wp.float64, device=device)
     # One contiguous (3, n_free) right-hand side: its rows are contiguous 1-D views, so the
     # assembly kernel writes them directly and the three columns solve in one batched CG. Every
     # free row writes all three of its components.
-    rhs = wp.empty((3, n_free), dtype=wp.float64, device=device)
+    rhs = _launch.empty((3, n_free), dtype=wp.float64, device=device)
     # The initial guess, written by the assembly kernel: every free vertex's current position.
     # [`solve_spd_columns`][triwarp.linalg.solve_spd_columns] starts from its ``solution``, and
     # seeding it is a **correctness** requirement before it is a warm start: a vertex no face refers
     # to contributes no row, so CG never writes its entry and it keeps whatever the seed held --
     # from zeros it would be silently moved to the origin. Seeded from the current positions it
     # stays put, the only defensible answer for an unknown the system does not constrain.
-    sol = wp.empty((3, n_free), dtype=wp.float64, device=device)
-    wp.launch(
+    sol = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_smoothing.dirichlet_system_values,
         dim=n,
         inputs=[
@@ -2166,8 +2170,8 @@ def _solve_region_fixed_rim(
         tol=twl.CG_TOLERANCE,
         maxiter=10 * n_free,
     )
-    out = wp.empty(n, dtype=wp.vec3, device=device)
-    wp.launch(
+    out = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_smoothing.scatter_free_solution,
         dim=n,
         inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2]],
@@ -2201,10 +2205,10 @@ def _solve_region_smooth(
     # for a vertex with no row) and its right-hand side. M, its transpose and the product ``M^T M``
     # are never built as matrices of their own -- ``normal_equations_*`` assemble the product's CSR
     # directly from the rows, and ``M^T b`` with it.
-    row_sums = wp.empty(n, dtype=wp.float64, device=device)
-    row_rhs = wp.empty(n, dtype=wp.vec3d, device=device)
-    free_degrees = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(
+    row_sums = _launch.empty(n, dtype=wp.float64, device=device)
+    row_rhs = _launch.empty(n, dtype=wp.vec3d, device=device)
+    free_degrees = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_smoothing.least_squares_rows,
         dim=n,
         inputs=[*walk, free_mask, vertices],
@@ -2212,19 +2216,19 @@ def _solve_region_smooth(
         device=device,
     )
     capacity = region.pattern_capacity
-    term_offsets = wp.zeros(n_free + 1, dtype=wp.int32, device=device)
+    term_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     term_counts = twt.as_dense(term_offsets[1:])
     # One contiguous (3, n_free) right-hand side, so the three columns batch; every free row
     # writes all three components.
-    atb = wp.empty((3, n_free), dtype=wp.float64, device=device)
-    factor = wp.empty(capacity, dtype=wp.float64, device=device)
-    factor_t = wp.empty(capacity, dtype=wp.float64, device=device)
-    factor_narrow = wp.empty(capacity, dtype=wp.float32, device=device)
-    factor_t_narrow = wp.empty(capacity, dtype=wp.float32, device=device)
-    ratios = wp.empty(n_free, dtype=wp.float64, device=device)
+    atb = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    factor = _launch.empty(capacity, dtype=wp.float64, device=device)
+    factor_t = _launch.empty(capacity, dtype=wp.float64, device=device)
+    factor_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
+    factor_t_narrow = _launch.empty(capacity, dtype=wp.float32, device=device)
+    ratios = _launch.empty(n_free, dtype=wp.float64, device=device)
     # The initial guess, seeded as ``_solve_region_fixed_rim``'s is and for the same reason.
-    sol = wp.empty((3, n_free), dtype=wp.float64, device=device)
-    wp.launch(
+    sol = _launch.empty((3, n_free), dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_smoothing.normal_equations_setup,
         dim=n,
         inputs=[
@@ -2253,25 +2257,25 @@ def _solve_region_smooth(
         ],
         device=device,
     )
-    wp.utils.array_scan(term_counts, term_counts, inclusive=True)
+    _launch.array_scan(term_counts, term_counts, inclusive=True)
     # The one readback of the assembly: how many terms the product gathers, which sizes the term
     # buffer and bounds the product's entry count, so its CSR is allocated without a second one.
     n_terms = max(int(read_scalar(term_offsets, n_free)), 1)
-    row_columns = wp.empty(n_terms, dtype=wp.int32, device=device)
-    row_values = wp.empty(n_terms, dtype=wp.float64, device=device)
-    system_offsets = wp.zeros(n_free + 1, dtype=wp.int32, device=device)
+    row_columns = _launch.empty(n_terms, dtype=wp.int32, device=device)
+    row_values = _launch.empty(n_terms, dtype=wp.float64, device=device)
+    system_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     system_counts = twt.as_dense(system_offsets[1:])
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.normal_equations_rows,
         dim=n,
         inputs=[*walk, free_mask, free_map, row_sums, term_offsets],
         outputs=[row_columns, row_values, system_counts],
         device=device,
     )
-    wp.utils.array_scan(system_counts, system_counts, inclusive=True)
-    columns = wp.empty(n_terms, dtype=wp.int32, device=device)
-    values = wp.empty(n_terms, dtype=wp.float64, device=device)
-    wp.launch(
+    _launch.array_scan(system_counts, system_counts, inclusive=True)
+    columns = _launch.empty(n_terms, dtype=wp.int32, device=device)
+    values = _launch.empty(n_terms, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_smoothing.normal_equations_values,
         dim=n,
         inputs=[free_mask, free_map, term_offsets, row_columns, row_values, system_offsets],
@@ -2299,8 +2303,8 @@ def _solve_region_smooth(
         maxiter=10 * n_free,
         preconditioner=preconditioner,
     )
-    out = wp.empty(n, dtype=wp.vec3, device=device)
-    wp.launch(
+    out = _launch.empty(n, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_smoothing.scatter_free_solution,
         dim=n,
         inputs=[free_mask, free_map, vertices, sol[0], sol[1], sol[2]],
@@ -2351,8 +2355,8 @@ def _edge_weights(
     if edge_weights != "cotan":
         raise ValueError(f"edge_weights must be 'unit' or 'cotan', got {edge_weights!r}")
     device = vertices.device
-    weights = wp.zeros(int(region.unique_edges.shape[0]), dtype=wp.float32, device=device)
-    wp.launch(
+    weights = _launch.zeros(int(region.unique_edges.shape[0]), dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_smoothing.edge_cotan_add,
         dim=faces.size // 3,
         inputs=[vertices, faces, region.inverse, weights],
@@ -2450,20 +2454,20 @@ def smooth_region_boundary(
         )
     n_vertices = vertices.size
     if n_vertices == 0 or n_faces == 0 or iterations == 0:
-        return wp.clone(vertices)
+        return _launch.clone(vertices)
 
     inside = _incident_vertex_mask(faces, region, n_vertices)
     free = _region_rim_vertices(faces, region, inside)
-    fixed_mask = wp.empty(n_vertices, dtype=wp.bool, device=device)
-    field = wp.empty((1, n_vertices), dtype=wp.float64, device=device)
-    wp.map(kernel_smoothing.band_pins, free, inside, out=[fixed_mask, field[0]])
+    fixed_mask = _launch.empty(n_vertices, dtype=wp.bool, device=device)
+    field = _launch.empty((1, n_vertices), dtype=wp.float64, device=device)
+    _launch.map(kernel_smoothing.band_pins, free, inside, out=[fixed_mask, field[0]])
 
     vf_indices, offsets = (
         vertex_faces
         if vertex_faces is not None
         else tw.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
-    positions = wp.clone(vertices)
+    positions = _launch.clone(vertices)
     free_map, n_free = twl.free_partition(fixed_mask)
     if n_free == 0:
         return positions
@@ -2481,13 +2485,15 @@ def smooth_region_boundary(
     )
     nnz = columns.size
     system = _csr_matrix(
-        n_free, pattern_offsets, columns, wp.empty(nnz, dtype=wp.float64, device=device)
+        n_free, pattern_offsets, columns, _launch.empty(nnz, dtype=wp.float64, device=device)
     )
-    rhs = twt.as_array2d(wp.empty((1, n_free), dtype=wp.float64, device=device), wp.float64)
-    solution = twt.as_array2d(wp.zeros((1, n_free), dtype=wp.float64, device=device), wp.float64)
-    nxt = wp.empty(n_vertices, dtype=wp.vec3, device=device)
+    rhs = twt.as_array2d(_launch.empty((1, n_free), dtype=wp.float64, device=device), wp.float64)
+    solution = twt.as_array2d(
+        _launch.zeros((1, n_free), dtype=wp.float64, device=device), wp.float64
+    )
+    nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
     for _ in range(iterations):
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.band_dirichlet_values,
             dim=n_vertices,
             inputs=[*ring, positions, field_2d, pattern_offsets, columns],
@@ -2496,7 +2502,7 @@ def smooth_region_boundary(
         )
         twl.solve_spd_columns(system, rhs, solution, tol=twl.CG_TOLERANCE)
         # The projection reads the field as the pinned values plus the solve's answer, in place.
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.project_to_zero_isoline,
             dim=n_vertices,
             inputs=[
@@ -2534,20 +2540,20 @@ def _band_pattern(
     n_vertices = fixed_mask.size
     vf_indices, offsets = vertex_faces
     ring = [fixed_mask, free_map, offsets, vf_indices, faces]
-    pattern_offsets = wp.zeros(n_free + 1, dtype=wp.int32, device=device)
+    pattern_offsets = _launch.zeros(n_free + 1, dtype=wp.int32, device=device)
     pattern_counts = twt.as_dense(pattern_offsets[1:])
-    wp.launch(
+    _launch.launch(
         kernel_smoothing.band_pattern,
         dim=n_vertices,
         inputs=[*ring, wp.int32(0), None],
         outputs=[pattern_counts, None],
         device=device,
     )
-    wp.utils.array_scan(pattern_counts, pattern_counts, inclusive=True)
+    _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
     # The one readback of the assembly: the entry count, which sizes the columns.
     nnz = int(read_scalar(pattern_offsets, n_free))
-    columns = wp.empty(nnz, dtype=wp.int32, device=device)
-    wp.launch(
+    columns = _launch.empty(nnz, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_smoothing.band_pattern,
         dim=n_vertices,
         inputs=[*ring, wp.int32(1), pattern_offsets],
@@ -2561,8 +2567,8 @@ def _incident_vertex_mask(
     faces: wp.array[wp.int32], region: wp.array[wp.bool], n_vertices: int
 ) -> wp.array[wp.bool]:
     """Mark the vertices touched by at least one selected face."""
-    mask = wp.zeros(n_vertices, dtype=wp.bool, device=faces.device)
-    wp.launch(
+    mask = _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
+    _launch.launch(
         kernel_selection.mark_incident_vertices,
         dim=faces.size // 3,
         inputs=[faces, region, mask],
@@ -2582,8 +2588,8 @@ def _region_rim_vertices(
     """
     device = faces.device
     n_vertices = inside.size
-    free = wp.zeros(n_vertices, dtype=wp.bool, device=device)
-    wp.launch(
+    free = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_smoothing.mark_band_vertices,
         dim=region.size,
         inputs=[faces, region, inside, free],
@@ -2675,15 +2681,15 @@ def filter_scalar_laplacian(
             f"values must have one entry per vertex, got {values.size} for {n} vertices"
         )
 
-    out = wp.clone(values)
+    out = _launch.clone(values)
     if n == 0 or iterations == 0:
         return out
 
     operator = _resolved_operator(vertices, faces, laplacian_operator, symmetric=True)
-    nxt = wp.empty(n, dtype=wp.float32, device=device)
+    nxt = _launch.empty(n, dtype=wp.float32, device=device)
     coeff = wp.float32(lamb)
     for _ in range(iterations):
-        wp.launch(
+        _launch.launch(
             kernel_smoothing.diffuse_scalar_pass,
             dim=n,
             inputs=[operator.offsets, operator.columns, operator.values, out, coeff],
@@ -2777,7 +2783,7 @@ def filter_normals(
         face_normals, face_areas = face_normals_and_areas(vertices, faces)
     # Each pass rewrites the normal field in place, so a caller-supplied buffer is copied rather
     # than clobbered -- ``Trimesh.face_normals`` is one array shared with every other reader.
-    normals, areas = wp.clone(face_normals), face_areas
+    normals, areas = _launch.clone(face_normals), face_areas
     if n_faces == 0 or iterations <= 0:
         return normals
 
@@ -2786,7 +2792,7 @@ def filter_normals(
     m = int(face_adjacency.shape[0])
     threshold_cos = wp.float32(math.cos(math.radians(threshold)))
 
-    accumulated = wp.empty(n_faces, dtype=wp.vec3, device=device)
+    accumulated = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     # The map is hoisted out of the pass loop: a cached ``wp.map`` call re-resolves its kernel in
     # Python every time, which adds up over many passes.
     seed = wp.map(
@@ -2797,21 +2803,21 @@ def filter_normals(
     # accumulation -> normalize, and the scatter in the middle needs the whole seeded buffer, so the
     # fusable pair is the normalization with the *next* pass's seed. Peeling the first seed off the
     # front is what puts them next to each other.
-    wp.launch(seed, dim=n_faces, inputs=[normals, areas], outputs=[accumulated], device=device)
+    _launch.launch(seed, dim=n_faces, inputs=[normals, areas], outputs=[accumulated], device=device)
     for index in range(iterations):
         if m > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_smoothing.accumulate_smoothed_normals,
                 dim=m,
                 inputs=[normals, areas, face_adjacency, threshold_cos, accumulated],
                 device=device,
             )
         if index == iterations - 1:
-            wp.launch(
+            _launch.launch(
                 renormalize, dim=n_faces, inputs=[accumulated], outputs=[normals], device=device
             )
         else:
-            wp.launch(
+            _launch.launch(
                 kernel_smoothing.renormalize_and_reseed,
                 dim=n_faces,
                 inputs=[areas, accumulated],
@@ -2893,7 +2899,7 @@ def filter_two_step(
     device = vertices.device
     n = vertices.size
     n_faces = faces.size // 3
-    out = wp.clone(vertices)
+    out = _launch.clone(vertices)
     if n == 0 or n_faces == 0 or iterations <= 0:
         return out
 
@@ -2902,9 +2908,9 @@ def filter_two_step(
     # Zeroed once: ``apply_fit_step_and_reset`` leaves every slot zero behind it, so each fit
     # iteration's scatter starts from an empty accumulator without a clear of its own. The
     # incident-face count is fixed by the topology, so it is taken once rather than per iteration.
-    delta = wp.zeros(n, dtype=wp.vec3, device=device)
-    counts = wp.zeros(n, dtype=wp.int32, device=device)
-    wp.launch(
+    delta = _launch.zeros(n, dtype=wp.vec3, device=device)
+    counts = _launch.zeros(n, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_scatter.count_occurrences, dim=3 * n_faces, inputs=[faces, counts], device=device
     )
     for _ in range(iterations):
@@ -2912,13 +2918,13 @@ def filter_two_step(
             out, faces, iterations=normal_iterations, threshold=threshold, face_adjacency=adjacency
         )
         for _fit in range(fit_iterations):
-            wp.launch(
+            _launch.launch(
                 kernel_smoothing.fit_vertices_to_normals,
                 dim=n_faces,
                 inputs=[out, faces, normals, delta],
                 device=device,
             )
-            wp.launch(
+            _launch.launch(
                 kernel_smoothing.apply_fit_step_and_reset,
                 dim=n,
                 inputs=[counts, out, delta],
@@ -2986,7 +2992,7 @@ def filter_sharpen(
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
     n = vertices.size
-    out = wp.empty(n, dtype=wp.vec3, device=device)
+    out = _launch.empty(n, dtype=wp.vec3, device=device)
     if n == 0:
         return out
     # No volume constraint on the inner smoothing: its rescaling would leak into the difference and
@@ -2999,7 +3005,7 @@ def filter_sharpen(
         volume_constraint=False,
         laplacian_operator=laplacian_operator,
     )
-    wp.map(
+    _launch.map(
         kernel_smoothing.unsharp_step,
         vertices,
         smoothed,
@@ -3053,13 +3059,13 @@ def _resolved_operator(
 
 def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:
     """Widen a ``wp.vec3`` array to ``wp.vec3d``: the seam where the float64 solves start."""
-    out = wp.empty(vertices.size, dtype=wp.vec3d, device=vertices.device)
+    out = _launch.empty(vertices.size, dtype=wp.vec3d, device=vertices.device)
     wp.utils.array_cast(vertices, out)
     return out
 
 
 def _as_vec3(positions: wp.array[wp.vec3d]) -> wp.array[wp.vec3]:
     """Narrow a ``wp.vec3d`` array back to ``wp.vec3``: the seam where the float64 solves end."""
-    out = wp.empty(positions.size, dtype=wp.vec3, device=positions.device)
+    out = _launch.empty(positions.size, dtype=wp.vec3, device=positions.device)
     wp.utils.array_cast(positions, out)
     return out

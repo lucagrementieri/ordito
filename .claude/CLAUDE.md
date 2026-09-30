@@ -1255,6 +1255,15 @@ implementation. `trimesh` is the default; §7.6 lists the eight others and what 
   does not name it. `pytest_generate_tests` parametrizes every test whose fixture closure reaches
   `device` (including via `request.getfixturevalue`), so `icosphere` alone runs on both devices.
   `reportUnusedParameter` (§8) enforces this.
+- **Tests use pytest alone — never `unittest`.** Patch with the `monkeypatch` fixture
+  (`monkeypatch.setattr(module, "NAME", value)`; `with monkeypatch.context() as patch:` for a
+  patch scoped to a block), assert with plain `assert` and `pytest.raises` / `pytest.warns`.
+  `monkeypatch` undoes every patch at teardown even when the test fails, and one spelling keeps a
+  patch findable by one grep. Ruff's `TID251` bans `unittest` (`pyproject.toml`,
+  `flake8-tidy-imports.banned-api`). **A test that counts or intercepts launches or allocations
+  patches both paths**: the wrapper layer calls `triwarp._launch.*`, which falls back to the `wp.*`
+  function (and whose `launch_tiled` routes through its own `launch`), so patching `wp.launch`
+  alone sees only the fallback (`test_successor_cycles_validates_before_launching`).
 - Reproducible random data: `np.random.default_rng(seed)` with a fixed integer seed per test.
 - **Upload a NumPy mesh with `conversions.numpy_to_warp(vertices_np, faces_np, device)`**, never a
   local helper (six private copies once existed). `numpy_to_warp_uv` is the `wp.vec2` sibling,
@@ -2819,9 +2828,10 @@ so harmonic / tutte / arap were pinned to different boundaries (§7.3).
 **Measure `n` calls between two syncs and divide.** A per-call cost taken with a sync *inside* the
 loop is up to 14x wrong: Warp leaves the CUDA mempool release threshold at 0, so every sync drains
 the pool and the next allocation is cold. A drained pool's cost grows with the allocation's size:
-raising the threshold is 1.00-1.02x at small sizes and 1.5-1.7x on a few-launch call at ~1 M faces
-and above (`cotmatrix`, `crease_edges`). triwarp keeps Warp's default (the setting is
-process-wide); the lever is allocating less (§16.9).
+raising the threshold is 1.00-1.02x at small sizes and 1.4-1.7x on every multi-allocation call
+from `dragon` (0.87 M faces) up (`face_adjacency`, `edges_unique`, `cotmatrix`, `crease_edges`),
+2.9x on the two-allocation `face_normals_and_areas` at `lucy`. triwarp keeps Warp's default
+(the setting is process-wide; re-decided on those numbers); the lever is allocating less (§16.9).
 
 | primitive (correct regime) | cost |
 |---|---|

@@ -26,6 +26,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import bounds as kernel_bounds
@@ -156,11 +157,11 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     # reduction. Reducing a concatenation instead is slower -- the union buffer is an allocation
     # and a copy of both clouds, against one launch that is flat in its ``dim``.
     device = points.device
-    corners = wp.full(6, math.inf, dtype=wp.float32, device=device)
+    corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
     for cloud in (points, other):
         if cloud is None or cloud.size == 0:
             continue
-        wp.launch(
+        _launch.launch(
             kernel_reduce.minmax_vec3_chunked,
             dim=kernel_reduce.chunks_1d(cloud.size),
             inputs=[cloud, corners],
@@ -258,11 +259,11 @@ def points_in_aabb_mask(
     [`points_in_obb_mask`][triwarp.bounds.points_in_obb_mask]
     [`triwarp.array.flatnonzero`][triwarp.array.flatnonzero]
     """
-    out_mask = wp.empty(points.size, dtype=wp.bool, device=points.device)
+    out_mask = _launch.empty(points.size, dtype=wp.bool, device=points.device)
     if points.size == 0:
         return out_mask
 
-    wp.map(kernel_predicates.is_in_aabb, points, min_bound, max_bound, out=out_mask)
+    _launch.map(kernel_predicates.is_in_aabb, points, min_bound, max_bound, out=out_mask)
     return out_mask
 
 
@@ -349,11 +350,11 @@ def points_in_obb_mask(
         The index form, and where the conventions are documented.
     [`points_in_aabb_mask`][triwarp.bounds.points_in_aabb_mask]
     """
-    out_mask = wp.empty(points.size, dtype=wp.bool, device=points.device)
+    out_mask = _launch.empty(points.size, dtype=wp.bool, device=points.device)
     if points.size == 0:
         return out_mask
 
-    wp.map(kernel_predicates.is_in_obb, points, rotation, min_bound, max_bound, out=out_mask)
+    _launch.map(kernel_predicates.is_in_obb, points, rotation, min_bound, max_bound, out=out_mask)
     return out_mask
 
 
@@ -406,10 +407,10 @@ def crop_points(
     """
     device = points.device
     inclusive, n_kept = _scanned_box_flags(points, min_bound, max_bound, rotation)
-    kept = wp.empty(n_kept, dtype=wp.vec3, device=device)
-    indices = wp.empty(n_kept, dtype=wp.int32, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    indices = _launch.empty(n_kept, dtype=wp.int32, device=device)
     if n_kept > 0:
-        wp.launch(
+        _launch.launch(
             kernel_bounds.compact_scanned_points,
             dim=points.size,
             inputs=[inclusive, points, kept, indices],
@@ -501,9 +502,9 @@ def _box_indices(
 ) -> wp.array[wp.int32]:
     """Ascending indices of the points inside the box: the index forms' shared body."""
     inclusive, n_inside = _scanned_box_flags(points, min_bound, max_bound, rotation)
-    out_indices = wp.empty(n_inside, dtype=wp.int32, device=points.device)
+    out_indices = _launch.empty(n_inside, dtype=wp.int32, device=points.device)
     if n_inside > 0:
-        wp.launch(
+        _launch.launch(
             kernel_scatter.scatter_index_where_scanned,
             dim=points.size,
             inputs=[inclusive, out_indices],
@@ -523,10 +524,10 @@ def _scanned_box_flags(
     """
     device = points.device
     n = points.size
-    inclusive = wp.empty(n, dtype=wp.int32, device=device)
+    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     if n == 0:
         return inclusive, 0
-    wp.launch(
+    _launch.launch(
         kernel_bounds.box_flags,
         dim=n,
         inputs=[
@@ -539,7 +540,7 @@ def _scanned_box_flags(
         ],
         device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # One 4-byte tail read: the count sizes every output.
     return inclusive, int(read_scalar(inclusive))
 
@@ -666,9 +667,9 @@ def oriented_bounding_box(
     device = points.device
     # The axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised
     # until then and every slot is written before the extents kernel reads it.
-    axes = wp.empty(rotations, dtype=wp.mat33, device=device)
-    corners = wp.empty(6 * rotations, dtype=wp.float32, device=device)
-    wp.launch(
+    axes = _launch.empty(rotations, dtype=wp.mat33, device=device)
+    corners = _launch.empty(6 * rotations, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_bounds.oriented_box_candidate_axes,
         dim=rotations,
         inputs=[rotations, axes, corners],
@@ -678,8 +679,8 @@ def oriented_bounding_box(
     n_slices = max(1, (n + ITEMS_PER_CANDIDATE_SLICE - 1) // ITEMS_PER_CANDIDATE_SLICE)
     _score_extents_into(points, axes, n_slices, corners)
 
-    loss = wp.empty(rotations, dtype=wp.float32, device=device)
-    wp.launch(
+    loss = _launch.empty(rotations, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_bounds.oriented_box_losses,
         dim=rotations,
         inputs=[corners, _BOX_OBJECTIVES[objective], loss],
@@ -688,12 +689,12 @@ def oriented_bounding_box(
     # One chain when there is nothing to refine: the seeding walk's first pick is the global
     # argmin, so it stops after a single round and the row it writes is already the answer.
     n_chains = 1 if refine_iterations == 0 else _REFINE_CHAINS
-    chains = wp.empty(n_chains, dtype=wp.mat33, device=device)
+    chains = _launch.empty(n_chains, dtype=wp.mat33, device=device)
     chain_state = twt.as_array2d(
-        wp.empty((n_chains, kernel_bounds.BOX_STATE_COLUMNS), dtype=wp.float32, device=device),
+        _launch.empty((n_chains, kernel_bounds.BOX_STATE_COLUMNS), dtype=wp.float32, device=device),
         wp.float32,
     )
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_bounds.oriented_box_seed_chains,
         dim=(1,),
         inputs=[
@@ -748,14 +749,14 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
     """
     device = points.device
     n = points.size
-    inclusive = wp.empty(n, dtype=wp.int32, device=device)
-    wp.launch(kernel_array.bool_flags, dim=n, inputs=[mask, inclusive], device=device)
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
+    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(kernel_array.bool_flags, dim=n, inputs=[mask, inclusive], device=device)
+    _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # The kept count sizes the output.
     n_kept = int(read_scalar(inclusive))
-    kept = wp.empty(n_kept, dtype=wp.vec3, device=device)
+    kept = _launch.empty(n_kept, dtype=wp.vec3, device=device)
     if n_kept > 0:
-        wp.launch(
+        _launch.launch(
             kernel_bounds.compact_scanned_points,
             dim=n,
             inputs=[inclusive, points, kept, None],
@@ -785,15 +786,15 @@ def _refine_box(
     device = points.device
     n_chains = chains.size
     total = n_chains * _REFINE_CANDIDATES
-    axes = wp.empty(total, dtype=wp.mat33, device=device)
-    corners = wp.empty(6 * total, dtype=wp.float32, device=device)
+    axes = _launch.empty(total, dtype=wp.mat33, device=device)
+    corners = _launch.empty(6 * total, dtype=wp.float32, device=device)
     objective_code = _BOX_OBJECTIVES[objective]
 
     # Start at the covering radius of the global grid: the sampled winner is at most about this
     # far from its basin's optimum, and each round shrinks the radius.
     sigma = 2.0 * (math.pi**2 / max(rotations, 2)) ** (1.0 / 3.0)
     for _ in range(refine_iterations):
-        wp.launch(
+        _launch.launch(
             kernel_bounds.oriented_box_refine_axes,
             dim=total,
             inputs=[
@@ -806,7 +807,7 @@ def _refine_box(
             device=device,
         )
         _score_extents_into(points, axes, n_slices, corners)
-        wp.launch(
+        _launch.launch(
             kernel_bounds.oriented_box_select_chains,
             dim=n_chains,
             inputs=[
@@ -832,7 +833,7 @@ def _score_extents_into(
     # The kernel only ever ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``:
     # both axes kernels seed a candidate's slots as they write its frame, which is what lets the
     # refinement reuse one buffer across its rounds.
-    wp.launch(
+    _launch.launch(
         kernel_bounds.oriented_box_extents,
         dim=(int(axes.shape[0]), n_slices),
         inputs=[points, axes, n_slices, corners],

@@ -7,6 +7,7 @@ import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device, run_device_loop
 from triwarp.array import arange
 from triwarp.kernels import array as kernel_array
@@ -63,20 +64,20 @@ def edges_to_csr(
         raise ValueError(f"weights must have one entry per edge, got {weights.size} for {m} edges")
 
     n_entries = 2 * m
-    rows = wp.empty(n_entries, dtype=wp.int32, device=device)
-    cols = wp.empty(n_entries, dtype=wp.int32, device=device)
+    rows = _launch.empty(n_entries, dtype=wp.int32, device=device)
+    cols = _launch.empty(n_entries, dtype=wp.int32, device=device)
     # One launch either way: the weighted form emits the structure and the two duplicated values
     # together, and the unweighted form's values are a fill rather than a launch at all.
     if weights is None:
-        data = wp.ones(n_entries, dtype=wp.float32, device=device)
+        data = _launch.ones(n_entries, dtype=wp.float32, device=device)
         if m > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_graph.edges_to_adjacency, dim=m, inputs=[edges, rows, cols], device=device
             )
     else:
-        data = wp.empty(n_entries, dtype=wp.float32, device=device)
+        data = _launch.empty(n_entries, dtype=wp.float32, device=device)
         if m > 0:
-            wp.launch(
+            _launch.launch(
                 kernel_graph.edges_to_adjacency_weighted,
                 dim=m,
                 inputs=[edges, weights, rows, cols, data],
@@ -183,32 +184,32 @@ def edges_to_neighbor_lists(
     device = edges.device
     m = int(edges.shape[0])
 
-    offsets = wp.zeros(node_count + 1, dtype=wp.int32, device=device)
-    neighbors = wp.empty(2 * m, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(node_count + 1, dtype=wp.int32, device=device)
+    neighbors = _launch.empty(2 * m, dtype=wp.int32, device=device)
     if m == 0 or node_count == 0:
         return neighbors, offsets
 
     # An ``(m, 2)`` edge buffer flattened *is* the entry -> node map, so one histogram over it is
     # every node's degree. ``count_occurrences``' own docstring names this as what it is for.
-    degree = wp.zeros(node_count, dtype=wp.int32, device=device)
-    wp.launch(
+    degree = _launch.zeros(node_count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_scatter.count_occurrences, dim=2 * m, inputs=[edges.flatten(), degree], device=device
     )
     # Deliberately NOT tw.array.counts_to_offsets: that helper always reads the total back, and
     # this function never needs it (it is 2 * m, known on the host). The same decline
     # ``adjacency.vertex_face_adjacency`` and ``halfedge.vertex_one_rings`` already write down.
-    wp.utils.array_scan(degree, out_array=offsets[1:], inclusive=True)
+    _launch.array_scan(degree, out_array=offsets[1:], inclusive=True)
     # ``degree`` has done its job and becomes the fill's write cursor, counting each row's free
     # slots down to zero -- which saves an allocation and a fill, and is why the scatter takes both
     # it and ``offsets``.
-    wp.launch(
+    _launch.launch(
         kernel_graph.scatter_neighbor_lists,
         dim=m,
         inputs=[edges, offsets, degree, neighbors],
         device=device,
     )
     if sort_rows:
-        wp.launch(
+        _launch.launch(
             kernel_array.sort_segments, dim=node_count, inputs=[offsets, neighbors], device=device
         )
     return neighbors, offsets
@@ -253,26 +254,26 @@ def connected_component_labels(adjacency: wps.BsrMatrix[wp.Scalar]) -> wp.array[
 
     device = adjacency.device
     if node_count <= 1:
-        return wp.zeros(node_count, dtype=wp.int32, device=device)
+        return _launch.zeros(node_count, dtype=wp.int32, device=device)
     if adjacency.nnz == 0:
         return arange(node_count, device=device)
 
-    labels = wp.empty(node_count, dtype=wp.int32, device=device)
-    parents = wp.empty(node_count, dtype=wp.int32, device=device)
+    labels = _launch.empty(node_count, dtype=wp.int32, device=device)
+    parents = _launch.empty(node_count, dtype=wp.int32, device=device)
 
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_init_parent,
         dim=node_count,
         inputs=[offsets, indices, parents],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_hook,
         dim=node_count,
         inputs=[offsets, indices, parents],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=node_count,
         inputs=[parents, labels],
@@ -348,20 +349,20 @@ def connected_component_labels_from_edges(
     # built: the unions are per edge either way, so a CSR would only be walked back into the edges.
     device = edges.device
     parents = arange(node_count, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_init_parent_edges,
         dim=int(edges.shape[0]),
         inputs=[edges, parents],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_hook_edges,
         dim=int(edges.shape[0]),
         inputs=[edges, parents],
         device=device,
     )
-    labels = wp.empty(node_count, dtype=wp.int32, device=device)
-    wp.launch(
+    labels = _launch.empty(node_count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_connected_components.ecl_flatten,
         dim=node_count,
         inputs=[parents, labels],
@@ -470,26 +471,26 @@ def connected_component_parity_from_edges(
             raise ValueError(f"signs must be 0 or 1, got min={lowest_sign} max={highest_sign}")
 
     device = edges.device
-    labels = wp.empty(node_count, dtype=wp.int32, device=device)
-    parity = wp.zeros(node_count, dtype=wp.int32, device=device)
+    labels = _launch.empty(node_count, dtype=wp.int32, device=device)
+    parity = _launch.zeros(node_count, dtype=wp.int32, device=device)
     if node_count == 0:
         return labels, parity
 
-    words = wp.empty(node_count, dtype=wp.int32, device=device)
-    wp.launch(
+    words = _launch.empty(node_count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_connected_components.ecl_init_parent_parity,
         dim=node_count,
         inputs=[words],
         device=device,
     )
     if m > 0:
-        wp.launch(
+        _launch.launch(
             kernel_connected_components.ecl_hook_parity,
             dim=m,
             inputs=[edges, signs, words],
             device=device,
         )
-    wp.launch(
+    _launch.launch(
         kernel_connected_components.ecl_flatten_parity,
         dim=node_count,
         inputs=[words, labels, parity],
@@ -564,7 +565,7 @@ def successor_cycles(
     device = edges.device
     m = int(edges.shape[0])
     if m == 0 or node_count == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+        return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
             1, dtype=wp.int32, device=device
         )
 
@@ -573,9 +574,9 @@ def successor_cycles(
     # over the flattened pairs: both return the sorted distinct values, and the range check above
     # has already guaranteed every endpoint indexes the mask, but this one is a zeroed buffer and a
     # scan where that one is a hash table, a compaction, a radix sort and two host readbacks.
-    next_node = wp.full(node_count, -1, dtype=wp.int32, device=device)
-    node_mask = wp.zeros(node_count, dtype=wp.bool, device=device)
-    wp.launch(
+    next_node = _launch.full(node_count, -1, dtype=wp.int32, device=device)
+    node_mask = _launch.zeros(node_count, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_graph.scatter_successor, dim=m, inputs=[edges, next_node, node_mask], device=device
     )
 
@@ -585,10 +586,10 @@ def successor_cycles(
     cycle_nodes = tw.array.flatnonzero(node_mask)
     n_nodes = cycle_nodes.size
 
-    label_min = wp.full(node_count, node_count, dtype=wp.int32, device=device)
-    label_count = wp.zeros(node_count, dtype=wp.int32, device=device)
-    is_chain = wp.zeros(node_count, dtype=wp.int32, device=device)
-    wp.launch(
+    label_min = _launch.full(node_count, node_count, dtype=wp.int32, device=device)
+    label_count = _launch.zeros(node_count, dtype=wp.int32, device=device)
+    is_chain = _launch.zeros(node_count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_graph.scatter_cycle_min_and_count,
         dim=n_nodes,
         inputs=[cycle_nodes, next_node, labels, label_min, label_count, is_chain],
@@ -603,7 +604,7 @@ def successor_cycles(
     # appeared in the input. Excluding a chain's nodes here keeps that collision scoped to the
     # malformed input the Notes above already describe (an in-degree collision), rather than
     # firing on an ordinary chain.
-    wp.launch(
+    _launch.launch(
         kernel_graph.chain_node_mask,
         dim=n_nodes,
         inputs=[cycle_nodes, labels, is_chain, node_mask],
@@ -612,7 +613,7 @@ def successor_cycles(
     cycle_nodes = tw.array.flatnonzero(node_mask)
     n_nodes = cycle_nodes.size
     if n_nodes == 0:
-        return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
+        return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
             1, dtype=wp.int32, device=device
         )
 
@@ -620,11 +621,11 @@ def successor_cycles(
     # per-node successor walk, whose total work was quadratic in the cycle length. Each round
     # chases several pointers (``pointer_jump_schedule``), so the round count is a logarithm to a
     # base above two.
-    successor = wp.empty(node_count, dtype=wp.int32, device=device)
-    steps = wp.empty(node_count, dtype=wp.int32, device=device)
-    successor_next = wp.empty(node_count, dtype=wp.int32, device=device)
-    steps_next = wp.empty(node_count, dtype=wp.int32, device=device)
-    wp.launch(
+    successor = _launch.empty(node_count, dtype=wp.int32, device=device)
+    steps = _launch.empty(node_count, dtype=wp.int32, device=device)
+    successor_next = _launch.empty(node_count, dtype=wp.int32, device=device)
+    steps_next = _launch.empty(node_count, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_graph.init_rank_arrays,
         dim=n_nodes,
         inputs=[cycle_nodes, next_node, labels, label_min, successor, steps],
@@ -632,7 +633,7 @@ def successor_cycles(
     )
     hops, rounds = kernel_graph.pointer_jump_schedule(n_nodes)
     for _ in range(rounds):
-        wp.launch(
+        _launch.launch(
             kernel_graph.jump_rank,
             dim=n_nodes,
             inputs=[cycle_nodes, successor, steps, hops, successor_next, steps_next],
@@ -641,9 +642,9 @@ def successor_cycles(
         successor, successor_next = successor_next, successor
         steps, steps_next = steps_next, steps
 
-    position = wp.empty(n_nodes, dtype=wp.int32, device=device)
-    label_mask = wp.zeros(node_count, dtype=wp.bool, device=device)
-    wp.launch(
+    position = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    label_mask = _launch.zeros(node_count, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_graph.finalize_rank_positions,
         dim=n_nodes,
         inputs=[cycle_nodes, labels, label_count, steps, position, label_mask],
@@ -655,20 +656,20 @@ def successor_cycles(
     label_ranks, n_cycles = tw.array.mask_to_compact_ranks(label_mask)
     # The sizes land in the tail of the ``n_cycles + 1`` offsets buffer and are scanned there in
     # place, behind the leading zero, so no separate sizes buffer is allocated.
-    offsets = wp.zeros(n_cycles + 1, dtype=wp.int32, device=device)
+    offsets = _launch.zeros(n_cycles + 1, dtype=wp.int32, device=device)
     sizes = twt.as_dense(offsets[1:])
-    wp.launch(
+    _launch.launch(
         kernel_graph.compact_cycle_sizes,
         dim=node_count,
         inputs=[label_mask, label_ranks, label_count, sizes],
         device=device,
     )
-    wp.utils.array_scan(sizes, out_array=sizes, inclusive=True)
+    _launch.array_scan(sizes, out_array=sizes, inclusive=True)
 
     # Zero-initialised (not wp.empty): colliding ranks on malformed input (see Notes) can leave
     # slots unwritten by scatter_cycle_slot, and zero is a valid node index.
-    flat_cycles = wp.zeros(n_nodes, dtype=wp.int32, device=device)
-    wp.launch(
+    flat_cycles = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_graph.scatter_cycle_slot,
         dim=n_nodes,
         inputs=[cycle_nodes, labels, label_ranks, position, offsets, flat_cycles],
@@ -785,7 +786,7 @@ def shortest_path_envelope(
         )
 
     device = wp.get_device(values.device)
-    labels = wp.clone(values)
+    labels = _launch.clone(values)
     if node_count == 0:
         return labels
 
@@ -794,7 +795,7 @@ def shortest_path_envelope(
         raise ValueError("adjacency weights must be non-negative for the envelope to converge")
 
     max_pass_count = max_iterations or node_count
-    relaxed = wp.empty(node_count, dtype=wp.float32, device=device)
+    relaxed = _launch.empty(node_count, dtype=wp.float32, device=device)
     # The shared round-loop state word (``kernels/array.py``): the relaxation pass raises
     # ``LOOP_PROGRESS`` and ``array.loop_advance`` publishes the condition against the pass cap.
     # Allocated inside each branch because the two seed it differently -- the host loop tests
@@ -802,14 +803,14 @@ def shortest_path_envelope(
     # non-zero one. Allocating zeroed above and re-seeding below would be an allocation plus a
     # whole second upload of the same twelve bytes.
     if not device.is_cuda:
-        state = wp.zeros(kernel_array.LOOP_ADVANCE_STATE_SIZE, dtype=wp.int32, device=device)
+        state = _launch.zeros(kernel_array.LOOP_ADVANCE_STATE_SIZE, dtype=wp.int32, device=device)
         # No conditional-graph capture on the CPU backend, so the pass loop runs on the host;
         # the plain per-pass loop below, with its one 4-byte readback per pass, is already the
         # cheapest thing a CPU launch can do here.
         progress = state[kernel_array.LOOP_PROGRESS_VIEW]
         for _ in range(max_pass_count):
-            progress.zero_()
-            wp.launch(
+            _launch.zero_(progress)
+            _launch.launch(
                 kernel_graph.shortest_path_envelope_pass,
                 dim=node_count,
                 inputs=[offsets, columns, weights, labels, relaxed, state],
@@ -837,7 +838,7 @@ def shortest_path_envelope(
     # across devices, so a loop whose result buffer depends on it cannot rely on it. The numbers and
     # the ping-pong corollary are at ``kernels/graph.shortest_path_envelope_pass``.
     # ``wp.capture_while`` reads the condition before the first round, so it starts non-zero.
-    state = wp.array([0, 1, 0], dtype=wp.int32, device=device)
+    state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
     max_pass_count_i32 = wp.int32(max_pass_count)
 
     def envelope_pass_body() -> None:
@@ -851,14 +852,14 @@ def shortest_path_envelope(
         # buffer* depends on the body running whole cannot rely on it. A Python-level ping-pong
         # cannot help either: the body is recorded once and replayed, so rebinding the names would
         # only take effect at record time.
-        wp.launch(
+        _launch.launch(
             kernel_graph.shortest_path_envelope_pass,
             dim=node_count,
             inputs=[offsets, columns, weights, labels, relaxed, state],
             device=device,
         )
-        wp.copy(labels, relaxed)
-        wp.launch(
+        _launch.copy(labels, relaxed)
+        _launch.launch(
             kernel_array.loop_advance, dim=1, inputs=[max_pass_count_i32, state], device=device
         )
 

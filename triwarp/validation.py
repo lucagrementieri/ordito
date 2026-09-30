@@ -10,6 +10,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import (
     read_scalar,
     read_values,
@@ -88,12 +89,12 @@ def is_edge_manifold(
 
     device = faces.device
     # ``flags[0]`` is the verdict and ``flags[1]`` the range check, read back together.
-    flags = wp.zeros(2, dtype=wp.int32, device=device)
+    flags = _launch.zeros(2, dtype=wp.int32, device=device)
     # The keys come straight off ``faces``: packing them there costs no more than hashing the
     # sorted edge rows, and the range check rides on the same pass, so validating costs no
     # reduction and no readback of its own; unvalidated, its flag is simply not read.
-    keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=device)
-    wp.launch(
+    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=device)
+    _launch.launch(
         kernel_validation.face_edge_keys_checked,
         dim=n_faces,
         inputs=[
@@ -109,7 +110,7 @@ def is_edge_manifold(
     # order-free and needs no per-edge output, so the compaction, the sort and the host read of
     # the unique count that sizes them are skipped.
     slot_counts = tw.grouping.hashed_occurrence_counts(keys)
-    wp.launch(
+    _launch.launch(
         kernel_validation.edge_share_count_violation,
         dim=slot_counts.size,
         inputs=[slot_counts, allow_boundary_edges, flags],
@@ -175,15 +176,15 @@ def edge_manifold_mask(
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
     # The share count of each edge is the length of its run of sorted keys, read in place: no
     # unique-edge table, inverse or count array, and no host read of the unique count.
     keys, order = _sorted_halfedge_keys(
         faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
     )
-    out_mask = wp.full(n_faces, True, dtype=wp.bool, device=device)
-    wp.launch(
+    out_mask = _launch.full(n_faces, True, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_validation.sorted_run_manifold_mask,
         dim=keys.size,
         inputs=[keys, order, wp.bool(allow_boundary_edges), out_mask],
@@ -288,7 +289,7 @@ def is_vertex_manifold(
         # The corner graph derived below trusts this bound, so it carries the range check the
         # edge-key packing would otherwise have made itself.
         n_vertices = tw.array.index_bound(faces, require_non_negative=face_adjacency is None)
-    violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
+    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     if face_adjacency is None:
         parents = _corner_parents_from_keys(
             faces, _sorted_halfedge_keys(faces, n_vertices), False, None
@@ -319,7 +320,7 @@ def _corner_parents_from_adjacency(
     if m == 0:
         return parents
     corner_edges = twt.empty_2d((2 * m, 2), wp.int32, device=device)
-    wp.launch(
+    _launch.launch(
         kernel_validation.build_corner_adjacency_edges,
         dim=m,
         inputs=[faces, face_adjacency, face_adjacency_edges, corner_edges],
@@ -329,7 +330,7 @@ def _corner_parents_from_adjacency(
         kernel_connected_components.ecl_init_parent_edges,
         kernel_connected_components.ecl_hook_edges,
     ):
-        wp.launch(kernel, dim=2 * m, inputs=[corner_edges, parents], device=device)
+        _launch.launch(kernel, dim=2 * m, inputs=[corner_edges, parents], device=device)
     return parents
 
 
@@ -370,13 +371,13 @@ def vertex_manifold_mask(
     require_same_device(vertices=vertices, faces=faces)
     n_vertices = vertices.size
     if faces.size // 3 == 0:
-        return wp.zeros(n_vertices, dtype=wp.bool, device=faces.device)
+        return _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     # The corner graph straight off the sorted halfedge keys, with its pair check off: no thread
     # indexes the violation flag, so none is allocated.
     parents = _corner_parents_from_keys(
         faces, _sorted_halfedge_keys(faces, n_vertices), False, None
     )
-    mask = wp.zeros(n_vertices, dtype=wp.bool, device=faces.device)
+    mask = _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     _vertex_manifold_check(faces, n_vertices, parents, mask, None)
     return mask
 
@@ -417,7 +418,7 @@ def is_self_intersecting(mesh: wp.Mesh, *, max_triangle_collisions: int = 32) ->
     -----
     Equivalent to ``open3d.geometry.TriangleMesh.is_self_intersecting``.
     """
-    found = wp.zeros(1, dtype=wp.bool, device=mesh.points.device)
+    found = _launch.zeros(1, dtype=wp.bool, device=mesh.points.device)
     _mark_self_intersections(mesh, mesh.points, mesh.indices, max_triangle_collisions, False, found)
     return bool(read_scalar(found))
 
@@ -486,7 +487,7 @@ def face_self_intersecting_mask(
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
     device = vertices.device
     n_faces = faces.size // 3
-    mask = wp.zeros(n_faces, dtype=wp.bool, device=device)
+    mask = _launch.zeros(n_faces, dtype=wp.bool, device=device)
     if n_faces < 2:
         return mask
 
@@ -528,24 +529,24 @@ def _mark_self_intersections(
     if n_faces == 0:
         return
     device = vertices.device
-    lower = wp.empty(n_faces, dtype=wp.vec3, device=device)
-    upper = wp.empty(n_faces, dtype=wp.vec3, device=device)
-    wp.launch(
+    lower = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    upper = _launch.empty(n_faces, dtype=wp.vec3, device=device)
+    _launch.launch(
         kernel_triangles.face_aabb_bounds,
         dim=n_faces,
         inputs=[vertices, faces, lower, upper],
         device=device,
     )
-    targets = wp.empty(n_faces * max_triangle_collisions, dtype=wp.int32, device=device)
-    counts = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    targets = _launch.empty(n_faces * max_triangle_collisions, dtype=wp.int32, device=device)
+    counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_intersection.collect_face_box_candidates,
         dim=n_faces,
         inputs=[mesh.id, lower, upper, max_triangle_collisions],
         outputs=[targets, counts],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_validation.self_intersection_marks,
         dim=n_faces * max_triangle_collisions,
         inputs=[vertices, faces, targets, counts, max_triangle_collisions, mark_faces, out_marks],
@@ -587,8 +588,8 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
     # ``edge_winding_consistent_mask``'s per-pair test read straight off the sorted keys, so the
     # verdict needs no group table, no host read of its length and no reduction over a mask.
     keys, order = _sorted_halfedge_keys(faces, None)
-    violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
-    wp.launch(
+    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
+    _launch.launch(
         kernel_validation.sorted_pair_winding_violation,
         dim=keys.size,
         inputs=[faces, None, keys, order, False, violation],
@@ -637,17 +638,17 @@ def edge_winding_consistent_mask(
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
     # Neither edge table is built when not given: the keys come straight off ``faces`` and the
     # kernel reads each directed edge from its face corner, the row ``faces_to_edges`` would hold.
     edge_groups = tw.grouping.group(_halfedge_keys(faces), 2)
     n_groups = int(edge_groups.shape[0])
     if n_groups == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
-    consistent = wp.empty(n_groups, dtype=wp.bool, device=device)
-    wp.launch(
+    consistent = _launch.empty(n_groups, dtype=wp.bool, device=device)
+    _launch.launch(
         kernel_validation.edge_pair_winding_mask,
         dim=n_groups,
         inputs=[faces, edges, edge_groups, consistent],
@@ -710,12 +711,12 @@ def face_orientation_bits(
 
     if m == 0:
         signed_edges = twt.empty_2d((0, 2), wp.int32, device=device)
-        signs = wp.empty(0, dtype=wp.int32, device=device)
-        return wp.zeros(n_faces, dtype=wp.int32, device=device), signed_edges, signs, m
+        signs = _launch.empty(0, dtype=wp.int32, device=device)
+        return _launch.zeros(n_faces, dtype=wp.int32, device=device), signed_edges, signs, m
 
     signed_edges = twt.empty_2d((m, 2), wp.int32, device=device)
-    signs = wp.empty(m, dtype=wp.int32, device=device)
-    wp.launch(
+    signs = _launch.empty(m, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_validation.build_signed_face_edges,
         dim=m,
         inputs=[faces, adjacency, adjacency_edges, signed_edges, signs],
@@ -780,8 +781,8 @@ def is_orientable(faces: wp.array[wp.int32]) -> bool:
 
     orient, keys, order = _orientation_bits_from_keys(faces)
     device = faces.device
-    conflict = wp.zeros(1, dtype=wp.int32, device=device)
-    wp.launch(
+    conflict = _launch.zeros(1, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_validation.sorted_pair_orientation_conflict,
         dim=keys.size,
         inputs=[faces, keys, order, orient, conflict],
@@ -832,11 +833,11 @@ def face_flip_mask(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return wp.empty(0, dtype=wp.bool, device=device)
+        return _launch.empty(0, dtype=wp.bool, device=device)
 
     orient, _, _ = _orientation_bits_from_keys(faces)
-    mask = wp.empty(n_faces, dtype=wp.bool, device=device)
-    wp.map(kernel_array.greater, orient, wp.int32(0), out=mask)
+    mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
+    _launch.map(kernel_array.greater, orient, wp.int32(0), out=mask)
     return mask
 
 
@@ -879,17 +880,17 @@ def _solve_orientation(
     three launches with ``hook`` in place of its edge-list hook and no label table, which neither
     orientation caller reads. ``hook_inputs`` precede the packed words in ``hook``'s signature.
     """
-    words = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+    words = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_connected_components.ecl_init_parent_parity,
         dim=n_faces,
         inputs=[words],
         device=device,
     )
     if n_edges > 0:
-        wp.launch(hook, dim=n_edges, inputs=[*hook_inputs, words], device=device)
-    orient = wp.empty(n_faces, dtype=wp.int32, device=device)
-    wp.launch(
+        _launch.launch(hook, dim=n_edges, inputs=[*hook_inputs, words], device=device)
+    orient = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_connected_components.ecl_flatten_parity,
         dim=n_faces,
         inputs=[words, None, orient],
@@ -970,7 +971,7 @@ def is_watertight(
     # mesh more than it saves an open one: the vertex test's launches then no longer overlap the
     # sort on the device.
     n_vertices = vertices.size
-    violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
+    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     parents = _corner_parents_from_keys(
         faces, _sorted_halfedge_keys(faces, n_vertices), True, violation
     )
@@ -1083,8 +1084,8 @@ def is_volume(
     # that is not exactly two keys is an edge not shared by exactly two faces, and each pair's two
     # directed copies must be reversed. One flag, one readback, and the volume only if it passes.
     keys, order = _sorted_halfedge_keys(faces, vertices.size)
-    violation = wp.zeros(1, dtype=wp.int32, device=faces.device)
-    wp.launch(
+    violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
+    _launch.launch(
         kernel_validation.sorted_pair_winding_violation,
         dim=keys.size,
         inputs=[faces, edges, keys, order, True, violation],
@@ -1181,7 +1182,7 @@ def face_defective_mask(
     device = faces.device
     n_faces = faces.size // 3
     # ``wp.empty``: the mask kernel writes every face on every path.
-    out_bad = wp.empty(n_faces, dtype=wp.bool, device=device)
+    out_bad = _launch.empty(n_faces, dtype=wp.bool, device=device)
     if n_faces == 0:
         return out_bad
 
@@ -1196,12 +1197,12 @@ def face_defective_mask(
     if max_normal_angle is not None or max_fold_angle is not None:
         if face_normals is None:
             face_normals, _areas = tw.triangles.face_normals_and_areas(vertices, faces)
-        neighbor_sum = wp.zeros(n_faces, dtype=wp.vec3, device=device)
-        max_angle = wp.zeros(n_faces, dtype=wp.float32, device=device)
+        neighbor_sum = _launch.zeros(n_faces, dtype=wp.vec3, device=device)
+        max_angle = _launch.zeros(n_faces, dtype=wp.float32, device=device)
         # Over the sorted halfedge keys, each adjacency pair taken at its first member: the pairs
         # ``face_adjacency`` would emit, with no table compacted and no host read of its length.
         keys, order = _sorted_halfedge_keys(faces, vertices.size)
-        wp.launch(
+        _launch.launch(
             kernel_validation.accumulate_neighbor_normals,
             dim=keys.size,
             inputs=[face_normals, keys, order, neighbor_sum, max_angle],
@@ -1210,7 +1211,7 @@ def face_defective_mask(
 
     # -2 is unreachable for a cosine and -1 for the normalized quality, so a disabled criterion
     # simply never fires and the kernel needs no per-criterion flag.
-    wp.launch(
+    _launch.launch(
         kernel_validation.face_defective_mask,
         dim=n_faces,
         inputs=[
@@ -1251,13 +1252,13 @@ def _corner_parents_from_keys(
     keys, order = sorted_keys
     n = keys.size
     parents = tw.array.arange(n, device=faces.device)
-    wp.launch(
+    _launch.launch(
         kernel_validation.sorted_corner_prehook,
         dim=n,
         inputs=[faces, keys, order, require_pairs, parents, violation],
         device=faces.device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_validation.sorted_corner_hook,
         dim=n,
         inputs=[faces, keys, order, parents],
@@ -1294,15 +1295,15 @@ def _vertex_manifold_check(
     """
     device = faces.device
     n_corners = faces.size // 3 * 3
-    labels = wp.empty(n_corners, dtype=wp.int32, device=device)
-    min_label = wp.full(n_vertices, twt.dtype_max(wp.int32), dtype=wp.int32, device=device)
-    wp.launch(
+    labels = _launch.empty(n_corners, dtype=wp.int32, device=device)
+    min_label = _launch.full(n_vertices, twt.dtype_max(wp.int32), dtype=wp.int32, device=device)
+    _launch.launch(
         kernel_validation.corner_labels_and_vertex_min,
         dim=n_corners,
         inputs=[faces, parents, labels, min_label, mask],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_validation.corner_vertex_check,
         dim=n_corners,
         inputs=[faces, labels, min_label, mask, violation],
@@ -1339,8 +1340,8 @@ def _halfedge_keys(faces: wp.array[wp.int32]) -> wp.array[wp.uint64]:
     same reason: it is the rows ``hash_indices_rows`` of ``edges_sorted`` would give, for less.
     """
     n_faces = faces.size // 3
-    keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
-    wp.launch(
+    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
+    _launch.launch(
         kernel_adjacency.face_edge_keys,
         dim=n_faces,
         inputs=[faces, wp.uint64(INDEX_RADIX_PAIR)],

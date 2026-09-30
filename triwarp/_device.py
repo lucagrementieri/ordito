@@ -23,6 +23,7 @@ import numpy as np
 import warp as wp
 
 import triwarp as tw
+from triwarp import _launch
 from triwarp.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA
 
 
@@ -423,16 +424,16 @@ def read_scalar(arr: wp.array[Any], index: int = -1) -> Any:
         return _detached(arr.numpy()[slot])
     scratch = _SCALAR_SCRATCH.get(arr.dtype)
     if scratch is None:
-        scratch = wp.empty(1, dtype=arr.dtype, device="cpu")
+        scratch = _launch.empty(1, dtype=arr.dtype, device="cpu")
         _SCALAR_SCRATCH[arr.dtype] = scratch
     # An offset copy rather than a copy of ``arr[slot : slot + 1]``: the one-element slice is a
     # whole ``wp.array`` construction to name four bytes ``wp.copy`` can address directly. The
     # offset path needs a contiguous source -- a strided one would be staged whole across devices
     # -- so a strided view keeps the slice, which is contiguous by construction.
     if arr.ndim == 1 and arr.is_contiguous:
-        wp.copy(scratch, arr, src_offset=slot, count=1)
+        _launch.copy(scratch, arr, src_offset=slot, count=1)
     else:
-        wp.copy(scratch, arr[slot : slot + 1])
+        _launch.copy(scratch, arr[slot : slot + 1])
     return _detached(scratch.numpy()[0])
 
 
@@ -469,9 +470,9 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
     key = (arr.dtype, count)
     scratch = _VALUES_SCRATCH.get(key)
     if scratch is None:
-        scratch = wp.empty(count, dtype=arr.dtype, device="cpu")
+        scratch = _launch.empty(count, dtype=arr.dtype, device="cpu")
         _VALUES_SCRATCH[key] = scratch
-    wp.copy(scratch, arr, src_offset=start, count=count)
+    _launch.copy(scratch, arr, src_offset=start, count=count)
     return scratch.numpy().tolist()
 
 

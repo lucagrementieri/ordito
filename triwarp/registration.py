@@ -5,10 +5,12 @@ from __future__ import annotations
 import math
 from typing import Any, Literal, TypedDict, cast, overload
 
+import numpy as np
 import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from triwarp import _launch
 from triwarp._device import (
     read_scalar,
     record_device_loop,
@@ -139,7 +141,7 @@ def procrustes(
         matrix = _identity_mat44(device)
         if not return_cost:
             return matrix
-        return matrix, wp.clone(a), 0.0
+        return matrix, _launch.clone(a), 0.0
 
     workspace = _procrustes_workspace(n, device, return_cost=return_cost)
     weighted = weights is not None and weights.size == n
@@ -180,9 +182,11 @@ def _procrustes_workspace(
 ) -> _ProcrustesWorkspace:
     """Allocate the buffers one Procrustes fit needs."""
     return {
-        "acc": wp.zeros(kernel_registration.PROCRUSTES_ACC_SIZE, dtype=wp.float32, device=device),
-        "matrix": wp.empty(1, dtype=wp.mat44, device=device),
-        "transformed": wp.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
+        "acc": _launch.zeros(
+            kernel_registration.PROCRUSTES_ACC_SIZE, dtype=wp.float32, device=device
+        ),
+        "matrix": _launch.empty(1, dtype=wp.mat44, device=device),
+        "transformed": _launch.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
         "uniform_weights": _zero_length(wp.float32, device),
     }
 
@@ -206,14 +210,14 @@ def _procrustes_into(
     if weights is None:
         weights = workspace["uniform_weights"]
 
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_registration.accumulate_procrustes_moments,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[a, b, weights, translation, acc],
         block_dim=TILE_1D,
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_registration.build_procrustes_matrix,
         dim=1,
         inputs=[a, b, acc, reflection, translation, scale, out_matrix],
@@ -227,7 +231,7 @@ def _procrustes_into(
     assert out_transformed is not None
     # One launch, not two: this both writes ``out_transformed`` and reduces the residual against
     # it. See the kernel for why fusing became worth it only after the reduction was flattened.
-    wp.launch_tiled(
+    _launch.launch_tiled(
         kernel_registration.transform_and_accumulate_cost,
         dim=kernel_reduce.blocks_1d(n),
         inputs=[a, b, weights, out_matrix, acc, out_transformed],
@@ -349,7 +353,7 @@ def icp(
     n = a.size
 
     if n == 0 or target_vertices.size == 0:
-        return _identity_mat44(device), wp.clone(a), math.inf
+        return _identity_mat44(device), _launch.clone(a), math.inf
 
     # ``total`` is the transform kept so far, and ``_resolve_initial``'s own copy, so the loop may
     # rewrite it in place. The source is never moved inside the loop: each correspondence pass
@@ -357,7 +361,7 @@ def icp(
     # loop by the transform it kept. The seed image is the answer of a call that runs no
     # iteration.
     total = _resolve_initial(initial, device)
-    transformed = wp.empty(n, dtype=wp.vec3, device=device)
+    transformed = _launch.empty(n, dtype=wp.vec3, device=device)
     if max_iterations <= 0:
         _apply_transform(a, total, transformed)
         return total, transformed, math.inf
@@ -369,15 +373,15 @@ def icp(
     # ``fitted`` and is copied into ``total`` only once ``point_to_point_round`` has seen that it
     # carried weight; ``state`` is the shared round / condition word; ``acc`` is the fit's moments
     # plus the kept fit's cost, which is also the "previous cost" the convergence test reads.
-    closest = wp.empty(n, dtype=wp.vec3, device=device)
+    closest = _launch.empty(n, dtype=wp.vec3, device=device)
     weights = (
-        wp.empty(n, dtype=wp.float32, device=device)
+        _launch.empty(n, dtype=wp.float32, device=device)
         if max_distance is not None
         else _zero_length(wp.float32, device)
     )
-    acc = wp.zeros(kernel_registration.ICP_POINT_ACC_SIZE, dtype=wp.float32, device=device)
-    fitted = wp.empty(1, dtype=wp.mat44, device=device)
-    state = wp.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    acc = _launch.zeros(kernel_registration.ICP_POINT_ACC_SIZE, dtype=wp.float32, device=device)
+    fitted = _launch.empty(1, dtype=wp.mat44, device=device)
+    state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
 
     blocks = kernel_reduce.blocks_1d(n)
     search_inputs = [
@@ -398,30 +402,30 @@ def icp(
     round_outputs = [acc, total, state]
 
     def iterate() -> None:
-        wp.launch(
+        _launch.launch(
             kernel_registration.point_to_point_correspondence_pass,
             dim=n,
             inputs=search_inputs,
             device=device,
         )
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_registration.accumulate_procrustes_moments,
             dim=blocks,
             inputs=moment_inputs,
             block_dim=TILE_1D,
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_registration.build_procrustes_matrix, dim=1, inputs=matrix_inputs, device=device
         )
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_registration.transform_and_accumulate_cost,
             dim=blocks,
             inputs=cost_inputs,
             block_dim=TILE_1D,
             device=device,
         )
-        wp.launch(
+        _launch.launch(
             kernel_registration.point_to_point_round,
             dim=1,
             inputs=round_inputs,
@@ -463,7 +467,7 @@ def _zero_length(dtype: type, device: wp.DeviceLike) -> wp.array[Any]:
     """
     key = (str(device), dtype)
     if key not in _ZERO_LENGTH:
-        _ZERO_LENGTH[key] = wp.empty(0, dtype=dtype, device=device)
+        _ZERO_LENGTH[key] = _launch.empty(0, dtype=dtype, device=device)
     return _ZERO_LENGTH[key]
 
 
@@ -598,11 +602,11 @@ def icp_point_to_plane(
         )
 
     if n == 0 or target_vertices.size == 0:
-        return _identity_mat44(device), wp.clone(a), math.inf
+        return _identity_mat44(device), _launch.clone(a), math.inf
 
     # ``current`` is the moving source. Every search writes it, the first from ``a`` and the seed.
     initial_matrix = _resolve_initial(initial, device)
-    current = wp.empty(n, dtype=wp.vec3, device=device)
+    current = _launch.empty(n, dtype=wp.vec3, device=device)
 
     mesh, query_max, target_index = _resolve_icp_target(
         target_vertices, target_faces, "icp_point_to_plane"
@@ -621,13 +625,13 @@ def icp_point_to_plane(
     # it never touches a caller's array. ``acc`` is the normal equations, the two scalars and the
     # previous kept cost in one buffer (``kernel_registration.ICP_ACC_SIZE``); ``state`` the shared
     # round and condition slots.
-    closest = wp.empty(n, dtype=wp.vec3, device=device)
-    distance = wp.empty(n, dtype=wp.float32, device=device)
-    triangle_id = wp.empty(n, dtype=wp.int32, device=device)
-    acc = wp.zeros(kernel_registration.ICP_ACC_SIZE, dtype=wp.float32, device=device)
-    step = wp.empty(1, dtype=wp.mat44, device=device)
+    closest = _launch.empty(n, dtype=wp.vec3, device=device)
+    distance = _launch.empty(n, dtype=wp.float32, device=device)
+    triangle_id = _launch.empty(n, dtype=wp.int32, device=device)
+    acc = _launch.zeros(kernel_registration.ICP_ACC_SIZE, dtype=wp.float32, device=device)
+    step = _launch.empty(1, dtype=wp.mat44, device=device)
     total = initial_matrix
-    state = wp.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    state = _launch.zeros(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
 
     # The correspondence step is one launch: the step applied to each point, and its match on the
     # target -- the closest point on a mesh, or the nearest vertex of a cloud through the hoisted
@@ -652,7 +656,7 @@ def icp_point_to_plane(
 
     def search(stepped: bool) -> None:
         source, source_step = (current, step) if stepped else (a, total)
-        wp.launch(
+        _launch.launch(
             kernel_registration.point_to_plane_correspondence_pass,
             dim=n,
             inputs=[*search_target, source, source_step, *search_options],
@@ -661,7 +665,7 @@ def icp_point_to_plane(
         )
 
     def accumulate() -> None:
-        wp.launch_tiled(
+        _launch.launch_tiled(
             kernel_registration.accumulate_point_to_plane,
             dim=kernel_reduce.blocks_1d(n),
             inputs=[
@@ -692,7 +696,7 @@ def icp_point_to_plane(
     round_outputs = [acc, total, step, state]
 
     def close_round() -> None:
-        wp.launch(
+        _launch.launch(
             kernel_registration.point_to_plane_round,
             dim=1,
             inputs=round_inputs,
@@ -784,33 +788,33 @@ def _robust_scale_from_residuals(
     device = current.device
     n = current.size
     # Radix-sort buffers: keys and a payload the sort needs and nobody reads, both ``2n`` long.
-    keys = wp.empty(2 * n, dtype=wp.float32, device=device)
-    payload = wp.empty(2 * n, dtype=wp.int32, device=device)
-    stats = wp.empty(kernel_registration.MAD_STATS_SIZE, dtype=wp.float64, device=device)
-    wp.launch(
+    keys = _launch.empty(2 * n, dtype=wp.float32, device=device)
+    payload = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    stats = _launch.empty(kernel_registration.MAD_STATS_SIZE, dtype=wp.float64, device=device)
+    _launch.launch(
         kernel_registration.robust_residual_keys,
         dim=n,
         inputs=[current, closest, normals, triangle_id, distance, wp.float32(max_distance)],
         outputs=[keys],
         device=device,
     )
-    wp.utils.radix_sort_pairs(keys, payload, n)
-    wp.launch(
+    _launch.radix_sort_pairs(keys, payload, n)
+    _launch.launch(
         kernel_registration.robust_residual_center,
         dim=1,
         inputs=[keys, wp.int32(n)],
         outputs=[stats],
         device=device,
     )
-    wp.launch(
+    _launch.launch(
         kernel_registration.robust_deviation_keys,
         dim=n,
         inputs=[stats],
         outputs=[keys],
         device=device,
     )
-    wp.utils.radix_sort_pairs(keys, payload, n)
-    wp.launch(
+    _launch.radix_sort_pairs(keys, payload, n)
+    _launch.launch(
         kernel_registration.robust_sigma, dim=1, inputs=[keys], outputs=[stats], device=device
     )
     # The estimate's one readback: the in-range count and the scale.
@@ -845,16 +849,16 @@ def _residual_standard_deviation(
     n = current.size
     # The residuals ``robust_residual_keys`` keys the medians' sort by, before any sort: the
     # in-range ones are the residuals this averages, and the ``+inf`` of the rest is never kept.
-    residual = wp.empty(n, dtype=wp.float32, device=device)
-    wp.launch(
+    residual = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
         kernel_registration.robust_residual_keys,
         dim=n,
         inputs=[current, closest, normals, triangle_id, distance, wp.float32(max_distance)],
         outputs=[residual],
         device=device,
     )
-    valid = wp.empty(n, dtype=wp.bool, device=device)
-    wp.map(
+    valid = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.map(
         kernel_registration.residual_valid,
         triangle_id,
         distance,
@@ -864,25 +868,26 @@ def _residual_standard_deviation(
     kept = tw.array.gather(residual, tw.array.flatnonzero(valid))
     k = kept.size
     mean = float(tw.reduce.mean(cast(twt.Array1dFloat32, kept)))
-    deviation = wp.empty(k, dtype=wp.float32, device=device)
-    wp.map(kernel_registration.abs_deviation, kept, wp.float32(mean), out=deviation)
-    wp.map(kernel_array.square_scalar, deviation, out=deviation)
+    deviation = _launch.empty(k, dtype=wp.float32, device=device)
+    _launch.map(kernel_registration.abs_deviation, kept, wp.float32(mean), out=deviation)
+    _launch.map(kernel_array.square_scalar, deviation, out=deviation)
     return float(tw.reduce.mean(cast(twt.Array1dFloat32, deviation))) ** 0.5
+
+
+# The identity as host data a ``(1,)`` ``wp.mat44`` upload takes as it is.
+_IDENTITY_MAT44_NP = np.eye(4, dtype=np.float32).reshape(1, 4, 4)
 
 
 def _identity_mat44(device: wp.DeviceLike) -> wp.array[wp.mat44]:
     """Return a ``(1,)`` array holding the 4x4 identity transform."""
-    identity = wp.mat44(
-        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0
-    )
-    return wp.array([identity], dtype=wp.mat44, device=device)
+    return _launch.array(_IDENTITY_MAT44_NP, dtype=wp.mat44, device=device)
 
 
 def _apply_transform(
     points: wp.array[wp.vec3], matrix: wp.array[wp.mat44], out_points: wp.array[wp.vec3]
 ) -> None:
     """Write ``matrix[0]`` applied to every point of ``points`` into ``out_points``."""
-    wp.launch(
+    _launch.launch(
         kernel_transform.apply_transform_mat44,
         dim=points.size,
         inputs=[points, matrix, out_points],
@@ -897,8 +902,12 @@ def _resolve_initial(
     if initial is None:
         return _identity_mat44(device)
     if isinstance(initial, wp.array):
-        return wp.clone(initial)
-    return wp.array([initial], dtype=wp.mat44, device=device)
+        return _launch.clone(initial)
+    # A ``wp.mat44`` is a ctypes array, so NumPy views its 16 floats in place (its stub does not
+    # declare the buffer protocol, hence the cast); a one-element list of it would make NumPy walk
+    # the matrix row by row.
+    host = np.frombuffer(cast(Any, initial), dtype=np.float32).reshape(1, 4, 4)
+    return _launch.array(host, dtype=wp.mat44, device=device)
 
 
 def _resolve_icp_target(
