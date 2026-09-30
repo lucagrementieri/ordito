@@ -590,7 +590,7 @@ def test_shape_diameter_invalid(device: str) -> None:
         tw.visibility.shape_diameter(
             mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=device)
         )
-    assert normals_wp.shape[0] > 0
+    assert normals_wp.size > 0
 
 
 def test_shape_diameter_empty(device: str) -> None:
@@ -701,7 +701,7 @@ def test_thickness_at_vertices_matches_meshlib(device: str) -> None:
     mesh_tm = _ellipsoid()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
 
     thickness_ml = meshlib_scalars_to_numpy(
         mm.computeRayThicknessAtVertices(trimesh_to_meshlib(mesh_tm))
@@ -821,7 +821,7 @@ def test_max_tangent_sphere_reach_matches_trimesh(cave_cube: tuple[tm.Trimesh, w
     finite_tm = np.isfinite(radii_tm)
     # Non-vacuous in both directions: a convex fixture would leave every radius infinite, and an
     # implementation that never escaped the surface would leave none of them.
-    assert 5 <= finite_tm.sum() < radii_tm.shape[0]
+    assert 5 <= finite_tm.sum() < radii_tm.size
     assert np.array_equal(np.isfinite(radii_wp.numpy()), finite_tm)
     assert np.allclose(radii_wp.numpy()[finite_tm], radii_tm[finite_tm], rtol=1e-5, atol=1e-5)
     assert np.allclose(centers_wp.numpy()[finite_tm], centers_tm[finite_tm], rtol=1e-5, atol=1e-5)
@@ -938,9 +938,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     _mesh_tm, mesh_wp = icosahedron
     points_wp = mesh_wp.points
     unit_normals_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
-    scaled_normals_wp = wp.empty(
-        int(unit_normals_wp.shape[0]), dtype=wp.vec3, device=mesh_wp.device
-    )
+    scaled_normals_wp = wp.empty(unit_normals_wp.size, dtype=wp.vec3, device=mesh_wp.device)
     wp.map(wp.mul, unit_normals_wp, wp.float32(2.0), out=scaled_normals_wp)
 
     centers_unit_wp, radii_unit_wp = tw.visibility.max_tangent_sphere(

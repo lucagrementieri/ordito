@@ -19,7 +19,7 @@ from tests.conftest import MESHES
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_halfedge_twins_are_a_symmetric_pairing(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
@@ -47,7 +47,7 @@ def test_halfedge_twins_are_a_symmetric_pairing(
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
 def test_halfedge_twins_has_no_boundary_on_closed_mesh(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     twins_wp = tw.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))
@@ -56,7 +56,7 @@ def test_halfedge_twins_has_no_boundary_on_closed_mesh(
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     twins = tw.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices)).numpy()
@@ -111,7 +111,7 @@ def test_halfedge_twins_rejects_a_face_pair_wound_against_each_other(
 
 @pytest.mark.parametrize("mesh_name", ["boy_surface", "mobius"])
 def test_halfedge_twins_rejects_a_non_orientable_surface(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: trimesh has no halfedge structure, so the oracle is orientability.
@@ -180,7 +180,7 @@ def test_vertex_one_rings_rejects_a_pinched_vertex(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_validate_false_skips_only_the_check(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Triwarp against triwarp: ``validate=False`` changes whether the mesh is checked, not the answer.
@@ -228,7 +228,7 @@ def test_halfedge_twins_empty(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_vertex_one_ring_sizes_match_incident_face_counts(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A after a named transform (Class B): ring sizes are the incident-face-corner counts.
@@ -269,7 +269,7 @@ def test_vertex_one_ring_sizes_match_incident_face_counts(
 )
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_vertex_one_ring_neighbor_counts_match_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B: ``Trimesh.vertex_neighbors`` counts, after adding one per boundary vertex.
@@ -294,7 +294,7 @@ def test_vertex_one_ring_neighbor_counts_match_trimesh(
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_vertex_one_rings_are_rotationally_ordered(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: the *ordering* claim, which no reference exposes.
@@ -332,7 +332,7 @@ def test_vertex_one_rings_are_rotationally_ordered(
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 def test_vertex_one_rings_boundary_flags_match_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B: trimesh's multiplicity-1 edge grouping, reduced to a per-vertex boolean.
@@ -389,13 +389,11 @@ def test_require_matching_twins_rejects_a_table_from_another_mesh(request) -> No
     _, fine_wp = request.getfixturevalue("icosphere_coarse")
     coarse_twins_wp = tw.halfedge.halfedge_twins(coarse_wp.indices)
     fine_twins_wp = tw.halfedge.halfedge_twins(fine_wp.indices)
-    assert int(coarse_twins_wp.shape[0]) < int(fine_twins_wp.shape[0])
+    assert coarse_twins_wp.size < fine_twins_wp.size
 
     contour_wp = tw.selection.region_boundary_edges(
         fine_wp.indices,
-        wp.array(
-            np.arange(int(fine_wp.indices.shape[0]) // 3) < 4, dtype=wp.bool, device=fine_wp.device
-        ),
+        wp.array(np.arange(fine_wp.indices.size // 3) < 4, dtype=wp.bool, device=fine_wp.device),
         oriented=True,
     )
     calls = (
@@ -457,7 +455,7 @@ def test_require_matching_twins_rejects_a_table_that_is_not_the_opposite_halfedg
 
     contour_wp = tw.selection.region_boundary_edges(
         faces_wp,
-        wp.array(np.arange(int(faces_wp.shape[0]) // 3) < 4, dtype=wp.bool, device=faces_wp.device),
+        wp.array(np.arange(faces_wp.size // 3) < 4, dtype=wp.bool, device=faces_wp.device),
         oriented=True,
     )
     calls = (
@@ -488,9 +486,9 @@ def test_require_matching_twins_bounds_a_twin_against_the_halfedge_count(device:
     faces_wp = wp.array(
         np.array([0, 1, 2, 0, 2, 3, 1, 2, 3, 7], dtype=np.int32), dtype=wp.int32, device=device
     )
-    n_halfedges = int(faces_wp.shape[0]) // 3 * 3
+    n_halfedges = faces_wp.size // 3 * 3
     # Non-vacuity: the trailing entry is what makes the two lengths disagree.
-    assert n_halfedges < int(faces_wp.shape[0])
+    assert n_halfedges < faces_wp.size
 
     twins_np = np.full(n_halfedges, -1, dtype=np.int32)
     twins_np[0] = n_halfedges  # in range for faces, out of range for halfedges

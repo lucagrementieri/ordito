@@ -279,8 +279,8 @@ def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
         np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec2, device=bench_lib.device
     )
     faces = bench_lib.run(lambda: tw.reconstruction.delaunay_triangulation(points_wp))
-    assert int(faces.shape[0]) % 3 == 0
-    assert int(faces.shape[0]) > 0
+    assert faces.size % 3 == 0
+    assert faces.size > 0
 
 
 @pytest.mark.benchmark(group="triangulate_point_cloud")

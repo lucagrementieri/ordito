@@ -334,4 +334,4 @@ def test_intersects_location(bench_case: BenchCase) -> None:
         lambda: tw.ray.intersects_location(mesh, origins, directions)
     )
     assert locations.shape == rays.shape == faces_hit.shape
-    assert int(rays.shape[0]) <= _N_RAYS
+    assert rays.size <= _N_RAYS

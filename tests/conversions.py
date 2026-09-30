@@ -392,15 +392,19 @@ def pyvista_edges_to_indices(edges_pv: pv.PolyData, vertices_np: np.ndarray) -> 
     which reads as a real disagreement. ``extract_all_edges`` does keep the numbering, but it goes
     through the same path here so no caller has to remember which filter is which.
 
-    The mapping is by position and exact: VTK copies the coordinates through unchanged, so the
-    nearest-neighbour distance is ``0.0`` and the assert below is a bijection check rather than a
-    tolerance.
+    The mapping is by position and exact. VTK 9.7's multithreaded ``vtkExtractEdges`` stores its
+    points as ``float32`` whatever the input precision, and has no output-precision setting, so
+    the mesh vertices are rounded to the extraction's own dtype before the match: the
+    nearest-neighbour distance is then ``0.0`` and the assert below stays a bijection check
+    rather than becoming a tolerance.
     """
     lines_np = np.asarray(edges_pv.lines).reshape(-1, 3)[:, 1:]
-    distances_np, indices_np = cKDTree(np.ascontiguousarray(vertices_np, dtype=np.float64)).query(
-        np.asarray(edges_pv.points)
-    )
+    points_np = np.asarray(edges_pv.points)
+    reference_np = np.ascontiguousarray(vertices_np, dtype=points_np.dtype)
+    distances_np, indices_np = cKDTree(reference_np).query(points_np)
     assert float(np.max(distances_np, initial=0.0)) == 0.0
+    # One-to-one, or the rounding merged two vertices and the match picked one of them.
+    assert np.unique(indices_np).size == indices_np.size
     return np.sort(indices_np[lines_np], axis=1)
 
 
@@ -600,9 +604,9 @@ def meshlib_bitset_to_numpy(bitset_ml: object, size: int) -> np.ndarray:
     element type, or a converter that dropped elements) and raises.
     """
     flags_np = mn.getNumpyBitSet(bitset_ml)
-    if flags_np.shape[0] > size:
+    if flags_np.size > size:
         raise ValueError(f"bitset holds {flags_np.shape[0]} bits, more than the {size} elements")
-    return np.pad(flags_np, (0, size - flags_np.shape[0]))
+    return np.pad(flags_np, (0, size - flags_np.size))
 
 
 def numpy_to_pymeshfix(vertices_np: np.ndarray, faces_np: np.ndarray) -> _meshfix.PyTMesh:

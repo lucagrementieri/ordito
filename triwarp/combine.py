@@ -65,7 +65,7 @@ def concatenate(
 
     require_same_device(meshes_data=meshes_data)
     device = meshes_data[0][0].device
-    vertex_counts = [int(vertices.shape[0]) for vertices, _ in meshes_data]
+    vertex_counts = [vertices.size for vertices, _ in meshes_data]
 
     if sum(vertex_counts) == 0:
         concatenated_vertices = wp.empty(0, dtype=wp.vec3, device=device)
@@ -76,7 +76,7 @@ def concatenate(
         )
 
     concatenated_faces, piece_starts = tw.array.pack_1d_arrays([faces for _, faces in meshes_data])
-    total_indices = int(concatenated_faces.shape[0])
+    total_indices = concatenated_faces.size
     if total_indices > 0:
         wp.launch(
             kernel_combine.offset_packed_faces,
@@ -144,7 +144,7 @@ def split(
     """
     require_same_device(vertices=vertices, faces=faces)
     vertices_all, vertex_offsets, faces_all, face_offsets = split_with_offsets(vertices, faces)
-    if int(vertex_offsets.shape[0]) == 2:
+    if vertex_offsets.size == 2:
         # One component is the whole of both buffers, so its offsets need no readback.
         if copy:
             return [(wp.clone(vertices_all), wp.clone(faces_all))]
@@ -200,7 +200,7 @@ def split_with_offsets(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
@@ -223,13 +223,11 @@ def split_with_offsets(
     )
     face_offsets = tw.array.flatnonzero(is_start)
 
-    if int(face_offsets.shape[0]) == 2:
+    if face_offsets.size == 2:
         component_vertices, component_faces = tw.selection.submesh_from_face_indices(
             vertices, faces, sorted_face_ids
         )
-        vertex_offsets = wp.array(
-            [0, int(component_vertices.shape[0])], dtype=wp.int32, device=device
-        )
+        vertex_offsets = wp.array([0, component_vertices.size], dtype=wp.int32, device=device)
         return component_vertices, vertex_offsets, component_faces, face_offsets
 
     vertices_all, vertex_offsets, faces_all = tw.selection.submeshes_from_face_groups(

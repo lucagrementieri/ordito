@@ -174,8 +174,8 @@ def test_thicken_mesh(bench_case: BenchCase) -> None:
     shell_vertices, shell_faces = bench_case.run(
         lambda: tw.levelset.thicken_mesh(vertices, faces, thickness)
     )
-    assert int(shell_vertices.shape[0]) == 2 * bench_case.n_vertices
-    assert int(shell_faces.shape[0]) >= 6 * bench_case.n_faces
+    assert shell_vertices.size == 2 * bench_case.n_vertices
+    assert shell_faces.size >= 6 * bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="signed_distance_grid")
@@ -393,4 +393,4 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     _vertices_wp, faces_wp = bench_lib.run(
         lambda: tw.levelset.marching_cubes(field_wp, 0.0, bounds=bounds)
     )
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0

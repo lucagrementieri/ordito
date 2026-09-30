@@ -55,9 +55,7 @@ def test_face_adjacency_n_vertices_matches_inferred(
     """Supplying the hash radix skips a ``reduce.minmax`` readback; the result must not move."""
     _, mesh_wp = request.getfixturevalue(mesh_name)
     inferred_wp = tw.adjacency.face_adjacency(mesh_wp.indices)
-    supplied_wp = tw.adjacency.face_adjacency(
-        mesh_wp.indices, n_vertices=int(mesh_wp.points.shape[0])
-    )
+    supplied_wp = tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     assert np.array_equal(inferred_wp.numpy(), supplied_wp.numpy())
 
 
@@ -99,14 +97,14 @@ def test_face_adjacency_edges_paired_matches_the_grouped_path(
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
     assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
-    n_vertices = int(mesh_wp.points.shape[0]) if n_vertices_given else None
+    n_vertices = mesh_wp.points.size if n_vertices_given else None
     grouped_wp, grouped_edges_wp = tw.adjacency.face_adjacency(
         faces_wp, return_edges=True, n_vertices=n_vertices
     )
     paired_wp, paired_edges_wp = tw.adjacency.face_adjacency(
         faces_wp, return_edges=True, n_vertices=n_vertices, edges_paired=True
     )
-    assert paired_wp.shape == (3 * (int(faces_wp.shape[0]) // 3) // 2, 2)
+    assert paired_wp.shape == (3 * (faces_wp.size // 3) // 2, 2)
     assert np.array_equal(paired_wp.numpy(), grouped_wp.numpy())
     assert np.array_equal(paired_edges_wp.numpy(), grouped_edges_wp.numpy())
     assert np.array_equal(
@@ -178,7 +176,7 @@ def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
     adjacency rows, which is what the row-count assert below would catch.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     adjacency_wp, edges_wp = tw.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
     assert int(adjacency_wp.shape[0]) > 0
     tight_wp, tight_edges_wp = tw.adjacency.face_adjacency(
@@ -241,7 +239,7 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
 
     payload_igl, offsets_igl = igl.vertex_triangle_adjacency(faces_np, n_vertices)
@@ -271,12 +269,12 @@ def test_vertex_face_adjacency_infers_n_vertices(
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     inferred_faces, inferred_offsets = tw.adjacency.vertex_face_adjacency(mesh_wp.indices)
     supplied_faces, supplied_offsets = tw.adjacency.vertex_face_adjacency(
-        mesh_wp.indices, n_vertices=int(mesh_wp.points.shape[0])
+        mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
 
     assert np.array_equal(inferred_offsets.numpy(), supplied_offsets.numpy())
     bounds_np = inferred_offsets.numpy()
-    for vertex in range(bounds_np.shape[0] - 1):
+    for vertex in range(bounds_np.size - 1):
         row = slice(int(bounds_np[vertex]), int(bounds_np[vertex + 1]))
         assert np.array_equal(
             np.sort(inferred_faces.numpy()[row]), np.sort(supplied_faces.numpy()[row])
@@ -516,7 +514,7 @@ def test_face_adjacency_angles_matches_meshlib(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
-        mesh_wp.indices, return_edges=True, n_vertices=int(mesh_wp.points.shape[0])
+        mesh_wp.indices, return_edges=True, n_vertices=mesh_wp.points.size
     )
     angles_wp = tw.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
@@ -904,7 +902,7 @@ def test_face_connected_component_labels_matches_igl(
     n_components_igl, labels_igl = igl.facet_components(faces_np)
     labels_wp = tw.adjacency.face_connected_component_labels(faces_wp)
 
-    assert n_components_igl == np.unique(labels_wp.numpy()).shape[0]
+    assert n_components_igl == np.unique(labels_wp.numpy()).size
     assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
     assert same_partition(labels_wp.numpy(), _face_labels_np(faces_np))
 
@@ -959,7 +957,7 @@ def test_face_connected_component_labels_matches_meshlib(
         mm.MeshPart(trimesh_to_meshlib(mesh_tm)), mm.MeshComponents.FaceIncidence.PerEdge
     )
     labels_wp = tw.adjacency.face_connected_component_labels(faces_wp)
-    assert len(components_ml) == np.unique(labels_wp.numpy()).shape[0]
+    assert len(components_ml) == np.unique(labels_wp.numpy()).size
     assert same_partition(labels_wp.numpy(), _face_labels_ml(components_ml, n_faces))
 
     # Two disjoint copies, the case a constant labelling would pass.
@@ -990,7 +988,7 @@ def test_face_connected_component_labels_matches_meshlib(
     per_edge_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerEdge)
     per_vertex_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerVertex)
     assert (len(per_edge_ml), len(per_vertex_ml)) == (2, 1)
-    assert np.unique(tw.adjacency.face_connected_component_labels(bowtie_wp).numpy()).shape[0] == 2
+    assert np.unique(tw.adjacency.face_connected_component_labels(bowtie_wp).numpy()).size == 2
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
@@ -1029,7 +1027,7 @@ def test_face_connected_component_labels_matches_pyvista(
     )
     labels_doubled_wp = tw.adjacency.face_connected_component_labels(doubled_wp)
 
-    assert np.unique(labels_doubled_pv).shape[0] == 2
+    assert np.unique(labels_doubled_pv).size == 2
     assert same_partition(labels_doubled_wp.numpy(), labels_doubled_pv)
 
 
@@ -1052,7 +1050,7 @@ def test_sorted_face_edge_keys(
     radix = np.uint64(n_vertices) if bounded else np.uint64(1 << 32)
     keys_np = edges_np[:, 0] + edges_np[:, 1] * radix
     order_np = np.argsort(keys_np, kind="stable")
-    assert np.unique(keys_np).shape[0] < keys_np.shape[0]
+    assert np.unique(keys_np).size < keys_np.size
 
     sorted_wp, order_wp = tw.adjacency.sorted_face_edge_keys(
         mesh_wp.indices, n_vertices=n_vertices if bounded else None

@@ -380,7 +380,7 @@ def test_transfer_onto_vertices_empty(device: str):
 
 
 def _scattered_cloud(
-    device: str, n_source: int = 500, n_query: int = 50
+    n_source: int = 500, n_query: int = 50
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Build a random source cloud carrying ``x ** 2`` and random queries, as the reference does."""
     rng = np.random.default_rng(0)
@@ -439,7 +439,7 @@ def test_interpolate_from_points_matches_pyvista(device: str, radius: float, sha
     live axis, and the sweep starts at 1.0 because VTK **clamps it up** to that — its own ``0.5``
     behaves as ``1.0``.
     """
-    source_np, values_np, query_np = _scattered_cloud(device)
+    source_np, values_np, query_np = _scattered_cloud()
     interpolated_pv = _interpolate_pv(source_np, values_np, query_np, radius, sharpness)
     interpolated_wp = _interpolate_wp(
         source_np, values_np, query_np, radius, sharpness, device=device
@@ -460,7 +460,7 @@ def test_interpolate_from_points_k_nearest_matches_pyvista(device: str, k: int):
     differently at a different radius (0.30153478 / 0.44769209 / 0.48687801 at radius 1 / 2 / 4).
     That is why ``radius`` stays required here.
     """
-    source_np, values_np, query_np = _scattered_cloud(device)
+    source_np, values_np, query_np = _scattered_cloud()
     interpolated_pv = _interpolate_pv(source_np, values_np, query_np, 1.0, 2.0, n_points=k)
     interpolated_wp = _interpolate_wp(source_np, values_np, query_np, 1.0, 2.0, device=device, k=k)
     assert (interpolated_pv != 0.0).all()
@@ -476,7 +476,7 @@ def test_interpolate_from_points_is_exact_at_the_sources(device: str):
     point's *neighbours* would not reproduce the datum (measured 5.39 against 7.0 on a two-source
     probe), so VTK short-circuits a zero distance and triwarp copies that.
     """
-    source_np, values_np, _ = _scattered_cloud(device)
+    source_np, values_np, _ = _scattered_cloud()
     coincident_np = source_np[:5]
     interpolated_pv = _interpolate_pv(source_np, values_np, coincident_np, 0.2, 2.0)
     interpolated_wp = _interpolate_wp(source_np, values_np, coincident_np, 0.2, 2.0, device=device)
@@ -487,7 +487,7 @@ def test_interpolate_from_points_is_exact_at_the_sources(device: str):
 @pytest.mark.parity("interpolate_from_points", "pyvista")
 def test_interpolate_from_points_unreached_queries_get_the_null_value(device: str):
     """Class A on the miss case: a radius reaching almost nothing leaves 47 of 50 queries null."""
-    source_np, values_np, query_np = _scattered_cloud(device)
+    source_np, values_np, query_np = _scattered_cloud()
     interpolated_pv = _interpolate_pv(source_np, values_np, query_np, 0.05, 2.0)
     interpolated_wp = _interpolate_wp(source_np, values_np, query_np, 0.05, 2.0, device=device)
     assert (interpolated_pv == 0.0).sum() == 47
@@ -510,7 +510,7 @@ def test_interpolate_from_points_unreached_queries_get_the_null_value(device: st
 
 def test_interpolate_from_points_vec3_field(device: str):
     """A ``wp.vec3`` field interpolates componentwise, which is the second registered overload."""
-    source_np, values_np, query_np = _scattered_cloud(device)
+    source_np, values_np, query_np = _scattered_cloud()
     vectors_np = np.column_stack((values_np, 2.0 * values_np, -values_np))
     interpolated_wp = tw.interpolation.interpolate_from_points(
         points_to_warp(source_np, device),
@@ -525,7 +525,7 @@ def test_interpolate_from_points_vec3_field(device: str):
 
 
 def test_interpolate_from_points_invalid(device: str):
-    source_np, values_np, query_np = _scattered_cloud(device)
+    source_np, values_np, query_np = _scattered_cloud()
     source_wp = points_to_warp(source_np, device)
     values_wp = wp.array(
         np.ascontiguousarray(values_np, dtype=np.float32), dtype=wp.float32, device=device
@@ -548,8 +548,6 @@ def test_interpolate_from_points_empty(device: str):
     )
     assert interpolated_wp.list() == [3.0]
     assert (
-        tw.interpolation.interpolate_from_points(
-            empty_points, empty_values, empty_points, 0.5
-        ).shape[0]
+        tw.interpolation.interpolate_from_points(empty_points, empty_values, empty_points, 0.5).size
         == 0
     )

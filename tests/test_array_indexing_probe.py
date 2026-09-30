@@ -83,9 +83,9 @@ def test_step_slice_index_also_ignores_the_stride(device: str) -> None:
     assert not stepped_wp.is_contiguous
     assert np.array_equal(stepped_wp.numpy(), indices_np[::2])
 
-    gathered_wp = wp.empty(int(stepped_wp.shape[0]), dtype=wp.float32, device=device)
+    gathered_wp = wp.empty(stepped_wp.size, dtype=wp.float32, device=device)
     wp.copy(gathered_wp, payload_wp[stepped_wp])
-    assert np.array_equal(gathered_wp.numpy(), payload_np[indices_np[: stepped_wp.shape[0]]])
+    assert np.array_equal(gathered_wp.numpy(), payload_np[indices_np[: stepped_wp.size]])
     assert not np.array_equal(gathered_wp.numpy(), payload_np[indices_np[::2]])
 
 

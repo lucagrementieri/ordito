@@ -184,8 +184,8 @@ def closest_point_on_mesh(
     """
     require_same_device(vertices=vertices, faces=faces, points=points, mesh=mesh)
     device = vertices.device
-    m = int(points.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    m = points.size
+    n_faces = faces.size // 3
     if m == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
@@ -299,7 +299,7 @@ def closest_point_on_edges(
     require_same_device(vertices=vertices, edges=edges, queries=queries, bvh=bvh)
     device = vertices.device
     twt.ensure_edge_pairs(edges, "edges")
-    m = int(queries.shape[0])
+    m = queries.size
     n_edges = int(edges.shape[0])
 
     if m == 0:
@@ -443,8 +443,8 @@ def mesh_to_mesh_distance(
     if upper_bound is not None and upper_bound < 0.0:
         raise ValueError(f"upper_bound must be non-negative, got {upper_bound}")
     device = faces_a.device
-    n_faces_a = int(faces_a.shape[0]) // 3
-    n_faces_b = int(faces_b.shape[0]) // 3
+    n_faces_a = faces_a.size // 3
+    n_faces_b = faces_b.size // 3
     if n_faces_a == 0 or n_faces_b == 0:
         return math.inf, -1, -1
 
@@ -656,10 +656,10 @@ def normals_at_closest_faces(
     """
     require_same_device(mesh=mesh, points=points, face_normals=face_normals)
     device = points.device
-    m = int(points.shape[0])
+    m = points.size
     if m == 0:
         return wp.empty(0, dtype=wp.vec3, device=device)
-    if int(mesh.indices.shape[0]) == 0:
+    if mesh.indices.size == 0:
         # Every query misses a mesh with no faces, and the kernel below maps a miss to face 0 -- of
         # a face_normals array that has no face 0, an out-of-bounds read that segfaults rather than
         # raising. Match closest_point_on_mesh's own zero-face convention instead.
@@ -799,8 +799,8 @@ def signed_distance_on_mesh(
         raise ValueError(f"sign_mode must be 'parity' or 'winding', got {sign_mode!r}")
 
     device = vertices.device
-    m = int(points.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    m = points.size
+    n_faces = faces.size // 3
     if m == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
@@ -960,7 +960,7 @@ def signed_distance_grid(
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
     if pad < 0:
         raise ValueError("pad must be non-negative")
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         raise ValueError("signed_distance_grid needs at least one face")
     device = vertices.device
     spacing, _origin = tw.voxels.resolve_voxel_grid(
@@ -1027,8 +1027,8 @@ def winding_number(
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     device = points.device
-    n_queries = int(points.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_queries = points.size
+    n_faces = faces.size // 3
     if n_queries == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
@@ -1110,8 +1110,8 @@ def query_mesh_aabb_with_offsets(
     """
     require_same_device(mesh=mesh, query_lower=query_lower, query_upper=query_upper)
     device = query_lower.device
-    m = int(query_lower.shape[0])
-    if int(query_upper.shape[0]) != m:
+    m = query_lower.size
+    if query_upper.size != m:
         raise ValueError("query_lower and query_upper must have the same length")
     if max_hits < 1:
         raise ValueError("max_hits must be >= 1")
@@ -1219,14 +1219,14 @@ def containing_faces_2d(
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
     device = vertices.device
-    m = int(points.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    m = points.size
+    n_faces = faces.size // 3
     if m == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
     if n_faces == 0:
         return wp.full(m, -1, dtype=wp.int32, device=device)
 
-    lifted = wp.empty(int(vertices.shape[0]), dtype=wp.vec3, device=device)
+    lifted = wp.empty(vertices.size, dtype=wp.vec3, device=device)
     wp.map(kernel_array.lift_vec2, vertices, wp.float32(0.0), out=lifted)
     # One readback: the search radius has to be in the triangulation's own units and nothing else
     # knows its scale.

@@ -123,8 +123,8 @@ def trace_from_vertex(
         frames=frames,
     )
     device = vertices.device
-    n_rays = int(start_vertices.shape[0])
-    n_vertices = int(vertices.shape[0])
+    n_rays = start_vertices.size
+    n_vertices = vertices.size
     if n_rays == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), wp.zeros(
             max(n_rays + 1, 1), dtype=wp.int32, device=device
@@ -226,14 +226,14 @@ def trace_from_face(
         twins=twins,
     )
     device = vertices.device
-    n_rays = int(start_faces.shape[0])
-    if n_rays == 0 or int(faces.shape[0]) == 0:
+    n_rays = start_faces.size
+    if n_rays == 0 or faces.size == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), wp.zeros(
             max(n_rays + 1, 1), dtype=wp.int32, device=device
         )
 
     if twins is None:
-        twins = halfedge_twins(faces, n_vertices=int(vertices.shape[0]))
+        twins = halfedge_twins(faces, n_vertices=vertices.size)
 
     inputs = [
         vertices,
@@ -352,21 +352,21 @@ def descend_field(
         gradients=gradients,
     )
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    if int(values.shape[0]) != n_vertices:
+    n_vertices = vertices.size
+    if values.size != n_vertices:
         raise ValueError(
-            f"values must have one entry per vertex, got {values.shape[0]} for {n_vertices}"
+            f"values must have one entry per vertex, got {values.size} for {n_vertices}"
         )
-    n_faces = int(faces.shape[0]) // 3
-    if gradients is not None and int(gradients.shape[0]) != n_faces:
+    n_faces = faces.size // 3
+    if gradients is not None and gradients.size != n_faces:
         # Unlike ``values``, a mismatched ``gradients`` was an out-of-bounds read with no
         # exception -- ``descent_walk``/``descend_at_vertex`` index it as ``gradients[f]`` for
         # every face index up to ``n_faces - 1`` (silent host-heap corruption on CPU, garbage or a
         # crash on CUDA), the exact hazard a caller-supplied precomputed cache exists to avoid.
         raise ValueError(
-            f"gradients must have one entry per face, got {gradients.shape[0]} for {n_faces}"
+            f"gradients must have one entry per face, got {gradients.size} for {n_faces}"
         )
-    n_paths = int(starts.shape[0])
+    n_paths = starts.size
     if n_paths == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
@@ -577,7 +577,7 @@ def shorten_loop(
     loops = list(loops)
     for loop in loops:
         twt.ensure_ndim(loop, 1, dtype=wp.int32)
-    if not loops or int(faces.shape[0]) == 0 or max_iter <= 0:
+    if not loops or faces.size == 0 or max_iter <= 0:
         return loops, 0
     # ``copy=False``: the packed form never writes into its input -- each sweep writes a freshly
     # sized buffer -- so the first pack can alias the caller's loops.
@@ -672,11 +672,11 @@ def shorten_loop_with_offsets(
     device = faces.device
     twt.ensure_ndim(loops, 1, dtype=wp.int32)
     twt.ensure_ndim(loop_offsets, 1, dtype=wp.int32)
-    n_loops = int(loop_offsets.shape[0]) - 1
-    if n_loops <= 0 or int(faces.shape[0]) == 0 or max_iter <= 0:
+    n_loops = loop_offsets.size - 1
+    if n_loops <= 0 or faces.size == 0 or max_iter <= 0:
         return loops, loop_offsets, 0
 
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if twins is None:
         twins = halfedge_twins(faces, n_vertices=n_vertices)
     ring_halfedges, ring_offsets, is_boundary = (
@@ -695,7 +695,7 @@ def shorten_loop_with_offsets(
     consecutive_unchanged = 0
     position_loop = positions = counts = changed = arc_slot = arc_step = None
     for sweep in range(max_iter):
-        n_positions = int(packed.shape[0])
+        n_positions = packed.size
         if n_positions == 0:
             break
         if consecutive_unchanged == 0:
@@ -795,7 +795,7 @@ def _rewrite_loops(
     rewritten = wp.empty(max(total, 1), dtype=wp.int32, device=device)
     wp.launch(
         kernel_geodesic_walk.shorten_loop_write,
-        dim=int(packed.shape[0]),
+        dim=packed.size,
         inputs=[
             faces,
             ring_offsets,
@@ -829,7 +829,7 @@ def _compact_repeats(
     amounts of control flow around one similarly-shaped call is not one function).
     """
     device = packed.device
-    n_positions = int(packed.shape[0])
+    n_positions = packed.size
     if n_positions == 0:
         return packed, loop_offsets
     position_loop = wp.empty(n_positions, dtype=wp.int32, device=device)
@@ -868,7 +868,7 @@ def _offsets_through(
     positions: wp.array[wp.int32], loop_offsets: wp.array[wp.int32]
 ) -> wp.array[wp.int32]:
     """Map old per-loop offsets through a position remap -- a Python-scope gather."""
-    mapped = wp.empty(int(loop_offsets.shape[0]), dtype=wp.int32, device=positions.device)
+    mapped = wp.empty(loop_offsets.size, dtype=wp.int32, device=positions.device)
     wp.copy(mapped, positions[loop_offsets])
     return mapped
 

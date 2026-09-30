@@ -127,7 +127,7 @@ def face_gradients(
         face_areas=face_areas,
     )
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     gradients = wp.empty(n_faces, dtype=wp.vec3d, device=device)
     if n_faces == 0:
         return gradients
@@ -191,7 +191,7 @@ def cotmatrix_entries(
     Matches ``igl::cotmatrix_entries``, column order included.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         return twt.empty_2d((0, 3), dtype, device=device)
@@ -361,8 +361,8 @@ def cotmatrix(
         cot_entries=cot_entries,
         pattern=None if pattern is None else pattern.offsets,
     )
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     device = vertices.device
     _check_pattern(pattern, "cotmatrix", n_vertices)
 
@@ -383,7 +383,7 @@ def cotmatrix(
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
-    values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
+    values = wp.empty(columns.size, dtype=dtype, device=device)
     wp.launch(
         kernel_laplacian.COTMATRIX_ROWS[cot_entries.dtype, dtype],
         dim=n_vertices,
@@ -509,7 +509,7 @@ def mollify_intrinsic(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return twt.empty_2d((0, 3), wp.float32, device=device), 0.0
 
@@ -609,8 +609,8 @@ def connection_laplacian(
         transport_angles=transport_angles,
         pattern=None if pattern is None else pattern.offsets,
     )
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     device = vertices.device
     _check_pattern(pattern, "cotmatrix", n_vertices)
     if n_faces == 0:
@@ -625,16 +625,16 @@ def connection_laplacian(
         )
     if transport_angles is None:
         transport_angles = halfedge_transport_angles(vertices, faces)
-    elif int(transport_angles.shape[0]) != 3 * n_faces:
+    elif transport_angles.size != 3 * n_faces:
         raise ValueError(
             f"transport_angles must have length 3 * n_faces = {3 * n_faces}, "
-            f"got {int(transport_angles.shape[0])}"
+            f"got {transport_angles.size}"
         )
 
     if pattern is None:
         pattern = mesh_operator_pattern(faces, n_vertices)
     _, _, offsets, columns, run_start, keys, count, order = pattern
-    values = wp.empty(int(columns.shape[0]), dtype=wp.mat22d, device=device)
+    values = wp.empty(columns.size, dtype=wp.mat22d, device=device)
     wp.launch(
         kernel_laplacian.CONNECTION_LAPLACIAN_ROWS[cot_entries.dtype],
         dim=n_vertices,
@@ -783,7 +783,7 @@ def _mesh_operator_pattern(
     memory, for three more launches.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if halfedges:
         count = 3 * n_faces
         keys, order = tw.array.csr_key_buffers(count, device)
@@ -1016,9 +1016,9 @@ def laplacian_entries(
     # Both directed pairs of each unique undirected edge, matching trimesh's ``vertex_neighbors``
     # (every neighbor counted once).
     if edges is None:
-        edges, _ = edges_unique(faces, n_vertices=int(vertices.shape[0]), validate=False)
+        edges, _ = edges_unique(faces, n_vertices=vertices.size, validate=False)
     elif validate and int(edges.shape[0]) > 0:
-        n_vertices = int(vertices.shape[0])
+        n_vertices = vertices.size
         lowest, highest = tw.reduce.minmax(edges)
         if lowest < 0 or highest >= n_vertices:
             raise ValueError(
@@ -1122,7 +1122,7 @@ def laplacian(
         edges=edges,
         pattern=None if pattern is None else pattern.offsets,
     )
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     device = vertices.device
     if symmetric is None:
         symmetric = not equal_weight
@@ -1134,12 +1134,12 @@ def laplacian(
         # The adjacency follows from the faces: its pattern is built straight from them and one row
         # kernel writes the weights and normalizes. Directed is one entry per halfedge; symmetric
         # both directions of every edge, plus a degenerate face's self-edge as a diagonal entry.
-        if int(faces.shape[0]) == 0:
+        if faces.size == 0:
             return tw.array.empty_square_bsr(n_vertices, dtype, device)
         if pattern is None:
             pattern = mesh_operator_pattern(faces, n_vertices, operator=operator)
         _, _, offsets, columns, run_start, keys, count, _ = pattern
-        values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
+        values = wp.empty(columns.size, dtype=dtype, device=device)
         wp.launch(
             kernel_laplacian.LAPLACIAN_ROWS[dtype],
             dim=n_vertices,
@@ -1222,8 +1222,8 @@ def graph_laplacian(
     [`tutte`][triwarp.parametrization.tutte]
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     device = vertices.device
 
     if n_faces == 0:
@@ -1233,7 +1233,7 @@ def graph_laplacian(
     # pattern with every vertex's diagonal (an unreferenced vertex keeps a zero one), and one row
     # kernel writing the ones and minus their count.
     offsets, columns, _, _, _, _ = _mesh_operator_pattern(faces, n_vertices, diagonal="all")
-    values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
+    values = wp.empty(columns.size, dtype=dtype, device=device)
     wp.launch(
         kernel_laplacian.GRAPH_LAPLACIAN_ROWS[dtype],
         dim=n_vertices,
@@ -1316,14 +1316,14 @@ def mass_matrix_entries(
     This is the diagonal of ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     device = vertices.device
     mass = wp.zeros(n_vertices, dtype=dtype, device=device)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces > 0:
-        if face_areas is not None and int(face_areas.shape[0]) != n_faces:
+        if face_areas is not None and face_areas.size != n_faces:
             raise ValueError(
-                f"face_areas must have length n_faces={n_faces}, got {int(face_areas.shape[0])}"
+                f"face_areas must have length n_faces={n_faces}, got {face_areas.size}"
             )
         areas = face_areas if face_areas is not None else face_normals_and_areas(vertices, faces)[1]
         if areas.dtype != dtype:

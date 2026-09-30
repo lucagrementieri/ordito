@@ -38,7 +38,7 @@ def test_construction_flat_and_2d_faces_agree(icosahedron: tuple[tm.Trimesh, wp.
 
 def test_construction_bad_faces_ndim_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    n_faces = mesh_wp.indices.shape[0] // 3
+    n_faces = mesh_wp.indices.size // 3
     bad_faces = wp.zeros((n_faces, 3, 1), dtype=wp.int32, device=mesh_wp.device)
     with pytest.raises(TypeError):
         tw.Trimesh(mesh_wp.points, bad_faces)
@@ -46,7 +46,7 @@ def test_construction_bad_faces_ndim_raises(icosahedron: tuple[tm.Trimesh, wp.Me
 
 def test_construction_bad_2d_faces_shape_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    bad_faces = wp.zeros((mesh_wp.indices.shape[0] // 4, 4), dtype=wp.int32, device=mesh_wp.device)
+    bad_faces = wp.zeros((mesh_wp.indices.size // 4, 4), dtype=wp.int32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="shape"):
         tw.Trimesh(mesh_wp.points, bad_faces)
 

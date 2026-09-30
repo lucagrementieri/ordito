@@ -310,8 +310,8 @@ def test_sort_and_argsort(bench_case: BenchCase) -> None:
         return
     keys = _keys(bench_case)
     sorted_keys, order = bench_case.run(lambda: tw.array.sort_and_argsort(keys))
-    assert int(sorted_keys.shape[0]) == int(keys.shape[0])
-    assert int(order.shape[0]) == int(keys.shape[0])
+    assert int(sorted_keys.shape[0]) == keys.size
+    assert int(order.shape[0]) == keys.size
 
 
 @pytest.mark.benchmark(group="flatnonzero")

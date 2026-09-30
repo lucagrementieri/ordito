@@ -94,7 +94,7 @@ def is_closed(polyline: wp.array[wp.vec3]) -> bool:
     [`polyline_open`][triwarp.polyline.polyline_open]
     [`polyline_close`][triwarp.polyline.polyline_close]
     """
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n < 2:
         return False
     return bool(int(read_scalar(_endpoints_coincide_flag(polyline), 0)) != 0)
@@ -140,7 +140,7 @@ def polyline_open(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     --------
     [`polyline_close`][triwarp.polyline.polyline_close]
     """
-    n = int(polyline.shape[0])
+    n = polyline.size
     if not is_closed(polyline):
         return polyline
     return twt.as_dense(polyline[0 : n - 1])
@@ -165,7 +165,7 @@ def polyline_close(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     --------
     [`polyline_open`][triwarp.polyline.polyline_open]
     """
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n < 2 or is_closed(polyline):
         return polyline
     return _append_first_point(polyline)
@@ -178,7 +178,7 @@ def _append_first_point(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     What [`array.concatenate`][triwarp.array.concatenate] of the polyline and its first point
     returns, without the segment table that function builds for an arbitrary list.
     """
-    n = int(polyline.shape[0])
+    n = polyline.size
     closed = wp.empty(n + 1, dtype=wp.vec3, device=polyline.device)
     wp.copy(closed, polyline, count=n)
     wp.copy(closed, polyline, dest_offset=n, count=1)
@@ -209,7 +209,7 @@ def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> flo
         The same lengths, unreduced.
     """
     device = polyline.device
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     # ``closed`` adds the segment from the last point back to the first, which the kernel reaches
     # by wrapping its index -- no ``polyline_close`` copy of the whole buffer for one segment.
     n_segments = n_points if closed else n_points - 1
@@ -263,7 +263,7 @@ def polyline_centroid(polyline: wp.array[wp.vec3], *, closed: bool = False) -> w
     [`polyline_radius`][triwarp.polyline.polyline_radius]
         Both default their plane to this centroid.
     """
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     # ``closed`` is the wrap-around segment, which the kernel reaches by index rather than by a
     # ``polyline_close`` copy of the whole buffer -- as in ``polyline_length``.
     n_segments = n_points if closed else n_points - 1
@@ -303,7 +303,7 @@ def polyline_normal(polyline: wp.array[wp.vec3]) -> wp.vec3:
     ValueError
         If the polyline has fewer than three points.
     """
-    n = int(polyline.shape[0])
+    n = polyline.size
     # A non-degenerate loop normal needs three distinct vertices, and a polyline whose last vertex
     # duplicates its first has only ``n - 1`` of them.
     if n < 3:
@@ -358,8 +358,8 @@ def polyline_point_distance(
     """
     require_same_device(points=points, polyline=polyline)
     device = points.device
-    n_points = int(points.shape[0])
-    m = int(polyline.shape[0])
+    n_points = points.size
+    m = polyline.size
     if m == 0:
         return wp.full(n_points, float("inf"), dtype=wp.float32, device=device)
     if n_points == 0:
@@ -506,7 +506,7 @@ def _upsample(
     input already repeats its first point (``segment_step_counts``) -- so the host never asks.
     """
     device = polyline.device
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     if n_points < 2:
         return polyline
     n_segments = n_points if closed else n_points - 1
@@ -556,7 +556,7 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     [`polyline_downsample`][triwarp.polyline.polyline_downsample]
     [`polyline_resample`][triwarp.polyline.polyline_resample]
     """
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     if n_points < 2:
         # No segment to sum: a single vertex is at arc length 0, an empty polyline has no entry.
         return wp.zeros(n_points, dtype=wp.float32, device=polyline.device)
@@ -595,14 +595,14 @@ def polyline_downsample(
     [`polyline_upsample`][triwarp.polyline.polyline_upsample]
     """
     device = polyline.device
-    if int(polyline.shape[0]) < 2:
+    if polyline.size < 2:
         return polyline
 
     # ``closed`` walks an ``n + 1``-entry table whose last entry is the closing segment's end, or,
     # when the input already repeats its first point, a stand-in the walks stop short of
     # (``kernels/polyline.seam_repeats_first``) -- the closure is decided on the device.
     cumulative = _arc_length_table(polyline, closed=closed)
-    n_table = int(cumulative.shape[0])
+    n_table = cumulative.size
     keep = wp.zeros(n_table, dtype=wp.int32, device=device)
     if wp.get_device(device).is_cuda and n_table >= _DOWNSAMPLE_DOUBLING_FROM:
         _greedy_downsample_doubling(cumulative, step_size, polyline, closed, keep)
@@ -637,7 +637,7 @@ def _greedy_downsample_doubling(
     the walk stops short of (``greedy_successors``); an open table needs no polyline.
     """
     device = cumulative.device
-    n = int(cumulative.shape[0])
+    n = cumulative.size
     successor = wp.empty(n, dtype=wp.int32, device=device)
     # Also marks the first point kept, which the walk always does; the caller zeroed the rest.
     wp.launch(
@@ -721,7 +721,7 @@ def polyline_simplify(
         Drops points by *spacing* rather than by shape error.
     """
     device = polyline.device
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n == 0:
         return polyline, wp.empty(0, dtype=wp.int32, device=device)
     # ``closed`` runs over ``n + 1`` entries, the last being the first point again, reached by
@@ -820,7 +820,7 @@ def _gather_kept(
     out_indices = wp.empty(n_kept, dtype=wp.int32, device=device) if return_indices else None
     wp.launch(
         kernel_polyline.gather_kept_points,
-        dim=int(flags.shape[0]),
+        dim=flags.size,
         inputs=[flags, polyline, out_points, out_indices],
         device=device,
     )
@@ -859,7 +859,7 @@ def polyline_resample(
         Targets a step size instead of a point count.
     """
     device = polyline.device
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n == 0:
         return polyline
     out_points = wp.empty(num_points, dtype=wp.vec3, device=device)
@@ -903,7 +903,7 @@ def _arc_length_table(polyline: wp.array[wp.vec3], *, closed: bool) -> wp.array[
     runs in place, the one-allocation idiom of ``array.counts_to_offsets`` in float32.
     """
     device = polyline.device
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     n_segments = n_points if closed else n_points - 1
     cumulative = wp.empty(n_segments + 1, dtype=wp.float32, device=device)
     wp.launch(
@@ -980,7 +980,7 @@ def polyline_radius(
         # should not cost a launch first.
         raise ValueError(f"unsupported reduction {reduction!r}")
     device = polyline.device
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n < 2:
         raise ValueError("polyline_radius requires at least two points")
     # ``closed`` adds the segment back to the first point when the input does not already end
@@ -1066,7 +1066,7 @@ def _accumulate_frame(
     frame = wp.zeros(kernel_polyline.RADIUS_FRAME_SIZE, dtype=wp.float32, device=device)
     wp.launch_tiled(
         kernel_polyline.accumulate_radius_frame,
-        dim=kernel_reduce.blocks_1d(int(polyline.shape[0])),
+        dim=kernel_reduce.blocks_1d(polyline.size),
         inputs=[
             polyline,
             wp.int32(n_segments),
@@ -1107,7 +1107,7 @@ def polyline_angles(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.
         What decides the wrap-around when ``closed`` is left ``False``.
     """
     device = polyline.device
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n < 2:
         return wp.zeros(n, dtype=wp.float32, device=device)
 
@@ -1182,7 +1182,7 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> twt.Array2dInt32:
     [`polyline_close`][triwarp.polyline.polyline_close]
     """
     device = polyline.device
-    n = int(polyline.shape[0])
+    n = polyline.size
     if n < 3:
         return twt.empty_2d((0, 3), wp.int32, device=device)
 
@@ -1248,7 +1248,7 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     """
     twt.ensure_ndim(polygon, 1, dtype=wp.vec2)
     device = polygon.device
-    n = int(polygon.shape[0])
+    n = polygon.size
     if n < 3:
         return polygon, wp.empty(0, dtype=wp.int32, device=device)
 
@@ -1272,7 +1272,7 @@ def _triangulate_ring(
     is a buffer of the caller's own; a caller's input ring is cloned first.
     """
     device = points2d.device
-    n = int(points2d.shape[0])
+    n = points2d.size
     wp.launch_tiled(
         kernel_polyline.accumulate_turning_angle,
         dim=kernel_reduce.blocks_1d(n),

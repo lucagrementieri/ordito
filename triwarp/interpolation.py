@@ -74,7 +74,7 @@ def average_onto_faces(
         If ``faces`` and ``vertex_values`` are not all on one device.
     """
     require_same_device(faces=faces, vertex_values=vertex_values)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = vertex_values.device
     if n_faces == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
@@ -129,11 +129,10 @@ def average_onto_vertices(
     """
     require_same_device(faces=faces, face_values=face_values)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(face_values.shape[0]) != n_faces:
+    n_faces = faces.size // 3
+    if face_values.size != n_faces:
         raise ValueError(
-            f"face_values must have one entry per face, got "
-            f"{face_values.shape[0]} for {n_faces} faces"
+            f"face_values must have one entry per face, got {face_values.size} for {n_faces} faces"
         )
 
     out_sum = wp.zeros(n_vertices, dtype=wp.float32, device=device)
@@ -205,7 +204,7 @@ def average_from_edges_onto_vertices(
         faces=faces, edges=edges, edges_orientation=edges_orientation, edge_values=edge_values
     )
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     # Both tables are indexed at ``[f, j]`` for every face and corner, so a table built for another
     # mesh is an out-of-bounds read rather than a wrong answer -- on the CPU device, where a Warp
     # array is host heap, a silent one.
@@ -298,16 +297,16 @@ def transfer_onto_vertices(
         target_vertices=target_vertices,
     )
     device = target_vertices.device
-    n_target = int(target_vertices.shape[0])
-    n_source = int(source_vertices.shape[0])
-    if int(source_values.shape[0]) != n_source:
+    n_target = target_vertices.size
+    n_source = source_vertices.size
+    if source_values.size != n_source:
         raise ValueError(
             f"source_values must have one entry per source vertex, got "
-            f"{source_values.shape[0]} for {n_source} vertices"
+            f"{source_values.size} for {n_source} vertices"
         )
 
     out_values = wp.zeros(n_target, dtype=source_values.dtype, device=device)
-    if n_target == 0 or int(source_faces.shape[0]) == 0:
+    if n_target == 0 or source_faces.size == 0:
         return out_values, wp.full(n_target, float("inf"), dtype=wp.float32, device=device)
 
     closest, distance, face_id = tw.proximity.closest_point_on_mesh(
@@ -406,7 +405,7 @@ def transfer_through_operator(
     """
     require_same_device(values=values, operator=operator)
     device = values.device
-    n_source = int(values.shape[0])
+    n_source = values.size
     n_out = int(operator.nrow)
     if int(operator.ncol) != n_source:
         raise ValueError(f"operator has {operator.ncol} columns but values has {n_source} entries")
@@ -510,12 +509,12 @@ def interpolate_from_points(
         source_points=source_points, source_values=source_values, query_points=query_points
     )
     device = query_points.device
-    n_source = int(source_points.shape[0])
-    n_query = int(query_points.shape[0])
-    if int(source_values.shape[0]) != n_source:
+    n_source = source_points.size
+    n_query = query_points.size
+    if source_values.size != n_source:
         raise ValueError(
             f"source_values must have one entry per source point, got "
-            f"{source_values.shape[0]} for {n_source} points"
+            f"{source_values.size} for {n_source} points"
         )
     if not float(radius) > 0.0:
         raise ValueError(f"radius must be positive, got {radius}")

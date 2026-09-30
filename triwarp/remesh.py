@@ -247,9 +247,9 @@ def isotropic_remesh(
     function.
     """
     require_same_device(vertices=vertices, faces=faces, target_length=target_length)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     current_vertices = wp.clone(vertices)
     current_faces = wp.clone(faces)
     if n_faces == 0 or iterations <= 0:
@@ -263,10 +263,10 @@ def isotropic_remesh(
             raise ValueError(f"isotropic_remesh requires target_length > 0, got {target}.")
     else:
         field = target_length
-        if int(field.shape[0]) != n_vertices:
+        if field.size != n_vertices:
             raise ValueError(
                 f"isotropic_remesh requires one target_length per vertex ({n_vertices}), "
-                f"got {int(field.shape[0])}."
+                f"got {field.size}."
             )
         # One readback, on a buffer the caller just built: a non-positive entry makes the split
         # stage diverge (every edge over-long), so it is worth catching here rather than at
@@ -323,7 +323,7 @@ def isotropic_remesh(
                 split_limit = _length_bands(
                     _sizing_at(current_vertices, vertices, faces, sizing_input, query_radius),
                     target,
-                    int(current_vertices.shape[0]),
+                    current_vertices.size,
                     device,
                 )[1]
             current_vertices, current_faces = subdivide_to_size(
@@ -336,13 +336,13 @@ def isotropic_remesh(
             low, high = _length_bands(
                 _sizing_at(current_vertices, vertices, faces, sizing_input, query_radius),
                 target,
-                int(current_vertices.shape[0]),
+                current_vertices.size,
                 device,
             )
             current_vertices, current_faces, incidence = _collapse_pass(
                 current_vertices, current_faces, low, high, feature
             )
-        if int(current_faces.shape[0]) == 0:
+        if current_faces.size == 0:
             break
         if swap and _valence_flip_pass(
             current_vertices, current_faces, feature, incidence=incidence
@@ -352,7 +352,7 @@ def isotropic_remesh(
             # One edge grouping serves both the classification and the smoothing ring: the two read
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
             if incidence is None:
-                incidence = _edge_incidence(current_faces, int(current_vertices.shape[0]))
+                incidence = _edge_incidence(current_faces, current_vertices.size)
             codes, _boundary = _classify(current_vertices, current_faces, feature, incidence)
             if smooth:
                 current_vertices = _smooth_pass(
@@ -366,7 +366,7 @@ def isotropic_remesh(
             bounded = wp.empty_like(current_vertices)
             wp.launch(
                 clamp_kernel,
-                dim=int(current_vertices.shape[0]),
+                dim=current_vertices.size,
                 inputs=[
                     current_vertices,
                     wp.uint64(original_mesh.id),
@@ -442,8 +442,8 @@ def _classify(
     grouping avoids that repeated work whenever a caller has it in hand.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     boundary_vertex = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     if n_faces == 0:
         return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
@@ -492,7 +492,7 @@ def _edge_incidence(faces: wp.array[wp.int32], n_vertices: int) -> _EdgeIncidenc
     if m > 0:
         wp.launch(
             kernel_scatter.scatter_edge_incidence,
-            dim=int(inverse.shape[0]),
+            dim=inverse.size,
             inputs=[inverse, face_count, edge_faces],
             device=device,
         )
@@ -526,8 +526,8 @@ def _collapse_pass(
     current: _EdgeIncidence | None = None
     for _ in range(max_passes):
         current = None
-        n_vertices = int(vertices.shape[0])
-        n_faces = int(faces.shape[0]) // 3
+        n_vertices = vertices.size
+        n_faces = faces.size // 3
         if n_faces == 0:
             break
 
@@ -655,7 +655,7 @@ def _valence_flip_pass(
     caller holding that grouping knows whether it still describes ``faces``.
     """
     device = faces.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     _codes, boundary_vertex = _classify(vertices, faces, feature, incidence)
 
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
@@ -716,7 +716,7 @@ def _smooth_pass(
     ``kernels/remesh.smooth_free_vertices`` for why the veto is load-bearing rather than defensive.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     normals = tw.vertices.vertex_normals(vertices, faces)
     if unique_edges is None:
         unique_edges, _ = tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
@@ -759,7 +759,7 @@ def _reproject_pass(
 ) -> wp.array[wp.vec3]:
     """Snap free vertices onto the closest point of the original surface."""
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     out_positions = wp.empty(n_vertices, dtype=wp.vec3, device=device)
     # ``wp.uint64(...)`` is required: a bare ``wp.Mesh.id`` is a Python int and ``wp.map`` would
     # infer ``int32`` for it (see tests/test_map_uniform_probe.py).
@@ -811,7 +811,7 @@ def _flip_interior_edges(
     opening build.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0 or max_iter <= 0:
         return 0
     if topology is None:
@@ -1032,7 +1032,7 @@ class _FlipTopology:
         """Allocate the fixed working set for the ``faces`` buffer the loop will mutate in place."""
         self._faces = faces
         self._device = faces.device
-        self._n_faces = int(faces.shape[0]) // 3
+        self._n_faces = faces.size // 3
         self._n_corners = self._n_faces * 3
         self._n_vertices = n_vertices
         self._radix = wp.uint64(n_vertices)
@@ -1363,8 +1363,8 @@ def cluster_decimate(
         raise ValueError(f"contraction must be 'average' or 'closest', got {contraction!r}")
 
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
         return wp.clone(vertices), wp.clone(faces)
 
@@ -1478,7 +1478,7 @@ def _cluster_positions(
 ) -> wp.array[wp.vec3]:
     """One representative position per kept cluster, by cell mean or by nearest-to-centre."""
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if contraction == "average":
         sums = wp.zeros(n_kept, dtype=wp.vec3, device=device)
         counts = wp.zeros(n_kept, dtype=wp.int32, device=device)
@@ -1537,7 +1537,7 @@ def _cluster_faces(
     face sort whenever they are wide enough, which they are unless almost nothing merged.
     """
     device = faces.device
-    if 2 * n_unique > int(sort_keys.shape[0]):
+    if 2 * n_unique > sort_keys.size:
         sort_keys = wp.empty(2 * n_unique, dtype=wp.uint64, device=device)
         kept_cells = wp.empty(2 * n_unique, dtype=wp.int32, device=device)
     wp.launch(
@@ -1583,7 +1583,7 @@ def _compact_remapped_faces(
     leading view.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     # Behind a leading zero: the face flags, then the target marks, so one inclusive scan of the
     # tail makes each half an exclusive scan ending in its running total.
     scan = wp.zeros(1 + n_faces + n_targets, dtype=wp.int32, device=device)
@@ -1780,7 +1780,7 @@ def quadric_decimate(
       the max-norm as a band, not a value** -- the mean deviation is far more stable.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     target = _resolve_decimation_target(target_faces, target_ratio, n_faces)
 
     if n_faces == 0 or target >= n_faces:
@@ -1853,8 +1853,8 @@ class _DecimationBuffers:
         self._graph = None
         self._passes = 0
         self._retain: list[Any] = []
-        self.n_faces = int(faces.shape[0]) // 3
-        self.n_vertices = int(vertices.shape[0])
+        self.n_faces = faces.size // 3
+        self.n_vertices = vertices.size
         self.n_corners = 3 * self.n_faces
         # The corner keys pack an edge as ``min + max * base``, so every real key is below
         # ``base ** 2`` and the sort need only order that many low bits. The padding sentinel is
@@ -1984,7 +1984,7 @@ class _DecimationBuffers:
         self._sort_order = wp.empty(2 * edges, dtype=wp.int32, device=device)
         # Two bitmasks of the round's winners, in cost order and in edge order, one word per 32.
         self._winner_words = wp.empty(2 * (-(-edges // 32)), dtype=wp.uint32, device=device)
-        self._winner_scan = _ExclusiveScan(int(self._winner_words.shape[0]), device)
+        self._winner_scan = _ExclusiveScan(self._winner_words.size, device)
 
     def run_pass(self) -> bool:
         """
@@ -2246,7 +2246,7 @@ class _DecimationBuffers:
         def round_body() -> None:
             wp.launch(
                 kernel_remesh.drop_locked_and_claim,
-                dim=max(m, int(self._winner_words.shape[0])),
+                dim=max(m, self._winner_words.size),
                 inputs=[
                     self._candidates,
                     self._removed,
@@ -2399,7 +2399,7 @@ class _ExclusiveScan:
             kernel_remesh.scan_word_counts_exclusive
             if words
             else kernel_remesh.scan_chunks_exclusive,
-            dim=[int(self.chunk_totals.shape[0])],
+            dim=[self.chunk_totals.size],
             inputs=[values, self.prefix, self.chunk_totals],
             block_dim=kernel_remesh.SCAN_BLOCK_DIM,
             device=self._device,
@@ -2728,11 +2728,11 @@ def _flip_setup(
         If ``region`` is given and is not length ``n_faces``.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return None
-    if region is not None and int(region.shape[0]) != n_faces:
-        raise ValueError(f"region must have length n_faces={n_faces}, got {int(region.shape[0])}")
+    if region is not None and region.size != n_faces:
+        raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
 
     if region is None:
         region_flags = wp.full(n_faces, 1, dtype=wp.int32, device=device)
@@ -2811,8 +2811,8 @@ def intrinsic_delaunay(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     intrinsic_faces = wp.clone(faces)
     if n_faces == 0:
@@ -2929,9 +2929,9 @@ def subdivide(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
 
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         # Cloned, not aliased: every other entry point in this module returns independent buffers,
         # and a caller that mutates a "subdivided" mesh must not reach back into its own input.
@@ -3057,8 +3057,8 @@ def subdivide_loop(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     if n_faces == 0:
         # No faces means no edges and no relocation, so the pass is the identity -- but it
         # returns independent buffers all the same, as every other entry point here does.
@@ -3153,7 +3153,7 @@ def _loop_operator(
     independently.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     n_unique = int(unique_edges.shape[0])
     edge_base = n_vertices
     face_base = edge_base + 4 * n_unique
@@ -3211,7 +3211,7 @@ def _split_faces_four(
     need before the split -- the two differ only in where they put the new positions.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     out_new_faces = wp.empty(n_faces * 12, dtype=wp.int32, device=device)
     wp.launch(
         kernel_remesh.subdivide_faces,
@@ -3310,7 +3310,7 @@ def subdivide_to_size(
 
     current_vertices = vertices
     current_faces = faces
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     index = tw.array.arange(n_faces, device=device)
 
     if n_faces == 0:
@@ -3319,7 +3319,7 @@ def subdivide_to_size(
         return wp.clone(vertices), wp.clone(faces)
 
     for i in range(max_iter + 1):
-        n_vertices = int(current_vertices.shape[0])
+        n_vertices = current_vertices.size
 
         unique_edges, inverse = tw.edges.edges_unique(
             current_faces, n_vertices=n_vertices, validate=False
@@ -3415,7 +3415,7 @@ def _extend_sizing_field(
         return sizing
     # Sized for its final use: the current field copied into the prefix and the new values written
     # straight into the tail, in the same order the split appends the midpoints.
-    n_vertices = int(sizing.shape[0])
+    n_vertices = sizing.size
     extended = wp.empty(n_vertices + n_split, dtype=wp.float32, device=device)
     wp.copy(extended, sizing, count=n_vertices)
     wp.launch(
@@ -3505,9 +3505,9 @@ def subdivide_region_to_size(
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(region.shape[0]) != n_faces:
-        raise ValueError(f"region must have length n_faces={n_faces}, got {int(region.shape[0])}")
+    n_faces = faces.size // 3
+    if region.size != n_faces:
+        raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
     if n_faces == 0:
         return wp.clone(vertices), wp.clone(faces), wp.clone(region)
 
@@ -3521,8 +3521,8 @@ def subdivide_region_to_size(
     topology: _FlipTopology | None = None
 
     for i in range(max_iter + 1):
-        n_faces = int(current_faces.shape[0]) // 3
-        n_vertices = int(current_vertices.shape[0])
+        n_faces = current_faces.size // 3
+        n_vertices = current_vertices.size
 
         if topology is not None and topology.built:
             unique_edges, inverse = topology.edges_unique()
@@ -3590,7 +3590,7 @@ def subdivide_region_to_size(
 
         topology = None
         if delaunay:
-            topology = _FlipTopology(current_faces, int(current_vertices.shape[0]))
+            topology = _FlipTopology(current_faces, current_vertices.size)
             _flip_region_faces(
                 current_vertices,
                 current_faces,
@@ -3650,7 +3650,7 @@ def _keep_longest_edges(
     # is the case CLAUDE.md section 3.4 says a gather may index through directly -- it is a column
     # (``arr[:, k]``) or a step slice whose stride Warp ignores. Cloning it dense first is a
     # measurable loss on the gather for byte-identical output.
-    descending = wp.empty(int(eligible.shape[0]), dtype=wp.float32, device=device)
+    descending = wp.empty(eligible.size, dtype=wp.float32, device=device)
     wp.map(wp.neg, tw.array.gather(lengths, eligible), out=descending)
     _sorted, order = tw.array.sort_and_argsort(descending)
     keep = tw.array.gather(eligible, order[:remaining])
@@ -3757,9 +3757,9 @@ def refine_region_to_density(
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(region.shape[0]) != n_faces:
-        raise ValueError(f"region must have length n_faces={n_faces}, got {int(region.shape[0])}")
+    n_faces = faces.size // 3
+    if region.size != n_faces:
+        raise ValueError(f"region must have length n_faces={n_faces}, got {region.size}")
     if n_faces == 0:
         return wp.clone(vertices), wp.clone(faces), wp.clone(region)
 
@@ -3770,7 +3770,7 @@ def refine_region_to_density(
     scale = _vertex_scale_attribute(vertices, faces, region)
 
     for _ in range(max_iter):
-        n_faces = int(current_faces.shape[0]) // 3
+        n_faces = current_faces.size // 3
         # The flags are written into the tail of the ranks buffer and scanned there, so the emit
         # reads each face's verdict back as a step in the scan.
         split_offsets = wp.zeros(n_faces + 1, dtype=wp.int32, device=device)
@@ -3788,7 +3788,7 @@ def refine_region_to_density(
         # A split face becomes three, so the output face count needs no second scan; and the new
         # centroids and their scales are written straight into the tails of buffers sized for the
         # grown mesh, whose prefixes are the current ones.
-        n_vertices = int(current_vertices.shape[0])
+        n_vertices = current_vertices.size
         n_out_faces = n_faces + 2 * n_split
         new_vertices = wp.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
         new_scale = wp.empty(n_vertices + n_split, dtype=wp.float32, device=device)
@@ -3858,8 +3858,8 @@ def _vertex_scale_attribute(
     counted instead, so the criterion degrades to the mesh's own average rather than to zero.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(region.shape[0])
+    n_vertices = vertices.size
+    n_faces = region.size
     n = 3 * n_faces
     # Every halfedge's edge key, the region's lifted past the surrounding mesh's, sorted once: the
     # unique surrounding edges are the leading runs, in ``edges_unique``'s order, so the class the
@@ -3901,7 +3901,7 @@ def _ranks_from_flags(rank_buffer: wp.array[wp.int32]) -> tuple[wp.array[wp.int3
     count -- ``array.mask_to_compact_ranks`` for a caller whose marking kernel already wrote the
     flags, which saves converting a mask into them.
     """
-    n = int(rank_buffer.shape[0]) - 1
+    n = rank_buffer.size - 1
     flags = twt.as_dense(rank_buffer[1:])
     wp.utils.array_scan(flags, flags, inclusive=True)
     # The count sizes the split's outputs and decides whether the loop stops, so it has to come
@@ -4044,8 +4044,8 @@ def split_edges(
         index=index,
     )
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     # Bound in one expression rather than an ``if`` that reassigns the parameters, so the optional
     # annotations narrow for the type checker without an ``assert``.
     edges, corner_edge = (
@@ -4054,17 +4054,14 @@ def split_edges(
         else tw.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
     )
     n_edges = int(edges.shape[0])
-    if int(split_mask.shape[0]) != n_edges:
+    if split_mask.size != n_edges:
         raise ValueError(
-            f"split_mask must have one entry per unique edge ({n_edges}), "
-            f"got {int(split_mask.shape[0])}."
+            f"split_mask must have one entry per unique edge ({n_edges}), got {split_mask.size}."
         )
 
     carried = index if index is not None else tw.array.arange(n_faces, device=device)
-    if int(carried.shape[0]) != n_faces:
-        raise ValueError(
-            f"index must have one entry per face ({n_faces}), got {int(carried.shape[0])}."
-        )
+    if carried.size != n_faces:
+        raise ValueError(f"index must have one entry per face ({n_faces}), got {carried.size}.")
 
     # The exclusive scan both counts the split edges and assigns each one its new vertex slot, which
     # is the indexing ``split_positions`` is documented against.
@@ -4111,8 +4108,8 @@ def _split_ranked_edges(
     ``split_edges`` drops it when not asked.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     n_edges = int(edges.shape[0])
     if n_split == 0 or n_faces == 0:
         # ``carried`` is still the caller's own ``index`` buffer when one was supplied, so it is
@@ -4136,10 +4133,10 @@ def _split_ranked_edges(
             device=device,
         )
     else:
-        if int(split_positions.shape[0]) != n_split:
+        if split_positions.size != n_split:
             raise ValueError(
                 f"split_positions must have one entry per flagged edge ({n_split}), "
-                f"got {int(split_positions.shape[0])}."
+                f"got {split_positions.size}."
             )
         wp.copy(new_vertices, split_positions, dest_offset=n_vertices, count=n_split)
 
@@ -4193,7 +4190,7 @@ def _flip_region_faces(
     ``faces`` as the pass leaves it.
     """
     device = faces.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     mac, mdsq, car = _flip_gates(max_angle_change, max_deviation)
 
     def launch(

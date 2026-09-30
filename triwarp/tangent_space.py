@@ -88,7 +88,7 @@ def vertex_tangent_frames(
     """
     require_same_device(vertices=vertices, faces=faces, normals=normals, rings=rings)
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     basis_x = wp.empty(n, dtype=wp.vec3, device=device)
     basis_y = wp.empty(n, dtype=wp.vec3, device=device)
     if normals is None:
@@ -154,7 +154,7 @@ def face_tangent_frames(
     """
     require_same_device(vertices=vertices, faces=faces, normals=normals)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     basis_x = wp.empty(n_faces, dtype=wp.vec3, device=device)
     basis_y = wp.empty(n_faces, dtype=wp.vec3, device=device)
     if n_faces == 0:
@@ -231,8 +231,8 @@ def halfedge_tangent_angles(
     """
     require_same_device(vertices=vertices, faces=faces, face_angles=face_angles, rings=rings)
     device = vertices.device
-    n = int(vertices.shape[0])
-    n_halfedges = int(faces.shape[0]) // 3 * 3
+    n = vertices.size
+    n_halfedges = faces.size // 3 * 3
     angles = wp.zeros(n_halfedges, dtype=wp.float32, device=device)
     if n_halfedges == 0 or n == 0:
         return angles
@@ -313,12 +313,12 @@ def halfedge_transport_angles(
     require_same_device(vertices=vertices, faces=faces, twins=twins, tangent_angles=tangent_angles)
     require_matching_twins(faces, twins)
     device = vertices.device
-    n_halfedges = int(faces.shape[0]) // 3 * 3
+    n_halfedges = faces.size // 3 * 3
     rho = wp.empty(n_halfedges, dtype=wp.float32, device=device)
     if n_halfedges == 0:
         return rho
 
-    n = int(vertices.shape[0])
+    n = vertices.size
     if twins is None:
         twins = halfedge_twins(faces, n_vertices=n)
     if tangent_angles is None:

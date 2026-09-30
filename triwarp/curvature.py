@@ -102,7 +102,7 @@ def principal_curvature(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
     )
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
 
     # Area-weighted vertex normals. The pair is used only when both halves were supplied, which is
     # the documented contract; otherwise ``vertex_normals`` derives both inside its own scatter and
@@ -207,11 +207,11 @@ def discrete_gaussian_curvature(
     nearest_indices, _, nearest_offsets = tw.neighbors.query_ball_with_offsets(
         vertices, points, radius
     )
-    defects = vertex_defects(vertices.shape[0], faces, face_angles)
-    gauss_curvature = wp.zeros(int(points.shape[0]), dtype=wp.float32, device=points.device)
+    defects = vertex_defects(vertices.size, faces, face_angles)
+    gauss_curvature = wp.zeros(points.size, dtype=wp.float32, device=points.device)
     wp.launch(
         kernel_scatter.SCATTER_OFFSET_SUM[defects.dtype],
-        dim=int(nearest_indices.shape[0]),
+        dim=nearest_indices.size,
         inputs=[defects, nearest_indices, nearest_offsets, gauss_curvature],
         device=points.device,
     )
@@ -277,20 +277,20 @@ def discrete_mean_curvature(
         face_adjacency_edges=face_adjacency_edges,
     )
     device = points.device
-    n_points = int(points.shape[0])
+    n_points = points.size
     # The pairing check first, so a half-supplied pair raises whatever the mesh looks like; the
     # resolve after the two guards, so an empty input does not allocate tables nothing reads.
     tw.adjacency.require_paired_adjacency(face_adjacency, face_adjacency_edges)
     if n_points == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
 
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.zeros(n_points, dtype=wp.float32, device=device)
 
     if face_adjacency is None:
         face_adjacency, face_adjacency_edges = tw.adjacency.face_adjacency(
-            faces, return_edges=True, n_vertices=int(vertices.shape[0])
+            faces, return_edges=True, n_vertices=vertices.size
         )
     assert face_adjacency_edges is not None
 
@@ -327,7 +327,7 @@ def discrete_mean_curvature(
     candidate_edges, offsets = tw.neighbors.query_bvh_ball(bvh, points, radius)
 
     mean_curvature = wp.zeros(n_points, dtype=wp.float32, device=device)
-    n_candidates = int(candidate_edges.shape[0])
+    n_candidates = candidate_edges.size
     if n_candidates > 0:
         wp.launch(
             kernel_curvature.accumulate_mean_curvature,

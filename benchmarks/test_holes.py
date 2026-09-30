@@ -117,7 +117,7 @@ def test_fill_fan(bench_case: BenchCase) -> None:
     """The cheapest filler -- one fan per loop, no DP -- so it can take the long-rim axis."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(lambda: tw.holes.fill_fan(vertices, faces))
-    assert result.shape[0] >= faces.shape[0]
+    assert result.size >= faces.size
 
 
 @pytest.mark.benchmark(group="fill_cone")
@@ -149,8 +149,8 @@ def test_fill_cone(bench_case: BenchCase) -> None:
     new_vertices, new_faces = bench_case.run(
         lambda: tw.holes.fill_cone(vertices, faces), rounds=_ROUNDS
     )
-    assert new_faces.shape[0] >= faces.shape[0]
-    assert new_vertices.shape[0] >= vertices.shape[0]
+    assert new_faces.size >= faces.size
+    assert new_vertices.size >= vertices.size
 
 
 @pytest.mark.noparity(
@@ -199,7 +199,7 @@ def test_fill_min_weight(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         result = bench_case.run(lambda: tw.holes.fill_min_weight(vertices, faces), rounds=_ROUNDS)
-        assert result.shape[0] >= faces.shape[0]
+        assert result.size >= faces.size
     elif bench_case.kind == "trimesh":  # mutates in place: rebuild inside the timed callable
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
 
@@ -237,7 +237,7 @@ def test_fill_min_weight_chords(bench_case: BenchCase, resolve_multiple_edges: b
         ),
         rounds=_ROUNDS,
     )
-    assert result.shape[0] >= faces.shape[0]
+    assert result.size >= faces.size
 
 
 @pytest.mark.benchmark(group="fill_smooth")
@@ -282,7 +282,7 @@ def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
         lambda: tw.holes.fill_smooth(vertices, faces, triangulate_only=triangulate_only),
         rounds=_ROUNDS,
     )
-    assert result[1].shape[0] >= faces.shape[0]
+    assert result[1].size >= faces.size
 
 
 _region_cache: dict[tuple[str, str], tuple] = {}
@@ -386,7 +386,7 @@ def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> 
     result = bench_case.run(
         lambda: tw.holes.fill_smooth(vertices, faces, max_edge=max_edge), rounds=_ROUNDS
     )
-    assert result[1].shape[0] >= faces.shape[0]
+    assert result[1].size >= faces.size
 
 
 # --- Stitching two rims: the same DP over a band rather than a cap -----------------------------
@@ -431,7 +431,7 @@ def test_stitch(bench_case: BenchCase) -> None:
     """Greedy band between two rims: O(La + Lb), the cheap counterpart of the DP below."""
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
     _vertices, faces = bench_case.run(lambda: tw.holes.stitch(va, fa, vb, fb))
-    assert int(faces.shape[0]) > 0
+    assert faces.size > 0
 
 
 def _stitch_pair_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
@@ -497,7 +497,7 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
     _vertices, faces = bench_case.run(
         lambda: tw.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
     )
-    assert int(faces.shape[0]) > 0
+    assert faces.size > 0
 
 
 @pytest.mark.benchmark(group="fillable_loop_mask")
@@ -597,7 +597,7 @@ def test_extend_hole(bench_case: BenchCase) -> None:
     extended_vertices, extended_faces = bench_case.run(
         lambda: tw.holes.extend_hole(vertices, faces, normal, origin, loops), rounds=3
     )
-    assert int(extended_faces.shape[0]) > int(faces.shape[0])
+    assert int(extended_faces.shape[0]) > faces.size
     assert int(extended_vertices.shape[0]) > bench_case.n_vertices
 
 
@@ -641,7 +641,7 @@ def test_build_bottom(bench_case: BenchCase) -> None:
     bottomed_vertices, bottomed_faces = bench_case.run(
         lambda: tw.holes.build_bottom(vertices, faces, direction, 0.0, loops), rounds=3
     )
-    assert int(bottomed_faces.shape[0]) > int(faces.shape[0])
+    assert int(bottomed_faces.shape[0]) > faces.size
     assert int(bottomed_vertices.shape[0]) > bench_case.n_vertices
 
 
@@ -694,7 +694,7 @@ def test_bridge_edges(bench_case: BenchCase) -> None:
     bridged_faces = bench_case.run(
         lambda: tw.holes.bridge_edges(vertices, faces, edge_a, edge_b), rounds=3
     )
-    assert int(bridged_faces.shape[0]) > int(faces.shape[0])
+    assert int(bridged_faces.shape[0]) > faces.size
 
 
 @pytest.mark.benchmark(group="bridge_edges_smooth")
@@ -747,7 +747,7 @@ def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
         lambda: tw.holes.bridge_edges_smooth(vertices, faces, edge_a, edge_b, sampling_step),
         rounds=3,
     )
-    assert int(strip_faces.shape[0]) > int(faces.shape[0])
+    assert int(strip_faces.shape[0]) > faces.size
     assert int(strip_vertices.shape[0]) >= bench_case.n_vertices
 
 
@@ -806,4 +806,4 @@ def test_join_closest_components(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     joined = bench_case.run(lambda: tw.holes.join_closest_components(vertices, faces), rounds=3)
-    assert int(joined.shape[0]) // 3 == n_faces + expected
+    assert joined.size // 3 == n_faces + expected

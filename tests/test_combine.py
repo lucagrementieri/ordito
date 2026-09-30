@@ -164,7 +164,7 @@ def test_split_meshes(request: pytest.FixtureRequest) -> None:
     assert np.allclose(roundtrip_vertices_wp.numpy(), concat_vertices_wp.numpy())
     assert np.array_equal(roundtrip_faces_wp.numpy(), concat_faces_wp.numpy())
 
-    split_wp_sorted = sorted(split_wp, key=lambda mesh: mesh[1].shape[0])
+    split_wp_sorted = sorted(split_wp, key=lambda mesh: mesh[1].size)
     meshes_tm_sorted = sorted([mesh_a_tm, mesh_b_tm, mesh_c_tm], key=lambda mesh: len(mesh.faces))
     for (vertices_wp, faces_wp), mesh_tm in zip(split_wp_sorted, meshes_tm_sorted, strict=True):
         assert np.allclose(vertices_wp.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
@@ -206,7 +206,7 @@ def test_split_matches_meshlib(request: pytest.FixtureRequest) -> None:
 
     expected = sorted(mesh.faces.shape[0] for mesh in (mesh_a_tm, mesh_b_tm, mesh_c_tm))
     assert sorted(component_ml.count() for component_ml in components_ml) == expected
-    assert sorted(int(faces_wp.shape[0]) // 3 for _vertices_wp, faces_wp in parts_wp) == expected
+    assert sorted(faces_wp.size // 3 for _vertices_wp, faces_wp in parts_wp) == expected
 
     # Every face in exactly one component, which a count comparison alone would not catch.
     covered_np = np.zeros(combined_tm.faces.shape[0], dtype=int)
@@ -243,7 +243,7 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
 
     assert len(counts_ml) == 8  # non-vacuity: the reference really sees eight pieces
     assert counts_ml == counts_tm
-    assert sorted(int(faces_wp.shape[0]) // 3 for _vertices_wp, faces_wp in parts_wp) == counts_ml
+    assert sorted(faces_wp.size // 3 for _vertices_wp, faces_wp in parts_wp) == counts_ml
 
     covered_np = np.zeros(n_faces, dtype=int)
     for component_ml in components_ml:
@@ -319,7 +319,7 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
             centroids_ref = vertices_ref[faces_ref].mean(axis=1)
             distance_np, match_np = cKDTree(centroids_ref).query(centroids_wp)
             assert distance_np.max() < 1e-5
-            assert len(set(match_np.tolist())) == match_np.shape[0]
+            assert len(set(match_np.tolist())) == match_np.size
 
 
 def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> None:
@@ -335,12 +335,12 @@ def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> Non
         tw.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)
     )
     split_wp = tw.combine.split(concat_vertices_wp, concat_faces_wp)
-    assert int(vertex_offsets_wp.shape[0]) == len(split_wp) + 1 == 4
+    assert vertex_offsets_wp.size == len(split_wp) + 1 == 4
 
     vertex_bounds_np = vertex_offsets_wp.list()
     face_bounds_np = face_offsets_wp.list()
-    assert vertex_bounds_np[-1] == int(vertices_all_wp.shape[0])
-    assert face_bounds_np[-1] == int(faces_all_wp.shape[0]) // 3
+    assert vertex_bounds_np[-1] == vertices_all_wp.size
+    assert face_bounds_np[-1] == faces_all_wp.size // 3
     for index, (vertices_wp, faces_wp) in enumerate(split_wp):
         v_begin, v_end = vertex_bounds_np[index], vertex_bounds_np[index + 1]
         f_begin, f_end = face_bounds_np[index], face_bounds_np[index + 1]
@@ -378,7 +378,7 @@ def test_split_copies_many_components(device: str) -> None:
     ):
         assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
         assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
-        assert int(copy_faces_wp.shape[0]) == 3 * sphere_tm.faces.shape[0]
+        assert copy_faces_wp.size == 3 * sphere_tm.faces.shape[0]
         assert copy_vertices_wp._ref is None
         assert copy_faces_wp._ref is None
 

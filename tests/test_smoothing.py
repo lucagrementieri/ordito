@@ -265,7 +265,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
     # index silently -- which is exactly why the defect stayed invisible. Leaving plausible in-range
     # indices in the memory pool makes the unwritten tail reachable, so the assertions below have
     # something to catch.
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     for _ in range(6):
         _junk = (
             wp.full(capacity + n_vertices, 7, dtype=wp.int32, device=mesh_wp.points.device),
@@ -435,7 +435,7 @@ def test_filter_spikes_matches_meshlib(
     """
     mesh_tm, mesh_wp = torus_spikes
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
     min_angle_sum = threshold_turns * 2.0 * math.pi
 
     defects_np = tw.vertices.vertex_defects(
@@ -578,7 +578,7 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
     """
     mesh_wp = trimesh_to_warp(_noisy_icosphere(3, 0.02), device)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
     positions_np = vertices_wp.numpy()
 
     unbounded_wp = tw.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 3, 0.5)
@@ -1117,7 +1117,7 @@ def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
     atomics, so *any* two runs of this function differ in the last bits, flag or no flag.
     """
     _, mesh_wp = icosahedron
-    assert int(tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).shape[0]) == 0
+    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size == 0
 
     pinned_np = tw.smoothing.filter_implicit_fairing(
         mesh_wp.points, mesh_wp.indices, iterations=6, pin_boundary=True
@@ -1348,10 +1348,10 @@ def _patch_to_refine(device: str):
     holed_tm.remove_unreferenced_vertices()
     vertices_wp, faces_wp = numpy_to_warp(holed_tm.vertices, holed_tm.faces, device)
 
-    n_vertices_before = int(vertices_wp.shape[0])
-    n_faces_before = int(faces_wp.shape[0]) // 3
+    n_vertices_before = vertices_wp.size
+    n_faces_before = faces_wp.size // 3
     filled_wp = tw.holes.fill_min_weight(vertices_wp, faces_wp)
-    n_faces_after = int(filled_wp.shape[0]) // 3
+    n_faces_after = filled_wp.size // 3
     patch_wp = tw.array.indices_to_mask(
         wp.array(
             np.arange(n_faces_before, n_faces_after, dtype=np.int32), dtype=wp.int32, device=device
@@ -1386,7 +1386,7 @@ def test_refine_and_smooth_region_without_curvature_is_just_the_subdivision(devi
         vertices_wp, faces_wp, patch_wp, max_edge=max_edge, max_splits=3, max_angle_change=0.5
     )
 
-    assert int(refined_wp.shape[0]) > n_vertices_before
+    assert refined_wp.size > n_vertices_before
     assert np.array_equal(refined_wp.numpy(), subdivided_wp.numpy())
     assert np.array_equal(refined_faces_wp.numpy(), subdivided_faces_wp.numpy())
     assert np.array_equal(refined_patch_wp.numpy(), subdivided_patch_wp.numpy())
@@ -1612,7 +1612,7 @@ def test_smooth_region_boundary_system_matches_the_cotmatrix_extraction(device: 
     offsets_wp, columns_wp = tw.smoothing._band_pattern(
         faces_wp, vertex_faces, fixed_wp, free_map_wp, n_free
     )
-    values_wp = wp.empty(columns_wp.shape[0], dtype=wp.float64, device=device)
+    values_wp = wp.empty(columns_wp.size, dtype=wp.float64, device=device)
     band_rhs_wp = wp.empty((1, n_free), dtype=wp.float64, device=device)
     wp.launch(
         kernel_smoothing.band_dirichlet_values,

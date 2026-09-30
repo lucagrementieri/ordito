@@ -96,4 +96,4 @@ def test_homology_generators_with_offsets(bench_case: BenchCase) -> None:
     _loops, offsets = bench_case.run(
         lambda: tw.homology.homology_generators_with_offsets(vertices, faces)
     )
-    assert int(offsets.shape[0]) == expected + 1
+    assert offsets.size == expected + 1

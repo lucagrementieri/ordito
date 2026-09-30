@@ -104,12 +104,10 @@ def edge_length_loss(
     # The bound is supplied and the range check skipped: both are host readbacks that
     # serialise the pipeline, and this wrapper trusts its connectivity the same way its
     # own per-edge kernels below do.
-    lengths = edges_unique_length(
-        vertices, faces, n_vertices=int(vertices.shape[0]), validate=False
-    )
-    if int(lengths.shape[0]) == 0:
+    lengths = edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=False)
+    if lengths.size == 0:
         return 0.0
-    deviations = wp.empty(int(lengths.shape[0]), dtype=wp.float32, device=lengths.device)
+    deviations = wp.empty(lengths.size, dtype=wp.float32, device=lengths.device)
     wp.map(kernel_energies.squared_deviation, lengths, wp.float32(target_length), out=deviations)
     return float(tw.reduce.mean(deviations))
 
@@ -157,9 +155,9 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     """
     require_same_device(vertices=vertices, faces=faces)
     angles = tw.adjacency.face_adjacency_angles(vertices, faces)
-    if int(angles.shape[0]) == 0:
+    if angles.size == 0:
         return 0.0
-    terms = wp.empty(int(angles.shape[0]), dtype=wp.float32, device=angles.device)
+    terms = wp.empty(angles.size, dtype=wp.float32, device=angles.device)
     wp.map(kernel_energies.one_minus_cosine, angles, out=terms)
     return float(tw.reduce.mean(terms))
 
@@ -228,8 +226,8 @@ def laplacian_smoothing_loss(
     require_same_device(vertices=vertices, faces=faces)
     if method not in ("uniform", "cot", "cotcurv"):
         raise ValueError(f'method must be "uniform", "cot" or "cotcurv", got {method!r}')
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
     # The three methods initialize the two scale buffers three different ways, so each branch
@@ -472,8 +470,8 @@ def hessian_energy(
     ``NaN`` there.
     """
     require_same_device(vertices=vertices, faces=faces, vertex_faces=vertex_faces)
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     device = vertices.device
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
@@ -579,8 +577,8 @@ def curved_hessian_energy(
     [`vertex_defects`][triwarp.vertices.vertex_defects]
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     device = vertices.device
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
@@ -730,12 +728,12 @@ def crouzeix_raviart_cotmatrix(
     )
     unique_edges, edge_map = _edge_numbering(vertices, faces, unique_edges, edge_map)
     n_edges = int(unique_edges.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_edges, dtype, device)
 
-    if not tw.validation.is_edge_manifold(faces, n_vertices=int(vertices.shape[0]), validate=False):
+    if not tw.validation.is_edge_manifold(faces, n_vertices=vertices.size, validate=False):
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization is undefined otherwise, like "
@@ -834,7 +832,7 @@ def _cr_mass_diagonal(
     [`curved_hessian_energy`][triwarp.energies.curved_hessian_energy] cannot drift onto different
     masses -- the latter's derivation assumes they are the same one.
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     mass = wp.zeros(n_edges, dtype=dtype, device=faces.device)
     if n_faces > 0:
         wp.launch(
@@ -889,7 +887,7 @@ def lscm_hessian(
     Matches ``igl::lscm_hessian``.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n = int(vertices.shape[0])
+    n = vertices.size
     device = vertices.device
     laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
     # The real compressed-CSR entry count is offsets[-1], not laplacian.nnz: bsr_from_triplets
@@ -969,7 +967,7 @@ def vector_area_matrix(
     Matches ``igl::vector_area_matrix``.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n = int(vertices.shape[0])
+    n = vertices.size
     device = vertices.device
     boundary = tw.boundary.oriented_boundary_edges(vertices, faces)
     n_be = int(boundary.shape[0])
@@ -1022,9 +1020,7 @@ def _edge_numbering(
     if (unique_edges is None) != (edge_map is None):
         raise ValueError("pass unique_edges and edge_map together, or neither.")
     if unique_edges is None or edge_map is None:
-        unique_edges, edge_map = edges_unique(
-            faces, n_vertices=int(vertices.shape[0]), validate=False
-        )
+        unique_edges, edge_map = edges_unique(faces, n_vertices=vertices.size, validate=False)
     return unique_edges, edge_map
 
 
@@ -1040,7 +1036,7 @@ def _zero_at_boundary(
     launching over an empty index buffer is what the check avoids.
     """
     boundary = tw.boundary.boundary_vertex_indices(vertices, faces)
-    n_boundary = int(boundary.shape[0])
+    n_boundary = boundary.size
     if n_boundary > 0:
         wp.launch(
             kernel_energies.ZERO_AT_INDICES[values.dtype],

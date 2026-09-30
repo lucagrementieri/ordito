@@ -128,7 +128,7 @@ def _field_ml(bench_case: BenchCase, field: str) -> mm.VertScalars:
     if key not in _field_ml_cache:
         values_np = _field_np(bench_case, field)
         values_ml = mm.VertScalars()
-        values_ml.resize(values_np.shape[0], 0.0)
+        values_ml.resize(values_np.size, 0.0)
         for index, value in enumerate(values_np):
             values_ml[mm.VertId(index)] = float(value)
         _field_ml_cache[key] = values_ml
@@ -321,7 +321,7 @@ def test_split_mesh_with_plane(bench_case: BenchCase) -> None:
     )
     assert int(new_faces.shape[0]) % 3 == 0
     assert int(above.shape[0]) == int(new_faces.shape[0]) // 3
-    assert new_vertices.shape[0] >= vertices.shape[0]
+    assert new_vertices.shape[0] >= vertices.size
 
 
 def _plane_field(bench_case: BenchCase) -> tuple[wp.array[wp.float32], np.ndarray]:
@@ -687,5 +687,5 @@ def test_marching_triangles_with_offsets(bench_case: BenchCase, field: str) -> N
         ),
         rounds=_ROUNDS,
     )
-    assert offsets.shape[0] == closed.shape[0] + 1
-    assert points.shape[0] > 0
+    assert offsets.size == closed.size + 1
+    assert points.size > 0

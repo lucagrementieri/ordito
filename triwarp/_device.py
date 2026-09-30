@@ -213,7 +213,7 @@ def require_nonempty_mesh(faces: wp.array[wp.int32], name: str) -> None:
     ValueError
         If ``faces`` is empty (zero triangles).
     """
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         raise ValueError(
             f"{name} cannot build a warp.Mesh with zero triangles: this silently corrupts CUDA "
             "state through Warp 1.17 (see the Warp issue tracker for wp.Mesh + empty BVH)."
@@ -256,7 +256,7 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
     ValueError
         If ``faces`` is non-empty and any of its indices is negative or ``>= n_vertices``.
     """
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return
     # One ``minmax`` rather than a ``min`` and a ``max``: both ends come out of the same launch,
     # the same buffer and the same readback, so asking for both costs nothing over asking for one.

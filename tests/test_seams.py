@@ -216,8 +216,8 @@ def test_cut_along_edges_separates_the_faces_of_a_cube(
     creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
 
     cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
-    assert int(cut_vertices_wp.shape[0]) == 24
-    assert int(cut_faces_wp.shape[0]) == int(faces_wp.shape[0])
+    assert cut_vertices_wp.size == 24
+    assert cut_faces_wp.size == faces_wp.size
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
     assert tw.validation.is_winding_consistent(cut_faces_wp)
 
@@ -242,7 +242,7 @@ def test_cut_along_edges_with_no_edges_is_the_identity(
     cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(
         vertices_wp, faces_wp, twt.empty_2d((0, 2), wp.int32, device=device)
     )
-    assert int(cut_vertices_wp.shape[0]) == int(vertices_wp.shape[0])
+    assert cut_vertices_wp.size == vertices_wp.size
     assert np.allclose(
         np.sort(cut_vertices_wp.numpy(), axis=0), np.sort(vertices_wp.numpy(), axis=0)
     )
@@ -257,8 +257,8 @@ def test_cut_along_edges_all_interior_edges_gives_a_triangle_soup(
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     all_edges_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
     cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, all_edges_wp)
-    assert int(cut_vertices_wp.shape[0]) == int(faces_wp.shape[0])
-    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == int(faces_wp.shape[0]) // 3
+    assert cut_vertices_wp.size == faces_wp.size
+    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == faces_wp.size // 3
 
 
 def test_cut_along_edges_ignores_the_winding(
@@ -308,7 +308,7 @@ def test_cut_along_edges_ignores_the_winding(
     # Undo the flip on the output so corner ``(f, k)`` names the same corner in both cuts.
     cut_flipped_np = cut_flipped_wp.numpy().reshape(-1, 3)
     cut_flipped_np[flipped] = cut_flipped_np[flipped][:, [0, 2, 1]]
-    n_out = np.unique(cut_np).shape[0]
+    n_out = np.unique(cut_np).size
     assert sphere_tm.vertices.shape[0] < n_out < cut_np.size
     assert same_partition(cut_np.ravel(), cut_flipped_np.ravel())
 
@@ -342,7 +342,7 @@ def test_cut_along_edges_opens_a_boundary(
         vertices_wp, faces_wp, twt.as_array2d(ring_wp, wp.int32)
     )
     # The four corners of that face each split in two; the other four are untouched.
-    assert int(cut_vertices_wp.shape[0]) == int(vertices_wp.shape[0]) + 4
+    assert cut_vertices_wp.size == vertices_wp.size + 4
     assert not tw.validation.is_edge_manifold(cut_faces_wp, allow_boundary_edges=False)
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 2
     assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
@@ -358,7 +358,7 @@ def test_cut_along_edges_round_trips_through_a_weld(unit_box: tuple[tm.Trimesh, 
     welded_vertices_wp, _unique, _inverse, welded_faces_wp = tw.repair.remove_duplicated_vertices(
         cut_vertices_wp, cut_faces_wp, epsilon=1e-6
     )
-    assert int(welded_vertices_wp.shape[0]) == int(vertices_wp.shape[0])
+    assert welded_vertices_wp.size == vertices_wp.size
     assert _face_component_count(welded_vertices_wp, welded_faces_wp) == 1
 
 
@@ -438,8 +438,8 @@ def test_cut_along_edges_matches_meshlib(icosphere_coarse: tuple[tm.Trimesh, wp.
     cut_tm = meshlib_to_trimesh(mesh_ml)
 
     assert cut_tm.vertices.shape[0] == mesh_tm.vertices.shape[0] + edges_np.shape[0]
-    assert int(cut_vertices_wp.shape[0]) == cut_tm.vertices.shape[0]
-    assert int(cut_faces_wp.shape[0]) // 3 == cut_tm.faces.shape[0] == mesh_tm.faces.shape[0]
+    assert cut_vertices_wp.size == cut_tm.vertices.shape[0]
+    assert cut_faces_wp.size // 3 == cut_tm.faces.shape[0] == mesh_tm.faces.shape[0]
 
 
 @pytest.mark.parity("cut_along_edges", "pymeshlab")
@@ -474,11 +474,11 @@ def test_cut_along_edges_matches_pymeshlab_topology(
     cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
 
-    assert int(cut_faces_wp.shape[0]) // 3 == faces_pml.shape[0]
+    assert cut_faces_wp.size // 3 == faces_pml.shape[0]
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == components_pml == 6
     assert np.isclose(cut_tm.area, box_tm.area, rtol=1e-5)
     assert np.isclose(mesh_cut_pml.area, box_tm.area, rtol=1e-5)
-    assert int(cut_vertices_wp.shape[0]) == 24 < mesh_pml.vertex_number()
+    assert cut_vertices_wp.size == 24 < mesh_pml.vertex_number()
 
 
 @pytest.mark.parity("cut_along_edges", "igl")
@@ -524,8 +524,8 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
 
     vertices_cut_igl, faces_cut_igl = igl.cut_mesh(vertices_np, faces_np, corner_mask_igl)[:2]
 
-    assert vertices_cut_igl.shape[0] == int(cut_vertices_wp.shape[0]) == 24
-    assert faces_cut_igl.shape[0] == int(cut_faces_wp.shape[0]) // 3
+    assert vertices_cut_igl.shape[0] == cut_vertices_wp.size == 24
+    assert faces_cut_igl.shape[0] == cut_faces_wp.size // 3
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
     mesh_cut_igl = tm.Trimesh(vertices_cut_igl, faces_cut_igl, process=False)
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
@@ -559,8 +559,8 @@ def test_cut_along_edges_empty(device: str) -> None:
     out_vertices_wp, out_faces_wp = tw.seams.cut_along_edges(
         vertices_wp, faces_wp, twt.empty_2d((0, 2), wp.int32, device=device)
     )
-    assert int(out_vertices_wp.shape[0]) == 0
-    assert int(out_faces_wp.shape[0]) == 0
+    assert out_vertices_wp.size == 0
+    assert out_faces_wp.size == 0
 
 
 def _spherical_wedge_atlas(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
@@ -675,7 +675,7 @@ def test_uv_seam_vertex_mask_matches_pymeshlab(
     selected_pml = meshset_pml.current_mesh().vertex_selection_array()
 
     # The atlas has a real seam ring, so this is not the trivially-empty comparison.
-    assert 0 < int(selected_pml.sum()) < selected_pml.shape[0]
+    assert 0 < int(selected_pml.sum()) < selected_pml.size
     if include_boundary:
         assert np.array_equal(mask_wp.numpy(), selected_pml)
     else:
@@ -869,8 +869,8 @@ def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh,
         mesh_wp.points, mesh_wp.indices, tw.seams.seam_edge_vertices(mesh_wp.indices, seams_wp)
     )
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
-    assert int(cut_faces_wp.shape[0]) == int(mesh_wp.indices.shape[0])
-    assert int(cut_vertices_wp.shape[0]) > int(mesh_tm.vertices.shape[0])
+    assert cut_faces_wp.size == mesh_wp.indices.size
+    assert cut_vertices_wp.size > int(mesh_tm.vertices.shape[0])
     assert np.isclose(cut_tm.area, mesh_tm.area, rtol=1e-5)
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 1
     # The cut turned the seam ring into a real boundary.
@@ -936,11 +936,9 @@ def test_uv_seam_edges_empty_mesh(device: str) -> None:
     assert boundaries_wp.shape == (0, 2)
     assert foldovers_wp.shape == (0, 4)
     assert (
-        int(
-            tw.seams.uv_seam_vertex_mask(
-                faces_wp, wp.empty(0, dtype=wp.vec2, device=device), n_vertices=0
-            ).shape[0]
-        )
+        tw.seams.uv_seam_vertex_mask(
+            faces_wp, wp.empty(0, dtype=wp.vec2, device=device), n_vertices=0
+        ).size
         == 0
     )
 
@@ -996,6 +994,6 @@ def test_cut_along_edges_accepts_a_row_in_either_order(
         vertices_wp, faces_wp, reversed_wp
     )
     # Non-vacuity: the cut has to do something, or both sides agree on having done nothing.
-    assert int(ascending_vertices_wp.shape[0]) > int(vertices_wp.shape[0])
+    assert ascending_vertices_wp.size > vertices_wp.size
     assert np.array_equal(ascending_faces_wp.numpy(), descending_faces_wp.numpy())
     assert np.allclose(ascending_vertices_wp.numpy(), descending_vertices_wp.numpy())

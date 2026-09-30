@@ -122,10 +122,8 @@ def test_scale_matrix_bad_length_raises() -> None:
 
 
 @pytest.mark.parity("transform_points", "trimesh")
-@pytest.mark.parametrize(("kind", "matrix"), TRANSFORMS, ids=[k for k, _ in TRANSFORMS])
-def test_transform_points_matches_trimesh(
-    device: str, kind: TransformKind, matrix: wp.mat44
-) -> None:
+@pytest.mark.parametrize("matrix", [m for _, m in TRANSFORMS], ids=[k for k, _ in TRANSFORMS])
+def test_transform_points_matches_trimesh(device: str, matrix: wp.mat44) -> None:
     """Class A: ``transform_points`` against ``trimesh.transformations.transform_points``."""
     points_np = np.random.default_rng(0).normal(size=(256, 3)).astype(np.float32)
     points_wp = points_to_warp(points_np, device)

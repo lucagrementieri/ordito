@@ -184,7 +184,7 @@ def load_mesh(path: str | Path, *, device: wp.DeviceLike = None) -> wp.Mesh:
     # A malformed file (or a meshio decoder bug) can hand back a face index the vertex buffer
     # doesn't cover; this is the trust boundary where that first enters triwarp, so check it once
     # here rather than trusting it through every downstream kernel that indexes ``vertices[faces]``.
-    require_valid_faces(data["faces"], int(data["vertices"].shape[0]), "load_mesh")
+    require_valid_faces(data["faces"], data["vertices"].size, "load_mesh")
     # ``load_mesh_data`` allocated both buffers on the line above and nothing else holds
     # them, so the mesh can own them directly.
     return wp.Mesh(points=data["vertices"], indices=data["faces"])
@@ -230,5 +230,5 @@ def mesh_from_numpy(
     # This is the trust boundary where an external caller's raw NumPy connectivity first enters
     # triwarp -- check it once here rather than trusting it through every downstream kernel that
     # indexes ``vertices[faces]``.
-    require_valid_faces(faces_wp, int(vertices_wp.shape[0]), "mesh_from_numpy")
+    require_valid_faces(faces_wp, vertices_wp.size, "mesh_from_numpy")
     return Trimesh(vertices_wp, faces_wp)

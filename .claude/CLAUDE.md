@@ -498,6 +498,7 @@ elements, struct fields) — use for multi-value updates like argmin/minmax/swap
   ```python
   def _factory(name, dtype):
       def _k(values: wp.array[wp.Scalar], out: wp.array[wp.Scalar]) -> None: ...
+
       _k.__annotations__["values"] = wp.array[dtype]
       _k.__annotations__["out"] = wp.array[dtype]
       return wp.kernel(_k, name=name)
@@ -670,6 +671,27 @@ Kernels in `triwarp/kernels/` keep `wp.array2d[dtype]` unchanged. Optional 2D ar
   are load-bearing. It is not a general replacement: `wp.array[dtype]` is this package's usual
   rank-1 spelling and `wp.empty` already satisfies it, so reaching for `empty_1d` there buys
   nothing and, because `NDim` is **invariant**, actively breaks the assignment (§8).
+- **A rank-1 array's length is `.size`, not `.shape[0]` — at Python scope only.** `wp.array.size`
+  and `.ndim` are typed `int`, while `.shape[i]` and `BsrMatrix.nrow` / `.ncol` read `Unknown`
+  through Warp's stubs, so `int(x.shape[0])` was a type narrowing and `x.size` needs none. All of
+  them are plain Python `int`s at runtime (`wp.array.__init__` normalizes its shape with
+  `int(x)`), so wrapping `.size` / `.ndim` in `int(...)` is noise. Three limits:
+    - **Kernel scope has no `.size`** — `a.size` inside a `@wp.kernel` is a parse-time
+      `WarpCodegenAttributeError` — so `kernels/` keeps `a.shape[0]`.
+    - **On a rank-2 array `.size` is rows × cols**, so the swap is only right where the rank is
+      known to be 1, and a wrong swap type-checks and runs. A row count of a table stays
+      `.shape[0]`.
+    - **A `torch.Tensor`'s `.size` is a method**, so the rule is for Warp and NumPy arrays.
+
+  The 2026-09-30 conversion (1 832 sites across `triwarp/`, `tests/` and `benchmarks/`) proved each
+  site's rank by instrumenting every Python-scope `.shape[0]` and running both devices' suites plus
+  the small-mesh benchmarks. Where no run reached a site, basedpyright's inferred operand type
+  (`reveal_type` at each one) decided: `wp.array[<concrete dtype>]`, the package's rank-1
+  spelling, and `ndarray[tuple[int], ...]` converted; `Any`, `Unknown`, `ndarray[tuple[Any, ...]]`
+  and rank-2 types did not, so ~180 sites keep `.shape[0]` for want of evidence rather than
+  because they are known to be 2-D. Two sites (`grouping.py`'s `data`, `vertices.py`'s `array`)
+  are reached at *both* ranks and must keep `.shape[0]`, as must a parameter annotated rank-free
+  (`twt.ArrayNd*`, `wp.array[Any]`).
 - Return rank-2 buffers as `return twt.as_array2d(arr, wp.int32)` so callers get a checked,
   correctly typed value.
 - **Always pass `device=` to every allocation** (`wp.zeros` / `empty` / `ones` / `full` / `array`) —
@@ -1674,7 +1696,12 @@ binds.
   import trimesh.<module> as tm
   import triwarp.<module> as tw
   ```
-- Use the `device` fixture from `tests/conftest.py`. **Every test function must accept `device`.**
+- Use the `device` fixture from `tests/conftest.py`. **A test reaches `device` if it touches the
+  device: directly when it builds device data itself, otherwise through a mesh fixture. A test that
+  never touches the device does not take it.** `pytest_generate_tests` parametrizes every test whose
+  fixture closure reaches `device` — including through `request.getfixturevalue` — so a test taking
+  `icosphere` runs on both devices without naming `device`, and naming it anyway is an unused
+  parameter. `reportUnusedParameter` (§8) enforces this: taking `device` means using it.
 - Generate reproducible random data with `np.random.default_rng(seed)` (a fixed integer seed per
   test).
 - **Upload a NumPy mesh with `conversions.numpy_to_warp(vertices_np, faces_np, device)`**, never a
@@ -2977,6 +3004,20 @@ uv run basedpyright
   gotcha. When it fires on a *correlated* condition (two separate `if is_mesh:` blocks), fix it the
   way `triwarp/registration.py` does: initialize to `None` before the branch and
   `assert x is not None` at the use site. Do **not** suppress it.
+- **Three rules above `standard` are ON: `reportUnnecessaryCast`, `reportUnusedFunction`,
+  `reportUnusedParameter`** — the only ones in `recommended` / `all` whose hits were real (a dead
+  `voxels._cell_slots` and its kernel, an unread `n_vertices`, 7 casts, a dead benchmark helper).
+  `reportUnnecessaryCast` doubles as the narrowings' staleness check after a Warp stub fix.
+  `reportUnusedParameter` covers `tests/` and `benchmarks/` too, which is what enforces §7.1's
+  `device` rule. A protocol-signature parameter is `_`-prefixed (`matvec`'s `_y`), the
+  `TYPE_CHECKING` redeclarations in `typing.py` carry a scoped ignore, and a `parametrize` value
+  used only to label a case goes in `pytest.param(..., id=)` / `ids=` rather than the signature.
+  **Measured and declined, 2026-09-30**: `strict` reports 12 866 on `triwarp/`, ~12 500 of them
+  `reportUnknown*` on Warp names (`.shape`, `wp.empty`, `wp.launch`, `.device`, `wp.zeros`);
+  `reportUnreachable` flags exactly §4.2's off-menu `Literal` guards; `reportImportCycles` flags
+  §3.1's lazy `__init__`; `reportUninitializedInstanceVariable` misreads `__slots__`. The lever for
+  catching more is local Warp stubs (typed `wp.empty` / `wp.zeros` / `array.shape` / `wp.launch`),
+  which might also let `reportArgumentType` back on — unmeasured.
 - The gate is expected to stay at **0 errors**. An error is almost always either a real
   possibly-unbound bug or a missing dependency — resolve it, do not widen the disabled-rule
   list.
@@ -3184,8 +3225,9 @@ gets proposed as a replacement for a hand-written 6×6 Cholesky. Introspect befo
 
 ```python
 from warp._src.context import builtin_functions
-f = builtin_functions["dense_chol"]      # a Function, the same handle §2.7's factories capture
-print(f.hidden, f.doc, f.input_types)    # True  'WIP'  {n: int32, A: array(ndim=1, float32), ...}
+
+f = builtin_functions["dense_chol"]  # a Function, the same handle §2.7's factories capture
+print(f.hidden, f.doc, f.input_types)  # True  'WIP'  {n: int32, A: array(ndim=1, float32), ...}
 ```
 
 `hidden: True` / `doc: "WIP"` is the answer, and the mirrors' silence was the same answer read one
@@ -3651,11 +3693,6 @@ The `nnz`-is-a-capacity rule and its consequences are §3.7. Three further behav
   not cosmetic once the result is multiplied again**: an explicit zero at `(i, c)` makes column `c`
   "see" row `i`, so a Galerkin product `PᵀAP` inherits every aggregate reachable from it — a measured
   47x pattern blowup on one coarse operator, operator complexity 2.19 instead of a true 1.03.
-- **`bsr_compress`'s illegal-memory-access is FIXED on Warp 1.17** (was: compressing a `bsr_mm`
-  result made the *next* `bsr_mm` die with `CUDA error 700`). `linalg._multigrid_prune` is now one
-  call to `wps.bsr_compress(matrix, prune_numerical_zeros=True)`, ~2.9x faster than the CSR-to-triplets
-  rebuild it replaced. **Trap found doing it: at the documented default `inplace=False`, it still
-  returns the *same* matrix, pruned in place** — copy first if the unpruned matrix is still needed.
 - **`bsr_set_transpose`, `bsr_mm` and `bsr_axpy` all read the `nnz` *field*, never `nnz_sync()`**, so
   a matrix whose count is stale carries garbage into whatever consumes it — the operand-side version
   of §3.7's buffer-sizing rule.

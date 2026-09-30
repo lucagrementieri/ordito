@@ -108,8 +108,8 @@ vertices, faces = tw.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
 mesh = tw.Trimesh(vertices, faces)
-print(mesh.area)                  # 12.551...
-print(mesh.is_watertight)         # True
+print(mesh.area)  # 12.551...
+print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 ```
 
@@ -132,9 +132,7 @@ distance = tw.heat.heat_geodesic(vertices, faces, sources)
 points, face_ids = tw.sample.sample_surface(vertices, faces, 10_000, seed=0)
 
 # Feature-preserving isotropic remeshing (split / collapse / flip / smooth / reproject).
-remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(
-    vertices, faces, target_length=0.05
-)
+remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
 ```
 
 Interop with NumPy is a `wp.array(...)` / `.numpy()` pair away, and

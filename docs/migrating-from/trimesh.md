@@ -7,8 +7,8 @@ the underlying quantity is the same — so most of this migration is a mechanica
 `wp.array`, not a `np.ndarray`.
 
 ```python
-import trimesh as tm     # before
-import triwarp as tw     # after
+import trimesh as tm  # before
+import triwarp as tw  # after
 ```
 
 ## Mesh construction and I/O

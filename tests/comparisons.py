@@ -226,7 +226,7 @@ def canonical_labels(labels_np: np.ndarray) -> np.ndarray:
         np.array([np.flatnonzero(inverse == i)[0] for i in range(inverse.max() + 1)])
     )
     rank = np.empty_like(order)
-    rank[order] = np.arange(order.shape[0])
+    rank[order] = np.arange(order.size)
     return rank[inverse]
 
 
@@ -294,7 +294,7 @@ def assert_cyclic_permutation_equal(loop_a: np.ndarray, loop_b: np.ndarray) -> N
     same job.
     """
     a, b = np.asarray(loop_a).ravel(), np.asarray(loop_b).ravel()
-    assert a.shape == b.shape, f"loop lengths differ: {a.shape[0]} vs {b.shape[0]}"
+    assert a.shape == b.shape, f"loop lengths differ: {a.size} vs {b.size}"
     if a.size == 0:
         return
     assert set(a.tolist()) == set(b.tolist()), "loops visit different vertices"

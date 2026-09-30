@@ -49,7 +49,7 @@ def group(values: wp.array[wp.Int], length: int) -> twt.Array2dInt32:
     --------
     [`group_int_rows`][triwarp.grouping.group_int_rows]
     """
-    n = int(values.shape[0])
+    n = values.size
     device = values.device
     if n < length or length <= 0:
         return twt.as_array2d(twt.empty_2d((0, max(length, 0)), wp.int32, device=device), wp.int32)
@@ -227,7 +227,7 @@ def unique_1d(
         end_bit = max(1, int(max_value).bit_length())
 
     device = data.device
-    n = int(data.shape[0])
+    n = data.size
 
     if n == 0:
         empty_unique = wp.empty(0, dtype=data.dtype, device=device)
@@ -277,7 +277,7 @@ def _unique_hash(
 
     # Phase 1: parallel insert into the open-addressing hash table.
     slot_key, slot_counts, occupied = _hash_insert(data_int, n, mask)
-    cap = int(slot_key.shape[0])
+    cap = slot_key.size
 
     # Phase 2: prefix-scan the occupancy in place to get compact positions -- nothing reads the
     # flags afterwards except the compaction, which recovers each one as a step of the scan.
@@ -386,7 +386,7 @@ def hashed_occurrence_counts(keys: wp.array[wp.uint64] | wp.array[wp.int64]) -> 
     --------
     [`unique_1d`][triwarp.grouping.unique_1d]
     """
-    n = int(keys.shape[0])
+    n = keys.size
     return _hash_insert(keys.view(wp.int64), n, _hash_mask(n))[1]
 
 
@@ -616,7 +616,7 @@ def unique_faces(
     if max_index is not None and max_index <= 0:
         raise ValueError(f"max_index must be positive, got {max_index}")
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         empty_faces = wp.empty(0, dtype=wp.int32, device=device)
         if return_inverse:
@@ -678,7 +678,7 @@ def _unique_keys_core(
     # The class count is the length of the unique-key array ``unique_1d`` just returned; recovering
     # it as ``reduce.max(inverse) + 1`` would be a whole reduction launch and a host sync for a
     # number already in hand.
-    first_idx = first_occurrence_indices(inverse, int(unique_keys.shape[0]))
+    first_idx = first_occurrence_indices(inverse, unique_keys.size)
     return inverse, first_idx, counts
 
 
@@ -720,7 +720,7 @@ def first_occurrence_indices(
         The companion step: gather the payload by these indices to get the representatives.
     """
     device = inverse.device
-    n = int(inverse.shape[0])
+    n = inverse.size
     if n_unique is None:
         n_unique = int(tw.reduce.max(inverse)) + 1 if n > 0 else 0
     first = wp.full(n_unique, n, dtype=wp.int32, device=device)
@@ -842,7 +842,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
     """
     if data.dtype != wp.vec3:
         raise ValueError(f"data must be a wp.array[wp.vec3], got wp.array[{data.dtype}]")
-    n = int(data.shape[0])
+    n = data.size
     if epsilon > 0.0:
         if n == 0:
             return wp.empty(0, dtype=wp.uint64, device=data.device)
@@ -866,7 +866,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
         # the half-cell of rounding covers the difference, and an over-wide radix is harmless.
         radix = int(extent * (1.0 + 1e-6)) + 3
         return hash_indices_rows(rounded, max_index=radix, validate=False)
-    hashes = wp.empty(data.shape[0], dtype=wp.uint64, device=data.device)
+    hashes = wp.empty(data.size, dtype=wp.uint64, device=data.device)
     wp.map(kernel_grouping.pack_vec3, data, out=hashes)
     return hashes
 

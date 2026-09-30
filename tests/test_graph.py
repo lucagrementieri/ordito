@@ -32,7 +32,7 @@ def test_edges_to_csr_roundtrip(device: str) -> None:
     assert adjacency.block_shape == (1, 1)
     assert offsets[0] == 0
     assert offsets[-1] == len(indices)
-    assert offsets.shape[0] == node_count + 1
+    assert offsets.size == node_count + 1
 
     neighbors: dict[int, set[int]] = {i: set() for i in range(node_count)}
     for a, b in edges_np:
@@ -62,7 +62,7 @@ def test_edges_to_neighbor_lists_matches_igl(
     excluded for exactly that reason — all twelve of its vertices have degree 5.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
     edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
@@ -72,7 +72,7 @@ def test_edges_to_neighbor_lists_matches_igl(
 
     assert offsets.shape == (n_vertices + 1,)
     assert int(offsets[0]) == 0
-    assert int(offsets[-1]) == neighbors.shape[0] == 2 * int(edges_wp.shape[0])
+    assert int(offsets[-1]) == neighbors.size == 2 * int(edges_wp.shape[0])
     degrees = np.diff(offsets)
     # Not a regular fixture: a constant degree would make a row-swap invisible.
     assert int(degrees.max()) > int(degrees.min()) > 0
@@ -95,7 +95,7 @@ def test_edges_to_neighbor_lists_agrees_with_edges_to_csr(
     switched between them relies on.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
     edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
@@ -130,7 +130,7 @@ def test_edges_to_neighbor_lists_sorted_rows_are_edges_to_csr_exactly(
     thread-arrival order and every repeat differs.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
     edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
@@ -186,7 +186,7 @@ def test_edges_to_neighbor_lists_empty(device: str) -> None:
     """No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form."""
     edges_wp = wp.zeros((0, 2), dtype=wp.int32, device=device)
     neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(4, edges_wp)
-    assert neighbors_wp.shape[0] == 0
+    assert neighbors_wp.size == 0
     assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
 
 
@@ -217,7 +217,7 @@ def test_connected_component_labels_random(device: str) -> None:
     labels_np = _scipy_component_labels(edges_np, node_count)
 
     # Non-vacuous: with one component the label-packing transform under test is the identity.
-    assert np.unique(labels_np).shape[0] > 1
+    assert np.unique(labels_np).size > 1
     assert same_partition(labels_wp.numpy(), labels_np)
 
 
@@ -263,7 +263,7 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
     labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
 
-    assert int(n_components_igl) == np.unique(labels_wp.numpy()).shape[0]
+    assert int(n_components_igl) == np.unique(labels_wp.numpy()).size
     assert int(np.asarray(sizes_igl).sum()) == node_count  # every node landed in a component
     # Non-vacuous on the random shape: the path is one component by design, see the docstring.
     assert int(n_components_igl) > 1 or n_edges == node_count - 1
@@ -641,7 +641,7 @@ def test_successor_cycles_multiple_cycles(device: str) -> None:
     flat_np = flat_wp.numpy()
     offsets_np = offsets_wp.numpy()
     assert offsets_np[0] == 0
-    assert offsets_np[-1] == flat_np.shape[0] == 9
+    assert offsets_np[-1] == flat_np.size == 9
     recovered = [
         flat_np[start:stop].tolist() for start, stop in itertools.pairwise(offsets_np.tolist())
     ]
@@ -727,7 +727,7 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 4)
 
     flat_np = flat_wp.numpy()
-    assert flat_np.shape[0] == int(offsets_wp.numpy()[-1]) == 4
+    assert flat_np.size == int(offsets_wp.numpy()[-1]) == 4
     assert np.all((flat_np >= 0) & (flat_np < 4))
 
 
@@ -765,7 +765,7 @@ def test_successor_cycles_empty(device: str) -> None:
 
 def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[twt.Array2dInt32, int]:
     """Return the unique undirected vertex edges and vertex count for a Warp mesh."""
-    n = int(mesh_wp.points.shape[0])
+    n = mesh_wp.points.size
     unique_edges, _ = tw.edges.edges_unique(mesh_wp.indices, n_vertices=n)
     return unique_edges, n
 
@@ -785,13 +785,13 @@ def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> object:
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
     lengths = tw.edges.edges_unique_length(mesh_wp.points, mesh_wp.indices, edges)
     if threshold != 1.0:
-        scaled = wp.empty(int(lengths.shape[0]), dtype=wp.float32, device=mesh_wp.device)
+        scaled = wp.empty(lengths.size, dtype=wp.float32, device=mesh_wp.device)
         wp.map(wp.div, lengths, wp.float32(threshold), out=scaled)
         lengths = scaled
     return tw.graph.edges_to_csr(n_vertices, edges, lengths)
 
 
-def _spike_field(n_vertices: int, device: str) -> np.ndarray:
+def _spike_field(n_vertices: int) -> np.ndarray:
     """Build a delta at vertex 0: the field with the steepest possible gradient."""
     values_np = np.zeros(n_vertices, dtype=np.float64)
     values_np[0] = 10.0
@@ -812,7 +812,7 @@ def test_shortest_path_envelope_matches_pymeshlab(
     sweep is over that parameter because it is the only one the reference has.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    values_np = _spike_field(mesh_tm.vertices.shape[0], str(mesh_wp.device))
+    values_np = _spike_field(mesh_tm.vertices.shape[0])
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm, values_np)
     meshset_pml.apply_scalar_saturation_per_vertex(gradientthr=threshold)

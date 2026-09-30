@@ -85,7 +85,7 @@ def test_the_empty_family_rejects_a_shape_of_the_wrong_rank(device: str) -> None
         twt.empty_3d((2, 3), wp.int32, device=device)
 
 
-def test_dtype_zero_splits_int_and_float_like_python(device: str) -> None:
+def test_dtype_zero_splits_int_and_float_like_python() -> None:
     """Integer types give a Python ``int`` and float ones a ``float``, not merely ``== 0``."""
     for dtype_wp, _np_dtype in _INT_WP_TO_NUMPY:
         zero = twt.dtype_zero(dtype_wp)

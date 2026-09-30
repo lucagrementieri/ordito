@@ -68,7 +68,7 @@ def intersects_location(
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
-    n = ray_origins.shape[0]
+    n = ray_origins.size
     device = ray_origins.device
     if n == 0:
         empty_int = wp.empty(0, dtype=wp.int32, device=device)
@@ -149,7 +149,7 @@ def intersects_first(
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
-    n = ray_origins.shape[0]
+    n = ray_origins.size
     if n == 0:
         return wp.empty(0, dtype=wp.int32, device=ray_origins.device)
     if max_t is None:
@@ -212,7 +212,7 @@ def intersects_any(
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
-    n = ray_origins.shape[0]
+    n = ray_origins.size
     if n == 0:
         return wp.empty(0, dtype=wp.bool, device=ray_origins.device)
     if max_t is None:
@@ -277,7 +277,7 @@ def longest_ray(
     """
     require_same_device(mesh=mesh, ray_origins=ray_origins, ray_directions=ray_directions)
     _validate_ray_inputs(ray_origins, ray_directions)
-    n = ray_origins.shape[0]
+    n = ray_origins.size
     if n == 0:
         return wp.empty(0, dtype=wp.float32, device=ray_origins.device)
     if max_t is None:
@@ -367,7 +367,7 @@ def contains_points(
     [`signed_distance_on_mesh`][triwarp.proximity.signed_distance_on_mesh]
     """
     require_same_device(mesh=mesh, points=points)
-    n = points.shape[0]
+    n = points.size
     if n == 0:
         return wp.empty(0, dtype=wp.bool, device=points.device)
     # One reduction, not two: ``enclosing_diagonal(mesh.points)`` would recompute exactly these

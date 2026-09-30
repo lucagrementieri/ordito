@@ -6,8 +6,8 @@ container where each filter mutates `current_mesh()` in place; triwarp filters t
 `(vertices, faces)` and return a new pair, so nothing needs a fresh `MeshSet` per call.
 
 ```python
-import pymeshlab as ml    # before
-import triwarp as tw      # after
+import pymeshlab as ml  # before
+import triwarp as tw  # after
 ```
 
 ## Remeshing and decimation

@@ -126,19 +126,19 @@ _V = TypeVar("_V", wp.vec2, wp.vec3, wp.vec4)
 
 if TYPE_CHECKING:
 
-    def normalize(v: _V) -> _V:
+    def normalize(v: _V) -> _V:  # pyright: ignore[reportUnusedParameter]
         """Vector of unit length along ``v``, at ``v``'s own precision."""
         ...
 
-    def cross(a: _V, b: _V) -> _V:
+    def cross(a: _V, b: _V) -> _V:  # pyright: ignore[reportUnusedParameter]
         """Cross product of two vectors of the same type."""
         ...
 
-    def dot(a: _V, b: _V) -> float:
+    def dot(a: _V, b: _V) -> float:  # pyright: ignore[reportUnusedParameter]
         """Dot product of two vectors of the same type."""
         ...
 
-    def transform_point(matrix: wp.mat44, point: wp.vec3) -> wp.vec3:
+    def transform_point(matrix: wp.mat44, point: wp.vec3) -> wp.vec3:  # pyright: ignore[reportUnusedParameter]
         """``point`` carried through the affine transform ``matrix``, translation included."""
         ...
 

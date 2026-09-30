@@ -40,7 +40,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     exempted there with a redirect to open3d.
     """
     mesh_tm, mesh_wp = half_torus
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     area_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
 
@@ -83,7 +83,7 @@ def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh
     triwarp's.
     """
     mesh_tm, mesh_wp = half_torus
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     face_normals_wp, _areas_wp = tw.triangles.face_normals_and_areas(
         mesh_wp.points, mesh_wp.indices
     )

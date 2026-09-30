@@ -63,7 +63,7 @@ def test_marching_cubes_extracts_an_analytic_sphere(device: str) -> None:
         twt.as_array3d(field_wp, wp.float32),
         bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)),
     )
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0
     spacing = 2.0 / (resolution - 1)
     radii_np = np.linalg.norm(vertices_wp.numpy(), axis=1)
     assert np.abs(radii_np - radius).max() < spacing
@@ -139,7 +139,7 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
         (vertices_pv, contour_pv.n_cells),
     ):
         assert reference_np.shape[0] == vertices_np.shape[0]
-        assert n_faces == int(faces_wp.shape[0]) // 3
+        assert n_faces == faces_wp.size // 3
         # A half-voxel origin error moves this by 0.065; the tolerance is 1e-04.
         assert np.isclose(
             np.linalg.norm(reference_np, axis=1).mean(),
@@ -150,7 +150,7 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
         # The vertex sets match as sets: no library promises an emission order.
         residual_np, matched_np = cKDTree(vertices_np).query(reference_np)
         assert residual_np.max() < 1e-5
-        assert np.unique(matched_np).shape[0] == reference_np.shape[0]
+        assert np.unique(matched_np).size == reference_np.shape[0]
 
 
 @pytest.mark.parity("marching_cubes", "meshlib")
@@ -261,11 +261,11 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     vertices_wp, faces_wp = tw.levelset.marching_cubes(twt.as_array3d(field_wp, wp.float32), iso)
 
     assert vertices_p3d.shape[0] > 0
-    assert int(vertices_wp.shape[0]) == vertices_p3d.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == faces_p3d[0].shape[0]
+    assert vertices_wp.size == vertices_p3d.shape[0]
+    assert faces_wp.size // 3 == faces_p3d[0].shape[0]
     distance_np, match_np = cKDTree(vertices_p3d).query(vertices_wp.numpy())
     assert distance_np.max() == 0.0, f"vertices differ by up to {distance_np.max():.3e}"
-    assert len(set(match_np.tolist())) == match_np.shape[0], "the vertex match is not a bijection"
+    assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
 
 
 def test_marching_cubes_index_space_by_default(device: str) -> None:
@@ -282,7 +282,7 @@ def test_marching_cubes_index_space_by_default(device: str) -> None:
 def test_marching_cubes_empty_when_the_field_never_crosses(device: str) -> None:
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)
     _vertices_wp, faces_wp = tw.levelset.marching_cubes(twt.as_array3d(field_wp, wp.float32))
-    assert int(faces_wp.shape[0]) == 0
+    assert faces_wp.size == 0
 
 
 def test_marching_cubes_invalid(device: str) -> None:
@@ -329,7 +329,7 @@ def test_offset_mesh_lands_at_the_requested_distance(
     offset_vertices_wp, offset_faces_wp = tw.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
-    assert int(offset_faces_wp.shape[0]) > 0
+    assert offset_faces_wp.size > 0
 
     signed_np = _signed_distance_to((vertices_wp, faces_wp), offset_vertices_wp.numpy())
     assert np.abs(signed_np - distance).max() < 0.1 * _VOXEL
@@ -382,7 +382,7 @@ def test_offset_mesh_matches_meshlib(
     )
     assert offset_ml.faces.shape[0] > 0  # non-vacuity: the reference produced a surface
 
-    count_wp = int(offset_vertices_wp.shape[0])
+    count_wp = offset_vertices_wp.size
     count_ml = offset_ml.vertices.shape[0]
     assert abs(count_wp - count_ml) < 0.05 * count_ml
 
@@ -468,12 +468,12 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
     )
 
     survivor_vertices_wp, survivor_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -0.9)
-    assert int(survivor_faces_wp.shape[0]) > 0
+    assert survivor_faces_wp.size > 0
     radius_np = np.linalg.norm(survivor_vertices_wp.numpy(), axis=1)
     assert 0.05 < radius_np.max() < 0.15  # the sphere that is left, not a stray cell
 
     _empty_vertices_wp, empty_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -1.5)
-    assert int(empty_faces_wp.shape[0]) == 0
+    assert empty_faces_wp.size == 0
 
 
 def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -510,14 +510,14 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     thickness = 0.05
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_vertices = int(vertices_wp.shape[0])
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_vertices = vertices_wp.size
+    n_faces = faces_wp.size // 3
     n_rim = int(tw.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape[0])
 
     shell_vertices_wp, shell_faces_wp = tw.levelset.thicken_mesh(vertices_wp, faces_wp, thickness)
 
-    assert int(shell_vertices_wp.shape[0]) == 2 * n_vertices
-    assert int(shell_faces_wp.shape[0]) // 3 == 2 * n_faces + 2 * n_rim
+    assert shell_vertices_wp.size == 2 * n_vertices
+    assert shell_faces_wp.size // 3 == 2 * n_faces + 2 * n_rim
     assert tw.validation.is_watertight(shell_vertices_wp, shell_faces_wp)
     assert tw.validation.is_winding_consistent(shell_faces_wp)
     assert tw.validation.is_edge_manifold(shell_faces_wp, False)
@@ -529,7 +529,7 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
 
 
 @pytest.mark.parity("thicken_mesh", "meshlib")
-def test_thicken_mesh_matches_meshlib(device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: the same shell as ``makeThickMesh``, under a nearest-neighbour vertex bijection.
 
@@ -559,8 +559,8 @@ def test_thicken_mesh_matches_meshlib(device: str, hemisphere: tuple[tm.Trimesh,
     shell_ml = meshlib_to_trimesh(mm.makeThickMesh(trimesh_to_meshlib(mesh_tm), parameters_ml))
     assert shell_ml.faces.shape[0] > 0  # non-vacuity: the reference produced a shell
 
-    assert shell_ml.vertices.shape[0] == int(shell_vertices_wp.shape[0])
-    assert shell_ml.faces.shape[0] == int(shell_faces_wp.shape[0]) // 3
+    assert shell_ml.vertices.shape[0] == shell_vertices_wp.size
+    assert shell_ml.faces.shape[0] == shell_faces_wp.size // 3
     assert np.isclose(
         float(tw.measures.volume(shell_vertices_wp, shell_faces_wp)),
         shell_ml.volume,
@@ -572,7 +572,7 @@ def test_thicken_mesh_matches_meshlib(device: str, hemisphere: tuple[tm.Trimesh,
     shell_np = shell_vertices_wp.numpy().astype(np.float64)
     distance_np, match_np = cKDTree(np.asarray(shell_ml.vertices)).query(shell_np)
     assert distance_np.max() < 1e-4
-    assert len(set(match_np.tolist())) == match_np.shape[0]
+    assert len(set(match_np.tolist())) == match_np.size
     inverse_np = np.empty(shell_ml.vertices.shape[0], dtype=np.int64)
     inverse_np[match_np] = np.arange(shell_np.shape[0])
     assert_unordered_rows_equal(
@@ -623,7 +623,7 @@ def test_thicken_mesh_self_intersects_past_the_curvature_radius(
 
     # The recommended alternative at the same distance, and it comes out clean.
     inward_vertices_wp, inward_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -thickness)
-    if int(inward_faces_wp.shape[0]) > 0:
+    if inward_faces_wp.size > 0:
         assert (
             int(
                 tw.validation.face_self_intersecting_mask(inward_vertices_wp, inward_faces_wp)
@@ -634,7 +634,7 @@ def test_thicken_mesh_self_intersects_past_the_curvature_radius(
         )
 
 
-def test_thicken_mesh_guards(device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_thicken_mesh_guards(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the three documented value guards."""
     _, mesh_wp = icosphere_coarse
     with pytest.raises(ValueError, match="thickness must be positive"):

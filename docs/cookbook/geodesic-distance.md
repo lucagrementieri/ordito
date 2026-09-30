@@ -16,7 +16,7 @@ sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertice
 
 distance = tw.heat.heat_geodesic(vertices, faces, sources)
 print(distance.numpy().min(), distance.numpy().max())  # 0.0 3.09... (a bit under pi, as expected
-                                                         # on a unit-radius sphere)
+# on a unit-radius sphere)
 ```
 
 The result is an *approximation* — typically a few percent off the true geodesic distance,

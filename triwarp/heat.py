@@ -279,10 +279,10 @@ def heat_geodesic(
     """
     require_same_device(vertices=vertices, faces=faces, sources=sources, operators=operators)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
 
-    if n_vertices == 0 or n_faces == 0 or int(sources.shape[0]) == 0:
+    if n_vertices == 0 or n_faces == 0 or sources.size == 0:
         return wp.zeros(n_vertices, dtype=wp.float64, device=device)
 
     if operators is None:
@@ -299,10 +299,7 @@ def heat_geodesic(
     # the distance range on a half torus.
     u0 = wp.zeros(n_vertices, dtype=wp.float64, device=device)
     wp.launch(
-        kernel_heat.seed_source_indicator,
-        dim=int(sources.shape[0]),
-        inputs=[sources, u0],
-        device=device,
+        kernel_heat.seed_source_indicator, dim=sources.size, inputs=[sources, u0], device=device
     )
 
     heat = wp.zeros(n_vertices, dtype=wp.float64, device=device)
@@ -450,9 +447,9 @@ def heat_signed_distance(
             f'level_set_constraint must be "zero_set" or "none", got {level_set_constraint!r}'
         )
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
-    if n_vertices == 0 or n_faces == 0 or int(curve_vertices.shape[0]) == 0:
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
+    if n_vertices == 0 or n_faces == 0 or curve_vertices.size == 0:
         return wp.zeros(n_vertices, dtype=wp.float64, device=device)
 
     if operators is None:
@@ -467,7 +464,7 @@ def heat_signed_distance(
     source = wp.zeros(n_vertices, dtype=wp.vec2d, device=device)
     wp.launch(
         kernel_heat.splat_curve_normals,
-        dim=int(curve_vertices.shape[0]),
+        dim=curve_vertices.size,
         inputs=[
             vertices,
             curve_vertices,
@@ -586,7 +583,7 @@ def _solve_poisson_shifted(
     twl.solve_spd(operator, divergence, field, tol=_CG_TOLERANCE, preconditioner=preconditioner)
     # ``heat_geodesic``'s device-side shift onto the sources, without its orientation: one launch
     # sized to the curve for the mean, one to apply it, and nothing read back.
-    n_sources = int(curve_vertices.shape[0])
+    n_sources = curve_vertices.size
     sums = wp.zeros(2, dtype=wp.float64, device=device)
     wp.launch_tiled(
         kernel_heat.source_and_global_sums,
@@ -715,9 +712,9 @@ def vector_heat_operators(
     """
     require_same_device(vertices=vertices, faces=faces, frames=frames)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     # One sparsity for both operators: the connection Laplacian's is the cotangent Laplacian's.
-    pattern = mesh_operator_pattern(faces, n_vertices) if int(faces.shape[0]) > 0 else None
+    pattern = mesh_operator_pattern(faces, n_vertices) if faces.size > 0 else None
     connection = connection_laplacian(vertices, faces, pattern=pattern)
     edge_sums = None
     if t is None:
@@ -939,9 +936,9 @@ def extend_scalar(
     """
     require_same_device(vertices=vertices, faces=faces, sources=sources, values=values)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_sources = int(sources.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or n_sources == 0:
+    n_vertices = vertices.size
+    n_sources = sources.size
+    if n_vertices == 0 or faces.size == 0 or n_sources == 0:
         return wp.zeros(n_vertices, dtype=wp.float64, device=device)
 
     if operators is None:
@@ -967,7 +964,7 @@ def _extend(
     Their ratio is the extension; it is left to the caller so ``transport_tangent_vectors`` can
     form it in the map that consumes it rather than in a pass and a buffer of its own.
     """
-    n_sources = int(sources.shape[0])
+    n_sources = sources.size
     # The indicator and the weighted values diffuse through the same operator, so they are one
     # batched two-column solve (``linalg.solve_spd_columns``) rather than two independent ones,
     # which shares the launches and converges on the worse-behaved of the two columns.
@@ -1076,9 +1073,9 @@ def transport_tangent_vectors(
     """
     require_same_device(vertices=vertices, faces=faces, sources=sources, vectors=vectors)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_sources = int(sources.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or n_sources == 0:
+    n_vertices = vertices.size
+    n_sources = sources.size
+    if n_vertices == 0 or faces.size == 0 or n_sources == 0:
         return (
             wp.zeros(n_vertices, dtype=wp.vec2, device=device),
             wp.zeros(n_vertices, dtype=wp.bool, device=device),
@@ -1189,8 +1186,8 @@ def log_map(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0:
         return wp.zeros(n_vertices, dtype=wp.vec2, device=device)
 
     if operators is None:
@@ -1219,7 +1216,7 @@ def log_map(
     # expressed in each vertex's frame.
     distance = _distance_from_heat(vertices, faces, sources, scalar, diffused[2 * n_vertices :])
     normals, areas = scalar[6], scalar[7]
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     vertex_gradient = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
     wp.launch(
         kernel_heat.scatter_unit_gradient_to_vertices,
@@ -1252,8 +1249,8 @@ def _distance_from_heat(
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     _, _, _, poisson_system, poisson_preconditioner, cot_entries, normals, areas = operators
 
     # Integrated divergence b = div(X) of the unit field X = -grad(u)/|grad(u)|, then a Poisson
@@ -1282,7 +1279,7 @@ def _distance_from_heat(
     # ``igl::heat_geodesics_solve`` convention, which makes a single source's distance exactly
     # zero. Both means from one reduction launch, applied by a second that reads them on the
     # device, so nothing is read back.
-    n_sources = int(sources.shape[0])
+    n_sources = sources.size
     sums = wp.zeros(2, dtype=wp.float64, device=device)
     wp.launch_tiled(
         kernel_heat.source_and_global_sums,
@@ -1350,7 +1347,7 @@ def tangent_to_world(
     [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames]
     """
     require_same_device(tangent=tangent, basis_x=basis_x, basis_y=basis_y)
-    world = wp.empty(int(tangent.shape[0]), dtype=wp.vec3, device=tangent.device)
+    world = wp.empty(tangent.size, dtype=wp.vec3, device=tangent.device)
     wp.map(kernel_heat.tangent_to_world, tangent, basis_x, basis_y, out=world)
     return world
 
@@ -1400,7 +1397,7 @@ def diffuse_tangent_field(
     [`vector_heat_operators`][triwarp.heat.vector_heat_operators]
     [`transport_tangent_vectors`][triwarp.heat.transport_tangent_vectors]
     """
-    n_vertices = int(source.shape[0])
+    n_vertices = source.size
     diffused = wp.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
     if n_vertices == 0:
         return diffused

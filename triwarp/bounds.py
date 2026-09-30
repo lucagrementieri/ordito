@@ -77,7 +77,7 @@ def aabb(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
         The other direction: which points a box already in hand contains.
     [`triwarp.reduce.minmax`][triwarp.reduce.minmax]
     """
-    if int(points.shape[0]) == 0:
+    if points.size == 0:
         return (wp.vec3(math.inf, math.inf, math.inf), wp.vec3(-math.inf, -math.inf, -math.inf))
     return tw.reduce.minmax(points)
 
@@ -158,11 +158,11 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     device = points.device
     corners = wp.full(6, math.inf, dtype=wp.float32, device=device)
     for cloud in (points, other):
-        if cloud is None or int(cloud.shape[0]) == 0:
+        if cloud is None or cloud.size == 0:
             continue
         wp.launch(
             kernel_reduce.minmax_vec3_chunked,
-            dim=kernel_reduce.chunks_1d(int(cloud.shape[0])),
+            dim=kernel_reduce.chunks_1d(cloud.size),
             inputs=[cloud, corners],
             device=device,
         )
@@ -258,8 +258,8 @@ def points_in_aabb_mask(
     [`points_in_obb_mask`][triwarp.bounds.points_in_obb_mask]
     [`triwarp.array.flatnonzero`][triwarp.array.flatnonzero]
     """
-    out_mask = wp.empty(int(points.shape[0]), dtype=wp.bool, device=points.device)
-    if int(points.shape[0]) == 0:
+    out_mask = wp.empty(points.size, dtype=wp.bool, device=points.device)
+    if points.size == 0:
         return out_mask
 
     wp.map(kernel_predicates.is_in_aabb, points, min_bound, max_bound, out=out_mask)
@@ -349,8 +349,8 @@ def points_in_obb_mask(
         The index form, and where the conventions are documented.
     [`points_in_aabb_mask`][triwarp.bounds.points_in_aabb_mask]
     """
-    out_mask = wp.empty(int(points.shape[0]), dtype=wp.bool, device=points.device)
-    if int(points.shape[0]) == 0:
+    out_mask = wp.empty(points.size, dtype=wp.bool, device=points.device)
+    if points.size == 0:
         return out_mask
 
     wp.map(kernel_predicates.is_in_obb, points, rotation, min_bound, max_bound, out=out_mask)
@@ -411,7 +411,7 @@ def crop_points(
     if n_kept > 0:
         wp.launch(
             kernel_bounds.compact_scanned_points,
-            dim=int(points.shape[0]),
+            dim=points.size,
             inputs=[inclusive, points, kept, indices],
             device=device,
         )
@@ -505,7 +505,7 @@ def _box_indices(
     if n_inside > 0:
         wp.launch(
             kernel_scatter.scatter_index_where_scanned,
-            dim=int(points.shape[0]),
+            dim=points.size,
             inputs=[inclusive, out_indices],
             device=points.device,
         )
@@ -522,7 +522,7 @@ def _scanned_box_flags(
     so neither a ``wp.bool`` mask nor its widening copy is ever allocated.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     inclusive = wp.empty(n, dtype=wp.int32, device=device)
     if n == 0:
         return inclusive, 0
@@ -648,7 +648,7 @@ def oriented_bounding_box(
             f'objective must be "volume", "surface_area" or "diagonal", got {objective!r}'
         )
 
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         return (
             wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
@@ -661,7 +661,7 @@ def oriented_bounding_box(
         # enclosing box, the mask keeps all of them, and min/max extents do not care about the
         # discarded interior points.
         points = _compact_masked_points(points, tw.points.convex_superset_mask(points))
-        n = int(points.shape[0])
+        n = points.size
 
     device = points.device
     # The axes kernel also seeds each candidate's six extent slots, so ``corners`` is uninitialised
@@ -747,7 +747,7 @@ def _compact_masked_points(points: wp.array[wp.vec3], mask: wp.array[wp.bool]) -
     ``gather(points, flatnonzero(mask))`` without the index list or the gathered copy between them.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     inclusive = wp.empty(n, dtype=wp.int32, device=device)
     wp.launch(kernel_array.bool_flags, dim=n, inputs=[mask, inclusive], device=device)
     wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
@@ -783,7 +783,7 @@ def _refine_box(
     row.
     """
     device = points.device
-    n_chains = int(chains.shape[0])
+    n_chains = chains.size
     total = n_chains * _REFINE_CANDIDATES
     axes = wp.empty(total, dtype=wp.mat33, device=device)
     corners = wp.empty(6 * total, dtype=wp.float32, device=device)

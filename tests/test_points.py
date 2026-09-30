@@ -1330,7 +1330,7 @@ def test_point_duplicate_mask_separates_one_ulp(device: str) -> None:
     assert np.array_equal(duplicate_wp, np.array([False, False, True]))
 
     _unique_bucketed = tw_grouping.unique_rows(points_wp)
-    assert int(_unique_bucketed.shape[0]) == 1  # the bucketed key merges all three
+    assert _unique_bucketed.size == 1  # the bucketed key merges all three
 
 
 def _position_hash_slot_np(points_np: np.ndarray, mask: int) -> np.ndarray:

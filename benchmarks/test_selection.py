@@ -265,7 +265,7 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
                 ).triangle.indices.shape[0]
             )
 
-        assert bench_case.run(select_faces_o3d) <= indices_np.shape[0]
+        assert bench_case.run(select_faces_o3d) <= indices_np.size
         return
     if bench_case.kind == "pyvista":
         _indices_wp, indices_np = _face_indices(bench_case)
@@ -279,7 +279,7 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
         _sub_vertices, sub_faces = bench_case.run(
             lambda: tw.selection.submesh_from_face_indices(vertices, faces, indices_wp)
         )
-        assert int(sub_faces.shape[0]) == 3 * int(indices_wp.shape[0])
+        assert sub_faces.size == 3 * indices_wp.size
     else:
         _indices_wp, indices_np = _face_indices(bench_case)
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
@@ -362,7 +362,7 @@ def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
     _kept_vertices, kept_faces, loops = bench_case.run(
         lambda: tw.selection.delete_region_keep_boundary(vertices, faces, mask_wp)
     )
-    assert int(kept_faces.shape[0]) > 0
+    assert kept_faces.size > 0
     assert len(loops) >= 1
 
 
@@ -381,9 +381,9 @@ def test_delete_region_keep_boundary_with_offsets(bench_case: BenchCase) -> None
     _kept_vertices, kept_faces, loops, offsets = bench_case.run(
         lambda: tw.selection.delete_region_keep_boundary_with_offsets(vertices, faces, mask_wp)
     )
-    assert int(kept_faces.shape[0]) > 0
-    assert int(offsets.shape[0]) >= 2
-    assert int(loops.shape[0]) > 0
+    assert kept_faces.size > 0
+    assert offsets.size >= 2
+    assert loops.size > 0
 
 
 @pytest.mark.benchmark(group="exclude_fully_selected_components")

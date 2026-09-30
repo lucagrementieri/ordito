@@ -133,8 +133,8 @@ def homology_generators_with_offsets(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
         return _no_loops(device)
 
@@ -152,7 +152,7 @@ def homology_generators_with_offsets(
     edge_faces = twt.empty_2d((n_edges, 2), wp.int32, device=device)
     wp.launch(
         kernel_scatter.scatter_edge_incidence,
-        dim=int(inverse.shape[0]),
+        dim=inverse.size,
         inputs=[inverse, edge_face_count, edge_faces],
         device=device,
     )
@@ -234,7 +234,7 @@ def _primal_spanning_tree(
     it, and the level loop writes it either way.
     """
     device = unique_edges.device
-    n_vertices = int(offsets.shape[0]) - 1
+    n_vertices = offsets.size - 1
     parents = wp.full(n_vertices, INT32_MAX, dtype=wp.int32, device=device)
     distances = wp.full(n_vertices, -1, dtype=wp.int32, device=device)
     # Level 1 is the first to claim; the condition starts true because ``wp.capture_while`` reads
@@ -283,7 +283,7 @@ def _remove_dual_spanning_forest(
     non-primal-tree edges is already nearly a tree, so its diameter is enormous.
     """
     device = candidate.device
-    n_candidates = int(candidate.shape[0])
+    n_candidates = candidate.size
     if n_candidates == 0 or n_faces == 0:
         return
     labels = tw.array.arange(n_faces, device=device)
@@ -337,7 +337,7 @@ def _trace_generator_loops(
     ascending edge order, as a compaction of the mask would list them.
     """
     device = unique_edges.device
-    n_edges = int(candidate.shape[0])
+    n_edges = candidate.size
     apex = wp.empty(n_edges, dtype=wp.int32, device=device)
     counts = wp.empty(n_edges, dtype=wp.vec2i, device=device)
     wp.launch(

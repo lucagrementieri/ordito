@@ -207,7 +207,7 @@ def test_face_gradients_of_a_constant_field_is_zero(
 ) -> None:
     """A constant field has no gradient, and a degenerate face has none either."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     constant_wp = wp.array(
         np.full(n_vertices, 3.25, dtype=np.float64), dtype=wp.float64, device=mesh_wp.device
     )
@@ -544,7 +544,7 @@ def test_cotmatrix_null_space(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     assert np.linalg.norm(laplacian_igl @ ones) < 1e-10
 
     laplacian_wp = bsr_to_csr(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
-    ones_wp = np.ones(int(mesh_wp.points.shape[0]), dtype=np.float32)
+    ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
     assert np.linalg.norm(laplacian_wp @ ones_wp) < 1e-4
 
 
@@ -700,7 +700,7 @@ def test_mesh_operator_pattern_rejects_a_mismatch(icosahedron: tuple[tm.Trimesh,
 # --- robust_laplacian / mollify_intrinsic (libigl reference) ---------------------------
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
@@ -827,7 +827,7 @@ def test_cotmatrix_entries_are_zero_for_a_zero_area_face(device: str) -> None:
 )
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 def test_robust_laplacian_matches_igl_intrinsic_assembly(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A: the intrinsic assembly against ``igl.cotmatrix_intrinsic`` on identical lengths.
@@ -857,7 +857,7 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
 @pytest.mark.parity("robust_laplacian", "igl")
 def test_robust_laplacian_matches_igl_intrinsic_delaunay(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A against ``igl.intrinsic_delaunay_cotmatrix`` -- the strongest oracle in this module.
@@ -891,9 +891,7 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
 # -----------------------------------------------------------------------------------------
 
 
-def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(
-    icosahedron: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     original = tw.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices)
     mollified, delta = tw.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
@@ -994,7 +992,7 @@ def _connection_complex(matrix, n_vertices: int) -> np.ndarray:
 )
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "icosphere_coarse", "hemisphere"])
 def test_connection_laplacian_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B (block fold, then gauge invariants): the same operator, up to the tangent-frame gauge.
@@ -1066,9 +1064,7 @@ def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
-    zero_angles_wp = wp.zeros(
-        int(mesh_wp.indices.shape[0]), dtype=wp.float32, device=mesh_wp.points.device
-    )
+    zero_angles_wp = wp.zeros(mesh_wp.indices.size, dtype=wp.float32, device=mesh_wp.points.device)
 
     connection_np = _dense_blocks_2x2(
         tw.laplacian.connection_laplacian(

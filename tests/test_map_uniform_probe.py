@@ -75,7 +75,7 @@ def test_map_accepts_a_uint64_mesh_id_and_queries_inside_the_func(
     # Push every vertex outward, then snap back: the result must return to the surface.
     original_np = mesh_wp.points.numpy()
     pushed_wp = points_to_warp(original_np * 1.1, device)
-    snapped_wp = wp.empty(int(pushed_wp.shape[0]), dtype=wp.vec3, device=device)
+    snapped_wp = wp.empty(pushed_wp.size, dtype=wp.vec3, device=device)
 
     wp.map(_snap_to_mesh, pushed_wp, wp.uint64(mesh_wp.id), wp.float32(1.0), out=snapped_wp)
 

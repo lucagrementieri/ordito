@@ -70,8 +70,8 @@ def _assert_same_solid(
     pick different (equally valid) diagonals, so the face *count* and the enclosed volume agree
     while individual cap triangles do not.
     """
-    assert int(vertices_wp.shape[0]) == mesh_tm.vertices.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == mesh_tm.faces.shape[0]
+    assert vertices_wp.size == mesh_tm.vertices.shape[0]
+    assert faces_wp.size // 3 == mesh_tm.faces.shape[0]
     assert np.isclose(warp_to_trimesh(vertices_wp, faces_wp).volume, mesh_tm.volume, rtol=1e-4)
     assert np.allclose(
         warp_to_trimesh(vertices_wp, faces_wp).bounds, mesh_tm.bounds, rtol=1e-5, atol=1e-5
@@ -226,8 +226,8 @@ def test_primitives_match_open3d(device: str) -> None:
         ),
     ):
         mesh_ref = open3d_to_trimesh(mesh_o3d)
-        assert int(vertices_wp.shape[0]) == len(mesh_ref.vertices), name
-        assert int(faces_wp.shape[0]) // 3 == len(mesh_ref.faces), name
+        assert vertices_wp.size == len(mesh_ref.vertices), name
+        assert faces_wp.size // 3 == len(mesh_ref.faces), name
         mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
         assert np.isclose(mesh_wp.volume, mesh_ref.volume, rtol=1e-4), name
         assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4), name
@@ -289,8 +289,8 @@ def test_primitives_match_meshlib(device: str) -> None:
         mesh_ref = meshlib_to_trimesh(mesh_ml)
         mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
         assert mesh_ref.faces.shape[0] > 0, name  # non-vacuity: the reference built something
-        assert int(vertices_wp.shape[0]) == mesh_ref.vertices.shape[0], name
-        assert int(faces_wp.shape[0]) // 3 == mesh_ref.faces.shape[0], name
+        assert vertices_wp.size == mesh_ref.vertices.shape[0], name
+        assert faces_wp.size // 3 == mesh_ref.faces.shape[0], name
         assert np.isclose(mesh_wp.volume, mesh_ref.volume, rtol=1e-4), name
         assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4), name
         extent_wp = mesh_wp.bounds[1] - mesh_wp.bounds[0]
@@ -333,8 +333,8 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     mesh_ref = meshlib_to_trimesh(mm.makeUVSphere(1.0, sections, 2 * sections - 2))
 
     assert len(mesh_ref.faces) == 2 * sections * (2 * sections - 2) > 0  # non-vacuity
-    assert int(vertices_wp.shape[0]) == len(mesh_ref.vertices)
-    assert int(faces_wp.shape[0]) // 3 == len(mesh_ref.faces)
+    assert vertices_wp.size == len(mesh_ref.vertices)
+    assert faces_wp.size // 3 == len(mesh_ref.faces)
 
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
     assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-6)
@@ -372,8 +372,8 @@ def test_revolve_matches_meshlib(device: str) -> None:
     mesh_ref = meshlib_to_trimesh(mm.makeSolidOfRevolution(profile_ml, 16))
 
     assert mesh_ref.faces.shape[0] > 0  # non-vacuity
-    assert int(vertices_wp.shape[0]) == mesh_ref.vertices.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == mesh_ref.faces.shape[0]
+    assert vertices_wp.size == mesh_ref.vertices.shape[0]
+    assert faces_wp.size // 3 == mesh_ref.faces.shape[0]
     assert np.isclose(mesh_wp.area, mesh_ref.area, rtol=1e-4)
     assert np.allclose(mesh_wp.bounds, mesh_ref.bounds, atol=1e-5)
 
@@ -403,8 +403,8 @@ def test_uv_sphere_matches_open3d(device: str, sections: int) -> None:
     )
     mesh_ref = open3d_to_trimesh(o3d.geometry.TriangleMesh.create_sphere(1.0, resolution=sections))
 
-    assert int(vertices_wp.shape[0]) == len(mesh_ref.vertices)
-    assert int(faces_wp.shape[0]) // 3 == len(mesh_ref.faces)
+    assert vertices_wp.size == len(mesh_ref.vertices)
+    assert faces_wp.size // 3 == len(mesh_ref.faces)
 
     # Both are unit spheres: every vertex on the surface, not merely near it.
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
@@ -500,8 +500,8 @@ def test_primitives_match_pymeshlab(device: str) -> None:
             mesh_pml.vertices = mesh_pml.vertices + np.array([0.0, 0.0, 1.0])
         mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
-        assert int(vertices_wp.shape[0]) == mesh_pml.vertices.shape[0], name
-        assert int(faces_wp.shape[0]) // 3 == mesh_pml.faces.shape[0], name
+        assert vertices_wp.size == mesh_pml.vertices.shape[0], name
+        assert faces_wp.size // 3 == mesh_pml.faces.shape[0], name
         assert np.isclose(mesh_wp.volume, mesh_pml.volume, rtol=1e-4), name
         assert np.isclose(mesh_wp.area, mesh_pml.area, rtol=1e-4), name
         assert np.allclose(mesh_wp.bounds, mesh_pml.bounds, rtol=1e-5, atol=1e-5), name
@@ -511,7 +511,7 @@ def test_primitives_match_pymeshlab(device: str) -> None:
         if exact_vertices:
             distance_np, match_np = cKDTree(mesh_pml.vertices).query(mesh_wp.vertices)
             assert distance_np.max() < 1e-5, name
-            assert len(set(match_np.tolist())) == match_np.shape[0], name
+            assert len(set(match_np.tolist())) == match_np.size, name
 
 
 # --- table primitives -------------------------------------------------------------------
@@ -629,8 +629,8 @@ def test_platonic_solids_match_pymeshlab(
     for these three.
     """
     vertices_wp, faces_wp = getattr(tw.creation, builder)(device=device)
-    assert int(vertices_wp.shape[0]) == n_vertices
-    assert int(faces_wp.shape[0]) // 3 == n_faces
+    assert vertices_wp.size == n_vertices
+    assert faces_wp.size // 3 == n_faces
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
     _assert_closed(vertices_wp, faces_wp)
 
@@ -701,8 +701,8 @@ def test_grid(device: str, count: tuple[int, int]) -> None:
     total and a different face total, which only the face formula catches.
     """
     vertices_wp, faces_wp = tw.creation.grid(count=count, extents=(2.0, 3.0), device=device)
-    assert int(vertices_wp.shape[0]) == count[0] * count[1]
-    assert int(faces_wp.shape[0]) // 3 == 2 * (count[0] - 1) * (count[1] - 1)
+    assert vertices_wp.size == count[0] * count[1]
+    assert faces_wp.size // 3 == 2 * (count[0] - 1) * (count[1] - 1)
 
     mesh_tm = warp_to_trimesh(vertices_wp, faces_wp)
     assert np.allclose(mesh_tm.bounds, [[-1.0, -1.5, 0.0], [1.0, 1.5, 0.0]], rtol=1e-5, atol=1e-5)
@@ -735,7 +735,7 @@ def test_grid_matches_igl(device: str) -> None:
     )
     vertices_igl, faces_igl = igl.triangulated_grid(count, count)
 
-    assert int(faces_wp.shape[0]) // 3 == faces_igl.shape[0]
+    assert faces_wp.size // 3 == faces_igl.shape[0]
     padded_igl = np.column_stack([vertices_igl, np.zeros(vertices_igl.shape[0])])
     assert np.allclose(
         np.sort(vertices_wp.numpy().astype(np.float64), axis=0),
@@ -770,8 +770,8 @@ def test_grid_matches_pymeshlab(device: str) -> None:
     meshset_pml = ml.MeshSet()
     meshset_pml.create_grid(numvertx=10, numverty=8, absscalex=0.3, absscaley=0.5, center=False)
     mesh_pml = meshset_pml.current_mesh()
-    assert int(vertices_wp.shape[0]) == mesh_pml.vertex_number()
-    assert int(faces_wp.shape[0]) // 3 == mesh_pml.face_number()
+    assert vertices_wp.size == mesh_pml.vertex_number()
+    assert faces_wp.size // 3 == mesh_pml.face_number()
     # MeshLab lays the patch out along -X; compare the shape after mirroring that back.
     vertices_pml = mesh_pml.vertex_matrix() * np.array([-1.0, 1.0, 1.0])
     assert np.allclose(
@@ -796,8 +796,8 @@ def test_sphere_cap(device: str, subdivisions: int) -> None:
         angle=angle, subdivisions=subdivisions, radius=radius, device=device
     )
     n_rings = 2**subdivisions
-    assert int(vertices_wp.shape[0]) == 1 + 3 * n_rings * (n_rings + 1)
-    assert int(faces_wp.shape[0]) // 3 == 6 * n_rings**2
+    assert vertices_wp.size == 1 + 3 * n_rings * (n_rings + 1)
+    assert faces_wp.size // 3 == 6 * n_rings**2
 
     # Every vertex on the sphere, the apex at the pole, and the rim at exactly ``angle``.
     vertices_np = vertices_wp.numpy().astype(np.float64)
@@ -809,7 +809,7 @@ def test_sphere_cap(device: str, subdivisions: int) -> None:
     # An open disc: one boundary loop, of exactly the rim's ``6 * n_rings`` vertices.
     loops = tw.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops) == 1
-    assert int(loops[0].shape[0]) == 6 * n_rings
+    assert loops[0].size == 6 * n_rings
     assert tw.validation.is_winding_consistent(faces_wp)
     # Wound outward: the area-weighted normal of a cap around +Z points along +Z.
     normals_wp, areas_wp = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)
@@ -831,8 +831,8 @@ def test_sphere_cap_matches_pymeshlab_size(device: str) -> None:
     meshset_pml = ml.MeshSet()
     meshset_pml.create_sphere_cap(angle=60.0, subdiv=3)
     mesh_pml = meshset_pml.current_mesh()
-    assert int(vertices_wp.shape[0]) == mesh_pml.vertex_number()
-    assert int(faces_wp.shape[0]) // 3 == mesh_pml.face_number()
+    assert vertices_wp.size == mesh_pml.vertex_number()
+    assert faces_wp.size // 3 == mesh_pml.face_number()
     # MeshLab puts the rim plane at z = 0 rather than centering the sphere; shift it back and the
     # two caps are the same surface (its lattice rings are rotated in azimuth, so compare radii).
     vertices_pml = mesh_pml.vertex_matrix() + np.array([0.0, 0.0, np.cos(np.deg2rad(30.0))])
@@ -868,8 +868,8 @@ def test_icosphere(device: str, subdivisions: int) -> None:
     _assert_same_vertices_and_faces(
         vertices_wp, faces_wp, tm.creation.icosphere(subdivisions=subdivisions)
     )
-    assert int(faces_wp.shape[0]) // 3 == 20 * 4**subdivisions
-    assert int(vertices_wp.shape[0]) == 10 * 4**subdivisions + 2
+    assert faces_wp.size // 3 == 20 * 4**subdivisions
+    assert vertices_wp.size == 10 * 4**subdivisions + 2
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
 
 
@@ -897,7 +897,7 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
     assert vertices_p3d.shape[0] == 10 * 4**subdivisions + 2
     assert faces_p3d.shape[0] == 20 * 4**subdivisions
     assert vertices_np.shape[0] == vertices_p3d.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == faces_p3d.shape[0]
+    assert faces_wp.size // 3 == faces_p3d.shape[0]
 
     distances_np, indices_np = cKDTree(vertices_p3d).query(vertices_np)
     assert float(distances_np.max()) < 1e-4
@@ -911,7 +911,7 @@ def test_icosphere_is_crack_free(device: str, subdivisions: int) -> None:
     # invisible in a vertex *count* -- the count is closed-form too, so it would still be right.
     vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=subdivisions, device=device)
     _assert_closed(vertices_wp, faces_wp)
-    assert int(vertices_wp.shape[0]) == len(np.unique(vertices_wp.numpy(), axis=0))
+    assert vertices_wp.size == len(np.unique(vertices_wp.numpy(), axis=0))
 
 
 def test_icosphere_radius(device: str) -> None:
@@ -942,7 +942,7 @@ def test_uv_sphere_explicit_count_doubles_longitude(device: str) -> None:
     # trimesh doubles count[1] only when count is passed explicitly; the port keeps that asymmetry.
     vertices_wp, faces_wp = tw.creation.uv_sphere(count=(16, 16), device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.uv_sphere(count=[16, 16]))
-    assert int(vertices_wp.shape[0]) == 14 * 32 + 2
+    assert vertices_wp.size == 14 * 32 + 2
 
 
 def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
@@ -960,7 +960,7 @@ def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
     # A tuple cannot be written through, so it is the control: both spellings must round the same.
     from_tuple_wp, _ = tw.creation.uv_sphere(count=(31, 63), device=device)
     from_array_wp, _ = tw.creation.uv_sphere(count=count_np, device=device)
-    assert int(from_tuple_wp.shape[0]) == int(from_array_wp.shape[0])
+    assert from_tuple_wp.size == from_array_wp.size
 
 
 def test_capsule(device: str) -> None:
@@ -1026,8 +1026,8 @@ def test_solids_of_revolution_agree_with_the_general_engine(
     monkeypatch.setattr(tw.creation, "_revolve_regular", lambda *a, **k: None)
     slow_vertices, slow_faces = builder(device=device, **kwargs)
 
-    assert (int(fast_faces.shape[0]) > 0) == expect_faces
-    assert int(fast_vertices.shape[0]) > 0
+    assert (fast_faces.size > 0) == expect_faces
+    assert fast_vertices.size > 0
     assert np.array_equal(fast_vertices.numpy(), slow_vertices.numpy())
     assert np.array_equal(fast_faces.numpy(), slow_faces.numpy())
 
@@ -1083,7 +1083,7 @@ def test_cone(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.cone(radius=1.0, height=2.0, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.cone(radius=1.0, height=2.0))
     # 32 rim vertices plus the apex and the base center; the two fans need the vertex collapse.
-    assert int(vertices_wp.shape[0]) == 34
+    assert vertices_wp.size == 34
     _assert_closed(vertices_wp, faces_wp)
 
 
@@ -1126,7 +1126,7 @@ def test_torus(device: str) -> None:
     """
     vertices_wp, faces_wp = tw.creation.torus(1.0, 0.25, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.torus(1.0, 0.25))
-    assert int(faces_wp.shape[0]) // 3 == 2 * 32 * 32
+    assert faces_wp.size // 3 == 2 * 32 * 32
     exact_volume = 2.0 * np.pi**2 * 1.0 * 0.25**2
     assert abs(warp_to_trimesh(vertices_wp, faces_wp).volume - exact_volume) / exact_volume < 0.02
 
@@ -1169,7 +1169,7 @@ def test_torus_matches_pytorch3d(device: str) -> None:
     assert vertices_p3d.shape[0] == major_sections * minor_sections
     assert faces_p3d.shape[0] == 2 * major_sections * minor_sections
     assert vertices_np.shape[0] == vertices_p3d.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == faces_p3d.shape[0]
+    assert faces_wp.size // 3 == faces_p3d.shape[0]
 
     # Distance from the major circle recovers the minor radius on both sides.
     for points_np in (vertices_np, vertices_p3d):
@@ -1246,7 +1246,7 @@ def test_revolve_absolute_tolerance_is_scale_dependent(device: str) -> None:
     small_v, small_f = tw.creation.uv_sphere(radius=1.0, count=(8, 8), device=device)
     large_v, large_f = tw.creation.uv_sphere(radius=1.0e5, count=(8, 8), device=device)
     _assert_closed(small_v, small_f)
-    assert int(large_f.shape[0]) >= int(small_f.shape[0])
+    assert large_f.size >= small_f.size
     assert np.allclose(np.linalg.norm(large_v.numpy(), axis=1), 1.0e5, rtol=1e-5, atol=1.0)
 
 
@@ -1288,8 +1288,8 @@ def test_extrude_polygon_matches_pyvista_and_open3d(device: str, ring_size: int)
 
     vertices_wp, faces_wp = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), 1.0)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
-    assert int(vertices_wp.shape[0]) == 2 * ring_size
-    assert int(faces_wp.shape[0]) // 3 == n_expected
+    assert vertices_wp.size == 2 * ring_size
+    assert faces_wp.size // 3 == n_expected
     assert mesh_wp.is_watertight
     assert mesh_wp.euler_number == 2
 
@@ -1331,7 +1331,7 @@ def test_extrude_polygon(device: str, ring_name: str, height: float) -> None:
     ring_np = _SQUARE_RING if ring_name == "square" else _L_RING
     vertices_wp, faces_wp = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
     mesh_tm = tm.creation.extrude_polygon(sg.Polygon(ring_np), height)
-    assert int(vertices_wp.shape[0]) == 2 * ring_np.shape[0]
+    assert vertices_wp.size == 2 * ring_np.shape[0]
     # Both signs of height must give an outward-facing solid of the same volume.
     _assert_same_solid(vertices_wp, faces_wp, mesh_tm)
     _assert_closed(vertices_wp, faces_wp)
@@ -1371,7 +1371,7 @@ def test_extrude_polygon_ring_walls_match_the_derived_boundary(
     rings = {"square": _SQUARE_RING, "L": _L_RING}
     ring_np = rings.get(ring_name, _star_ring(12, ring_name == "star_cw"))
     ring_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    assert int(faces_wp.shape[0]) // 3 == ring_np.shape[0] - 2
+    assert faces_wp.size // 3 == ring_np.shape[0] - 2
     derived_v, derived_f = tw.creation.extrude_triangulation(ring_wp, faces_wp, height)
     ring_v, ring_f = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
     _assert_closed(ring_v, ring_f)
@@ -1389,7 +1389,7 @@ def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     solid_v, solid_f = tw.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
     _assert_closed(solid_v, solid_f)
-    assert int(solid_f.shape[0]) // 3 == 2 * 3 + 2 * 5
+    assert solid_f.size // 3 == 2 * 3 + 2 * 5
     assert np.isclose(warp_to_trimesh(solid_v, solid_f).volume, 1.0, rtol=1e-4)
 
 
@@ -1466,7 +1466,7 @@ def test_sweep_polygon_reversing_path_matches_trimesh_at_the_reversal(device: st
     )
     mesh_tm = tm.creation.sweep_polygon(sg.Polygon(ring_np), path_np, cap=True, connect=False)
     _assert_closed(vertices_wp, faces_wp)
-    assert int(vertices_wp.shape[0]) == mesh_tm.vertices.shape[0]
+    assert vertices_wp.size == mesh_tm.vertices.shape[0]
     distance_np, _ = cKDTree(mesh_tm.vertices).query(vertices_wp.numpy().astype(np.float64))
     assert distance_np.max() < 1e-4, f"vertices differ by up to {distance_np.max():.3e}"
 
@@ -1499,7 +1499,7 @@ def test_sweep_polygon_open_path_without_caps(device: str) -> None:
     path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
     _, faces_wp = tw.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp, cap=False)
     assert not tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
-    assert int(faces_wp.shape[0]) // 3 == 2 * 2 * 4
+    assert faces_wp.size // 3 == 2 * 2 * 4
 
 
 def test_sweep_polygon_invalid(device: str) -> None:
@@ -1523,7 +1523,7 @@ def test_sweep_polygon_rejects_a_non_simple_ring(device: str) -> None:
     """
     bowtie_np = np.array([[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
     ring_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(bowtie_np, device))
-    assert int(faces_wp.shape[0]) // 3 < int(ring_wp.shape[0]) - 2
+    assert faces_wp.size // 3 < ring_wp.size - 2
     path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
     with pytest.raises(ValueError, match="simple ring"):
         tw.creation.sweep_polygon(points_to_warp_uv(bowtie_np, device), path_wp)
@@ -1551,8 +1551,8 @@ def test_truncated_prisms(device: str) -> None:
     triangles_np, vertices_wp, faces_wp = _triangle_soup(device)
     prism_v, prism_f = tw.creation.truncated_prisms(vertices_wp, faces_wp)
     mesh_tm = tm.creation.truncated_prisms(triangles_np)
-    assert int(prism_v.shape[0]) == 6 * 5
-    assert int(prism_f.shape[0]) // 3 == 8 * 5
+    assert prism_v.size == 6 * 5
+    assert prism_f.size // 3 == 8 * 5
     assert np.isclose(warp_to_trimesh(prism_v, prism_f).volume, mesh_tm.volume, rtol=1e-4)
     assert warp_to_trimesh(prism_v, prism_f).body_count == 5
 
@@ -1601,8 +1601,8 @@ def test_axis(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.axis(device=device)
     ball_v, ball_f = tw.creation.icosphere(radius=0.04, device=device)
     shaft_v, shaft_f = tw.creation.cylinder(radius=0.008, height=0.4, device=device)
-    assert int(vertices_wp.shape[0]) == int(ball_v.shape[0]) + 3 * int(shaft_v.shape[0])
-    assert int(faces_wp.shape[0]) == int(ball_f.shape[0]) + 3 * int(shaft_f.shape[0])
+    assert vertices_wp.size == ball_v.size + 3 * shaft_v.size
+    assert faces_wp.size == ball_f.size + 3 * shaft_f.size
     # One shaft runs out to axis_length along each of X, Y and Z.
     assert np.allclose(warp_to_trimesh(vertices_wp, faces_wp).bounds[1], 0.4, rtol=1e-3, atol=1e-3)
     assert np.allclose(
@@ -1618,7 +1618,7 @@ def test_axis_transform(device: str) -> None:
         tw.creation.axis(device=device)[0].numpy().astype(np.float64), matrix_np
     )
     assert np.allclose(vertices_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0
 
 
 @pytest.mark.parametrize("surface", sorted(_PARAMETRIC_TABLE))
@@ -1720,7 +1720,7 @@ def test_parametric_surface_topology_is_resolution_independent(device: str, surf
         assert len(faces_np) == 2 * (resolution - 1) ** 2 - _PARAMETRIC_TABLE[
             surface
         ].pole_cells * (resolution - 1)
-        assert int(vertices_wp.shape[0]) == int(faces_np.max()) + 1
+        assert vertices_wp.size == int(faces_np.max()) + 1
         invariants.add(
             (
                 euler_characteristic(faces_np),
@@ -1763,7 +1763,7 @@ def test_parametric_surface_rejects_resolution_2_on_a_wrapped_axis(
         tw.creation.parametric_surface(surface, u_resolution, v_resolution, device=device)
     # The twisted wrap is the control: a flip keeps the two rows distinct, so 2 stays admissible.
     _vertices_wp, faces_wp = tw.creation.parametric_surface("mobius", 2, 40, device=device)
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0
 
     with pytest.raises(ValueError, match="at least 3"):
         tw.creation.super_toroid(u_resolution=2, device=device)
@@ -1804,8 +1804,8 @@ def test_super_toroid_unit_exponents_are_a_torus(device: str) -> None:
 def test_random_hills(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.random_hills(seed=3, device=device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
-    assert int(vertices_wp.shape[0]) == 1_600
-    assert int(faces_wp.shape[0]) // 3 == 2 * 39 * 39
+    assert vertices_wp.size == 1_600
+    assert faces_wp.size // 3 == 2 * 39 * 39
     assert tw.measures.euler_characteristic(faces_wp) == 1
     # The lattice is the plain grid over [-10, 10]^2, and only the height is random.
     assert np.allclose(vertices_np[:, :2].min(axis=0), -10.0)
@@ -1833,7 +1833,7 @@ def test_random_hills_invalid(device: str) -> None:
 
 def test_random_soup(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.random_soup(50, seed=3, device=device)
-    assert int(vertices_wp.shape[0]) == 150
+    assert vertices_wp.size == 150
     assert np.array_equal(faces_wp.numpy(), np.arange(150, dtype=np.int32))
     assert vertices_wp.numpy().min() >= -0.5
     assert vertices_wp.numpy().max() <= 0.5
@@ -1847,20 +1847,20 @@ def test_random_soup(device: str) -> None:
 
 def test_empty_results(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.random_soup(0, seed=1, device=device)
-    assert int(vertices_wp.shape[0]) == 0
-    assert int(faces_wp.shape[0]) == 0
+    assert vertices_wp.size == 0
+    assert faces_wp.size == 0
 
     empty_v = wp.empty(0, dtype=wp.vec3, device=device)
     empty_f = wp.empty(0, dtype=wp.int32, device=device)
     prism_v, prism_f = tw.creation.truncated_prisms(empty_v, empty_f)
-    assert int(prism_v.shape[0]) == 0
-    assert int(prism_f.shape[0]) == 0
+    assert prism_v.size == 0
+    assert prism_f.size == 0
 
     solid_v, solid_f = tw.creation.extrude_triangulation(
         wp.empty(0, dtype=wp.vec2, device=device), empty_f, 1.0
     )
-    assert int(solid_v.shape[0]) == 0
-    assert int(solid_f.shape[0]) == 0
+    assert solid_v.size == 0
+    assert solid_f.size == 0
 
 
 @pytest.mark.parametrize("surface", ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral"])
@@ -1899,6 +1899,6 @@ def test_parametric_lattice_paths_agree(
     assert forced > 0, "the gate must be a positive sample count"
     # Not vacuous: the lattice really did produce a surface on both sides.
     assert host_v_np.shape[0] > 0
-    assert host_f_np.shape[0] > 0
+    assert host_f_np.size > 0
     assert np.array_equal(device_v.numpy(), host_v_np)
     assert np.array_equal(device_f.numpy(), host_f_np)

@@ -594,7 +594,7 @@ def icosphere(
     """
     levels = max(0, int(subdivisions))
     n = 1 << levels
-    radius_f = wp.float32(float(radius))
+    radius_f = float(radius)
 
     table, corners = _icosphere_tables(wp.get_device(device).alias)
     vertices = wp.empty(10 * 4**levels + 2, dtype=wp.vec3, device=corners.device)
@@ -1217,7 +1217,7 @@ def revolve(
     require_same_device(linestring=linestring, transform=transform)
     twt.ensure_ndim(linestring, 1, dtype=wp.vec2)
     device = linestring.device
-    per = int(linestring.shape[0])
+    per = linestring.size
     if per < 2:
         raise ValueError(f"linestring must have at least 2 points, got {per}")
 
@@ -1245,7 +1245,7 @@ def revolve(
     column_np, offsets_np, on_axis_np, n_vertices = _revolve_vertex_layout(
         profile_np, n_kept_slices
     )
-    n_keep = int(keep_np.shape[0])
+    n_keep = keep_np.size
     # One upload: the three per-point tables and the kept template, in the order ``revolve_mesh``
     # reads them.
     layout = wp.array(
@@ -1262,7 +1262,7 @@ def revolve(
         # Ear clipping introduces no new vertices, so its indices address profile points directly --
         # the guarantee trimesh gets from ``triangulate_polygon(force_vertices=True)``.
         cap_faces = tw.polyline.polyline_triangulate(profile_3d).reshape((-1,))
-        n_cap = int(cap_faces.shape[0]) // 3
+        n_cap = cap_faces.size // 3
 
     vertices = wp.empty(n_vertices, dtype=wp.vec3, device=device)
     faces = wp.empty((n_slices * n_keep + 2 * n_cap) * 3, dtype=wp.int32, device=device)
@@ -1493,7 +1493,7 @@ def extrude_polygon(
             transform = wp.mat44(*composed.flatten())
     # A full triangulation of the ring is bounded by the ring edges themselves; a partial one (a
     # degenerate ring) has its boundary derived, as ``extrude_triangulation`` does.
-    full = int(faces.shape[0]) // 3 == int(ring.shape[0]) - 2
+    full = faces.size // 3 == ring.size - 2
     return _extrude(ring, faces, height, transform, ring_walls=full)
 
 
@@ -1515,10 +1515,10 @@ def _extrude(
     twt.ensure_ndim(vertices, 1, dtype=wp.vec2)
     twt.ensure_ndim(faces, 1, dtype=wp.int32)
     device = vertices.device
-    n = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
-    if int(faces.shape[0]) % 3 != 0:
-        raise ValueError(f"faces size must be a multiple of 3, got {int(faces.shape[0])}")
+    n = vertices.size
+    n_faces = faces.size // 3
+    if faces.size % 3 != 0:
+        raise ValueError(f"faces size must be a multiple of 3, got {faces.size}")
     height_f = float(height)
     if abs(height_f) < TOLERANCE_MERGE:
         raise ValueError(f"height must be nonzero, got {height_f}")
@@ -1610,19 +1610,19 @@ def sweep_polygon(
     require_same_device(polygon=polygon, path=path, angles=angles)
     twt.ensure_ndim(path, 1, dtype=wp.vec3)
     device = polygon.device
-    n_path = int(path.shape[0])
+    n_path = path.size
     if n_path < 2:
         raise ValueError(f"path must have at least 2 points, got {n_path}")
-    if angles is not None and int(angles.shape[0]) != n_path:
+    if angles is not None and angles.size != n_path:
         raise ValueError(
             f"angles must have one entry per path point ({n_path}), got {angles.shape}"
         )
 
     ring, cap_faces = tw.polyline.triangulate_polygon(polygon)
-    stride = int(ring.shape[0])
+    stride = ring.size
     boundary = None
     n_boundary = stride
-    if int(cap_faces.shape[0]) // 3 != stride - 2:
+    if cap_faces.size // 3 != stride - 2:
         # Only a partial triangulation (a ring that is not simple) can be bounded by anything but
         # the ring edges. ``oriented_boundary_edges`` only uses the vertex count, as its row-hash
         # base, so a zero buffer of the right length is enough.
@@ -1646,7 +1646,7 @@ def sweep_polygon(
     # A connected closed path drops its duplicate final slice and wraps onto the first instead.
     n_slices = n_path - 1
     n_vertices = (n_slices if connect_closed else n_path) * stride
-    n_cap = 0 if connect_closed or not cap else int(cap_faces.shape[0]) // 3
+    n_cap = 0 if connect_closed or not cap else cap_faces.size // 3
     vertices = wp.empty(n_vertices, dtype=wp.vec3, device=device)
     faces = wp.empty((2 * n_slices * n_boundary + 2 * n_cap) * 3, dtype=wp.int32, device=device)
     wp.launch(
@@ -1718,9 +1718,9 @@ def truncated_prisms(
     require_same_device(vertices=vertices, faces=faces)
     twt.ensure_ndim(faces, 1, dtype=wp.int32)
     device = vertices.device
-    if int(faces.shape[0]) % 3 != 0:
-        raise ValueError(f"faces size must be a multiple of 3, got {int(faces.shape[0])}")
-    n_faces = int(faces.shape[0]) // 3
+    if faces.size % 3 != 0:
+        raise ValueError(f"faces size must be a multiple of 3, got {faces.size}")
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device)
 
@@ -2125,10 +2125,10 @@ def random_hills(
         size=(max(int(n_hills), 0), 2),
     )
 
-    vertices = wp.empty(int(first.shape[0]), dtype=wp.vec3, device=device)
+    vertices = wp.empty(first.size, dtype=wp.vec3, device=device)
     wp.launch(
         kernel_creation.random_hills_vertices,
-        dim=int(vertices.shape[0]),
+        dim=vertices.size,
         inputs=[
             wp.float32(amplitude),
             wp.float32(x_variance),
@@ -2354,10 +2354,10 @@ def _parametric_surface(
     # collapsed pole row reach the same point through different expressions, so they agree only to
     # rounding).
     first, tables, faces = _parametric_samples(spec, u_resolution, v_resolution, device)
-    vertices = wp.empty(int(first.shape[0]), dtype=wp.vec3, device=device)
+    vertices = wp.empty(first.size, dtype=wp.vec3, device=device)
     wp.launch(
         kernel_creation.parametric_vertices,
-        dim=int(first.shape[0]),
+        dim=first.size,
         inputs=[
             spec.kind,
             first,

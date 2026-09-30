@@ -226,7 +226,7 @@ def _occlusion_bundle(
         raise ValueError(f"weight must be 'cosine' or 'uniform', got {weight!r}")
 
     device = points.device
-    m = int(points.shape[0])
+    m = points.size
     # Resolved before the empty-input early return: a mismatched ``normals`` length is a caller
     # bug independent of how many points there are, and `_resolve_normals_and_radius` handles
     # `m == 0` on its own (an empty `points` measures the mesh's own box alone).
@@ -354,7 +354,7 @@ def shape_diameter(
         raise ValueError(f"trim must be non-negative, got {trim}")
 
     device = points.device
-    m = int(points.shape[0])
+    m = points.size
     # See `_occlusion_bundle`'s identical comment: resolved before the empty-input check so a
     # mismatched `normals` length is caught even when there is nothing to measure.
     normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, "shape_diameter")
@@ -456,7 +456,7 @@ def thickness(
     normals = _resolve_normals(mesh, points, normals, "thickness")
     ray_dirs = normals
     if not exterior:
-        ray_dirs = wp.empty(int(points.shape[0]), dtype=wp.vec3, device=points.device)
+        ray_dirs = wp.empty(points.size, dtype=wp.vec3, device=points.device)
         wp.map(wp.neg, normals, out=ray_dirs)
     return tw.ray.longest_ray(mesh, points, ray_dirs)
 
@@ -514,7 +514,7 @@ def max_tangent_sphere(
     """
     require_same_device(mesh=mesh, points=points, normals=normals)
     device = points.device
-    m = int(points.shape[0])
+    m = points.size
     # Resolved (and, for a caller-supplied array, normalized) before the empty-input early return
     # and before the AABB reductions below -- a mismatched or non-unit ``normals`` is a property of
     # ``normals`` alone, and there is no reason to pay for two reductions first only to reject it.
@@ -546,7 +546,7 @@ def max_tangent_sphere(
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
     corners = wp.full(12, math.inf, dtype=wp.float32, device=device)
     for cloud, box in ((mesh.points, corners), (points, twt.as_dense(corners[6:]))):
-        n_cloud = int(cloud.shape[0])
+        n_cloud = cloud.size
         if n_cloud > 0:
             wp.launch(
                 kernel_reduce.minmax_vec3_chunked,
@@ -567,7 +567,7 @@ def max_tangent_sphere(
 
     distances = tw.ray.longest_ray(mesh, points, ray_dirs, max_t=max_t)
 
-    n_verts = int(mesh.points.shape[0])
+    n_verts = mesh.points.size
     radii = wp.empty(m, dtype=wp.float32, device=device)
     not_converged = wp.empty(m, dtype=wp.bool, device=device)
     needs_support = wp.empty(m, dtype=wp.bool, device=device)
@@ -584,7 +584,7 @@ def max_tangent_sphere(
     # subset empty — then run one grid-stride packed-argmax pass over the vertices for just
     # that subset instead of a serial all-vertices loop per query thread.
     support_indices = tw.array.flatnonzero(needs_support)
-    k = int(support_indices.shape[0])
+    k = support_indices.size
     if k > 0:
         n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
         packed_support = wp.zeros(k, dtype=wp.uint64, device=device)
@@ -681,12 +681,12 @@ def _resolve_normals(
     ValueError
         If ``normals`` has a different length from ``points``.
     """
-    m = int(points.shape[0])
+    m = points.size
     if normals is None:
         return normals_at_closest_faces(mesh, points)
-    if int(normals.shape[0]) != m:
+    if normals.size != m:
         raise ValueError(
-            f"{name}: normals must have one entry per point, got {normals.shape[0]} for {m} points"
+            f"{name}: normals must have one entry per point, got {normals.size} for {m} points"
         )
     return normals
 

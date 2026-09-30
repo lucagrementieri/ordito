@@ -356,7 +356,7 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
         indices, _distances = bench_case.run(
             lambda: tw.neighbors.query_nearest(points, queries, k=1, backend="bvh")
         )
-        assert indices.shape == (queries.shape[0],)
+        assert indices.shape == (queries.size,)
     elif bench_case.kind == "igl":
         _run_igl_knn(bench_case, 1)
     elif bench_case.kind == "open3d":
@@ -398,7 +398,7 @@ def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
         indices, _distances = bench_case.run(
             lambda: tw.neighbors.query_nearest(points, queries, k=1)
         )
-        assert indices.shape == (queries.shape[0],)
+        assert indices.shape == (queries.size,)
     elif bench_case.kind == "igl":
         _run_igl_knn(bench_case, 1)
     elif bench_case.kind == "open3d":
@@ -437,7 +437,7 @@ def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
         indices, _distances = bench_case.run(
             lambda: tw.neighbors.query_nearest(points, queries, k=7, backend="bvh")
         )
-        assert indices.shape == (queries.shape[0], 7)
+        assert indices.shape == (queries.size, 7)
     elif bench_case.kind == "igl":
         _run_igl_knn(bench_case, 7)
     elif bench_case.kind == "open3d":
@@ -463,7 +463,7 @@ def test_query_nearest_bvh_k64(bench_case: BenchCase) -> None:
         indices, _distances = bench_case.run(
             lambda: tw.neighbors.query_nearest(points, queries, k=64, backend="bvh")
         )
-        assert indices.shape == (queries.shape[0], 64)
+        assert indices.shape == (queries.size, 64)
     elif bench_case.kind == "igl":
         _run_igl_knn(bench_case, 64)
     elif bench_case.kind == "open3d":
@@ -500,7 +500,7 @@ def test_query_nearest_hashgrid_k7(bench_case: BenchCase) -> None:
         indices, _distances = bench_case.run(
             lambda: tw.neighbors.query_nearest(points, queries, k=7)
         )
-        assert indices.shape == (queries.shape[0], 7)
+        assert indices.shape == (queries.size, 7)
     elif bench_case.kind == "igl":
         _run_igl_knn(bench_case, 7)
     elif bench_case.kind == "open3d":
@@ -555,8 +555,8 @@ def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> 
             points, weights, queries, max_weight=max_weight, accelerator=bvh
         )
     )
-    assert indices.shape == (queries.shape[0],)
-    assert distances.shape == (queries.shape[0],)
+    assert indices.shape == (queries.size,)
+    assert distances.shape == (queries.size,)
 
 
 @pytest.mark.benchmark(group="bvh_from_points")
@@ -651,7 +651,7 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
         neighbors, _distances, offsets = bench_case.run(
             lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=bvh)
         )
-        assert offsets.shape[0] == int(queries.shape[0]) + 1
+        assert offsets.shape[0] == queries.size + 1
         assert neighbors.shape[0] >= 0
     elif bench_case.kind == "open3d":
         import open3d as o3d
@@ -772,7 +772,7 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     neighbors, _distances, offsets = bench_case.run(
         lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=grid)
     )
-    assert offsets.shape[0] == int(queries.shape[0]) + 1
+    assert offsets.shape[0] == queries.size + 1
     assert neighbors.shape[0] >= 0
 
 
@@ -799,7 +799,7 @@ def test_query_geodesic_ball(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     radius = 5.0 * float(tw.edges.mean_edge_length(vertices, faces))
     _, offsets, _ = bench_case.run(lambda: tw.neighbors.geodesic_ball(vertices, faces, radius))
-    assert offsets.shape == (vertices.shape[0] + 1,)
+    assert offsets.shape == (vertices.size + 1,)
 
 
 @pytest.mark.benchmark(group="closest_pair")

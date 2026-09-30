@@ -200,14 +200,14 @@ def test_the_packing_family_matches_pytorch3d(device: str) -> None:
     padded_p3d = p3d_ops.packed_to_padded(
         torch.as_tensor(flat_np, device=device), first_p3d, max(len(s) for s in segments_np)
     )
-    repacked_p3d = p3d_ops.padded_to_packed(padded_p3d, first_p3d, flat_np.shape[0])
+    repacked_p3d = p3d_ops.padded_to_packed(padded_p3d, first_p3d, flat_np.size)
 
     assert padded_p3d.shape == (len(segments_np), 5)
     assert np.array_equal(repacked_p3d.cpu().numpy(), flat_np)
     parts_wp = tw.array.split(flat_wp, offsets_wp)
     padded_np = padded_p3d.cpu().numpy()
     for index, part_wp in enumerate(parts_wp):
-        length = int(part_wp.shape[0])
+        length = part_wp.size
         assert np.array_equal(padded_np[index, :length], part_wp.numpy())
         assert np.array_equal(padded_np[index, length:], np.zeros(5 - length, dtype=np.float32))
 
@@ -270,7 +270,7 @@ def test_pack_1d_arrays_copy_false_aliases_a_boundary_loop_pack(
         packed_wp.numpy(), np.concatenate([loop_wp.numpy() for loop_wp in loops_wp])
     )
     assert offsets_wp.numpy()[0] == 0
-    assert offsets_wp.numpy()[-1] == packed_wp.shape[0]
+    assert offsets_wp.numpy()[-1] == packed_wp.size
 
 
 def test_split_views_share_storage_and_copies_do_not(device: str) -> None:
@@ -335,7 +335,7 @@ def test_split_trailing_empty_segment(device: str, copy: bool) -> None:
 
     segments_wp = tw.array.split(flat_wp, offsets_wp, copy=copy)
 
-    assert [int(segment.shape[0]) for segment in segments_wp] == [4, 0, 0]
+    assert [segment.size for segment in segments_wp] == [4, 0, 0]
     assert np.array_equal(segments_wp[0].numpy(), np.arange(4, dtype=np.int32))
 
 
@@ -423,7 +423,7 @@ def test_segment_views_keep_their_base_alive_and_write_through(device: str, dtyp
     _churn = [wp.zeros(n * 4, dtype=dtype, device=device) for _ in range(8)]
 
     trailing_wp = wp.clone(views_wp[-1])
-    assert int(trailing_wp.shape[0]) == 0
+    assert trailing_wp.size == 0
     bounds = [*starts, n]
     expected_np[7:14] = expected_np[18:25]
     for view_wp, begin, end in zip(views_wp, bounds[:-1], bounds[1:], strict=True):
@@ -462,7 +462,7 @@ def test_split_copies_past_the_one_launch_threshold(device: str, dtype: type) ->
     assert len(copies_wp) == len(starts)
     for copy_wp, begin, end in zip(copies_wp, bounds[:-1], bounds[1:], strict=True):
         assert copy_wp.dtype == dtype
-        assert int(copy_wp.shape[0]) == end - begin
+        assert copy_wp.size == end - begin
         assert copy_wp._ref is None
         if end > begin:
             assert not base_begin <= int(copy_wp.ptr) < base_end
@@ -482,9 +482,7 @@ def test_segment_views_fall_back_for_grad_and_strided_bases(device: str) -> None
     grad_wp = _warp_array_of(wp.float32, 10, device, requires_grad=True)
     grad_views_wp = tw.array.split(grad_wp, offsets_wp)
     assert all(
-        view.requires_grad and view.grad is not None
-        for view in grad_views_wp
-        if int(view.shape[0]) > 0
+        view.requires_grad and view.grad is not None for view in grad_views_wp if view.size > 0
     )
     first_grad_wp, base_grad_wp = grad_views_wp[0].grad, grad_wp.grad
     assert first_grad_wp is not None
@@ -737,7 +735,7 @@ def test_csr_from_triplets_prunes_assembled_zeros(device: str) -> None:
 
     def entries(matrix: wps.BsrMatrix, n: int) -> dict[tuple[int, int], float]:
         offsets = matrix.offsets.numpy()
-        rows = np.repeat(np.arange(offsets.shape[0] - 1), np.diff(offsets))
+        rows = np.repeat(np.arange(offsets.size - 1), np.diff(offsets))
         return dict(
             zip(
                 zip(rows.tolist(), matrix.columns.numpy()[:n].tolist(), strict=True),

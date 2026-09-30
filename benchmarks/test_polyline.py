@@ -123,8 +123,8 @@ def _polyline_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
         loops = tw.boundary.boundary_loops(vertices, faces)
         if not loops:
             pytest.skip(f"{bench_case.mesh_name} has no boundary loop to use as a polyline")
-        longest = max(loops, key=lambda loop: int(loop.shape[0]))
-        dense = wp.empty(int(longest.shape[0]), dtype=wp.vec3, device=bench_case.device)
+        longest = max(loops, key=lambda loop: loop.size)
+        dense = wp.empty(longest.size, dtype=wp.vec3, device=bench_case.device)
         wp.copy(dense, vertices[longest])
         _polyline_cache[key] = dense
     return _polyline_cache[key]
@@ -184,7 +184,7 @@ def _polyline_np(bench_case: BenchCase) -> np.ndarray:
         loops = tw.boundary.boundary_loops(vertices, faces)
         if not loops:
             pytest.skip(f"{bench_case.mesh_name} has no boundary loop to use as a polyline")
-        longest = max(loops, key=lambda loop: int(loop.shape[0]))
+        longest = max(loops, key=lambda loop: loop.size)
         _polyline_np_cache[bench_case.mesh_name] = np.ascontiguousarray(
             bench_case.vertices_np[longest.numpy()], dtype=np.float64
         )
@@ -355,7 +355,7 @@ def test_polyline_angles(bench_case: BenchCase) -> None:
     """
     polyline = _polyline_wp(bench_case)
     angles = bench_case.run(lambda: tw.polyline.polyline_angles(polyline))
-    assert angles.shape[0] == int(polyline.shape[0])
+    assert angles.size == polyline.size
 
 
 def _polyline_cpu(bench_case: BenchCase) -> wp.array[wp.vec3]:
@@ -412,7 +412,7 @@ def test_upsample_polyline(bench_case: BenchCase) -> None:
 
     polyline = _polyline_wp(bench_case)
     dense = bench_case.run(lambda: tw.polyline.polyline_upsample(polyline, step))
-    assert dense.shape[0] >= int(polyline.shape[0])
+    assert dense.size >= polyline.size
 
 
 @pytest.mark.benchmark(group="polyline_downsample")
@@ -437,8 +437,8 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
     if bench_case.kind == "meshlib":
         contour_ml = _contour_ml(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
-        n_points = int(cpu_polyline.shape[0])
-        n_kept = int(tw.polyline.polyline_downsample(cpu_polyline, step).shape[0])
+        n_points = cpu_polyline.size
+        n_kept = tw.polyline.polyline_downsample(cpu_polyline, step).size
 
         def downsample_ml() -> int:
             polyline_ml = mm.Polyline3(contour_ml)
@@ -453,7 +453,7 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
 
     polyline = _polyline_wp(bench_case)
     sparse = bench_case.run(lambda: tw.polyline.polyline_downsample(polyline, step))
-    assert sparse.shape[0] >= 2
+    assert sparse.size >= 2
 
 
 @pytest.mark.benchmark(group="polyline_simplify")
@@ -492,8 +492,8 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
     if bench_case.kind == "meshlib":
         contour_ml = _contour_ml(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
-        n_points = int(cpu_polyline.shape[0])
-        n_kept = int(tw.polyline.polyline_simplify(cpu_polyline, tol)[0].shape[0])
+        n_points = cpu_polyline.size
+        n_kept = tw.polyline.polyline_simplify(cpu_polyline, tol)[0].size
 
         def simplify_ml() -> int:
             polyline_ml = mm.Polyline3(contour_ml)
@@ -508,15 +508,15 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
     if bench_case.kind == "pyvista":
         line_pv = _polyline_pv(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
-        n_points = int(cpu_polyline.shape[0])
-        n_kept = int(tw.polyline.polyline_simplify(cpu_polyline, tol)[0].shape[0])
+        n_points = cpu_polyline.size
+        n_kept = tw.polyline.polyline_simplify(cpu_polyline, tol)[0].size
         reduction = min(max(1.0 - n_kept / n_points, 0.0), 0.999)
         assert bench_case.run(lambda: line_pv.decimate_polyline(reduction)).n_points >= 2
         return
 
     polyline = _polyline_wp(bench_case)
     simplified, kept = bench_case.run(lambda: tw.polyline.polyline_simplify(polyline, tol))
-    assert simplified.shape[0] == kept.shape[0]
+    assert simplified.size == kept.size
 
 
 @pytest.mark.benchmark(group="polyline_point_distance")
@@ -572,7 +572,7 @@ def test_distance_to_polyline(bench_case: BenchCase, n_queries: int) -> None:
     polyline = _polyline_wp(bench_case)
     points = _query_points_wp(bench_case, n_queries)
     distance = bench_case.run(lambda: tw.polyline.polyline_point_distance(points, polyline))
-    assert distance.shape[0] == n_queries
+    assert distance.size == n_queries
 
 
 # The ``closed=True`` rows. A boundary loop does not repeat its first vertex, so every one of these
@@ -590,7 +590,7 @@ def test_upsample_closed_polyline(bench_case: BenchCase) -> None:
     step = _UPSAMPLE_FRACTION * _segment_scale(bench_case)[0]
     polyline = _polyline_wp(bench_case)
     dense = bench_case.run(lambda: tw.polyline.polyline_upsample(polyline, step, closed=True))
-    assert dense.shape[0] >= int(polyline.shape[0])
+    assert dense.size >= polyline.size
 
 
 @pytest.mark.benchmark(group="polyline_downsample_closed")
@@ -601,7 +601,7 @@ def test_downsample_closed_polyline(bench_case: BenchCase) -> None:
     step = _DOWNSAMPLE_FRACTION * _segment_scale(bench_case)[0]
     polyline = _polyline_wp(bench_case)
     sparse = bench_case.run(lambda: tw.polyline.polyline_downsample(polyline, step, closed=True))
-    assert sparse.shape[0] >= 2
+    assert sparse.size >= 2
 
 
 @pytest.mark.benchmark(group="polyline_resample_closed")
@@ -615,9 +615,9 @@ def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     no readback of its own.
     """
     polyline = _polyline_wp(bench_case)
-    n_points = int(polyline.shape[0])
+    n_points = polyline.size
     ring = bench_case.run(lambda: tw.polyline.polyline_resample(polyline, n_points, closed=True))
-    assert ring.shape[0] == n_points
+    assert ring.size == n_points
 
 
 @pytest.mark.benchmark(group="polyline_point_distance_closed")
@@ -635,7 +635,7 @@ def test_distance_to_closed_polyline(bench_case: BenchCase) -> None:
     distance = bench_case.run(
         lambda: tw.polyline.polyline_point_distance(points, polyline, closed=True)
     )
-    assert distance.shape[0] == _N_QUERIES[0]
+    assert distance.size == _N_QUERIES[0]
 
 
 # Vertex counts for the triangulation group. A simple polygon of ``n`` vertices always yields
@@ -743,7 +743,7 @@ def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     if bench_lib.kind == "triwarp":
         ring_wp = _star_wp(ring_size, str(bench_lib.device))
         _vertices, faces_wp = bench_lib.run(lambda: tw.polyline.triangulate_polygon(ring_wp))
-        assert int(faces_wp.shape[0]) // 3 == ring_size - 2
+        assert faces_wp.size // 3 == ring_size - 2
     else:
         polygon = sg.Polygon(_star_np(ring_size))
         _vertices, faces_tm = bench_lib.run(lambda: tm.creation.triangulate_polygon(polygon))

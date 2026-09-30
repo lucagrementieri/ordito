@@ -269,8 +269,8 @@ def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     vertex_faces, offsets = bench_case.run(
         lambda: tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=supplied)
     )
-    assert int(offsets.shape[0]) == n_vertices + 1
-    assert int(vertex_faces.shape[0]) == 3 * bench_case.n_faces
+    assert offsets.size == n_vertices + 1
+    assert vertex_faces.size == 3 * bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="face_adjacency_projections")

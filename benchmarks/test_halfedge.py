@@ -70,7 +70,7 @@ def test_halfedge_twins(bench_case: BenchCase) -> None:
     """Hash, radix sort and pair up: the ``N``-driven half of this module."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     twins = bench_case.run(lambda: tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices))
-    assert twins.shape == (faces.shape[0],)
+    assert twins.shape == (faces.size,)
 
 
 @pytest.mark.benchmark(group="vertex_one_rings")
@@ -83,7 +83,7 @@ def test_vertex_one_rings(bench_case: BenchCase) -> None:
         lambda: tw.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
     )
     assert offsets.shape == (n_vertices + 1,)
-    assert ring.shape == (faces.shape[0],)
+    assert ring.shape == (faces.size,)
 
 
 @pytest.mark.benchmark(group="vertex_one_rings_scale")

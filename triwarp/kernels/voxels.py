@@ -222,17 +222,9 @@ def cell_center_positions(
 @wp.func
 def cell_slot(volume: wp.uint64, cells: wp.array2d[wp.int32], v: wp.int32) -> wp.int32:
     # The grid and ``get_voxels()`` share one numbering, so a cell's slot is also its payload row;
-    # ``-1`` means the cell is not in the grid. Shared by the slot kernel and the occupancy one
-    # below, which differ only in whether the caller wants the row or just its existence.
+    # ``-1`` means the cell is not in the grid. Shared by the occupancy kernels below, which
+    # differ only in whether the caller wants a mask or the builder's ``int32`` flags.
     return wp.volume_lookup_index(volume, cells[v, 0], cells[v, 1], cells[v, 2])
-
-
-@wp.kernel
-def lookup_cell_slots(
-    volume: wp.uint64, cells: wp.array2d[wp.int32], out_slots: wp.array[wp.int32]
-) -> None:
-    v = wp.int32(wp.tid())
-    out_slots[v] = cell_slot(volume, cells, v)
 
 
 @wp.kernel

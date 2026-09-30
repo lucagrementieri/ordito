@@ -133,8 +133,8 @@ def test_make_solid_matches_pymeshfix_on_interpenetrating_shells(device: str) ->
     assert faces_pmf.shape[0] < mesh_tm.faces.shape[0]
     assert solid_pmf.is_watertight
     assert solid_pmf.euler_number == 2
-    assert int(solid_faces_wp.shape[0]) // 3 == faces_pmf.shape[0]
-    assert int(solid_wp.shape[0]) == vertices_pmf.shape[0]
+    assert solid_faces_wp.size // 3 == faces_pmf.shape[0]
+    assert solid_wp.size == vertices_pmf.shape[0]
     assert np.isclose(solid_tm.volume, solid_pmf.volume, rtol=1e-5, atol=1e-5)
     assert (
         hausdorff_surface_two_sided(
@@ -191,7 +191,7 @@ def test_make_solid_singular_curve_divergence(
     assert solid_pmf.is_watertight
     assert solid_pmf.euler_number == 2
     # Both sacrificed surface rather than growing it, which is the one thing they do share here.
-    assert int(solid_faces_wp.shape[0]) // 3 < 2 * n_faces
+    assert solid_faces_wp.size // 3 < 2 * n_faces
     assert faces_pmf.shape[0] < n_faces
 
 
@@ -225,9 +225,9 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     )
     welded_tm = _assert_is_a_solid(welded_wp, welded_faces_wp)
 
-    assert int(largest_faces_wp.shape[0]) // 3 < mesh_tm.faces.shape[0] // 2
+    assert largest_faces_wp.size // 3 < mesh_tm.faces.shape[0] // 2
     assert welded_tm.volume > 2.5 * largest_tm.volume
-    assert int(welded_faces_wp.shape[0]) > int(largest_faces_wp.shape[0])
+    assert welded_faces_wp.size > largest_faces_wp.size
 
 
 def test_make_solid_leaves_a_solid_alone(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -243,8 +243,8 @@ def test_make_solid_leaves_a_solid_alone(icosphere_coarse: tuple[tm.Trimesh, wp.
     solid_wp, solid_faces_wp = tw.repair.make_solid(mesh_wp.points, mesh_wp.indices)
     solid_tm = _assert_is_a_solid(solid_wp, solid_faces_wp)
 
-    assert int(solid_faces_wp.shape[0]) // 3 == mesh_tm.faces.shape[0]
-    assert int(solid_wp.shape[0]) == mesh_tm.vertices.shape[0]
+    assert solid_faces_wp.size // 3 == mesh_tm.faces.shape[0]
+    assert solid_wp.size == mesh_tm.vertices.shape[0]
     assert np.isclose(solid_tm.volume, mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
@@ -336,7 +336,7 @@ def _assert_duplicate_vertices_match(
 
 
 @pytest.mark.parity("remove_unreferenced_vertices", "igl")
-def test_remove_unreferenced_identity(icosahedron, device: str):
+def test_remove_unreferenced_identity(icosahedron):
     """Class A: all four returns against ``igl.remove_unreferenced``, on a fully-referenced mesh."""
     mesh_tm, mesh_wp = icosahedron
     vertices_np = mesh_tm.vertices
@@ -466,8 +466,8 @@ def test_remove_unreferenced_vertices_matches_meshlib_pack(
     packed_tm = meshlib_to_trimesh(mesh_ml)
 
     assert packed_tm.vertices.shape[0] == n_vertices - 1  # the reference really compacted
-    assert int(kept_wp.shape[0]) == packed_tm.vertices.shape[0]
-    assert int(kept_faces_wp.shape[0]) // 3 == packed_tm.faces.shape[0]
+    assert kept_wp.size == packed_tm.vertices.shape[0]
+    assert kept_faces_wp.size // 3 == packed_tm.faces.shape[0]
     assert np.allclose(
         lexsort_rows(np.round(kept_wp.numpy().astype(np.float64), 5)),
         lexsort_rows(np.round(packed_tm.vertices, 5)),
@@ -536,8 +536,8 @@ def test_remove_unreferenced_vertices_matches_pymeshfix(device: str, placement: 
     # Non-vacuity: the reference really dropped the spares rather than passing the buffer through.
     assert kept_pmf.shape[0] == vertices_np.shape[0] < padded_np.shape[0]
     assert kept_faces_pmf.shape[0] == faces_np.shape[0]
-    assert int(kept_wp.shape[0]) == kept_pmf.shape[0]
-    assert int(kept_faces_wp.shape[0]) // 3 == kept_faces_pmf.shape[0]
+    assert kept_wp.size == kept_pmf.shape[0]
+    assert kept_faces_wp.size // 3 == kept_faces_pmf.shape[0]
     assert np.allclose(kept_wp.numpy().astype(np.float64), kept_pmf, rtol=1e-5, atol=1e-5)
 
 
@@ -589,7 +589,7 @@ def test_remove_duplicate_vertices_epsilon_negative_coordinates(
     sv_wp, _, svj_wp, sf_wp = tw.repair.remove_duplicated_vertices(
         vertices_wp, faces_wp, epsilon=epsilon
     )
-    assert int(sv_wp.shape[0]) == mesh_tm.vertices.shape[0]
+    assert sv_wp.size == mesh_tm.vertices.shape[0]
     _assert_duplicate_vertices_match(
         vertices_np, sv_wp.numpy(), svj_wp.numpy(), sf_wp.numpy(), faces_np, epsilon=epsilon
     )
@@ -680,7 +680,7 @@ def test_duplicate_vertex_inverse_is_what_remove_duplicated_vertices_remaps_by(d
     unique_wp, _indices_wp, _inverse_wp, unique_faces_wp = tw.repair.remove_duplicated_vertices(
         positions_wp, faces_wp, epsilon
     )
-    assert int(unique_wp.shape[0]) == 3
+    assert unique_wp.size == 3
     assert np.array_equal(unique_faces_wp.numpy(), inverse_np[faces_np.reshape(-1)])
     assert np.abs(unique_wp.numpy()[inverse_np] - positions_np).max() <= epsilon
 
@@ -815,7 +815,7 @@ def test_remove_duplicated_vertices_matches_open3d_and_pymeshlab(
     )
     vertices_pv = np.asarray(cleaned_pv.points)
 
-    assert int(unique_wp.shape[0]) == len(mesh_tm.vertices)
+    assert unique_wp.size == len(mesh_tm.vertices)
     assert vertices_pml.shape[0] == len(mesh_tm.vertices)
     assert vertices_o3d.shape[0] == len(mesh_tm.vertices)
     assert vertices_pv.shape[0] == len(mesh_tm.vertices)
@@ -868,7 +868,7 @@ def test_remove_duplicated_vertices_matches_meshlib(
 
     assert n_merged_ml == soup_np.shape[0] - mesh_tm.vertices.shape[0]  # 798 of 960
     assert welded_tm.vertices.shape[0] == mesh_tm.vertices.shape[0]
-    assert int(unique_wp.shape[0]) == welded_tm.vertices.shape[0]
+    assert unique_wp.size == welded_tm.vertices.shape[0]
     assert np.allclose(
         lexsort_rows(np.round(unique_wp.numpy().astype(np.float64), 5)),
         lexsort_rows(np.round(welded_tm.vertices, 5)),
@@ -1014,7 +1014,7 @@ def test_make_winding_consistent_matches_igl(icosahedron: tuple[tm.Trimesh, wp.M
     oriented_igl, components_igl = igl.bfs_orient(
         np.ascontiguousarray(faces_flipped, dtype=np.int64)
     )
-    assert np.unique(components_igl).shape[0] == 1
+    assert np.unique(components_igl).size == 1
 
     repaired_wp = tw.repair.make_winding_consistent(faces_wp)
 
@@ -1078,7 +1078,7 @@ def test_make_winding_consistent_on_a_non_orientable_mesh(
     assert tw.validation.is_winding_consistent(repaired_wp) is False
 
     inconsistent_np = ~tw.validation.edge_winding_consistent_mask(repaired_wp).numpy()
-    assert 0 < inconsistent_np.sum() < 0.02 * inconsistent_np.shape[0]
+    assert 0 < inconsistent_np.sum() < 0.02 * inconsistent_np.size
 
     before, after = mesh_wp.indices.numpy().reshape(-1, 3), _faces_2d(repaired_wp)
     assert np.array_equal(after[:, 0], before[:, 0])
@@ -1581,8 +1581,8 @@ def test_remove_non_manifold_faces_leaves_an_edge_manifold_mesh_alone(
         mesh_wp.points, mesh_wp.indices
     )
 
-    assert new_vertices_wp.shape[0] == mesh_tm.vertices.shape[0]
-    assert new_faces_wp.shape[0] == mesh_tm.faces.size
+    assert new_vertices_wp.size == mesh_tm.vertices.shape[0]
+    assert new_faces_wp.size == mesh_tm.faces.size
     # Nothing was rebuilt: the early break hands back the caller's own buffers.
     assert new_vertices_wp.ptr == mesh_wp.points.ptr
 
@@ -1688,7 +1688,7 @@ def test_remove_degenerate_and_non_manifold_faces_empty(device: str) -> None:
         vertices_wp, faces_wp
     )
 
-    assert new_faces_wp.shape[0] == 0
+    assert new_faces_wp.size == 0
     assert np.array_equal(new_vertices_wp.numpy(), np.eye(3, dtype=np.float32))
     assert new_vertices_wp.ptr != vertices_wp.ptr
 
@@ -1738,8 +1738,8 @@ def _assert_same_surviving_mesh(
     kept_tm = warp_to_trimesh(kept_wp, kept_faces_wp)
     reference_tm = tm.Trimesh(vertices_ref, faces_ref, process=False)
     scale = float(np.linalg.norm(vertices_ref.max(axis=0) - vertices_ref.min(axis=0)))
-    assert int(kept_faces_wp.shape[0]) // 3 == faces_ref.shape[0]
-    assert int(kept_wp.shape[0]) == vertices_ref.shape[0]
+    assert kept_faces_wp.size // 3 == faces_ref.shape[0]
+    assert kept_wp.size == vertices_ref.shape[0]
     assert hausdorff_two_sided(kept_wp.numpy().astype(np.float64), vertices_ref) < 1e-5 * scale
     assert np.isclose(kept_tm.area, reference_tm.area, rtol=1e-5, atol=1e-5)
 
@@ -1861,7 +1861,7 @@ def test_remove_small_components_min_area_matches_open3d(device: str) -> None:
     mesh_o3d = trimesh_to_open3d(mesh_tm)
     clusters_o3d, _counts_o3d, areas_o3d = mesh_o3d.cluster_connected_triangles()
     areas_np = np.asarray(areas_o3d)
-    assert areas_np.shape[0] == 3  # non-vacuity: the reference found the three shells
+    assert areas_np.size == 3  # non-vacuity: the reference found the three shells
     mesh_o3d.remove_triangles_by_mask(areas_np[np.asarray(clusters_o3d)] < min_area)
     mesh_o3d.remove_unreferenced_vertices()
     vertices_o3d = np.asarray(mesh_o3d.vertices)
@@ -1887,8 +1887,8 @@ def test_remove_small_components_invariants(device: str) -> None:
     identity_wp, identity_faces_wp = tw.repair.remove_small_components(
         vertices_wp, faces_wp, min_faces=1
     )
-    assert int(identity_faces_wp.shape[0]) // 3 == n_faces
-    assert int(identity_wp.shape[0]) == mesh_tm.vertices.shape[0]
+    assert identity_faces_wp.size // 3 == n_faces
+    assert identity_wp.size == mesh_tm.vertices.shape[0]
 
     kept_wp, kept_faces_wp = tw.repair.remove_small_components(
         vertices_wp, faces_wp, keep_largest=True
@@ -1900,7 +1900,7 @@ def test_remove_small_components_invariants(device: str) -> None:
     _empty_wp, empty_faces_wp = tw.repair.remove_small_components(
         vertices_wp, faces_wp, min_faces=n_faces + 1
     )
-    assert int(empty_faces_wp.shape[0]) == 0
+    assert empty_faces_wp.size == 0
 
 
 @pytest.mark.parametrize(
@@ -1995,7 +1995,7 @@ def test_split_nonmanifold_matches_igl(
     faces_igl, source_igl = igl.split_nonmanifold(
         np.ascontiguousarray(faces_np, dtype=np.int64).reshape(-1, 3)
     )
-    assert source_igl.shape[0] == expected_new, "the reference produced the expected split"
+    assert source_igl.size == expected_new, "the reference produced the expected split"
     assert new_vertices_np.shape[0] == expected_new
     assert same_partition(new_faces_np.ravel(), np.asarray(faces_igl).ravel())
 
@@ -2038,9 +2038,9 @@ def test_split_nonmanifold_matches_meshlib(mesh_kind: str, device: str) -> None:
 
     expected_count = {"bowtie": 1, "three_faces_on_one_edge": 0}[mesh_kind]
     assert n_duplicated_ml == expected_count
-    assert int(split_wp.shape[0]) == mesh_ml.topology.numValidVerts()
-    assert int(split_faces_wp.shape[0]) // 3 == mesh_ml.topology.numValidFaces()
-    assert int(split_faces_wp.shape[0]) // 3 == faces_np.shape[0]
+    assert split_wp.size == mesh_ml.topology.numValidVerts()
+    assert split_faces_wp.size // 3 == mesh_ml.topology.numValidFaces()
+    assert split_faces_wp.size // 3 == faces_np.shape[0]
     assert tw.validation.is_vertex_manifold(split_faces_wp)
 
 
@@ -2087,13 +2087,13 @@ def test_split_nonmanifold_leaves_a_manifold_mesh(
     )
 
     assert tw.validation.is_edge_manifold(new_faces_wp)
-    assert int(new_faces_wp.shape[0]) == int(faces_wp.shape[0])
-    assert int(new_vertices_wp.shape[0]) >= int(vertices_wp.shape[0])
+    assert new_faces_wp.size == faces_wp.size
+    assert new_vertices_wp.size >= vertices_wp.size
     # Idempotent: a second pass has nothing left to split.
     again_vertices_wp, again_faces_wp, _ = tw.repair.split_non_manifold_vertices(
         new_vertices_wp, new_faces_wp
     )
-    assert int(again_vertices_wp.shape[0]) == int(new_vertices_wp.shape[0])
+    assert again_vertices_wp.size == new_vertices_wp.size
     assert np.array_equal(again_faces_wp.numpy(), new_faces_wp.numpy())
 
 
@@ -2123,7 +2123,7 @@ def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
     )
 
     assert new_vertices_np.shape[0] == 18, "all three copies of each shared vertex split apart"
-    assert source_igl.shape[0] == 15, "igl keeps one pair of the three joined"
+    assert source_igl.size == 15, "igl keeps one pair of the three joined"
     # Both answers are legal repairs of the same input: manifold, with every face kept.
     assert _new_faces_np.shape[0] == faces_np.shape[0] == np.asarray(_faces_igl).shape[0]
     faces_wp = wp.array(np.ascontiguousarray(faces_np).ravel(), dtype=wp.int32, device=device)
@@ -2175,8 +2175,8 @@ def test_split_non_manifold_vertices_matches_pymeshfix(device: str) -> None:
 
     assert vertices_pmf.shape[0] == vertices_np.shape[0] + 1  # the reference really cut
     assert faces_pmf.shape[0] == faces_np.shape[0]
-    assert int(split_wp.shape[0]) == vertices_pmf.shape[0]
-    assert int(split_faces_wp.shape[0]) // 3 == faces_pmf.shape[0]
+    assert split_wp.size == vertices_pmf.shape[0]
+    assert split_faces_wp.size // 3 == faces_pmf.shape[0]
     assert tw.validation.is_vertex_manifold(split_faces_wp)
     assert tw.validation.is_vertex_manifold(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
 
@@ -2231,8 +2231,8 @@ def test_remove_degenerate_faces_matches_pymeshfix(device: str, n_degenerate: in
     # Non-vacuity: the reference removed the degeneracies rather than passing the mesh through.
     assert faces_pmf.shape[0] == mesh_tm.faces.shape[0] < faces_np.shape[0]
     assert vertices_pmf.shape[0] == n_vertices
-    assert int(kept_faces_wp.shape[0]) // 3 == faces_pmf.shape[0]
-    assert int(kept_wp.shape[0]) == vertices_pmf.shape[0]
+    assert kept_faces_wp.size // 3 == faces_pmf.shape[0]
+    assert kept_wp.size == vertices_pmf.shape[0]
     assert kept_tm.is_watertight
     assert kept_pmf.is_watertight
     assert kept_tm.euler_number == 2
@@ -2269,7 +2269,7 @@ def test_remove_degenerate_faces_near_degenerate_divergence(device: str) -> None
 
         vertices_wp, faces_wp = numpy_to_warp(vertices_np, quads_np, device)
         _kept_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(vertices_wp, faces_wp)
-        assert int(kept_faces_wp.shape[0]) // 3 == triwarp_faces, offset
+        assert kept_faces_wp.size // 3 == triwarp_faces, offset
 
 
 def test_remove_degenerate_faces_matches_trimesh(device: str) -> None:
@@ -2363,8 +2363,8 @@ def test_remove_degenerate_faces_matches_meshlib(device: str) -> None:
     repeated_o3d.remove_degenerate_triangles()
     assert len(repeated_o3d.triangles) == 2
     assert int((~np.asarray(repeated_tm.nondegenerate_faces(height=1e-8))).sum()) == 1
-    assert int(kept_faces_wp.shape[0]) // 3 == int((~degenerate_ml).sum())
-    assert int(kept_vertices_wp.shape[0]) == 4  # the collinear apex is now unreferenced
+    assert kept_faces_wp.size // 3 == int((~degenerate_ml).sum())
+    assert kept_vertices_wp.size == 4  # the collinear apex is now unreferenced
 
     # The knob that is *not* in play: at any aspect ratio these three faces classify the same way.
     for critical_aspect_ratio in (20.0, 1e3, 1e5):
@@ -2390,8 +2390,8 @@ def test_remove_degenerate_faces_clean_mesh(icosahedron: tuple[tm.Trimesh, wp.Me
     kept_vertices_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(
         mesh_wp.points, mesh_wp.indices
     )
-    assert kept_faces_wp.shape[0] // 3 == mesh_tm.faces.shape[0]
-    assert kept_vertices_wp.shape[0] == mesh_tm.vertices.shape[0]
+    assert kept_faces_wp.size // 3 == mesh_tm.faces.shape[0]
+    assert kept_vertices_wp.size == mesh_tm.vertices.shape[0]
 
 
 def test_collapse_small_triangles_noop(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -2427,7 +2427,7 @@ def test_collapse_small_triangles_removes_sliver(icosahedron: tuple[tm.Trimesh, 
     )
 
     # Sliver is gone.
-    assert out_faces_wp.shape[0] // 3 < faces_np.shape[0]
+    assert out_faces_wp.size // 3 < faces_np.shape[0]
     # Invariant (libigl fixpoint guarantee): no surviving triangle is below threshold.
     bbd = tw.bounds.enclosing_diagonal(out_vertices_wp)
     _, areas_wp = tw.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
@@ -2447,7 +2447,7 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
     top = np.stack([xs, np.full_like(xs, 1e-5), np.zeros_like(xs)], axis=1)
     bottom = np.stack([xs, np.zeros_like(xs), np.zeros_like(xs)], axis=1)
     vertices_np = np.vstack([top, bottom]).astype(np.float32)
-    n = xs.shape[0]
+    n = xs.size
     faces = []
     for i in range(n - 1):
         faces.append([i, i + 1, n + i])  # thin triangles
@@ -2557,9 +2557,9 @@ def test_remove_folded_faces_drops_the_fold(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     kept_vertices_wp, kept_faces_wp = tw.repair.remove_folded_faces(vertices_wp, faces_wp)
     # Only the fold goes, so the flat quad it folded over survives intact.
-    assert int(kept_faces_wp.shape[0]) // 3 == 2
+    assert kept_faces_wp.size // 3 == 2
     # The folded apex was referenced only by the dropped face, so it is gone too.
-    assert int(kept_vertices_wp.shape[0]) == vertices_np.shape[0] - 1
+    assert kept_vertices_wp.size == vertices_np.shape[0] - 1
     assert (
         not tw.validation.face_defective_mask(
             kept_vertices_wp, kept_faces_wp, min_quality=None, max_fold_angle=160.0
@@ -2574,15 +2574,15 @@ def test_remove_folded_faces_leaves_a_clean_mesh_alone(
 ) -> None:
     _mesh_tm, mesh_wp = icosahedron
     kept_vertices_wp, kept_faces_wp = tw.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
-    assert int(kept_faces_wp.shape[0]) == int(mesh_wp.indices.shape[0])
-    assert int(kept_vertices_wp.shape[0]) == int(mesh_wp.points.shape[0])
+    assert kept_faces_wp.size == mesh_wp.indices.size
+    assert kept_vertices_wp.size == mesh_wp.points.size
 
 
 def _self_intersecting_count_ml(vertices_wp: wp.array, faces_wp: wp.array) -> int:
     """Count self-intersecting faces with MeshLib, on exactly the buffer it is handed."""
     mesh_ml = warp_to_meshlib(vertices_wp, faces_wp)
     colliding_ml = mm.findSelfCollidingTrianglesBS(mm.MeshPart(mesh_ml), touchIsIntersection=False)
-    return int(meshlib_bitset_to_numpy(colliding_ml, int(faces_wp.shape[0]) // 3).sum())
+    return int(meshlib_bitset_to_numpy(colliding_ml, faces_wp.size // 3).sum())
 
 
 def _self_intersecting_count_pmf(vertices_wp: wp.array, faces_wp: wp.array) -> int:
@@ -2597,7 +2597,7 @@ def _self_intersecting_count_pmf(vertices_wp: wp.array, faces_wp: wp.array) -> i
     succeed; it is skipped because the face *identities* are not what is being compared.
     """
     tin_pmf = warp_to_pymeshfix(vertices_wp, faces_wp)
-    return int(pymeshfix_intersecting_faces(tin_pmf, tris_per_cell=50, justproper=False).shape[0])
+    return pymeshfix_intersecting_faces(tin_pmf, tris_per_cell=50, justproper=False).size
 
 
 @pytest.mark.parity("fix_self_intersections", "meshlib")
@@ -2661,7 +2661,7 @@ def test_fix_self_intersections_local_clears_them(
     fixed_vertices_wp, fixed_faces_wp = tw.repair.fix_self_intersections(
         vertices_wp, faces_wp, max_expand=max_expand
     )
-    assert int(fixed_faces_wp.shape[0]) > 0
+    assert fixed_faces_wp.size > 0
     after_np = tw.validation.face_self_intersecting_mask(fixed_vertices_wp, fixed_faces_wp).numpy()
     after_ml = _self_intersecting_count_ml(fixed_vertices_wp, fixed_faces_wp)
     after_pmf = _self_intersecting_count_pmf(fixed_vertices_wp, fixed_faces_wp)
@@ -2722,14 +2722,14 @@ def test_fix_self_intersections_voxel_rebuilds(
     rebuilt_vertices_wp, rebuilt_faces_wp = tw.repair.fix_self_intersections(
         mesh_wp.points, mesh_wp.indices, method="voxel"
     )
-    assert int(rebuilt_faces_wp.shape[0]) // 3 > 10 * n_faces  # everything was resampled
+    assert rebuilt_faces_wp.size // 3 > 10 * n_faces  # everything was resampled
 
     after_np = tw.validation.face_self_intersecting_mask(
         rebuilt_vertices_wp, rebuilt_faces_wp
     ).numpy()
     after_ml = _self_intersecting_count_ml(rebuilt_vertices_wp, rebuilt_faces_wp)
     after_pmf = _self_intersecting_count_pmf(rebuilt_vertices_wp, rebuilt_faces_wp)
-    assert int(after_np.sum()) < 0.001 * int(rebuilt_faces_wp.shape[0]) // 3
+    assert int(after_np.sum()) < 0.001 * rebuilt_faces_wp.size // 3
     assert int(after_np.sum()) < int(before_np.sum())
     assert after_ml == int(after_np.sum())
     assert after_pmf == int(after_np.sum())
@@ -2778,8 +2778,8 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     """
     _, mesh_wp = icosphere_coarse
     faces_wp = mesh_wp.indices
-    n_vertices = int(mesh_wp.points.shape[0])
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_vertices = mesh_wp.points.size
+    n_faces = faces_wp.size // 3
     seed_np = np.zeros(n_faces, dtype=bool)
     seed_np[[0, 101, 222]] = True
     seed_wp = wp.array(seed_np, dtype=wp.bool, device=faces_wp.device)
@@ -2807,7 +2807,7 @@ def _ragged_grid(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp
     exactly coplanar with its neighbours and well shaped, and the correct answer is the grid itself.
     """
     vertices_wp, faces_wp = tw.creation.grid(count=(8, 8), device=device)
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_faces = faces_wp.size // 3
     rim = set(tw.boundary.boundary_loops(vertices_wp, faces_wp)[0].list())
     faces_np = faces_wp.numpy().reshape(-1, 3)
     keep_np = np.ones(n_faces, dtype=bool)
@@ -2839,8 +2839,8 @@ def test_straighten_boundary_matches_meshlib(device: str) -> None:
     is what makes this stronger than two implementations agreeing with each other.
     """
     ragged_vertices_wp, ragged_faces_wp, grid_faces_wp = _ragged_grid(device)
-    n_ragged = int(ragged_faces_wp.shape[0]) // 3
-    assert n_ragged < int(grid_faces_wp.shape[0]) // 3  # non-vacuity: faces really were removed
+    n_ragged = ragged_faces_wp.size // 3
+    assert n_ragged < grid_faces_wp.size // 3  # non-vacuity: faces really were removed
 
     straightened_wp, added = tw.repair.straighten_boundary(
         ragged_vertices_wp,
@@ -2890,7 +2890,7 @@ def test_straighten_boundary_restores_the_grid(device: str) -> None:
     straightened_wp, added = tw.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, min_normal_dot=0.99, iterations=6, return_count=True
     )
-    assert added == int(grid_faces_wp.shape[0]) // 3 - int(ragged_faces_wp.shape[0]) // 3
+    assert added == grid_faces_wp.size // 3 - ragged_faces_wp.size // 3
     assert tw.validation.is_edge_manifold(straightened_wp)
     loops_after = tw.boundary.boundary_loops(ragged_vertices_wp, straightened_wp)
     assert len(loops_after) == 1
@@ -2940,7 +2940,7 @@ def test_straighten_boundary_return_count_shapes(device: str) -> None:
         ragged_vertices_wp, ragged_faces_wp, min_normal_dot=0.99, iterations=6, return_count=True
     )
     assert added > 0  # non-vacuity: the rim really was straightened
-    assert int(faces_only_wp.shape[0]) == int(faces_wp.shape[0])
+    assert faces_only_wp.size == faces_wp.size
     assert_unordered_rows_equal(
         canonical_winding(faces_only_wp.numpy().reshape(-1, 3)),
         canonical_winding(faces_wp.numpy().reshape(-1, 3)),
@@ -2972,7 +2972,7 @@ def test_straighten_boundary_closes_an_independent_set(device: str) -> None:
     the rim-edge count and not on manifoldness.
     """
     ragged_vertices_wp, ragged_faces_wp, _grid_faces_wp = _ragged_grid(device)
-    n_faces = int(ragged_faces_wp.shape[0]) // 3
+    n_faces = ragged_faces_wp.size // 3
 
     out_wp, added = tw.repair.straighten_boundary(
         ragged_vertices_wp,
@@ -3209,8 +3209,8 @@ def test_remove_degree3_vertices_mask_matches_meshlib(device: str) -> None:
             vertices_wp, faces_wp, return_count=True
         )
         assert removed == expected_removed
-        assert int(out_vertices_wp.shape[0]) == len(mesh_tm.vertices) - expected_removed
-        assert int(out_faces_wp.shape[0]) // 3 == len(mesh_tm.faces) - 2 * expected_removed
+        assert out_vertices_wp.size == len(mesh_tm.vertices) - expected_removed
+        assert out_faces_wp.size // 3 == len(mesh_tm.faces) - 2 * expected_removed
         assert tw.validation.is_edge_manifold(out_faces_wp)
         assert warp_to_trimesh(out_vertices_wp, out_faces_wp).is_watertight
 
@@ -3278,7 +3278,7 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == 0
-    assert int(out_faces_wp.shape[0]) == 2 * 3 * len(icosahedron_tm.faces)
+    assert out_faces_wp.size == 2 * 3 * len(icosahedron_tm.faces)
     assert out_vertices_wp is vertices_wp  # nothing removed: the input buffers come back
 
     tetrahedron_np = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
@@ -3381,11 +3381,11 @@ def test_remove_degree3_vertices_runs_a_cascade_to_its_fixpoint(device: str, clo
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == n_splits
-    assert int(out_vertices_wp.shape[0]) == len(mesh_tm.vertices)
-    assert int(out_faces_wp.shape[0]) // 3 == len(mesh_tm.faces)
+    assert out_vertices_wp.size == len(mesh_tm.vertices)
+    assert out_faces_wp.size // 3 == len(mesh_tm.faces)
     output_ml = warp_to_meshlib(out_vertices_wp, out_faces_wp)
     output_degree3_ml = meshlib_bitset_to_numpy(
-        mm.findInnerVertsOfDegree(output_ml.topology, 3), int(out_vertices_wp.shape[0])
+        mm.findInnerVertsOfDegree(output_ml.topology, 3), out_vertices_wp.size
     )
     assert not output_degree3_ml.any()
     _, _, again_removed = tw.repair.remove_degree3_vertices(
@@ -3446,7 +3446,7 @@ def test_flatten_degree3_vertices_matches_meshlib(device: str) -> None:
         after = abs(float(np.dot(flattened_wp.numpy()[apex] - corners_np[0], normal_np)))
         assert before > 0.25
         assert after < 1e-6
-        assert int(flattened_wp.shape[0]) == int(vertices_wp.shape[0])
+        assert flattened_wp.size == vertices_wp.size
 
 
 def test_flatten_degree3_vertices_respects_its_region(device: str) -> None:
@@ -3461,7 +3461,7 @@ def test_flatten_degree3_vertices_respects_its_region(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
     )
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
     default_np = tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp).numpy()
     assert not np.array_equal(default_np, vertices_wp.numpy())  # non-vacuity
 
@@ -3574,9 +3574,9 @@ def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     assert tw.validation.is_edge_manifold(cut_faces_wp)
     assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 0
     labels_np = tw.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
-    assert np.unique(labels_np).shape[0] == 1
+    assert np.unique(labels_np).size == 1
     # Every output position is an input position: the rims are filled over their own vertices.
-    assert int(cut_vertices_wp.shape[0]) >= int(vertices_wp.shape[0])
+    assert cut_vertices_wp.size >= vertices_wp.size
 
     # The genus drop, and the two properties that stop a shattering cut, read by other libraries.
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
@@ -3650,7 +3650,7 @@ def test_remove_t_vertices_flips_the_sliver(
 
     flipped_wp = tw.repair.flip_t_vertices(vertices_wp, faces_wp, threshold=40.0)
     assert _worst_aspect(vertices_wp, flipped_wp) < before
-    assert int(flipped_wp.shape[0]) == int(faces_wp.shape[0])
+    assert flipped_wp.size == faces_wp.size
     assert tw.validation.is_winding_consistent(flipped_wp)
     assert tw.validation.is_edge_manifold(flipped_wp)
 
@@ -3751,4 +3751,4 @@ def test_repair_empty_mesh_is_a_noop(device: str, repair_fn) -> None:
     vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
     faces_wp = wp.empty(0, dtype=wp.int32, device=device)
     for result_wp in repair_fn(vertices_wp, faces_wp):
-        assert int(result_wp.shape[0]) == 0
+        assert result_wp.size == 0

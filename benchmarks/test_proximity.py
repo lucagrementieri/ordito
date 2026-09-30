@@ -85,7 +85,6 @@ _N_QUERIES = 10_000
 _N_QUERIES_SWEEP = [10_000, 100_000]
 
 _query_cache: dict[tuple[str, str, int], wp.array] = {}
-_mesh_cache: dict[tuple[str, str], wp.Mesh] = {}
 _pml_distance_cache: dict[tuple[str, str], ml.MeshSet] = {}
 _ml_query_cache: dict[tuple[str, str, int], mm.std_vector_Vector3_float] = {}
 
@@ -129,13 +128,6 @@ def _query_points_ml(bench_case: BenchCase, count: int = _N_QUERIES) -> mm.std_v
             points_ml.append(mm.Vector3f(*point_np.tolist()))
         _ml_query_cache[key] = points_ml
     return _ml_query_cache[key]
-
-
-def _mesh_wp(bench_case: BenchCase) -> wp.Mesh:
-    key = (bench_case.mesh_name, str(bench_case.device))
-    if key not in _mesh_cache:
-        _mesh_cache[key] = wp.Mesh(points=bench_case.vertices_wp, indices=bench_case.faces_wp)
-    return _mesh_cache[key]
 
 
 @pytest.mark.benchmark(group="winding_number")

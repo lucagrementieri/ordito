@@ -60,8 +60,8 @@ each is asked for:
 
 ```python
 mesh = tw.Trimesh(vertices, faces)
-print(mesh.area)                  # 12.551353454589844
-print(mesh.is_watertight)         # True
+print(mesh.area)  # 12.551353454589844
+print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 ```
 

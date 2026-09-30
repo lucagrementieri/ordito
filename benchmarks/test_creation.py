@@ -186,7 +186,7 @@ def test_box(bench_lib: BenchLibrary) -> None:
     if bench_lib.kind == "triwarp":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(lambda: tw.creation.box(extents=(1.0, 2.0, 3.0), device=device))
-        assert int(faces_wp.shape[0]) == 36
+        assert faces_wp.size == 36
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(lambda: tm.creation.box(extents=[1.0, 2.0, 3.0]))
         assert len(mesh_tm.faces) == 12
@@ -248,7 +248,7 @@ def test_platonic_solids(
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(lambda: getattr(tw.creation, builder)(device=device))
-    assert int(faces_wp.shape[0]) // 3 == n_faces
+    assert faces_wp.size // 3 == n_faces
 
 
 @pytest.mark.benchmark(group="grid")
@@ -286,7 +286,7 @@ def test_grid(bench_lib: BenchLibrary, count: int) -> None:
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(lambda: tw.creation.grid(count=(count, count), device=device))
-    assert int(faces_wp.shape[0]) // 3 == n_faces
+    assert faces_wp.size // 3 == n_faces
 
 
 @pytest.mark.benchmark(group="sphere_cap")
@@ -317,7 +317,7 @@ def test_sphere_cap(bench_lib: BenchLibrary, subdivisions: int) -> None:
             angle=math.radians(30.0), subdivisions=subdivisions, device=device
         )
     )
-    assert int(faces_wp.shape[0]) // 3 == n_faces
+    assert faces_wp.size // 3 == n_faces
 
 
 @pytest.mark.benchmark(group="icosphere")
@@ -353,7 +353,7 @@ def test_icosphere(bench_lib: BenchLibrary, subdivisions: int) -> None:
         _, faces_wp = bench_lib.run(
             lambda: tw.creation.icosphere(subdivisions=subdivisions, device=device)
         )
-        assert int(faces_wp.shape[0]) // 3 == 20 * 4**subdivisions
+        assert faces_wp.size // 3 == 20 * 4**subdivisions
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.icosphere(subdivisions=subdivisions))
         assert len(mesh_tm.faces) == 20 * 4**subdivisions
@@ -398,7 +398,7 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
     if bench_lib.kind == "triwarp":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(lambda: tw.creation.uv_sphere(count=count, device=device))
-        assert int(faces_wp.shape[0]) > 0
+        assert faces_wp.size > 0
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(lambda: tm.creation.uv_sphere(count=list(count)))
         assert len(mesh_tm.faces) > 0
@@ -429,7 +429,7 @@ def test_cylinder(bench_lib: BenchLibrary, sections: int) -> None:
         _, faces_wp = bench_lib.run(
             lambda: tw.creation.cylinder(radius=1.0, height=2.0, sections=sections, device=device)
         )
-        assert int(faces_wp.shape[0]) // 3 == 4 * sections
+        assert faces_wp.size // 3 == 4 * sections
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(
             lambda: tm.creation.cylinder(radius=1.0, height=2.0, sections=sections)
@@ -471,7 +471,7 @@ def test_cone(bench_lib: BenchLibrary, sections: int) -> None:
         _, faces_wp = bench_lib.run(
             lambda: tw.creation.cone(radius=1.0, height=2.0, sections=sections, device=device)
         )
-        assert int(faces_wp.shape[0]) // 3 == 2 * sections
+        assert faces_wp.size // 3 == 2 * sections
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(lambda: tm.creation.cone(radius=1.0, height=2.0, sections=sections))
         assert len(mesh_tm.faces) == 2 * sections
@@ -511,7 +511,7 @@ def test_annulus(bench_lib: BenchLibrary, sections: int) -> None:
         _, faces_wp = bench_lib.run(
             lambda: tw.creation.annulus(0.5, 1.0, height=2.0, sections=sections, device=device)
         )
-        assert int(faces_wp.shape[0]) // 3 == 8 * sections
+        assert faces_wp.size // 3 == 8 * sections
     else:
         mesh_tm = bench_lib.run(
             lambda: tm.creation.annulus(0.5, 1.0, height=2.0, sections=sections)
@@ -564,7 +564,7 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
         _, faces_wp = bench_lib.run(
             lambda: tw.creation.torus(1.0, 0.25, major_sections=sections, device=device)
         )
-        assert int(faces_wp.shape[0]) // 3 == 2 * 32 * sections
+        assert faces_wp.size // 3 == 2 * 32 * sections
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(lambda: tm.creation.torus(1.0, 0.25, major_sections=sections))
         assert len(mesh_tm.faces) == 2 * 32 * sections
@@ -603,7 +603,7 @@ def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
             np.ascontiguousarray(profile_np, dtype=np.float32), dtype=wp.vec2, device=device
         )
         _, faces_wp = bench_lib.run(lambda: tw.creation.revolve(profile_wp, sections=sections))
-        assert int(faces_wp.shape[0]) // 3 == 2 * 63 * sections
+        assert faces_wp.size // 3 == 2 * 63 * sections
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.revolve(profile_np, sections=sections))
         assert len(mesh_tm.faces) == 2 * 63 * sections
@@ -660,7 +660,7 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     if bench_lib.kind == "triwarp":
         ring_wp = _ring_wp(ring_size, str(bench_lib.device))
         _, faces_wp = bench_lib.run(lambda: tw.creation.extrude_polygon(ring_wp, 1.0))
-        assert int(faces_wp.shape[0]) // 3 == 2 * (ring_size - 2) + 2 * ring_size
+        assert faces_wp.size // 3 == 2 * (ring_size - 2) + 2 * ring_size
     else:
         polygon = sg.Polygon(_ring_np(ring_size))
         mesh_tm = bench_lib.run(lambda: tm.creation.extrude_polygon(polygon, 1.0))
@@ -680,7 +680,7 @@ def test_sweep_polygon(bench_lib: BenchLibrary) -> None:
             np.ascontiguousarray(path_np, dtype=np.float32), dtype=wp.vec3, device=device
         )
         _, faces_wp = bench_lib.run(lambda: tw.creation.sweep_polygon(ring_wp, path_wp))
-        assert int(faces_wp.shape[0]) // 3 > 0
+        assert faces_wp.size // 3 > 0
     else:
         polygon = sg.Polygon(_ring_np(_SWEEP_RING))
         mesh_tm = bench_lib.run(lambda: tm.creation.sweep_polygon(polygon, path_np))
@@ -706,7 +706,7 @@ def test_truncated_prisms(bench_lib: BenchLibrary, face_count: int) -> None:
             np.arange(3 * face_count, dtype=np.int32), dtype=wp.int32, device=device
         )
         _, out_faces_wp = bench_lib.run(lambda: tw.creation.truncated_prisms(vertices_wp, faces_wp))
-        assert int(out_faces_wp.shape[0]) // 3 == 8 * face_count
+        assert out_faces_wp.size // 3 == 8 * face_count
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.truncated_prisms(triangles_np))
         assert len(mesh_tm.faces) == 8 * face_count
@@ -741,7 +741,7 @@ def test_parametric_surface(bench_lib: BenchLibrary, surface: str, resolution: i
     _, faces_wp = bench_lib.run(
         lambda: tw.creation.parametric_surface(surface, resolution, resolution, device=device)
     )
-    assert int(faces_wp.shape[0]) // 3 > 0
+    assert faces_wp.size // 3 > 0
 
 
 @pytest.mark.benchmark(group="super_ellipsoid")
@@ -761,7 +761,7 @@ def test_super_ellipsoid(bench_lib: BenchLibrary, resolution: int) -> None:
             u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
-    assert int(faces_wp.shape[0]) // 3 > 0
+    assert faces_wp.size // 3 > 0
 
 
 @pytest.mark.benchmark(group="super_toroid")
@@ -781,7 +781,7 @@ def test_super_toroid(bench_lib: BenchLibrary, resolution: int) -> None:
             u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
-    assert int(faces_wp.shape[0]) // 3 > 0
+    assert faces_wp.size // 3 > 0
 
 
 @pytest.mark.noparity(
@@ -810,7 +810,7 @@ def test_random_hills(bench_lib: BenchLibrary, resolution: int) -> None:
             seed=0, u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
-    assert int(faces_wp.shape[0]) // 3 > 0
+    assert faces_wp.size // 3 > 0
 
 
 @pytest.mark.noparity(
@@ -831,7 +831,7 @@ def test_random_soup(bench_lib: BenchLibrary, face_count: int) -> None:
         vertices_wp, _ = bench_lib.run(
             lambda: tw.creation.random_soup(face_count, seed=0, device=device)
         )
-        assert int(vertices_wp.shape[0]) == 3 * face_count
+        assert vertices_wp.size == 3 * face_count
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.random_soup(face_count))
         assert len(mesh_tm.faces) == face_count

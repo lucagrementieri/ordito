@@ -93,7 +93,7 @@ def test_flipped_faces_empty_mesh(device):
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("map_vertices_to_circle", "igl")
-def test_map_vertices_to_circle_matches_igl(request, device, mesh_name):
+def test_map_vertices_to_circle_matches_igl(request, mesh_name):
     """Class A: the arc-length circle map against ``igl.map_vertices_to_circle``, no transform."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, _ = mesh_igl(mesh_tm)
@@ -126,7 +126,7 @@ def test_map_vertices_to_circle_single_vertex_loop(device):
     "but takes an adjacency matrix, which triwarp's face buffer is not, so its row would time "
     "the same composition one step earlier. benchmarks/test_laplacian.py carries the decline.",
 )
-def test_graph_laplacian_matches_igl(device, hemisphere):
+def test_graph_laplacian_matches_igl(hemisphere):
     """
     Class B: igl has no ``graph_laplacian``, so the reference is assembled from its adjacency.
 
@@ -137,7 +137,7 @@ def test_graph_laplacian_matches_igl(device, hemisphere):
     """
     mesh_tm, mesh_wp = hemisphere
     _, faces_np = mesh_igl(mesh_tm)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     operator_wp = tw.laplacian.graph_laplacian(mesh_wp.points, mesh_wp.indices)
     operator_dense = scipy.sparse.csr_matrix(
@@ -154,7 +154,7 @@ def test_graph_laplacian_matches_igl(device, hemisphere):
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("harmonic", "igl")
 @pytest.mark.parity("harmonic_conditioning", "igl")
-def test_harmonic_matches_igl(request, device, mesh_name):
+def test_harmonic_matches_igl(request, mesh_name):
     """
     Class A: the same boundary constraints in, the same interior UVs out, at ``1e-4``.
 
@@ -179,12 +179,12 @@ def test_harmonic_matches_igl(request, device, mesh_name):
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_biharmonic_matches_reference(request, device, mesh_name):
+def test_biharmonic_matches_reference(request, mesh_name):
     # k=2 (biharmonic). igl.harmonic's default mass is Voronoi, but triwarp uses the barycentric
     # lumped mass, so compare against a barycentric-mass biharmonic solved directly in SciPy.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_uv_wp = tw.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
@@ -212,7 +212,7 @@ def test_biharmonic_matches_reference(request, device, mesh_name):
     assert np.allclose(uv_wp.numpy(), uv_ref, rtol=1e-4, atol=1e-4)
 
 
-def test_biharmonic_is_deterministic(device, hemisphere):
+def test_biharmonic_is_deterministic(hemisphere):
     # Regression guard for operator-assembly nondeterminism: the float64-native biharmonic operator
     # must give the same result across repeated calls. The original defect sized a rebuild's triplet
     # buffers by ``BsrMatrix.nnz`` (the capacity, not the entry count) and so fed the uninitialized
@@ -258,18 +258,18 @@ def test_harmonic_cpu_matches_cuda():
     assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=1e-5, atol=1e-5)
 
 
-def test_harmonic_boundary_uv_length_mismatch_raises(device, hemisphere):
+def test_harmonic_boundary_uv_length_mismatch_raises(hemisphere):
     # boundary_indices/boundary_uv feed a scatter kernel indexed by boundary_indices' own length;
     # a shorter boundary_uv would otherwise be an out-of-bounds read.
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    short_uv = wp.zeros(int(boundary_wp.shape[0]) - 1, dtype=wp.vec2, device=mesh_wp.device)
+    short_uv = wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
     with pytest.raises(ValueError, match="same length"):
         tw.parametrization.harmonic(mesh_wp.points, mesh_wp.indices, boundary_wp, short_uv)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_tutte_matches_igl_reference(request, device, mesh_name):
+def test_tutte_matches_igl_reference(request, mesh_name):
     """
     Class B: igl has no ``tutte``, so the reference is its fixed-value minimizer on ``D - A``.
 
@@ -280,7 +280,7 @@ def test_tutte_matches_igl_reference(request, device, mesh_name):
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, faces_np = mesh_igl(mesh_tm)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_uv_wp = tw.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
@@ -306,7 +306,7 @@ def test_tutte_matches_igl_reference(request, device, mesh_name):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_tutte_disk_is_fold_free(device, hemisphere):
+def test_tutte_disk_is_fold_free(hemisphere):
     # A disk-topology mesh with a convex (circle) boundary yields a bijective, fold-free Tutte map.
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
@@ -327,7 +327,7 @@ def _arap_igl(vertices_np, faces_np, fixed_np, fixed_uv_np, uv_init_np, max_iter
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("arap", "igl")
-def test_arap_matches_igl(request, device, mesh_name):
+def test_arap_matches_igl(request, mesh_name):
     """
     Class A at a fixed iteration count, with the *same warm start* fed to both sides.
 
@@ -356,7 +356,7 @@ def test_arap_matches_igl(request, device, mesh_name):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_arap_free_boundary_matches_igl(device, hemisphere):
+def test_arap_free_boundary_matches_igl(hemisphere):
     """
     Class A on the free-boundary branch: only two vertices pinned, the rest of the rim moving.
 
@@ -389,7 +389,7 @@ def test_arap_free_boundary_matches_igl(device, hemisphere):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-3, atol=1e-3)
 
 
-def test_arap_default_tolerance_tracks_a_tight_solve(device, hemisphere):
+def test_arap_default_tolerance_tracks_a_tight_solve(hemisphere):
     # ``arap`` defaults its inner CG to 1e-7 rather than the 1e-8 the other solvers use: its global
     # solves are inner steps of a truncated outer iteration. Guard that the looser default still
     # tracks a tight solve two orders below it, far inside the 1e-4 gate the igl oracles use.
@@ -415,7 +415,7 @@ def test_arap_default_tolerance_tracks_a_tight_solve(device, hemisphere):
     assert np.allclose(uv_default_wp.numpy(), uv_tight_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
-def test_arap_fixed_vertices_pinned(device, hemisphere):
+def test_arap_fixed_vertices_pinned(hemisphere):
     # The pinned rows must equal the prescribed UV exactly (they are re-enforced every iteration).
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
@@ -430,7 +430,7 @@ def test_arap_fixed_vertices_pinned(device, hemisphere):
     assert np.array_equal(uv_wp.numpy()[boundary_wp.numpy()], boundary_uv_wp.numpy())
 
 
-def test_arap_disk_is_finite(device, hemisphere):
+def test_arap_disk_is_finite(hemisphere):
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_uv_wp = tw.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
@@ -443,10 +443,10 @@ def test_arap_disk_is_finite(device, hemisphere):
     assert np.isfinite(uv_wp.numpy()).all()
 
 
-def test_arap_all_vertices_fixed(device, hemisphere):
+def test_arap_all_vertices_fixed(hemisphere):
     # Every vertex pinned: the prescribed UV is returned with no solve, so this runs on CPU too.
     _, mesh_wp = hemisphere
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     rng = np.random.default_rng(7)
     fixed_uv_np = rng.standard_normal((n_vertices, 2)).astype(np.float32)
     all_indices_np = np.arange(n_vertices, dtype=np.int32)
@@ -460,43 +460,43 @@ def test_arap_all_vertices_fixed(device, hemisphere):
     assert np.array_equal(uv_wp.numpy(), fixed_uv_np)
 
 
-def test_arap_empty_fixed_raises(device, hemisphere):
+def test_arap_empty_fixed_raises(hemisphere):
     # Interior vertices but no pins: the ARAP global system is singular; raised pre-solve (CPU-ok).
     _, mesh_wp = hemisphere
     empty_fixed = wp.empty(0, dtype=wp.int32, device=mesh_wp.device)
     empty_uv = wp.empty(0, dtype=wp.vec2, device=mesh_wp.device)
-    uv_init = wp.zeros(int(mesh_wp.points.shape[0]), dtype=wp.vec2, device=mesh_wp.device)
+    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
     with pytest.raises(ValueError, match="at least one fixed vertex"):
         tw.parametrization.arap(mesh_wp.points, mesh_wp.indices, empty_fixed, empty_uv, uv_init)
 
 
-def test_arap_fixed_uv_length_mismatch_raises(device, hemisphere):
+def test_arap_fixed_uv_length_mismatch_raises(hemisphere):
     # fixed_indices/fixed_uv feed a scatter kernel indexed by fixed_indices' own length; a shorter
     # fixed_uv would otherwise be an out-of-bounds read.
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    short_uv = wp.zeros(int(boundary_wp.shape[0]) - 1, dtype=wp.vec2, device=mesh_wp.device)
-    uv_init = wp.zeros(int(mesh_wp.points.shape[0]), dtype=wp.vec2, device=mesh_wp.device)
+    short_uv = wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
+    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
     with pytest.raises(ValueError, match="same length"):
         tw.parametrization.arap(mesh_wp.points, mesh_wp.indices, boundary_wp, short_uv, uv_init)
 
 
-def test_arap_bad_iterations_raises(device, hemisphere):
+def test_arap_bad_iterations_raises(hemisphere):
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_uv_wp = tw.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init = wp.zeros(int(mesh_wp.points.shape[0]), dtype=wp.vec2, device=mesh_wp.device)
+    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
     with pytest.raises(ValueError, match="max_iterations"):
         tw.parametrization.arap(
             mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init, max_iterations=0
         )
 
 
-def test_arap_bad_tolerance_raises(device, hemisphere):
+def test_arap_bad_tolerance_raises(hemisphere):
     _, mesh_wp = hemisphere
     boundary_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
     boundary_uv_wp = tw.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init = wp.zeros(int(mesh_wp.points.shape[0]), dtype=wp.vec2, device=mesh_wp.device)
+    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
     with pytest.raises(ValueError, match="tolerance"):
         tw.parametrization.arap(
             mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init, tolerance=0.0
@@ -543,7 +543,7 @@ def test_arap_empty_mesh(device):
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("lscm", "igl")
-def test_lscm_matches_igl(request, device, mesh_name):
+def test_lscm_matches_igl(request, mesh_name):
     """
     Class A against ``igl.lscm`` with the same two pins, the libigl tutorial-502 convention.
 
@@ -568,7 +568,7 @@ def test_lscm_matches_igl(request, device, mesh_name):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_lscm_closed_mesh_matches_igl(device, icosahedron):
+def test_lscm_closed_mesh_matches_igl(icosahedron):
     """
     Class A on the degenerate closed-mesh branch, where the area term vanishes.
 
@@ -593,7 +593,7 @@ def test_lscm_closed_mesh_matches_igl(device, icosahedron):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-def test_lscm_is_fold_free(device, hemisphere):
+def test_lscm_is_fold_free(hemisphere):
     # LSCM of a disk-topology open surface with two pins is conformal and fold-free.
     _, mesh_wp = hemisphere
     loop_np = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
@@ -610,7 +610,7 @@ def test_lscm_is_fold_free(device, hemisphere):
 
 
 @pytest.mark.parametrize("n_pins", [0, 1])
-def test_lscm_too_few_pins_raises(device, hemisphere, n_pins):
+def test_lscm_too_few_pins_raises(hemisphere, n_pins):
     # Fewer than two pins leaves the similarity-transform null space; raised pre-solve (CPU-safe).
     _, mesh_wp = hemisphere
     pins_wp = wp.array(np.arange(n_pins, dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
@@ -632,7 +632,7 @@ def test_lscm_waives_pin_count_below_two_vertices(device):
     assert np.isfinite(uv_wp.numpy()).all()
 
 
-def test_lscm_pinned_uv_length_mismatch_raises(device, hemisphere):
+def test_lscm_pinned_uv_length_mismatch_raises(hemisphere):
     # pinned_indices/pinned_uv feed a scatter kernel indexed by pinned_indices' own length; a
     # shorter pinned_uv would otherwise be an out-of-bounds read.
     _, mesh_wp = hemisphere

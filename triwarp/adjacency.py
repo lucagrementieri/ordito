@@ -122,7 +122,7 @@ def face_adjacency(
     [`trimesh.graph.face_adjacency`][]
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         empty_array = twt.empty_2d((0, 2), wp.int32, device=device)
         if return_edges:
@@ -142,7 +142,7 @@ def face_adjacency(
         kernel, dim, sources = kernel_adjacency.edge_pairs_to_face_pairs, n_pairs, [edge_groups]
     else:
         order, inclusive, n_pairs = _sorted_pair_scan(faces, n_vertices)
-        kernel, dim = kernel_adjacency.emit_sorted_face_pairs, int(inclusive.shape[0])
+        kernel, dim = kernel_adjacency.emit_sorted_face_pairs, inclusive.size
         sources = [inclusive, order]
     adjacency = twt.empty_2d((n_pairs, 2), wp.int32, device=device)
     adjacency_edges = twt.empty_2d((n_pairs, 2), wp.int32, device=device) if return_edges else None
@@ -295,7 +295,7 @@ def vertex_face_adjacency(
     ``igl.vertex_triangle_adjacency``
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     row_count = tw.array.index_bound(faces) if n_vertices is None else int(n_vertices)
 
     offsets = wp.zeros(row_count + 1, dtype=wp.int32, device=device)
@@ -407,9 +407,9 @@ def face_adjacency_unshared(
     # ``edge_groups`` only to size an empty output off it.
     if face_adjacency is None:
         m, dim, tables = 0, 0, ()
-        if int(faces.shape[0]) >= 3:
+        if faces.size >= 3:
             order, inclusive, m = _sorted_pair_scan(faces, n_vertices)
-            dim, tables = int(inclusive.shape[0]), (inclusive, order)
+            dim, tables = inclusive.size, (inclusive, order)
         kernel = kernel_adjacency.emit_sorted_unshared
     else:
         assert face_adjacency_edges is not None
@@ -485,12 +485,12 @@ def face_adjacency_angles(
         vertices=vertices, faces=faces, face_adjacency=face_adjacency, face_normals=face_normals
     )
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
 
     if face_adjacency is None:
-        face_adjacency = tw.adjacency.face_adjacency(faces, n_vertices=int(vertices.shape[0]))
+        face_adjacency = tw.adjacency.face_adjacency(faces, n_vertices=vertices.size)
     if face_normals is None:
         face_normals, _ = tw.triangles.face_normals_and_areas(vertices, faces)
 
@@ -586,7 +586,7 @@ def face_adjacency_projections(
     out_projections = wp.empty(int(tables[1].shape[0]), dtype=wp.float32, device=faces.device)
     wp.launch(
         kernel_adjacency.face_adjacency_projections,
-        dim=out_projections.shape[0],
+        dim=out_projections.size,
         inputs=[vertices, *tables, out_projections],
         device=faces.device,
     )
@@ -667,7 +667,7 @@ def face_adjacency_convex(
     out_convex = wp.empty(int(tables[1].shape[0]), dtype=wp.bool, device=faces.device)
     wp.launch(
         kernel_adjacency.face_adjacency_convex,
-        dim=out_convex.shape[0],
+        dim=out_convex.size,
         inputs=[vertices, *tables, TOLERANCE_MERGE_CONSTANT, out_convex],
         device=faces.device,
     )
@@ -696,13 +696,13 @@ def _projection_tables(
     empty tables nothing reads.
     """
     require_paired_adjacency(face_adjacency, face_adjacency_edges)
-    if int(faces.shape[0]) // 3 == 0:
+    if faces.size // 3 == 0:
         return None
     if face_adjacency is None:
         # ``tw.adjacency.`` rather than a bare call: the parameter shadows the module-level
         # ``face_adjacency`` it derives from.
         face_adjacency, face_adjacency_edges = tw.adjacency.face_adjacency(
-            faces, return_edges=True, n_vertices=int(vertices.shape[0])
+            faces, return_edges=True, n_vertices=vertices.size
         )
     assert face_adjacency_edges is not None
     m = int(face_adjacency.shape[0])
@@ -761,7 +761,7 @@ def face_connected_component_labels(
     [`connected_component_labels_from_edges`][triwarp.graph.connected_component_labels_from_edges]
     [`face_adjacency`][triwarp.adjacency.face_adjacency]
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.empty(0, dtype=wp.int32, device=faces.device)
     # The adjacency pairs straight off the sorted edge keys, one union-find edge per halfedge (a
@@ -839,7 +839,7 @@ def _sorted_face_edge_buffers(
     of allocating one.
     """
     device = faces.device
-    n = int(faces.shape[0]) // 3 * 3
+    n = faces.size // 3 * 3
     radix = _hash_radix(n_vertices)
     # The keys and the identity payload are written straight into the leading halves of the radix
     # sort's double-width buffers in one launch, so no staging copy of every halfedge key is made

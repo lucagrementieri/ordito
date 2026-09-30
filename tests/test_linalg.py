@@ -1389,7 +1389,7 @@ def test_block_diag_matches_scipy(device: str) -> None:
         wp.array(vals, dtype=wp.float64, device=device),
     )
     # Duplicates, so the triplet build's ``nnz`` really is a capacity.
-    assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.shape[0]
+    assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
     scalar_np = sp.coo_matrix((vals, (rows, cols)), shape=(n, n)).toarray()
 
     stacked_wp = tw.linalg.block_diag((vector_wp, scalar_wp, scalar_wp))

@@ -70,10 +70,10 @@ def region_boundary_edges(
     """
     require_same_device(faces=faces, face_mask=face_mask)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(face_mask.shape[0]) != n_faces:
+    n_faces = faces.size // 3
+    if face_mask.size != n_faces:
         raise ValueError(
-            f"face_mask must have one entry per face, got {face_mask.shape[0]} for {n_faces}"
+            f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
     if n_faces == 0:
         return twt.empty_2d((0, 2), wp.int32, device=device)
@@ -196,7 +196,7 @@ def faces_left_of_contour(
     require_matching_twins(faces, twins)
     twt.ensure_edge_pairs(contour_edges, "contour_edges")
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     n_contour = int(contour_edges.shape[0])
     if n_faces == 0 or n_contour == 0:
         return wp.zeros(n_faces, dtype=wp.bool, device=device)
@@ -296,9 +296,9 @@ def exclude_fully_selected_components(
         If ``faces``, ``mask`` and ``unique_edges`` are not all on one device.
     """
     require_same_device(faces=faces, mask=mask, unique_edges=unique_edges)
-    if int(mask.shape[0]) != n_vertices:
+    if mask.size != n_vertices:
         raise ValueError(
-            f"mask must have one entry per vertex, got {mask.shape[0]} for n_vertices={n_vertices}"
+            f"mask must have one entry per vertex, got {mask.size} for n_vertices={n_vertices}"
         )
     device = mask.device
     if n_vertices == 0:
@@ -309,7 +309,7 @@ def exclude_fully_selected_components(
     # function trusts to be below ``n_vertices`` as the rest of its caller's pipeline does.
     parents = tw.array.arange(n_vertices, device=device)
     if unique_edges is None:
-        n_faces = int(faces.shape[0]) // 3
+        n_faces = faces.size // 3
         if n_faces > 0:
             for kernel in (kernel_selection.prehook_face_edges, kernel_selection.hook_face_edges):
                 wp.launch(kernel, dim=n_faces, inputs=[faces, parents], device=device)
@@ -418,7 +418,7 @@ def submesh_from_face_indices(
     """
     require_same_device(vertices=vertices, faces=faces, face_indices=face_indices)
     device = vertices.device
-    k = int(face_indices.shape[0])
+    k = face_indices.size
     if k == 0:
         empty_vertices = wp.empty(0, dtype=wp.vec3, device=device)
         empty_faces = wp.empty(0, dtype=wp.int32, device=device)
@@ -430,7 +430,7 @@ def submesh_from_face_indices(
     # sorted unique set and every corner's compact rank: no dedup of ``face_indices`` (a duplicated
     # face reaches the vertices it already reached, and keeps its own row), no face gather and no
     # ``unique_1d``. One readback, of the vertex count.
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     inclusive = wp.zeros(n_vertices, dtype=wp.int32, device=device)
     wp.launch(
         kernel_selection.mark_indexed_face_vertices,
@@ -526,9 +526,9 @@ def submeshes_from_face_groups(
         group_offsets=group_offsets,
     )
     device = vertices.device
-    k = max(int(group_offsets.shape[0]) - 1, 0)
-    n_selected = int(group_face_indices.shape[0])
-    n_vertices = int(vertices.shape[0])
+    k = max(group_offsets.size - 1, 0)
+    n_selected = group_face_indices.size
+    n_vertices = vertices.size
     if k == 0 or n_selected == 0:
         return (
             wp.empty(0, dtype=wp.vec3, device=device),
@@ -552,7 +552,7 @@ def submeshes_from_face_groups(
 
     # A key is ``group * radix + vertex``, below ``k * radix``.
     unique_keys, inverse = tw.grouping.unique_1d(keys, return_inverse=True, max_value=k * radix - 1)
-    n_slots = int(unique_keys.shape[0])
+    n_slots = unique_keys.size
     # One decode per unique slot answers everything its key is needed for: the slot's group, the
     # group's vertex count (a histogram, so an empty group still gets a zero-length entry and no
     # host synchronisation is needed to size it), and the source position it names.
@@ -641,10 +641,10 @@ def submesh_from_face_mask(
         The complement: keep everything *outside* a region, and report the rims that opens.
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
-    n_faces = int(faces.shape[0]) // 3
-    if int(face_mask.shape[0]) != n_faces:
+    n_faces = faces.size // 3
+    if face_mask.size != n_faces:
         raise ValueError(
-            f"face_mask must have one entry per face, got {face_mask.shape[0]} for {n_faces}"
+            f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
     sub_vertices, sub_faces, vertex_index, _ = _submesh_from_mask(
         vertices, faces, face_mask, keep_masked=True
@@ -822,10 +822,10 @@ def _delete_region_loops(
     """
     require_same_device(vertices=vertices, faces=faces, face_mask=face_mask)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(face_mask.shape[0]) != n_faces:
+    n_faces = faces.size // 3
+    if face_mask.size != n_faces:
         raise ValueError(
-            f"face_mask must have one entry per face, got {face_mask.shape[0]} for {n_faces}"
+            f"face_mask must have one entry per face, got {face_mask.size} for {n_faces}"
         )
 
     kept_vertices, kept_faces, vertex_index, kept_ranks = _submesh_from_mask(
@@ -848,15 +848,15 @@ def _delete_region_loops(
             [] if host_bounds else None,
         )
 
-    if int(kept_faces.shape[0]) == 0:
+    if kept_faces.size == 0:
         return no_loops()
     # Nothing deleted opens no rim: every loop the submesh has is the input's own. The face count
     # says so without a readback, and it skips the loop extraction as well as the classification.
-    if int(kept_faces.shape[0]) == 3 * n_faces:
+    if kept_faces.size == 3 * n_faces:
         return no_loops()
 
     flat_loops, loop_offsets = tw.boundary.boundary_loops_with_offsets(kept_vertices, kept_faces)
-    n_loops = int(loop_offsets.shape[0]) - 1
+    n_loops = loop_offsets.size - 1
     if n_loops == 0:
         return no_loops()
 
@@ -867,11 +867,11 @@ def _delete_region_loops(
     #
     # Done on the host this was a readback per loop plus a Python membership test per rim edge, so
     # its cost grew with the *loop count* as much as with the mesh.
-    n_kept = int(kept_faces.shape[0]) // 3
+    n_kept = kept_faces.size // 3
     # The deleted count is the face count's complement, and a deleted face's rank among the
     # deleted ones follows from the extraction's kept-face ranks, so the region needs neither a
     # readback nor a scan of its own.
-    base = wp.uint64(int(vertices.shape[0]))
+    base = wp.uint64(vertices.size)
     n_deleted_keys = 3 * (n_faces - n_kept)
     # The keys are written into the leading half of the radix sort's double-width scratch, and the
     # payload is never read, so neither is seeded: only the sorted keys are wanted.
@@ -884,7 +884,7 @@ def _delete_region_loops(
     )
     payload = wp.empty(2 * n_deleted_keys, dtype=wp.int32, device=device)
     # A key is ``min + max * n_vertices``, below ``n_vertices ** 2``: only those bits are sorted.
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     wp.utils.radix_sort_pairs(
         key_buffer,
         payload,
@@ -944,8 +944,8 @@ def _submesh_from_mask(
     two-value readback sizes both outputs.
     """
     device = vertices.device
-    n_faces = int(face_mask.shape[0])
-    n_vertices = int(vertices.shape[0])
+    n_faces = face_mask.size
+    n_vertices = vertices.size
     if n_faces == 0:
         empty_index = wp.empty(0, dtype=wp.int32, device=device)
         return wp.empty(0, dtype=wp.vec3, device=device), empty_index, empty_index, empty_index
@@ -1027,7 +1027,7 @@ def submesh_from_vertex_indices(
     """
     require_same_device(vertices=vertices, faces=faces, vertex_indices=vertex_indices)
     face_indices = face_indices_from_vertex_indices(
-        faces, vertex_indices, face_mode=face_mode, n_vertices=int(vertices.shape[0])
+        faces, vertex_indices, face_mode=face_mode, n_vertices=vertices.size
     )
     return submesh_from_face_indices(vertices, faces, face_indices)
 
@@ -1083,10 +1083,10 @@ def submesh_from_vertex_mask(
         The per-face selection this reduces onto.
     """
     require_same_device(vertices=vertices, faces=faces, vertex_mask=vertex_mask)
-    n_vertices = int(vertices.shape[0])
-    if int(vertex_mask.shape[0]) != n_vertices:
+    n_vertices = vertices.size
+    if vertex_mask.size != n_vertices:
         raise ValueError(
-            f"vertex_mask length must equal n_vertices={n_vertices}, got {vertex_mask.shape[0]}"
+            f"vertex_mask length must equal n_vertices={n_vertices}, got {vertex_mask.size}"
         )
 
     face_mask = _face_mask_from_vertex_mask(faces, vertex_mask, face_mode=face_mode)
@@ -1112,7 +1112,7 @@ def _face_mask_from_vertex_mask(
         raise ValueError(f'face_mode must be "all" or "any", got {face_mode!r}')
 
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     out_face_mask = wp.empty(n_faces, dtype=wp.bool, device=device)
     if n_faces == 0:
         return out_face_mask
@@ -1167,7 +1167,7 @@ def expand_vertex_mask(
     face references are neither reached nor removed.
     """
     require_same_device(faces=faces, mask=mask)
-    n = int(mask.shape[0])
+    n = mask.size
     if hops <= 0 or n == 0:
         return wp.clone(mask)
     return _dilate_vertex_mask(faces, mask, hops, value=True)
@@ -1211,7 +1211,7 @@ def shrink_vertex_mask(
     mask. MeshLab's Erode Selection is a *face*-based operation and gives a different answer.
     """
     require_same_device(faces=faces, mask=mask)
-    n = int(mask.shape[0])
+    n = mask.size
     if hops <= 0 or n == 0:
         return wp.clone(mask)
     # The dilation of the complement, run on the mask itself with the polarity flipped: a face with
@@ -1232,7 +1232,7 @@ def _dilate_vertex_mask(
     The caller's ``mask`` is never written. ``hops`` must be positive.
     """
     device = mask.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     current = mask
     spare = None
     owned = False
@@ -1297,8 +1297,8 @@ def face_indices_from_vertex_indices(
         raise ValueError(f'face_mode must be "all" or "any", got {face_mode!r}')
 
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
-    if int(vertex_indices.shape[0]) == 0 or n_faces == 0:
+    n_faces = faces.size // 3
+    if vertex_indices.size == 0 or n_faces == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
 
     # A membership mask over the vertices, read per corner, is the ``isin`` over the index list;

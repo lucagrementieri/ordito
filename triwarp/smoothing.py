@@ -152,7 +152,7 @@ def filter_laplacian(
     # returning both would have to hand back an optional operator that three of the six callers
     # immediately unwrap.
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -282,7 +282,7 @@ def _implicit_fixed_point_pass(
         target = positions if step == steps - 1 else scratch[step % 2]
         wp.launch(
             kernel_smoothing.implicit_laplacian_step,
-            dim=int(positions.shape[0]),
+            dim=positions.size,
             inputs=[operator.offsets, operator.columns, operator.values, coeff, positions, source],
             outputs=[target],
             device=positions.device,
@@ -350,7 +350,7 @@ def _apply_volume_constraint(
     scratch.accumulate(positions, faces)
     wp.launch(
         kernel_smoothing.rescale_to_volume,
-        dim=int(positions.shape[0]),
+        dim=positions.size,
         inputs=[wp.float64(vol_ini), scratch.volume, center, positions],
         device=positions.device,
     )
@@ -436,8 +436,8 @@ def inflate(
     if iterations < 0:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or iterations == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0 or iterations == 0:
         return wp.clone(vertices)
 
     positions = wp.clone(vertices)
@@ -528,7 +528,7 @@ def filter_humphrey(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -635,8 +635,8 @@ def filter_spikes(
     if max_iter < 0:
         raise ValueError(f"max_iter must be non-negative, got {max_iter}")
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or max_iter == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0 or max_iter == 0:
         cloned = wp.clone(vertices)
         return (cloned, 0) if return_count else cloned
 
@@ -761,7 +761,7 @@ def equalize_triangle_areas(
     """
     require_same_device(vertices=vertices, faces=faces, region=region, vertex_faces=vertex_faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
         return wp.clone(vertices)
@@ -867,7 +867,7 @@ def relax_keep_volume(
     """
     require_same_device(vertices=vertices, faces=faces, region=region)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
         return wp.clone(vertices)
@@ -987,7 +987,7 @@ def relax_approx(
     if dilate_radius <= 0.0:
         raise ValueError(f"dilate_radius must be positive, got {dilate_radius}")
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     flags, limit = _relaxation_state(vertices, iterations, region, max_displacement)
     if flags is None:
         return wp.clone(vertices)
@@ -1039,13 +1039,13 @@ def _relaxation_state(
         raise ValueError(f"iterations must be non-negative, got {iterations}")
     if max_displacement is not None and max_displacement < 0.0:
         raise ValueError(f"max_displacement must be non-negative, got {max_displacement}")
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     limit = wp.float32(-1.0 if max_displacement is None else max_displacement)
     # Validate before the do-nothing early return, so a malformed ``region`` raises whatever
     # ``iterations`` happens to be -- ``smooth_region_boundary`` orders it this way too, and a
     # validation a caller can switch off by asking for zero passes is not one.
     if region is not None and (
-        len(region.shape) != 1 or region.shape[0] != n_vertices or region.dtype is not wp.bool
+        len(region.shape) != 1 or region.size != n_vertices or region.dtype is not wp.bool
     ):
         raise ValueError(
             f"region must be a length-{n_vertices} wp.bool array, got shape {tuple(region.shape)} "
@@ -1138,7 +1138,7 @@ def filter_taubin(
     if recompute and laplacian_operator is not None:
         raise ValueError("recompute rebuilds the operator each pass; do not also pass one")
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -1148,7 +1148,7 @@ def filter_taubin(
     # writes the weights.
     pattern = (
         laplacian.mesh_operator_pattern(faces, n, operator="laplacian_symmetric")
-        if recompute and int(faces.shape[0]) > 0
+        if recompute and faces.size > 0
         else None
     )
     positions = _as_vec3d(vertices)
@@ -1213,7 +1213,7 @@ def filter_neighborhood_average(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -1307,7 +1307,7 @@ def filter_mut_dif_laplacian(
         vertices=vertices, faces=faces, face_normals=face_normals, face_areas=face_areas
     )
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -1414,7 +1414,7 @@ class _VolumeScratch(NamedTuple):
     @classmethod
     def for_faces(cls, faces: wp.array[wp.int32], device: wp.DeviceLike) -> _VolumeScratch:
         """Allocate the scratch for ``faces``' face count."""
-        n_faces = int(faces.shape[0]) // 3
+        n_faces = faces.size // 3
         return cls(
             wp.empty(n_faces, dtype=wp.float64, device=device),
             wp.empty(1, dtype=wp.float64, device=device),
@@ -1435,7 +1435,7 @@ class _VolumeScratch(NamedTuple):
         what both consumers read as "no correction".
         """
         out = self.volume if out_volume is None else out_volume
-        n_faces = int(self.face_volumes.shape[0])
+        n_faces = self.face_volumes.size
         if n_faces == 0:
             out.zero_()
             return
@@ -1460,7 +1460,7 @@ def _diffuse_pass(
     # ``coeff`` alternates sign.
     wp.launch(
         kernel_smoothing.diffuse_vec3_pass,
-        dim=int(positions.shape[0]),
+        dim=positions.size,
         inputs=[operator.offsets, operator.columns, operator.values, positions, coeff],
         outputs=[out_next],
         device=positions.device,
@@ -1529,8 +1529,8 @@ def filter_implicit_fairing(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n = vertices.size
+    n_faces = faces.size // 3
     if n == 0 or n_faces == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -1672,7 +1672,7 @@ def _dirichlet_state(
     path, so a watertight input runs exactly the same code as it did before pinning existed.
     """
     boundary_wp = tw.boundary.boundary_vertex_indices(vertices, faces)
-    if int(boundary_wp.shape[0]) == 0:
+    if boundary_wp.size == 0:
         return None
     fixed_mask = tw.array.indices_to_mask(boundary_wp, n, device=device)
     free_map, n_free = twl.free_partition(fixed_mask)
@@ -1922,7 +1922,7 @@ def refine_and_smooth_region(
     if not smooth_curvature:
         return vertices, faces, patch_face_mask
 
-    n = int(vertices.shape[0])
+    n = vertices.size
     # New (interior patch) vertices are the tail appended by subdivision, minus mesh-boundary verts.
     new_verts = wp.zeros(n, dtype=wp.bool, device=device)
     # Warp rejects a zero-length slice, and subdivision may have added no vertices at all.
@@ -1980,10 +1980,7 @@ def _boundary_verts_mask(
     unique_edges, inverse = edges
     counts = wp.zeros(int(unique_edges.shape[0]), dtype=wp.int32, device=device)
     wp.launch(
-        kernel_scatter.count_occurrences,
-        dim=int(inverse.shape[0]),
-        inputs=[inverse, counts],
-        device=device,
+        kernel_scatter.count_occurrences, dim=inverse.size, inputs=[inverse, counts], device=device
     )
     mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     wp.launch(
@@ -2042,8 +2039,8 @@ def _region_topology(
     ``incidence`` a previous region's ``(incidence_offsets, incident_edges)`` over the same one.
     """
     device = vertices.device
-    n = int(vertices.shape[0])
-    if int(faces.shape[0]) == 0 or n == 0:
+    n = vertices.size
+    if faces.size == 0 or n == 0:
         return None
     free_map, n_free = tw.array.mask_to_compact_ranks(free_mask)
     if n_free == 0:
@@ -2128,7 +2125,7 @@ def _solve_region_fixed_rim(
 ) -> wp.array[wp.vec3]:
     """Solve [`smooth_region_fixed_rim`][triwarp.smoothing.smooth_region_fixed_rim] on a region."""
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     free_map, n_free = region.free_map, region.n_free
     weights, unit = _edge_weights(vertices, faces, "unit", region)
     values = wp.empty(region.pattern_capacity, dtype=wp.float64, device=device)
@@ -2189,7 +2186,7 @@ def _solve_region_smooth(
 ) -> wp.array[wp.vec3]:
     """Solve [`smooth_region`][triwarp.smoothing.smooth_region] on a derived region."""
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     free_map, n_free = region.free_map, region.n_free
     weights, unit = _edge_weights(vertices, faces, edge_weights, region)
     walk = [
@@ -2332,7 +2329,7 @@ def _csr_matrix(
     matrix.columns = columns
     matrix.values = values
     matrix.row_counts = None
-    matrix.notify_nnz_changed(nnz=int(values.shape[0]))
+    matrix.notify_nnz_changed(nnz=values.size)
     return matrix
 
 
@@ -2357,7 +2354,7 @@ def _edge_weights(
     weights = wp.zeros(int(region.unique_edges.shape[0]), dtype=wp.float32, device=device)
     wp.launch(
         kernel_smoothing.edge_cotan_add,
-        dim=int(faces.shape[0]) // 3,
+        dim=faces.size // 3,
         inputs=[vertices, faces, region.inverse, weights],
         device=device,
     )
@@ -2445,13 +2442,13 @@ def smooth_region_boundary(
     if iterations < 0:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
-    if len(region.shape) != 1 or region.shape[0] != n_faces or region.dtype is not wp.bool:
+    n_faces = faces.size // 3
+    if len(region.shape) != 1 or region.size != n_faces or region.dtype is not wp.bool:
         raise ValueError(
             f"region must be a length-{n_faces} wp.bool array, got shape {tuple(region.shape)} "
             f"of {region.dtype}"
         )
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if n_vertices == 0 or n_faces == 0 or iterations == 0:
         return wp.clone(vertices)
 
@@ -2482,7 +2479,7 @@ def smooth_region_boundary(
     pattern_offsets, columns = _band_pattern(
         faces, (vf_indices, offsets), fixed_mask, free_map, n_free
     )
-    nnz = int(columns.shape[0])
+    nnz = columns.size
     system = _csr_matrix(
         n_free, pattern_offsets, columns, wp.empty(nnz, dtype=wp.float64, device=device)
     )
@@ -2534,7 +2531,7 @@ def _band_pattern(
     their vertex-face rings alone.
     """
     device = faces.device
-    n_vertices = int(fixed_mask.shape[0])
+    n_vertices = fixed_mask.size
     vf_indices, offsets = vertex_faces
     ring = [fixed_mask, free_map, offsets, vf_indices, faces]
     pattern_offsets = wp.zeros(n_free + 1, dtype=wp.int32, device=device)
@@ -2567,7 +2564,7 @@ def _incident_vertex_mask(
     mask = wp.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     wp.launch(
         kernel_selection.mark_incident_vertices,
-        dim=int(faces.shape[0]) // 3,
+        dim=faces.size // 3,
         inputs=[faces, region, mask],
         device=faces.device,
     )
@@ -2584,11 +2581,11 @@ def _region_rim_vertices(
     harmonic system over that component has nothing to interpolate and is singular.
     """
     device = faces.device
-    n_vertices = int(inside.shape[0])
+    n_vertices = inside.size
     free = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     wp.launch(
         kernel_smoothing.mark_band_vertices,
-        dim=int(region.shape[0]),
+        dim=region.size,
         inputs=[faces, region, inside, free],
         device=device,
     )
@@ -2672,10 +2669,10 @@ def filter_scalar_laplacian(
     """
     require_same_device(values=values, vertices=vertices, faces=faces)
     device = values.device
-    n = int(vertices.shape[0])
-    if int(values.shape[0]) != n:
+    n = vertices.size
+    if values.size != n:
         raise ValueError(
-            f"values must have one entry per vertex, got {values.shape[0]} for {n} vertices"
+            f"values must have one entry per vertex, got {values.size} for {n} vertices"
         )
 
     out = wp.clone(values)
@@ -2775,7 +2772,7 @@ def filter_normals(
         raise ValueError(f"threshold must be in [0, 180] degrees, got {threshold}")
 
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if face_normals is None or face_areas is None:
         face_normals, face_areas = face_normals_and_areas(vertices, faces)
     # Each pass rewrites the normal field in place, so a caller-supplied buffer is copied rather
@@ -2785,7 +2782,7 @@ def filter_normals(
         return normals
 
     if face_adjacency is None:
-        face_adjacency = tw.adjacency.face_adjacency(faces, n_vertices=int(vertices.shape[0]))
+        face_adjacency = tw.adjacency.face_adjacency(faces, n_vertices=vertices.size)
     m = int(face_adjacency.shape[0])
     threshold_cos = wp.float32(math.cos(math.radians(threshold)))
 
@@ -2894,8 +2891,8 @@ def filter_two_step(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n = vertices.size
+    n_faces = faces.size // 3
     out = wp.clone(vertices)
     if n == 0 or n_faces == 0 or iterations <= 0:
         return out
@@ -2988,7 +2985,7 @@ def filter_sharpen(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     out = wp.empty(n, dtype=wp.vec3, device=device)
     if n == 0:
         return out
@@ -3056,13 +3053,13 @@ def _resolved_operator(
 
 def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:
     """Widen a ``wp.vec3`` array to ``wp.vec3d``: the seam where the float64 solves start."""
-    out = wp.empty(int(vertices.shape[0]), dtype=wp.vec3d, device=vertices.device)
+    out = wp.empty(vertices.size, dtype=wp.vec3d, device=vertices.device)
     wp.utils.array_cast(vertices, out)
     return out
 
 
 def _as_vec3(positions: wp.array[wp.vec3d]) -> wp.array[wp.vec3]:
     """Narrow a ``wp.vec3d`` array back to ``wp.vec3``: the seam where the float64 solves end."""
-    out = wp.empty(int(positions.shape[0]), dtype=wp.vec3, device=positions.device)
+    out = wp.empty(positions.size, dtype=wp.vec3, device=positions.device)
     wp.utils.array_cast(positions, out)
     return out

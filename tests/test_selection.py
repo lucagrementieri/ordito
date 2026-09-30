@@ -211,7 +211,7 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
     device = faces_wp.device
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_faces = faces_wp.size // 3
 
     centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
     region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
@@ -269,7 +269,7 @@ def test_faces_left_of_contour_matches_meshlib(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
     device = faces_wp.device
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_faces = faces_wp.size // 3
 
     centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
     region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
@@ -313,7 +313,7 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
     _, mesh_wp = torus
     faces_wp = mesh_wp.indices
     device = faces_wp.device
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_faces = faces_wp.size // 3
 
     empty_wp = twt.empty_2d((0, 2), wp.int32, device=device)
     assert not np.any(tw.selection.faces_left_of_contour(faces_wp, empty_wp).numpy())
@@ -390,7 +390,7 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
             )
         )
     vertices_wp, faces_wp = tw.combine.concatenate(parts)
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
     offsets = np.cumsum([0, *(len(mesh_tm.vertices) for mesh_tm in meshes)])
 
     mask_np = np.zeros(n_vertices, dtype=bool)
@@ -404,7 +404,7 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
     rows_np = np.concatenate([faces_2d_np[:, 0], faces_2d_np[:, 1], faces_2d_np[:, 2]])
     columns_np = np.concatenate([faces_2d_np[:, 1], faces_2d_np[:, 2], faces_2d_np[:, 0]])
     adjacency_np = sp.coo_matrix(
-        (np.ones(rows_np.shape[0]), (rows_np, columns_np)), shape=(n_vertices, n_vertices)
+        (np.ones(rows_np.size), (rows_np, columns_np)), shape=(n_vertices, n_vertices)
     )
     n_components, labels_np = csgraph.connected_components(adjacency_np, directed=False)
     kept_np = mask_np.copy()
@@ -430,7 +430,7 @@ def test_exclude_fully_selected_components(device: str):
     f_wp_hemi = wp.array(hemi.faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
     verts, faces = tw.combine.concatenate([(v_wp_ico, f_wp_ico), (v_wp_hemi, f_wp_hemi)])
 
-    n = int(verts.shape[0])
+    n = verts.size
     n_ico = len(v_ico)
     mask = np.zeros(n, dtype=bool)
     mask[:n_ico] = True  # whole icosahedron component
@@ -509,7 +509,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     # vertex, so triwarp's compaction would be a no-op and the transform would go untested.
     upper_np = np.asarray(mesh_tm.vertices)[np.asarray(mesh_tm.faces)].mean(axis=1)[:, 2] > 0.0
     indices_np = np.flatnonzero(upper_np).astype(np.int32)
-    assert 0 < indices_np.shape[0] < n_faces  # non-vacuity: a strict subset
+    assert 0 < indices_np.size < n_faces  # non-vacuity: a strict subset
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 
     sub_vertices_wp, sub_faces_wp, vertex_map_wp = tw.selection.submesh_from_face_indices(
@@ -517,7 +517,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     )
     # triwarp's faces, lifted back into the input's vertex numbering.
     faces_wp = vertex_map_wp.numpy()[sub_faces_wp.numpy().reshape(-1, 3)]
-    assert int(sub_vertices_wp.shape[0]) < mesh_tm.vertices.shape[0]  # it really compacted
+    assert sub_vertices_wp.size < mesh_tm.vertices.shape[0]  # it really compacted
 
     mask_np = np.zeros(n_faces, dtype=bool)
     mask_np[indices_np] = True
@@ -530,7 +530,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     positions_o3d = selected_o3d.vertex.positions.numpy().astype(np.float64)
     residual_o3d, original_o3d = KDTree(np.asarray(mesh_tm.vertices)).query(positions_o3d)
     assert residual_o3d.max() < 1e-6  # every kept position is a copy, not a recomputation
-    assert np.unique(original_o3d).shape[0] == original_o3d.shape[0]  # and the match is a bijection
+    assert np.unique(original_o3d).size == original_o3d.size  # and the match is a bijection
     faces_o3d = original_o3d[selected_o3d.triangle.indices.numpy().astype(np.int64)]
 
     extracted_pv = trimesh_to_pyvista(mesh_tm).extract_cells(indices_np)
@@ -538,10 +538,10 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     faces_pv = original_pv[np.asarray(extracted_pv.cells_dict[5])]
 
     # All three compact to the same vertex count, which is the referenced set.
-    assert positions_o3d.shape[0] == int(sub_vertices_wp.shape[0])
-    assert extracted_pv.n_points == int(sub_vertices_wp.shape[0])
+    assert positions_o3d.shape[0] == sub_vertices_wp.size
+    assert extracted_pv.n_points == sub_vertices_wp.size
     for reference_faces in (faces_o3d, faces_pv):
-        assert reference_faces.shape[0] == indices_np.shape[0]
+        assert reference_faces.shape[0] == indices_np.size
         assert np.array_equal(
             lexsort_rows(np.sort(reference_faces, axis=1)),
             lexsort_rows(np.sort(faces_wp.astype(np.int64), axis=1)),
@@ -590,7 +590,7 @@ def test_submesh_from_face_indices_duplicated(request: pytest.FixtureRequest) ->
     submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
-    assert submesh_vertices_wp.shape[0] <= len(np.unique(face_indices_np)) * 3
+    assert submesh_vertices_wp.size <= len(np.unique(face_indices_np)) * 3
     assert submesh_faces_wp.shape == (len(face_indices_np) * 3,)
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
@@ -638,8 +638,8 @@ def test_submesh_from_face_indices_all_faces(
     submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
-    assert submesh_vertices_wp.shape[0] <= mesh_tm.vertices.shape[0]
-    assert submesh_faces_wp.shape[0] == n_faces * 3
+    assert submesh_vertices_wp.size <= mesh_tm.vertices.shape[0]
+    assert submesh_faces_wp.size == n_faces * 3
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
@@ -668,7 +668,7 @@ def test_submeshes_from_face_groups_matches_single(
     )
     vertex_bounds_np = vertex_offsets_wp.list()
     face_bounds_np = offsets_np.tolist()
-    assert vertex_bounds_np[-1] == int(vertices_all_wp.shape[0])
+    assert vertex_bounds_np[-1] == vertices_all_wp.size
     assert face_bounds_np[-1] == n_faces
 
     for group, v_begin, v_end, f_begin, f_end in zip(
@@ -715,7 +715,7 @@ def test_submeshes_from_face_groups_shared_vertex(device: str) -> None:
     )
     # 3 + 3 vertices, not 5: vertex 2 belongs to both groups and is emitted in each.
     assert np.array_equal(vertex_offsets_wp.numpy(), [0, 3, 6])
-    assert int(vertices_all_wp.shape[0]) == 6
+    assert vertices_all_wp.size == 6
     assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2, 0, 1, 2])
     assert np.array_equal(vertices_all_wp.numpy()[:3], vertices_np[[0, 1, 2]])
     assert np.array_equal(vertices_all_wp.numpy()[3:], vertices_np[[2, 3, 4]])
@@ -781,7 +781,7 @@ def test_submesh_return_index_carries_an_attribute(
         mesh_wp.points, mesh_wp.indices, face_mask_wp, return_index=True
     )
     vertex_index_np = vertex_index_wp.numpy()
-    assert vertex_index_np.shape == (int(sub_vertices_wp.shape[0]),)
+    assert vertex_index_np.shape == (sub_vertices_wp.size,)
     assert np.all(np.diff(vertex_index_np) > 0)  # ascending, so it is a sorted lookup
 
     # The round trip: an attribute gathered through the map is the submesh's own answer.
@@ -792,7 +792,7 @@ def test_submesh_return_index_carries_an_attribute(
         mesh_wp.points, mesh_wp.indices, tw.array.flatnonzero(face_mask_wp), return_index=True
     )
     assert np.array_equal(index_map_wp.numpy(), vertex_index_np)
-    assert int(sub_faces_wp.shape[0]) > 0
+    assert sub_faces_wp.size > 0
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
@@ -871,14 +871,12 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     region_ml.resize(n_faces)
     loops_ml = mm.delRegionKeepBd(mesh_ml, region_ml, False)
 
-    assert int(kept_faces_wp.shape[0]) // 3 == mesh_ml.topology.numValidFaces()
+    assert kept_faces_wp.size // 3 == mesh_ml.topology.numValidFaces()
     assert len(new_loops) == len(loops_ml)
-    assert sorted(int(loop.shape[0]) for loop in new_loops) == sorted(
-        len(loop_ml) for loop_ml in loops_ml
-    )
+    assert sorted(loop.size for loop in new_loops) == sorted(len(loop_ml) for loop_ml in loops_ml)
     # The rim is a real cycle in the kept mesh, which the loop lengths alone would not say.
     kept_boundary_np = tw.boundary.boundary_edges(kept_vertices_wp, kept_faces_wp).numpy()
-    assert kept_boundary_np.shape[0] == sum(int(loop.shape[0]) for loop in new_loops)
+    assert kept_boundary_np.shape[0] == sum(loop.size for loop in new_loops)
 
 
 def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
@@ -892,14 +890,14 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
     """
     mesh_tm, mesh_wp = hemisphere
     device = mesh_wp.points.device
-    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).shape[0] > 0
+    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size > 0
     nothing = wp.zeros(mesh_tm.faces.shape[0], dtype=wp.bool, device=device)
     kept_vertices_wp, kept_faces_wp, loops = tw.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, nothing
     )
     assert loops == []
     assert np.array_equal(kept_faces_wp.numpy(), mesh_wp.indices.numpy())
-    assert int(kept_vertices_wp.shape[0]) == int(mesh_wp.points.shape[0])
+    assert kept_vertices_wp.size == mesh_wp.points.size
 
 
 def test_delete_region_keep_boundary_reports_only_new_rims(
@@ -935,7 +933,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     _kept_vertices_wp, kept_faces_wp, interior_loops = tw.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, wp.array(interior_np, dtype=wp.bool, device=device)
     )
-    assert int(kept_faces_wp.shape[0]) // 3 == n_faces - int(interior_np.sum())
+    assert kept_faces_wp.size // 3 == n_faces - int(interior_np.sum())
     assert len(interior_loops) == 1
     interior_loop_np = interior_loops[0].numpy()
     assert np.unique(interior_loop_np).size == interior_loop_np.size  # a simple rim
@@ -1052,9 +1050,9 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     assert np.array_equal(packed_vertices_wp.numpy(), vertices_wp.numpy())
     assert np.array_equal(packed_faces_wp.numpy(), faces_wp.numpy())
     offsets_np = offsets_wp.numpy()
-    assert offsets_np.shape[0] == len(loops_wp) + 1
+    assert offsets_np.size == len(loops_wp) + 1
     assert offsets_np[0] == 0
-    assert offsets_np[-1] == flat_wp.shape[0]
+    assert offsets_np[-1] == flat_wp.size
     flat_np = flat_wp.numpy()
     for i, loop_wp in enumerate(loops_wp):
         assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])
@@ -1168,7 +1166,7 @@ def test_submesh_from_vertex_mask(request: pytest.FixtureRequest, face_mode: str
         face_mode=face_mode,
     )
     # Two empty submeshes compare equal, which is what the "all" branch used to do.
-    assert exp_faces_wp.shape[0] > 0
+    assert exp_faces_wp.size > 0
     assert np.allclose(got_vertices_wp.numpy(), exp_vertices_wp.numpy())
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
 

@@ -56,7 +56,7 @@ def face_normals_and_areas(
     [`trimesh.Trimesh.area_faces`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_normal = wp.empty(f, dtype=wp.vec3, device=vertices.device)
     out_area = wp.empty(f, dtype=wp.float32, device=vertices.device)
     wp.launch(
@@ -95,7 +95,7 @@ def face_angles(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> twt.A
     [`trimesh.triangles.angles`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_angle = twt.empty_2d((f, 3), wp.float32, device=vertices.device)
     wp.launch(
         kernel_triangles.angles, dim=f, inputs=[vertices, faces, out_angle], device=vertices.device
@@ -222,7 +222,7 @@ def corner_normals(
         face_areas=face_areas,
     )
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return twt.as_array2d(twt.empty_2d((0, 3), wp.vec3, device=device), wp.vec3)
     if n_vertices is None:
@@ -231,7 +231,7 @@ def corner_normals(
         # correct, and a mesh with trailing unreferenced vertices simply packs against a slightly
         # wider one. Inferring the tight bound is a device reduction plus a host readback, which is
         # a fifth of the whole call.
-        n_vertices = int(vertices.shape[0])
+        n_vertices = vertices.size
     if twins is None:
         twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
 
@@ -337,7 +337,7 @@ def face_quality(
     require_same_device(vertices=vertices, faces=faces)
     if metric not in _QUALITY_METRICS:
         raise ValueError(f"unknown metric {metric!r}, expected one of {sorted(_QUALITY_METRICS)}")
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_quality = wp.empty(f, dtype=wp.float32, device=vertices.device)
     wp.launch(
         kernel_triangles.face_quality,
@@ -380,7 +380,7 @@ def face_centroids(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp
     ``igl.barycenter``
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     out_centroids = wp.empty(n_faces, dtype=wp.vec3, device=vertices.device)
     if n_faces == 0:
         return out_centroids
@@ -440,7 +440,7 @@ def face_signed_volumes(
     [`face_centroids`][triwarp.triangles.face_centroids]
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = vertices.device
     scalar = wp.float64 if vertices.dtype is wp.vec3d else wp.float32
     volumes = wp.empty(n_faces, dtype=scalar, device=device)
@@ -486,7 +486,7 @@ def face_nondegenerate_mask(
     [`trimesh.triangles.nondegenerate`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_nondegenerate = wp.empty(f, dtype=wp.bool, device=vertices.device)
     wp.launch(
         kernel_triangles.face_nondegenerate_mask,
@@ -534,7 +534,7 @@ def barycentric_to_points(
     [`trimesh.triangles.barycentric_to_points`][]
     """
     require_same_device(vertices=vertices, faces=faces, barycentric=barycentric)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_points = wp.empty(f, dtype=wp.vec3, device=vertices.device)
     wp.launch(
         kernel_triangles.barycentric_to_points,
@@ -594,7 +594,7 @@ def points_to_barycentric(
     ``triwarp.kernels.triangles.point_barycentric``.
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_barycentric = wp.empty(f, dtype=wp.vec3, device=vertices.device)
     wp.launch(
         kernel_triangles.points_to_barycentric,
@@ -641,7 +641,7 @@ def closest_point(
     [`trimesh.triangles.closest_point`][]
     """
     require_same_device(vertices=vertices, faces=faces, points=points)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     out_closest = wp.empty(f, dtype=wp.vec3, device=vertices.device)
     wp.launch(
         kernel_triangles.closest_point,

@@ -23,11 +23,15 @@ normals = wp.array(
 )
 
 poisson_vertices, poisson_faces = tw.reconstruction.screened_poisson(points, normals, depth=7)
-print("screened Poisson faces:", poisson_faces.shape[0] // 3)              # 127460
-print("screened Poisson watertight:", tw.validation.is_watertight(poisson_vertices, poisson_faces))  # True
+print("screened Poisson faces:", poisson_faces.shape[0] // 3)  # 127460
+print(
+    "screened Poisson watertight:", tw.validation.is_watertight(poisson_vertices, poisson_faces)
+)  # True
 
 bpa_vertices, bpa_faces = tw.reconstruction.ball_pivoting(points, normals)
-print("ball pivoting faces:", bpa_faces.shape[0] // 3, "verts:", bpa_vertices.shape[0])  # 34804, 19864
+print(
+    "ball pivoting faces:", bpa_faces.shape[0] // 3, "verts:", bpa_vertices.shape[0]
+)  # 34804, 19864
 ```
 
 ## Estimating normals for a real scan

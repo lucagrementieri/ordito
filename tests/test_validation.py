@@ -164,7 +164,7 @@ def test_topological_measures_match_pymeshlab(
     boundary_edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert int(boundary_edges_wp.shape[0]) == int(measures_pml["boundary_edges"])
 
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     labels_np = tw.graph.connected_component_labels_from_edges(unique_edges_wp, n_vertices).numpy()
     assert len(np.unique(labels_np)) == int(measures_pml["connected_components_number"])
 
@@ -336,7 +336,7 @@ def test_edge_manifold_mask(
         mesh_wp.indices, allow_boundary_edges=allow_boundary_edges
     )
     mask_np = _edge_manifold_mask_np(mesh_tm.faces, allow_boundary_edges)
-    assert mask_wp.shape[0] == mesh_tm.faces.shape[0]
+    assert mask_wp.size == mesh_tm.faces.shape[0]
     assert np.array_equal(mask_wp.numpy(), mask_np)
     # is_edge_manifold is the reduction of the per-face mask.
     assert bool(mask_wp.numpy().all()) == tw.validation.is_edge_manifold(
@@ -558,7 +558,7 @@ def test_vertex_manifold_mask(request: pytest.FixtureRequest, mesh_name: str) ->
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = tw.validation.vertex_manifold_mask(mesh_wp.points, mesh_wp.indices)
     mask_igl = igl.is_vertex_manifold(_faces_igl(mesh_tm))
-    assert mask_wp.shape[0] == mesh_tm.vertices.shape[0]
+    assert mask_wp.size == mesh_tm.vertices.shape[0]
     assert np.array_equal(mask_wp.numpy(), mask_igl)
     # is_vertex_manifold is the reduction of the per-vertex mask.
     assert bool(mask_wp.numpy().all()) == tw.validation.is_vertex_manifold(mesh_wp.indices)
@@ -580,7 +580,7 @@ def test_vertex_manifold_mask_unreferenced(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mask_wp = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp)
     expected = np.array([False, True, True, True, True, False])
-    assert mask_wp.shape[0] == vertices_np.shape[0]
+    assert mask_wp.size == vertices_np.shape[0]
     assert np.array_equal(mask_wp.numpy(), expected)
 
 
@@ -644,7 +644,7 @@ def test_face_self_intersecting_mask_matches_predicate(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
-    assert int(mask_wp.shape[0]) == mesh_tm.faces.shape[0]
+    assert mask_wp.size == mesh_tm.faces.shape[0]
     predicate = tw.validation.is_self_intersecting(mesh_wp)
     assert bool(tw.reduce.any(mask_wp)) == predicate
 
@@ -779,10 +779,10 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
     triwarp_faces = np.flatnonzero(mask_np).astype(np.int64)
     if kind == "boxes":
         # The parallel-edge configuration open3d's narrow phase misses one of.
-        assert faces_o3d.shape[0] == n_expected - 1
+        assert faces_o3d.size == n_expected - 1
         assert set(faces_o3d.tolist()) < set(triwarp_faces.tolist())
     else:
-        assert faces_o3d.shape[0] == n_expected
+        assert faces_o3d.size == n_expected
         assert np.array_equal(faces_o3d.astype(np.int64), triwarp_faces)
 
 
@@ -846,7 +846,7 @@ def test_face_self_intersecting_mask_matches_pymeshfix(device: str, kind: str) -
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     mask_wp = tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp)
 
-    assert faces_pmf.shape[0] == n_expected  # non-vacuity: the reference answered this input
+    assert faces_pmf.size == n_expected  # non-vacuity: the reference answered this input
     assert np.array_equal(np.flatnonzero(mask_wp.numpy()), np.sort(faces_pmf))
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
     assert tw.validation.is_self_intersecting(mesh_wp) is (n_expected > 0)
@@ -961,7 +961,7 @@ def test_edge_winding_consistent_mask_matches_predicate(
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = tw.validation.edge_winding_consistent_mask(mesh_wp.indices)
-    aggregated = bool(tw.reduce.all(mask_wp)) if int(mask_wp.shape[0]) > 0 else True
+    aggregated = bool(tw.reduce.all(mask_wp)) if mask_wp.size > 0 else True
     assert aggregated == tw.validation.is_winding_consistent(mesh_wp.indices)
     assert aggregated is True
 
@@ -974,7 +974,7 @@ def test_edge_winding_consistent_mask_flags_flipped(
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]  # reverse winding of half the faces
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
     mask_wp = tw.validation.edge_winding_consistent_mask(faces_wp)
-    assert int(mask_wp.shape[0]) > 0
+    assert mask_wp.size > 0
     assert bool(tw.reduce.all(mask_wp)) is False
 
 
@@ -1037,7 +1037,7 @@ def test_face_flip_mask_all_false_on_consistent(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mask_wp = tw.validation.face_flip_mask(mesh_wp.indices)
-    assert int(mask_wp.shape[0]) == mesh_tm.faces.shape[0]
+    assert mask_wp.size == mesh_tm.faces.shape[0]
     # Fixtures are consistently wound, so no face needs flipping.
     assert bool(tw.reduce.any(mask_wp)) is False
 
@@ -1085,7 +1085,7 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     unchanged_igl = (oriented_igl == flipped_np).all(axis=1)
     reversed_igl = (oriented_igl == flipped_np[:, ::-1]).all(axis=1)
     assert bool((unchanged_igl | reversed_igl).all()), "a row is neither kept nor reversed"
-    assert np.unique(components_igl).shape[0] == 1, "the ribbon is one component"
+    assert np.unique(components_igl).size == 1, "the ribbon is one component"
 
     mask_wp = tw.validation.face_flip_mask(faces_wp).numpy()
     repaired_np = tw.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
@@ -1419,8 +1419,8 @@ def test_empty_mesh(device: str) -> None:
     assert tw.validation.is_winding_consistent(faces_wp) is True
     assert tw.validation.is_volume(vertices_wp, faces_wp) is False
     assert tw.measures.euler_characteristic(faces_wp) == 0
-    assert tw.validation.edge_manifold_mask(faces_wp).shape[0] == 0
-    assert tw.validation.vertex_manifold_mask(vertices_wp, faces_wp).shape[0] == 0
+    assert tw.validation.edge_manifold_mask(faces_wp).size == 0
+    assert tw.validation.vertex_manifold_mask(vertices_wp, faces_wp).size == 0
 
 
 def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:
@@ -1437,10 +1437,10 @@ def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:
 def test_new_masks_empty_mesh(device: str) -> None:
     vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
     faces_wp = wp.empty(0, dtype=wp.int32, device=device)
-    assert tw.validation.edge_winding_consistent_mask(faces_wp).shape[0] == 0
-    assert tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).shape[0] == 0
-    assert tw.validation.face_watertight_mask(faces_wp).shape[0] == 0
-    assert tw.validation.face_flip_mask(faces_wp).shape[0] == 0
+    assert tw.validation.edge_winding_consistent_mask(faces_wp).size == 0
+    assert tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).size == 0
+    assert tw.validation.face_watertight_mask(faces_wp).size == 0
+    assert tw.validation.face_flip_mask(faces_wp).size == 0
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)

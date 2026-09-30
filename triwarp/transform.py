@@ -152,26 +152,24 @@ def transform_points(
     [`transform_mesh`][triwarp.transform.transform_mesh]
     """
     require_same_device(points=points, matrix=matrix, out=out)
-    result = _alloc_or_out(out, int(points.shape[0]), wp.vec3, points.device)
-    if int(points.shape[0]) == 0:
+    result = _alloc_or_out(out, points.size, wp.vec3, points.device)
+    if points.size == 0:
         return result
-    if int(result.shape[0]) != int(points.shape[0]):
-        raise ValueError(
-            f"transform_points: out must have length {points.shape[0]}, got {result.shape[0]}"
-        )
+    if result.size != points.size:
+        raise ValueError(f"transform_points: out must have length {points.size}, got {result.size}")
     if isinstance(matrix, wp.array):
         # The one path that never crosses to host: the kernel reads the device pointer directly,
         # so a fitted (e.g. icp) transform never has to leave the device. `apply_transform_mat44`
         # reads `matrix[0]` unconditionally, which is why the (1,) shape is checked above rather
         # than left to a silent partial read.
-        if int(matrix.shape[0]) != 1:
+        if matrix.size != 1:
             raise ValueError(
                 "transform_points: matrix must be a length-1 wp.array[wp.mat44], got shape "
                 f"{tuple(matrix.shape)}"
             )
         wp.launch(
             kernel_transform.apply_transform_mat44,
-            dim=int(points.shape[0]),
+            dim=points.size,
             inputs=[points, matrix, result],
             device=points.device,
         )
@@ -223,8 +221,8 @@ def transform_vectors(
     [`transform_normals`][triwarp.transform.transform_normals]
     """
     require_same_device(vectors=vectors, matrix=matrix, out=out)
-    result = _alloc_or_out(out, int(vectors.shape[0]), wp.vec3, vectors.device)
-    if int(vectors.shape[0]) == 0:
+    result = _alloc_or_out(out, vectors.size, wp.vec3, vectors.device)
+    if vectors.size == 0:
         return result
     wp.map(kernel_transform.transform_vector_mat44, vectors, as_mat44(matrix), out=result)
     return result
@@ -285,8 +283,8 @@ def transform_normals(
     # of `matrix` alone, not of how many normals there are, so a zero-length `normals` must not
     # silently skip it.
     linear_normal_matrix = normal_matrix(matrix)
-    result = _alloc_or_out(out, int(normals.shape[0]), wp.vec3, normals.device)
-    if int(normals.shape[0]) == 0:
+    result = _alloc_or_out(out, normals.size, wp.vec3, normals.device)
+    if normals.size == 0:
         return result
     wp.map(kernel_transform.transform_normal_mat33, normals, linear_normal_matrix, out=result)
     return result
@@ -349,12 +347,12 @@ def transform_mesh(
         out_faces=out_faces,
     )
     new_vertices = transform_points(vertices, matrix, out=out_vertices)
-    new_faces = _alloc_or_out(out_faces, int(faces.shape[0]), wp.int32, faces.device)
-    if int(new_faces.shape[0]) != int(faces.shape[0]):
+    new_faces = _alloc_or_out(out_faces, faces.size, wp.int32, faces.device)
+    if new_faces.size != faces.size:
         raise ValueError(
-            f"transform_mesh: out_faces must have length {faces.shape[0]}, got {new_faces.shape[0]}"
+            f"transform_mesh: out_faces must have length {faces.size}, got {new_faces.size}"
         )
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if reverses_orientation(matrix):
         if n_faces > 0:
             wp.launch(
@@ -715,7 +713,7 @@ def as_mat44(matrix: wp.mat44 | wp.array[wp.mat44]) -> wp.mat44:
     """
     if not isinstance(matrix, wp.array):
         return matrix
-    if int(matrix.shape[0]) != 1:
+    if matrix.size != 1:
         raise ValueError(
             f"as_mat44 requires a length-1 wp.array[wp.mat44], got shape {tuple(matrix.shape)}"
         )

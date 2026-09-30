@@ -257,8 +257,8 @@ def test_concatenate(bench_case: BenchCase, copies: int) -> None:
     if bench_case.kind == "triwarp":
         pieces = _parts(bench_case, copies)
         vertices, faces = bench_case.run(lambda: tw.combine.concatenate(pieces))
-        assert int(faces.shape[0]) // 3 == bench_case.n_faces
-        assert int(vertices.shape[0]) > 0
+        assert faces.size // 3 == bench_case.n_faces
+        assert vertices.size > 0
     else:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         stride = max(1, bench_case.n_faces // copies)

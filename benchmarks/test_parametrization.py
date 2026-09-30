@@ -113,11 +113,11 @@ def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
         vertices = bench_case.vertices_wp
         loop, _loop_uv = _boundary(bench_case)
         circle = bench_case.run(lambda: tw.parametrization.map_vertices_to_circle(vertices, loop))
-        assert int(circle.shape[0]) == int(loop.shape[0])
+        assert circle.size == loop.size
     else:
         vertices_np, _faces_np, loop_np = _igl_boundary(bench_case)
         circle_igl = bench_case.run(lambda: igl.map_vertices_to_circle(vertices_np, loop_np))
-        assert circle_igl.shape[0] == loop_np.shape[0]
+        assert circle_igl.shape[0] == loop_np.size
 
 
 def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:
@@ -161,7 +161,7 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
         uv = bench_case.run(
             lambda: tw.parametrization.harmonic(vertices, faces, loop, loop_uv, k=order)
         )
-        assert int(uv.shape[0]) == int(vertices.shape[0])
+        assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
         circle_np = igl.map_vertices_to_circle(vertices_np, loop_np)
@@ -198,7 +198,7 @@ def test_harmonic_conditioning(bench_case: BenchCase) -> None:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, loop_uv = _boundary(bench_case)
         uv = bench_case.run(lambda: tw.parametrization.harmonic(vertices, faces, loop, loop_uv))
-        assert int(uv.shape[0]) == int(vertices.shape[0])
+        assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
         circle_np = igl.map_vertices_to_circle(vertices_np, loop_np)
@@ -221,7 +221,7 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
                 vertices, faces, loop, loop_uv, uv_init, max_iterations=iterations
             )
         )
-        assert int(uv.shape[0]) == int(vertices.shape[0])
+        assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
         circle_np = igl.map_vertices_to_circle(vertices_np, loop_np)
@@ -274,7 +274,7 @@ def test_lscm(bench_case: BenchCase) -> None:
             device=bench_case.device,
         )
         uv = bench_case.run(lambda: tw.parametrization.lscm(vertices, faces, pins, pins_uv))
-        assert int(uv.shape[0]) == int(vertices.shape[0])
+        assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
         pins_np = np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int64)

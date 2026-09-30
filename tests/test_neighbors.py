@@ -260,7 +260,7 @@ def test_query_ball_count_matches_scipy_and_the_list_form(
 
     indices_wp, _distances_wp, offsets_wp = query_ball_with_offsets(points_wp, queries_wp, radius)
     assert np.array_equal(np.diff(offsets_wp.numpy()), counts_np)
-    assert int(indices_wp.shape[0]) == int(counts_np.sum())
+    assert indices_wp.size == int(counts_np.sum())
 
 
 @pytest.mark.parametrize("copy", [False, True])
@@ -281,7 +281,7 @@ def test_query_ball_is_its_packed_form_split(device: str, copy: bool) -> None:
         points_wp, queries_wp, radius
     )
     bounds_np = offsets_wp.numpy()
-    assert len(indices_wp) == len(distances_wp) == bounds_np.shape[0] - 1 == 25
+    assert len(indices_wp) == len(distances_wp) == bounds_np.size - 1 == 25
     assert int(bounds_np[-1]) > 25  # non-vacuous: most queries find neighbours
     for query, (index_wp, distance_wp) in enumerate(zip(indices_wp, distances_wp, strict=True)):
         begin, end = int(bounds_np[query]), int(bounds_np[query + 1])
@@ -341,7 +341,7 @@ def test_query_bvh_ball_matches_a_brute_force_ball_overlap(device: str) -> None:
     cube_indices_wp, _cube_offsets_wp = tw.neighbors.query_bvh_box(
         bvh, cube_lower_wp, cube_upper_wp
     )
-    assert int(indices_np.size) < int(cube_indices_wp.shape[0])
+    assert int(indices_np.size) < cube_indices_wp.size
 
 
 def test_query_bvh_ball_degenerate_inputs(device: str) -> None:
@@ -534,8 +534,8 @@ def test_query_ball_empty(device: str, backend: Literal["bvh", "hashgrid"]):
     assert distances.shape == (0,)
 
     indices, distances = query_ball(empty_points_wp, queries_wp, radius)
-    assert len(indices) == queries_wp.shape[0]
-    assert len(distances) == queries_wp.shape[0]
+    assert len(indices) == queries_wp.size
+    assert len(distances) == queries_wp.size
     for single_indices, single_distances in zip(indices, distances, strict=False):
         assert single_indices.shape == (0,)
         assert single_distances.shape == (0,)
@@ -912,14 +912,14 @@ def test_query_ball_matches_open3d(device: str, backend: Literal["bvh", "hashgri
 
     neighbors_np = neighbors_wp.numpy()
     bounds_np = offsets_wp.numpy()
-    assert int(bounds_np[-1]) == neighbors_np.shape[0]
+    assert int(bounds_np[-1]) == neighbors_np.size
     starts_np, ends_np = bounds_np[:-1], bounds_np[1:]
     assert np.array_equal(ends_np - starts_np, np.diff(offsets_o3d))
     for query_index in range(queries.shape[0]):
         set_wp = set(neighbors_np[starts_np[query_index] : ends_np[query_index]])
         set_o3d = set(indices_o3d[offsets_o3d[query_index] : offsets_o3d[query_index + 1]])
         assert set_wp == set_o3d
-    assert neighbors_np.shape[0] > 0  # non-vacuous: the radius actually finds neighbours
+    assert neighbors_np.size > 0  # non-vacuous: the radius actually finds neighbours
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1773,7 +1773,7 @@ def test_geodesic_ball_neighborhoods(mesh_name: str, request: pytest.FixtureRequ
     offsets = offsets_wp.numpy()
     n = vertices_np.shape[0]
     assert offsets.shape == (n + 1,)
-    assert int(offsets[n]) == neighbor_indices.shape[0]
+    assert int(offsets[n]) == neighbor_indices.size
     for i in range(n):
         start = int(offsets[i])
         end = int(offsets[i + 1])

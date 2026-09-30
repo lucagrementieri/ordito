@@ -274,7 +274,7 @@ def test_points_in_aabb(bench_case: BenchCase) -> None:
         indices_wp = bench_case.run(
             lambda: tw.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
         )
-        assert 0 < int(indices_wp.shape[0]) < bench_case.n_vertices
+        assert 0 < indices_wp.size < bench_case.n_vertices
         return
     box_o3d = o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
     vector_o3d = _vector_o3d(bench_case)
@@ -302,8 +302,8 @@ def test_crop_points(bench_case: BenchCase) -> None:
         kept_wp, indices_wp = bench_case.run(
             lambda: tw.bounds.crop_points(vertices_wp, lower_wp, upper_wp)
         )
-        assert int(kept_wp.shape[0]) == int(indices_wp.shape[0])
-        assert 0 < int(kept_wp.shape[0]) < bench_case.n_vertices
+        assert kept_wp.size == indices_wp.size
+        assert 0 < kept_wp.size < bench_case.n_vertices
         return
     box_o3d = o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
     cloud_o3d = _cloud_o3d(bench_case)
@@ -343,8 +343,8 @@ def test_crop_mesh(bench_case: BenchCase) -> None:
         sub_vertices_wp, sub_faces_wp = bench_case.run(
             lambda: tw.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
         )
-        assert 0 < int(sub_faces_wp.shape[0]) // 3 < bench_case.n_faces
-        assert 0 < int(sub_vertices_wp.shape[0]) < bench_case.n_vertices
+        assert 0 < sub_faces_wp.size // 3 < bench_case.n_faces
+        assert 0 < sub_vertices_wp.size < bench_case.n_vertices
         return
     box_o3d = o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
     mesh_o3d = bench_case.mesh_o3d

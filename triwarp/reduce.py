@@ -281,12 +281,12 @@ def sum(
             # ``int32`` widening is worth avoiding here, and why the ``axis`` branch below keeps
             # it.
             flat = mask.flatten() if mask.ndim == 2 else mask
-            if int(flat.shape[0]) == 0:
+            if flat.size == 0:
                 raise ValueError("sum requires a non-empty array.")
             total = wp.zeros(1, dtype=wp.int32, device=flat.device)
             wp.launch_tiled(
                 kernel_reduce.sum_bool_1d_tiled,
-                dim=[kernel_reduce.blocks_1d(int(flat.shape[0]))],
+                dim=[kernel_reduce.blocks_1d(flat.size)],
                 inputs=[flat, total],
                 block_dim=TILE_1D,
                 device=flat.device,
@@ -357,10 +357,10 @@ def mean(
     if axis is None:
         if array.dtype == wp.vec3:
             vectors = cast("wp.array[wp.vec3]", array)
-            return cast(wp.vec3, sum(vectors)) / float(int(array.size))
+            return sum(vectors) / float(array.size)
         total = sum(cast(twt.ArrayNdScalar, array))
-        return float(total) / float(int(array.size))
-    sums = cast(twt.Array1dScalar, sum(cast(twt.Array2dScalar, array), axis=axis))
+        return float(total) / array.size
+    sums = sum(cast(twt.Array2dScalar, array), axis=axis)
     out = astype(sums, wp.float32)
     wp.map(wp.div, out, wp.float32(array.shape[axis]), out=out)
     return cast(twt.Array1dFloat32, out)
@@ -482,11 +482,11 @@ def median(array: twt.Array1dScalar) -> float:
     """
     if array.ndim != 1:
         raise ValueError("median requires a 1D array.")
-    n = int(array.shape[0])
+    n = array.size
     if n == 0:
         raise ValueError("median requires a non-empty array.")
 
-    sorted_values = cast(twt.Array1dScalar, _sorted_copy(cast(twt.Array1dScalar, array)))
+    sorted_values = _sorted_copy(array)
     if n % 2 == 1:
         return float(read_scalar(sorted_values, n // 2))
     middle = sorted_values[n // 2 - 1 : n // 2 + 1].numpy()
@@ -630,7 +630,7 @@ def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.ve
     """Component-wise corner pair of a ``wp.vec3`` array: one launch, one buffer, one readback."""
     if int(array.ndim) != 1:
         raise ValueError("minmax requires a rank-1 wp.vec3 array.")
-    n = int(array.shape[0])
+    n = array.size
     if n == 0:
         raise ValueError("minmax requires a non-empty array.")
     corners = wp.full(6, math.inf, dtype=wp.float32, device=array.device)
@@ -679,7 +679,7 @@ def _launch_global_scalar_tiled(
     if flat is not None:
         wp.launch_tiled(
             spec.tiled_1d[array.dtype],
-            dim=[kernel_reduce.blocks_1d(int(flat.shape[0]))],
+            dim=[kernel_reduce.blocks_1d(flat.size)],
             inputs=[flat, out],
             block_dim=TILE_1D,
             device=array.device,
@@ -861,7 +861,7 @@ def _launch_global_bool_tiled(mask: wp.array[wp.bool], spec: _BoolReduceSpec) ->
     # ``4n`` rather than ``n``. See ``kernels.reduce._reduce_bool_1d_tiled`` for the concrete bool
     # kernel and why its block shape differs from the tile-load family's.
     out = wp.full(1, spec.init_global, dtype=wp.int32, device=mask.device)
-    n = int(mask.shape[0])
+    n = mask.size
     wp.launch_tiled(
         spec.bool_1d,
         dim=[kernel_reduce.blocks_1d(n)],

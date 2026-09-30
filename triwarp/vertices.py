@@ -85,7 +85,7 @@ def mean_vertex_normals(
         The geometry-aware entry point, which derives a weight table and calls one of these two.
     """
     require_same_device(faces=faces, face_normals=face_normals)
-    _require_face_rows(int(faces.shape[0]) // 3, face_normals=face_normals)
+    _require_face_rows(faces.size // 3, face_normals=face_normals)
     return _accumulate_and_normalize(
         n_vertices, faces, kernel_scatter.SCATTER_SUM_VEC, [face_normals, faces.reshape((-1, 3))]
     )
@@ -137,9 +137,7 @@ def weighted_vertex_normals(
         The geometry-aware entry point, which derives a weight table and calls this.
     """
     require_same_device(faces=faces, face_normals=face_normals, face_weights=face_weights)
-    _require_face_rows(
-        int(faces.shape[0]) // 3, face_normals=face_normals, face_weights=face_weights
-    )
+    _require_face_rows(faces.size // 3, face_normals=face_normals, face_weights=face_weights)
     return _accumulate_and_normalize(
         n_vertices,
         faces,
@@ -197,7 +195,7 @@ def _accumulate_and_normalize(
     ``_require_face_rows`` first.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     sums = wp.zeros((n_vertices, 3), dtype=_ACCUMULATOR_DTYPE, device=device)
     wp.launch(scatter_table[_ACCUMULATOR_DTYPE], dim=n_faces, inputs=[*inputs, sums], device=device)
     vec_normals = wp.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -300,8 +298,8 @@ def vertex_normals(
         raise ValueError('face_weights is not accepted with weighting="mwselr"')
 
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
 
     if weighting == "mwselr":
         if n_faces == 0:
@@ -404,7 +402,7 @@ def vertex_defects(
         The angles this sums.
     """
     require_same_device(faces=faces, face_angles=face_angles)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     _require_face_rows(n_faces, face_angles=face_angles)
     angle_sum = wp.zeros(n_vertices, dtype=wp.float32, device=faces.device)
     faces2d = faces.reshape((-1, 3))

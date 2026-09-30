@@ -113,7 +113,7 @@ def test_halfedge_tangent_angles(bench_case: BenchCase) -> None:
     """Two serial ring walks per vertex: the valence-sensitive group of this module."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     angles = bench_case.run(lambda: tw.tangent_space.halfedge_tangent_angles(vertices, faces))
-    assert angles.shape == (faces.shape[0],)
+    assert angles.shape == (faces.size,)
 
 
 @pytest.mark.benchmark(group="halfedge_transport_angles")
@@ -131,4 +131,4 @@ def test_halfedge_transport_angles(bench_case: BenchCase) -> None:
             vertices, faces, twins=twins, tangent_angles=angles
         )
     )
-    assert rho.shape == (faces.shape[0],)
+    assert rho.shape == (faces.size,)

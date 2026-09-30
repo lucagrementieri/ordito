@@ -104,7 +104,7 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     selection_ml = mn.getNumpyBitSet(mm.getBoundaryVerts(mesh_ml.topology))
 
-    assert vertex_indices_wp.shape[0] > 0  # non-vacuity: an empty rim would pass everything below
+    assert vertex_indices_wp.size > 0  # non-vacuity: an empty rim would pass everything below
     assert np.array_equal(vertex_indices_wp.numpy(), vertex_indices_tm)
     assert np.array_equal(np.flatnonzero(selection_pml), vertex_indices_wp.numpy())
     assert np.array_equal(np.flatnonzero(selection_ml), vertex_indices_wp.numpy())
@@ -385,7 +385,7 @@ def test_boundary_loops_mobius_is_one_cycle(mobius: tuple[tm.Trimesh, wp.Mesh]) 
     assert len(loops_wp) == 1
     loop_np = loops_wp[0].numpy()
 
-    assert loop_np.shape[0] == 78
+    assert loop_np.size == 78
     assert len(set(loop_np.tolist())) == 78  # the assert that failed before the fallback existed
     assert set(loop_np.tolist()) == set(degree)
     assert all(
@@ -422,7 +422,7 @@ def test_boundary_loops_two_mobius_bands_keep_one_direction_each(
     single_np = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)[0].numpy()
     loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
 
-    assert [loop_wp.shape[0] for loop_wp in loops_wp] == [78, 78]
+    assert [loop_wp.size for loop_wp in loops_wp] == [78, 78]
     assert np.array_equal(loops_wp[0].numpy(), single_np)
     assert np.array_equal(loops_wp[1].numpy(), single_np + n)
 
@@ -445,14 +445,12 @@ def test_boundary_loop_sizes_helper_agrees_with_boundary_loops(
     sizes_np = boundary_loop_sizes(np.asarray(mesh_tm.faces))
 
     loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
-    expected = sorted(
-        (int(loop_wp.shape[0]) for loop_wp in loops_wp if int(loop_wp.shape[0]) >= 3), reverse=True
-    )
+    expected = sorted((loop_wp.size for loop_wp in loops_wp if loop_wp.size >= 3), reverse=True)
     assert sizes_np == expected
     assert (len(expected) == 0) == bool(mesh_tm.is_watertight)
 
 
-def test_boundary_loop_sizes_refuses_a_pinched_rim(device: str) -> None:
+def test_boundary_loop_sizes_refuses_a_pinched_rim() -> None:
     """
     Two rims meeting at one vertex have no well-defined loop through it, and the helper says so.
 
@@ -482,9 +480,9 @@ def test_boundary_loops_with_offsets_matches_boundary_loops(
     flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(mesh_wp.points, mesh_wp.indices)
 
     offsets_np = offsets_wp.numpy()
-    assert len(loops_wp) == offsets_np.shape[0] - 1
+    assert len(loops_wp) == offsets_np.size - 1
     assert int(offsets_np[0]) == 0
-    assert int(flat_wp.shape[0]) == int(offsets_np[-1])
+    assert flat_wp.size == int(offsets_np[-1])
     for i, loop_wp in enumerate(loops_wp):
         begin, end = int(offsets_np[i]), int(offsets_np[i + 1])
         assert np.array_equal(loop_wp.numpy(), flat_wp.numpy()[begin:end])
@@ -507,7 +505,7 @@ def test_boundary_loops_copy_detaches_from_packed_buffer(
         assert views[1].ptr is not None
         assert views[0].ptr != views[1].ptr
         # Adjacent views share one allocation; the copies do not.
-        assert views[1].ptr - views[0].ptr == 4 * int(views[0].shape[0])
+        assert views[1].ptr - views[0].ptr == 4 * views[0].size
 
 
 @pytest.mark.parametrize("rim", [7, 8, 9, 15, 16, 17, 63, 64, 65, 255, 256, 257, 4095, 4097])
@@ -764,8 +762,8 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     ear_igl, ear_opp_igl = igl.ears(np.ascontiguousarray(faces_np, dtype=np.int64))
     ear_wp, ear_opp_wp = tw.boundary.ears(faces_wp)
 
-    assert int(ear_wp.shape[0]) == expected_ears
-    assert ear_igl.shape[0] == expected_ears
+    assert ear_wp.size == expected_ears
+    assert ear_igl.size == expected_ears
 
     pairs_igl = np.stack([ear_igl, (ear_opp_igl + 1) % 3], axis=1)
     pairs_wp = np.stack([ear_wp.numpy(), ear_opp_wp.numpy()], axis=1)
@@ -795,7 +793,7 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
     ear_igl, _ear_opp_igl = igl.ears(faces_np)
     ear_wp, ear_opp_wp = tw.boundary.ears(mesh_wp.indices)
 
-    assert ear_igl.shape[0] == 0
+    assert ear_igl.size == 0
     assert ear_wp.shape == (0,)
     assert ear_opp_wp.shape == (0,)
 
@@ -964,7 +962,7 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     )
 
     sizes_np = np.diff(offsets_wp.numpy())
-    owner_np = np.repeat(np.arange(sizes_np.shape[0], dtype=np.int32), sizes_np)
+    owner_np = np.repeat(np.arange(sizes_np.size, dtype=np.int32), sizes_np)
     owner_wp = wp.array(owner_np, dtype=wp.int32, device=vertices_wp.device)
     assert np.allclose(
         tw.boundary.loop_directed_areas_from_offsets(

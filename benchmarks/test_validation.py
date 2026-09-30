@@ -326,7 +326,7 @@ def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     mask = bench_case.run(lambda: tw.validation.face_self_intersecting_mask(vertices, faces))
-    assert int(mask.shape[0]) == bench_case.n_faces
+    assert mask.size == bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="face_defective_mask")

@@ -6,8 +6,8 @@ difference is that Open3D's `PointCloud` / `TriangleMesh` are mutable objects wi
 filters, where triwarp functions take arrays and return new arrays.
 
 ```python
-import open3d as o3d      # before
-import triwarp as tw      # after
+import open3d as o3d  # before
+import triwarp as tw  # after
 ```
 
 ## Point clouds

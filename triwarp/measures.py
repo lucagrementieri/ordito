@@ -79,7 +79,7 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
     [`trimesh.Trimesh.volume`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return 0.0
     return tw.reduce.sum(tw.triangles.face_signed_volumes(vertices, faces))
 
@@ -123,7 +123,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     [`trimesh.Trimesh.centroid`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    f = faces.shape[0] // 3
+    f = faces.size // 3
     if f == 0:
         return wp.vec3(float("nan"), float("nan"), float("nan"))
     device = vertices.device
@@ -224,7 +224,7 @@ def moments(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return 0.0, wp.vec3(float("nan"), float("nan"), float("nan")), wp.mat33d()
 
@@ -314,7 +314,7 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     [`edges_unique`][triwarp.edges.edges_unique]
     [`trimesh.Trimesh.euler_number`][]
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return 0
 

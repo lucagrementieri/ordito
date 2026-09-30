@@ -92,7 +92,7 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
     bounds_np = offsets_wp.numpy()
     assert bounds_np.shape == (query_lower_np.shape[0] + 1,)
     assert bounds_np[0] == 0
-    assert bounds_np[-1] == indices_np.shape[0]
+    assert bounds_np[-1] == indices_np.size
 
     for query_idx in range(query_lower_np.shape[0]):
         q_lower = query_lower_np[query_idx]
@@ -545,7 +545,7 @@ def test_mesh_to_mesh_distance_face_a_tie_break_is_the_lowest_index(device: str)
     faces_a = np.asarray(sphere_tm.faces)
     closest_vertex_a = int(np.argmax(vertices_a[:, 0]))
     tied_faces_a = np.flatnonzero((faces_a == closest_vertex_a).any(axis=1))
-    assert tied_faces_a.shape[0] > 1  # a real multi-face tie, not a vacuous single-face one
+    assert tied_faces_a.size > 1  # a real multi-face tie, not a vacuous single-face one
 
     a_vertices_wp, a_faces_wp = numpy_to_warp(vertices_a, faces_a.ravel().astype(np.int32), device)
     b_vertices_wp, b_faces_wp = numpy_to_warp(
@@ -1952,7 +1952,7 @@ def test_containing_faces_2d_empty(device: str) -> None:
     )
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
     no_queries_wp = wp.zeros(0, dtype=wp.vec2, device=device)
-    assert int(tw.proximity.containing_faces_2d(vertices_wp, faces_wp, no_queries_wp).shape[0]) == 0
+    assert tw.proximity.containing_faces_2d(vertices_wp, faces_wp, no_queries_wp).size == 0
 
     queries_wp = wp.array(np.array([[0.25, 0.25]], dtype=np.float32), dtype=wp.vec2, device=device)
     no_faces_wp = wp.zeros(0, dtype=wp.int32, device=device)

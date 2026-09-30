@@ -10,8 +10,8 @@ separates that into an explicit, cacheable operator bundle
 solve.
 
 ```python
-import potpourri3d as pp3d   # before
-import triwarp as tw         # after
+import potpourri3d as pp3d  # before
+import triwarp as tw  # after
 ```
 
 ## Distance and vector heat

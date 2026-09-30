@@ -174,7 +174,7 @@ def test_subdivide(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         _new_vertices, new_faces = bench_case.run(lambda: tw.remesh.subdivide(vertices, faces))
-        assert int(new_faces.shape[0]) == 4 * int(faces.shape[0])
+        assert int(new_faces.shape[0]) == 4 * faces.size
     elif bench_case.kind == "trimesh":
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         _new_vertices, new_faces = bench_case.run(lambda: tm.remesh.subdivide(vertices, faces))
@@ -222,7 +222,7 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         new_vertices, new_faces = bench_case.run(lambda: tw.remesh.subdivide_loop(vertices, faces))
-        assert int(new_faces.shape[0]) == 4 * int(faces.shape[0])
+        assert new_faces.size == 4 * faces.size
         assert np.isfinite(new_vertices.numpy()).all()
     elif bench_case.kind == "igl":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -289,7 +289,7 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
         _new_vertices, new_faces = bench_case.run(
             lambda: tw.remesh.subdivide_to_size(vertices, faces, max_edge), rounds=_ROUNDS
         )
-        assert int(new_faces.shape[0]) >= int(faces.shape[0])
+        assert new_faces.size >= faces.size
     else:
         if bench_case.mesh_name == "sphere_large":
             pytest.skip("trimesh subdivide_to_size takes tens of seconds at this size")
@@ -338,8 +338,8 @@ def test_split_edges(bench_case: BenchCase, split_fraction: float) -> None:
         ),
         rounds=_ROUNDS,
     )
-    assert int(new_faces.shape[0]) >= int(faces.shape[0])
-    assert int(new_vertices.shape[0]) >= int(vertices.shape[0])
+    assert new_faces.size >= faces.size
+    assert new_vertices.size >= vertices.size
 
 
 # Split budgets for the region refiner, as a fraction of the input face count. ``None`` runs to
@@ -419,8 +419,8 @@ def test_subdivide_region_to_size(bench_case: BenchCase, split_budget: float | N
         ),
         rounds=_ROUNDS,
     )
-    assert int(new_faces.shape[0]) >= int(faces.shape[0])
-    assert int(new_region.shape[0]) == int(new_faces.shape[0]) // 3
+    assert new_faces.size >= faces.size
+    assert new_region.size == new_faces.size // 3
 
 
 @pytest.mark.benchmark(group="refine_region_to_density")
@@ -453,8 +453,8 @@ def test_refine_region_to_density(bench_case: BenchCase) -> None:
     _new_vertices, new_faces, new_region = bench_case.run(
         lambda: tw.remesh.refine_region_to_density(vertices, faces, region), rounds=_ROUNDS
     )
-    assert int(new_faces.shape[0]) >= int(faces.shape[0])
-    assert int(new_region.shape[0]) == int(new_faces.shape[0]) // 3
+    assert new_faces.size >= faces.size
+    assert new_region.size == new_faces.size // 3
 
 
 @pytest.mark.benchmark(group="flip_to_delaunay")
@@ -489,7 +489,7 @@ def test_flip_to_delaunay(bench_case: BenchCase) -> None:
         return tw.remesh.flip_to_delaunay(vertices, wp.clone(faces), max_iter=100)
 
     flipped = bench_case.run(run, rounds=_ROUNDS)
-    assert int(flipped.shape[0]) == int(faces.shape[0])
+    assert flipped.size == faces.size
 
 
 @pytest.mark.noparity(
@@ -602,7 +602,7 @@ def test_isotropic_remesh(bench_case: BenchCase) -> None:
         ),
         rounds=_ROUNDS,
     )
-    assert int(new_faces.shape[0]) > 0
+    assert new_faces.size > 0
 
 
 @pytest.mark.benchmark(group="intrinsic_delaunay")
@@ -724,7 +724,7 @@ def test_flip_by_objective(bench_case: BenchCase, objective: str) -> None:
     flipped = bench_case.run(
         lambda: tw.remesh.flip_by_objective(vertices, faces, objective=objective), rounds=_ROUNDS
     )
-    assert int(flipped.shape[0]) == int(faces.shape[0])
+    assert flipped.size == faces.size
 
 
 # Reduction ratios for the quadric decimator. 0.5 is a mild pass and 0.1 is the ratio MeshLab's own
@@ -831,4 +831,4 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
         lambda: tw.remesh.quadric_decimate(vertices, faces, target_faces=target_faces),
         rounds=_ROUNDS,
     )
-    assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
+    assert decimated_faces.size // 3 <= bench_case.n_faces

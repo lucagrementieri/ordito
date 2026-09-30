@@ -91,7 +91,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     than exact predicates, so near-cocircular inputs may resolve either ambiguous diagonal.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n < 3:
         raise ValueError(f"delaunay_triangulation requires at least 3 points, got {n}")
 
@@ -278,7 +278,7 @@ def triangulate_point_cloud(
         )
 
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         # Cloned, like every other exit from this module: the returned vertices are the function's
         # own buffer on the populated path (`_clean_reconstruction`), so handing
@@ -328,7 +328,7 @@ def triangulate_point_cloud(
         return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
 
     faces = _repeated_oriented_triangles(out_tris, fan_counts, n_candidates, n)
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.clone(points), faces
     # Every face carries a distinct vertex set, so the duplicate-resolution stage has nothing to do.
     # Orientation is not re-derived (``orient=False``): the fans are wound from the trusted normals,
@@ -545,7 +545,7 @@ def screened_poisson(
         raise ValueError(f"screened_poisson method must be 'dense' or 'adaptive', got {method!r}.")
 
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n < 3:
         raise ValueError(f"screened_poisson requires at least 3 points, got {n}.")
 
@@ -601,7 +601,7 @@ def screened_poisson(
     # dedup would change the default path's output. As written it is **byte-identical** on a
     # well-screened reconstruction -- the default ``point_weight`` emits no degenerate face at all.
     vertices, faces = tw.repair.remove_degenerate_faces(vertices, faces)
-    if int(faces.shape[0]) > 0:
+    if faces.size > 0:
         faces = tw.repair.make_normals_outward(vertices, faces)
     return vertices, faces
 
@@ -633,7 +633,7 @@ def _poisson_iso_value(
     """
     if not confidence:
         return tw.reduce.mean(sampled)
-    lengths = twt.empty_1d(int(normals.shape[0]), wp.float32, device=normals.device)
+    lengths = twt.empty_1d(normals.size, wp.float32, device=normals.device)
     wp.map(wp.length, normals, out=lengths)
     total_weight = tw.reduce.sum(lengths)
     if total_weight <= 0.0:
@@ -762,7 +762,7 @@ def _poisson_solve_level(
     vx, vy, vz, weights = (twt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
     wp.launch(
         kernel_reconstruction.splat_normals,
-        dim=int(points.shape[0]),
+        dim=points.size,
         inputs=[
             points,
             normals,
@@ -1148,7 +1148,7 @@ def _screened_poisson_adaptive(
     # first to fire). triwarp's own allocations already carry ``device=``; this is the one place
     # where a dependency picks the device for us, so the whole fem section runs under a scope.
     with wp.ScopedDevice(device):
-        n = int(points.shape[0])
+        n = points.size
 
         res_fine = 1 << depth
         scale_to_index = float(res_fine) / cube_size
@@ -1387,7 +1387,7 @@ def resample_uniform(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.clone(vertices), wp.clone(faces)
 
@@ -1554,7 +1554,7 @@ def ball_pivoting(
     """
     require_same_device(points=points, normals=normals)
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n < 3:
         return wp.clone(points), wp.empty(0, dtype=wp.int32, device=device)
 
@@ -1614,7 +1614,7 @@ class _BpaState:
         self.clustering = wp.float32(clustering)
         self.crease_cos = wp.float32(crease_cos)
         self.device = points.device
-        self.n = int(points.shape[0])
+        self.n = points.size
         self.key_base = wp.uint64(self.n)
 
         self.counters = wp.zeros(kernel_bpa.BPA_COUNTERS, dtype=wp.int32, device=self.device)
@@ -1700,7 +1700,7 @@ class _BpaState:
             self.edge_state,
             self.edge_cand,
         )
-        old_capacity = int(self.edge_key.shape[0])
+        old_capacity = self.edge_key.size
         old_faces = self.all_faces
         old_count = min(int(read_scalar(self.counters, kernel_bpa.CNT_FACE)), self.max_faces)
 
@@ -1737,7 +1737,7 @@ class _BpaState:
         self.counters.assign(counters)
         wp.launch(
             kernel_bpa.collect_front_from_table,
-            dim=int(self.edge_key.shape[0]),
+            dim=self.edge_key.size,
             inputs=[wp.int32(self.front_capacity), self.counters, self.edge_table],
             outputs=[self.front_in],
             device=self.device,
@@ -1781,7 +1781,7 @@ def _mean_positive_finite(values: wp.array[wp.float32]) -> float | None:
     answer costs one launch and one readback.
     """
     device = values.device
-    n = int(values.shape[0])
+    n = values.size
     if n == 0:
         return None
     sum_and_count = wp.zeros(2, dtype=wp.float64, device=device)
@@ -1968,7 +1968,7 @@ def _clean_reconstruction(
     stage for a caller whose faces already carry pairwise distinct vertex sets *in ascending
     unoriented-key order* -- the order that stage emits -- so the result is unchanged.
     """
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.clone(points), faces
 
     if deduplicate:
@@ -1977,7 +1977,7 @@ def _clean_reconstruction(
     # package's own, so their indices are in range, which the combined filter requires.
     vertices, faces = tw.repair.remove_degenerate_and_non_manifold_faces(points, faces)
 
-    if int(faces.shape[0]) > 0:
+    if faces.size > 0:
         if orient:
             faces = tw.repair.make_normals_outward(vertices, faces)
         if crit_hole_length != 0.0:

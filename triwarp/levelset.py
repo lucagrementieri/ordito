@@ -244,7 +244,7 @@ def offset_mesh(
         raise ValueError("distance must be non-zero; an offset of zero is a resampling")
     if voxel_size is not None and voxel_size <= 0.0:
         raise ValueError("voxel_size must be positive")
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         raise ValueError("offset_mesh needs at least one face")
 
     spacing = voxel_size
@@ -359,12 +359,12 @@ def thicken_mesh(
         raise ValueError("thickness must be positive")
     if outside < 0.0:
         raise ValueError("outside must be non-negative")
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         raise ValueError("thicken_mesh needs at least one face")
 
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     normals = tw.vertices.vertex_normals(vertices, faces, weighting="angle")
     rim = tw.boundary.oriented_boundary_edges(vertices, faces)
     n_rim = int(rim.shape[0])

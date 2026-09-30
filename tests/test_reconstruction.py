@@ -237,7 +237,7 @@ def test_delaunay_collinear(device: str):
     points_np = np.array([[float(i), 0.0] for i in range(5)], dtype=np.float32)
     points_wp = points_to_warp_uv(points_np, device)
     faces_wp = tw.reconstruction.delaunay_triangulation(points_wp)
-    assert int(faces_wp.shape[0]) == 0
+    assert faces_wp.size == 0
 
 
 def test_delaunay_too_few(device: str):
@@ -263,7 +263,7 @@ def test_sphere_is_closed_manifold(device: str, subdivisions: int):
     n_points = points_np.shape[0]
 
     # A closed genus-0 triangulation of n points has exactly 2n - 4 faces (Euler).
-    assert faces_np.shape[0] // 3 == 2 * n_points - 4
+    assert faces_np.size // 3 == 2 * n_points - 4
     assert tw.validation.is_watertight(vertices_wp, faces_wp)
     assert tw.validation.is_edge_manifold(faces_wp)
     assert tw.measures.euler_characteristic(faces_wp) == 2
@@ -405,7 +405,7 @@ def test_estimated_normals_path_runs(device: str):
     points_wp = points_to_warp(points_np, device)
 
     vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=18)
-    assert faces_wp.numpy().shape[0] > 0
+    assert faces_wp.numpy().size > 0
     assert tw.validation.is_edge_manifold(faces_wp)
     radii = np.linalg.norm(vertices_wp.numpy(), axis=1)
     assert np.allclose(radii, 1.0, rtol=1e-5, atol=1e-5)
@@ -532,8 +532,8 @@ def test_holes_seal_small_hole(device: str):
 def test_empty_cloud(device: str):
     points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp)
-    assert int(vertices_wp.shape[0]) == 0
-    assert int(faces_wp.shape[0]) == 0
+    assert vertices_wp.size == 0
+    assert faces_wp.size == 0
 
 
 def test_too_few_points(device: str):
@@ -548,7 +548,7 @@ def test_too_few_points(device: str):
     points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64)
     points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
     vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=4)
-    assert int(faces_wp.shape[0]) == 0
+    assert faces_wp.size == 0
 
     assert np.allclose(vertices_wp.numpy(), points_np, rtol=1e-5, atol=1e-5)
     vertices_wp.fill_(wp.vec3(9.0, 9.0, 9.0))
@@ -1261,7 +1261,7 @@ def test_resample_uniform_coarser_is_smaller(
         _out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
             vertices_wp, faces_wp, voxel_size=voxel_size
         )
-        counts.append(int(out_faces_wp.shape[0]) // 3)
+        counts.append(out_faces_wp.size // 3)
         assert tw.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
     assert counts == sorted(counts, reverse=True)
 
@@ -1277,8 +1277,8 @@ def test_resample_uniform_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = wp.empty(0, dtype=wp.int32, device=device)
     out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(vertices_wp, faces_wp)
-    assert int(out_vertices_wp.shape[0]) == 0
-    assert int(out_faces_wp.shape[0]) == 0
+    assert out_vertices_wp.size == 0
+    assert out_faces_wp.size == 0
 
 
 # ======================================================================================
@@ -1297,7 +1297,7 @@ def test_ball_pivoting_interpolates_input(device: str):
 
     vertices_wp, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
     vertices_np = vertices_wp.numpy().astype(np.float64)
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0
 
     # Interpolating: every output vertex coincides with an input point.
     from scipy.spatial import cKDTree
@@ -1378,7 +1378,7 @@ def test_ball_pivoting_is_reproducible(device: str):
         major_radius=1.0, minor_radius=0.35, major_sections=64, minor_sections=32
     )
     points_wp, normals_wp = _to_warp(torus_tm.vertices, torus_tm.vertex_normals, device)
-    n_points = int(points_wp.shape[0])
+    n_points = points_wp.size
     # The wrapper's own auto-radius, recomputed on the host and then passed explicitly to every run
     # below -- including the two public calls. That is load-bearing, not tidiness: the wrapper's own
     # `radius <= 0` guess averages the spacings with a device reduction whose summation order is not
@@ -1471,7 +1471,7 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     """
     points_np, normals_np = _sphere_cloud(2)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    n_points = int(points_wp.shape[0])
+    n_points = points_wp.size
     radius = 0.2
     grid = tw.neighbors.hashgrid_from_points(points_wp, radius)
     bvh = tw.neighbors.bvh_from_points(points_wp)
@@ -1538,7 +1538,7 @@ def test_ball_pivoting_face_count_near_open3d(device: str):
     radius = 1.5 * spacing
 
     _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
-    n_faces_tw = int(faces_wp.shape[0]) // 3
+    n_faces_tw = faces_wp.size // 3
 
     pcd = points_to_open3d(points_np, normals_np)
     mesh_o3d = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
@@ -1625,7 +1625,7 @@ def test_ball_pivoting_small_radius_leaves_holes(device: str):
     )
     _v_ok, faces_ok = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=1.5 * spacing)
     # A ball far smaller than the sampling never rests on three points: far fewer (or no) faces.
-    assert int(faces_small.shape[0]) < int(faces_ok.shape[0])
+    assert faces_small.size < faces_ok.size
 
 
 def test_ball_pivoting_estimated_normals(device: str):
@@ -1633,11 +1633,11 @@ def test_ball_pivoting_estimated_normals(device: str):
     points_wp = points_to_warp(points_np, device)
     # normals=None triggers PCA normal estimation (valid for this star-shaped cloud).
     _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, None)
-    assert int(faces_wp.shape[0]) > 0
+    assert faces_wp.size > 0
 
 
 def test_ball_pivoting_too_few_points(device: str):
     points_wp = wp.array(np.zeros((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     normals_wp = wp.array(np.ones((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
-    assert int(faces_wp.shape[0]) == 0
+    assert faces_wp.size == 0

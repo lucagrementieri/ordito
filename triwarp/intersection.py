@@ -87,7 +87,7 @@ def segments_with_plane(
     require_same_device(start_points=start_points, end_points=end_points)
     if start_points.shape != end_points.shape:
         raise ValueError("start_points and end_points must have the same shape")
-    n = int(start_points.shape[0])
+    n = start_points.size
     device = start_points.device
     intersections = wp.empty(n, dtype=wp.vec3, device=device)
     valid = wp.empty(n, dtype=wp.bool, device=device)
@@ -149,7 +149,7 @@ def mesh_with_plane(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         empty_segments = twt.empty_2d((0, 2), wp.vec3, device=device)
         if return_faces:
@@ -390,13 +390,13 @@ def _marching_curves(
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return None
 
     # The key base only has to exceed every vertex index the faces reference; ``vertices`` is the
     # buffer they index, so its length is the bound whenever the caller did not give one.
-    key_base = int(n_vertices) if n_vertices is not None else int(vertices.shape[0])
+    key_base = int(n_vertices) if n_vertices is not None else vertices.size
     cut = wp.empty(n_faces, dtype=wp.int32, device=device)
     segments = twt.empty_2d((n_faces, 2), wp.vec3, device=device)
     segment_edges = twt.empty_2d((n_faces, 2), wp.int64, device=device)
@@ -453,7 +453,7 @@ def _link_curves(
     )
     wp.launch(
         kernel_intersections.compact_cut_segment_keys,
-        dim=int(inclusive.shape[0]),
+        dim=inclusive.size,
         inputs=[inclusive, segments, segment_edges, record_points, record, None],
         device=device,
     )
@@ -493,7 +493,7 @@ def _link_on_device(
     endpoints = wp.empty(2 * m, dtype=wp.int32, device=device)
     wp.launch(
         kernel_intersections.compact_cut_segment_keys,
-        dim=int(inclusive.shape[0]),
+        dim=inclusive.size,
         inputs=[inclusive, segments, segment_edges, hit_segments, keys, endpoints],
         device=device,
     )
@@ -567,7 +567,7 @@ def _link_on_host(
     one upload.
     """
     slots_np, starts_np, closed = _link_segments(edges_np)
-    return points_np[slots_np], [*starts_np.tolist(), int(slots_np.shape[0])], closed
+    return points_np[slots_np], [*starts_np.tolist(), slots_np.size], closed
 
 
 def _link_segments(segment_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray, list[bool]]:
@@ -674,7 +674,7 @@ def _link_segments(segment_edges: np.ndarray) -> tuple[np.ndarray, np.ndarray, l
     curve_heads = np.concatenate([heads[~head_closed], heads[head_closed]])
     closed = is_closed[curve_heads]
     curve_of_head = np.empty(n, dtype=np.int64)
-    curve_of_head[curve_heads] = np.arange(curve_heads.shape[0])
+    curve_of_head[curve_heads] = np.arange(curve_heads.size)
     curve = curve_of_head[head_of]
 
     # An open curve carries one extra slot: its last segment contributes both endpoints.
@@ -857,7 +857,7 @@ def _compact_crossing_candidates(
     buffer carries the verdict, its scan and -- at its tail, the one readback -- the kept count.
     """
     device = candidates.targets.device
-    n_slots = int(candidates.targets.shape[0])
+    n_slots = candidates.targets.size
     flags = wp.empty(n_slots, dtype=wp.int32, device=device)
     wp.launch(
         kernel_intersections.crossing_slot_flags,
@@ -937,8 +937,8 @@ def collision_masks(
         vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
     )
     device = vertices_a.device
-    n_faces_a = int(faces_a.shape[0]) // 3
-    n_faces_b = int(faces_b.shape[0]) // 3
+    n_faces_a = faces_a.size // 3
+    n_faces_b = faces_b.size // 3
     mask_a = wp.zeros(n_faces_a, dtype=wp.bool, device=device)
     mask_b = wp.zeros(n_faces_b, dtype=wp.bool, device=device)
 
@@ -954,7 +954,7 @@ def collision_masks(
     mask_query, mask_target = (mask_b, mask_a) if candidates.swapped else (mask_a, mask_b)
     wp.launch(
         kernel_intersections.mark_crossing_slot_masks,
-        dim=int(candidates.targets.shape[0]),
+        dim=candidates.targets.size,
         inputs=[*candidates.narrow_phase_inputs(), mask_query, mask_target],
         device=device,
     )
@@ -1016,8 +1016,8 @@ def _candidate_face_pairs(
     if max_triangle_collisions < 1:
         raise ValueError("max_triangle_collisions must be >= 1")
     device = vertices_a.device
-    n_faces_a = int(faces_a.shape[0]) // 3
-    n_faces_b = int(faces_b.shape[0]) // 3
+    n_faces_a = faces_a.size // 3
+    n_faces_b = faces_b.size // 3
     if n_faces_a == 0 or n_faces_b == 0:
         return None
 
@@ -1030,7 +1030,7 @@ def _candidate_face_pairs(
         target_vertices, target_faces = vertices_b, faces_b
         query_vertices, query_faces = vertices_a, faces_a
 
-    n_query = int(query_faces.shape[0]) // 3
+    n_query = query_faces.size // 3
     require_nonempty_mesh(target_faces, caller)
     target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
@@ -1125,10 +1125,10 @@ def slice_mesh_with_plane(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if n_vertices == 0:
         return vertices, faces
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device)
 
     return _clip_with_vertex_field(
@@ -1246,8 +1246,8 @@ def split_mesh_with_plane(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
         return wp.clone(vertices), wp.clone(faces), wp.empty(n_faces, dtype=wp.bool, device=device)
 
@@ -1279,7 +1279,7 @@ def split_mesh_with_plane(
         vertices, faces, crossed, crossing_points, unique_edges=unique_edges, inverse=inverse
     )
 
-    n_out = int(new_faces.shape[0]) // 3
+    n_out = new_faces.size // 3
     above = wp.empty(n_out, dtype=wp.bool, device=device)
     wp.launch(
         kernel_intersections.label_faces_by_plane_side,
@@ -1382,10 +1382,10 @@ def clip_mesh_with_field(
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if n_vertices == 0:
         return vertices, faces
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device)
 
     new_vertices, new_faces = _clip_with_vertex_field(
@@ -1471,7 +1471,7 @@ def split_faces_along_field(
     """
     require_same_device(vertices=vertices, faces=faces, values=values)
     device = vertices.device
-    if int(faces.shape[0]) == 0 or int(vertices.shape[0]) == 0:
+    if faces.size == 0 or vertices.size == 0:
         return (
             wp.clone(vertices),
             wp.empty(0, dtype=wp.int32, device=device),
@@ -1492,7 +1492,7 @@ def _shifted_field(
     mean doing it per face.
     """
     device = values.device
-    shifted = wp.empty(int(values.shape[0]), dtype=wp.float32, device=device)
+    shifted = wp.empty(values.size, dtype=wp.float32, device=device)
     if values.dtype is wp.float32:
         wp.map(wp.sub, values, values.dtype(isovalue), out=shifted)
     else:
@@ -1506,7 +1506,7 @@ def _plane_dots(
     vertices: wp.array[wp.vec3], plane_normal: wp.vec3, plane_origin: wp.vec3
 ) -> wp.array[wp.float32]:
     """Signed plane distance of every vertex, the field all three plane entry points classify on."""
-    dots = wp.empty(int(vertices.shape[0]), dtype=wp.float32, device=vertices.device)
+    dots = wp.empty(vertices.size, dtype=wp.float32, device=vertices.device)
     wp.map(kernel_predicates.point_plane_dot, vertices, plane_normal, plane_origin, out=dots)
     return dots
 
@@ -1516,8 +1516,8 @@ def _split_with_vertex_field(
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
     """Cut along ``vertex_dots == 0``, keeping both sides; the engine behind the public split."""
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
 
     face_classes = wp.empty(n_faces, dtype=wp.int32, device=device)
     face_signs = twt.empty_2d((n_faces, 3), wp.int32, device=device)
@@ -1627,8 +1627,8 @@ def _clip_with_vertex_field(
     compare, so such a face is left in the ``ON_PLANE`` class, which no kept block claims.
     """
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
 
     face_classes = wp.empty(n_faces, dtype=wp.int32, device=device)
     face_signs = twt.empty_2d((n_faces, 3), wp.int32, device=device)
@@ -1764,7 +1764,7 @@ def _compact_cut_segments(
     ``(segments, rows)``, the second ``None`` when not asked for.
     """
     device = cut.device
-    n = int(cut.shape[0])
+    n = cut.size
     n_kept = _scan_cut_flags(cut)
     out_segments = twt.empty_2d((n_kept, 2), wp.vec3, device=device)
     out_rows = wp.empty(n_kept, dtype=wp.int32, device=device) if return_rows else None
@@ -1780,7 +1780,7 @@ def _compact_cut_segments(
 
 def _scan_cut_flags(cut: wp.array[wp.int32]) -> int:
     """Scan ``0`` / ``1`` flags in place into an inclusive scan and return their total."""
-    if int(cut.shape[0]) == 0:
+    if cut.size == 0:
         return 0
     wp.utils.array_scan(cut, out_array=cut, inclusive=True)
     # The kept count sizes every compacted output.

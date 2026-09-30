@@ -86,9 +86,9 @@ def test_intersects_location_miss(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
     loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
-    assert loc_wp.shape[0] == 0
-    assert tri_wp.shape[0] == 0
-    assert ray_wp.shape[0] == 0
+    assert loc_wp.size == 0
+    assert tri_wp.size == 0
+    assert ray_wp.size == 0
 
 
 def test_intersects_location_cave_cube(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
@@ -366,9 +366,9 @@ def test_intersects_empty_rays(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     assert tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
     assert tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
     loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
-    assert loc_wp.shape[0] == 0
-    assert tri_wp.shape[0] == 0
-    assert ray_wp.shape[0] == 0
+    assert loc_wp.size == 0
+    assert tri_wp.size == 0
+    assert ray_wp.size == 0
     assert tw.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
 
 

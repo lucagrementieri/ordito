@@ -150,8 +150,8 @@ def test_procrustes_return_cost_arity(device: str) -> None:
     assert isinstance(defaulted, tuple)
     assert len(defaulted) == 3
     matrix_wp, transformed_wp, cost = defaulted
-    assert matrix_wp.shape[0] == 1
-    assert transformed_wp.shape[0] == a_np.shape[0]
+    assert matrix_wp.size == 1
+    assert transformed_wp.size == a_np.shape[0]
     assert np.isfinite(cost)
 
     matrix_only = tw.registration.procrustes(a_wp, b_wp, return_cost=False)
@@ -858,7 +858,7 @@ def test_icp_point_to_point_cloud(device: str) -> None:
     assert cost_tm / len(source_np) < 1e-3
 
 
-def test_icp_point_to_point_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
+def test_icp_point_to_point_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = half_torus
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
@@ -939,7 +939,7 @@ def test_icp_convergence_stop_matches_the_host_rule(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "gated"],
 )
 def test_icp_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str, target: str, options: dict
+    half_torus: tuple[tm.Trimesh, wp.Mesh], target: str, options: dict
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.
@@ -1111,7 +1111,7 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
 )
 @pytest.mark.parametrize("mesh_name", ["half_torus", "unit_box"])
 def test_icp_point_to_plane_mesh_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A: the same rigid transform, against ``ICP`` given a ``MeshOrPoints`` holding a mesh.
@@ -1182,7 +1182,7 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     assert _rms(moved_ml, vertices_np) < 1e-4
 
 
-def test_icp_point_to_plane_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
+def test_icp_point_to_plane_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = half_torus
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
     rotation_np, translation_np = _rigid_transform(0.1, [0.2, 0.6, 0.3], [0.03, -0.02, 0.04])
@@ -1202,7 +1202,7 @@ def test_icp_point_to_plane_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh], device:
 
 @pytest.mark.parametrize("max_iterations", [0, 1, 3, 30])
 def test_icp_point_to_plane_cost_is_the_returned_poses_objective(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str, max_iterations: int
+    half_torus: tuple[tm.Trimesh, wp.Mesh], max_iterations: int
 ) -> None:
     """
     Class A, against trimesh's closest point: ``cost`` scores the transform actually returned.
@@ -1240,9 +1240,7 @@ def test_icp_point_to_plane_cost_is_the_returned_poses_objective(
     assert np.isclose(cost_tw, cost_tm, rtol=1e-2, atol=1e-9), (cost_tw, cost_tm)
 
 
-def test_icp_point_to_plane_robust_outliers(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
+def test_icp_point_to_plane_robust_outliers(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     rng = np.random.default_rng(11)
     mesh_tm, mesh_wp = half_torus
     vertices_np, faces_np = _mesh_vertices_faces(mesh_tm)
@@ -1273,7 +1271,7 @@ def test_icp_point_to_plane_robust_outliers(
 @pytest.mark.parametrize("target", ["cloud", "mesh"])
 @pytest.mark.parametrize("scale", [0.02, 0.05])
 def test_icp_point_to_plane_tukey_converges_from_outside_its_kernel(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str, scale: float, target: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh], scale: float, target: str
 ) -> None:
     """
     Class C (a fit error against the exact answer): Tukey ICP from a start mostly outside ``c``.
@@ -1345,7 +1343,7 @@ def test_icp_point_to_plane_cloud_with_normals(device: str) -> None:
 
 def _host_prefix_median(values: np.ndarray) -> float:
     """``reduce.median``'s answer for sorted ``float32`` values: the ``float64`` middle mean."""
-    count = values.shape[0]
+    count = values.size
     if count % 2 == 1:
         return float(values[count // 2])
     return (float(values[count // 2 - 1]) + float(values[count // 2])) / 2.0
@@ -1440,7 +1438,7 @@ def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> N
 
 @pytest.mark.parametrize("robust_kernel", ["huber", "tukey"])
 def test_icp_point_to_plane_accepts_non_unit_target_normals(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str, robust_kernel: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh], robust_kernel: str
 ) -> None:
     """
     Triwarp against triwarp: a fit with non-unit target normals against one with unit normals.
@@ -1530,7 +1528,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     assert np.array_equal(distance_wp.numpy(), nearest_distance_wp.numpy())
     assert np.array_equal(distance_wp.numpy(), walk_distance_wp.numpy())
     assert np.array_equal(closest_wp.numpy(), target_np[nearest_wp.numpy()])
-    assert np.unique(nearest_wp.numpy()).shape[0] > 100
+    assert np.unique(nearest_wp.numpy()).size > 100
 
     step_np = np.eye(4, dtype=np.float32)
     step_np[:3, 3] = (0.3, -0.2, 0.1)
@@ -1556,7 +1554,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "all_rejected", "all_rejected_one"],
 )
 def test_icp_point_to_plane_mesh_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str, options: dict
+    half_torus: tuple[tm.Trimesh, wp.Mesh], options: dict
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.

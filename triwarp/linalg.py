@@ -450,7 +450,7 @@ def assemble_interior_system(
     """
     require_same_device(fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values)
     device = fixed_mask.device
-    n_dofs = int(fixed_mask.shape[0])
+    n_dofs = fixed_mask.size
     n_rhs = int(fixed_values.shape[0])
     # Every free row writes its own count exactly once (``free_map`` is a bijection onto
     # ``[0, n_free)``), so there is nothing to pre-zero.
@@ -655,7 +655,7 @@ def _solve_spd_batched(
         matrix = _scalar_expansion(matrix)
         rhs = _as_scalar_view(rhs)
         solution = _as_scalar_view(solution)
-    if _one_block_eligible(matrix, int(rhs.shape[0]), kind):
+    if _one_block_eligible(matrix, rhs.size, kind):
         result = _cg_one_block(
             matrix,
             rhs,
@@ -703,7 +703,7 @@ def _scalar_expansion(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[wp.float64]:
         return cached[1]
     device = matrix.device
     n_rows = int(matrix.nrow)
-    capacity = 4 * int(matrix.values.shape[0])
+    capacity = 4 * matrix.values.size
     offsets = wp.empty(2 * n_rows + 1, dtype=wp.int32, device=device)
     columns = wp.empty(capacity, dtype=wp.int32, device=device)
     values = wp.empty(capacity, dtype=wp.float64, device=device)
@@ -2321,9 +2321,9 @@ def _cached_solver(
         shape = (
             *config,
             n,
-            int(matrix.offsets.shape[0]),
-            int(matrix.columns.shape[0]),
-            int(matrix.values.shape[0]),
+            matrix.offsets.size,
+            matrix.columns.size,
+            matrix.values.size,
             _row_path(matrix, n, fold),
             str(matrix.device),
         )
@@ -2468,7 +2468,7 @@ def bsr_with_values(matrix: wps.BsrMatrix[Any], values: wp.array[Any]) -> wps.Bs
     --------
     [`replicated_operator`][triwarp.linalg.replicated_operator]
     """
-    if values.shape[0] != matrix.values.shape[0]:
+    if values.shape[0] != matrix.values.size:
         raise ValueError(
             f"values must hold one block per stored entry ({matrix.values.shape[0]}), got "
             f"{values.shape[0]}"
@@ -2553,7 +2553,7 @@ def block_diag(matrices: Sequence[wps.BsrMatrix[Any]]) -> wps.BsrMatrix[wp.float
     ]
     device = blocks[0].device
     n_rows = sum(int(block.nrow) for block in blocks)
-    capacity = sum(int(block.values.shape[0]) for block in blocks)
+    capacity = sum(block.values.size for block in blocks)
     descriptors = []
     for block in blocks:
         descriptor = kernel_linalg.CsrBlock()
@@ -2753,7 +2753,7 @@ def multigrid_preconditioner(
     levels, coarse_inverse = hierarchy
     cycle = _MultigridCycle(levels, coarse_inverse, n_columns=n_columns, stride=n)
 
-    def matvec(x: twt.ArrayNd, y: twt.ArrayNd, z: twt.ArrayNd, alpha: float, beta: float) -> None:
+    def matvec(x: twt.ArrayNd, _y: twt.ArrayNd, z: twt.ArrayNd, alpha: float, beta: float) -> None:
         if alpha != 1.0 or beta != 0.0:
             raise ValueError(
                 "multigrid_preconditioner's operator only implements z = M x "
@@ -2834,7 +2834,7 @@ def chebyshev_preconditioner(
     # has queued.
     cycle: list[_JacobiChebyshevApply] = []
 
-    def matvec(x: twt.ArrayNd, y: twt.ArrayNd, z: twt.ArrayNd, alpha: float, beta: float) -> None:
+    def matvec(x: twt.ArrayNd, _y: twt.ArrayNd, z: twt.ArrayNd, alpha: float, beta: float) -> None:
         if alpha != 1.0 or beta != 0.0:
             raise ValueError(
                 "chebyshev_preconditioner's operator only implements z = M x "
@@ -3036,11 +3036,11 @@ class SquaredLaplacianPreconditioner:
             "squared",
             self._shares_pattern(),
             *(
-                int(array.shape[0])
+                array.size
                 for factor in (self._factor, self._factor_t)
                 for array in (factor.offsets, factor.columns, factor.values)
             ),
-            int(self._steps.shape[0]),
+            self._steps.size,
         )
 
     def _owned_copy(self) -> SquaredLaplacianPreconditioner:
@@ -3077,12 +3077,8 @@ class SquaredLaplacianPreconditioner:
         ``kernels/algorithms/conjugate_gradient.one_block_precondition`` for why in ``float32``.
         """
         if self._narrowed is None:
-            factor = twt.empty_1d(
-                int(self._factor.values.shape[0]), wp.float32, device=self._device
-            )
-            factor_t = twt.empty_1d(
-                int(self._factor_t.values.shape[0]), wp.float32, device=self._device
-            )
+            factor = twt.empty_1d(self._factor.values.size, wp.float32, device=self._device)
+            factor_t = twt.empty_1d(self._factor_t.values.size, wp.float32, device=self._device)
             wp.utils.array_cast(self._factor.values.flatten(), factor)
             wp.utils.array_cast(self._factor_t.values.flatten(), factor_t)
             self._narrowed = (factor, factor_t)
@@ -3130,7 +3126,7 @@ class _ChebyshevApply:
         # ``chebyshev_step``.
         previous, current = source, source
         free = list(self._spare)
-        n_steps = int(steps.shape[0])
+        n_steps = steps.size
         for index in range(n_steps):
             target = destination if index == n_steps - 1 else free.pop()
             wp.launch(
@@ -3287,7 +3283,7 @@ def _device_chebyshev_steps(
     that kernel for both. ``out``, when given, is written in place of a new array.
     """
     device = ratios.device
-    n = int(ratios.shape[0])
+    n = ratios.size
     bound = wp.full(1, -math.inf, dtype=wp.float64, device=device)
     if n > 0:
         wp.launch_tiled(

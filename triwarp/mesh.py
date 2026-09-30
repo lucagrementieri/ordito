@@ -391,12 +391,12 @@ class Trimesh:
     @property
     def n_vertices(self) -> int:
         """Number of vertices in the `vertices` buffer (its length, not the referenced count)."""
-        return int(self._vertices.shape[0])
+        return self._vertices.size
 
     @property
     def n_faces(self) -> int:
         """Number of triangles (``faces.size // 3``)."""
-        return int(self._faces.shape[0]) // 3
+        return self._faces.size // 3
 
     @property
     def device(self) -> wp.Device:
@@ -857,7 +857,7 @@ class Trimesh:
             return_edges=True,
             # The mesh knows its own vertex count, so the row-hash radix never has to be inferred
             # from a device reduction ending in a host readback.
-            n_vertices=int(self._vertices.shape[0]),
+            n_vertices=self._vertices.size,
         )
         self._cache.setdefault("face_adjacency_edges", adjacency_edges)
         return adjacency
@@ -1002,7 +1002,7 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return 0
-        return int(tw.grouping.unique_1d(self.face_connected_component_labels).shape[0])
+        return tw.grouping.unique_1d(self.face_connected_component_labels).size
 
     @_CachedProperty
     def vertex_face_adjacency(self) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
@@ -1135,7 +1135,7 @@ class Trimesh:
         """
         if self.n_faces == 0:
             return 0
-        n_referenced = int(tw.grouping.unique_1d(self._faces).shape[0])
+        n_referenced = tw.grouping.unique_1d(self._faces).size
         return n_referenced - int(self.edges_unique.shape[0]) + self.n_faces
 
     @_CachedProperty
@@ -1805,8 +1805,8 @@ class Trimesh:
             cached = self._cache.get(key)
             if cached is not None:
                 normals = cast("wp.array[wp.vec3]", cached)
-                flipped = wp.empty(int(normals.shape[0]), dtype=wp.vec3, device=normals.device)
-                if int(normals.shape[0]) > 0:
+                flipped = wp.empty(normals.size, dtype=wp.vec3, device=normals.device)
+                if normals.size > 0:
                     wp.map(wp.neg, normals, out=flipped)
                 survived[key] = flipped
         return Trimesh(
@@ -1838,10 +1838,10 @@ class Trimesh:
         ValueError
             If ``new_vertices`` has a different vertex count than the current mesh.
         """
-        if int(new_vertices.shape[0]) != self.n_vertices:
+        if new_vertices.size != self.n_vertices:
             raise ValueError(
                 f"with_vertices requires the same vertex count ({self.n_vertices}), "
-                f"got {int(new_vertices.shape[0])}"
+                f"got {new_vertices.size}"
             )
         survived = {key: value for key, value in self._cache.items() if key in _TOPOLOGY_KEYS}
         return Trimesh(new_vertices, self._faces, initial_cache=survived)

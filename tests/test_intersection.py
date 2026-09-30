@@ -473,7 +473,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
 @pytest.mark.parametrize("axis", [0, 2])
 @pytest.mark.parity("marching_triangles", "potpourri3d")
 def test_marching_triangles_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, axis: int, device: str
+    request: pytest.FixtureRequest, mesh_name: str, axis: int
 ) -> None:
     """
     Class B (barycentric decoding): potpourri3d reports hits in its own element numbering.
@@ -518,9 +518,7 @@ def test_marching_triangles_matches_potpourri3d(
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("marching_triangles", "igl")
 @pytest.mark.parity("marching_triangles_curves", "igl")
-def test_marching_triangles_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_marching_triangles_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: ``igl.isolines`` returns a segment **soup**, so the linking must be undone first.
 
@@ -614,7 +612,7 @@ def test_marching_triangles_many_components_matches_potpourri3d(device: str) -> 
 
 
 def test_marching_triangles_open_curve_ends_on_the_boundary(
-    hemisphere: tuple[object, wp.Mesh], device: str
+    hemisphere: tuple[object, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = hemisphere
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -671,7 +669,7 @@ def test_marching_triangles_exact_vertex_hit_is_reported_once(device: str) -> No
 
 
 def test_marching_triangles_level_set_is_the_piecewise_linear_one(
-    icosahedron: tuple[object, wp.Mesh], device: str
+    icosahedron: tuple[object, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = icosahedron
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -688,10 +686,10 @@ def test_marching_triangles_level_set_is_the_piecewise_linear_one(
     # curve: the total point count equals the cut-face count for an all-closed level set.
     positive = values_np[faces_np] >= isovalue
     cut_faces = int((~(positive.all(axis=1) | (~positive).all(axis=1))).sum())
-    assert sum(int(curve.shape[0]) for curve in curves_wp) == cut_faces
+    assert sum(curve.size for curve in curves_wp) == cut_faces
 
 
-def test_marching_triangles_no_crossing(icosahedron: tuple[object, wp.Mesh], device: str) -> None:
+def test_marching_triangles_no_crossing(icosahedron: tuple[object, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
     values_wp = wp.array(
         np.ascontiguousarray(np.asarray(mesh_tm.vertices)[:, 2]),
@@ -713,7 +711,7 @@ def test_marching_triangles_empty(device: str) -> None:
 
 @pytest.mark.parametrize("field", ["plane", "wave"])
 def test_marching_triangles_is_its_packed_form_split(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], field: str, device: str
+    icosphere: tuple[tm.Trimesh, wp.Mesh], field: str
 ) -> None:
     """
     Triwarp against triwarp: the list form is the packed form, curve by curve.
@@ -740,9 +738,9 @@ def test_marching_triangles_is_its_packed_form_split(
 
     offsets_np = offsets_wp.numpy()
     assert len(curves_wp) == 1 if field == "plane" else len(curves_wp) > 10
-    assert offsets_np.shape[0] == len(curves_wp) + 1
+    assert offsets_np.size == len(curves_wp) + 1
     assert offsets_np[0] == 0
-    assert offsets_np[-1] == points_wp.shape[0]
+    assert offsets_np[-1] == points_wp.size
     assert closed_packed_wp.numpy().tolist() == closed_wp
     for c, curve_wp in enumerate(curves_wp):
         assert np.array_equal(
@@ -750,17 +748,15 @@ def test_marching_triangles_is_its_packed_form_split(
         )
 
 
-def test_marching_triangles_with_offsets_empty(
-    icosahedron: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_marching_triangles_with_offsets_empty(icosahedron: tuple[object, wp.Mesh]) -> None:
     """An empty level set is no points, ``[0]`` offsets and no flags."""
     _, mesh_wp = icosahedron
-    values_wp = wp.zeros(mesh_wp.points.shape[0], dtype=wp.float32, device=mesh_wp.device)
+    values_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float32, device=mesh_wp.device)
     points_wp, offsets_wp, closed_wp = tw.intersection.marching_triangles_with_offsets(
         mesh_wp.points, mesh_wp.indices, values_wp, 1e6
     )
-    assert points_wp.shape[0] == 0
-    assert closed_wp.shape[0] == 0
+    assert points_wp.size == 0
+    assert closed_wp.size == 0
     assert offsets_wp.numpy().tolist() == [0]
 
 
@@ -793,7 +789,6 @@ def test_marching_triangles_device_link_matches_host_link(
     mesh_name: str,
     field: str,
     hops: int,
-    device: str,
 ) -> None:
     """
     Triwarp against triwarp: the device link returns the host link's curves exactly.
@@ -1376,6 +1371,10 @@ def test_split_mesh_with_plane_matches_pyvista(device: str) -> None:
     diagonal, so there is no face correspondence to assert. What is asserted is stronger than a
     total: each side's area separately, which pins the partition, and both point sets
     bidirectionally (measured 5.4e-08).
+
+    VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
@@ -1384,16 +1383,14 @@ def test_split_mesh_with_plane_matches_pyvista(device: str) -> None:
     vertices_wp, faces_wp, above_wp = tw.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, height)
     )
-    kept_pv, clipped_pv = cast(
-        "tuple[pv.PolyData, pv.PolyData]",
-        trimesh_to_pyvista(mesh_tm).clip(
-            normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, height), return_clipped=True
-        ),
+    kept_pv, clipped_pv = trimesh_to_pyvista(mesh_tm).clip(
+        normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, height), return_clipped=True
     )
+    kept_pv, clipped_pv = kept_pv.triangulate(), clipped_pv.triangulate()
 
     # Anti-vacuity: a plane that missed, or that kept one side only, would pass everything below.
     above_np = above_wp.numpy()
-    assert 0 < int(above_np.sum()) < above_np.shape[0]
+    assert 0 < int(above_np.sum()) < above_np.size
     assert kept_pv.n_cells > 0
     assert clipped_pv.n_cells > 0
 
@@ -1431,7 +1428,7 @@ def test_split_mesh_with_plane_refines_without_cracking(
     normal_np = np.array([0.3, -0.5, 1.0])
     normal_np = normal_np / np.linalg.norm(normal_np)
     origin_np = mesh_tm.vertices.mean(axis=0)
-    n_vertices_in = int(mesh_wp.points.shape[0])
+    n_vertices_in = mesh_wp.points.size
     closed_in = tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
 
     vertices_wp, faces_wp, above_wp = tw.intersection.split_mesh_with_plane(
@@ -1443,7 +1440,7 @@ def test_split_mesh_with_plane_refines_without_cracking(
 
     # Anti-vacuity: a plane through the centroid must actually cut.
     assert points_np.shape[0] > n_vertices_in
-    assert 0 < int(above_np.sum()) < above_np.shape[0]
+    assert 0 < int(above_np.sum()) < above_np.size
 
     # Every inserted vertex lies on the plane.
     inserted = points_np[n_vertices_in:]
@@ -1489,8 +1486,8 @@ def test_split_mesh_with_plane_above_block_is_the_slice(
         mesh_wp.points, mesh_wp.indices, normal, origin
     )
 
-    assert int(above_f.shape[0]) > 0
-    assert int(above_f.shape[0]) == int(slice_f.shape[0])
+    assert above_f.size > 0
+    assert above_f.size == slice_f.size
     assert np.isclose(
         warp_to_trimesh(above_v, above_f).area, warp_to_trimesh(slice_v, slice_f).area, rtol=1e-6
     )
@@ -1511,7 +1508,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
     apex = int(np.argmax(mesh_tm.vertices[:, 2]))
     normal_np = np.array([0.0, 0.0, 1.0])
     origin_np = mesh_tm.vertices[apex]
-    n_vertices_in = int(mesh_wp.points.shape[0])
+    n_vertices_in = mesh_wp.points.size
 
     vertices_wp, faces_wp, _ = tw.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
@@ -1521,7 +1518,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
     # The apex is the unique highest vertex of an icosahedron, so a plane through it touches the
     # surface at that point alone: nothing is crossed and nothing is inserted.
     assert points_np.shape[0] == n_vertices_in
-    assert int(faces_wp.shape[0]) == int(mesh_wp.indices.shape[0])
+    assert faces_wp.size == mesh_wp.indices.size
     # No zero-area face was introduced anywhere.
     assert (
         tm.Trimesh(points_np, faces_wp.numpy().reshape(-1, 3), process=False).area_faces.min() > 0
@@ -1570,6 +1567,10 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(device: str) -> None:
     the low side** (measured 798 faces below ``z = 0.1`` against 670 above), where triwarp keeps
     ``values >= isovalue``. Take the default and the two answers are different regions of the same
     mesh, which the face-count assert catches only because they happen to differ in size.
+
+    VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
@@ -1580,13 +1581,11 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(device: str) -> None:
     )
     mesh_pv = trimesh_to_pyvista(mesh_tm)
     mesh_pv.point_data["height"] = np.ascontiguousarray(mesh_tm.vertices[:, 2])
-    clipped_pv = cast(
-        pv.PolyData, mesh_pv.clip_scalar(scalars="height", value=isovalue, invert=False)
-    )
+    clipped_pv = mesh_pv.clip_scalar(scalars="height", value=isovalue, invert=False).triangulate()
 
     # Anti-vacuity: a clip that kept nothing, or everything, would pass the comparisons below.
     assert 0 < clipped_pv.n_faces < len(mesh_tm.faces)
-    assert int(clipped_f.shape[0]) // 3 == clipped_pv.n_faces
+    assert clipped_f.size // 3 == clipped_pv.n_faces
     points_np = clipped_v.numpy().astype(np.float64)
     points_pv = np.asarray(clipped_pv.points)
     assert KDTree(points_pv).query(points_np)[0].max() < 1e-5
@@ -1620,10 +1619,7 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(device:
     )
     capped_tm = warp_to_trimesh(capped_v, capped_f)
     mesh_pv = trimesh_to_pyvista(mesh_tm)
-    closed_pv = cast(
-        pv.PolyData,
-        mesh_pv.clip_closed_surface(normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, isovalue)),
-    )
+    closed_pv = mesh_pv.clip_closed_surface(normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, isovalue))
 
     assert closed_pv.n_open_edges == 0
     assert capped_tm.is_watertight
@@ -1633,7 +1629,7 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(device:
     _, uncapped_f = tw.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
-    assert int(capped_f.shape[0]) > int(uncapped_f.shape[0])
+    assert capped_f.size > uncapped_f.size
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
@@ -1667,7 +1663,7 @@ def test_clip_mesh_with_field_reproduces_slice_mesh_with_plane(
     clipped_v, clipped_f = tw.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, field_wp
     )
-    assert int(sliced_f.shape[0]) > 0
+    assert sliced_f.size > 0
     assert np.array_equal(clipped_f.numpy(), sliced_f.numpy())
     assert np.allclose(clipped_v.numpy(), sliced_v.numpy(), rtol=1e-5, atol=1e-5)
 
@@ -1701,7 +1697,7 @@ def test_clip_mesh_with_field_through_a_saddle_vertex_reuses_it(device: str) -> 
     # Exactly one genuine crossing (corner 1 to corner 2) plus the reused on-plane corner: three
     # vertices, one triangle -- not four vertices from two independently-interpolated corners.
     assert positions_np.shape[0] == 3
-    assert int(new_f.shape[0]) == 3
+    assert new_f.size == 3
     assert np.any(np.all(positions_np == vertices_np[0], axis=1)), (
         "the on-plane vertex must be reused bit-exactly, not interpolated near it"
     )
@@ -1780,7 +1776,7 @@ def test_clip_mesh_with_field_accepts_a_float64_field(
         ),
         isovalue,
     )
-    assert int(clipped_64[1].shape[0]) > 0
+    assert clipped_64[1].size > 0
     assert np.array_equal(clipped_64[1].numpy(), clipped_32[1].numpy())
     assert np.allclose(clipped_64[0].numpy(), clipped_32[0].numpy(), rtol=1e-5, atol=1e-5)
 
@@ -1891,6 +1887,10 @@ def test_split_faces_along_field_matches_pyvista_clip_scalar_both(
     At that pairing it is exact: face counts equal and areas equal to six decimals on all three
     fixtures. Areas rather than positions, because each side appends its crossing points in its own
     order -- the same reason the clip's own row uses a nearest-neighbour compare.
+
+    VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     isovalue = _off_vertex_isovalue(mesh_tm)
@@ -1905,6 +1905,7 @@ def test_split_faces_along_field_matches_pyvista_clip_scalar_both(
     below_pv, above_pv = mesh_pv.clip_scalar(scalars="height", value=isovalue, both=True)
     assert above_pv is not None
     assert below_pv is not None
+    below_pv, above_pv = below_pv.triangulate(), above_pv.triangulate()
 
     # Non-vacuity: an isovalue outside the field's range would leave one side empty and every
     # comparison below trivially true. Note a clipped side can carry *more* cells than the whole
@@ -1953,13 +1954,13 @@ def test_split_faces_along_field_partitions_the_surface(
     )
     whole_tm, positive_tm, negative_tm = _split_sides(mesh_wp, field_wp, isovalue)
 
-    assert int(faces_wp.shape[0]) // 3 > len(mesh_tm.faces)  # non-vacuity: faces were cut
+    assert faces_wp.size // 3 > len(mesh_tm.faces)  # non-vacuity: faces were cut
     assert tw.validation.is_edge_manifold(faces_wp)
     assert whole_tm.is_watertight == mesh_tm.is_watertight
     assert np.isclose(whole_tm.area, mesh_tm.area, rtol=1e-5)
     assert np.isclose(positive_tm.area + negative_tm.area, mesh_tm.area, rtol=1e-5)
-    n_vertices = int(mesh_wp.points.shape[0])
-    assert int(vertices_wp.shape[0]) > n_vertices
+    n_vertices = mesh_wp.points.size
+    assert vertices_wp.size > n_vertices
     assert np.array_equal(vertices_wp.numpy()[:n_vertices], mesh_wp.points.numpy())
 
 
@@ -2007,7 +2008,7 @@ def test_split_faces_along_field_degenerate_level_sets(
     )
     assert np.array_equal(faces_wp.numpy(), torus_wp.indices.numpy())
     assert np.array_equal(vertices_wp.numpy(), torus_wp.points.numpy())
-    assert 0 < int(positive_wp.numpy().sum()) < int(faces_wp.shape[0]) // 3
+    assert 0 < int(positive_wp.numpy().sum()) < faces_wp.size // 3
 
     sphere_tm, sphere_wp = icosphere
     sphere_field_wp = _height_field(sphere_tm, str(sphere_wp.device))

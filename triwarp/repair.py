@@ -193,14 +193,14 @@ def make_solid(
             f"max_iter and inner_iter must be non-negative, got {max_iter}, {inner_iter}"
         )
 
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return vertices, faces
 
     # This is the trust boundary for "a broken digitised surface": every stage below indexes
     # ``vertices[faces]`` without a bound check, the same way every other per-face kernel wrapper in
     # this package does, so an out-of-range index arriving here would otherwise reach the first one
     # silently (§12.1's memory-safety class) rather than raising a Python exception.
-    require_valid_faces(faces, int(vertices.shape[0]), "make_solid")
+    require_valid_faces(faces, vertices.size, "make_solid")
 
     # Stage 0. The reference does this inside its *loader*, which is why it is easy to leave out and
     # why leaving it out is dangerous: skipping it can leave a mesh at the right Euler
@@ -217,7 +217,7 @@ def make_solid(
 
     faces = _fill_any_boundary(vertices, faces)
     for _ in range(max_iter):
-        n_faces_before = int(faces.shape[0])
+        n_faces_before = faces.size
         vertices, faces = remove_degenerate_faces(vertices, faces)
         vertices, faces = collapse_small_triangles(vertices, faces)
         vertices, faces = fix_self_intersections(vertices, faces, max_iter=inner_iter)
@@ -226,7 +226,7 @@ def make_solid(
         # component that did not exist yet.
         if keep_largest:
             vertices, faces = remove_small_components(vertices, faces, keep_largest=True)
-        if int(faces.shape[0]) == n_faces_before:
+        if faces.size == n_faces_before:
             break
 
     # Stage 4 opens a rim whenever it cuts an intersecting region out, so the last fill is not a
@@ -297,7 +297,7 @@ def remove_unreferenced_vertices(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
 
     # The referenced flags are marked as ``int32`` and scanned in place, and one pass reads the scan
     # to write all three maps and the remapped faces: the tail of the scan is the referenced count,
@@ -309,7 +309,7 @@ def remove_unreferenced_vertices(
         new_faces = tw.array.remap_indices(faces, remap)
     else:
         inclusive = wp.zeros(n_vertices, dtype=wp.int32, device=device)
-        n_indices = int(faces.shape[0])
+        n_indices = faces.size
         if n_indices > 0:
             wp.launch(
                 kernel_repair.mark_referenced,
@@ -444,14 +444,14 @@ def duplicate_vertex_inverse(vertices: wp.array[wp.vec3], epsilon: float) -> wp.
 def _vertex_classes(vertices: wp.array[wp.vec3], epsilon: float) -> tuple[int, wp.array[wp.int32]]:
     """Return the coincident-vertex class count and each vertex's class, as ``unique_1d`` does."""
     device = vertices.device
-    if int(vertices.shape[0]) == 0:
+    if vertices.size == 0:
         return 0, wp.empty(0, dtype=wp.int32, device=device)
     # One key per vertex and one ``unique_1d`` over it, at either tolerance: ``hash_vector_rows``
     # quantizes at ``epsilon > 0`` and packs the relative float buckets at ``0`` -- the same key
     # ``unique_rows`` would hash the vertices to, without the representative gather it would then
     # compute.
     unique, inverse = unique_1d(hash_vector_rows(vertices, epsilon=epsilon), return_inverse=True)
-    return int(unique.shape[0]), inverse
+    return unique.size, inverse
 
 
 def resolve_duplicated_faces(
@@ -484,7 +484,7 @@ def resolve_duplicated_faces(
         If a duplicate group's signed count is not orientable, i.e. its positive and negative
         copies differ by more than one.
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         empty = wp.empty(0, dtype=wp.int32, device=device)
@@ -492,7 +492,7 @@ def resolve_duplicated_faces(
 
     faces2d = faces.reshape((-1, 3))
     unique_faces_wp, inverse = unique_faces(faces, return_inverse=True)
-    num_unique = int(unique_faces_wp.shape[0]) // 3
+    num_unique = unique_faces_wp.size // 3
 
     # Per-group orientation stats scattered on device: member/signed counts plus the smallest
     # member index of each sign class (seeded with the ``n_faces`` sentinel).
@@ -545,7 +545,7 @@ def resolve_duplicated_faces(
 
     # Compact kept decisions in ascending group order (matches the reference emission order).
     kept_slots = tw.array.flatnonzero(keep_mask)
-    if int(kept_slots.shape[0]) == 0:
+    if kept_slots.size == 0:
         empty = wp.empty(0, dtype=wp.int32, device=device)
         return empty, empty
 
@@ -596,7 +596,7 @@ def remove_degenerate_faces(
     [`trimesh.triangles.nondegenerate`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.clone(vertices), wp.clone(faces)
 
@@ -691,10 +691,10 @@ def remove_degenerate_and_non_manifold_faces(
     [`remove_non_manifold_faces`][triwarp.repair.remove_non_manifold_faces]
     """
     require_same_device(vertices=vertices, faces=faces)
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.clone(vertices), wp.clone(faces)
     keep = tw.triangles.face_nondegenerate_mask(vertices, faces)
-    survivors, keep = _edge_manifold_survivors(faces, keep, int(vertices.shape[0]), max_iter)
+    survivors, keep = _edge_manifold_survivors(faces, keep, vertices.size, max_iter)
     assert keep is not None
     return tw.selection.submesh_from_face_mask(vertices, survivors, keep)
 
@@ -719,14 +719,14 @@ def _edge_manifold_survivors(
     if keep is not None:
         kept = tw.array.flatnonzero(keep)
         # Readback: the kept count decides whether the prefilter dropped anything to gather out.
-        if int(kept.shape[0]) != int(faces.shape[0]) // 3:
+        if kept.size != faces.size // 3:
             tested = tw.array.gather(faces.reshape((-1, 3)), kept).reshape((-1,))
     pending = None
     for _ in range(max_iter):
         # The previous pass's removal is applied only once another pass is going to test it.
         if pending is not None:
             tested = tw.array.gather(tested.reshape((-1, 3)), pending).reshape((-1,))
-        n_faces = int(tested.shape[0]) // 3
+        n_faces = tested.size // 3
         if n_faces == 0:
             break
         manifold = tw.validation.edge_manifold_mask(
@@ -734,7 +734,7 @@ def _edge_manifold_survivors(
         )
         pending = tw.array.flatnonzero(manifold)
         # Readback: the kept count is the stopping test.
-        if int(pending.shape[0]) == n_faces:
+        if pending.size == n_faces:
             break  # already edge-manifold
         faces, keep = tested, manifold
     return faces, keep
@@ -831,11 +831,11 @@ def remove_small_components(
         )
 
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return vertices, faces
 
-    labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=int(vertices.shape[0]))
+    labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
     keep = wp.empty(n_faces, dtype=wp.bool, device=device)
 
     if min_area is not None:
@@ -890,7 +890,7 @@ def _component_diagonals(
 ) -> wp.array[wp.float32]:
     """Bounding-box diagonal per component, indexed by the component's label."""
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner negated
     # so every update is a ``wp.atomic_min``, and a component no face names stays at the seed, which
     # ``packed_box_diagonals`` reports as a zero diagonal rather than as ``nan``.
@@ -996,14 +996,14 @@ def split_non_manifold_vertices(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         empty_index = wp.empty(0, dtype=wp.int32, device=device)
         return wp.empty(0, dtype=wp.vec3, device=vertices.device), faces, empty_index
 
     n_corners = 3 * n_faces
     _unique_edges, edge_of_corner = tw.edges.edges_unique(
-        faces, n_vertices=int(vertices.shape[0]), validate=False
+        faces, n_vertices=vertices.size, validate=False
     )
     n_unique = int(_unique_edges.shape[0])
 
@@ -1106,8 +1106,8 @@ def collapse_small_triangles(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
-    if n_faces == 0 or int(vertices.shape[0]) == 0:
+    n_faces = faces.size // 3
+    if n_faces == 0 or vertices.size == 0:
         return wp.clone(vertices), wp.clone(faces)
 
     bbd = tw.bounds.enclosing_diagonal(vertices)
@@ -1115,13 +1115,13 @@ def collapse_small_triangles(
 
     current_vertices = vertices
     current_faces = faces
-    max_iterations = int(faces.shape[0])  # bounded: each collapsing pass drops at least one face
+    max_iterations = faces.size  # bounded: each collapsing pass drops at least one face
     # One small-face counter for the whole loop, zeroed per pass: the kernel that finds the small
     # faces counts them, so the stopping test is one 4-byte read rather than a per-face flag buffer
     # reduced on the device first.
     n_small = wp.zeros(1, dtype=wp.int32, device=device)
     for _ in range(max_iterations):
-        n_current = int(current_faces.shape[0]) // 3
+        n_current = current_faces.size // 3
         if n_current == 0:
             break
 
@@ -1139,7 +1139,7 @@ def collapse_small_triangles(
 
         # Non-flagged faces emit a self-pair (i0, i0); these are self-loops that leave the
         # connected-components closure unchanged, so all rows can be passed without filtering.
-        n_vertices = int(current_vertices.shape[0])
+        n_vertices = current_vertices.size
         # ``validate=False``: the pairs are vertex indices read straight out of the face buffer
         # this function is repairing, which every kernel around it already indexes unchecked.
         labels = tw.graph.connected_component_labels_from_edges(
@@ -1244,8 +1244,8 @@ def straighten_boundary(
     if iterations < 0:
         raise ValueError(f"iterations must be non-negative, got {iterations}")
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or iterations == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0 or iterations == 0:
         return (faces, 0) if return_count else faces
 
     added = 0
@@ -1254,7 +1254,7 @@ def straighten_boundary(
     cursor = wp.zeros(1, dtype=wp.int32, device=device)
     for _ in range(iterations):
         cursor.zero_()
-        n_faces = int(faces.shape[0]) // 3
+        n_faces = faces.size // 3
         n_halfedges = 3 * n_faces
         twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
         # Keyed by halfedge, not by vertex: a bowtie rim vertex carries two rim loops and has no
@@ -1398,8 +1398,8 @@ def remove_degree3_vertices(
     if max_iter < 0:
         raise ValueError(f"max_iter must be non-negative, got {max_iter}")
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    n_input = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_input = faces.size // 3
     if n_input == 0 or max_iter == 0:
         return (vertices, faces, 0) if return_count else (vertices, faces)
     # The documented edge-manifold check, on the input only: the run-length test on the sorted
@@ -1606,11 +1606,11 @@ def flatten_degree3_vertices(
     if max_iter < 0:
         raise ValueError(f"max_iter must be non-negative, got {max_iter}")
     device = faces.device
-    n_vertices = int(vertices.shape[0])
-    if n_vertices == 0 or int(faces.shape[0]) == 0 or max_iter == 0:
+    n_vertices = vertices.size
+    if n_vertices == 0 or faces.size == 0 or max_iter == 0:
         return wp.clone(vertices)
     if region is not None and (
-        len(region.shape) != 1 or region.shape[0] != n_vertices or region.dtype is not wp.bool
+        len(region.shape) != 1 or region.size != n_vertices or region.dtype is not wp.bool
     ):
         raise ValueError(
             f"region must be a length-{n_vertices} wp.bool array, got shape {tuple(region.shape)} "
@@ -1729,8 +1729,8 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     [`make_normals_outward`][triwarp.repair.make_normals_outward]
     [`triwarp.validation.is_winding_consistent`][]
     """
-    reversed_faces = wp.empty(int(faces.shape[0]), dtype=wp.int32, device=faces.device)
-    n_faces = int(faces.shape[0]) // 3
+    reversed_faces = wp.empty(faces.size, dtype=wp.int32, device=faces.device)
+    n_faces = faces.size // 3
     if n_faces > 0:
         wp.launch(
             kernel_repair.reverse_face_winding,
@@ -1782,7 +1782,7 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     merely the same ones — so treat the result as unrepaired rather than partly repaired, and test
     with [`is_orientable`][triwarp.validation.is_orientable] first if that matters.
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
@@ -1849,7 +1849,7 @@ def make_volume(
     for meshes whose bodies are individually closed.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
@@ -1857,9 +1857,7 @@ def make_volume(
     if multibody:
         out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
         signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
-        labels = tw.adjacency.face_connected_component_labels(
-            faces, n_vertices=int(vertices.shape[0])
-        )
+        labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
         accum = wp.zeros(n_faces, dtype=wp.float32, device=device)
         wp.launch(
             kernel_scatter.SCATTER_ADD[signed_volumes.dtype],
@@ -1882,7 +1880,7 @@ def make_volume(
     # Both answer "is every undirected edge shared by exactly two faces", because every unique edge
     # in the table comes from a face.
     if not tw.validation.is_edge_manifold(
-        faces, allow_boundary_edges=False, n_vertices=int(vertices.shape[0])
+        faces, allow_boundary_edges=False, n_vertices=vertices.size
     ):
         return wp.clone(faces)
 
@@ -1989,7 +1987,7 @@ def remove_folded_faces(
     that [`triwarp.holes`][triwarp.holes] can retriangulate properly.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.clone(vertices), wp.clone(faces)
     folded = tw.validation.face_defective_mask(
@@ -2111,7 +2109,7 @@ def fix_self_intersections(
     if max_iter < 1:
         raise ValueError("max_iter must be at least 1")
 
-    if int(faces.shape[0]) == 0:
+    if faces.size == 0:
         return wp.clone(vertices), wp.clone(faces)
 
     if method == "voxel":
@@ -2135,15 +2133,13 @@ def fix_self_intersections(
         # a mesh past half a million faces.
         if not bool(bad_mask.numpy().any()):
             break
-        region = _dilate_face_mask(
-            current_faces, bad_mask, max_expand, int(current_vertices.shape[0])
-        )
+        region = _dilate_face_mask(current_faces, bad_mask, max_expand, current_vertices.size)
         if bool(region.numpy().all()):
             break  # the region swallowed the mesh: refilling it would delete everything
         current_vertices, current_faces = tw.holes.refill_region(
             current_vertices, current_faces, region
         )
-        if int(current_faces.shape[0]) == 0:
+        if current_faces.size == 0:
             break
     if current_faces is faces:
         return wp.clone(vertices), wp.clone(faces)
@@ -2184,7 +2180,7 @@ def _dilate_face_mask(
         Length-``n_faces`` grown selection on ``faces.device``.
     """
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
 
     # Mask to mask throughout, so nothing is compacted and nothing is read back: the selection's
     # corners are marked by one pass over the faces, and each hop is an any-corner lookup into the
@@ -2320,7 +2316,7 @@ def remove_tunnels(
     # The basis stays packed from the generators through the shortening to the measuring, so no
     # per-loop array is built and split again on the way.
     loops, loop_offsets = tw.homology.homology_generators_with_offsets(vertices, faces)
-    if int(loop_offsets.shape[0]) == 1:
+    if loop_offsets.size == 1:
         return vertices, faces, 0
 
     shortened, shortened_offsets, _sweeps = tw.geodesic_walk.shorten_loop_with_offsets(
@@ -2341,7 +2337,7 @@ def remove_tunnels(
     # mesh is cut once, along the family that survives.
     labels, sides = _cut_face_labels(faces, selected)
     labels_np = labels.numpy()
-    if int(np.unique(labels_np).shape[0]) > 1:
+    if np.unique(labels_np).size > 1:
         selected = _independent_loops(selected, labels_np, sides())
     cut_vertices, cut_faces = _cut_along_loops(vertices, faces, selected)
     return (
@@ -2364,7 +2360,7 @@ def _measure_loops(
     would change which loops are cut. A loop longer than one block is measured on its own.
     """
     device = vertices.device
-    n_loops = int(offsets.shape[0]) - 1
+    n_loops = offsets.size - 1
     lengths = wp.empty(n_loops, dtype=wp.float32, device=device)
     wp.launch_tiled(
         kernel_polyline.packed_closed_loop_lengths,
@@ -2440,7 +2436,7 @@ def _cut_face_labels(
         device=device,
     )
     labels = tw.graph.connected_component_labels_from_edges(
-        severed, node_count=int(faces.shape[0]) // 3, validate=False
+        severed, node_count=faces.size // 3, validate=False
     )
 
     def sides() -> dict[tuple[int, int], tuple[int, int]]:
@@ -2502,7 +2498,7 @@ def _cut_along_loops(
 
 def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> float:
     """Length of a closed vertex-index cycle, gathered onto its positions."""
-    points = wp.empty(int(loop.shape[0]), dtype=wp.vec3, device=vertices.device)
+    points = wp.empty(loop.size, dtype=wp.vec3, device=vertices.device)
     wp.copy(points, vertices[loop])
     return tw.polyline.polyline_length(points, closed=True)
 

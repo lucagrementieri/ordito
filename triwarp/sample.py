@@ -229,13 +229,13 @@ def sample_surface(
         If ``vertices``, ``faces`` and ``face_weight`` are not all on one device.
     """
     require_same_device(vertices=vertices, faces=faces, face_weight=face_weight)
-    n_faces = faces.shape[0] // 3
+    n_faces = faces.size // 3
     # Validated before the ``count == 0`` short-circuit below, so a bad ``face_weight`` still
     # raises even when nothing would otherwise be sampled.
-    if face_weight is not None and face_weight.shape[0] != n_faces:
+    if face_weight is not None and face_weight.size != n_faces:
         raise ValueError(
             f"face_weight length must match number of triangles (expected {n_faces}, "
-            f"got {face_weight.shape[0]})"
+            f"got {face_weight.size})"
         )
     if count == 0:
         return (
@@ -456,11 +456,11 @@ def _top_maxima_by_weight(
     wp.array[wp.int32]
         Length-``init_count`` ``0``/``1`` deletion flags with exactly ``excess`` ones.
     """
-    n_pool = int(candidates.shape[0])
+    n_pool = candidates.size
     flagged = flatnonzero(candidates)
     # Ascending on the negated weight is descending on the weight, and ``sort_and_argsort`` is the
     # package's one radix-sort spelling.
-    descending = wp.empty(int(flagged.shape[0]), dtype=wp.float32, device=candidates.device)
+    descending = wp.empty(flagged.size, dtype=wp.float32, device=candidates.device)
     wp.map(wp.neg, gather(weights, flagged), out=descending)
     _sorted, order = tw.array.sort_and_argsort(descending)
     # No clone: ``order`` need not outlive this frame (no further sort call reuses its scratch),
@@ -524,7 +524,7 @@ def sample_surface_blue_noise(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = faces.shape[0] // 3
+    n_faces = faces.size // 3
 
     if radius <= 0.0:
         raise ValueError(f"radius must be > 0, got {radius}")
@@ -574,7 +574,7 @@ def _dart_throw_blue_noise(
     launch floor.
     """
     device = pool_points.device
-    n_pool = int(pool_points.shape[0])
+    n_pool = pool_points.size
     empty = (wp.empty(0, dtype=wp.vec3, device=device), wp.empty(0, dtype=wp.int32, device=device))
     if n_pool == 0:
         return empty
@@ -603,7 +603,7 @@ def _dart_throw_blue_noise(
         kernel_blue_noise.cell_run_starts, dim=n_pool, inputs=[sorted_keys, is_start], device=device
     )
     run_starts = flatnonzero(is_start)
-    n_cells = int(run_starts.shape[0])
+    n_cells = run_starts.size
     unique_keys = wp.empty(n_cells, dtype=wp.int64, device=device)
     cell_offsets = wp.empty(n_cells + 1, dtype=wp.int32, device=device)
     wp.launch(
@@ -760,7 +760,7 @@ def _dart_throw_blue_noise(
         device=device,
     )
     kept = flatnonzero(accepted_mask)
-    if int(kept.shape[0]) == 0:
+    if kept.size == 0:
         return empty
     return gather(pool_points, kept), gather(pool_faces, kept)
 
@@ -804,13 +804,13 @@ def sample_volume(
         If ``vertices`` and ``faces`` are not all on one device.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = faces.shape[0] // 3
+    n_faces = faces.size // 3
 
     # These two validations run regardless of ``count`` -- unlike the "no faces" guard below,
     # which only matters once something is actually being sampled -- so a caller cannot skip a
     # documented raise on a malformed mesh by asking for zero points.
     if not tw.validation.is_edge_manifold(
-        faces, allow_boundary_edges=False, n_vertices=int(vertices.shape[0])
+        faces, allow_boundary_edges=False, n_vertices=vertices.size
     ):
         raise ValueError(
             "mesh is not watertight; tetrahedral decomposition requires a closed surface"

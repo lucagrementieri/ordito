@@ -39,7 +39,7 @@ def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: set[tuple[int, int]]) -> b
     [("icosahedron", 0), ("torus", 1), ("bohemian_dome", 1), ("genus_two", 2)],
 )
 def test_homology_generator_count_is_twice_the_genus(
-    request: pytest.FixtureRequest, mesh_name: str, genus: int, device: str
+    request: pytest.FixtureRequest, mesh_name: str, genus: int
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
@@ -88,7 +88,7 @@ def test_homology_generator_count_matches_meshlib(
 
 @pytest.mark.parametrize("mesh_name", ["torus", "genus_two"])
 def test_homology_generators_are_simple_closed_edge_cycles(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: no reference computes a homology basis, so the claim is structural.
@@ -107,9 +107,7 @@ def test_homology_generators_are_simple_closed_edge_cycles(
         assert _is_simple_edge_cycle(loop.numpy(), edges_tm)
 
 
-def test_homology_generators_are_not_contractible(
-    torus: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
+def test_homology_generators_are_not_contractible(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = torus
     loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
@@ -128,9 +126,7 @@ def test_homology_generators_are_not_contractible(
         assert len(components) == 1
 
 
-def test_homology_generators_are_reproducible(
-    genus_two: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
+def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Triwarp against triwarp: the docstring promises a reproducible basis, so pin it.
 
@@ -166,9 +162,7 @@ def test_homology_generators_are_reproducible(
         assert run == runs[0]
 
 
-def test_homology_generators_reject_a_boundary(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str
-) -> None:
+def test_homology_generators_reject_a_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = hemisphere
     with pytest.raises(ValueError, match="closed surface"):
         tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
@@ -243,7 +237,7 @@ def test_homology_generators_without_edges(device: str) -> None:
 
 
 def test_homology_generators_satisfy_the_tree_cotree_identity(
-    torus: tuple[tm.Trimesh, wp.Mesh], device: str
+    torus: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the counting identity a tree-cotree decomposition must satisfy.
@@ -274,7 +268,7 @@ def test_homology_generators_empty(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "torus", "genus_two"])
 def test_homology_generators_is_its_packed_form_split(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Triwarp against triwarp: the list form is the packed form, loop by loop.
@@ -290,8 +284,8 @@ def test_homology_generators_is_its_packed_form_split(
     )
 
     offsets_np = offsets_wp.numpy()
-    assert offsets_np.shape[0] == len(loops_wp) + 1
-    assert offsets_np[-1] == flat_wp.shape[0]
+    assert offsets_np.size == len(loops_wp) + 1
+    assert offsets_np[-1] == flat_wp.size
     flat_np = flat_wp.numpy()
     for i, loop_wp in enumerate(loops_wp):
         assert np.array_equal(loop_wp.numpy(), flat_np[offsets_np[i] : offsets_np[i + 1]])

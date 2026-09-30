@@ -131,7 +131,7 @@ def test_unique_1d_inverse_float_with_nan(device: str):
     """
     data_np = np.array([3.5, 1.25, 3.5, np.nan, 1.25, np.nan], dtype=np.float32)
     unique_np, inverse_np = np.unique(data_np, return_inverse=True)
-    assert np.unique(inverse_np).shape[0] == 3
+    assert np.unique(inverse_np).size == 3
 
     data_wp = wp.array(data_np, dtype=wp.float32, device=device)
     unique_wp, inverse_wp = tw.grouping.unique_1d(data_wp, return_inverse=True)
@@ -243,7 +243,7 @@ def test_unique_rows_vec3(device: str):
     data_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
     data_wp = points_to_warp(data_np, device)
     unique_wp, inverse_wp = tw.grouping.unique_rows(data_wp, return_inverse=True)
-    assert unique_wp.shape[0] == 2
+    assert unique_wp.size == 2
     for i in range(data_np.shape[0]):
         assert np.allclose(
             unique_wp.numpy()[inverse_wp.numpy()[i]], data_np[i], rtol=1e-5, atol=1e-5
@@ -338,8 +338,8 @@ def test_unique_faces(device: str):
 def test_unique_faces_empty(device: str):
     faces_wp = wp.empty(0, dtype=wp.int32, device=device)
     unique_wp, inverse_wp = tw.grouping.unique_faces(faces_wp, return_inverse=True)
-    assert unique_wp.shape[0] == 0
-    assert inverse_wp.shape[0] == 0
+    assert unique_wp.size == 0
+    assert inverse_wp.size == 0
 
 
 def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> None:
@@ -355,7 +355,7 @@ def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> Non
     unique_wp, inverse_wp = tw.grouping.unique_1d(
         wp.array(values_np, dtype=wp.int32, device=device), return_inverse=True
     )
-    n_unique = int(unique_wp.shape[0])
+    n_unique = unique_wp.size
 
     first_wp = tw.grouping.first_occurrence_indices(inverse_wp, n_unique)
 

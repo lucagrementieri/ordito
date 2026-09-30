@@ -59,10 +59,8 @@ def edges_to_csr(
     require_same_device(edges=edges, weights=weights)
     device = edges.device
     m = int(edges.shape[0])
-    if weights is not None and int(weights.shape[0]) != m:
-        raise ValueError(
-            f"weights must have one entry per edge, got {weights.shape[0]} for {m} edges"
-        )
+    if weights is not None and weights.size != m:
+        raise ValueError(f"weights must have one entry per edge, got {weights.size} for {m} edges")
 
     n_entries = 2 * m
     rows = wp.empty(n_entries, dtype=wp.int32, device=device)
@@ -452,8 +450,8 @@ def connected_component_parity_from_edges(
     require_same_device(edges=edges, signs=signs)
     twt.ensure_edge_pairs(edges, "edges")
     m = int(edges.shape[0])
-    if int(signs.shape[0]) != m:
-        raise ValueError(f"signs must have length {m} to match edges, got {int(signs.shape[0])}")
+    if signs.size != m:
+        raise ValueError(f"signs must have length {m} to match edges, got {signs.size}")
     if node_count < 0:
         raise ValueError(f"node_count must be non-negative, got {node_count}")
     if validate and m > 0:
@@ -585,7 +583,7 @@ def successor_cycles(
     labels = connected_component_labels_from_edges(edges, node_count=node_count, validate=False)
 
     cycle_nodes = tw.array.flatnonzero(node_mask)
-    n_nodes = int(cycle_nodes.shape[0])
+    n_nodes = cycle_nodes.size
 
     label_min = wp.full(node_count, node_count, dtype=wp.int32, device=device)
     label_count = wp.zeros(node_count, dtype=wp.int32, device=device)
@@ -612,7 +610,7 @@ def successor_cycles(
         device=device,
     )
     cycle_nodes = tw.array.flatnonzero(node_mask)
-    n_nodes = int(cycle_nodes.shape[0])
+    n_nodes = cycle_nodes.size
     if n_nodes == 0:
         return wp.empty(0, dtype=wp.int32, device=device), wp.zeros(
             1, dtype=wp.int32, device=device
@@ -781,9 +779,9 @@ def shortest_path_envelope(
     node_count, offsets, columns = _validate_square_csr(adjacency)
     if max_iterations < 0:
         raise ValueError(f"max_iterations must be non-negative, got {max_iterations}")
-    if int(values.shape[0]) != node_count:
+    if values.size != node_count:
         raise ValueError(
-            f"values must have one entry per node, got {values.shape[0]} for {node_count} nodes"
+            f"values must have one entry per node, got {values.size} for {node_count} nodes"
         )
 
     device = wp.get_device(values.device)
@@ -792,7 +790,7 @@ def shortest_path_envelope(
         return labels
 
     weights = adjacency.values
-    if int(weights.shape[0]) > 0 and float(tw.reduce.min(weights)) < 0.0:
+    if weights.size > 0 and float(tw.reduce.min(weights)) < 0.0:
         raise ValueError("adjacency weights must be non-negative for the envelope to converge")
 
     max_pass_count = max_iterations or node_count

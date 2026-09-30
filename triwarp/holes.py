@@ -105,7 +105,7 @@ class _PackedLoops:
             [[0], np.cumsum(self.sizes_np * self.sizes_np)[:-1]]
         ).astype(np.int64)
 
-        self.n_loops = int(sizes_np.shape[0])
+        self.n_loops = sizes_np.size
         self.total = int(self.sizes_np.sum())
         self.max_size = int(self.sizes_np.max())
         self.dp_total = int((self.sizes_np * self.sizes_np).sum())
@@ -209,7 +209,7 @@ def fill_fan(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
     if packed is None:
         return wp.clone(faces)
@@ -279,14 +279,14 @@ def fill_cone(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
     if packed is None:
         return wp.clone(vertices), wp.clone(faces)
 
     flat_loops, loop_offsets = packed.flat_loops, packed.offsets
     n_loops, total = packed.n_loops, packed.total
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
 
     centroids = wp.empty(n_loops, dtype=wp.vec3, device=device)
     fill_faces = wp.empty(3 * total, dtype=wp.int32, device=device)
@@ -335,7 +335,7 @@ class _EdgeTable:
         n_vertices = tw.array.index_bound(faces, require_non_negative=True)
         self.vertices = vertices
         self.faces = faces
-        self.n_halfedges = int(faces.shape[0]) // 3 * 3
+        self.n_halfedges = faces.size // 3 * 3
         self.base = wp.uint64(n_vertices)
         self.n_vertices = n_vertices
         self.device = device
@@ -362,7 +362,7 @@ class _EdgeTable:
         third = wp.full(loops.total, kernel_holes.RIM_NO_FACE, dtype=wp.int32, device=self.device)
         wp.launch(
             kernel_holes.probe_rim_edges,
-            dim=int(self.faces.shape[0]) // 3,
+            dim=self.faces.size // 3,
             inputs=[self.faces, sorted_keys, slots, self.base, third],
             device=self.device,
         )
@@ -505,7 +505,7 @@ def fill_min_weight(
     """
     require_same_device(vertices=vertices, faces=faces)
     _check_fill_metric(metric)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.clone(faces)
     loops = _hole_loops(vertices, faces, preserve_largest_hole)
@@ -725,7 +725,7 @@ def _traceback_fill_faces(
     n_padded = int(triangle_sizes_np.sum())
     if n_padded == 0:
         return wp.clone(faces)
-    n_face_indices = int(faces.shape[0])
+    n_face_indices = faces.size
     filled = wp.empty(n_face_indices + 3 * n_padded, dtype=wp.int32, device=device)
     wp.copy(filled, faces, count=n_face_indices)
     padded = twt.as_dense(filled[n_face_indices:]).reshape((n_padded, 3))
@@ -922,7 +922,7 @@ def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
     """Concatenate a caller's per-loop arrays into the packed form the fill engine consumes."""
     # ``copy=False``: every kernel below takes ``flat_loops`` as an input and none writes it.
     flat_loops, _offsets = tw.array.pack_1d_arrays(loops, copy=False)
-    sizes_np = np.asarray([int(loop.shape[0]) for loop in loops], dtype=np.int64)
+    sizes_np = np.asarray([loop.size for loop in loops], dtype=np.int64)
     return _PackedLoops(flat_loops, sizes_np)
 
 
@@ -1173,19 +1173,19 @@ def fill_smooth(
     _check_refine(refine)
 
     device = faces.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     packed = _hole_loops(vertices, faces, preserve_largest_hole) if n_faces > 0 else None
     if packed is None:
-        empty = _patch_mask(int(faces.shape[0]) // 3, int(faces.shape[0]) // 3, device)
+        empty = _patch_mask(faces.size // 3, faces.size // 3, device)
         result = (wp.clone(vertices), wp.clone(faces))
         return (*result, empty) if return_patch else result
 
     n_faces_before = n_faces
-    n_vertices_before = int(vertices.shape[0])
+    n_vertices_before = vertices.size
     faces_filled = _fill_packed_loops(
         vertices, faces, packed, metric, resolve_multiple_edges, smooth_boundary
     )
-    n_faces_after = int(faces_filled.shape[0]) // 3
+    n_faces_after = faces_filled.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
 
     if triangulate_only:
@@ -1330,7 +1330,7 @@ def refill_region(
         vertices, faces, face_mask
     )
     device = faces.device
-    n_kept_faces = int(kept_faces.shape[0]) // 3
+    n_kept_faces = kept_faces.size // 3
     if not new_loops:
         empty = _patch_mask(n_kept_faces, n_kept_faces, device)
         result = (kept_vertices, kept_faces)
@@ -1338,7 +1338,7 @@ def refill_region(
 
     packed = _pack_loops(new_loops)
     faces_filled = _fill_packed_loops(kept_vertices, kept_faces, packed, metric, True, True)
-    patch_mask = _patch_mask(n_kept_faces, int(faces_filled.shape[0]) // 3, device)
+    patch_mask = _patch_mask(n_kept_faces, faces_filled.size // 3, device)
     if triangulate_only:
         result = (kept_vertices, faces_filled)
         return (*result, patch_mask) if return_patch else result
@@ -1347,7 +1347,7 @@ def refill_region(
     new_vertices, new_faces, out_patch = tw.smoothing.refine_and_smooth_region(
         kept_vertices,
         faces_filled,
-        int(kept_vertices.shape[0]),
+        kept_vertices.size,
         patch_mask,
         target_edge,
         1000,
@@ -1555,8 +1555,8 @@ def _extend_packed_rims(
     """Project every packed rim vertex onto its loop's plane and bridge the two rings."""
     device = faces.device
     total = rims.total
-    n_vertices = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n_vertices = vertices.size
+    n_faces = faces.size // 3
     extended_vertices = wp.empty(n_vertices + total, dtype=wp.vec3, device=device)
     extended_faces = wp.empty(3 * (n_faces + 2 * total), dtype=wp.int32, device=device)
     wp.copy(extended_vertices[:n_vertices], vertices)
@@ -1672,7 +1672,7 @@ def fillable_loop_mask(
     # ``vertices`` is the domain, so its length is the bound ``index_bound`` would go to the
     # device to re-derive. An unreferenced vertex only widens the two tables below, which are
     # indexed by vertex id.
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     fillable = wp.full(packed.n_loops, value=True, dtype=wp.bool, device=device)
     if packed.total > 0:
         # A vertex on two different rims is a pinch *between* loops, and a vertex a single rim
@@ -1701,7 +1701,7 @@ def fillable_loop_mask(
         # the sort that deduplicates the edges buys nothing (``clear_loops_with_chords``).
         wp.launch(
             kernel_holes.clear_loops_with_chords,
-            dim=int(faces.shape[0]) // 3,
+            dim=faces.size // 3,
             inputs=[faces, counts, loop_slots, packed.offsets, fillable],
             device=device,
         )
@@ -1960,12 +1960,12 @@ def stitch_smooth(
     )
 
     device = faces_a.device
-    n_faces_before = (int(faces_a.shape[0]) + int(faces_b.shape[0])) // 3
-    n_vertices_before = int(vertices_a.shape[0]) + int(vertices_b.shape[0])
+    n_faces_before = (faces_a.size + faces_b.size) // 3
+    n_vertices_before = vertices_a.size + vertices_b.size
     combined_vertices, combined_faces = stitch_loops_min_weight(
         vertices_a, faces_a, loop_a, vertices_b, faces_b, loop_b, metric, up_dir
     )
-    n_faces_after = int(combined_faces.shape[0]) // 3
+    n_faces_after = combined_faces.size // 3
     patch_mask = _patch_mask(n_faces_before, n_faces_after, device)
 
     if triangulate_only:
@@ -1976,8 +1976,8 @@ def stitch_smooth(
     # and ``_mean_rim_edge_length`` must not alias it. ``wp.clone`` says exactly that; the round
     # trip through ``.numpy()`` these used to take said nothing and crossed the bus twice. The
     # second loop's shift into the combined numbering is elementwise, so it maps on the device.
-    shifted_loop_b = wp.empty(int(loop_b.shape[0]), dtype=wp.int32, device=device)
-    wp.map(wp.add, loop_b, wp.int32(int(vertices_a.shape[0])), out=shifted_loop_b)
+    shifted_loop_b = wp.empty(loop_b.size, dtype=wp.int32, device=device)
+    wp.map(wp.add, loop_b, wp.int32(vertices_a.size), out=shifted_loop_b)
     rim_loops = [wp.clone(loop_a), shifted_loop_b]
     target_edge = (
         max_edge if max_edge is not None else _mean_rim_edge_length(combined_vertices, rim_loops)
@@ -2068,12 +2068,8 @@ def _single_boundary_loops(
     to zip to the other's. Loops shorter than three vertices are degenerate rather than holes and
     are dropped before counting, so a mesh carrying one is rejected on its real loop count.
     """
-    loops_a = [
-        loop for loop in tw.boundary.boundary_loops(vertices_a, faces_a) if int(loop.shape[0]) >= 3
-    ]
-    loops_b = [
-        loop for loop in tw.boundary.boundary_loops(vertices_b, faces_b) if int(loop.shape[0]) >= 3
-    ]
+    loops_a = [loop for loop in tw.boundary.boundary_loops(vertices_a, faces_a) if loop.size >= 3]
+    loops_b = [loop for loop in tw.boundary.boundary_loops(vertices_b, faces_b) if loop.size >= 3]
     if len(loops_a) != 1 or len(loops_b) != 1:
         raise ValueError(
             f"{caller} requires each mesh to have exactly one boundary loop (>= 3 vertices); "
@@ -2169,8 +2165,8 @@ def stitch_loops(
         faces_b=faces_b,
         loop_b=loop_b,
     )
-    n = int(loop_a.shape[0])
-    m = int(loop_b.shape[0])
+    n = loop_a.size
+    m = loop_b.size
     if n < m:
         vertices_a, vertices_b = vertices_b, vertices_a
         faces_a, faces_b = faces_b, faces_a
@@ -2181,7 +2177,7 @@ def stitch_loops(
     device = faces_a.device
     if m < 3:
         raise ValueError(f"each boundary loop must have at least 3 vertices, got {n} and {m}")
-    n_vertices_a = int(vertices_a.shape[0])
+    n_vertices_a = vertices_a.size
 
     # Reverse loop A so both rims wind the same way, then take rim positions.
     flipped_loop_a = wp.empty(n, dtype=wp.int32, device=device)
@@ -2262,7 +2258,7 @@ def stitch_loops(
                 perimeters,
                 wp.array(unsorted_indices.astype(np.int32), dtype=wp.int32, device=device),
                 wp.array(next_indices.astype(np.int32), dtype=wp.int32, device=device),
-                wp.int32(int(unsorted_indices.size)),
+                wp.int32(unsorted_indices.size),
                 wp.int32(row_roll),
                 wp.int32(col_roll),
                 wp.int32(n),
@@ -2440,14 +2436,14 @@ def stitch_loops_min_weight(
         loop_b=loop_b,
     )
     _check_stitch_metric(metric)
-    n_a = int(loop_a.shape[0])
-    n_b = int(loop_b.shape[0])
+    n_a = loop_a.size
+    n_b = loop_b.size
     if n_a < 3 or n_b < 3:
         raise ValueError(f"each boundary loop must have at least 3 vertices, got {n_a} and {n_b}")
 
     device = faces_a.device
     metric_id = _STITCH_METRIC_IDS[metric]
-    offset = int(vertices_a.shape[0])
+    offset = vertices_a.size
 
     # Reverse loop A so the two rims wind oppositely (facing), then align both at the closest pair.
     # ``la`` / ``lb`` stay on the host for the sequential band traceback, but the closest-pair
@@ -2572,8 +2568,8 @@ def _closest_loop_pair(a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3]) -> tu
     ``row_argmin`` / ``global_argmin``, which the caller needs anyway for its *perimeter* objective.
     """
     device = a_pos.device
-    n_a = int(a_pos.shape[0])
-    n_b = int(b_pos.shape[0])
+    n_a = a_pos.size
+    n_b = b_pos.size
     dist_sq = twt.empty_2d((n_a, n_b), wp.float32, device=device)
     wp.launch(
         kernel_holes.pair_sq_distances,
@@ -2839,7 +2835,7 @@ def bridge_edges_smooth(
     wp.copy(gathered, vertices[wp.array(corners, dtype=wp.int32, device=device)])
     positions_np = gathered.numpy().astype(np.float64)
 
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     interior_np, strip_np = _bridge_strip(positions_np, corners, n_vertices, sampling_step)
     if interior_np.shape[0] == 0:
         # One segment: the strip *is* the flat patch, which adds edges between existing vertices,
@@ -3109,9 +3105,9 @@ def _closest_cross_component_edges(
     if n_boundary == 0:
         return None
 
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     face_labels = tw.adjacency.face_connected_component_labels(faces)
-    vertex_labels = wp.full(int(vertices.shape[0]), -1, dtype=wp.int32, device=device)
+    vertex_labels = wp.full(vertices.size, -1, dtype=wp.int32, device=device)
     wp.launch(
         kernel_scatter.scatter_face_labels_to_vertices,
         dim=3 * n_faces,
@@ -3163,7 +3159,7 @@ def _bridge_census(faces: wp.array[wp.int32], pairs: Sequence[tuple[int, int]]) 
     """
     device = faces.device
     census = wp.zeros((len(pairs), 3), dtype=wp.int32, device=device)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces > 0:
         queries = wp.array(np.asarray(pairs, dtype=np.int32), dtype=wp.int32, device=device)
         wp.launch(
@@ -3353,7 +3349,7 @@ def _boundary_loops_packed(
     unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway.
     """
     flat_loops, offsets = tw.boundary.boundary_loops_with_offsets(vertices, faces)
-    if int(offsets.shape[0]) == 1:
+    if offsets.size == 1:
         return None
     return flat_loops, np.diff(offsets.numpy().astype(np.int64))
 

@@ -48,14 +48,12 @@ vertices, faces = tw.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
 mesh = tw.Trimesh(vertices, faces)
-print(mesh.area)                  # 12.551353454589844
-print(mesh.is_watertight)         # True
+print(mesh.area)  # 12.551353454589844
+print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 
 # Feature-preserving isotropic remeshing (split / collapse / flip / smooth / reproject).
-remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(
-    vertices, faces, target_length=0.05
-)
+remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
 ```
 
 Continue with **[Getting started](getting-started.md)** for the full walkthrough (including a

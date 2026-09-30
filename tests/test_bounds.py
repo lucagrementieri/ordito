@@ -310,7 +310,7 @@ def _original_face_rows(
     sub_np = sub_vertices_wp.numpy()
     distance_np, original_np = cKDTree(vertices_np).query(sub_np)
     assert np.max(distance_np) < 1e-5, "a cropped vertex is not one of the input's"
-    assert np.unique(original_np).shape[0] == original_np.shape[0], "the vertex match is not 1:1"
+    assert np.unique(original_np).size == original_np.size, "the vertex match is not 1:1"
     rows_np = original_np[sub_faces_wp.numpy().reshape(-1, 3)]
     return lexsort_rows(np.sort(rows_np, axis=1))
 
@@ -338,7 +338,7 @@ def test_points_in_aabb_matches_open3d(request: pytest.FixtureRequest, mesh_name
         )
     )
     # Non-vacuous on both sides: a full box or an empty one would make this test pass on nothing.
-    assert 0 < indices_o3d.shape[0] < mesh_tm.vertices.shape[0]
+    assert 0 < indices_o3d.size < mesh_tm.vertices.shape[0]
 
     lower_wp, upper_wp = _corners_wp(box_np)
     indices_wp = tw.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
@@ -416,7 +416,7 @@ def test_points_in_obb_matches_open3d(request: pytest.FixtureRequest, mesh_name:
             )
         )
     )
-    assert 0 < indices_o3d.shape[0] < points_np.shape[0]
+    assert 0 < indices_o3d.size < points_np.shape[0]
 
     indices_wp = tw.bounds.points_in_obb(points_wp, rotation_wp, *_corners_wp(box_np))
     assert np.array_equal(indices_wp.numpy(), indices_o3d)
@@ -521,7 +521,7 @@ def test_index_crop_and_mask_forms_agree(device: str, oriented: bool) -> None:
         indices_wp = tw.bounds.points_in_aabb(points_wp, lower_wp, upper_wp)
         kept_wp, crop_indices_wp = tw.bounds.crop_points(points_wp, lower_wp, upper_wp)
     expected_np = np.flatnonzero(mask_np)
-    assert 0 < expected_np.shape[0] < points_np.shape[0]
+    assert 0 < expected_np.size < points_np.shape[0]
     assert not mask_np[:3].any(), "a non-finite row was selected"
     assert np.array_equal(indices_wp.numpy(), expected_np)
     assert np.array_equal(crop_indices_wp.numpy(), expected_np)
@@ -549,8 +549,8 @@ def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str
     assert 0 < faces_o3d.shape[0] < mesh_tm.faces.shape[0]
 
     sub_vertices_wp, sub_faces_wp = tw.bounds.crop_mesh(vertices_wp, faces_wp, *_corners_wp(box_np))
-    assert int(sub_faces_wp.shape[0]) // 3 == faces_o3d.shape[0]
-    assert int(sub_vertices_wp.shape[0]) == np.asarray(mesh_o3d.vertices).shape[0]
+    assert sub_faces_wp.size // 3 == faces_o3d.shape[0]
+    assert sub_vertices_wp.size == np.asarray(mesh_o3d.vertices).shape[0]
     assert np.array_equal(
         _original_face_rows(sub_vertices_wp, sub_faces_wp, mesh_tm.vertices),
         _original_face_rows(
@@ -594,15 +594,15 @@ def test_crop_mesh_drops_the_faces_that_straddle_the_box(device: str) -> None:
     lower_wp, upper_wp = _corners_wp(np.array([[-0.5, -0.5, -0.5], [1.5, 1.5, 0.5]]))
 
     sub_vertices_wp, sub_faces_wp = tw.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
-    assert int(sub_faces_wp.shape[0]) // 3 == 2
-    assert int(sub_vertices_wp.shape[0]) == 4
+    assert sub_faces_wp.size // 3 == 2
+    assert sub_vertices_wp.size == 4
 
     # ``face_mode="any"`` is the documented escape hatch, and it keeps the straddling one.
     mask_wp = tw.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
     _, any_faces_wp = tw.selection.submesh_from_vertex_mask(
         vertices_wp, faces_wp, mask_wp, face_mode="any"
     )
-    assert int(any_faces_wp.shape[0]) // 3 == 3
+    assert any_faces_wp.size // 3 == 3
 
 
 def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
@@ -613,14 +613,14 @@ def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     lower_wp, upper_wp = wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
     identity_wp = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-    assert int(tw.bounds.points_in_aabb(empty_wp, lower_wp, upper_wp).shape[0]) == 0
-    assert int(tw.bounds.points_in_aabb_mask(empty_wp, lower_wp, upper_wp).shape[0]) == 0
-    assert int(tw.bounds.points_in_obb(empty_wp, identity_wp, lower_wp, upper_wp).shape[0]) == 0
-    assert int(tw.bounds.crop_points(empty_wp, lower_wp, upper_wp)[0].shape[0]) == 0
+    assert tw.bounds.points_in_aabb(empty_wp, lower_wp, upper_wp).size == 0
+    assert tw.bounds.points_in_aabb_mask(empty_wp, lower_wp, upper_wp).size == 0
+    assert tw.bounds.points_in_obb(empty_wp, identity_wp, lower_wp, upper_wp).size == 0
+    assert tw.bounds.crop_points(empty_wp, lower_wp, upper_wp)[0].size == 0
 
     # An inverted box is empty rather than universal: no point satisfies both comparisons.
-    assert int(tw.bounds.points_in_aabb(cloud_wp, upper_wp, lower_wp).shape[0]) == 0
-    assert int(tw.bounds.points_in_obb(cloud_wp, identity_wp, upper_wp, lower_wp).shape[0]) == 0
+    assert tw.bounds.points_in_aabb(cloud_wp, upper_wp, lower_wp).size == 0
+    assert tw.bounds.points_in_obb(cloud_wp, identity_wp, upper_wp, lower_wp).size == 0
 
 
 def _tilted_cloud(mesh_tm: tm.Trimesh, device: str) -> tuple[np.ndarray, wp.array[wp.vec3]]:
@@ -891,7 +891,7 @@ def test_oriented_bounding_box_prefilter_returns_the_identical_box(device: str) 
     kept_wp = tw.array.gather(
         cloud_wp, tw.array.flatnonzero(tw.points.convex_superset_mask(cloud_wp))
     )
-    assert int(kept_wp.shape[0]) < n // 10, "the prefilter must actually discard interior points"
+    assert kept_wp.size < n // 10, "the prefilter must actually discard interior points"
 
     rotation_dense, lower_dense, upper_dense = tw.bounds.oriented_bounding_box(cloud_wp)
     rotation_kept, lower_kept, upper_kept = tw.bounds.oriented_bounding_box(kept_wp)

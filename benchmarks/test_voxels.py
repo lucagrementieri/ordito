@@ -690,7 +690,7 @@ def test_sample_grid_trilinear(bench_case: BenchCase) -> None:
     points = bench_case.vertices_wp
     bounds = _splat_bounds(bench_case)
     sampled = bench_case.run(lambda: tw.voxels.sample_grid_trilinear(field, points, bounds=bounds))
-    assert int(sampled.shape[0]) == bench_case.n_vertices
+    assert sampled.size == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="grid_points")
@@ -735,4 +735,4 @@ def test_grid_points(bench_lib: BenchLibrary, resolution: int) -> None:
     device = bench_lib.device
     bounds = (wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0))
     lattice = bench_lib.run(lambda: tw.voxels.grid_points(shape, bounds=bounds, device=device))
-    assert int(lattice.shape[0]) == resolution**3
+    assert lattice.size == resolution**3

@@ -53,7 +53,7 @@ def _path_length(points: np.ndarray) -> float:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_trace_from_vertex_walks_the_requested_distance(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: the traced arc length against the requested one, computed here.
@@ -94,7 +94,7 @@ def test_trace_from_vertex_walks_the_requested_distance(
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_trace_from_vertex_stays_on_the_surface(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class C (a distance bound, not a correspondence): every traced point is on the surface.
@@ -124,7 +124,7 @@ def test_trace_from_vertex_stays_on_the_surface(
 @pytest.mark.parity("trace_rays", "potpourri3d")
 @pytest.mark.parity("trace_locality", "potpourri3d")
 def test_trace_from_vertex_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A on the arc length, Class C on the endpoint -- and the split is the point.
@@ -169,9 +169,7 @@ def test_trace_from_vertex_matches_potpourri3d(
         assert np.linalg.norm(points[-1] - path_pp[-1]) < 0.5 * edge_length
 
 
-def test_trace_from_vertex_stops_at_the_boundary(
-    hemisphere: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[object, wp.Mesh]) -> None:
     """
     Not a library comparison: rays fired off the rim must stop there, not wrap or leave.
 
@@ -214,7 +212,7 @@ def test_trace_from_vertex_stops_at_the_boundary(
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 @pytest.mark.parity("trace_from_face", "potpourri3d")
 def test_trace_from_face_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A on the start point and the arc length, for the barycentric entry point.
@@ -266,7 +264,7 @@ def test_trace_from_face_matches_potpourri3d(
 
 
 def test_trace_from_face_zero_direction_is_a_single_point(
-    icosahedron: tuple[object, wp.Mesh], device: str
+    icosahedron: tuple[object, wp.Mesh],
 ) -> None:
     _, mesh_wp = icosahedron
     points_wp, offsets_wp = tw.geodesic_walk.trace_from_face(
@@ -467,7 +465,7 @@ def test_geodesic_path_reaches_the_source_along_the_surface(
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_vertices = int(vertices_wp.shape[0])
+    n_vertices = vertices_wp.size
     rng = np.random.default_rng(3)
     targets_np = rng.choice(
         np.arange(1, n_vertices), min(12, n_vertices - 1), replace=False
@@ -510,14 +508,14 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
     at_source_wp, offsets_wp = tw.geodesic_walk.descend_field(
         sphere_wp.points, sphere_wp.indices, distance_wp, source_wp
     )
-    assert int(at_source_wp.shape[0]) == 1  # already at the stop value
+    assert at_source_wp.size == 1  # already at the stop value
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 1]))
 
     # A boundary: the field's source is a rim vertex, so paths from the far side reach it, but a
     # field with no reachable minimum stops on the rim instead.
     mesh_tm, hemi_wp = hemisphere
     rim_wp = tw.boundary.boundary_vertex_indices(hemi_wp.points, hemi_wp.indices)
-    assert int(rim_wp.shape[0]) > 0
+    assert rim_wp.size > 0
     hemi_distance_wp = tw.heat.heat_geodesic(hemi_wp.points, hemi_wp.indices, rim_wp[:1])
     interior_np = np.setdiff1d(
         np.arange(mesh_tm.vertices.shape[0], dtype=np.int32), rim_wp.numpy()
@@ -528,8 +526,8 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
         hemi_distance_wp,
         wp.array(interior_np, dtype=wp.int32, device=device),
     )
-    assert int(points_wp.shape[0]) > int(interior_np.shape[0])  # every path has more than a point
-    assert int(path_offsets_wp.shape[0]) == interior_np.shape[0] + 1
+    assert points_wp.size > interior_np.size  # every path has more than a point
+    assert path_offsets_wp.size == interior_np.size + 1
 
 
 def test_descend_field_accepts_the_precomputed_pair_values_first(
@@ -550,7 +548,7 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
     """
     _, mesh_wp = icosphere
     device = mesh_wp.points.device
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     distance_wp = tw.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp)
     starts_wp = wp.array(np.arange(1, 9, dtype=np.int32), dtype=wp.int32, device=device)
@@ -560,13 +558,13 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
     )
 
     incidence = tw.adjacency.vertex_face_adjacency(mesh_wp.indices, n_vertices=n_vertices)
-    assert int(incidence[0].shape[0]) == int(mesh_wp.indices.shape[0])  # values, not offsets
-    assert int(incidence[1].shape[0]) == n_vertices + 1  # offsets, not values
+    assert incidence[0].size == mesh_wp.indices.size  # values, not offsets
+    assert incidence[1].size == n_vertices + 1  # offsets, not values
     supplied_points, supplied_offsets = tw.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, distance_wp, starts_wp, vertex_faces=incidence
     )
 
-    assert int(derived_points.shape[0]) > int(starts_wp.shape[0])  # not a batch of single points
+    assert derived_points.size > starts_wp.size  # not a batch of single points
     assert np.array_equal(derived_offsets.numpy(), supplied_offsets.numpy())
     assert np.allclose(derived_points.numpy(), supplied_points.numpy(), rtol=1e-5, atol=1e-5)
 
@@ -584,7 +582,7 @@ def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
             wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device),
         )
 
-    field_wp = wp.zeros(int(mesh_wp.points.shape[0]), dtype=wp.float64, device=device)
+    field_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float64, device=device)
     points_wp, offsets_wp = tw.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, field_wp, wp.empty(0, dtype=wp.int32, device=device)
     )
@@ -662,9 +660,7 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
     "call and returns a multi-loop system, so a row over a generator basis would "
     "price a Python loop and a different output shape. potpourri3d is timed.",
 )
-def test_shorten_loop_bounded_by_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class C: triwarp's edge-path local minimum against a reference minimizing over the same space.
 
@@ -779,8 +775,8 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
     }
     for shortened_loop_wp in shortened_wp:
         loop_np = shortened_loop_wp.numpy()
-        assert loop_np.shape[0] >= 3
-        assert np.unique(loop_np).shape[0] == loop_np.shape[0]  # simple, so the cut below applies
+        assert loop_np.size >= 3
+        assert np.unique(loop_np).size == loop_np.size  # simple, so the cut below applies
         rolled_np = np.roll(loop_np, -1)
         assert all(
             tuple(sorted((int(a), int(b)))) in edges_np
@@ -794,7 +790,7 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
             mesh_wp.points, mesh_wp.indices, twt.as_array2d(loop_edges_wp, wp.int32)
         )
         labels_np = tw.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
-        assert np.unique(labels_np).shape[0] == 1
+        assert np.unique(labels_np).size == 1
         assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
 
 
@@ -822,7 +818,7 @@ def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.M
     assert packed_sweeps == sweeps
     assert np.array_equal(flat_wp.numpy(), flat_before_np)
     offsets_np = packed_offsets_wp.numpy()
-    assert offsets_np.shape[0] == len(shortened_wp) + 1
+    assert offsets_np.size == len(shortened_wp) + 1
     packed_np = packed_wp.numpy()
     for i, loop_wp in enumerate(shortened_wp):
         assert np.array_equal(loop_wp.numpy(), packed_np[offsets_np[i] : offsets_np[i + 1]])

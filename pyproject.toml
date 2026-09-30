@@ -135,6 +135,7 @@ test = [
     # environment.
     "torch==2.11.0",
     "trimesh>=5.0.0",
+    "py-cpuinfo>=9.0.0",
 ]
 
 
@@ -354,6 +355,18 @@ reportMissingTypeArgument = "error"
 reportMissingTypeStubs = "error"
 reportOperatorIssue = "none"
 reportUnnecessaryTypeIgnoreComment = "error"
+
+# Three rules above ``standard``, the ones whose hits were real rather than Warp stub fallout.
+# ``reportUnnecessaryCast`` is also the staleness half of the narrowings above: a Warp stub fix
+# turns a cast into a no-op, and this is what says so. Enabling them reported 4 / 1 / 10 on
+# ``triwarp/`` (a dead ``voxels._cell_slots``, an unread ``n_vertices``, protocol-signature and
+# stub parameters), plus 3 casts and 1 dead helper in ``tests/`` / ``benchmarks/``, where
+# ``reportUnusedParameter`` also enforces section 7.1's ``device`` rule (152 hits: 150 ``device``
+# parameters a mesh fixture already supplied, and two ``parametrize`` labels). The stricter
+# modes are ~12 500 ``reportUnknown*`` hits on Warp's stubs and were declined.
+reportUnnecessaryCast = "error"
+reportUnusedFunction = "error"
+reportUnusedParameter = "error"
 
 # ``tests/`` and ``benchmarks/`` are checked too, but not against the same bar. Two things are
 # true there and nowhere else: they import all nine reference libraries of section 7.6, none of

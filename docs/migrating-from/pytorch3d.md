@@ -9,9 +9,9 @@ batch, concatenate meshes with [`combine.concatenate`][triwarp.combine.concatena
 per-mesh index ranges yourself) where PyTorch3D would use its batch axis.
 
 ```python
-import pytorch3d.ops as p3d_ops        # before
+import pytorch3d.ops as p3d_ops  # before
 import pytorch3d.loss as p3d_loss
-import triwarp as tw                   # after
+import triwarp as tw  # after
 ```
 
 ## Neighbours and distances

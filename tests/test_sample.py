@@ -481,7 +481,7 @@ def test_sample_surface_blue_noise_count_order_of_magnitude(
     expected = 50
     radius = _blue_noise_radius_for_count(surface_area, expected)
     points, _ = tw.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=0)
-    n = int(points.shape[0])
+    n = points.size
     igl_expected = (
         surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     )
@@ -504,7 +504,7 @@ def _blue_noise_statistics(
     return (
         float(pdist(points_np).min()) / radius,
         float(cKDTree(points_np).query(dense_np)[0].max()) / radius,
-        int(np.unique(face_index_np).shape[0]),
+        np.unique(face_index_np).size,
     )
 
 
@@ -574,7 +574,7 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     points_wp, _face_index_wp = tw.sample.sample_surface_blue_noise(
         mesh_wp.points, mesh_wp.indices, radius, seed=11
     )
-    n_samples = int(points_wp.shape[0])
+    n_samples = points_wp.size
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.generate_sampling_poisson_disk(radius=ml.PureValue(radius))

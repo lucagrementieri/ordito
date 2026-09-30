@@ -81,7 +81,7 @@ def face_flipped_mask(vertices: wp.array[wp.vec2], faces: wp.array[wp.int32]) ->
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return wp.empty(0, dtype=wp.bool, device=device)
 
@@ -176,7 +176,7 @@ def map_vertices_to_circle(
     """
     require_same_device(vertices=vertices, boundary=boundary)
     device = vertices.device
-    n_boundary = int(boundary.shape[0])
+    n_boundary = boundary.size
     out_uv = wp.empty(n_boundary, dtype=wp.vec2, device=device)
     if n_boundary == 0:
         return out_uv
@@ -359,7 +359,7 @@ def _validate_fixed_boundary_call(
     )
     if k < 1:
         raise ValueError(f"{name} power k must be >= 1, got {k}.")
-    return vertices.device, int(vertices.shape[0])
+    return vertices.device, vertices.size
 
 
 def _solve_fixed_boundary(
@@ -386,7 +386,7 @@ def _solve_fixed_boundary(
     # every vertex is fixed (n_vertices > 0, n_boundary == 0 is impossible here because n_vertices
     # > 0 implies interior vertices exist) this cannot be satisfied and the assembly would be
     # wasted.
-    n_boundary = int(boundary_indices.shape[0])
+    n_boundary = boundary_indices.size
     _require_fixed_vertices(
         n_boundary,
         n_vertices,
@@ -591,7 +591,7 @@ def arap(
     if tolerance <= 0.0:
         raise ValueError(f"arap tolerance must be > 0, got {tolerance}.")
     device = vertices.device
-    n_vertices = int(vertices.shape[0])
+    n_vertices = vertices.size
     if n_vertices == 0:
         return wp.empty(0, dtype=wp.vec2, device=device)
 
@@ -600,13 +600,13 @@ def arap(
     # interior vertex exists. Checked before the cotangent/Laplacian build below (mirroring
     # harmonic / tutte), so a rejected call doesn't pay for the assembly first.
     _require_fixed_vertices(
-        int(fixed_indices.shape[0]),
+        fixed_indices.size,
         n_vertices,
         1,
         "arap requires at least one fixed vertex when the mesh has interior vertices; the ARAP "
         "global system is otherwise singular (translation invariant).",
     )
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
 
     # Cotangents computed once and reused by both the Laplacian build and the rest-edge flattening;
     # single native-float64 operator build, so nothing is recast or rebuilt (see cotmatrix docs).
@@ -735,11 +735,9 @@ def _scatter_constraints(
         If ``indices`` and ``uv`` have different lengths -- the scatter kernel below indexes ``uv``
         at every position up to ``indices.shape[0]``, so a shorter ``uv`` is an out-of-bounds read.
     """
-    n_fixed = int(indices.shape[0])
-    if int(uv.shape[0]) != n_fixed:
-        raise ValueError(
-            f"indices and uv must have the same length, got {n_fixed} and {int(uv.shape[0])}."
-        )
+    n_fixed = indices.size
+    if uv.size != n_fixed:
+        raise ValueError(f"indices and uv must have the same length, got {n_fixed} and {uv.size}.")
     # One scatter marks the mask and writes the values, skipping an out-of-range index in both.
     fixed_mask = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     fixed_values = wp.zeros((2, n_vertices), dtype=wp.float64, device=device)
@@ -820,11 +818,11 @@ def lscm(
         vertices=vertices, faces=faces, pinned_indices=pinned_indices, pinned_uv=pinned_uv
     )
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0:
         return wp.empty(0, dtype=wp.vec2, device=device)
 
-    n_pinned = int(pinned_indices.shape[0])
+    n_pinned = pinned_indices.size
     _require_fixed_vertices(
         n_pinned,
         n,
@@ -832,12 +830,12 @@ def lscm(
         "lscm requires at least two pinned vertices to remove the conformal map's "
         f"similarity-transform null space; got {n_pinned}.",
     )
-    if int(pinned_uv.shape[0]) != n_pinned:
+    if pinned_uv.size != n_pinned:
         # The scatter kernel below indexes ``pinned_uv`` at every position up to
         # ``pinned_indices.shape[0]``, so a shorter ``pinned_uv`` is an out-of-bounds read.
         raise ValueError(
             "pinned_indices and pinned_uv must have the same length, got "
-            f"{n_pinned} and {int(pinned_uv.shape[0])}."
+            f"{n_pinned} and {pinned_uv.size}."
         )
 
     q = tw.energies.lscm_hessian(vertices, faces)

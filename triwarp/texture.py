@@ -85,7 +85,7 @@ def rasterize_attribute(
 
     device = uv.device
     image = wp.zeros((resolution, resolution, n_channels), dtype=wp.float32, device=device)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return twt.as_array3d(image, wp.float32)
 
@@ -144,12 +144,12 @@ def rasterize_discrete_attribute(
     """
     require_same_device(uv=uv, faces=faces, attribute=attribute)
     twt.ensure_ndim(attribute, 1, dtype=wp.int32)
-    n_vertices = int(attribute.shape[0])
+    n_vertices = attribute.size
     _check_rasterize_inputs(uv, n_vertices, resolution, labels=attribute)
 
     device = uv.device
     labels_image = wp.full((resolution, resolution), -1, dtype=wp.int32, device=device)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return twt.as_array2d(labels_image, wp.int32)
 
@@ -193,8 +193,8 @@ def _check_rasterize_inputs(
     """
     if resolution <= 0:
         raise ValueError("Resolution must be positive")
-    if int(uv.shape[0]) != n_vertices:
-        raise ValueError(f"uv and attribute row count mismatch: {int(uv.shape[0])} vs {n_vertices}")
+    if uv.size != n_vertices:
+        raise ValueError(f"uv and attribute row count mismatch: {uv.size} vs {n_vertices}")
     if labels is None:
         _check_uv_in_range(uv)
         return
@@ -243,7 +243,7 @@ def _rasterize_owner(
     owner = wp.full((resolution, resolution), _OWNER_SENTINEL, dtype=wp.int32, device=device)
     wp.launch(
         kernel_texture.rasterize_owner,
-        dim=int(faces.shape[0]) // 3,
+        dim=faces.size // 3,
         inputs=[uv, faces, resolution, owner],
         device=device,
     )
@@ -311,7 +311,7 @@ def remap_attribute_from_uv(
     _check_uv_in_range(uv)
 
     device = uv.device
-    n_vertices = int(uv.shape[0])
+    n_vertices = uv.size
     out_values = twt.empty_2d((n_vertices, n_channels), wp.float32, device=device)
     if n_vertices > 0:
         # ``order`` is rejected above rather than defaulted here: an ``if order == 1 else``
@@ -369,7 +369,7 @@ def remap_discrete_attribute_from_uv(
     _check_uv_in_range(uv)
 
     device = uv.device
-    n_vertices = int(uv.shape[0])
+    n_vertices = uv.size
     out_labels = twt.empty_1d(n_vertices, wp.int32, device=device)
     if n_vertices > 0:
         wp.launch(
@@ -398,7 +398,7 @@ def _check_uv_in_range(uv: wp.array[wp.vec2]) -> None:
     ``_check_rasterize_inputs`` and pay a far smaller share, since their own work
     scales with ``resolution ** 2``.
     """
-    n_vertices = int(uv.shape[0])
+    n_vertices = uv.size
     if n_vertices == 0:
         return
     flag = wp.zeros(1, dtype=wp.int32, device=uv.device)

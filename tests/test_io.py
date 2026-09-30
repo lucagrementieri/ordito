@@ -146,7 +146,7 @@ def test_face_normals_cover_every_triangle_block(monkeypatch, device):
     assert faces_mio.shape[0] == 2
     assert normals_mio.shape == (2, 3)
     assert np.array_equal(data_wp["faces"].numpy().reshape(-1, 3), faces_mio)
-    assert data_wp["face_normals"].shape[0] == faces_mio.shape[0]
+    assert data_wp["face_normals"].size == faces_mio.shape[0]
     assert np.allclose(data_wp["face_normals"].numpy(), normals_mio, rtol=1e-5, atol=1e-5)
 
 

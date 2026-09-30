@@ -89,7 +89,7 @@ def halfedge_twins(
     """
     defect_counts = wp.zeros(2, dtype=wp.int32, device=faces.device)
     twins = _pair_halfedges(faces, n_vertices, defect_counts)
-    if validate and twins.shape[0] > 0:
+    if validate and twins.size > 0:
         _raise_twin_defects(read_values(defect_counts, 0, 2))
     return twins
 
@@ -150,10 +150,10 @@ def require_matching_twins(faces: wp.array[wp.int32], twins: wp.array[wp.int32] 
     """
     if twins is None:
         return
-    n_halfedges = int(faces.shape[0]) // 3 * 3
-    if int(twins.shape[0]) != n_halfedges:
+    n_halfedges = faces.size // 3 * 3
+    if twins.size != n_halfedges:
         raise ValueError(
-            f"twins must have one entry per halfedge, got {twins.shape[0]} for {n_halfedges} "
+            f"twins must have one entry per halfedge, got {twins.size} for {n_halfedges} "
             f"halfedges ({n_halfedges // 3} faces)"
         )
     if n_halfedges == 0:
@@ -249,7 +249,7 @@ def vertex_one_rings(
     require_same_device(faces=faces, twins=twins)
     require_matching_twins(faces, twins)
     device = faces.device
-    n_halfedges = int(faces.shape[0]) // 3 * 3
+    n_halfedges = faces.size // 3 * 3
 
     if n_vertices is None:
         n_vertices = tw.array.index_bound(faces)
@@ -323,7 +323,7 @@ def _pair_halfedges(
     back at once.
     """
     device = faces.device
-    n_halfedges = int(faces.shape[0]) // 3 * 3
+    n_halfedges = faces.size // 3 * 3
     twins = wp.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0:
         return twins

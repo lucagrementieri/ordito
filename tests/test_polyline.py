@@ -432,7 +432,7 @@ def test_polyline_angles_closed_matches_reference(device: str) -> None:
 def test_polyline_angles_closed_length_matches_original(device: str) -> None:
     pts_np = _random_open_polyline(32)
     angles_wp = tw.polyline.polyline_angles(points_to_warp(pts_np, device), closed=True)
-    assert angles_wp.shape[0] == pts_np.shape[0]
+    assert angles_wp.size == pts_np.shape[0]
 
 
 def test_polyline_angles_closed_is_indexed_by_vertex_not_by_segment(device: str) -> None:
@@ -756,7 +756,7 @@ def test_smooth_upsample_detects_an_already_closed_input(device: str) -> None:
 
 def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
     single = points_to_warp(np.array([[1.0, 2.0, 3.0]]), device)
-    assert tw.polyline.polyline_smooth_upsample(single, 0.5).shape[0] == 1
+    assert tw.polyline.polyline_smooth_upsample(single, 0.5).size == 1
 
 
 # --- cumulative_arc_length (NumPy reference) ---
@@ -1157,7 +1157,7 @@ def test_angles_short_polyline_is_zeros(device: str) -> None:
 def test_distance_empty_polyline(device: str) -> None:
     points = points_to_warp(np.random.default_rng(99).standard_normal((4, 3)), device)
     empty = wp.empty(0, dtype=wp.vec3, device=device)
-    assert tw.polyline.polyline_point_distance(points, empty).shape[0] == 4
+    assert tw.polyline.polyline_point_distance(points, empty).size == 4
 
 
 # --- triangulate (ear clipping) ---
@@ -1432,15 +1432,21 @@ def test_simplify_deep_split_tree_matches_reference(device: str) -> None:
 
 
 @pytest.mark.parametrize(
-    ("name", "builder"),
+    "builder",
     [
-        ("nan_interior", lambda: [[0.0, 0.0, 0.0], [1.0, np.nan, 0.0], [2.0, 0.0, 0.0]]),
-        ("nan_endpoint", lambda: [[np.nan, 0.0, 0.0], [1.0, 5.0, 0.0], [2.0, 0.0, 0.0]]),
-        ("inf_interior", lambda: [[0.0, 0.0, 0.0], [1.0, np.inf, 0.0], [2.0, 0.0, 0.0]]),
-        ("all_nan", lambda: np.full((5, 3), np.nan).tolist()),
+        pytest.param(
+            lambda: [[0.0, 0.0, 0.0], [1.0, np.nan, 0.0], [2.0, 0.0, 0.0]], id="nan_interior"
+        ),
+        pytest.param(
+            lambda: [[np.nan, 0.0, 0.0], [1.0, 5.0, 0.0], [2.0, 0.0, 0.0]], id="nan_endpoint"
+        ),
+        pytest.param(
+            lambda: [[0.0, 0.0, 0.0], [1.0, np.inf, 0.0], [2.0, 0.0, 0.0]], id="inf_interior"
+        ),
+        pytest.param(lambda: np.full((5, 3), np.nan).tolist(), id="all_nan"),
     ],
 )
-def test_simplify_non_finite_terminates(device: str, name: str, builder) -> None:
+def test_simplify_non_finite_terminates(device: str, builder) -> None:
     """
     A non-finite coordinate leaves the round loop terminating and the answer well-formed.
 
@@ -1527,7 +1533,7 @@ def test_simplify_block_and_round_loop_match_reference(
     _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
     _, indices_np = _simplify_np(pts_np, tol)
     # Non-vacuous: a real share of the points is dropped and a real share kept.
-    assert 10 < indices_np.shape[0] < pts_np.shape[0] - 100
+    assert 10 < indices_np.size < pts_np.shape[0] - 100
     assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
 
 
@@ -1570,7 +1576,7 @@ def test_simplify_closed_through_both_round_forms(
     )
     simplified_np, indices_np = _simplify_np(closed_np, 0.02)
     # Non-vacuous: the loop keeps both ends of the seam and drops a real share of the rest.
-    assert 10 < indices_np.shape[0] < pts_np.shape[0] - 100
+    assert 10 < indices_np.size < pts_np.shape[0] - 100
     assert indices_np[-1] == pts_np.shape[0]
     assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
     assert np.allclose(
@@ -1683,7 +1689,7 @@ def test_closed_keyword_equals_closing_the_polyline_explicitly(device: str, endi
     assert np.array_equal(stored_np[0], stored_np[-1]) == (ending == "repeated")
     closed_wp = tw.polyline.polyline_close(polyline_wp)
     queries_wp = points_to_warp(_random_open_polyline(34, n=15), device)
-    n_original = int(polyline_wp.shape[0])
+    n_original = polyline_wp.size
 
     # Pure delegation: closed=True adds the segment and changes nothing else.
     assert np.isclose(
@@ -1742,8 +1748,8 @@ _L_RING = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], 
 def test_triangulate_polygon(device: str, ring_name: str) -> None:
     ring_np = _SQUARE_RING if ring_name == "square" else _L_RING
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    assert int(vertices_wp.shape[0]) == ring_np.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == ring_np.shape[0] - 2
+    assert vertices_wp.size == ring_np.shape[0]
+    assert faces_wp.size // 3 == ring_np.shape[0] - 2
     # No Steiner points, and the triangles must tile the polygon exactly.
     triangles_np = vertices_wp.numpy().astype(np.float64)[faces_wp.numpy().reshape(-1, 3)]
     edge_a, edge_b = (
@@ -1772,8 +1778,8 @@ def test_triangulate_polygon_star(device: str, n: int) -> None:
     """
     ring_np = _star_ring_wp(n)
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    assert int(vertices_wp.shape[0]) == n
-    assert int(faces_wp.shape[0]) // 3 == n - 2
+    assert vertices_wp.size == n
+    assert faces_wp.size // 3 == n - 2
 
     triangles_np = vertices_wp.numpy().astype(np.float64)[faces_wp.numpy().reshape(-1, 3)]
     edge_a = triangles_np[:, 1] - triangles_np[:, 0]
@@ -1849,8 +1855,8 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str, n: int) 
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     vertices_tm, faces_tm = tm.creation.triangulate_polygon(sg.Polygon(ring_np))
 
-    assert int(faces_wp.shape[0]) // 3 == faces_tm.shape[0] == n - 2
-    assert int(vertices_wp.shape[0]) == vertices_tm.shape[0] == n
+    assert faces_wp.size // 3 == faces_tm.shape[0] == n - 2
+    assert vertices_wp.size == vertices_tm.shape[0] == n
     # Same vertex set: equal counts plus a two-sided Hausdorff distance at float32 resolution. A
     # lexsort compare is not usable here -- the star has coordinate pairs that tie to 1e-16, so the
     # row order is decided by rounding noise rather than by the values.
@@ -1887,8 +1893,8 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
     )
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     vertices_tm, faces_tm = tm.creation.triangulate_polygon(sg.Polygon(ring_np))
-    assert int(vertices_wp.shape[0]) == n
-    assert int(faces_wp.shape[0]) // 3 == faces_tm.shape[0] == n - 2
+    assert vertices_wp.size == n
+    assert faces_wp.size // 3 == faces_tm.shape[0] == n - 2
 
     points_np = np.random.default_rng(1).uniform([-0.05, -0.3], [1.05, 0.05], size=(20000, 2))
     count_wp = _triangle_cover_count(
@@ -1903,16 +1909,16 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
 def test_triangulate_polygon_drops_repeated_closing_point(device: str) -> None:
     closed_np = np.vstack((_SQUARE_RING, _SQUARE_RING[:1]))
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(closed_np, device))
-    assert int(vertices_wp.shape[0]) == _SQUARE_RING.shape[0]
-    assert int(faces_wp.shape[0]) // 3 == _SQUARE_RING.shape[0] - 2
+    assert vertices_wp.size == _SQUARE_RING.shape[0]
+    assert faces_wp.size // 3 == _SQUARE_RING.shape[0] - 2
 
 
 def test_triangulate_polygon_too_few_points(device: str) -> None:
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(
         points_to_warp_uv(np.zeros((2, 2)), device)
     )
-    assert int(vertices_wp.shape[0]) == 2
-    assert int(faces_wp.shape[0]) == 0
+    assert vertices_wp.size == 2
+    assert faces_wp.size == 0
 
 
 def _signed_ring_area(ring_np: np.ndarray) -> float:
@@ -1945,7 +1951,7 @@ def test_triangulate_polygon_leaves_a_clockwise_input_unchanged(device: str) -> 
     vertices_wp, faces_wp = tw.polyline.triangulate_polygon(ring_wp)
     assert np.array_equal(ring_wp.numpy(), before_np)
     assert np.array_equal(vertices_wp.numpy(), before_np)
-    assert int(faces_wp.shape[0]) // 3 == 62
+    assert faces_wp.size // 3 == 62
     assert np.isclose(_tiled_area(before_np, faces_wp.numpy()), -_signed_ring_area(ring_np))
 
 

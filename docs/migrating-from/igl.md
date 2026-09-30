@@ -7,8 +7,8 @@ closest of any reference library to triwarp's own — the difference is entirely
 extra precision, as `heat_geodesic` itself does internally).
 
 ```python
-import igl                # before
-import triwarp as tw      # after
+import igl  # before
+import triwarp as tw  # after
 ```
 
 ## Discrete differential geometry

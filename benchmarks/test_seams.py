@@ -195,7 +195,7 @@ def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
     cut_vertices, cut_faces = bench_case.run(
         lambda: tw.seams.cut_along_edges(vertices, faces, edges), rounds=3
     )
-    assert int(cut_faces.shape[0]) == int(faces.shape[0])
+    assert cut_faces.size == faces.size
     assert np.isfinite(cut_vertices.numpy()[:1]).all()
 
 

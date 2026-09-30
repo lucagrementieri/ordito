@@ -337,5 +337,5 @@ def test_shorten_loop_with_offsets(bench_case: BenchCase) -> None:
         lambda: tw.geodesic_walk.shorten_loop_with_offsets(vertices, faces, loops, offsets),
         rounds=_ROUNDS,
     )
-    assert int(shortened_offsets.shape[0]) == int(offsets.shape[0])
+    assert shortened_offsets.size == offsets.size
     assert sweeps > 0

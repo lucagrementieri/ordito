@@ -406,8 +406,8 @@ def chamfer_points_to_points_loss(
     require_same_device(x=x, y=y)
     _validate_diff_reduction(point_reduction)
     device = x.device
-    n = int(x.shape[0])
-    m = int(y.shape[0])
+    n = x.size
+    m = y.size
     loss = _zero_loss(device)
     if n == 0 or m == 0:
         return loss
@@ -480,9 +480,9 @@ def chamfer_points_to_mesh_loss(
     require_same_device(points=points, vertices=vertices, faces=faces)
     _validate_diff_reduction(point_reduction)
     device = points.device
-    n = int(points.shape[0])
-    v = int(vertices.shape[0])
-    n_faces = int(faces.shape[0]) // 3
+    n = points.size
+    v = vertices.size
+    n_faces = faces.size // 3
     loss = _zero_loss(device)
     if n == 0 or v == 0 or n_faces == 0:
         return loss
@@ -562,10 +562,10 @@ def chamfer_mesh_to_mesh_loss(
     )
     _validate_diff_reduction(point_reduction)
     device = vertices_a.device
-    va = int(vertices_a.shape[0])
-    vb = int(vertices_b.shape[0])
-    n_faces_a = int(faces_a.shape[0]) // 3
-    n_faces_b = int(faces_b.shape[0]) // 3
+    va = vertices_a.size
+    vb = vertices_b.size
+    n_faces_a = faces_a.size // 3
+    n_faces_b = faces_b.size // 3
     loss = _zero_loss(device)
     if va == 0 or vb == 0 or n_faces_a == 0 or n_faces_b == 0:
         return loss
@@ -789,7 +789,7 @@ def _chamfer(
 
 
 def _square(distances: wp.array[wp.float32]) -> twt.Array1dFloat32:
-    n = int(distances.shape[0])
+    n = distances.size
     squared = twt.empty_1d(n, wp.float32, device=distances.device)
     if n > 0:
         wp.map(kernel_array.square_scalar, distances, out=squared)
@@ -813,7 +813,7 @@ def _reduce_squared(
         return float(largest * largest)
     total = tw.reduce.weighted_sum(distances_1d, distances_1d)
     if point_reduction == "mean":
-        return total / float(int(distances.shape[0]))
+        return total / distances.size
     return total
 
 
@@ -852,7 +852,7 @@ def _distances_points_to_points(
     x: wp.array[wp.vec3], y: wp.array[wp.vec3], single_directional: bool
 ) -> _Distances | None:
     """Nearest-neighbour distances between two clouds, both directions unless directed."""
-    if int(x.shape[0]) == 0 or int(y.shape[0]) == 0:
+    if x.size == 0 or y.size == 0:
         return None
     nearest_forward, distance_forward = _nearest(y, x)
     d_forward = _flat(distance_forward)
@@ -869,7 +869,7 @@ def _distances_points_to_mesh(
     single_directional: bool,
 ) -> _Distances | None:
     """Point-to-surface distances forward, cloud nearest-neighbour distances back."""
-    if int(points.shape[0]) == 0 or int(vertices.shape[0]) == 0 or int(faces.shape[0]) == 0:
+    if points.size == 0 or vertices.size == 0 or faces.size == 0:
         return None
     _, d_forward, face_id = tw.proximity.closest_point_on_mesh(vertices, faces, points)
     if single_directional:
@@ -939,11 +939,11 @@ def _backward_nearest(
     Returns the search's ``(indices, distances)`` and the largest forward distance when the choice
     read it back (a ``"max"`` reduction or a Hausdorff distance reuses it), else ``None``.
     """
-    n = int(points.shape[0])
+    n = points.size
     device = points.device
     if not wp.get_device(device).is_cuda or n < _GRID_BACKWARD_MIN_POINTS:
         return _nearest(points, queries), None
-    m = int(queries.shape[0])
+    m = queries.size
     scale = wp.array(_SCALE_SEED, dtype=wp.float32, device=device)
     hits = wp.zeros(m, dtype=wp.int32, device=device)
     wp.launch(
@@ -1001,12 +1001,7 @@ def _distances_mesh_to_mesh(
     dominance and CG's periodic host-readback check). Kept sequential; do not reintroduce stream
     overlap here without a call site whose own device share is much larger.
     """
-    if (
-        int(vertices_a.shape[0]) == 0
-        or int(vertices_b.shape[0]) == 0
-        or int(faces_a.shape[0]) == 0
-        or int(faces_b.shape[0]) == 0
-    ):
+    if vertices_a.size == 0 or vertices_b.size == 0 or faces_a.size == 0 or faces_b.size == 0:
         return None
     max_dist = _mesh_pair_search_radius(vertices_a, vertices_b, single_directional)
     d_forward = tw.proximity.closest_point_on_mesh(
@@ -1089,7 +1084,7 @@ def _launch_nn_term(
     _launch_reduction_pair(
         kernel_metrics.chamfer_nn_term_tiled,
         kernel_metrics.chamfer_nn_term_sliced,
-        int(x.shape[0]),
+        x.size,
         x.device,
         [x, y, nearest, wp.float32(scale)],
         loss,
@@ -1108,7 +1103,7 @@ def _launch_surface_term(
     _launch_reduction_pair(
         kernel_metrics.chamfer_surface_term_tiled,
         kernel_metrics.chamfer_surface_term_sliced,
-        int(points.shape[0]),
+        points.size,
         points.device,
         [points, vertices, faces, face_id, wp.float32(scale)],
         loss,

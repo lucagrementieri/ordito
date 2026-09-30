@@ -110,7 +110,7 @@ def point_plane_distance(
     """
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
-    n = int(points.shape[0])
+    n = points.size
     out_distances = wp.empty(n, dtype=wp.float32, device=points.device)
     wp.map(
         kernel_points.point_plane_distance, points, plane_normal, plane_origin, out=out_distances
@@ -169,7 +169,7 @@ def half_space_mask(
     """
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
-    n = int(points.shape[0])
+    n = points.size
     out_mask = wp.empty(n, dtype=wp.bool, device=points.device)
     if n == 0:
         return out_mask
@@ -193,7 +193,7 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
         Shape ``(1,)`` device array holding the centroid on ``points.device``.
         All-zeros when ``points`` is empty.
     """
-    n = int(points.shape[0])
+    n = points.size
     out = _point_sum(points)
     if n == 0:
         return out
@@ -260,7 +260,7 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     [`trimesh.points.major_axis`][]
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         return wp.vec3(0.0, 0.0, 0.0)
 
@@ -305,7 +305,7 @@ def centered_covariance(
     require_same_device(points=points, center=center)
     if center is not None:
         return _scatter_matrix(points, center, 1.0)
-    return _scatter_matrix(points, _point_sum(points), float(points.shape[0]))
+    return _scatter_matrix(points, _point_sum(points), float(points.size))
 
 
 def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
@@ -340,7 +340,7 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
         Two in-plane axes completing this normal into a frame.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         # Both zero, so the order is readability rather than behaviour: normal, then centroid.
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 0.0)
@@ -425,7 +425,7 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     ValueError
         If ``n - ddof <= 0``.
     """
-    n = int(points.shape[0])
+    n = points.size
     if n - ddof <= 0:
         raise ValueError(f"covariance requires n > ddof, got n={n}, ddof={ddof}")
     out = centered_covariance(points)
@@ -481,7 +481,7 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
         A searched box rather than a covariance fit, and tighter for it.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         return wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0), wp.vec3(), wp.vec3()
 
@@ -570,7 +570,7 @@ def estimate_normals(
     twt.ensure_ndim(neighbor_idx, 2, dtype=wp.int32)
 
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     # The launch is one thread per *point* and each reads its own row, so a table with fewer rows
     # than the cloud is an out-of-bounds read rather than a short answer -- and on the CPU device a
     # Warp array is host heap, so that is heap corruption with no exception in release mode
@@ -611,7 +611,7 @@ def estimate_normals(
 def _point_sum(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     """``sum(points)`` as a ``(1,)`` device array, zero when ``points`` is empty."""
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     out = wp.zeros(1, dtype=wp.vec3, device=device)
     if n == 0:
         return out
@@ -635,7 +635,7 @@ def _scatter_matrix(
     point sum with ``n``; ``None`` is the zero center, i.e. the uncentred Gram matrix.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     out = wp.zeros(1, dtype=wp.mat33, device=device)
     if n == 0:
         return out
@@ -927,7 +927,7 @@ def radius_outlier_mask(
         raise ValueError(f"min_neighbors must be >= 1, got {min_neighbors}")
 
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     out_mask = wp.zeros(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
@@ -974,7 +974,7 @@ def point_finite_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     [`triwarp.array.flatnonzero`][triwarp.array.flatnonzero]
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     out_mask = wp.empty(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
@@ -1034,7 +1034,7 @@ def point_duplicate_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     [`triwarp.grouping.first_occurrence_indices`][triwarp.grouping.first_occurrence_indices]
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     out_mask = wp.empty(n, dtype=wp.bool, device=device)
     if n == 0:
         return out_mask
@@ -1125,7 +1125,7 @@ def farthest_point_sample(
     [`triwarp.neighbors.nearest_neighbor_distance`][triwarp.neighbors.nearest_neighbor_distance]
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if not 0 <= count <= n:
         raise ValueError(f"count must be in [0, {n}], got {count}")
 
@@ -1233,7 +1233,7 @@ def convex_subset_mask(
     [`scipy.spatial.ConvexHull`][]
     """
     device = points.device
-    n_points = int(points.shape[0])
+    n_points = points.size
     if n_points == 0:
         return wp.empty(0, dtype=wp.bool, device=device)
 
@@ -1363,7 +1363,7 @@ def convex_superset_mask(
     [`scipy.spatial.ConvexHull`][]
     """
     device = points.device
-    n_points = int(points.shape[0])
+    n_points = points.size
     if n_points == 0:
         return wp.empty(0, dtype=wp.bool, device=device)
     if n_points < 4:
@@ -1371,8 +1371,8 @@ def convex_superset_mask(
         return wp.full(n_points, value=True, dtype=wp.bool, device=device)
 
     directions, shell_faces = tw.creation.icosphere(subdivisions=int(subdivisions), device=device)
-    n_dir = int(directions.shape[0])
-    n_tetra = int(shell_faces.shape[0]) // 3
+    n_dir = directions.size
+    n_tetra = shell_faces.size // 3
     best_max, best_min = _support_extremes(points, directions)
 
     # Seeded with the last index rather than a sentinel: a direction that somehow marks nothing
@@ -1428,8 +1428,8 @@ def _support_extremes(
     ``bounds``' oriented-box extents.
     """
     device = points.device
-    n_points = int(points.shape[0])
-    n_dir = int(directions.shape[0])
+    n_points = points.size
+    n_dir = directions.size
     n_slices = slice_count(n_points, device)
 
     best_max = wp.full(n_dir, value=-float("inf"), dtype=wp.float32, device=device)
@@ -1478,9 +1478,9 @@ def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.floa
     """
     require_same_device(a=a, b=b)
     device = a.device
-    n = int(a.shape[0])
-    if n != int(b.shape[0]):
-        raise ValueError(f"a and b must have the same length, got {n} and {b.shape[0]}")
+    n = a.size
+    if n != b.size:
+        raise ValueError(f"a and b must have the same length, got {n} and {b.size}")
 
     if n == 0:
         return wp.empty(0, dtype=wp.float32, device=device)
@@ -1525,7 +1525,7 @@ def radial_sort(
         If ``start`` is provided and is (near-)parallel with ``normal``.
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         return wp.empty(0, dtype=wp.vec3, device=device)
 

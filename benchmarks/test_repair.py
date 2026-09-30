@@ -183,8 +183,8 @@ def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> Non
     if bench_case.kind == "triwarp":
         faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
         resolved, kept = bench_case.run(lambda: tw.repair.resolve_duplicated_faces(faces_dup))
-        assert resolved.shape[0] == kept.shape[0] * 3
-        assert kept.shape[0] > 0
+        assert resolved.size == kept.size * 3
+        assert kept.size > 0
     else:
         # open3d dedups in place and is idempotent: build the mesh inside the timed callable.
         import open3d as o3d
@@ -341,7 +341,7 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
     _kept_vertices, kept_faces = bench_case.run(
         lambda: tw.repair.remove_small_components(vertices, faces, min_faces=min_faces)
     )
-    assert int(kept_faces.shape[0]) // 3 == bench_case.n_faces
+    assert kept_faces.size // 3 == bench_case.n_faces
 
 
 @pytest.mark.noparity(
@@ -387,7 +387,7 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     _kept_vertices, kept_faces = bench_case.run(
         lambda: tw.repair.remove_non_manifold_faces(vertices, faces)
     )
-    assert int(kept_faces.shape[0]) > 0
+    assert kept_faces.size > 0
 
 
 @pytest.mark.benchmark(group="split_non_manifold_vertices")
@@ -448,8 +448,8 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     split_vertices, split_faces, _source = bench_case.run(
         lambda: tw.repair.split_non_manifold_vertices(vertices, faces)
     )
-    assert int(split_faces.shape[0]) == int(faces.shape[0])
-    assert int(split_vertices.shape[0]) >= bench_case.n_vertices
+    assert split_faces.size == faces.size
+    assert split_vertices.size >= bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="remove_unreferenced_vertices")
@@ -529,7 +529,7 @@ def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) 
     kept_vertices, kept_faces, _remap = bench_case.run(
         lambda: tw.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
     )
-    assert int(kept_faces.shape[0]) == int(faces_wp.shape[0])
+    assert int(kept_faces.shape[0]) == faces_wp.size
     assert int(kept_vertices.shape[0]) <= vertices_np.shape[0]
 
 
@@ -610,7 +610,7 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
         unique_vertices, _unique_indices, _inverse, _faces = bench_case.run(
             lambda: tw.repair.remove_duplicated_vertices(vertices, faces, epsilon)
         )
-        assert int(unique_vertices.shape[0]) <= int(vertices.shape[0])
+        assert unique_vertices.size <= vertices.size
     else:
         import open3d as o3d
 
@@ -699,7 +699,7 @@ def test_make_winding_consistent(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         faces = bench_case.faces_wp
         oriented = bench_case.run(lambda: tw.repair.make_winding_consistent(faces))
-        assert int(oriented.shape[0]) == faces.shape[0]
+        assert oriented.size == faces.size
     else:  # trimesh mutates in place: rebuild inside the timed callable
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 
@@ -754,7 +754,7 @@ def test_make_volume(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         oriented = bench_case.run(lambda: tw.repair.make_volume(vertices, faces))
-        assert int(oriented.shape[0]) == faces.shape[0]
+        assert int(oriented.shape[0]) == faces.size
     else:  # trimesh mutates in place and caches the volume: rebuild inside the timed callable
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 
@@ -786,7 +786,7 @@ def test_remove_t_vertices(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     flipped = bench_case.run(lambda: tw.repair.flip_t_vertices(vertices, faces), rounds=3)
-    assert int(flipped.shape[0]) == int(faces.shape[0])
+    assert flipped.size == faces.size
 
 
 @pytest.mark.benchmark(group="remove_degenerate_faces")
@@ -842,8 +842,8 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
     kept_vertices, kept_faces = bench_case.run(
         lambda: tw.repair.remove_degenerate_faces(vertices, faces)
     )
-    assert int(kept_faces.shape[0]) <= int(faces.shape[0])
-    assert int(kept_vertices.shape[0]) <= bench_case.n_vertices
+    assert kept_faces.size <= faces.size
+    assert kept_vertices.size <= bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="fix_self_intersections")
@@ -920,9 +920,9 @@ def test_fix_self_intersections(bench_case: BenchCase, method: str) -> None:
     fixed_vertices, fixed_faces = bench_case.run(
         lambda: tw.repair.fix_self_intersections(vertices, faces, method=method), rounds=3
     )
-    assert int(fixed_faces.shape[0]) > 0
-    assert int(fixed_vertices.shape[0]) > 0
-    assert int(fixed_faces.shape[0]) // 3 != n_faces_in
+    assert fixed_faces.size > 0
+    assert fixed_vertices.size > 0
+    assert fixed_faces.size // 3 != n_faces_in
 
 
 @pytest.mark.benchmark(group="collapse_small_triangles")
@@ -965,8 +965,8 @@ def test_collapse_small_triangles(bench_case: BenchCase) -> None:
     kept_vertices, kept_faces = bench_case.run(
         lambda: tw.repair.collapse_small_triangles(vertices, faces, epsilon), rounds=3
     )
-    assert int(kept_faces.shape[0]) <= int(faces.shape[0])
-    assert int(kept_vertices.shape[0]) <= bench_case.n_vertices
+    assert kept_faces.size <= faces.size
+    assert kept_vertices.size <= bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="remove_tunnels")
@@ -1006,7 +1006,7 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
         lambda: tw.repair.remove_tunnels(vertices, faces, 1e9), rounds=3
     )
     assert removed >= 1
-    assert int(cut_vertices.shape[0]) >= bench_case.n_vertices
+    assert cut_vertices.size >= bench_case.n_vertices
     assert tw.measures.euler_characteristic(cut_faces) == (
         tw.measures.euler_characteristic(faces) + 2 * removed
     )
@@ -1071,7 +1071,7 @@ def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
         lambda: tw.repair.remove_degree3_vertices(vertices, faces, return_count=True), rounds=3
     )
     assert removed >= 0
-    assert int(out_faces.shape[0]) <= int(faces.shape[0])
+    assert int(out_faces.shape[0]) <= faces.size
     assert int(out_vertices.shape[0]) <= bench_case.n_vertices
 
 
@@ -1121,7 +1121,7 @@ def test_straighten_boundary(bench_case: BenchCase) -> None:
         lambda: tw.repair.straighten_boundary(vertices, faces, return_count=True), rounds=3
     )
     assert added >= 0
-    assert int(straightened.shape[0]) >= int(faces.shape[0])
+    assert int(straightened.shape[0]) >= faces.size
 
 
 @pytest.mark.benchmark(group="flatten_degree3_vertices")

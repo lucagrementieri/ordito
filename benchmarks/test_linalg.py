@@ -214,7 +214,7 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
                 point1=point1, point2=point2, colorize=False
             )
         )
-        assert meshset_pml.current_mesh().vertex_scalar_array().shape[0] == bench_case.n_vertices
+        assert meshset_pml.current_mesh().vertex_scalar_array().size == bench_case.n_vertices
         return
 
     operator = _operator(bench_case)

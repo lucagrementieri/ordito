@@ -442,7 +442,7 @@ def test_remap_discrete_attribute_matches_scipy(device: str, n_labels: int) -> N
     labels_wp = tw.texture.remap_discrete_attribute_from_uv(uv_wp, class_image_wp).numpy()
 
     # Non-vacuity: a constant answer would satisfy array_equal against a constant reference.
-    assert np.unique(labels_np).shape[0] == n_labels
+    assert np.unique(labels_np).size == n_labels
     assert np.array_equal(labels_wp, labels_np)
 
 

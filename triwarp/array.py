@@ -266,7 +266,7 @@ def pack_1d_arrays(
     [`concatenate`][triwarp.array.concatenate]
     """
     flat, offsets = _pack_segments(arrays, caller="pack_1d_arrays", copy=copy)
-    return flat, wp.array([*offsets, int(flat.shape[0])], dtype=wp.int32, device=flat.device)
+    return flat, wp.array([*offsets, flat.size], dtype=wp.int32, device=flat.device)
 
 
 def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.array[DType]:
@@ -382,12 +382,12 @@ def split(
     offsets_ndim = int(offsets.ndim) if on_device else np.ndim(offsets)
     if offsets_ndim != 1:
         raise ValueError(f"split requires rank-1 offsets, got ndim={offsets_ndim}")
-    n = int(array.shape[0])
+    n = array.size
     if row_size < 1 or n % row_size != 0:
         raise ValueError(
             f"row_size must be positive and divide the array length {n}, got {row_size}"
         )
-    n_offsets = int(offsets.shape[0]) if on_device else len(offsets)
+    n_offsets = offsets.size if on_device else len(offsets)
     if n_offsets == 0:
         raise ValueError("split requires total-terminated offsets of length n_segments + 1, got []")
     if n_offsets == 1 and n == 0:
@@ -403,7 +403,7 @@ def split(
             f"offsets must be total-terminated: start at 0, be non-decreasing and end at the row "
             f"count {n_rows}, got {bounds_np.tolist()}"
         )
-    if bounds_np.shape[0] == 1:
+    if bounds_np.size == 1:
         return []
     if row_size != 1:
         bounds_np *= row_size
@@ -428,7 +428,7 @@ def _segment_views(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
     zero-length segment at the very end is stamped too, although Warp rejects the slice
     ``array[n:n]``: its state is exactly that of an interior empty slice, one past the last element.
     """
-    n = int(array.shape[0])
+    n = array.size
     if type(array) is not wp.array or array.requires_grad or not array.is_contiguous or n == 0:
         return [
             twt.as_dense(array[begin:end])
@@ -538,7 +538,7 @@ def _pack_segments(
             raise ValueError(
                 f"all arrays must have the same dtype, got {dtype} and {arr.dtype} at index {i}"
             )
-        sizes.append(int(arr.shape[0]))
+        sizes.append(arr.size)
 
     offsets = list(itertools.accumulate(sizes[:-1], initial=0))
     total = offsets[-1] + sizes[-1]
@@ -667,7 +667,7 @@ def _as_words(arr: wp.array[DType], words_per_element: int) -> wp.array[wp.int32
     dtype of a different size and every dtype wider than four bytes needs exactly that.
     """
     return wp.array(
-        ptr=arr.ptr, dtype=wp.int32, shape=int(arr.shape[0]) * words_per_element, device=arr.device
+        ptr=arr.ptr, dtype=wp.int32, shape=arr.size * words_per_element, device=arr.device
     )
 
 
@@ -717,7 +717,7 @@ def _tiled_span(
             return None
         cursor += n * stride
     start, remainder = divmod(int(arrays[0].ptr) - int(base.ptr), stride)
-    if remainder or start < 0 or start + total > int(base.shape[0]):
+    if remainder or start < 0 or start + total > base.size:
         return None
     return twt.as_dense(base[start : start + total])
 
@@ -772,9 +772,9 @@ def allclose(
     require_same_device(a=a, b=b)
     if a.dtype != b.dtype:
         raise ValueError(f"allclose requires matching dtypes, got {a.dtype} and {b.dtype}")
-    n = int(a.shape[0])
-    if n != int(b.shape[0]):
-        raise ValueError(f"allclose requires equal lengths, got {n} and {b.shape[0]}")
+    n = a.size
+    if n != b.size:
+        raise ValueError(f"allclose requires equal lengths, got {n} and {b.size}")
     if n == 0:
         return True
 
@@ -843,7 +843,7 @@ def sort_and_argsort(
     [`sortable_dtype`][triwarp.typing.sortable_dtype]
     """
     device = keys.device
-    n = int(keys.shape[0])
+    n = keys.size
     if n == 0:
         return keys, wp.empty(0, dtype=wp.int32, device=device)
     keys_buffer = wp.empty(2 * n, dtype=keys.dtype, device=device)
@@ -1049,13 +1049,11 @@ def bsr_from_csr(
     [`csr_from_keys`][triwarp.array.csr_from_keys]
     [`csr_from_triplets`][triwarp.array.csr_from_triplets]
     """
-    if int(offsets.shape[0]) != n_rows + 1:
+    if offsets.size != n_rows + 1:
+        raise ValueError(f"offsets must have n_rows + 1 = {n_rows + 1} entries, got {offsets.size}")
+    if columns.size != int(values.shape[0]):
         raise ValueError(
-            f"offsets must have n_rows + 1 = {n_rows + 1} entries, got {offsets.shape[0]}"
-        )
-    if int(columns.shape[0]) != int(values.shape[0]):
-        raise ValueError(
-            f"columns and values must have one element per entry, got {columns.shape[0]} and "
+            f"columns and values must have one element per entry, got {columns.size} and "
             f"{values.shape[0]}"
         )
     matrix = wps.bsr_matrix_t(values.dtype)()
@@ -1066,7 +1064,7 @@ def bsr_from_csr(
     matrix.values = values
     matrix.row_counts = None
     if nnz is None:
-        matrix.notify_nnz_changed(nnz_capacity=int(columns.shape[0]))
+        matrix.notify_nnz_changed(nnz_capacity=columns.size)
     else:
         matrix.notify_nnz_changed(nnz=nnz)
     return matrix
@@ -1233,10 +1231,10 @@ def csr_from_triplets(
     [`triplet_buffers`][triwarp.array.triplet_buffers]
     """
     require_same_device(rows=rows, cols=cols, values=values)
-    count = int(rows.shape[0])
-    if int(cols.shape[0]) != count or int(values.shape[0]) != count:
+    count = rows.size
+    if cols.size != count or int(values.shape[0]) != count:
         raise ValueError(
-            f"rows, cols and values must have equal length, got {count}, {cols.shape[0]} and "
+            f"rows, cols and values must have equal length, got {count}, {cols.size} and "
             f"{values.shape[0]}"
         )
     device = rows.device
@@ -1467,7 +1465,7 @@ def isin(
     if max_index is not None and max_index <= 0:
         raise ValueError(f"max_index must be positive, got {max_index}")
 
-    k = int(test_elements.shape[0])
+    k = test_elements.size
     if k == 0 or int(elements.size) == 0:
         return wp.zeros(elements.shape, dtype=wp.bool, device=device)
 
@@ -1499,7 +1497,7 @@ def isin(
     for values in (elements_flat, test_elements):
         wp.launch_tiled(
             kernel_reduce.MINMAX1D_TILED[reduce_dtype],
-            dim=[kernel_reduce.blocks_1d(int(values.shape[0]))],
+            dim=[kernel_reduce.blocks_1d(values.size)],
             inputs=[values, bounds],
             block_dim=TILE_1D,
             device=device,
@@ -1544,14 +1542,14 @@ def _isin_lookup_mask(
     membership_wp = wp.zeros(span, dtype=wp.bool, device=device)
     wp.launch(
         kernel_array.ISIN_MARK_TABLE[dtype],
-        dim=int(test_elements.shape[0]),
+        dim=test_elements.size,
         inputs=[test_elements, anchor, last, membership_wp],
         device=device,
     )
-    out_mask = wp.empty(int(elements_flat.shape[0]), dtype=wp.bool, device=device)
+    out_mask = wp.empty(elements_flat.size, dtype=wp.bool, device=device)
     wp.launch(
         kernel_array.ISIN_LOOKUP_MASK[dtype],
-        dim=int(elements_flat.shape[0]),
+        dim=elements_flat.size,
         inputs=[elements_flat, anchor, last, membership_wp, out_mask],
         device=device,
     )
@@ -1566,7 +1564,7 @@ def _isin_lookup_sorted(
     out_wp = wp.empty(elements_flat.shape, dtype=wp.bool, device=device)
     wp.launch(
         kernel_array.ISIN_LOOKUP_SORTED[elements_flat.dtype],
-        dim=int(elements_flat.shape[0]),
+        dim=elements_flat.size,
         inputs=[elements_flat, sorted_test_wp, out_wp],
         device=device,
     )
@@ -1581,7 +1579,7 @@ def _sorted_copy(values: wp.array[DType]) -> wp.array[DType]:
     frame, so the keys are cloned. The order payload is discarded, which is why the padding value
     it seeds does not matter here.
     """
-    if int(values.shape[0]) <= 1:
+    if values.size <= 1:
         return values
     return wp.clone(sort_and_argsort(values)[0])
 
@@ -1620,7 +1618,7 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
         raise ValueError(f"flatnonzero requires a 1D array, got ndim={values.ndim}")
 
     device = values.device
-    n = int(values.shape[0])
+    n = values.size
     if n == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
 
@@ -1699,7 +1697,7 @@ def gather(
         The sentinel-preserving variant for index buffers that may carry ``-1`` entries.
     """
     require_same_device(src=src, indices=indices)
-    k = int(indices.shape[0])
+    k = indices.size
     out_shape = (k, *(int(dim) for dim in src.shape[1:]))
     out = wp.empty(out_shape, dtype=src.dtype, device=src.device)
     if k > 0:
@@ -1760,7 +1758,7 @@ def astype(values: twt.ArrayNd, dtype: type) -> twt.ArrayNd:
     # The common conversions launch a concrete kernel; see ``kernels/array.ASTYPE`` for the census
     # behind the table and why any other pair is left to ``wp.utils.array_cast``.
     kernel = kernel_array.ASTYPE.get((values.dtype, dtype))
-    n = int(source.shape[0])
+    n = source.size
     if kernel is None:
         wp.utils.array_cast(source, target)
     elif n > 0:
@@ -1849,7 +1847,7 @@ def indices_to_mask(
     """
     device = device if device is not None else indices.device
     mask = wp.zeros(n, dtype=wp.bool, device=device)
-    k = int(indices.shape[0])
+    k = indices.size
     if k > 0:
         wp.launch(kernel_scatter.mark_membership_mask, dim=k, inputs=[indices, mask], device=device)
     return mask
@@ -1888,7 +1886,7 @@ def mask_to_compact_ranks(
         Total number of selected entries in ``mask``.
     """
     device = mask.device
-    n = int(mask.shape[0])
+    n = mask.size
     if n == 0:
         return wp.zeros(0, dtype=wp.int32, device=device), 0
     # The flags are written straight into the tail of the ``n + 1`` offsets buffer and scanned
@@ -1945,7 +1943,7 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     """
     # The unconditional readback of ``total`` is a host synchronization -- which is why the Notes
     # section advises open-coding the scan when only the offsets are wanted.
-    n = int(counts.shape[0])
+    n = counts.size
     device = counts.device
     if n == 0:
         return wp.zeros(1, dtype=wp.int32, device=device), 0
@@ -2005,7 +2003,7 @@ def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.
         The sentinel-free form: a dense first-axis gather for index buffers known to be in range.
     """
     require_same_device(indices=indices, remap=remap)
-    n = int(indices.shape[0])
+    n = indices.size
     device = indices.device
     if n == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
@@ -2093,7 +2091,7 @@ def bitcast_to_int(
     [`bitcast_from_int`][triwarp.array.bitcast_from_int]
     """
     n_bits = wp.types.type_size_in_bytes(data.dtype) * 8
-    n = data.shape[0]
+    n = data.size
     # ``is None``, not ``or``: zero is a legitimate length and ``or`` would read it as "not passed"
     # and hand back the whole buffer -- an ``n``-element array of stale bits where the caller asked
     # for an empty one. The signature already spells the distinction; only this line lost it.
@@ -2158,7 +2156,7 @@ def bitcast_from_int(
     """
     n_bits = wp.types.type_size_in_bytes(data.dtype) * 8
     n_target_bits = wp.types.type_size_in_bytes(dtype) * 8
-    n = data.shape[0]
+    n = data.size
     # ``is None`` rather than ``or``, and the zero-length short circuit, both for the reasons
     # recorded at ``bitcast_to_int``: Warp reads ``count=0`` as "copy everything".
     count = n if count is None else count

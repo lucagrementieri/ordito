@@ -34,9 +34,7 @@ print("procrustes residual:", cost)  # ~3e-4 (the jitter's own variance)
 
 # Refinement against the original surface: icp re-derives correspondences by nearest point on
 # the target mesh every iteration, starting from procrustes's transform.
-transforms, aligned, rmse = tw.registration.icp(
-    points_b, vertices, faces, initial=transforms
-)
+transforms, aligned, rmse = tw.registration.icp(points_b, vertices, faces, initial=transforms)
 print("icp rmse:", rmse)  # ~1e-4 -- a real, if small, improvement over the coarse fit
 ```
 

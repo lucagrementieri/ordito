@@ -209,9 +209,7 @@ def _heat_geodesic_igl(
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
-def test_heat_geodesic_matches_igl(
-    request: pytest.FixtureRequest, device: str, mesh_name: str
-) -> None:
+def test_heat_geodesic_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A at 5e-2: the same method, but igl factorizes where triwarp runs conjugate gradient.
 
@@ -305,9 +303,7 @@ def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh,
     assert np.corrcoef(distance_wp, distance_ml)[0, 1] > 0.999
 
 
-def test_heat_geodesic_multi_source_matches_igl(
-    device: str, icosahedron: tuple[object, wp.Mesh]
-) -> None:
+def test_heat_geodesic_multi_source_matches_igl(icosahedron: tuple[object, wp.Mesh]) -> None:
     """
     Class A: the multi-source form, where the answer is the distance to the *nearest* source.
 
@@ -353,7 +349,7 @@ def test_heat_geodesic_matches_igl_far_from_the_sources(device: str, n_sources: 
     assert np.abs(distance_wp - distance_igl).max() < 5e-3 * np.ptp(distance_igl)
 
 
-def test_heat_geodesic_approximates_exact(device: str, icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_heat_geodesic_approximates_exact(icosahedron: tuple[object, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
@@ -371,9 +367,7 @@ def test_heat_geodesic_approximates_exact(device: str, icosahedron: tuple[object
     assert np.allclose(distance_wp.numpy(), distance_exact, rtol=8e-2, atol=1e-1)
 
 
-def test_heat_geodesic_source_is_zero_and_nonnegative(
-    device: str, hemisphere: tuple[object, wp.Mesh]
-) -> None:
+def test_heat_geodesic_source_is_zero_and_nonnegative(hemisphere: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = hemisphere
     sources_np = np.array([0], dtype=np.int32)
     sources_wp = wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
@@ -391,7 +385,7 @@ def test_heat_geodesic_empty_faces(device: str) -> None:
 
     distance = tw.heat.heat_geodesic(vertices, faces, sources)
 
-    assert distance.shape[0] == 4
+    assert distance.size == 4
     assert np.array_equal(distance.numpy(), np.zeros(4))
 
 
@@ -401,7 +395,7 @@ def test_heat_geodesic_empty_sources(icosahedron: tuple[object, wp.Mesh]) -> Non
 
     distance = tw.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources)
 
-    assert np.array_equal(distance.numpy(), np.zeros(int(mesh_wp.points.shape[0])))
+    assert np.array_equal(distance.numpy(), np.zeros(mesh_wp.points.size))
 
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
@@ -433,7 +427,7 @@ def test_heat_geodesic_cpu_matches_cuda(request: pytest.FixtureRequest, mesh_nam
 @pytest.mark.parity("heat_geodesic", "potpourri3d")
 @pytest.mark.parity("heat_geodesic_conditioning", "potpourri3d")
 def test_heat_geodesic_matches_potpourri3d_plain(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     The plain heat method against geometry-central on the *same* discretization.
@@ -487,9 +481,7 @@ def test_heat_geodesic_matches_potpourri3d_plain(
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
 @pytest.mark.parity("heat_geodesic", "pymeshlab")
 @pytest.mark.parity("heat_geodesic_conditioning", "pymeshlab")
-def test_heat_geodesic_matches_pymeshlab(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_heat_geodesic_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     A fourth independent implementation of the same PDE, and the cheapest strong check on it.
 
@@ -533,7 +525,7 @@ def test_heat_geodesic_matches_pymeshlab(
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
 @pytest.mark.parity("heat_geodesic", "pyvista")
 def test_heat_geodesic_is_bounded_by_the_graph_distance(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class C, a two-sided bound on a value with no correspondence to compare against.
@@ -584,7 +576,7 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
 # --- the heat method's robust path (potpourri3d use_robust=True reference) -------------
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
 def test_robust_heat_geodesic_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A on the ``use_robust=True`` path, against potpourri3d's identically-named flag.
@@ -755,7 +747,7 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
 @pytest.mark.parity("heat_signed_distance", "potpourri3d")
 @pytest.mark.parity("heat_signed_distance_conditioning", "potpourri3d")
 def test_heat_signed_distance_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class C (correlation plus a mean-error bound): the two fields have no correspondence to assert.
@@ -803,7 +795,7 @@ def test_heat_signed_distance_matches_potpourri3d(
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
 def test_signed_distance_magnitude_is_the_unsigned_distance(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -822,7 +814,7 @@ def test_signed_distance_magnitude_is_the_unsigned_distance(
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
 def test_signed_distance_is_positive_inside_the_curve(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     center, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -841,7 +833,7 @@ def test_signed_distance_is_positive_inside_the_curve(
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 def test_reversing_the_curve_negates_the_field(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -860,9 +852,7 @@ def test_reversing_the_curve_negates_the_field(
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_zero_set_constraint_pins_the_curve(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_zero_set_constraint_pins_the_curve(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
     curve_wp = wp.array(curve_np, dtype=wp.int32, device=mesh_wp.device)
@@ -884,7 +874,7 @@ def test_zero_set_constraint_pins_the_curve(
     assert np.abs(pinned - shifted).mean() < 0.1 * span
 
 
-def test_multiple_curves_via_offsets(icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
+def test_multiple_curves_via_offsets(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
     _, first = _one_ring_cycle(mesh_tm, mesh_wp, which=0)
     _, second = _one_ring_cycle(mesh_tm, mesh_wp, which=5)
@@ -907,7 +897,7 @@ def test_multiple_curves_via_offsets(icosahedron: tuple[tm.Trimesh, wp.Mesh], de
 
 
 def test_open_curve_still_changes_sign_across_itself(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = icosahedron
     _, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -925,7 +915,7 @@ def test_open_curve_still_changes_sign_across_itself(
 
 
 def test_reused_operators_give_the_same_signed_distance(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], device: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = half_torus
     _, curve_np = _one_ring_cycle(mesh_tm, mesh_wp)
@@ -943,7 +933,7 @@ def test_reused_operators_give_the_same_signed_distance(
     assert np.allclose(fresh.numpy(), reused.numpy(), rtol=0.0, atol=1e-5 * span)
 
 
-def test_invalid_level_set_constraint(icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
+def test_invalid_level_set_constraint(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="level_set_constraint"):
         tw.heat.heat_signed_distance(
@@ -992,9 +982,7 @@ def _to_world(tangent: np.ndarray, basis_x: np.ndarray, basis_y: np.ndarray) -> 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("extend_scalar", "potpourri3d")
-def test_extend_scalar_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_extend_scalar_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: a scalar field carries no gauge, so this is the one vector-heat comparison that is.
 
@@ -1069,9 +1057,7 @@ def test_extend_scalar_matches_potpourri3d_far_from_the_sources(device: str) -> 
     assert np.abs(extended_wp - extended_pp).max() < 1e-3
 
 
-def test_extend_scalar_single_source_is_constant(
-    icosahedron: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_extend_scalar_single_source_is_constant(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     extended = tw.heat.extend_scalar(
         mesh_wp.points,
@@ -1144,7 +1130,7 @@ def test_transport_on_a_flat_patch_is_constant(device: str) -> None:
 @pytest.mark.parity("transport_tangent_vectors", "potpourri3d")
 @pytest.mark.parity("vector_heat_scale", "potpourri3d")
 def test_transport_tangent_vectors_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B (gauge fix): both 2-D fields are pushed to 3-D world vectors before comparing.
@@ -1191,7 +1177,7 @@ def test_transport_tangent_vectors_matches_potpourri3d(
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
 def test_transport_preserves_source_magnitudes(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     magnitude = 2.5
@@ -1207,9 +1193,7 @@ def test_transport_preserves_source_magnitudes(
     assert np.allclose(np.linalg.norm(transported.numpy(), axis=1), magnitude, rtol=1e-4, atol=1e-4)
 
 
-def test_transport_does_not_cross_components(
-    cave_cube: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_transport_does_not_cross_components(cave_cube: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = cave_cube
     # ``cave_cube`` is a cube shell around a smaller cube shell: two components. Nothing can be
     # transported across the gap, so the cavity's vertices must come back at zero rather than with a
@@ -1223,7 +1207,7 @@ def test_transport_does_not_cross_components(
 
     magnitude = np.linalg.norm(transported.numpy(), axis=1)
     labels = tw.graph.connected_component_labels_from_edges(
-        tw.edges.edges_unique(mesh_wp.indices)[0], int(mesh_wp.points.shape[0])
+        tw.edges.edges_unique(mesh_wp.indices)[0], mesh_wp.points.size
     ).numpy()
     reachable = labels == labels[0]
 
@@ -1243,7 +1227,7 @@ def test_transport_does_not_cross_components(
     positions_np = mesh_wp.points.numpy()
     antipode = int(np.argmin(np.linalg.norm(positions_np + positions_np[0], axis=1)))
     assert reachable[antipode]
-    resolvable = reachable & (np.arange(magnitude.shape[0]) != antipode)
+    resolvable = reachable & (np.arange(magnitude.size) != antipode)
 
     assert np.isfinite(magnitude).all()
     # Seven of the outer shell's eight corners, so the comparison below is not vacuous.
@@ -1253,7 +1237,7 @@ def test_transport_does_not_cross_components(
 
 
 def test_transport_cancels_at_a_symmetric_cut_locus_point(
-    cave_cube: tuple[object, wp.Mesh], device: str
+    cave_cube: tuple[object, wp.Mesh],
 ) -> None:
     """
     Class C: the transported direction at a symmetric cut-locus point is a cancellation.
@@ -1287,9 +1271,9 @@ def test_transport_cancels_at_a_symmetric_cut_locus_point(
     jitter = np.random.default_rng(20260810).normal(scale=1e-3, size=positions_np.shape)
     moved = np.linalg.norm(_directions(positions_np) - _directions(positions_np + jitter), axis=1)
     labels = tw.graph.connected_component_labels_from_edges(
-        tw.edges.edges_unique(mesh_wp.indices)[0], int(mesh_wp.points.shape[0])
+        tw.edges.edges_unique(mesh_wp.indices)[0], mesh_wp.points.size
     ).numpy()
-    others = (labels == labels[0]) & (np.arange(moved.shape[0]) != antipode)
+    others = (labels == labels[0]) & (np.arange(moved.size) != antipode)
 
     assert others.sum() == 7
     assert np.median(moved[others]) < 0.02
@@ -1298,7 +1282,7 @@ def test_transport_cancels_at_a_symmetric_cut_locus_point(
 
 @pytest.mark.parametrize("scale", [1e-3, 1e5])
 def test_transport_is_invariant_to_mesh_scale(
-    hemisphere: tuple[object, wp.Mesh], scale: float, device: str
+    hemisphere: tuple[object, wp.Mesh], scale: float
 ) -> None:
     """
     Class A: the same surface in different units transports to the same tangent field.
@@ -1333,7 +1317,7 @@ def test_transport_is_invariant_to_mesh_scale(
     ("mesh_name", "n_resolved"), [("cave_cube", 7), ("icosahedron", 11), ("hemisphere", 97)]
 )
 def test_transport_validity_mask_flags_the_unresolvable(
-    request: pytest.FixtureRequest, mesh_name: str, n_resolved: int, device: str
+    request: pytest.FixtureRequest, mesh_name: str, n_resolved: int
 ) -> None:
     """
     Class A against resolved counts measured on both devices.
@@ -1358,7 +1342,7 @@ def test_transport_validity_mask_flags_the_unresolvable(
 
 
 def test_transport_validity_mask_separates_the_cut_locus_from_the_unreached(
-    cave_cube: tuple[object, wp.Mesh], device: str
+    cave_cube: tuple[object, wp.Mesh],
 ) -> None:
     """
     Class A: on ``cave_cube`` the mask is exactly "reachable, and not the antipodal corner".
@@ -1380,7 +1364,7 @@ def test_transport_validity_mask_separates_the_cut_locus_from_the_unreached(
     positions_np = mesh_wp.points.numpy()
     antipode = int(np.argmin(np.linalg.norm(positions_np + positions_np[0], axis=1)))
     labels = tw.graph.connected_component_labels_from_edges(
-        tw.edges.edges_unique(mesh_wp.indices)[0], int(mesh_wp.points.shape[0])
+        tw.edges.edges_unique(mesh_wp.indices)[0], mesh_wp.points.size
     ).numpy()
     expected = (labels == labels[0]) & (np.arange(len(labels)) != antipode)
 
@@ -1395,7 +1379,7 @@ def test_transport_validity_mask_separates_the_cut_locus_from_the_unreached(
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_log_map_radius_is_the_geodesic_distance(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
@@ -1412,9 +1396,7 @@ def test_log_map_radius_is_the_geodesic_distance(
 # either library's log map to mean much.
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("log_map", "potpourri3d")
-def test_log_map_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
-) -> None:
+def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (gauge fix by an explicit rotation): both log maps live in the source's tangent plane.
 
@@ -1473,15 +1455,13 @@ def test_log_map_radius_matches_potpourri3d_far_from_the_sources(device: str) ->
     assert np.abs(radius_wp - exact_np).max() < 0.06
 
 
-def test_log_map_is_zero_at_its_source(icosahedron: tuple[object, wp.Mesh], device: str) -> None:
+def test_log_map_is_zero_at_its_source(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     logarithm = tw.heat.log_map(mesh_wp.points, mesh_wp.indices, 3).numpy()
     assert np.allclose(logarithm[3], 0.0, rtol=1e-6, atol=1e-6)
 
 
-def test_log_map_is_invariant_to_mesh_scale(
-    icosphere_coarse: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[object, wp.Mesh]) -> None:
     """
     Class A: the same surface in different units maps to the same angles, scaled.
 
@@ -1536,7 +1516,7 @@ def test_log_map_is_invariant_to_mesh_scale(
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES)
 def test_reused_operators_give_the_same_transport(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
@@ -1567,7 +1547,7 @@ def test_reused_operators_give_the_same_transport(
         assert np.allclose(fresh.numpy(), reused.numpy(), rtol=0.0, atol=1e-5 * span)
 
 
-def test_operators_fix_the_diffusion_time(icosahedron: tuple[object, wp.Mesh], device: str) -> None:
+def test_operators_fix_the_diffusion_time(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
     vectors = wp.array(
@@ -1646,14 +1626,12 @@ def test_diffuse_tangent_field_empty(icosahedron: tuple[object, wp.Mesh]) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_tangent_to_world_reproduces_the_frames(
-    icosahedron: tuple[object, wp.Mesh], device: str
-) -> None:
+def test_tangent_to_world_reproduces_the_frames(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     basis_x_wp, basis_y_wp, _ = tw.tangent_space.vertex_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     tangent = wp.array(
         np.tile(np.array([[0.0, 1.0]], dtype=np.float32), (n_vertices, 1)),
         dtype=wp.vec2,

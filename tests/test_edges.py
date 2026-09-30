@@ -218,9 +218,7 @@ def test_edges_unique_matches_potpourri3d(request: pytest.FixtureRequest, mesh_n
         )
     )
 
-    unique_edges_wp, _ = tw.edges.edges_unique(
-        mesh_wp.indices, n_vertices=int(mesh_wp.points.shape[0])
-    )
+    unique_edges_wp, _ = tw.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     assert_unordered_rows_equal(np.sort(unique_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
 
 
@@ -259,7 +257,7 @@ def test_edges_unique_and_inverse_match_igl(request: pytest.FixtureRequest, mesh
     of the inferred-base group: the hint only chooses the radix width.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     faces_np = mesh_tm.faces.astype(np.int64)
 
     _e_igl, unique_edges_igl, inverse_igl = igl.unique_edge_map(faces_np)[:3]
@@ -332,7 +330,7 @@ def test_edges_unique_and_inverse_match_pytorch3d(
     edges_p3d = edges_t.numpy()
     face_edges_p3d = face_edges_t.numpy()
 
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
     unique_edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
     unique_edges_np = unique_edges_wp.numpy()
     hinted_edges_wp, hinted_inverse_wp = tw.edges.edges_unique(
@@ -547,9 +545,9 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
     # Non-vacuity: the same three keywords still accept the tables they are meant to take.
     pairs_wp = tw.edges.faces_to_edges(faces_wp, sorted=True)
     unique_wp, _inverse = tw.edges.edges_unique(faces_wp, edges_sorted=pairs_wp)
-    assert tw.edges.edges_length(vertices_wp, faces_wp, edges_in=pairs_wp).shape[0] == 30
+    assert tw.edges.edges_length(vertices_wp, faces_wp, edges_in=pairs_wp).size == 30
     assert (
-        tw.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_wp).shape[0]
+        tw.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_wp).size
         == unique_wp.shape[0]
     )
 
@@ -668,7 +666,7 @@ def test_mean_edge_length_empty(device: str) -> None:
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("face_edge_lengths", "igl")
 def test_face_edge_lengths_are_the_opposite_edges(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A against ``igl.edge_lengths``, plus the explicit opposite-edge construction.

@@ -126,14 +126,14 @@ def procrustes(
     so its ``R`` is this matrix's linear block divided by the scale and *transposed*.
     """
     require_same_device(a=a, b=b, weights=weights)
-    n = int(a.shape[0])
+    n = a.size
     device = a.device
-    if int(b.shape[0]) != n:
-        raise ValueError(f"a and b must have the same length, got {n} and {b.shape[0]}")
+    if b.size != n:
+        raise ValueError(f"a and b must have the same length, got {n} and {b.size}")
     # A zero-length weights array is the kernels' own "uniform weights" sentinel (see
     # ``_zero_length``), not a caller mistake -- only a non-empty mismatch is a real error.
-    if weights is not None and int(weights.shape[0]) not in (0, n):
-        raise ValueError(f"weights must have the same length as a, got {weights.shape[0]} and {n}")
+    if weights is not None and weights.size not in (0, n):
+        raise ValueError(f"weights must have the same length as a, got {weights.size} and {n}")
 
     if n == 0:
         matrix = _identity_mat44(device)
@@ -142,7 +142,7 @@ def procrustes(
         return matrix, wp.clone(a), 0.0
 
     workspace = _procrustes_workspace(n, device, return_cost=return_cost)
-    weighted = weights is not None and int(weights.shape[0]) == n
+    weighted = weights is not None and weights.size == n
     result = _procrustes_into(
         a, b, weights, reflection, translation, scale, return_cost, workspace, weighted
     )
@@ -199,7 +199,7 @@ def _procrustes_into(
     need_weight_sum: bool = False,
 ) -> tuple[wp.array[wp.mat44], wp.array[wp.vec3], float, float] | wp.array[wp.mat44]:
     """Run one Procrustes fit into caller-owned buffers. See ``procrustes`` for the semantics."""
-    n = int(a.shape[0])
+    n = a.size
     device = a.device
     acc = workspace["acc"]
     out_matrix = workspace["matrix"]
@@ -346,9 +346,9 @@ def icp(
         a=a, target_vertices=target_vertices, target_faces=target_faces, initial=initial
     )
     device = a.device
-    n = int(a.shape[0])
+    n = a.size
 
-    if n == 0 or int(target_vertices.shape[0]) == 0:
+    if n == 0 or target_vertices.size == 0:
         return _identity_mat44(device), wp.clone(a), math.inf
 
     # ``total`` is the transform kept so far, and ``_resolve_initial``'s own copy, so the loop may
@@ -575,7 +575,7 @@ def icp_point_to_plane(
         initial=initial,
     )
     device = a.device
-    n = int(a.shape[0])
+    n = a.size
     is_mesh = _is_mesh_target(target_faces)
     if robust_kernel not in _ROBUST_KINDS:
         raise ValueError(
@@ -588,20 +588,16 @@ def icp_point_to_plane(
             "icp_point_to_plane requires target_normals for a point-cloud target "
             "(target_faces is None)."
         )
-    if (
-        not is_mesh
-        and target_normals is not None
-        and int(target_normals.shape[0]) != int(target_vertices.shape[0])
-    ):
+    if not is_mesh and target_normals is not None and target_normals.size != target_vertices.size:
         # ``target_normals`` feeds ``accumulate_point_to_plane`` below, indexed by a nearest-vertex
         # id that ranges over ``target_vertices``; a shorter buffer is an out-of-bounds read on
         # both devices (CLAUDE.md §12.1), not merely a wrong answer.
         raise ValueError(
             "target_normals must have the same length as target_vertices, got "
-            f"{target_normals.shape[0]} and {target_vertices.shape[0]}."
+            f"{target_normals.size} and {target_vertices.size}."
         )
 
-    if n == 0 or int(target_vertices.shape[0]) == 0:
+    if n == 0 or target_vertices.size == 0:
         return _identity_mat44(device), wp.clone(a), math.inf
 
     # ``current`` is the moving source. Every search writes it, the first from ``a`` and the seed.
@@ -786,7 +782,7 @@ def _robust_scale_from_residuals(
     their original order.
     """
     device = current.device
-    n = int(current.shape[0])
+    n = current.size
     # Radix-sort buffers: keys and a payload the sort needs and nobody reads, both ``2n`` long.
     keys = wp.empty(2 * n, dtype=wp.float32, device=device)
     payload = wp.empty(2 * n, dtype=wp.int32, device=device)
@@ -846,7 +842,7 @@ def _residual_standard_deviation(
     ``normals`` is the target's normal table, read at each correspondence's index.
     """
     device = current.device
-    n = int(current.shape[0])
+    n = current.size
     # The residuals ``robust_residual_keys`` keys the medians' sort by, before any sort: the
     # in-range ones are the residuals this averages, and the ``+inf`` of the rest is never kept.
     residual = wp.empty(n, dtype=wp.float32, device=device)
@@ -866,7 +862,7 @@ def _residual_standard_deviation(
         out=valid,
     )
     kept = tw.array.gather(residual, tw.array.flatnonzero(valid))
-    k = int(kept.shape[0])
+    k = kept.size
     mean = float(tw.reduce.mean(cast(twt.Array1dFloat32, kept)))
     deviation = wp.empty(k, dtype=wp.float32, device=device)
     wp.map(kernel_registration.abs_deviation, kept, wp.float32(mean), out=deviation)
@@ -888,7 +884,7 @@ def _apply_transform(
     """Write ``matrix[0]`` applied to every point of ``points`` into ``out_points``."""
     wp.launch(
         kernel_transform.apply_transform_mat44,
-        dim=int(points.shape[0]),
+        dim=points.size,
         inputs=[points, matrix, out_points],
         device=points.device,
     )
@@ -956,4 +952,4 @@ def _target_index(target_vertices: wp.array[wp.vec3]) -> wp.Mesh:
 
 
 def _is_mesh_target(target_faces: wp.array[wp.int32] | None) -> bool:
-    return target_faces is not None and int(target_faces.shape[0]) // 3 > 0
+    return target_faces is not None and target_faces.size // 3 > 0

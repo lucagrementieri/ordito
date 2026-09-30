@@ -52,7 +52,7 @@ def faces_to_edges(
     --------
     [`trimesh.geometry.faces_to_edges`][]
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     edges = twt.empty_2d((n_faces * 3, 2), wp.int32, device=faces.device)
     wp.launch(
         kernel_edges.faces_to_edges,
@@ -84,7 +84,7 @@ def edges_face(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     --------
     [`trimesh.Trimesh.edges_face`][]
     """
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     return arange_repeat(n_faces * 3, 3, faces.device)
 
 
@@ -150,7 +150,7 @@ def edges_unique(
     require_same_device(faces=faces, edges_sorted=edges_sorted)
     if edges_sorted is not None:
         twt.ensure_edge_pairs(edges_sorted, "edges_sorted")
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     device = faces.device
 
     if n_faces == 0:
@@ -200,7 +200,7 @@ def _face_edge_keys(
     if n_vertices is not None and n_vertices <= 0:
         raise ValueError(f"n_vertices must be positive, got {n_vertices}")
     if validate:
-        owned = faces if int(faces.shape[0]) == 3 * n_faces else twt.as_dense(faces[: 3 * n_faces])
+        owned = faces if faces.size == 3 * n_faces else twt.as_dense(faces[: 3 * n_faces])
         low, high = tw.reduce.minmax(owned)
         if low < 0:
             raise ValueError(f"edge indices must be non-negative, got a minimum of {low}")
@@ -235,7 +235,7 @@ def _unique_edges_from_keys(
     # produced each one: the packing is exactly invertible for two columns, so a
     # ``first_occurrence_indices`` scatter, an ``array.gather`` and the first-occurrence buffer
     # between them all disappear. Row order is unchanged -- both forms index by the same unique id.
-    unique_edges_out = twt.empty_2d((int(unique_keys.shape[0]), 2), wp.int32, device=device)
+    unique_edges_out = twt.empty_2d((unique_keys.size, 2), wp.int32, device=device)
     wp.launch(
         kernel_edges.edges_from_keys,
         dim=unique_edges_out.shape[0],
@@ -342,7 +342,7 @@ def edges_unique_length(
         # readback, for a number every caller of *this* function already holds in the array it
         # passed. It is also the bound ``validate`` is documented against.
         if n_vertices is None:
-            n_vertices = int(vertices.shape[0])
+            n_vertices = vertices.size
         unique_edges, _ = edges_unique(faces, n_vertices=n_vertices, validate=validate)
 
     return _edge_lengths(vertices, unique_edges, "unique_edges")
@@ -382,7 +382,7 @@ def edges_length(
     if edges_in is not None:
         return _edge_lengths(vertices, edges_in, "edges_in")
     # Without a table the rows are the halfedges, so the lengths come straight off ``faces``.
-    n_halfedges = int(faces.shape[0]) // 3 * 3
+    n_halfedges = faces.size // 3 * 3
     out = wp.empty(n_halfedges, dtype=wp.float32, device=vertices.device)
     if n_halfedges > 0:
         wp.launch(
@@ -456,7 +456,7 @@ def face_edge_lengths(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     lengths = twt.empty_2d((n_faces, 3), wp.float32, device=device)
     if n_faces == 0:
         return twt.as_array2d(lengths, wp.float32)
@@ -516,7 +516,7 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
         The per-face lengths this averages.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return 0.0
     return tw.reduce.mean(edges_length(vertices, faces))
@@ -567,9 +567,9 @@ def mean_unique_edge_length(
         The per-edge lengths this averages.
     """
     require_same_device(vertices=vertices, faces=faces)
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     if n_faces == 0:
         return 0.0
     return tw.reduce.mean(
-        edges_unique_length(vertices, faces, n_vertices=int(vertices.shape[0]), validate=validate)
+        edges_unique_length(vertices, faces, n_vertices=vertices.size, validate=validate)
     )

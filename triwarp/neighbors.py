@@ -142,7 +142,7 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
     --------
     [`bvh_from_points`][triwarp.neighbors.bvh_from_points]
     """
-    n = int(points.shape[0])
+    n = points.size
     if n == 0:
         raise ValueError("mesh_from_points needs at least one point")
     corners = wp.empty(3 * n, dtype=wp.int32, device=points.device)
@@ -191,7 +191,7 @@ def hashgrid_from_points(
     [`query_ball`][triwarp.neighbors.query_ball]
     [`query_nearest`][triwarp.neighbors.query_nearest]
     """
-    n = int(points.shape[0])
+    n = points.size
     bins = _resolve_grid_bins(grid_bins, n)
     grid = wp.HashGrid(bins, bins, bins, device=points.device)
     grid.reserve(n)
@@ -290,7 +290,7 @@ def query_bvh_ball(
     """
     require_same_device(bvh=bvh, queries=queries)
     device = queries.device
-    m = int(queries.shape[0])
+    m = queries.size
 
     if m == 0:
         return (
@@ -388,8 +388,8 @@ def query_bvh_box(
     """
     require_same_device(bvh=bvh, query_lower=query_lower, query_upper=query_upper)
     device = query_lower.device
-    m = int(query_lower.shape[0])
-    if int(query_upper.shape[0]) != m:
+    m = query_lower.size
+    if query_upper.size != m:
         raise ValueError("query_lower and query_upper must have the same length")
 
     if m == 0:
@@ -640,8 +640,8 @@ def query_ball_count(
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     kind, accelerator = _resolve_accelerator(accelerator, backend)
     device = points.device
-    n = int(points.shape[0])
-    m = int(queries.shape[0])
+    n = points.size
+    m = queries.size
     if n == 0:
         return wp.zeros(m, dtype=wp.int32, device=device)
 
@@ -785,9 +785,9 @@ def _ball_with_offsets(
 
     if isinstance(queries, wp.vec3):
         queries = wp.array([queries], dtype=wp.vec3, device=device)
-    m = int(queries.shape[0])
+    m = queries.size
 
-    if int(points.shape[0]) == 0 or m == 0:
+    if points.size == 0 or m == 0:
         return (
             wp.empty(0, dtype=wp.int32, device=device),
             wp.empty(0, dtype=wp.float32, device=device),
@@ -891,7 +891,7 @@ def knn_initial_radius(
     [`query_nearest`][triwarp.neighbors.query_nearest]
     [`aabb`][triwarp.bounds.aabb]
     """
-    n = int(points.shape[0])
+    n = points.size
     if n == 0 or k >= n:
         return math.inf
 
@@ -1083,8 +1083,8 @@ def query_nearest(
     if single_query:
         queries = wp.array([queries], dtype=wp.vec3, device=device)
 
-    m = int(queries.shape[0])
-    n = int(points.shape[0])
+    m = queries.size
+    n = points.size
 
     # Both degenerate inputs answer "every slot unfilled" over `(m, k)`, which is empty of its own
     # accord when there are no queries -- and both must go through the same shaping as the general
@@ -1214,7 +1214,7 @@ def _finish_deferred_nearest(
     if int(read_scalar(deferred, 0)) == 0:
         return
     device = points.device
-    m = int(queries.shape[0])
+    m = queries.size
     if k == 1:
         mesh = mesh_from_points(points)
         wp.launch(
@@ -1475,9 +1475,9 @@ def query_weighted_nearest(
     """
     require_same_device(points=points, weights=weights, queries=queries, accelerator=accelerator)
     device = points.device
-    n = int(points.shape[0])
-    m = int(queries.shape[0])
-    if int(weights.shape[0]) != n:
+    n = points.size
+    m = queries.size
+    if weights.size != n:
         raise ValueError("weights must have one entry per point")
 
     if m == 0:
@@ -1494,7 +1494,7 @@ def query_weighted_nearest(
     if accelerator is None:
         accelerator = bvh_from_points(points, leaf_size=leaf_size)
     if max_weight is None:
-        max_weight = float(cast(float, tw.reduce.max(weights)))
+        max_weight = float(tw.reduce.max(weights))
     min_bound, max_bound = tw.bounds.aabb(points)
     # First radius: the mean spacing's own estimate plus the weight bound, since a query cannot be
     # certified below it however close its winner is.
@@ -1561,7 +1561,7 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     [`triwarp.points.farthest_point_sample`][triwarp.points.farthest_point_sample]
     """
     device = points.device
-    n = int(points.shape[0])
+    n = points.size
     if n < 2:
         return wp.full(n, math.inf, dtype=wp.float32, device=device)
 
@@ -1620,7 +1620,7 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
     [`triwarp.points.point_duplicate_mask`][triwarp.points.point_duplicate_mask]
         Exact coincidence rather than proximity, and a mask rather than one pair.
     """
-    n = int(points.shape[0])
+    n = points.size
     if n < 2:
         raise ValueError("closest_pair needs at least two points")
 
@@ -1710,7 +1710,7 @@ def geodesic_ball(
     """
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
-    n = int(vertices.shape[0])
+    n = vertices.size
     if n == 0:
         # A single zero rather than an empty buffer: the CSR row-bounds form is ``n + 1`` long.
         return (

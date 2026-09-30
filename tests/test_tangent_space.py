@@ -36,7 +36,7 @@ def _vector_heat_solver_pp(mesh_tm: object) -> pp3d.MeshVectorHeatSolver:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_vertex_tangent_frames_are_orthonormal(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_wp, basis_y_wp, normal_wp = tw.tangent_space.vertex_tangent_frames(
@@ -55,7 +55,7 @@ def test_vertex_tangent_frames_are_orthonormal(
 @pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("vertex_tangent_frames", "potpourri3d")
 def test_vertex_tangent_frames_match_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B (gauge fix): only the normal is comparable directly; the tangents share a rotation.
@@ -110,7 +110,7 @@ def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_halfedge_tangent_angles_span_the_rescaled_disk(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
@@ -162,7 +162,7 @@ def test_halfedge_tangent_angles_span_the_rescaled_disk(
 )
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
 def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class B (holonomy): a single transport angle is gauge-dependent; the loop product is not.
@@ -204,7 +204,7 @@ def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_halfedge_transport_angles_are_antisymmetric(
-    request: pytest.FixtureRequest, mesh_name: str, device: str
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
     twins = tw.halfedge.halfedge_twins(mesh_wp.indices).numpy()

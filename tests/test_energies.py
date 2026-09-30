@@ -176,9 +176,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
 @pytest.mark.parametrize("k", [1, 2, 3])
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
 @pytest.mark.parity("k_harmonic", "igl")
-def test_k_harmonic_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str, k: int, device: str
-) -> None:
+def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, k: int) -> None:
     """
     Class A: identical Laplacian and mass on both sides isolate the k-harmonic composition.
 
@@ -326,7 +324,7 @@ def _igl_edge_arguments(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
     halfedges ``(f[s], f[s+1])``, where slot ``s`` spans the edge opposite corner ``(s + 2) % 3``.
     """
     unique_edges_wp, inverse_wp = tw.edges.edges_unique(
-        mesh_wp.indices, n_vertices=int(mesh_wp.points.shape[0])
+        mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
     inverse_np = inverse_wp.numpy().reshape(-1, 3)
     edge_map_igl = np.concatenate([inverse_np[:, (c + 1) % 3] for c in range(3)], dtype=np.int64)
@@ -391,9 +389,7 @@ def test_crouzeix_raviart_massmatrix_matches_igl(
 def test_crouzeix_raviart_shared_edge_numbering(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Precomputed ``(unique_edges, edge_map)`` must not change the answer; half a pair raises."""
     _mesh_tm, mesh_wp = half_torus
-    unique_edges, edge_map = tw.edges.edges_unique(
-        mesh_wp.indices, n_vertices=int(mesh_wp.points.shape[0])
-    )
+    unique_edges, edge_map = tw.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     derived = bsr_to_csr(
         tw.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
     ).toarray()
@@ -448,7 +444,7 @@ def test_curved_hessian_and_crouzeix_raviart_cotmatrix_reject_non_edge_manifold(
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_lscm_hessian_matches_igl(request, device, mesh_name):
+def test_lscm_hessian_matches_igl(request, mesh_name):
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
@@ -459,7 +455,7 @@ def test_lscm_hessian_matches_igl(request, device, mesh_name):
     # No CPU skip: this builds the Hessian only, no conjugate-gradient solve.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     # igl.lscm returns (V_uv, Q); its Q equals -repdiag(L, 2) - 2A exactly.
     pins_np = np.array([0, 1], dtype=np.int64)
@@ -476,7 +472,7 @@ def test_lscm_hessian_matches_igl(request, device, mesh_name):
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_vector_area_matrix_matches_igl_derived(request, device, mesh_name):
+def test_vector_area_matrix_matches_igl_derived(request, mesh_name):
     """
     Class B: ``vector_area_matrix`` is unbound, so it is solved for from two functions that are.
 
@@ -488,7 +484,7 @@ def test_vector_area_matrix_matches_igl_derived(request, device, mesh_name):
     # The bindings do not expose vector_area_matrix; derive it from A = (-repdiag(L,2) - Q) / 2.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = int(mesh_wp.points.shape[0])
+    n_vertices = mesh_wp.points.size
 
     pins_np = np.array([0, 1], dtype=np.int64)
     pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)

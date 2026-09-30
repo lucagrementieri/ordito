@@ -155,7 +155,7 @@ def test_corner_normals_matches_meshlib(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_faces = int(faces_wp.shape[0]) // 3
+    n_faces = faces_wp.size // 3
     mesh_ml = trimesh_to_meshlib(mesh_tm)
 
     creases_wp = None
@@ -526,7 +526,7 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     mesh_tm, mesh_wp = half_torus
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     topology_ml, points_ml = mesh_ml.topology, mesh_ml.points
-    n_faces = int(mesh_wp.indices.shape[0]) // 3
+    n_faces = mesh_wp.indices.size // 3
     assert topology_ml.numValidFaces() == n_faces > 0  # non-vacuity, and the converter's own check
 
     normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
@@ -568,15 +568,10 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
 
     # The same table read the other way: MeshLib's per-vertex angle sum.
     sums_ml = np.array(
-        [
-            mm.sumAngles(topology_ml, points_ml, mm.VertId(v))
-            for v in range(int(mesh_wp.points.shape[0]))
-        ]
+        [mm.sumAngles(topology_ml, points_ml, mm.VertId(v)) for v in range(mesh_wp.points.size)]
     )
     sums_wp = np.bincount(
-        faces_np.reshape(-1),
-        weights=angles_wp.numpy().reshape(-1),
-        minlength=int(mesh_wp.points.shape[0]),
+        faces_np.reshape(-1), weights=angles_wp.numpy().reshape(-1), minlength=mesh_wp.points.size
     )
     assert np.allclose(sums_wp, sums_ml, rtol=1e-5, atol=1e-5)
 

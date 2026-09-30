@@ -186,7 +186,7 @@ def test_unique_rows(bench_case: BenchCase, unique_fraction: float) -> None:
     rows_wp, rows_np = _duplicate_rows(bench_case, unique_fraction)
     if bench_case.kind == "triwarp":
         unique = bench_case.run(lambda: tw.grouping.unique_rows(rows_wp))
-        assert int(unique[0].shape[0]) > 0
+        assert unique[0].size > 0
     else:
         unique_tm = bench_case.run(lambda: tm.grouping.unique_rows(rows_np))
         assert len(unique_tm[0]) > 0

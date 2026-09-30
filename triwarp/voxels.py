@@ -179,7 +179,7 @@ def voxelize_mesh(
         raise ValueError(f"max_candidates must be positive, got {max_candidates}")
 
     device = vertices.device
-    n_faces = int(faces.shape[0]) // 3
+    n_faces = faces.size // 3
     voxel_size, origin = resolve_voxel_grid(vertices, voxel_size, origin, caller="voxelize_mesh")
     if n_faces == 0:
         return _empty_grid(voxel_size, origin, device)
@@ -274,7 +274,7 @@ def voxelize_points(
     """
     device = points.device
     voxel_size, origin = resolve_voxel_grid(points, voxel_size, origin, caller="voxelize_points")
-    if int(points.shape[0]) == 0:
+    if points.size == 0:
         return _empty_grid(voxel_size, origin, device)
     return from_cells(cell_indices(points, voxel_size, origin=origin), voxel_size, origin)
 
@@ -338,7 +338,7 @@ def voxel_down_sample(
     use atomics directly, since those are order-independent for floats.
     """
     device = points.device
-    n_points = int(points.shape[0])
+    n_points = points.size
     # A derived origin sits below every point, so the cells are non-negative and the bound the
     # box already gives says whether they fit one root tile; a caller's origin says nothing.
     if origin is None:
@@ -415,7 +415,7 @@ class _VoxelTable:
         self, points: wp.array[wp.vec3], voxel_size: float, origin: wp.vec3, *, one_root_tile: bool
     ) -> None:
         device = points.device
-        n_points = int(points.shape[0])
+        n_points = points.size
         inverse_size = wp.float32(1.0 / voxel_size)
         # At least twice ``n_points`` slots, a power of two: a cloud with no repeated cell fills it
         # at most half full.
@@ -542,14 +542,13 @@ def _pool_by_voxel(
     """
     if pooling not in ("mean", "min", "max", "sum"):
         raise ValueError(f"pooling must be 'mean', 'sum', 'min' or 'max', got {pooling!r}")
-    if int(points.shape[0]) != int(values.shape[0]):
+    if points.size != values.size:
         raise ValueError(
-            f"points and values must be the same length, got {int(points.shape[0])} and "
-            f"{int(values.shape[0])}"
+            f"points and values must be the same length, got {points.size} and {values.size}"
         )
     _require_index_grid(grid)
     device = points.device
-    n_points = int(points.shape[0])
+    n_points = points.size
     n_voxels = _voxel_count(grid)
     if n_voxels == 0:
         return wp.empty(0, dtype=wp.vec3, device=device), None
@@ -611,7 +610,7 @@ def _segment_pool(
     ``2 * n_points`` sort buffers their bucketing launch seeded, a point outside the grid in the
     sentinel bucket ``n_voxels``. The segments are read off the sorted buckets, so no histogram.
     """
-    n_points = int(values.shape[0])
+    n_points = values.size
     # Stable, so each voxel's segment lists its points in index order.
     # Every bucket is at most ``n_voxels`` (the sentinel), so only those low bits are sorted.
     wp.utils.radix_sort_pairs(
@@ -882,7 +881,7 @@ def resolve_voxel_grid(
     """
     upper = wp.vec3(0.0, 0.0, 0.0)
     if voxel_size is None or origin is None or return_cell_bound:
-        if int(points.shape[0]) == 0:
+        if points.size == 0:
             lower = wp.vec3(0.0, 0.0, 0.0)
             diagonal = 1.0
         else:
@@ -914,7 +913,7 @@ def resolve_voxel_grid(
     # floors a float32 product, which can land one cell past the float64 quotient here, so the
     # bound carries one cell of slack on top of the exclusive ``+ 1``; an empty set has no cells
     # and takes the smallest radix a hash accepts.
-    inverse = float(wp.float32(1.0 / voxel_size))
+    inverse = float(np.float32(1.0 / voxel_size))
     extent = max(
         math.floor((float(upper[axis]) - float(origin[axis])) * inverse) for axis in range(3)
     )
@@ -957,7 +956,7 @@ def cell_indices(
     """
     if voxel_size <= 0.0:
         raise ValueError(f"cell_indices requires voxel_size > 0, got {voxel_size}")
-    n_points = int(points.shape[0])
+    n_points = points.size
     out_cells = twt.empty_2d((n_points, 3), wp.int32, device=points.device)
     if n_points == 0:
         return out_cells
@@ -1043,7 +1042,7 @@ def occupancy_at_points(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[
     """
     require_same_device(grid=grid, points=points)
     _require_index_grid(grid)
-    n_points = int(points.shape[0])
+    n_points = points.size
     mask = wp.empty(n_points, dtype=wp.bool, device=points.device)
     if n_points == 0:
         return mask
@@ -1204,10 +1203,9 @@ def splat_onto_grid(
     require_same_device(points=points, values=values)
     if len(shape) != 3 or min(int(n) for n in shape) < 1:
         raise ValueError(f"shape must be three positive integers, got {shape!r}")
-    if int(points.shape[0]) != int(values.shape[0]):
+    if points.size != values.size:
         raise ValueError(
-            f"points and values must have the same length, got {int(points.shape[0])} and "
-            f"{int(values.shape[0])}"
+            f"points and values must have the same length, got {points.size} and {values.size}"
         )
     if min_weight <= 0.0:
         raise ValueError(f"min_weight must be positive, got {min_weight}")
@@ -1215,12 +1213,12 @@ def splat_onto_grid(
     device = points.device
     field = cast("wp.array[DType, Literal[3]]", wp.zeros(dims, dtype=values.dtype, device=device))
     density = twt.as_array3d(wp.zeros(dims, dtype=wp.float32, device=device), wp.float32)
-    if int(points.shape[0]) == 0:
+    if points.size == 0:
         return field, density
     lower, inverse_spacing = _lattice_transform(dims, bounds)
     wp.launch(
         kernel_scatter.SPLAT_GRID_TRILINEAR[values.dtype],
-        dim=int(points.shape[0]),
+        dim=points.size,
         inputs=[points, values, lower, inverse_spacing, field, density],
         device=device,
     )
@@ -1297,13 +1295,13 @@ def sample_grid_trilinear(
     if field.ndim != 3:
         raise ValueError(f"field must be a rank-3 lattice, got ndim {field.ndim}")
     dims = (int(field.shape[0]), int(field.shape[1]), int(field.shape[2]))
-    values = wp.empty(int(points.shape[0]), dtype=field.dtype, device=points.device)
-    if int(points.shape[0]) == 0:
+    values = wp.empty(points.size, dtype=field.dtype, device=points.device)
+    if points.size == 0:
         return values
     lower, inverse_spacing = _lattice_transform(dims, bounds)
     wp.launch(
         kernel_interpolation.SAMPLE_GRID_TRILINEAR[field.dtype],
-        dim=int(points.shape[0]),
+        dim=points.size,
         inputs=[field, lower, inverse_spacing, points, values],
         device=points.device,
     )
@@ -2565,24 +2563,11 @@ def _empty_grid(voxel_size: float, origin: wp.vec3, device: wp.DeviceLike) -> wp
     )
 
 
-# Three members of this trailing block have a single caller -- ``_cell_slots``
-# (``occupancy_at_cells``), ``_face_neighbors`` and ``_face_corner_table`` (both ``to_boxes``) --
-# and all three stay here rather than moving up to their caller. The two face tables are one half
-# of a pair whose other half *is* cross-cutting -- the constant tables ``_stencil`` above them
-# builds from -- and splitting a pair across the file to save a backward jump is the worse trade.
-# ``_cell_slots`` lost its point twin when ``voxel_down_sample`` stopped building a volume.
-
-
-def _cell_slots(grid: wp.Volume, cells: twt.Array2dInt32) -> wp.array[wp.int32]:
-    """Voxel row of each cell, ``-1`` when the cell is empty."""
-    slots = wp.empty(int(cells.shape[0]), dtype=wp.int32, device=cells.device)
-    wp.launch(
-        kernel_voxels.lookup_cell_slots,
-        dim=int(cells.shape[0]),
-        inputs=[grid.id, cells, slots],
-        device=cells.device,
-    )
-    return slots
+# Two members of this trailing block have a single caller -- ``_face_neighbors`` and
+# ``_face_corner_table`` (both ``to_boxes``) -- and both stay here rather than moving up to their
+# caller. They are one half of a pair whose other half *is* cross-cutting -- the constant tables
+# ``_stencil`` above them builds from -- and splitting a pair across the file to save a backward
+# jump is the worse trade.
 
 
 def _cell_bounds(grid: wp.Volume) -> tuple[tuple[int, int, int], tuple[int, int, int]]:

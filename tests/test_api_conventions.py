@@ -533,9 +533,7 @@ def example_namespace(
         "open_f": open_mesh_wp.indices,
         "pts": queries,
         "origins": queries,
-        "directions": wp.array(
-            [[1.0, 0.0, 0.0]] * int(queries.shape[0]), dtype=wp.vec3, device=device
-        ),
+        "directions": wp.array([[1.0, 0.0, 0.0]] * queries.size, dtype=wp.vec3, device=device),
         "neighbor_idx": neighbor_idx,
         "neighbor_distance": neighbor_distance,
     }
