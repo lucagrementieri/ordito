@@ -50,11 +50,10 @@ filter at all but a one-sided Lipschitz projection, and lives in
 from __future__ import annotations
 
 import math
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.linalg as twl
@@ -76,7 +75,7 @@ from triwarp.vertices import mean_vertex_normals
 _ISOLINE_DAMPING = wp.float32(0.75)
 
 # The common apex of the tetrahedra whose signed volumes sum to the enclosed volume.
-_ORIGIN_D = wp.vec3d(0.0, 0.0, 0.0)
+_ORIGIN_D = wp.vec3d()
 
 # The fixed-point path's step cap, above which a pass solves the assembled system instead: a large
 # ``lamb`` pulls the contraction factor towards 1, and the step count grows as ``1 / (1 - q)``.
@@ -90,7 +89,7 @@ def filter_laplacian(
     iterations: int = 10,
     implicit_time_integration: bool = False,
     volume_constraint: bool = True,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Laplacian mesh smoothing (Vollmer et al.; Desbrun et al. implicit fairing).
@@ -164,13 +163,14 @@ def filter_laplacian(
         # _apply_volume_constraint's Notes for why the rescale has to stay anchored to this one
         # fixed point rather than the mesh's current (already-moved) centre of mass.
         _, center_f32, _ = tw.measures.moments(vertices, faces)
-        center_ini = wp.vec3d(float(center_f32[0]), float(center_f32[1]), float(center_f32[2]))
+        cx, cy, cz = twt.vec3_floats(center_f32)
+        center_ini = wp.vec3d(wp.float64(cx), wp.float64(cy), wp.float64(cz))
         # The per-face volumes and their sum are rewritten by every pass, so both buffers are
         # allocated once here rather than once per pass.
         constraint = _VolumeScratch.for_faces(faces, device)
     else:
         vol_ini = 0.0
-        center_ini = wp.vec3d(0.0, 0.0, 0.0)
+        center_ini = wp.vec3d()
         constraint = None
 
     steps = _implicit_fixed_point_steps(operator, lamb) if implicit_time_integration else None
@@ -191,6 +191,7 @@ def filter_laplacian(
                 with wp.ScopedCapture(device) as capture:
                     _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch)
                 graph = capture.graph
+                assert graph is not None
                 wp.capture_launch(graph)
             else:
                 _implicit_fixed_point_pass(operator, coeff, steps, positions, scratch)
@@ -204,8 +205,8 @@ def filter_laplacian(
         preconditioner = wpl.preconditioner(system, "diag")
         components = _component_columns(n, device)
         solutions = _component_columns(n, device)
-        component_rows = [components[column] for column in range(3)]
-        solution_rows = [solutions[column] for column in range(3)]
+        component_rows = [twt.as_dense(components[column]) for column in range(3)]
+        solution_rows = [twt.as_dense(solutions[column]) for column in range(3)]
         for _ in range(iterations):
             _launch.map(kernel_smoothing.extract_components, positions, out=component_rows)
             # Seeded with the right-hand side, which is the current position component.
@@ -241,7 +242,7 @@ def filter_laplacian(
     return _as_vec3(positions)
 
 
-def _implicit_fixed_point_steps(operator: wps.BsrMatrix[wp.float32], lamb: float) -> int | None:
+def _implicit_fixed_point_steps(operator: twt.BsrMatrix[wp.float32], lamb: float) -> int | None:
     """
     Count the steps of ``x' = (b + lamb L x) / (1 + lamb)`` bounding the error at the tolerance.
 
@@ -270,7 +271,7 @@ def _implicit_fixed_point_steps(operator: wps.BsrMatrix[wp.float32], lamb: float
 
 
 def _implicit_fixed_point_pass(
-    operator: wps.BsrMatrix[wp.float32],
+    operator: twt.BsrMatrix[wp.float32],
     coeff: wp.float64,
     steps: int,
     positions: wp.array[wp.vec3d],
@@ -290,8 +291,8 @@ def _implicit_fixed_point_pass(
 
 
 def _build_implicit_system(
-    operator: wps.BsrMatrix[wp.float32], lamb: float, n: int, device: wp.DeviceLike
-) -> wps.BsrMatrix[wp.float64]:
+    operator: twt.BsrMatrix[wp.float32], lamb: float, n: int, device: wp.DeviceLike
+) -> twt.BsrMatrix[wp.float64]:
     # ``nnz_sync()``, never ``operator.nnz``: after ``bsr_from_triplets`` the ``nnz`` field is a
     # stale cache holding the triplet *capacity* it was handed, duplicates included, and only a
     # ``nnz_sync()`` repairs it (no other operation does, so whether ``nnz`` reads correctly depends
@@ -451,13 +452,16 @@ def inflate(
         )
     # Hoisted once: the displacement is the same map every pass, so a per-iteration wrapper loop
     # should not re-derive it.
-    step_kernel = wp.map(
-        kernel_smoothing.step_along_normal,
-        positions,
-        positions,
-        wp.float32(0.0),
-        out=positions,
-        return_kernel=True,
+    step_kernel = cast(
+        "wp.Kernel",
+        wp.map(
+            kernel_smoothing.step_along_normal,
+            positions,
+            positions,
+            wp.float32(0.0),
+            out=positions,
+            return_kernel=True,
+        ),
     )
     # Allocated once beside the hoisted kernel, for the same reason: the vertex count is fixed, and
     # the buffer is dead by the end of the pass that writes it, so a fresh one each pass is an
@@ -485,7 +489,7 @@ def filter_humphrey(
     alpha: float = 0.1,
     beta: float = 0.5,
     iterations: int = 10,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Laplacian smoothing with Humphrey (HC) filtering (Vollmer et al.).
@@ -566,6 +570,24 @@ def filter_humphrey(
     return _as_vec3(positions)
 
 
+@overload
+def filter_spikes(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    min_angle_sum: float,
+    *,
+    max_iter: int = 10,
+    return_count: Literal[False] = False,
+) -> wp.array[wp.vec3]: ...
+@overload
+def filter_spikes(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    min_angle_sum: float,
+    *,
+    max_iter: int = 10,
+    return_count: Literal[True],
+) -> tuple[wp.array[wp.vec3], int]: ...
 def filter_spikes(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1066,7 +1088,7 @@ def filter_taubin(
     lamb: float = 0.5,
     nu: float = 0.5,
     iterations: int = 10,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
     *,
     recompute: bool = False,
 ) -> wp.array[wp.vec3]:
@@ -1172,7 +1194,7 @@ def filter_neighborhood_average(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     iterations: int = 10,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Uniform neighborhood-average smoothing over the closed 1-ring.
@@ -1245,7 +1267,7 @@ def filter_mut_dif_laplacian(
     lamb: float = 0.5,
     iterations: int = 10,
     volume_constraint: bool = True,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
     *,
     face_normals: wp.array[wp.vec3] | None = None,
     face_areas: wp.array[wp.float32] | None = None,
@@ -1453,7 +1475,7 @@ class _VolumeScratch(NamedTuple):
 
 
 def _diffuse_pass(
-    operator: wps.BsrMatrix[wp.float32],
+    operator: twt.BsrMatrix[wp.float32],
     positions: wp.array[wp.vec3d],
     coeff: wp.float64,
     out_next: wp.array[wp.vec3d],
@@ -1544,8 +1566,8 @@ def filter_implicit_fairing(
     # Both column lists are viewed once. The buffers are allocated here and never rebound -- only
     # the *operator* is rebuilt each pass, which is what the note in the loop is about -- so
     # re-slicing them per pass would be half a dozen views an iteration, buying nothing.
-    rhs_rows = [rhs[column] for column in range(3)]
-    solution_rows = [solutions[column] for column in range(3)]
+    rhs_rows = [twt.as_dense(rhs[column]) for column in range(3)]
+    solution_rows = [twt.as_dense(solutions[column]) for column in range(3)]
 
     # Boundary topology is fixed for the whole flow, so the partition is built once. ``None`` means
     # "solve over every vertex" -- either the caller asked for the unconstrained flow, or the mesh
@@ -1569,7 +1591,7 @@ def filter_implicit_fairing(
         mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)
 
         # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the diagonal).
-        system = wps.bsr_axpy(x=stiffness, y=wps.bsr_diag(diag=mass), alpha=-float(lamb), beta=1.0)
+        system = twt.bsr_axpy(x=stiffness, y=twt.bsr_diag(diag=mass), alpha=-float(lamb), beta=1.0)
 
         if dirichlet is None:
             # Right-hand side b = M V and the CG seed in one pass. The seed is the current
@@ -2316,7 +2338,7 @@ def _solve_region_smooth(
 
 def _csr_matrix(
     n: int, offsets: wp.array[wp.int32], columns: wp.array[wp.int32], values: wp.array[wp.float64]
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.float64]:
     """
     Wrap a square ``float64`` CSR assembled here as a ``BsrMatrix``.
 
@@ -2326,7 +2348,7 @@ def _csr_matrix(
     # The typed class directly, not ``wps.bsr_zeros``, whose three placeholder arrays and offsets
     # memset would all be replaced; ``notify_nnz_changed`` is Warp's entry point for storage
     # assigned from outside ``warp.sparse``.
-    matrix = wps.bsr_matrix_t(wp.float64)()
+    matrix = twt.bsr_matrix_t(wp.float64)()
     matrix.nrow = n
     matrix.ncol = n
     matrix.offsets = offsets
@@ -2604,7 +2626,7 @@ def filter_scalar_laplacian(
     faces: wp.array[wp.int32],
     lamb: float = 0.5,
     iterations: int = 10,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
 ) -> wp.array[wp.float32]:
     """
     Diffuse a per-vertex scalar field through the 1-ring averaging operator.
@@ -2795,10 +2817,19 @@ def filter_normals(
     accumulated = _launch.empty(n_faces, dtype=wp.vec3, device=device)
     # The map is hoisted out of the pass loop: a cached ``wp.map`` call re-resolves its kernel in
     # Python every time, which adds up over many passes.
-    seed = wp.map(
-        kernel_smoothing.seed_weighted_normal, normals, areas, out=accumulated, return_kernel=True
+    seed = cast(
+        "wp.Kernel",
+        wp.map(
+            kernel_smoothing.seed_weighted_normal,
+            normals,
+            areas,
+            out=accumulated,
+            return_kernel=True,
+        ),
     )
-    renormalize = wp.map(wp.normalize, accumulated, out=normals, return_kernel=True)
+    renormalize = cast(
+        "wp.Kernel", wp.map(wp.normalize, accumulated, out=normals, return_kernel=True)
+    )
     # Two launches per pass rather than three. A pass is seed -> crease-gated neighbour
     # accumulation -> normalize, and the scatter in the middle needs the whole seeded buffer, so the
     # fusable pair is the normalization with the *next* pass's seed. Peeling the first seed off the
@@ -2940,7 +2971,7 @@ def filter_sharpen(
     weight: float = 0.3,
     weight_original: float = 1.0,
     iterations: int = 5,
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None = None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None = None,
 ) -> wp.array[wp.vec3]:
     """
     Sharpen a surface by adding back the detail a smoothing pass removes.
@@ -3024,10 +3055,10 @@ def filter_sharpen(
 def _resolved_operator(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    laplacian_operator: wps.BsrMatrix[wp.float32] | None,
+    laplacian_operator: twt.BsrMatrix[wp.float32] | None,
     *,
     symmetric: bool = False,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Return the caller's row-stochastic operator, or the uniform-weight default built here.
 

@@ -9,6 +9,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.conversions import (
     faces_igl,
     points_to_warp,
@@ -141,7 +142,9 @@ def test_weighted_vertex_normals(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     )
 
     face_normals_wp = points_to_warp(face_normals_tm, mesh_wp.device)
-    face_weights_wp = wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device)
+    face_weights_wp = twt.as_array2d(
+        wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
     vertex_normals_wp = tw.vertices.weighted_vertex_normals(
         n_vertices, mesh_wp.indices, face_normals_wp, face_weights_wp
     )
@@ -440,11 +443,15 @@ def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str):
 
     n_vertices = mesh_tm.vertices.shape[0]
     vertex_defects_tm = tm.curvature.vertex_defects(mesh_tm)
-    vertex_defects_igl = igl.gaussian_curvature(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)
+    vertex_defects_igl = np.asarray(
+        igl.gaussian_curvature(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)
+        )
     ).ravel()
 
-    face_angles_wp = wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device)
+    face_angles_wp = twt.as_array2d(
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
     vertex_defects_wp = tw.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
 
     vertex_defects_ml = mn.getNumpyGaussianCurvature(trimesh_to_meshlib(mesh_tm))
@@ -488,7 +495,9 @@ def test_vertex_defects_against_pyvista_gaussian_curvature(
     lumped_pv = np.zeros(n_vertices)
     np.add.at(lumped_pv, mesh_tm.faces.ravel(), np.repeat(areas_pv / 3.0, 3))
 
-    face_angles_wp = wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device)
+    face_angles_wp = twt.as_array2d(
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
     vertex_defects_wp = tw.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
 
     assert np.allclose(vertex_defects_wp.numpy(), gaussian_pv * lumped_pv, rtol=1e-4, atol=1e-4)
@@ -515,7 +524,9 @@ def test_vertex_defects_satisfy_gauss_bonnet(
     assert mesh_tm.is_watertight
     assert tw.measures.euler_characteristic(mesh_wp.indices) == chi
 
-    face_angles_wp = wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device)
+    face_angles_wp = twt.as_array2d(
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
     defects_wp = tw.vertices.vertex_defects(
         mesh_tm.vertices.shape[0], mesh_wp.indices, face_angles_wp
     )
@@ -539,7 +550,9 @@ def test_scatter_wrappers_ignore_the_current_device(half_torus: tuple[tm.Trimesh
     n_vertices = mesh_tm.vertices.shape[0]
 
     face_normals_wp = points_to_warp(mesh_tm.face_normals, mesh_wp.device)
-    face_angles_wp = wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device)
+    face_angles_wp = twt.as_array2d(
+        wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
 
     mean_normals_tm = tm.geometry.mean_vertex_normals(
         n_vertices, mesh_tm.faces, mesh_tm.face_normals

@@ -9,7 +9,6 @@ from typing import Any, TypeVar, cast
 import numpy as np
 import numpy.typing as npt
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -21,6 +20,10 @@ from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import scatter as kernel_scatter
 
 DType = TypeVar("DType")
+_ArrayT = TypeVar("_ArrayT", bound="twt.ArrayNd")
+# The radix-sortable arrays. Bounded rather than constrained (``wp.Scalar``), so a caller holding a
+# union of dtypes gets that union back.
+_SortableArrayT = TypeVar("_SortableArrayT", bound="twt.ArrayNdScalar")
 
 
 # Use a direct-index membership table when the value *span* (max - min + 1, over both inputs) is at
@@ -202,8 +205,8 @@ def sort_pair_indices(n: int, fill_value: int, device: wp.DeviceLike) -> wp.arra
 
 
 def pack_1d_arrays(
-    arrays: Sequence[wp.array[wp.Scalar]], *, copy: bool = True
-) -> tuple[wp.array[wp.Scalar], wp.array[wp.int32]]:
+    arrays: Sequence[wp.array[DType]], *, copy: bool = True
+) -> tuple[wp.array[DType], wp.array[wp.int32]]:
     """
     Concatenate several 1-D ``warp.array`` instances into one buffer plus per-segment offsets.
 
@@ -438,8 +441,9 @@ def _segment_views(array: wp.array[DType], bounds: Sequence[int]) -> list[wp.arr
             for begin, end in itertools.pairwise(bounds)
         ]
     template = array[0:1].__dict__
-    stride = int(array.strides[0])
-    base_ptr = int(array.ptr)
+    # ``n > 0`` here, so the array has an address and a stride.
+    stride = cast("int", array.strides[0])
+    base_ptr = cast("int", array.ptr)
     new = object.__new__
     views: list[wp.array[DType]] = []
     for begin, end in itertools.pairwise(bounds):
@@ -705,19 +709,22 @@ def _tiled_span(
     base = _view_base(arrays[0])
     if int(base.ndim) != 1 or not base.is_contiguous or base.dtype != arrays[0].dtype:
         return None
-    stride = int(base.strides[0])
-    cursor = int(arrays[0].ptr)
+    stride = cast("int", base.strides[0])
+    first_ptr, base_ptr = arrays[0].ptr, base.ptr
+    if first_ptr is None or base_ptr is None:
+        return None  # only a zero-capacity array has no address
+    cursor = first_ptr
     for arr, n in zip(arrays, sizes, strict=True):
         # A direct view of ``base`` -- every segment ``split`` returns -- answers in one lookup.
         if (
             (getattr(arr, "_ref", None) is not base and _view_base(arr) is not base)
             or not arr.is_contiguous
-            or int(arr.strides[0]) != stride
-            or int(arr.ptr) != cursor
+            or arr.strides[0] != stride
+            or arr.ptr != cursor
         ):
             return None
         cursor += n * stride
-    start, remainder = divmod(int(arrays[0].ptr) - int(base.ptr), stride)
+    start, remainder = divmod(first_ptr - base_ptr, stride)
     if remainder or start < 0 or start + total > base.size:
         return None
     return twt.as_dense(base[start : start + total])
@@ -796,8 +803,8 @@ def allclose(
 
 
 def sort_and_argsort(
-    keys: wp.array[wp.Scalar], *, fill_value: int = -1
-) -> tuple[wp.array[wp.Scalar], wp.array[wp.int32]]:
+    keys: _SortableArrayT, *, fill_value: int = -1
+) -> tuple[_SortableArrayT, wp.array[wp.int32]]:
     """
     Ascending sort of ``keys`` together with the permutation that produced it.
 
@@ -851,7 +858,7 @@ def sort_and_argsort(
     _launch.copy(keys_buffer, keys, count=n)
     order_buffer = sort_pair_indices(n, fill_value, device)
     _launch.radix_sort_pairs(keys_buffer, order_buffer, count=n)
-    return twt.as_dense(keys_buffer[:n]), twt.as_dense(order_buffer[:n])
+    return cast(_SortableArrayT, twt.as_dense(keys_buffer[:n])), twt.as_dense(order_buffer[:n])
 
 
 def sort_rows(data: twt.Array2dInt32 | twt.Array2dFloat32) -> None:
@@ -917,8 +924,8 @@ def sort_rows(data: twt.Array2dInt32 | twt.Array2dFloat32) -> None:
 
 
 def triplet_buffers(
-    n_triplets: int, dtype: type, device: wp.DeviceLike
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], twt.ArrayNd]:
+    n_triplets: int, dtype: type[twt.Block], device: wp.DeviceLike
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[twt.Block]]:
     """
     Uninitialized ``(rows, cols, values)`` COO buffers for one ``csr_from_triplets`` build.
 
@@ -961,10 +968,9 @@ def triplet_buffers(
     return rows, cols, values
 
 
-# ``BsrMatrix[Any]``, not ``BsrMatrix[wp.float32]``: ``dtype`` is a runtime argument and the
-# seven callers pass ``wp.float64`` and ``wp.mat22d`` as well as a variable, so a concrete
-# parameter here is simply wrong for most of them. No overload can narrow a runtime ``type``.
-def empty_square_bsr(n_rows: int, dtype: type, device: wp.DeviceLike) -> wps.BsrMatrix[Any]:
+def empty_square_bsr(
+    n_rows: int, dtype: type[twt.Block], device: wp.DeviceLike
+) -> twt.BsrMatrix[twt.Block]:
     """
     Zero-nnz ``(n_rows, n_rows)`` operator, the ``n_faces == 0`` return several assemblers share.
 
@@ -1009,10 +1015,10 @@ def bsr_from_csr(
     n_cols: int,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    values: wp.array[Any],
+    values: wp.array[twt.Block, Any],
     *,
     nnz: int | None = None,
-) -> wps.BsrMatrix[Any]:
+) -> twt.BsrMatrix[twt.Block]:
     """
     Wrap compressed-row arrays that already hold a matrix's storage as a ``BsrMatrix``, no copy.
 
@@ -1057,7 +1063,7 @@ def bsr_from_csr(
             f"columns and values must have one element per entry, got {columns.size} and "
             f"{values.shape[0]}"
         )
-    matrix = wps.bsr_matrix_t(values.dtype)()
+    matrix = twt.bsr_matrix_t(values.dtype)()
     matrix.nrow = n_rows
     matrix.ncol = n_cols
     matrix.offsets = offsets
@@ -1181,12 +1187,12 @@ def csr_from_keys(
 def csr_from_triplets(
     n_rows: int,
     n_cols: int,
-    rows: wp.array[wp.int32],
-    cols: wp.array[wp.int32],
-    values: wp.array[Any],
+    rows: twt.ArrayNdInt32,
+    cols: twt.ArrayNdInt32,
+    values: wp.array[twt.Block, Any],
     *,
     prune_numerical_zeros: bool = False,
-) -> wps.BsrMatrix[Any]:
+) -> twt.BsrMatrix[twt.Block]:
     """
     Assemble a sparse matrix from coordinate triplets, summing duplicates.
 
@@ -1317,7 +1323,7 @@ def index_sparse(
     dtype: type[wp.Scalar] | None = None,
     *,
     prune_numerical_zeros: bool = True,
-) -> wps.BsrMatrix[wp.Scalar]:
+) -> twt.BsrMatrix[wp.Scalar]:
     """
     Build a sparse row/column incidence matrix from flat index columns.
 
@@ -1355,8 +1361,13 @@ def index_sparse(
     require_same_device(indices=indices, data=data)
     prune_numerical_zeros = prune_numerical_zeros and data is not None
     if data is None:
-        data = _launch.ones(
-            indices.size, dtype=dtype if dtype is not None else wp.float32, device=indices.device
+        data = cast(
+            "wp.array[wp.Scalar]",
+            _launch.ones(
+                indices.size,
+                dtype=dtype if dtype is not None else wp.float32,
+                device=indices.device,
+            ),
         )
     else:
         if data.size != indices.size:
@@ -1471,20 +1482,22 @@ def isin(
         return _launch.zeros(elements.shape, dtype=wp.bool, device=device)
 
     is_flat = int(elements.ndim) == 1
-    elements_flat = elements if is_flat else elements.flatten()
+    # Either input may be widened below, to a dtype chosen at runtime.
+    elements_flat: twt.ArrayNd = elements if is_flat else elements.flatten()
+    tests: twt.ArrayNd = test_elements
     # Widen sub-32-bit dtypes once, up front: neither ``reduce.minmax`` nor the radix sort accepts
     # them, and a widened span cannot overflow the type it is measured in (int8's span reaches 256).
     if wp.types.type_size_in_bytes(dtype) < 4:
         wide = twt.sortable_dtype(dtype)
         elements_flat = astype(elements_flat, wide)
-        test_elements = astype(test_elements, wide)
+        tests = astype(tests, wide)
 
     if max_index is not None:
         # A supplied bound is the whole point of the keyword: it is what the two reductions below
         # would have inferred, so it also settles the strategy -- a caller who knows the values are
         # dense mesh indices is describing exactly the table's best case, and honouring a
         # ``_ISIN_MASK_SIZE_FACTOR`` test here would spend the readback to reach the same branch.
-        return _reshaped(_isin_lookup_mask(elements_flat, test_elements, max_index, 0), elements)
+        return _reshaped(_isin_lookup_mask(elements_flat, tests, max_index, 0), elements)
 
     # One ``(min, max)`` accumulator over both inputs: the tiled minmax kernel folds into what the
     # buffer already holds, so launching it once per input yields the joint bounds for a single
@@ -1495,7 +1508,7 @@ def isin(
         dtype=reduce_dtype,
         device=device,
     )
-    for values in (elements_flat, test_elements):
+    for values in (elements_flat, tests):
         _launch.launch_tiled(
             kernel_reduce.MINMAX1D_TILED[reduce_dtype],
             dim=[kernel_reduce.blocks_1d(values.size)],
@@ -1506,9 +1519,9 @@ def isin(
     offset, high = (int(bound) for bound in bounds.numpy())
     span = high - offset + 1
     if span <= _ISIN_MASK_SIZE_FACTOR * k:
-        out_flat = _isin_lookup_mask(elements_flat, test_elements, span, offset)
+        out_flat = _isin_lookup_mask(elements_flat, tests, span, offset)
     else:
-        out_flat = _isin_lookup_sorted(elements_flat, test_elements)
+        out_flat = _isin_lookup_sorted(elements_flat, tests)
 
     return _reshaped(out_flat, elements)
 
@@ -1572,7 +1585,7 @@ def _isin_lookup_sorted(
     return out_wp
 
 
-def _sorted_copy(values: wp.array[DType]) -> wp.array[DType]:
+def _sorted_copy(values: _ArrayT) -> _ArrayT:
     """
     Ascending-sorted copy of a 1D scalar array.
 
@@ -1706,7 +1719,7 @@ def gather(
     return out
 
 
-def astype(values: twt.ArrayNd, dtype: type) -> twt.ArrayNd:
+def astype(values: twt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
     """
     Element-wise dtype conversion, shape and rank preserved (``numpy.ndarray.astype``).
 
@@ -1767,7 +1780,7 @@ def astype(values: twt.ArrayNd, dtype: type) -> twt.ArrayNd:
     return out
 
 
-def index_bound(indices: twt.IntArray, *, require_non_negative: bool = False) -> int:
+def index_bound(indices: twt.ArrayNdInt, *, require_non_negative: bool = False) -> int:
     """
     Exclusive upper bound on an index buffer's values, as ``max(indices) + 1``.
 
@@ -1953,7 +1966,7 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     # The leading zero from ``wp.zeros`` is the first exclusive offset; the inclusive scan fills the
     # rest, so ``buffer[n]`` is the total and ``buffer[:n]`` the exclusive offsets.
     buffer = _launch.zeros(n + 1, dtype=wp.int32, device=device)
-    return buffer, _scan_into_tail(buffer, counts, buffer[1:])
+    return buffer, _scan_into_tail(buffer, counts, twt.as_dense(buffer[1:]))
 
 
 def _scan_into_tail(
@@ -2018,8 +2031,8 @@ def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.
 
 
 def trim_to_count(
-    counter: wp.array[wp.int32], *buffers: wp.array[DType]
-) -> tuple[int, list[wp.array[DType]]]:
+    counter: wp.array[wp.int32], *buffers: wp.array[DType, Any]
+) -> tuple[int, list[wp.array[DType, Any]]]:
     """
     Trim atomic-append output buffers to the number of elements actually written.
 
@@ -2109,7 +2122,10 @@ def bitcast_to_int(
     # unsupported operand type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the
     # empty allocation here is both the right answer and the only way to state it.
     if copy_count == 0:
-        return _launch.empty(count, dtype=target, device=data.device)
+        return cast(
+            "wp.array[wp.int32] | wp.array[wp.int64]",
+            _launch.empty(count, dtype=target, device=data.device),
+        )
 
     if n_bits > 32:
         reinterpreted = _launch.empty(count, dtype=wp.int64, device=data.device)

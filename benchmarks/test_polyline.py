@@ -124,8 +124,10 @@ def _polyline_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
         if not loops:
             pytest.skip(f"{bench_case.mesh_name} has no boundary loop to use as a polyline")
         longest = max(loops, key=lambda loop: loop.size)
-        dense = wp.empty(longest.size, dtype=wp.vec3, device=bench_case.device)
-        wp.copy(dense, vertices[longest])
+        # Warp's stubs type ``wp.empty``'s dtype as ``float`` and ``wp.copy``'s source as a dense
+        # array, though it copies from the ``indexedarray`` a gather returns.
+        dense = wp.empty(longest.size, dtype=wp.vec3, device=bench_case.device)  # pyright: ignore[reportArgumentType]
+        wp.copy(dense, vertices[longest])  # pyright: ignore[reportArgumentType]
         _polyline_cache[key] = dense
     return _polyline_cache[key]
 

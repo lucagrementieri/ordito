@@ -52,7 +52,7 @@ PNG_DIR = HERE / "png"
 def _fit_and_chip(source: Image.Image, size: int = SIZE) -> Image.Image:
     """Scale `source` (any size/aspect) to fit inside `size x size`, centered on a gray chip."""
     fitted = source.convert("RGBA")
-    fitted.thumbnail((size, size), Image.LANCZOS)
+    fitted.thumbnail((size, size), Image.Resampling.LANCZOS)
 
     canvas = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     chip_box = (CHIP_MARGIN, CHIP_MARGIN, size - CHIP_MARGIN, size - CHIP_MARGIN)
@@ -67,6 +67,7 @@ def render_svg(svg_path: Path, png_path: Path, size: int = SIZE) -> None:
     # Render oversized on the long axis, then fit -- asking cairosvg for the exact output size
     # directly would stretch a non-square source instead of letter/pillar-boxing it.
     raw = cairosvg.svg2png(url=str(svg_path), output_width=size * 4, output_height=size * 4)
+    assert raw is not None  # no ``write_to``, so cairosvg returns the bytes
     _fit_and_chip(Image.open(io.BytesIO(raw)), size).save(png_path)
 
 

@@ -68,7 +68,7 @@ from conftest import BenchCase, skip_larger_than
 _QUERY_SEED = 42
 _N_QUERIES = 10_000
 
-_surface_cache: dict[tuple[str, str], wp.array] = {}
+_surface_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 _mesh_cache: dict[tuple[str, str], wp.Mesh] = {}
 _normals_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 

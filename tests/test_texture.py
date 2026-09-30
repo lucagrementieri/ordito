@@ -11,6 +11,8 @@ both rasterizers cover the pixel (the interpolated field is continuous, so value
 from __future__ import annotations
 
 import textwrap
+from collections.abc import Iterator
+from typing import Literal
 
 import moderngl
 import numpy as np
@@ -20,6 +22,7 @@ import warp as wp
 from scipy.ndimage import map_coordinates
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.conversions import points_to_warp_uv
 
 
@@ -63,10 +66,8 @@ def _rasterize_attribute_gl(
     program = ctx.program(vertex_shader=vertex_shader, fragment_shader=fragment_shader)
     uv_buffer = ctx.buffer(uv.astype(np.float32).tobytes())
     face_buffer = ctx.buffer(faces.astype(np.int32).tobytes())
-    out_frame_buffer = ctx.framebuffer(
-        color_attachments=[ctx.texture((resolution, resolution), 4, dtype="f4")]
-    )
-    color_tex = out_frame_buffer.color_attachments[0]
+    color_tex = ctx.texture((resolution, resolution), 4, dtype="f4")
+    out_frame_buffer = ctx.framebuffer(color_attachments=[color_tex])
 
     out_parts: list[npt.NDArray[np.float32]] = []
     try:
@@ -100,7 +101,7 @@ def _rasterize_attribute_gl(
 
 
 def _remap_attribute_scipy(
-    uv: npt.NDArray[np.float32], image: npt.NDArray[np.float32], order: int
+    uv: npt.NDArray[np.float32], image: npt.NDArray[np.float32], order: Literal[0, 1]
 ) -> npt.NDArray[np.float32]:
     """Scipy reference for the pixel-center inverse sampling."""
     image_hwc = image[:, :, None] if image.ndim == 2 else image
@@ -125,7 +126,7 @@ def _remap_attribute_scipy(
 # Fixtures / helpers
 # --------------------------------------------------------------------------------------------
 @pytest.fixture(scope="module")
-def gl_context():
+def gl_context() -> Iterator[moderngl.Context]:
     """
     Yield a standalone EGL context, or skip naming the *driver* -- never the missing package.
 
@@ -137,7 +138,8 @@ def gl_context():
     if the import ever broke.
     """
     try:
-        ctx = moderngl.create_context(standalone=True, backend="egl")
+        # moderngl's stub types ``backend`` as a settings dict; the runtime takes the backend name.
+        ctx = moderngl.create_context(standalone=True, backend="egl")  # pyright: ignore[reportArgumentType]
     except Exception as exc:  # noqa: BLE001 - any GL/EGL init failure should skip, not error
         pytest.skip(f"no EGL OpenGL context available: {exc!r}")
     yield ctx
@@ -178,7 +180,9 @@ def _interior_mask(n: int) -> npt.NDArray[np.bool_]:
     "decline; moderngl is registered as a test-only reference so this claim is still checked.",
 )
 @pytest.mark.parametrize("n_channels", [1, 2, 5])
-def test_rasterize_attribute_matches_opengl(gl_context, device: str, n_channels: int):
+def test_rasterize_attribute_matches_opengl(
+    gl_context: moderngl.Context, device: str, n_channels: int
+):
     """
     Class C (a coverage fraction plus values on the jointly-covered pixels).
 
@@ -221,7 +225,9 @@ def test_rasterize_attribute_matches_opengl(gl_context, device: str, n_channels:
 
     uv_wp = points_to_warp_uv(uv_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    attribute_wp = wp.array(attribute_np, dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(attribute_np, dtype=wp.float32, device=device), wp.float32
+    )
     image_wp = tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution).numpy()
 
     covered_gl = image_gl[:, :, 0] > 0.5
@@ -242,7 +248,7 @@ def test_rasterize_attribute_matches_opengl(gl_context, device: str, n_channels:
     "also needs a one-hot encoding on the reference side, so the two are not even doing the same "
     "amount of work -- the label agreement is what is comparable, and that is what this checks.",
 )
-def test_rasterize_discrete_attribute_matches_opengl(gl_context, device: str):
+def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Context, device: str):
     """
     Class C (coverage fraction plus label agreement), through a named one-hot transform.
 
@@ -317,7 +323,7 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context, device: str):
 )
 @pytest.mark.parametrize("order", [0, 1])
 @pytest.mark.parametrize("n_channels", [1, 3])
-def test_remap_attribute_matches_scipy(device: str, order: int, n_channels: int):
+def test_remap_attribute_matches_scipy(device: str, order: Literal[0, 1], n_channels: int):
     """
     Class A against ``scipy.ndimage.map_coordinates``, on both interpolation orders.
 
@@ -350,7 +356,7 @@ def test_remap_attribute_matches_scipy(device: str, order: int, n_channels: int)
     values_np = _remap_attribute_scipy(uv_np, image_np, order)
 
     uv_wp = points_to_warp_uv(uv_np, device)
-    image_wp = wp.array(image_np, dtype=wp.float32, device=device)
+    image_wp = twt.as_array3d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
     values_wp = tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=order).numpy()
 
     assert values_wp.shape == (200, n_channels)
@@ -382,7 +388,7 @@ def test_remap_attribute_2d_image(device: str):
     values_np = _remap_attribute_scipy(uv_np, image_np, order=1)
 
     uv_wp = points_to_warp_uv(uv_np, device)
-    image_wp = wp.array(image_np, dtype=wp.float32, device=device)
+    image_wp = twt.as_array2d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
     values_wp = tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=1).numpy()
     assert values_wp.shape == (50, 1)
     assert np.allclose(values_wp[:, 0], values_np[:, 0], rtol=1e-4, atol=1e-4)
@@ -438,7 +444,9 @@ def test_remap_discrete_attribute_matches_scipy(device: str, n_labels: int) -> N
     ).astype(np.int32)
 
     uv_wp = points_to_warp_uv(uv_np, device)
-    class_image_wp = wp.array(class_image_np, dtype=wp.int32, device=device)
+    class_image_wp = twt.as_array2d(
+        wp.array(class_image_np, dtype=wp.int32, device=device), wp.int32
+    )
     labels_wp = tw.texture.remap_discrete_attribute_from_uv(uv_wp, class_image_wp).numpy()
 
     # Non-vacuity: a constant answer would satisfy array_equal against a constant reference.
@@ -460,7 +468,9 @@ def test_rasterize_remap_roundtrip_linear(device: str):
 
     uv_wp = points_to_warp_uv(uv_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    attribute_wp = wp.array(attribute_np, dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(attribute_np, dtype=wp.float32, device=device), wp.float32
+    )
     image = tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution)
     recovered = tw.texture.remap_attribute_from_uv(uv_wp, image, order=1).numpy()
 
@@ -493,14 +503,16 @@ def test_nan_uv_rows(device: str):
     image_np = np.random.default_rng(0).random((16, 16, 2), dtype=np.float32)
 
     uv_wp = points_to_warp_uv(uv_np, device)
-    image_wp = wp.array(image_np, dtype=wp.float32, device=device)
+    image_wp = twt.as_array3d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
     values = tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=1).numpy()
     assert np.all(np.isnan(values[1]))
     assert not np.any(np.isnan(values[0]))
     assert not np.any(np.isnan(values[2]))
 
     class_image_np = np.random.default_rng(1).integers(0, 3, size=(16, 16)).astype(np.int32)
-    class_image_wp = wp.array(class_image_np, dtype=wp.int32, device=device)
+    class_image_wp = twt.as_array2d(
+        wp.array(class_image_np, dtype=wp.int32, device=device), wp.int32
+    )
     labels = tw.texture.remap_discrete_attribute_from_uv(uv_wp, class_image_wp).numpy()
     assert labels[1] == -1
     assert labels[0] >= 0
@@ -513,7 +525,9 @@ def test_nan_uv_rows(device: str):
 def test_empty_faces(device: str):
     uv_wp = wp.array(np.zeros((0, 2), dtype=np.float32), dtype=wp.vec2, device=device)
     faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
+    )
     image = tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 8).numpy()
     assert image.shape == (8, 8, 3)
     assert np.all(image == 0.0)
@@ -527,7 +541,9 @@ def test_empty_faces(device: str):
 def test_invalid_resolution(device: str):
     uv_wp = wp.array(np.array([[0.5, 0.5]], dtype=np.float32), dtype=wp.vec2, device=device)
     faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = wp.array(np.zeros((1, 1), dtype=np.float32), dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(np.zeros((1, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
+    )
     with pytest.raises(ValueError, match="Resolution must be positive"):
         tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 0)
 
@@ -536,7 +552,9 @@ def test_uv_out_of_range(device: str):
     uv_np = np.array([[0.5, 0.5], [1.5, 0.2]], dtype=np.float32)
     uv_wp = points_to_warp_uv(uv_np, device)
     faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
+    )
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 8)
 
@@ -561,7 +579,9 @@ def test_rasterize_row_count_mismatch(device: str):
     uv_np = np.array([[0.5, 0.5], [0.2, 0.2], [0.8, 0.8]], dtype=np.float32)
     uv_wp = points_to_warp_uv(uv_np, device)
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device)
+    attribute_wp = twt.as_array2d(
+        wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
+    )
     with pytest.raises(ValueError, match="row count mismatch"):
         tw.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 8)
     labels_wp = wp.array(np.zeros(2, dtype=np.int32), dtype=wp.int32, device=device)
@@ -579,10 +599,10 @@ def test_remap_uv_out_of_range(device: str):
     guard it does not itself run, which is exactly the kind that goes stale unnoticed.
     """
     uv_wp = points_to_warp_uv(np.array([[0.5, 0.5], [1.5, 0.2]], dtype=np.float32), device)
-    image_wp = wp.zeros((4, 4), dtype=wp.float32, device=device)
+    image_wp = twt.as_array2d(wp.zeros((4, 4), dtype=wp.float32, device=device), wp.float32)
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         tw.texture.remap_attribute_from_uv(uv_wp, image_wp)
-    class_image_wp = wp.zeros((4, 4), dtype=wp.int32, device=device)
+    class_image_wp = twt.as_array2d(wp.zeros((4, 4), dtype=wp.int32, device=device), wp.int32)
     with pytest.raises(ValueError, match=r"\[0, 1\]"):
         tw.texture.remap_discrete_attribute_from_uv(uv_wp, class_image_wp)
 
@@ -599,10 +619,10 @@ def test_remap_rejects_an_off_menu_order(device: str):
     """
     uv_wp = points_to_warp_uv(np.array([[0.25, 0.25], [0.6, 0.7]], dtype=np.float32), device)
     image_np = np.arange(16, dtype=np.float32).reshape(4, 4)
-    image_wp = wp.array(image_np, dtype=wp.float32, device=device)
+    image_wp = twt.as_array2d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
     for order in (2, -1, 0.5):
         with pytest.raises(ValueError, match="order must be 0"):
-            tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=order)
+            tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=order)  # pyright: ignore[reportArgumentType]
     bilinear_np = tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=1).numpy()
     nearest_np = tw.texture.remap_attribute_from_uv(uv_wp, image_wp, order=0).numpy()
     assert np.isfinite(bilinear_np).all()

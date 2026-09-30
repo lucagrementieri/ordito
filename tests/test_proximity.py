@@ -8,6 +8,8 @@ Mesh AABB queries against a brute-force reference; closest-on-mesh tests compare
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import igl
 import numpy as np
@@ -38,10 +40,15 @@ from tests.conversions import (
     trimesh_to_pytorch3d,
     trimesh_to_pyvista,
     trimesh_to_warp,
+    warp_empty,
 )
 from triwarp import _launch
 from triwarp.constants import TOLERANCE_MERGE
 from triwarp.kernels import proximity as kernel_proximity
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+    from typing_extensions import Buffer
 
 _SIGNED_DISTANCE_MESHES = ["icosahedron", "cave_cube"]
 _SIGNED_DISTANCE_MESHES_TORUS = ["icosahedron", "cave_cube", "torus"]
@@ -225,8 +232,9 @@ def test_closest_point_on_mesh_matches_pyvista(
     points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
     points_wp = points_to_warp(points_np, mesh_wp.device)
 
-    _cells_pv, closest_pv = trimesh_to_pyvista(mesh_tm).find_closest_cell(
-        points_np, return_closest_point=True
+    _cells_pv, closest_pv = cast(
+        "tuple[object, NDArray[np.float64]]",
+        trimesh_to_pyvista(mesh_tm).find_closest_cell(points_np, return_closest_point=True),
     )
     closest_pv = np.asarray(closest_pv)
     distances_pv = np.linalg.norm(points_np - closest_pv, axis=1)
@@ -311,7 +319,7 @@ def test_closest_point_on_mesh_unreferenced_vertex(device: str) -> None:
 
 def test_closest_point_on_mesh_empty_faces(device: str) -> None:
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    faces = warp_empty(0, wp.int32, device)
     points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     closest_wp, distance_wp, triangle_id_wp = tw.proximity.closest_point_on_mesh(
         vertices, faces, points
@@ -404,7 +412,7 @@ def test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins(
     result_ml = mm.findDistance(
         mm.MeshPart(trimesh_to_meshlib(lower_tm)),
         mm.MeshPart(trimesh_to_meshlib(upper_tm)),
-        None,
+        None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
         float(np.finfo(np.float32).max),
     )
     assert np.isclose(distance, float(np.sqrt(result_ml.distSq)), rtol=1e-5, atol=1e-6)
@@ -454,7 +462,7 @@ def test_mesh_to_mesh_distance_gap_overlap_and_contact(device: str) -> None:
         result_ml = mm.findDistance(
             mm.MeshPart(trimesh_to_meshlib(a_tm)),
             mm.MeshPart(trimesh_to_meshlib(b_tm)),
-            None,
+            None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
             float(np.finfo(np.float32).max),
         )
         assert np.isclose(distance, expected, rtol=1e-5, atol=1e-6)
@@ -496,7 +504,7 @@ def test_mesh_to_mesh_distance_when_the_vertex_bound_is_the_answer(device: str) 
         result_ml = mm.findDistance(
             mm.MeshPart(trimesh_to_meshlib(sphere_tm)),
             mm.MeshPart(trimesh_to_meshlib(shifted_tm)),
-            None,
+            None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
             float(np.finfo(np.float32).max),
         )
         assert np.isfinite(distance), f"gap {gap} pruned the pair achieving the bound"
@@ -691,8 +699,8 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
     tiled_launches = []
     tiled_kernel = kernel_proximity.face_to_mesh_distance_tiled
 
-    def counting(real_launch_tiled):
-        def counting_launch_tiled(*args, **kwargs):
+    def counting(real_launch_tiled: Callable[..., object]):
+        def counting_launch_tiled(*args: object, **kwargs: object):
             # Keyed on the kernel, not on the call: ``tw.reduce.min`` derives this function's
             # upper bound through a tiled launch of its own, so counting every ``launch_tiled``
             # would make the non-vacuity assertion below pass with the split disabled --
@@ -818,7 +826,7 @@ def test_mesh_to_mesh_distance_upper_bound_and_edge_cases(device: str) -> None:
     assert starved > exact
 
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    empty_faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_faces_wp = warp_empty(0, wp.int32, device)
     assert tw.proximity.mesh_to_mesh_distance(
         lower_vertices_wp, lower_faces_wp, empty_vertices_wp, empty_faces_wp
     ) == (math.inf, -1, -1)
@@ -852,7 +860,7 @@ def test_closest_point_on_edges_matches_pyvista(
         *numpy_to_warp(vertices_np, np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device)
     )
     edges_np = edges_wp.numpy()
-    assert edges_np.shape[0] == 12  # the box's creases, and non-empty before anything is compared
+    assert edges_wp.shape[0] == 12  # the box's creases, and non-empty before anything is compared
 
     rng = np.random.default_rng(21)
     queries_np = (rng.random((200, 3)) * 1.6 - 0.3).astype(np.float32)
@@ -880,11 +888,12 @@ def test_closest_point_on_edges_matches_pyvista(
     assert np.array_equal(edge_id_np[unique_np], nearest_np[unique_np])
 
     # VTK: one line cell per edge, so the cell id is the edge id.
-    cells_np = np.hstack([np.full((edges_np.shape[0], 1), 2), edges_np]).astype(np.int64).ravel()
+    cells_np = np.hstack([np.full((edges_wp.shape[0], 1), 2), edges_np]).astype(np.int64).ravel()
     wireframe_pv = pv.PolyData(vertices_np, lines=cells_np)
-    assert wireframe_pv.n_cells == edges_np.shape[0]
-    cell_pv, point_pv = wireframe_pv.find_closest_cell(
-        queries_np.astype(np.float64), return_closest_point=True
+    assert wireframe_pv.n_cells == edges_wp.shape[0]
+    cell_pv, point_pv = cast(
+        "tuple[NDArray[np.int_], NDArray[np.float64]]",
+        wireframe_pv.find_closest_cell(queries_np.astype(np.float64), return_closest_point=True),
     )
     assert np.allclose(
         np.linalg.norm(np.asarray(point_pv) - queries_np, axis=1), minimum_np, rtol=1e-5, atol=1e-5
@@ -927,7 +936,7 @@ def test_closest_point_on_edges_matches_meshlib(
         *numpy_to_warp(vertices_np, np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device)
     )
     edges_np = edges_wp.numpy()
-    assert edges_np.shape[0] == 12
+    assert edges_wp.shape[0] == 12
 
     rng = np.random.default_rng(22)
     queries_np = (rng.random((64, 3)) * 1.6 - 0.3).astype(np.float32)
@@ -1063,13 +1072,13 @@ def test_closest_point_on_edges_max_dist_and_degenerate(device: str) -> None:
     assert np.allclose(closest_wp.numpy()[1], queries_np[1])  # and the query point itself
 
     empty_closest_wp, empty_distance_wp, empty_edge_wp = tw.proximity.closest_point_on_edges(
-        vertices_wp, edges_wp, wp.empty(0, dtype=wp.vec3, device=device)
+        vertices_wp, edges_wp, warp_empty(0, wp.vec3, device)
     )
     assert empty_closest_wp.shape == (0,)
     assert empty_distance_wp.shape == (0,)
     assert empty_edge_wp.shape == (0,)
 
-    no_edges_wp = twt.as_array2d(wp.empty((0, 2), dtype=wp.int32, device=device), wp.int32)
+    no_edges_wp = twt.as_array2d(warp_empty((0, 2), wp.int32, device), wp.int32)
     _closest_wp, distance_wp, edge_id_wp = tw.proximity.closest_point_on_edges(
         vertices_wp, no_edges_wp, queries_wp
     )
@@ -1112,7 +1121,7 @@ def test_normals_at_closest_faces_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh
 
 def test_normals_at_closest_faces_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    points_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
+    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     normals_wp = tw.proximity.normals_at_closest_faces(mesh_wp, points_wp)
     assert normals_wp.shape == (0,)
 
@@ -1124,7 +1133,7 @@ def test_normals_at_closest_faces_empty_mesh() -> None:
     # object, and building it on CUDA would corrupt allocator state rather than reproduce anything.
     device = wp.get_device("cpu")
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    faces = warp_empty(0, wp.int32, device)
     mesh_wp = wp.Mesh(points=vertices, indices=faces)
     points_wp = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     normals_wp = tw.proximity.normals_at_closest_faces(mesh_wp, points_wp)
@@ -1214,7 +1223,7 @@ def test_signed_distance_on_mesh_matches_meshlib(
     points_np = _queries_in_bounds_np(mesh_tm, 200, seed=42)
     points_wp = points_to_warp(points_np, mesh_wp.device)
 
-    cloud_ml = mn.pointCloudFromPoints(np.ascontiguousarray(points_np))
+    cloud_ml = mn.pointCloudFromPoints(cast("Buffer", np.ascontiguousarray(points_np)))
     distances_ml = meshlib_scalars_to_numpy(
         mm.findSignedDistances(trimesh_to_meshlib(mesh_tm), cloud_ml.points)
     )
@@ -1293,7 +1302,7 @@ def test_signed_distance_on_mesh_matches_open3d(
     scene_o3d = o3d.t.geometry.RaycastingScene()
     scene_o3d.add_triangles(mesh_t)
     signed_o3d = scene_o3d.compute_signed_distance(
-        o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32))
+        o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
     ).numpy()
 
     points_wp = points_to_warp(points_np, mesh_wp.device)
@@ -1408,10 +1417,13 @@ def test_signed_distance_on_mesh_rejects_unknown_sign_mode(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _, mesh_wp = icosahedron
-    points_wp = wp.empty(4, dtype=wp.vec3, device=mesh_wp.device)
+    points_wp = warp_empty(4, wp.vec3, mesh_wp.device)
     with pytest.raises(ValueError, match="sign_mode"):
         tw.proximity.signed_distance_on_mesh(
-            mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="nearest"
+            mesh_wp.points,
+            mesh_wp.indices,
+            points_wp,
+            sign_mode="nearest",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
         )
 
 
@@ -1526,7 +1538,7 @@ def test_signed_distance_contains_points_consistency(
 
 def test_signed_distance_on_mesh_empty_faces(device: str) -> None:
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    faces = warp_empty(0, wp.int32, device)
     points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     signed_wp = tw.proximity.signed_distance_on_mesh(vertices, faces, points)
     assert signed_wp.shape == (2,)
@@ -1563,16 +1575,16 @@ def test_signed_distance_grid_matches_open3d(
 
     # The box: the mesh's own, grown by exactly ``pad`` cells, and spaced by exactly ``voxel_size``.
     mesh_lower_np = np.asarray(mesh_tm.vertices).min(axis=0)
-    assert np.allclose([lower[0], lower[1], lower[2]], mesh_lower_np - pad * voxel_size, atol=1e-6)
+    assert np.allclose(twt.vec3_floats(lower), mesh_lower_np - pad * voxel_size, atol=1e-6)
     for axis in range(3):
         span = float(upper[axis]) - float(lower[axis])
         assert np.isclose(span / (field_np.shape[axis] - 1), voxel_size, rtol=1e-6)
 
-    samples_np = tw.voxels.grid_points(field_np.shape, bounds=(lower, upper), device=device).numpy()
+    samples_np = tw.voxels.grid_points(field_wp.shape, bounds=(lower, upper), device=device).numpy()
     scene_o3d = o3d.t.geometry.RaycastingScene()
     scene_o3d.add_triangles(trimesh_to_open3d_t(mesh_tm))
     distance_o3d = scene_o3d.compute_signed_distance(
-        o3d.core.Tensor(samples_np.astype(np.float32))
+        o3d.core.Tensor(samples_np.astype(np.float32))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
     ).numpy()
     assert np.abs(field_np.ravel() - distance_o3d).max() < 1e-5
 
@@ -1600,9 +1612,7 @@ def test_signed_distance_grid_guards_and_conventions(
     with pytest.raises(ValueError, match="pad"):
         tw.proximity.signed_distance_grid(vertices_wp, faces_wp, 0.1, pad=-1)
     with pytest.raises(ValueError, match="at least one face"):
-        tw.proximity.signed_distance_grid(
-            vertices_wp, wp.empty(0, dtype=wp.int32, device=device), 0.1
-        )
+        tw.proximity.signed_distance_grid(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
     with pytest.raises(ValueError, match="cannot use a supplied mesh"):
         tw.proximity.signed_distance_grid(
             vertices_wp, faces_wp, 0.1, sign_mode="winding", mesh=mesh_wp
@@ -1616,7 +1626,7 @@ def test_signed_distance_grid_guards_and_conventions(
         bounds=(wp.vec3(-0.5, -0.5, -0.5), wp.vec3(0.5, 0.5, 0.5)),
         pad=0,
     )
-    assert np.allclose([tight_lower[0], tight_lower[1], tight_lower[2]], [-0.5, -0.5, -0.5])
+    assert np.allclose(twt.vec3_floats(tight_lower), [-0.5, -0.5, -0.5])
     # Entirely inside a unit sphere, so every sample of that box is inside it.
     assert tight_field_wp.numpy().max() < 0.0
 
@@ -1650,7 +1660,7 @@ def test_winding_number_random(request: pytest.FixtureRequest, mesh_name: str, t
     winding_igl = igl.winding_number(vertices_np, faces_np, query_np)
     query_wp = points_to_warp(query_np, mesh_wp.device)
     winding_wp = tw.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=tiled)
-    assert np.allclose(winding_wp.numpy(), winding_igl.ravel(), rtol=1e-5, atol=1e-5)
+    assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
@@ -1734,7 +1744,7 @@ def test_winding_number_tiled_matches_igl_on_both_devices(kernel_device: str) ->
     )
     query_wp = points_to_warp(query_np, kernel_device)
     winding_wp = tw.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=True)
-    assert np.allclose(winding_wp.numpy(), winding_igl.ravel(), rtol=1e-5, atol=1e-5)
+    assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
 def test_winding_number_inside_outside(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1771,18 +1781,23 @@ _PROXIMITY_EMPTY_POINTS_CASES = [
     [case[1] for case in _PROXIMITY_EMPTY_POINTS_CASES],
     ids=[case[0] for case in _PROXIMITY_EMPTY_POINTS_CASES],
 )
-def test_proximity_empty_points_is_a_noop(device: str, proximity_fn) -> None:
+def test_proximity_empty_points_is_a_noop(
+    device: str,
+    proximity_fn: Callable[
+        [wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]], tuple[wp.array[object], ...]
+    ],
+) -> None:
     """Not a library comparison: zero query points give an all-empty result for every operator."""
     vertices = wp.array(np.zeros((3, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces = wp.array([0, 1, 2], dtype=wp.int32, device=device)
-    points = wp.empty(0, dtype=wp.vec3, device=device)
+    points = warp_empty(0, wp.vec3, device)
     for result_wp in proximity_fn(vertices, faces, points):
         assert result_wp.shape == (0,)
 
 
 def test_winding_number_empty_faces(device: str) -> None:
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    faces = warp_empty(0, wp.int32, device)
     points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     winding_wp = tw.proximity.winding_number(vertices, faces, points)
     assert winding_wp.shape == (2,)

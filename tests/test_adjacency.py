@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
+
 import igl
 import numpy as np
 import pytest
@@ -19,6 +21,7 @@ from tests.conversions import (
     numpy_to_meshlib,
     trimesh_to_meshlib,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 # Not ``conftest.MESHES``: ``cave_cube`` is dropped because its coplanar box faces make every
@@ -135,7 +138,7 @@ def test_face_adjacency_empty(device: str) -> None:
     ],
 )
 def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
-    device: str, function: object
+    device: str, function: Callable[..., object]
 ) -> None:
     """
     Not a library comparison: no reference takes a precomputed face-adjacency pair at all.
@@ -149,8 +152,8 @@ def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
     ``face_adjacency_unshared`` takes ``faces`` first and the other two take ``vertices, faces``,
     which is why the call goes through ``*args`` rather than a shared signature.
     """
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     adjacency_wp = twt.empty_2d((0, 2), wp.int32, device=device)
     args = (
         (faces_wp,) if function is tw.adjacency.face_adjacency_unshared else (vertices_wp, faces_wp)
@@ -203,7 +206,7 @@ def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
             tw.adjacency.face_adjacency_convex(mesh_wp.points, mesh_wp.indices).numpy(),
         ),
     ):
-        assert supplied_np.shape[0] == int(adjacency_wp.shape[0])
+        assert len(supplied_np) == int(adjacency_wp.shape[0])
         assert np.array_equal(supplied_np, derived_np)
 
 
@@ -582,7 +585,7 @@ def test_face_adjacency_angles_precomputed(request: pytest.FixtureRequest, mesh_
 
 def test_face_adjacency_angles_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     angles_wp = tw.adjacency.face_adjacency_angles(vertices_wp, faces_wp)
     assert angles_wp.shape == (0,)
 
@@ -684,7 +687,7 @@ def test_face_adjacency_projections_precomputed(
 
 def test_face_adjacency_projections_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     projections_wp = tw.adjacency.face_adjacency_projections(vertices_wp, faces_wp)
     assert projections_wp.shape == (0,)
 
@@ -843,7 +846,7 @@ def test_face_adjacency_convex_precomputed(request: pytest.FixtureRequest, mesh_
 
 def test_face_adjacency_convex_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     convex_wp = tw.adjacency.face_adjacency_convex(vertices_wp, faces_wp)
     assert convex_wp.shape == (0,)
 
@@ -921,7 +924,7 @@ def test_face_connected_component_labels_matches_igl(
     assert same_partition(labels_doubled_wp.numpy(), _face_labels_np(doubled_np))
 
 
-def _face_labels_ml(components_ml: object, n_faces: int) -> np.ndarray:
+def _face_labels_ml(components_ml: Iterable[mm.BitSet], n_faces: int) -> np.ndarray:
     """Decode MeshLib's vector of ``FaceBitSet`` components into a per-face label array."""
     labels_np = np.full(n_faces, -1, dtype=np.int64)
     for label, component_ml in enumerate(components_ml):
@@ -962,6 +965,7 @@ def test_face_connected_component_labels_matches_meshlib(
 
     # Two disjoint copies, the case a constant labelling would pass.
     doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
+    assert isinstance(doubled_tm, tm.Trimesh)
     doubled_wp = wp.array(
         np.ascontiguousarray(doubled_tm.faces.reshape(-1), dtype=np.int32),
         dtype=wp.int32,
@@ -1017,6 +1021,7 @@ def test_face_connected_component_labels_matches_pyvista(
     assert same_partition(labels_wp.numpy(), labels_pv)
 
     doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
+    assert isinstance(doubled_tm, tm.Trimesh)
     doubled_wp = wp.array(
         np.ascontiguousarray(doubled_tm.faces.reshape(-1), dtype=np.int32),
         dtype=wp.int32,

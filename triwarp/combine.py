@@ -62,7 +62,7 @@ def concatenate(
     [`trimesh.util.concatenate`][]
     """
     if len(meshes_data) == 0:
-        return wp.empty(0, dtype=wp.vec3), wp.empty(0, dtype=wp.int32)
+        return (_launch.empty(0, dtype=wp.vec3), _launch.empty(0, dtype=wp.int32))
 
     require_same_device(meshes_data=meshes_data)
     device = meshes_data[0][0].device

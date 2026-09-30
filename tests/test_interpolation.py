@@ -9,7 +9,8 @@ import trimesh as tm
 import warp as wp
 
 import triwarp as tw
-from tests.conversions import points_to_pyvista, points_to_warp, trimesh_to_pyvista
+import triwarp.typing as twt
+from tests.conversions import points_to_pyvista, points_to_warp, trimesh_to_pyvista, warp_empty
 
 
 @pytest.mark.parity("average_onto_faces", "igl", "pyvista")
@@ -109,9 +110,11 @@ def test_average_from_edges_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]
         faces_np, edges_igl, orientation_igl, edge_values_np
     )
 
-    edges_wp = wp.array(edges_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device)
-    orientation_wp = wp.array(
-        orientation_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device
+    edges_wp = twt.as_array2d(
+        wp.array(edges_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device), wp.int32
+    )
+    orientation_wp = twt.as_array2d(
+        wp.array(orientation_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device), wp.int32
     )
     edge_values_wp = wp.array(edge_values_np, dtype=wp.float32, device=mesh_wp.device)
     vertex_values_wp = tw.interpolation.average_from_edges_onto_vertices(
@@ -369,7 +372,7 @@ def test_transfer_onto_vertices_length_mismatch(device: str):
 
 def test_transfer_onto_vertices_empty(device: str):
     source_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    source_faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    source_faces_wp = warp_empty(0, wp.int32, device)
     values_wp = wp.zeros(0, dtype=wp.float32, device=device)
     targets_wp = wp.zeros(3, dtype=wp.vec3, device=device)
     transferred_wp, distance_wp = tw.interpolation.transfer_onto_vertices(
@@ -532,7 +535,9 @@ def test_interpolate_from_points_invalid(device: str):
     )
     query_wp = points_to_warp(query_np, device)
     with pytest.raises(ValueError, match="one entry per source point"):
-        tw.interpolation.interpolate_from_points(source_wp, values_wp[:10], query_wp, 0.2)
+        tw.interpolation.interpolate_from_points(
+            source_wp, twt.as_dense(values_wp[:10]), query_wp, 0.2
+        )
     with pytest.raises(ValueError, match="radius must be positive"):
         tw.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.0)
     with pytest.raises(ValueError, match="k must be positive"):
@@ -540,8 +545,8 @@ def test_interpolate_from_points_invalid(device: str):
 
 
 def test_interpolate_from_points_empty(device: str):
-    empty_points = wp.empty(0, dtype=wp.vec3, device=device)
-    empty_values = wp.empty(0, dtype=wp.float32, device=device)
+    empty_points = warp_empty(0, wp.vec3, device)
+    empty_values = warp_empty(0, wp.float32, device)
     query_wp = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
     interpolated_wp = tw.interpolation.interpolate_from_points(
         empty_points, empty_values, query_wp, 0.5, null_value=3.0

@@ -66,6 +66,8 @@ soup's dedup. Subtract it before quoting a ratio.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -90,9 +92,9 @@ _NON_MANIFOLD_COUNTS = [0, 1_024]
 _MERGE_EPSILONS = [0.0, 1e-6]
 
 _defect_np_cache: dict[tuple[str, float], np.ndarray] = {}
-_defect_wp_cache: dict[tuple[str, str, float], wp.array] = {}
-_nonmanifold_cache: dict[tuple[str, str, int], wp.array] = {}
-_soup_cache: dict[tuple[str, str], tuple] = {}
+_defect_wp_cache: dict[tuple[str, str, float], wp.array[wp.int32]] = {}
+_nonmanifold_cache: dict[tuple[str, str, int], wp.array[wp.int32]] = {}
+_soup_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = {}
 
 
 def _new_meshset_pml(vertices_np: np.ndarray, faces_np: np.ndarray) -> ml.MeshSet:
@@ -330,7 +332,8 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
             mesh_o3d = o3d.geometry.TriangleMesh(vertices_o3d, o3d.utility.Vector3iVector(faces_np))
             clusters_o3d, counts_o3d, _areas_o3d = mesh_o3d.cluster_connected_triangles()
             small_np = np.asarray(counts_o3d)[np.asarray(clusters_o3d)] < min_faces
-            mesh_o3d.remove_triangles_by_mask(small_np)
+            # pybind11 takes the bool array as the sequence its stub spells.
+            mesh_o3d.remove_triangles_by_mask(small_np)  # pyright: ignore[reportArgumentType]
             mesh_o3d.remove_unreferenced_vertices()
             return mesh_o3d
 
@@ -850,7 +853,7 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
 @pytest.mark.benchaxis("tangle")
 @pytest.mark.benchlibs("triwarp", "meshlib")
 @pytest.mark.parametrize("method", ["local", "voxel"])
-def test_fix_self_intersections(bench_case: BenchCase, method: str) -> None:
+def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", "voxel"]) -> None:
     """
     Repair a genuine self-intersection, by cutting-and-refilling or by rebuilding.
 

@@ -123,12 +123,11 @@ import math
 import warnings
 import weakref
 from collections.abc import Sequence
-from typing import Any, Literal, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast, overload
 
 import numpy as np
 import warp as wp
 import warp.optim.linear as wpl
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -140,6 +139,9 @@ from triwarp.kernels import linalg as kernel_linalg
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels.algorithms import conjugate_gradient as kernel_cg
 from triwarp.kernels.algorithms import multigrid as kernel_mg
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
 
 # Relative residual tolerance used when a caller does not supply one.
 CG_TOLERANCE = 1e-10
@@ -273,7 +275,7 @@ CG_MULTIGRID_DOMINANCE = 2.15
 
 
 def min_quad_with_fixed(
-    q: wps.BsrMatrix[wp.float64],
+    q: twt.SparseMatrix,
     fixed_mask: wp.array[wp.bool],
     fixed_values: twt.Array2dFloat,
     *,
@@ -392,12 +394,12 @@ def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], i
 
 
 def assemble_interior_system(
-    q: wps.BsrMatrix[wp.float64],
+    q: twt.SparseMatrix,
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     fixed_values: twt.Array2dFloat,
     n_free: int,
-) -> tuple[wps.BsrMatrix[wp.float64], twt.Array2dFloat]:
+) -> tuple[twt.BsrMatrix[wp.float64], twt.Array2dFloat]:
     """
     Extract the free-free block ``Q_uu`` and the constant right-hand side ``-Q_ub bc``.
 
@@ -480,7 +482,7 @@ def assemble_interior_system(
 
 
 def solve_spd(
-    matrix: wps.BsrMatrix[Any],
+    matrix: twt.SparseMatrix,
     rhs: twt.ArrayNd,
     solution: twt.ArrayNd,
     *,
@@ -596,12 +598,13 @@ def solve_spd(
         M=wpl.preconditioner(matrix, "diag") if preconditioner is None else preconditioner,
         check_every=_supported_check_every(check_every),
     )
-    _warn_if_not_converged(result, iteration_cap, name)
-    return cast("tuple[int, float, float]", result)
+    converged = cast("tuple[int, float, float]", result)
+    _warn_if_not_converged(converged, iteration_cap, name)
+    return converged
 
 
 def _batched_preconditioner_kind(
-    matrix: wps.BsrMatrix[Any], rhs: twt.ArrayNd, preconditioner: wpl.LinearOperator | None
+    matrix: twt.SparseMatrix, rhs: twt.ArrayNd, preconditioner: wpl.LinearOperator | None
 ) -> str | None:
     """
     Name the preconditioner ``solve_spd`` can hand ``_BatchedCg``, or ``None`` to keep ``wpl.cg``.
@@ -620,7 +623,10 @@ def _batched_preconditioner_kind(
         return None
     if preconditioner is None:
         return "diag"
-    tag = getattr(preconditioner, "_triwarp_preconditioner", None)
+    try:
+        tag = _PRECONDITIONER_TAGS.get(preconditioner)
+    except TypeError:  # a caller's operator that cannot be weakly referenced is not one of ours
+        tag = None
     if tag is None or tag[1]() is not matrix:
         return None
     # A ``float32`` system stores its vectors at that precision and has only the Jacobi apply.
@@ -630,7 +636,7 @@ def _batched_preconditioner_kind(
 
 
 def _solve_spd_batched(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.SparseMatrix,
     rhs: wp.array[wp.float64],
     solution: wp.array[wp.float64],
     *,
@@ -647,7 +653,7 @@ def _solve_spd_batched(
     reading the three results back once after the replay answers, where running the cadence from
     the host would issue every iteration's launches from Python.
     """
-    if matrix.values.dtype == wp.mat22d:
+    if twt.has_blocks(matrix, wp.mat22d):
         # A ``wp.mat22d`` operator is solved as the scalar CSR over its interleaved unknowns, kept
         # per operator like the solver: the right-hand side and solution are the same bytes viewed
         # as ``float64``. Warp's blocked Jacobi inverts each diagonal block's diagonal
@@ -684,12 +690,13 @@ def _solve_spd_batched(
 
 
 # ``_scalar_expansion``'s results, keyed weakly by the block operator they expand.
-_EXPANSION_CACHE: weakref.WeakKeyDictionary[Any, tuple[Any, wps.BsrMatrix[wp.float64]]] = (
-    weakref.WeakKeyDictionary()
-)
+_EXPANSION_CACHE: weakref.WeakKeyDictionary[
+    twt.SparseMatrix,
+    tuple[tuple[tuple[int, int, int], tuple[object, ...]], twt.BsrMatrix[wp.float64]],
+] = weakref.WeakKeyDictionary()
 
 
-def _scalar_expansion(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[wp.float64]:
+def _scalar_expansion(matrix: twt.SparseMatrix) -> twt.BsrMatrix[wp.float64]:
     """
     Expand a compact ``wp.mat22d`` operator into its ``float64`` CSR, once per operator.
 
@@ -728,12 +735,12 @@ def _scalar_expansion(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[wp.float64]:
     return expanded
 
 
-def _as_scalar_view(vectors: wp.array[Any]) -> wp.array[wp.float64]:
+def _as_scalar_view(vectors: twt.ArrayNd) -> wp.array[wp.float64]:
     """View a contiguous ``wp.vec2d`` array's bytes as a flat ``float64`` array, with no copy."""
     return vectors.view(wp.float64).flatten()
 
 
-def jacobi_preconditioner(matrix: wps.BsrMatrix[Any]) -> wpl.LinearOperator:
+def jacobi_preconditioner(matrix: twt.SparseMatrix) -> wpl.LinearOperator:
     """
     Jacobi preconditioner for a symmetric positive-definite operator.
 
@@ -775,7 +782,7 @@ def jacobi_preconditioner(matrix: wps.BsrMatrix[Any]) -> wpl.LinearOperator:
 
 
 def solve_spd_columns(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -935,7 +942,7 @@ def solve_spd_columns(
 
 
 def spd_column_solver(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -1027,7 +1034,7 @@ def spd_column_solver(
 
 
 def solve_spd_settled(
-    matrix: wps.BsrMatrix[Any],
+    matrix: twt.SparseMatrix,
     rhs: twt.ArrayNd,
     solution: twt.ArrayNd,
     *,
@@ -1108,7 +1115,7 @@ def solve_spd_settled(
     columns = rhs.ndim == 2
     if columns:
         if (
-            matrix.values.dtype != wp.float64
+            not twt.has_blocks(matrix, wp.float64)
             or rhs.dtype != wp.float64
             or preconditioner is not None
         ):
@@ -1130,7 +1137,7 @@ def solve_spd_settled(
             )
         n_columns, n_rows = 1, int(rhs.shape[0])
         rhs_flat, solution_flat = rhs, solution
-        if matrix.values.dtype == wp.mat22d:
+        if twt.has_blocks(matrix, wp.mat22d):
             # Solved as its scalar expansion, as ``solve_spd`` does (``_solve_spd_batched``).
             matrix = _scalar_expansion(matrix)
             rhs_flat, solution_flat = _as_scalar_view(rhs), _as_scalar_view(solution)
@@ -1146,12 +1153,12 @@ def solve_spd_settled(
         pooled=True,
     )
     solver.solve(rhs_flat, solution_flat)
-    return solver._iterations
+    return solver.iterations
 
 
 @overload
 def _cg_columns(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -1164,7 +1171,7 @@ def _cg_columns(
 ) -> tuple[int, float, float]: ...
 @overload
 def _cg_columns(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -1176,7 +1183,7 @@ def _cg_columns(
     caller: str,
 ) -> _BatchedCg | _AdaptiveCg: ...
 def _cg_columns(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -1287,22 +1294,22 @@ def _cg_columns(
 
 
 def _one_block_eligible(
-    matrix: wps.BsrMatrix[Any], n: int, preconditioner: str | SquaredLaplacianPreconditioner
-) -> bool:
+    matrix: twt.SparseMatrix, n: int, preconditioner: str | SquaredLaplacianPreconditioner
+) -> TypeGuard[twt.BsrMatrix[wp.float64]]:
     """Whether a solve can run as ``_cg_one_block``: small, compact ``float64``, a fitting one."""
     fitting = isinstance(preconditioner, SquaredLaplacianPreconditioner) or preconditioner == "diag"
     return (
         fitting
         and 0 < n <= CG_ONE_BLOCK_MAX_ROWS
-        and matrix.values.dtype == wp.float64
+        and twt.has_blocks(matrix, wp.float64)
         and matrix.row_counts is None
     )
 
 
 def _cg_one_block(
-    matrix: wps.BsrMatrix[wp.float64],
-    rhs: wp.array[wp.float64],
-    solution: wp.array[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
+    rhs: twt.ArrayNdFloat,
+    solution: twt.ArrayNdFloat,
     n_columns: int,
     *,
     tol: float,
@@ -1325,9 +1332,9 @@ def _cg_one_block(
     factor = factor_t = None
     factor_values = factor_t_values = steps = narrow = None
     if isinstance(preconditioner, SquaredLaplacianPreconditioner):
-        factor, factor_t = preconditioner._factor, preconditioner._factor_t
+        factor, factor_t = preconditioner._factor, preconditioner._factor_t  # pyright: ignore[reportPrivateUsage]
         factor_values, factor_t_values = preconditioner.narrowed()
-        steps = preconditioner._steps
+        steps = preconditioner._steps  # pyright: ignore[reportPrivateUsage]
         narrow = _launch.empty(
             kernel_cg.ONE_BLOCK_NARROW_SLOTS * total, dtype=wp.float32, device=device
         )
@@ -1382,7 +1389,7 @@ def _cg_one_block(
 
 
 def _cg_columns_auto(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     rhs: twt.Array2dFloat,
     solution: twt.Array2dFloat,
     *,
@@ -1462,7 +1469,7 @@ def _cg_columns_auto(
     )
 
 
-def _wants_multigrid(matrix: wps.BsrMatrix[wp.float64]) -> bool:
+def _wants_multigrid(matrix: twt.BsrMatrix[wp.float64]) -> bool:
     """
     Whether ``preconditioner="auto"`` should skip its probe and build a hierarchy outright.
 
@@ -1479,7 +1486,7 @@ def _wants_multigrid(matrix: wps.BsrMatrix[wp.float64]) -> bool:
     return n_rows >= CG_MULTIGRID_LARGE_UNKNOWNS and dominance > CG_MULTIGRID_SIZE_FLOOR
 
 
-def _offdiagonal_dominance(matrix: wps.BsrMatrix[wp.float64]) -> float:
+def _offdiagonal_dominance(matrix: twt.BsrMatrix[wp.float64]) -> float:
     """
     ``max_i sum_{j != i} |A_ij| / A_ii`` over the rows of a scalar-block CSR operator.
 
@@ -1520,7 +1527,9 @@ def _cg_residual_and_tolerance(result: tuple[Any, ...]) -> tuple[float, float]:
     return math.sqrt(float(residual_np[worst])), math.sqrt(float(tolerance_np[worst]))
 
 
-def _read_pair(first: wp.array[Any], second: wp.array[Any]) -> tuple[Any, Any]:
+def _read_pair(
+    first: wp.array[wp.float64], second: wp.array[wp.float64]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """
     Read two same-length ``float64`` device arrays back, in one copy when they are adjacent.
 
@@ -1528,6 +1537,8 @@ def _read_pair(first: wp.array[Any], second: wp.array[Any]) -> tuple[Any, Any]:
     (in either order), so the span covering both is one contiguous array and one readback.
     """
     n = int(first.shape[0])
+    first_ptr = first.ptr or 0
+    second_ptr = second.ptr or 0
     itemsize = 8
     if (
         first.dtype == wp.float64
@@ -1536,11 +1547,11 @@ def _read_pair(first: wp.array[Any], second: wp.array[Any]) -> tuple[Any, Any]:
         and first.device == second.device
         and first.is_contiguous
         and second.is_contiguous
-        and abs(int(second.ptr) - int(first.ptr)) == n * itemsize
+        and abs(second_ptr - first_ptr) == n * itemsize
     ):
-        low = min(int(first.ptr), int(second.ptr))
+        low = min(first_ptr, second_ptr)
         both = wp.array(ptr=low, shape=(2 * n,), dtype=wp.float64, device=first.device).numpy()
-        if int(first.ptr) == low:
+        if first_ptr == low:
             return both[:n], both[n:]
         return both[n:], both[:n]
     return first.numpy(), second.numpy()
@@ -1564,7 +1575,7 @@ class _AdaptiveCg:
 
     def __init__(
         self,
-        matrix: wps.BsrMatrix[wp.float64],
+        matrix: twt.BsrMatrix[wp.float64],
         rhs: twt.Array2dFloat,
         solution: twt.Array2dFloat,
         *,
@@ -1675,7 +1686,7 @@ class _BatchedCg:
 
     def __init__(
         self,
-        matrix: wps.BsrMatrix[wp.float64],
+        matrix: twt.CsrMatrix,
         rhs: twt.Array2dFloat | None,
         solution: twt.Array2dFloat,
         *,
@@ -1695,7 +1706,7 @@ class _BatchedCg:
         if own_storage:
             matrix = _owned_copy(matrix)
             if isinstance(preconditioner, SquaredLaplacianPreconditioner):
-                preconditioner = preconditioner._owned_copy()
+                preconditioner = preconditioner._owned_copy()  # pyright: ignore[reportPrivateUsage]
         self._owns_storage = own_storage
         self._matrix = matrix
         self._n_columns, self._n = int(solution.shape[0]), int(solution.shape[1])
@@ -1777,11 +1788,11 @@ class _BatchedCg:
         head = _launch.zeros(_INT_WORDS + 10 * self._n_columns, dtype=wp.float64, device=device)
         self._head = twt.as_dense(head[: _INT_WORDS + 2 * self._n_columns])
         scalars = twt.as_dense(head[_INT_WORDS:]).reshape((10, self._n_columns))
-        self._residual_tolerance = twt.as_array2d(scalars[0:2], wp.float64)
+        self._residual_tolerance = twt.as_array2d(twt.as_dense(scalars[0:2]), wp.float64)
         self._atol_sq = twt.as_dense(scalars[0])
-        self._dots = twt.as_array2d(scalars[1:3], wp.float64)
+        self._dots = twt.as_array2d(twt.as_dense(scalars[1:3]), wp.float64)
         self._dots_rz = twt.as_dense(scalars[1])
-        self._coefficients = twt.as_array2d(scalars[3:6], wp.float64)
+        self._coefficients = twt.as_array2d(twt.as_dense(scalars[3:6]), wp.float64)
         self._gamma_old, self._alpha_old, self._gamma_new, self._alpha_new = (
             twt.as_dense(scalars[row]) for row in range(6, 10)
         )
@@ -1793,9 +1804,9 @@ class _BatchedCg:
         )
         # A view by pointer holds no reference to its storage; this one keeps ``head`` alive for as
         # long as it -- or any slice of it handed to a caller -- is.
-        self._ints._ref = head
+        self._ints._ref = head  # pyright: ignore[reportPrivateUsage]
         self._state = twt.as_dense(self._ints[: kernel_array.LOOP_STATE_SIZE])
-        self._iterations = twt.as_dense(self._ints[kernel_array.LOOP_STATE_SIZE :])
+        self.iterations = twt.as_dense(self._ints[kernel_array.LOOP_STATE_SIZE :])
         # The live rows of ``u`` and ``w`` per column, for ``bsr_mv`` on the heavy-row path.
         self._uw_columns = [
             (
@@ -1814,8 +1825,11 @@ class _BatchedCg:
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
             self._cycle = preconditioner.bind(self._n_columns, self._stride)
         elif preconditioner == "chebyshev":
+            # Only ``float64`` systems get a non-Jacobi one (``_batched_preconditioner_kind``).
+            assert twt.has_blocks(matrix, wp.float64)
             self._cycle = _JacobiChebyshev(matrix).bind(self._n_columns, self._stride)
         elif preconditioner == "multigrid":
+            assert twt.has_blocks(matrix, wp.float64)
             hierarchy = _multigrid_hierarchy(matrix, 0)
             if hierarchy is not None:
                 self._cycle = _MultigridCycle(
@@ -1841,7 +1855,7 @@ class _BatchedCg:
             self._scaled = self._cycle.scaled
         # The caller's right-hand side at pitch ``n``, re-read by ``_initialize`` on every call. A
         # solver built without one (``_cached_solver``'s) is handed it by ``solve``.
-        self._rhs_flat: wp.array[wp.float64] | None = None if rhs is None else rhs.flatten()
+        self._rhs_flat: twt.ArrayNdFloat | None = None if rhs is None else rhs.flatten()
         # The device-side loop's recorded graph: ``_seed`` -- which resets the loop condition --
         # then the loop. Every launch in both reads buffers this state owns and never rebinds, so
         # one recording serves every call: re-recording it per call would repay the capture of
@@ -1865,9 +1879,7 @@ class _BatchedCg:
             )
 
     def refresh(
-        self,
-        matrix: wps.BsrMatrix[wp.float64],
-        preconditioner: str | SquaredLaplacianPreconditioner = "diag",
+        self, matrix: twt.CsrMatrix, preconditioner: str | SquaredLaplacianPreconditioner = "diag"
     ) -> None:
         """
         Write ``matrix`` into this pooled state's own operator storage, and re-derive from it.
@@ -1914,7 +1926,7 @@ class _BatchedCg:
             self._cycle.owner.refit()
         if isinstance(preconditioner, SquaredLaplacianPreconditioner):
             assert isinstance(self._cycle, _SquaredLaplacianApply)
-            self._cycle.owner._assign(preconditioner)
+            self._cycle.owner._assign(preconditioner)  # pyright: ignore[reportPrivateUsage]
 
     def _settle_check(self) -> None:
         """Issue the settle monitor's two launches, after a block of ``check_rounds`` rounds."""
@@ -1962,7 +1974,7 @@ class _BatchedCg:
         grid = (self._n_columns, self._blocks)
         if self._heavy:
             for u_column, w_column in self._uw_columns:
-                wps.bsr_mv(self._matrix, u_column, w_column, tile_size=self._mv_tile)
+                twt.bsr_mv(self._matrix, u_column, w_column, tile_size=self._mv_tile)
             _launch.launch_tiled(
                 kernel_cg.CG_ROUND_DOTS[self._dtype],
                 dim=grid,
@@ -2018,7 +2030,7 @@ class _BatchedCg:
                     self._gamma_new,
                     self._alpha_new,
                     self._dots,
-                    self._iterations,
+                    self.iterations,
                 ],
                 block_dim=tile,
                 device=self._device,
@@ -2057,7 +2069,7 @@ class _BatchedCg:
                 self._gamma_new,
                 self._alpha_new,
                 self._dots,
-                self._iterations,
+                self.iterations,
             ],
             block_dim=tile,
             device=self._device,
@@ -2067,7 +2079,7 @@ class _BatchedCg:
         elif self._cycle is not None:
             self._cycle.apply(self._r, self._u)
 
-    def _initialize(self, initial: wp.array[Any] | None) -> None:
+    def _initialize(self, initial: twt.ArrayNdFloat | None) -> None:
         """
         Seed the residual from the caller's operands: the one launch that reads them.
 
@@ -2126,13 +2138,7 @@ class _BatchedCg:
                 wp.int32(self._blocks),
                 self._partials,
             ],
-            outputs=[
-                self._atol_sq,
-                self._gamma_new,
-                self._alpha_new,
-                self._iterations,
-                self._state,
-            ],
+            outputs=[self._atol_sq, self._gamma_new, self._alpha_new, self.iterations, self._state],
             block_dim=tile,
             device=self._device,
         )
@@ -2143,7 +2149,7 @@ class _BatchedCg:
         if self._settle is not None:
             _launch.zero_(self._settle_state)
 
-    def __call__(self, initial: wp.array[Any] | None = None):
+    def __call__(self, initial: twt.ArrayNdFloat | None = None):
         """
         Run the solve, returning ``warp.optim.linear.cg``'s three values on its own terms.
 
@@ -2171,12 +2177,13 @@ class _BatchedCg:
             body = self._iteration if self._settle is None else self._settle_block
             with wp.ScopedCapture(self._device) as capture:
                 self._seed()
-                wp.capture_while(condition, body)
+                wp.capture_while(cast("wp.array[int]", condition), body)
             self._graph = capture.graph
+        assert self._graph is not None
         wp.capture_launch(self._graph)
-        return self._iterations, self._dots_rz, self._atol_sq
+        return self.iterations, self._dots_rz, self._atol_sq
 
-    def solve(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]):
+    def solve(self, rhs: twt.ArrayNdFloat, solution: twt.ArrayNdFloat):
         """
         Run against a caller's operands through this solver's own solution buffer.
 
@@ -2226,7 +2233,7 @@ class _BatchedCg:
                 break
         return self.host_result(head)
 
-    def host_result(self, head: Any = None) -> tuple[int, float, float]:
+    def host_result(self, head: npt.NDArray[np.float64] | None = None) -> tuple[int, float, float]:
         """
         Read the last solve's ``(iterations, residual, tolerance)`` back as host scalars.
 
@@ -2249,20 +2256,20 @@ class _BatchedCg:
 _INT_WORDS = (kernel_array.LOOP_STATE_SIZE + 2) // 2
 
 
-def _head_ints(head: Any) -> Any:
+def _head_ints(head: npt.NDArray[np.float64]) -> npt.NDArray[np.int32]:
     """Reinterpret the head of a host read of a ``_BatchedCg``'s scalars as its ``int32`` words."""
     return np.ascontiguousarray(head[:_INT_WORDS]).view(np.int32)
 
 
 # ``_cached_solver``'s states, keyed weakly by the operator they solve, so a state -- its buffers,
 # its preconditioner and its recorded graph -- lives exactly as long as its operator does.
-_SOLVER_CACHE: weakref.WeakKeyDictionary[Any, dict[tuple[Any, ...], _BatchedCg]] = (
+_SOLVER_CACHE: weakref.WeakKeyDictionary[twt.SparseMatrix, dict[tuple[object, ...], _BatchedCg]] = (
     weakref.WeakKeyDictionary()
 )
 
 
 def _cached_solver(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.CsrMatrix,
     n_columns: int,
     *,
     tol: float,
@@ -2313,7 +2320,7 @@ def _cached_solver(
         float(tol),
         int(maxiter),
         int(check_every),
-        preconditioner._pool_shape() if squared else preconditioner,
+        preconditioner._pool_shape() if squared else preconditioner,  # pyright: ignore[reportPrivateUsage]
         settle,
         narrow_values,
     )
@@ -2382,14 +2389,14 @@ def _cached_solver(
 # ``_cached_solver``'s pooled states, one per operator shape and configuration, least recently
 # used first, and the shapes it has seen once (``_SHAPES_SEEN``), which a second fresh operator of
 # the same shape then pools on. Both bounded: a pooled state holds a copy of its operator.
-_SOLVER_POOL: dict[tuple[Any, ...], _BatchedCg] = {}
+_SOLVER_POOL: dict[tuple[object, ...], _BatchedCg] = {}
 _SOLVER_POOL_ENTRIES = 8
-_SHAPES_SEEN: set[tuple[Any, ...]] = set()
+_SHAPES_SEEN: set[tuple[object, ...]] = set()
 _SHAPES_SEEN_ENTRIES = 256
 
 
 def _poolable(
-    matrix: wps.BsrMatrix[Any], preconditioner: str | SquaredLaplacianPreconditioner
+    matrix: twt.SparseMatrix, preconditioner: str | SquaredLaplacianPreconditioner
 ) -> bool:
     """Whether ``_BatchedCg.refresh`` can rebuild everything a state derives from ``matrix``."""
     return (
@@ -2402,7 +2409,7 @@ def _poolable(
     )
 
 
-def _row_path(matrix: wps.BsrMatrix[Any], n: int, fold: bool) -> tuple[bool, int]:
+def _row_path(matrix: twt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     """
     ``_BatchedCg``'s mat-vec path for ``matrix``: whether it takes ``bsr_mv``, and at what tile.
 
@@ -2417,7 +2424,11 @@ def _row_path(matrix: wps.BsrMatrix[Any], n: int, fold: bool) -> tuple[bool, int
     return heavy, _HEAVY_ROW_TILE if entries > _HEAVY_ROW_TILED_ENTRIES * n else -1
 
 
-def _owned_copy(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[Any]:
+@overload
+def _owned_copy(matrix: twt.BsrMatrix[wp.float32]) -> twt.BsrMatrix[wp.float32]: ...
+@overload
+def _owned_copy(matrix: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]: ...
+def _owned_copy(matrix: twt.BsrMatrix[twt.Block]) -> twt.BsrMatrix[twt.Block]:
     """Build a ``BsrMatrix`` over copies of ``matrix``'s arrays, for a pooled state to own."""
     return _bsr_over(
         int(matrix.nrow),
@@ -2429,19 +2440,31 @@ def _owned_copy(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[Any]:
     )
 
 
-def _storage_alias(matrix: wps.BsrMatrix[Any]) -> wps.BsrMatrix[Any]:
+@overload
+def _storage_alias(matrix: twt.BsrMatrix[wp.float32]) -> twt.BsrMatrix[wp.float32]: ...
+@overload
+def _storage_alias(matrix: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]: ...
+def _storage_alias(matrix: twt.BsrMatrix[twt.Block]) -> twt.BsrMatrix[twt.Block]:
     """Build a second ``BsrMatrix`` over ``matrix``'s arrays, holding them and not ``matrix``."""
-    return bsr_with_values(matrix, matrix.values)
+    return _bsr_over(
+        int(matrix.nrow),
+        int(matrix.ncol),
+        matrix.offsets,
+        matrix.columns,
+        matrix.values,
+        int(matrix.nnz),
+        row_counts=matrix.row_counts,
+    )
 
 
-def _tag_preconditioner(
-    operator: wpl.LinearOperator, matrix: wps.BsrMatrix[Any], kind: str
-) -> None:
+def _tag_preconditioner(operator: wpl.LinearOperator, matrix: twt.SparseMatrix, kind: str) -> None:
     """Mark ``operator`` as this module's ``kind`` preconditioner for ``matrix`` (``solve_spd``)."""
-    operator._triwarp_preconditioner = (kind, weakref.ref(matrix))
+    _PRECONDITIONER_TAGS[operator] = (kind, weakref.ref(matrix))
 
 
-def bsr_with_values(matrix: wps.BsrMatrix[Any], values: wp.array[Any]) -> wps.BsrMatrix[Any]:
+def bsr_with_values(
+    matrix: twt.SparseMatrix, values: wp.array[twt.Block, Any]
+) -> twt.BsrMatrix[twt.Block]:
     """
     Build a sparse matrix with ``matrix``'s sparsity pattern and the given block values.
 
@@ -2489,13 +2512,20 @@ def bsr_with_values(matrix: wps.BsrMatrix[Any], values: wp.array[Any]) -> wps.Bs
     )
 
 
-# ``block_diag``'s results, keyed weakly by the first operator of the stack.
-_BLOCK_DIAG_CACHE: weakref.WeakKeyDictionary[
-    Any, dict[tuple[int, ...], tuple[tuple[Any, ...], wps.BsrMatrix[wp.float64]]]
+# The preconditioners this module built, keyed weakly: ``(kind, weak reference to the matrix they
+# were built for)``, which ``_batched_preconditioner_kind`` reads to recognize one.
+_PRECONDITIONER_TAGS: weakref.WeakKeyDictionary[
+    wpl.LinearOperator, tuple[str, weakref.ref[twt.SparseMatrix]]
 ] = weakref.WeakKeyDictionary()
 
 
-def block_diag(matrices: Sequence[wps.BsrMatrix[Any]]) -> wps.BsrMatrix[wp.float64]:
+# ``block_diag``'s results, keyed weakly by the first operator of the stack.
+_BLOCK_DIAG_CACHE: weakref.WeakKeyDictionary[
+    twt.SparseMatrix, dict[tuple[int, ...], tuple[tuple[object, ...], twt.BsrMatrix[wp.float64]]]
+] = weakref.WeakKeyDictionary()
+
+
+def block_diag(matrices: Sequence[twt.SparseMatrix]) -> twt.BsrMatrix[wp.float64]:
     """
     Stack square sparse operators into one block-diagonal ``float64`` operator.
 
@@ -2589,7 +2619,7 @@ def block_diag(matrices: Sequence[wps.BsrMatrix[Any]]) -> wps.BsrMatrix[wp.float
 
 
 def replicated_operator(
-    matrix: wps.BsrMatrix[wp.float64] | wpl.LinearOperator, n_columns: int
+    matrix: twt.BsrMatrix[wp.float64] | wpl.LinearOperator, n_columns: int
 ) -> wpl.LinearOperator:
     """
     Present one ``(n, n)`` operator as ``n_columns`` independent subproblems over a flat vector.
@@ -2644,7 +2674,7 @@ def replicated_operator(
     # Python-level array constructions to a solve — enough to erase the batching win outright, and
     # enough to keep the iteration from being captured as a CUDA graph. The cache is keyed on the
     # full memory layout, so a different buffer (or a re-slice of one) never aliases a stale view.
-    block_views: dict[tuple[int, tuple[int, ...], tuple[int, ...]], list[twt.ArrayNd]] = {}
+    block_views: dict[tuple[object, ...], list[twt.ArrayNd]] = {}
 
     def blocks(array: twt.ArrayNd) -> list[twt.ArrayNd]:
         key = (array.ptr, tuple(array.shape), tuple(array.strides))
@@ -2671,7 +2701,7 @@ def replicated_operator(
 
 
 def multigrid_preconditioner(
-    matrix: wps.BsrMatrix[wp.float64], n_columns: int = 1, *, seed: int = 0
+    matrix: twt.BsrMatrix[wp.float64], n_columns: int = 1, *, seed: int = 0
 ) -> wpl.LinearOperator:
     """
 
@@ -2771,7 +2801,7 @@ def multigrid_preconditioner(
 
 
 def chebyshev_preconditioner(
-    matrix: wps.BsrMatrix[wp.float64], n_columns: int = 1
+    matrix: twt.BsrMatrix[wp.float64], n_columns: int = 1
 ) -> wpl.LinearOperator:
     """
     Jacobi-Chebyshev polynomial preconditioner for a second-order symmetric definite operator.
@@ -2857,7 +2887,7 @@ def chebyshev_preconditioner(
 
 
 def squared_laplacian_preconditioner(
-    laplacian: wps.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
+    laplacian: twt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
 ) -> SquaredLaplacianPreconditioner:
     """
     Preconditioner for normal equations ``(MᵀM) x = Mᵀ b`` whose square block is ``D⁻¹ L``.
@@ -2942,19 +2972,19 @@ class SquaredLaplacianPreconditioner:
     """
 
     def __init__(
-        self, laplacian: wps.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
+        self, laplacian: twt.BsrMatrix[wp.float64], weight_sums: wp.array[wp.float64]
     ) -> None:
         """Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""
         self._n = int(laplacian.nrow)
         self._device = laplacian.values.device
-        self._factor = wps.bsr_copy(laplacian)
+        self._factor = twt.bsr_copy(laplacian)
         _launch.launch(
             kernel_mg.scale_rows,
             dim=self._n,
             inputs=[self._factor.offsets, weight_sums, wp.float64(1.0), 1, self._factor.values],
             device=self._device,
         )
-        self._factor_t = wps.bsr_transposed(self._factor)
+        self._factor_t = twt.bsr_transposed(self._factor)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
         # 2. With ``D`` the diagonal of ``L`` it is exactly 2 when every weight is non-negative and
         # exceeds it when a clamped cotangent weight is negative, as on a regular grid's near-right
@@ -2982,8 +3012,8 @@ class SquaredLaplacianPreconditioner:
     @classmethod
     def from_factors(
         cls,
-        factor: wps.BsrMatrix[wp.float64],
-        factor_t: wps.BsrMatrix[wp.float64],
+        factor: twt.BsrMatrix[wp.float64],
+        factor_t: twt.BsrMatrix[wp.float64],
         ratios: wp.array[wp.float64],
         narrowed: tuple[wp.array[wp.float32], wp.array[wp.float32]] | None = None,
     ) -> SquaredLaplacianPreconditioner:
@@ -3035,7 +3065,7 @@ class SquaredLaplacianPreconditioner:
             and self._factor_t.columns is self._factor.columns
         )
 
-    def _pool_shape(self) -> tuple[Any, ...]:
+    def _pool_shape(self) -> tuple[object, ...]:
         """Return what a pooled solver state's copy of this must match to be rewritten in place."""
         return (
             "squared",
@@ -3082,12 +3112,14 @@ class SquaredLaplacianPreconditioner:
         ``kernels/algorithms/conjugate_gradient.one_block_precondition`` for why in ``float32``.
         """
         if self._narrowed is None:
-            factor = twt.empty_1d(self._factor.values.size, wp.float32, device=self._device)
-            factor_t = twt.empty_1d(self._factor_t.values.size, wp.float32, device=self._device)
+            factor = _launch.empty(self._factor.values.size, dtype=wp.float32, device=self._device)
+            factor_t = _launch.empty(
+                self._factor_t.values.size, dtype=wp.float32, device=self._device
+            )
             wp.utils.array_cast(self._factor.values.flatten(), factor)
             wp.utils.array_cast(self._factor_t.values.flatten(), factor_t)
             self._narrowed = (factor, factor_t)
-        return cast("tuple[wp.array[wp.float32], wp.array[wp.float32]]", self._narrowed)
+        return self._narrowed
 
 
 class _ChebyshevApply:
@@ -3114,7 +3146,7 @@ class _ChebyshevApply:
 
     def _polynomial(
         self,
-        factor: wps.BsrMatrix[wp.float64],
+        factor: twt.BsrMatrix[wp.float64],
         source: wp.array[wp.float64],
         destination: wp.array[wp.float64],
         row_scale: wp.array[wp.float64] | None = None,
@@ -3164,7 +3196,7 @@ class _SquaredLaplacianApply(_ChebyshevApply):
     """``z = B Bᵀ r`` over the padded column blocks of one conjugate-gradient state."""
 
     def __init__(self, owner: SquaredLaplacianPreconditioner, n_columns: int, stride: int) -> None:
-        super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)
+        super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)  # pyright: ignore[reportPrivateUsage]
         self._owner = owner
         self._middle = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
 
@@ -3175,28 +3207,28 @@ class _SquaredLaplacianApply(_ChebyshevApply):
 
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
         """``destination = B Bᵀ source``: ``Bᵀ`` first, then ``B``."""
-        self._polynomial(self._owner._factor_t, source, self._middle)
-        self._polynomial(self._owner._factor, self._middle, destination)
+        self._polynomial(self._owner._factor_t, source, self._middle)  # pyright: ignore[reportPrivateUsage]
+        self._polynomial(self._owner._factor, self._middle, destination)  # pyright: ignore[reportPrivateUsage]
 
 
 class _JacobiChebyshev:
     """``A``, ``D⁻¹`` and the polynomial's steps in ``D⁻¹ A``, for one operator."""
 
-    def __init__(self, matrix: wps.BsrMatrix[wp.float64]) -> None:
-        self._n = int(matrix.nrow)
-        self._device = matrix.values.device
+    def __init__(self, matrix: twt.BsrMatrix[wp.float64]) -> None:
+        self.n = int(matrix.nrow)
+        self.device = matrix.values.device
         # ``A`` itself, not a row-scaled copy: each step scales its row's product by ``D⁻¹``, which
         # is the same arithmetic without the copy -- and ``bsr_copy`` is most of what a setup would
         # otherwise cost.
-        self._matrix = matrix
-        self._inverse_diagonal = _launch.empty(self._n, dtype=wp.float64, device=self._device)
-        self.ratios = twt.empty_1d(self._n, wp.float64, device=self._device)
+        self.matrix = matrix
+        self.inverse_diagonal = _launch.empty(self.n, dtype=wp.float64, device=self.device)
+        self.ratios = twt.empty_1d(self.n, wp.float64, device=self.device)
         _launch.launch(
             kernel_linalg.jacobi_dominance_rows,
-            dim=self._n,
+            dim=self.n,
             inputs=[matrix.offsets, matrix.columns, matrix.values],
-            outputs=[self._inverse_diagonal, self.ratios],
-            device=self._device,
+            outputs=[self.inverse_diagonal, self.ratios],
+            device=self.device,
         )
         # Gershgorin's discs for ``D⁻¹ A`` are centred on 1 with radius ``r_i = sum_j |A_ij| /
         # |A_ii|``, whatever the diagonal's sign. ``1 + max r`` bounds the spectrum from above, and
@@ -3208,14 +3240,14 @@ class _JacobiChebyshev:
         # So the interval is ``[max(min(CHEBYSHEV_INTERVAL / n, SQUARED_LAPLACIAN_INTERVAL_CAP),
         # 1 - r), 1 + r]`` with ``r = max(max_i r_i, 1e-3)``, computed on the device
         # (``_device_chebyshev_steps``).
-        self._steps = _device_chebyshev_steps(
+        self.steps = _device_chebyshev_steps(
             self.ratios, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False
         )
 
     def refit(self) -> None:
         """Refit the steps, in place, to ``ratios`` as a pooled state's ``refresh`` rewrote them."""
         _device_chebyshev_steps(
-            self.ratios, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=self._steps
+            self.ratios, CHEBYSHEV_INTERVAL, CHEBYSHEV_DEGREE, squared=False, out=self.steps
         )
 
     def bind(self, n_columns: int, stride: int) -> _JacobiChebyshevApply:
@@ -3227,7 +3259,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
     """``z = p(D⁻¹ A) D⁻¹ r`` over the padded column blocks of one conjugate-gradient state."""
 
     def __init__(self, owner: _JacobiChebyshev, n_columns: int, stride: int) -> None:
-        super().__init__(owner._n, n_columns, stride, owner._steps, owner._device)
+        super().__init__(owner.n, n_columns, stride, owner.steps, owner.device)
         self._owner = owner
         self._scaled = _launch.zeros(self._dofs, dtype=wp.float64, device=self._device)
 
@@ -3239,7 +3271,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
     @property
     def inverse_diagonal(self) -> wp.array[wp.float64]:
         """``D⁻¹``, length ``n``: what a caller writing ``scaled`` itself applies."""
-        return self._owner._inverse_diagonal
+        return self._owner.inverse_diagonal
 
     @property
     def scaled(self) -> wp.array[wp.float64]:
@@ -3249,7 +3281,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
     def apply_scaled(self, destination: wp.array[wp.float64]) -> None:
         """``destination = p(D⁻¹ A) scaled``, for a caller that has already written ``scaled``."""
         self._polynomial(
-            self._owner._matrix, self._scaled, destination, row_scale=self._owner._inverse_diagonal
+            self._owner.matrix, self._scaled, destination, row_scale=self._owner.inverse_diagonal
         )
 
     def apply(self, source: wp.array[wp.float64], destination: wp.array[wp.float64]) -> None:
@@ -3260,7 +3292,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
             inputs=[
                 wp.int32(self._n),
                 wp.int32(self._stride),
-                self._owner._inverse_diagonal,
+                self._owner.inverse_diagonal,
                 wp.float64(1.0),
                 source,
                 self._scaled,
@@ -3271,7 +3303,7 @@ class _JacobiChebyshevApply(_ChebyshevApply):
 
 
 def _device_chebyshev_steps(
-    ratios: wp.array[wp.float64],
+    ratios: wp.array[wp.float64, Any],
     interval: float,
     degree: int,
     *,
@@ -3394,17 +3426,17 @@ class _MultigridLevel:
         "x",
     )
 
-    def __init__(self, operator: wps.BsrMatrix[wp.float64]) -> None:
+    def __init__(self, operator: twt.BsrMatrix[wp.float64]) -> None:
         self.operator = operator
         self.n = int(operator.nrow)
-        self.prolongator = None
-        self.restrictor = None
+        self.prolongator: twt.BsrMatrix[wp.float64] | None = None
+        self.restrictor: twt.BsrMatrix[wp.float64] | None = None
         # ``omega D^-1``, the smoother's damping folded in (``_multigrid_damped_diagonal``).
-        self.inverse_diagonal = None
+        self.inverse_diagonal: wp.array[wp.float64] | None = None
 
 
 def _multigrid_hierarchy(
-    matrix: wps.BsrMatrix[wp.float64], seed: int
+    matrix: twt.BsrMatrix[wp.float64], seed: int
 ) -> tuple[list[_MultigridLevel], twt.ArrayNd] | None:
     """
     Coarsen ``matrix`` until a level is small enough to invert densely.
@@ -3424,7 +3456,7 @@ def _multigrid_hierarchy(
         # ``sqrt(|A_ii|)`` and the smoother wants ``1 / A_ii``. ``wps.bsr_get_diag`` is an
         # allocation *and* a launch, so extracting it once here rather than once per consumer saves
         # a redundant diagonal extraction per level.
-        diag = wps.bsr_get_diag(operator)
+        diag = twt.bsr_get_diag(operator)
         label, n_aggregates = _multigrid_aggregate(operator, diag, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
@@ -3436,9 +3468,9 @@ def _multigrid_hierarchy(
         level.prolongator = _multigrid_prolongator(
             operator, label, n_aggregates, level.inverse_diagonal
         )
-        level.restrictor = wps.bsr_transposed(level.prolongator)
+        level.restrictor = twt.bsr_transposed(level.prolongator)
         operator = _multigrid_prune(
-            wps.bsr_mm(level.restrictor, wps.bsr_mm(operator, level.prolongator))
+            twt.bsr_mm(level.restrictor, twt.bsr_mm(operator, level.prolongator))
         )
     coarse_inverse = _multigrid_dense_inverse(levels[-1].operator)
     if coarse_inverse is None:
@@ -3447,7 +3479,7 @@ def _multigrid_hierarchy(
 
 
 def _multigrid_aggregate(
-    matrix: wps.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
+    matrix: twt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
 ) -> tuple[wp.array[wp.int32], int]:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
@@ -3527,7 +3559,7 @@ def _multigrid_aggregate(
 
 
 def _multigrid_damped_diagonal(
-    matrix: wps.BsrMatrix[wp.float64], inverse_diagonal: wp.array[wp.float64], seed: int
+    matrix: twt.BsrMatrix[wp.float64], inverse_diagonal: wp.array[wp.float64], seed: int
 ) -> wp.array[wp.float64]:
     """
     ``omega D^-1``, with ``omega = 4/3 / rho`` and ``rho`` the spectral radius of ``D^-1 A``.
@@ -3582,11 +3614,11 @@ def _multigrid_damped_diagonal(
 
 
 def _multigrid_prolongator(
-    matrix: wps.BsrMatrix[wp.float64],
+    matrix: twt.BsrMatrix[wp.float64],
     label: wp.array[wp.int32],
     n_aggregates: int,
     damped_inverse_diagonal: wp.array[wp.float64],
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.float64]:
     """Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``."""
     device = matrix.device
     n = int(matrix.nrow)
@@ -3603,7 +3635,7 @@ def _multigrid_prolongator(
     )
     # Exactly one entry per row, so the CSR is written directly and its ``nnz`` is exact.
     tentative = _bsr_over(n, n_aggregates, offsets, columns, values, n)
-    smoothed = wps.bsr_mm(matrix, tentative)
+    smoothed = twt.bsr_mm(matrix, tentative)
     # Row-scale by ``-omega D^-1`` in place: one pass over the product's values, where a ``bsr_mm``
     # against a diagonal matrix would be a second sparse product.
     _launch.launch(
@@ -3612,10 +3644,10 @@ def _multigrid_prolongator(
         inputs=[smoothed.offsets, damped_inverse_diagonal, wp.float64(-1.0), 0, smoothed.values],
         device=device,
     )
-    return _multigrid_prune(wps.bsr_axpy(smoothed, tentative, alpha=1.0, beta=1.0))
+    return _multigrid_prune(twt.bsr_axpy(smoothed, tentative, alpha=1.0, beta=1.0))
 
 
-def _multigrid_prune(matrix: wps.BsrMatrix[wp.float64]) -> wps.BsrMatrix[wp.float64]:
+def _multigrid_prune(matrix: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]:
     """
     Drop a matrix's explicitly-zero entries, by rebuilding it from its own CSR.
 
@@ -3633,17 +3665,17 @@ def _multigrid_prune(matrix: wps.BsrMatrix[wp.float64]) -> wps.BsrMatrix[wp.floa
     directly here.
 
     !!! warning "``inplace=False`` does not mean the source is untouched"
-        ``wps.bsr_compress(m)`` at the documented default returns **``m`` itself**, pruned in place
+        ``twt.bsr_compress(m)`` at the documented default returns **``m`` itself**, pruned in place
         -- ``result is m`` and ``result.values.ptr == m.values.ptr``, with ``m.nnz_sync()`` reduced
         across the call. It returns ``src`` unchanged when there is nothing to prune, too. That is
         safe at both call sites here only because each passes a freshly built temporary
         (``bsr_mm(...)`` / ``bsr_axpy(...)``) that nothing else holds. **A caller that still needs
         the unpruned matrix must copy it first.**
     """
-    return cast("wps.BsrMatrix[wp.float64]", wps.bsr_compress(matrix, prune_numerical_zeros=True))
+    return twt.bsr_compress(matrix, prune_numerical_zeros=True)
 
 
-def _multigrid_dense_inverse(matrix: wps.BsrMatrix[wp.float64]) -> twt.ArrayNd | None:
+def _multigrid_dense_inverse(matrix: twt.BsrMatrix[wp.float64]) -> twt.ArrayNd | None:
     """
     Pseudo-inverse of the coarsest operator as a dense ``(n, n)`` device array, or ``None``.
 
@@ -3656,8 +3688,8 @@ def _multigrid_dense_inverse(matrix: wps.BsrMatrix[wp.float64]) -> twt.ArrayNd |
     """
     n = int(matrix.nrow)
     nnz = int(matrix.nnz_sync())
-    offsets = matrix.offsets.numpy()[: n + 1]
-    columns = matrix.columns.numpy()[:nnz]
+    offsets = cast("npt.NDArray[np.int32]", matrix.offsets.numpy())[: n + 1]
+    columns = cast("npt.NDArray[np.int32]", matrix.columns.numpy())[:nnz]
     values = matrix.values.numpy()[:nnz].astype(np.float64).reshape(nnz)
     dense = np.zeros((n, n), dtype=np.float64)
     # A triplet build coalesces duplicates, so the CSR has one entry per position and a plain
@@ -3735,7 +3767,7 @@ class _MultigridCycle:
 
     def _matvec(
         self,
-        matrix: wps.BsrMatrix[wp.float64],
+        matrix: twt.BsrMatrix[wp.float64] | None,
         dim: int,
         n_rows: int,
         x_stride: int,
@@ -3744,6 +3776,7 @@ class _MultigridCycle:
         y: wp.array[wp.float64],
         accumulate: bool = False,
     ) -> None:
+        assert matrix is not None
         _launch.launch(
             kernel_mg.csr_matvec,
             dim=dim,
@@ -3898,11 +3931,11 @@ def _bsr_over(
     n_cols: int,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
-    values: wp.array[Any],
+    values: wp.array[twt.Block, Any],
     nnz: int,
     *,
     row_counts: wp.array[wp.int32] | None = None,
-) -> wps.BsrMatrix[Any]:
+) -> twt.BsrMatrix[twt.Block]:
     """
     Build a ``BsrMatrix`` over arrays that already hold its storage, allocating nothing.
 
@@ -3912,7 +3945,7 @@ def _bsr_over(
     every one of them to be replaced; ``notify_nnz_changed`` is still Warp's documented entry
     point for storage assigned from outside ``warp.sparse``, and records ``nnz``.
     """
-    matrix = wps.bsr_matrix_t(values.dtype)()
+    matrix = twt.bsr_matrix_t(values.dtype)()
     matrix.nrow = n_rows
     matrix.ncol = n_cols
     matrix.offsets = offsets

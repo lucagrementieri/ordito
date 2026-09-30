@@ -69,26 +69,30 @@ from __future__ import annotations
 
 import math
 import warnings
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pymeshlab as ml
 import pytest
 import trimesh as tm
 import warp as wp
-import warp.sparse as wps
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, face_bitset_ml, mesh_ml_from_numpy, skip_larger_than
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 _ITERATIONS = 10
 
-_operator_cache: dict[tuple[str, str], wps.BsrMatrix[wp.float32]] = {}
+_operator_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
 
 
-def _laplacian_operator(bench_case: BenchCase) -> wps.BsrMatrix[wp.float32]:
+def _laplacian_operator(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
     """Assemble the uniform Laplacian once per (mesh, device) -- an *input*, not the operation."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _operator_cache:
@@ -733,7 +737,10 @@ def test_smooth_region(bench_case: BenchCase) -> None:
         def smooth_ml() -> int:
             mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
             mm.positionVertsSmoothly(
-                mesh_ml, mn.vertBitSetFromBools(free_np), mm.EdgeWeights.Unit, mm.VertexMass.Unit
+                mesh_ml,
+                mn.vertBitSetFromBools(cast("Buffer", free_np)),
+                mm.EdgeWeights.Unit,
+                mm.VertexMass.Unit,
             )
             return mesh_ml.topology.numValidVerts()
 
@@ -776,7 +783,7 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
         def smooth_ml() -> int:
             mesh_ml = mesh_ml_from_numpy(vertices_np, faces_np)
             params_ml = mm.PositionVertsSmoothlyParams()
-            params_ml.region = mn.vertBitSetFromBools(free_np)
+            params_ml.region = mn.vertBitSetFromBools(cast("Buffer", free_np))
             mm.positionVertsSmoothlySharpBd(mesh_ml, params_ml)
             return mesh_ml.topology.numValidVerts()
 

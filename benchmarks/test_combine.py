@@ -43,6 +43,8 @@ self-comparisons.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
 import pytest
 import pytorch3d.structures as p3d_structures
@@ -54,6 +56,9 @@ from meshlib import mrmeshpy as mm
 import triwarp as tw
 from conftest import BenchCase, mesh_ml_from_numpy
 
+if TYPE_CHECKING:
+    import open3d as o3d
+
 # Copies for the concatenate sweep: the function still issues one packing copy per input buffer, so
 # the input *count* is the driver and the total face count is held roughly fixed between the points.
 _CONCAT_COPIES = [8, 512]
@@ -61,11 +66,12 @@ _CONCAT_COPIES = [8, 512]
 # The min-weight stitch DP and split on a thousand components run to tens of milliseconds a call.
 _ROUNDS = 3
 
-_split_cache: dict[tuple[str, str], tuple] = {}
-_parts_cache: dict[tuple[str, str, int], list] = {}
+_SplitInputs = tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[np.ndarray, np.ndarray]
+_split_cache: dict[tuple[str, str], _SplitInputs] = {}
+_parts_cache: dict[tuple[str, str, int], list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]] = {}
 
 
-def _split_inputs(bench_case: BenchCase) -> tuple:
+def _split_inputs(bench_case: BenchCase) -> _SplitInputs:
     """Return the whole mesh as one soup, on the device (or host) the case needs."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _split_cache:
@@ -122,9 +128,13 @@ def test_split(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "triwarp":
         vertices, faces = _split_inputs(bench_case)
+        assert isinstance(vertices, wp.array)
+        assert isinstance(faces, wp.array)
         parts = bench_case.run(lambda: tw.combine.split(vertices, faces), rounds=_ROUNDS)
     elif bench_case.kind == "trimesh":
         vertices_np, faces_np = _split_inputs(bench_case)
+        assert isinstance(vertices_np, np.ndarray)
+        assert isinstance(faces_np, np.ndarray)
         mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
         parts = bench_case.run(lambda: mesh_tm.split(only_watertight=False), rounds=_ROUNDS)
     else:
@@ -136,10 +146,11 @@ def test_split(bench_case: BenchCase) -> None:
         mesh_o3d = bench_case.mesh_o3d
         faces_i32 = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
 
-        def run_o3d() -> list:
+        def run_o3d() -> list[o3d.geometry.TriangleMesh]:
             labels_np = np.asarray(mesh_o3d.cluster_connected_triangles()[0])
             return [
-                mesh_o3d.select_by_index(np.unique(faces_i32[labels_np == label]))
+                # pybind11 takes the int array as the index sequence its stub spells.
+                mesh_o3d.select_by_index(np.unique(faces_i32[labels_np == label]))  # pyright: ignore[reportArgumentType]
                 for label in range(int(labels_np.max()) + 1)
             ]
 
@@ -152,14 +163,18 @@ def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
     return wp.array(np.arange(lo, hi, dtype=np.int32), dtype=wp.int32, device=bench_case.device)
 
 
-def _submesh(bench_case: BenchCase, lo: int, hi: int) -> tuple:
+def _submesh(
+    bench_case: BenchCase, lo: int, hi: int
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
     return tw.selection.submesh_from_face_indices(
         bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
     )
 
 
-def _parts(bench_case: BenchCase, copies: int) -> list:
+def _parts(
+    bench_case: BenchCase, copies: int
+) -> list[tuple[wp.array[wp.vec3], wp.array[wp.int32]]]:
     """Build ``copies`` independent ``(vertices, faces)`` pairs to feed ``concatenate``."""
     key = (bench_case.mesh_name, str(bench_case.device), copies)
     if key not in _parts_cache:
@@ -170,10 +185,10 @@ def _parts(bench_case: BenchCase, copies: int) -> list:
     return _parts_cache[key]
 
 
-_parts_p3d_cache: dict[tuple[str, str, int], list] = {}
+_parts_p3d_cache: dict[tuple[str, str, int], list[p3d_structures.Meshes]] = {}
 
 
-def _parts_p3d(bench_case: BenchCase, copies: int) -> list:
+def _parts_p3d(bench_case: BenchCase, copies: int) -> list[p3d_structures.Meshes]:
     """Build the same pieces as a list of ``Meshes``, cached: the input, not the operation."""
     key = (bench_case.mesh_name, bench_case.torch_device, copies)
     if key not in _parts_p3d_cache:

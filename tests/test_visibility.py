@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -20,7 +22,11 @@ from tests.conversions import (
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
     trimesh_to_warp,
+    warp_empty,
 )
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 
 def _ellipsoid() -> tm.Trimesh:
@@ -44,7 +50,7 @@ def _vertex_normals_wp(mesh_wp: wp.Mesh) -> wp.array[wp.vec3]:
 @pytest.mark.parametrize("weight", ["cosine", "uniform"])
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "torus"])
 def test_ambient_occlusion_is_zero_on_a_convex_mesh(
-    request: pytest.FixtureRequest, mesh_name: str, weight: str
+    request: pytest.FixtureRequest, mesh_name: str, weight: tw.visibility.RayWeight
 ) -> None:
     """
     No ray leaving a convex closed surface can come back, so the occlusion is *exactly* zero.
@@ -152,6 +158,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     dome = tm.creation.icosphere(subdivisions=3, radius=1.2)
     dome.apply_translation([0.0, 0.0, 0.3])
     terrain_tm = tm.util.concatenate([ground, dome])
+    assert isinstance(terrain_tm, tm.Trimesh)
 
     grid = np.stack(np.meshgrid(np.linspace(-3.0, 3.0, 21), np.linspace(-3.0, 3.0, 21)), axis=-1)
     samples_np = np.ascontiguousarray(
@@ -177,7 +184,13 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     valid_ml = mm.VertBitSet()
     valid_ml.resize(len(samples_np), True)
     sky_view_ml = meshlib_scalars_to_numpy(
-        mm.computeSkyViewFactor(mesh_ml, mn.fromNumpyArray(samples_np), valid_ml, patches_ml)
+        mm.computeSkyViewFactor(
+            mesh_ml,
+            # The stub names ``VertCoords``; pybind converts this vector implicitly.
+            mn.fromNumpyArray(cast("Buffer", samples_np)),  # pyright: ignore[reportArgumentType]
+            valid_ml,
+            patches_ml,
+        )
     )
 
     vertices_wp, faces_wp = numpy_to_warp(terrain_tm.vertices, terrain_tm.faces.reshape(-1), device)
@@ -237,7 +250,7 @@ def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
     with pytest.raises(ValueError, match="n_rays >= 1"):
         tw.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, n_rays=0)
     with pytest.raises(ValueError, match="weight must be"):
-        tw.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, weight="lambert")
+        tw.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, weight="lambert")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="one entry per point"):
         tw.visibility.ambient_occlusion(
             mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
@@ -443,6 +456,7 @@ def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
     inner_tm = tm.creation.icosphere(subdivisions=3, radius=0.8)
     inner_tm.invert()
     shell_tm = tm.util.concatenate([outer_tm, inner_tm])
+    assert isinstance(shell_tm, tm.Trimesh)
     vertices_wp = points_to_warp(shell_tm.vertices, device)
     faces_wp = wp.array(
         np.ascontiguousarray(shell_tm.faces.reshape(-1), dtype=np.int32),
@@ -899,7 +913,7 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
 
 def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    points_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
+    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     centers_wp, radii_wp = tw.visibility.max_tangent_sphere(mesh_wp, points_wp)
     assert centers_wp.shape == (0,)
     assert radii_wp.shape == (0,)
@@ -916,7 +930,7 @@ def test_max_tangent_sphere_empty_still_validates_normals_length(
     passes ran before the check regardless. Both are pinned here.
     """
     _, mesh_wp = icosahedron
-    points_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
+    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per point"):
         tw.visibility.max_tangent_sphere(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
@@ -938,7 +952,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     _mesh_tm, mesh_wp = icosahedron
     points_wp = mesh_wp.points
     unit_normals_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
-    scaled_normals_wp = wp.empty(unit_normals_wp.size, dtype=wp.vec3, device=mesh_wp.device)
+    scaled_normals_wp = warp_empty(unit_normals_wp.size, wp.vec3, mesh_wp.device)
     wp.map(wp.mul, unit_normals_wp, wp.float32(2.0), out=scaled_normals_wp)
 
     centers_unit_wp, radii_unit_wp = tw.visibility.max_tangent_sphere(

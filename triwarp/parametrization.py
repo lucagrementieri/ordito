@@ -20,7 +20,6 @@ solve is conjugate-gradient.
 from __future__ import annotations
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.linalg as twl
@@ -364,7 +363,7 @@ def _validate_fixed_boundary_call(
 
 
 def _solve_fixed_boundary(
-    laplacian: wps.BsrMatrix[wp.float64],
+    laplacian: twt.BsrMatrix[wp.float64],
     mass_diag: wp.array[wp.float64] | None,
     k: int,
     n_vertices: int,
@@ -429,9 +428,9 @@ def _solve_fixed_boundary(
 
 
 def _solve_biharmonic(
-    laplacian: wps.BsrMatrix[wp.float64],
+    laplacian: twt.BsrMatrix[wp.float64],
     mass_diag: wp.array[wp.float64] | None,
-    q: wps.BsrMatrix[wp.float64],
+    q: twt.BsrMatrix[wp.float64],
     fixed_mask: wp.array[wp.bool],
     fixed_values: wp.array[wp.float64],
     n_vertices: int,
@@ -452,7 +451,7 @@ def _solve_biharmonic(
     sol = twt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
     if n_free > 0:
         q_uu, rhs = twl.assemble_interior_system(q, fixed_mask, free_map, fixed_values_2d, n_free)
-        neg_l = wps.bsr_axpy(x=laplacian, alpha=-1.0)
+        neg_l = twt.bsr_axpy(x=laplacian, alpha=-1.0)
         no_values = twt.as_array2d(
             _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
         )
@@ -647,7 +646,7 @@ def arap(
     # ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped
     # faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a
     # mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.
-    neg_l = wps.bsr_axpy(x=laplacian, alpha=-1.0)
+    neg_l = twt.bsr_axpy(x=laplacian, alpha=-1.0)
     q_uu, rhs_const = twl.assemble_interior_system(
         neg_l, fixed_mask, interior_map, fixed_values_2d, n_interior
     )

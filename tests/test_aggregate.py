@@ -4,16 +4,36 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TypedDict
 
 import benchmarks.aggregate as agg
 
 
-def _write_benchmark_json(path: Path, rows: list[dict]) -> None:
+class _Stats(TypedDict):
+    median: float
+    min: float
+    rounds: int
+
+
+class _Row(TypedDict):
+    group: str
+    name: str
+    params: dict[str, object]
+    stats: _Stats
+
+
+def _write_benchmark_json(path: Path, rows: list[_Row]) -> None:
     path.write_text(json.dumps({"benchmarks": rows}))
 
 
-def _row(group: str, library: str, median: float, mesh_name: str | None = None, **params):
-    full_params = {"library": library, **({"mesh_name": mesh_name} if mesh_name else {}), **params}
+def _row(
+    group: str, library: str, median: float, mesh_name: str | None = None, **params: object
+) -> _Row:
+    full_params: dict[str, object] = {
+        "library": library,
+        **({"mesh_name": mesh_name} if mesh_name else {}),
+        **params,
+    }
     return {
         "group": group,
         "name": f"test_{group}[{library}]",
@@ -101,7 +121,7 @@ def test_load_flags_a_median_well_above_its_own_minimum_as_suspect(tmp_path: Pat
 
 
 def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() -> None:
-    cells = {
+    cells: dict[agg.CellKey, dict[str, float]] = {
         ("test_x", "op", "mesh", ()): {
             "triwarp-cuda": 0.010,
             "triwarp-cpu": 0.050,
@@ -124,7 +144,7 @@ def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() ->
 
 
 def test_compare_skips_a_cell_with_no_triwarp_cuda_row_or_no_reference() -> None:
-    cells = {
+    cells: dict[agg.CellKey, dict[str, float]] = {
         ("test_x", "op", "a", ()): {"trimesh": 0.010},  # no triwarp-cuda
         ("test_x", "op", "b", ()): {"triwarp-cuda": 0.010},  # no reference
         ("test_x", "op", "c", ()): {"triwarp-cuda": 0.010, "trimesh": 0.020},  # comparable

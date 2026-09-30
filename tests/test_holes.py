@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
+
 import numpy as np
 import open3d as o3d
 import pytest
@@ -31,22 +34,28 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshfix,
     trimesh_to_pymeshlab,
+    warp_empty,
     warp_to_trimesh,
 )
-from triwarp.holes import _non_increasing_indices
+from triwarp.holes import _non_increasing_indices  # pyright: ignore[reportPrivateUsage]
 from triwarp.kernels import holes as kernel_holes
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 
 # Open-surface fixtures that actually have a boundary to fill.
-def _fillable_loops(vertices: wp.array, faces: wp.array) -> list[wp.array]:
+def _fillable_loops(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+) -> list[wp.array[wp.int32]]:
     return [loop for loop in tw.boundary.boundary_loops(vertices, faces) if loop.size >= 3]
 
 
-def _loop_sizes_of(vertices: wp.array, faces: wp.array) -> list[int]:
+def _loop_sizes_of(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> list[int]:
     return [loop.size for loop in _fillable_loops(vertices, faces)]
 
 
-def _loop_perimeters_of(vertices: wp.array, faces: wp.array) -> list[float]:
+def _loop_perimeters_of(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> list[float]:
     return [
         tw.polyline.polyline_length(tw.array.gather(vertices, loop), closed=True)
         for loop in _fillable_loops(vertices, faces)
@@ -428,7 +437,7 @@ def _edge_term(
 
 
 def _total_fill_metric(
-    vertices: wp.array, faces: wp.array, fill_flat: np.ndarray, metric: str
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], fill_flat: np.ndarray, metric: str
 ) -> float:
     """
     Score a fill triangulation exactly as ``fill_dp_span`` accumulates it.
@@ -495,7 +504,9 @@ def _total_fill_metric(
     return total
 
 
-def _meshlib_fill_triangles(vertices: wp.array, faces: wp.array, metric: str) -> np.ndarray:
+def _meshlib_fill_triangles(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], metric: str
+) -> np.ndarray:
     """
     Fill triangles produced by MeshLib's ``fillHole`` for the same metric, as a flat vertex buffer.
 
@@ -647,7 +658,7 @@ def test_fillable_loop_mask_shared_vertex_disqualifies_both_loops(device: str) -
     faces_np = np.array([[0, 1, 2], [0, 3, 4], [2, 5, 6], [7, 8, 9]], dtype=np.int64)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    def loop(indices: list[int]) -> wp.array:
+    def loop(indices: list[int]) -> wp.array[wp.int32]:
         return wp.array(np.array(indices, dtype=np.int32), dtype=wp.int32, device=device)
 
     pinched = loop([0, 1, 2, 0, 3, 4])  # visits vertex 0 twice: a pinch within itself
@@ -769,7 +780,7 @@ def test_fill_metric_scorer_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mes
         mesh_full = numpy_to_meshlib(verts_np, full)
         region_bools = np.zeros(len(full), dtype=bool)
         region_bools[len(faces_np) :] = True
-        region = mn.faceBitSetFromBools(region_bools)
+        region = mn.faceBitSetFromBools(cast("Buffer", region_bools))
         mr_cost = mm.calcCombinedFillMetric(mesh_full, region, metric_obj)
         my_cost = _total_fill_metric(mesh_wp.points, mesh_wp.indices, fill.reshape(-1), metric)
         assert np.isclose(my_cost, mr_cost, rtol=2e-3, atol=1e-3), metric
@@ -1014,7 +1025,7 @@ def test_fill_dp_span_tiled_matches_serial(
     )
     n_orig = faces_wp.size
 
-    original = tw.holes._run_hole_dp
+    original = tw.holes._run_hole_dp  # pyright: ignore[reportPrivateUsage]
     fills = {}
     for tiled in (True, False):
         monkeypatch.setattr(
@@ -1064,7 +1075,7 @@ def test_fill_dp_captured_matches_plain(
     # because they are the same path twice.
     assert kernel_holes.hole_dp_captures(n_rim, 2)
 
-    original = tw.holes._run_hole_dp
+    original = tw.holes._run_hole_dp  # pyright: ignore[reportPrivateUsage]
     fills = {}
     for captured in (True, False):
         monkeypatch.setattr(
@@ -1467,11 +1478,16 @@ def test_fill_small_thresholds_select_opposite_loops(device: str) -> None:
     assert by_length_wp.size // 3 - n_faces == 16 - 2
 
 
+class _FillSmallThresholds(TypedDict, total=False):
+    max_perimeter: float
+    max_edges: int
+
+
 @pytest.mark.parametrize(
     "kwargs", [{}, {"max_perimeter": 1.0, "max_edges": 8}], ids=["neither", "both"]
 )
 def test_fill_small_requires_exactly_one_threshold(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], kwargs: dict[str, float | int]
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], kwargs: _FillSmallThresholds
 ) -> None:
     """The documented ``ValueError``, in both directions: no threshold and two."""
     _mesh_tm, mesh_wp = hemisphere
@@ -1640,7 +1656,11 @@ def test_fill_smooth_refinement_matches_pymeshfix(
     assert refined_pmf.is_watertight
     assert refined_pmf.euler_number == 2
 
-    for refine, ratio_bound in (("density", 2.0), ("max_edge", 20.0)):
+    refines: tuple[tuple[Literal["max_edge", "density"], float], ...] = (
+        ("density", 2.0),
+        ("max_edge", 20.0),
+    )
+    for refine, ratio_bound in refines:
         refined_wp, refined_faces_wp = tw.holes.fill_smooth(
             mesh_wp.points, mesh_wp.indices, smooth_curvature=False, refine=refine
         )
@@ -1920,7 +1940,9 @@ _HOLE_FILL_WATERTIGHT_CASES = [
     ids=[case[0] for case in _HOLE_FILL_WATERTIGHT_CASES],
 )
 def test_holes_watertight_mesh_is_unchanged(
-    hole_fill_fn, reference_fn, icosahedron: tuple[tm.Trimesh, wp.Mesh]
+    hole_fill_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
+    reference_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """Not a library comparison: an already-closed mesh has no hole for any of these to fill."""
     _, mesh_wp = icosahedron
@@ -1937,10 +1959,13 @@ def test_holes_watertight_mesh_is_unchanged(
     [case[1] for case in _HOLE_FILL_CASES if case[0] != "fill_smooth"],
     ids=[case[0] for case in _HOLE_FILL_CASES if case[0] != "fill_smooth"],
 )
-def test_holes_empty_mesh_is_a_noop(device: str, hole_fill_fn) -> None:
+def test_holes_empty_mesh_is_a_noop(
+    device: str,
+    hole_fill_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
+) -> None:
     """Not a library comparison: every output array stays empty on a zero-face mesh."""
-    vertices = wp.empty(0, dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    vertices = warp_empty(0, wp.vec3, device)
+    faces = warp_empty(0, wp.int32, device)
     for result_wp in hole_fill_fn(vertices, faces):
         assert result_wp.size == 0
 
@@ -1976,8 +2001,16 @@ def _cone(
     return vertices, faces.reshape(-1)
 
 
-def _cone_wp(device: str, **kwargs):
-    vertices_np, faces_np = _cone(**kwargs)
+def _cone_wp(
+    device: wp.DeviceLike,
+    n: int,
+    apex_z: float,
+    rim_z: float,
+    radius: float = 1.0,
+    phase: float = 0.0,
+    center_x: float = 0.0,
+):
+    vertices_np, faces_np = _cone(n, apex_z, rim_z, radius, phase, center_x)
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     return vertices_np, faces_np, vertices_wp, faces_wp
@@ -2177,7 +2210,7 @@ def _meshlib_stitch_cost(
     mesh_full = numpy_to_meshlib(verts, full)
     region_bools = np.zeros(len(full), dtype=bool)
     region_bools[len(orig) :] = True
-    region = mn.faceBitSetFromBools(region_bools)
+    region = mn.faceBitSetFromBools(cast("Buffer", region_bools))
     return mm.calcCombinedFillMetric(mesh_full, region, metric_obj)
 
 
@@ -2231,7 +2264,7 @@ def test_stitch_dp_tile_matches_diagonal(
     monkeypatch.setattr(kernel_holes, "STITCH_DP_TILE", tile)
     (_, _, va, fa), (_, _, vb, fb) = _capsule_halves(device, n_a, n_b, phase=0.3)
 
-    original = tw.holes._run_stitch_dp
+    original = tw.holes._run_stitch_dp  # pyright: ignore[reportPrivateUsage]
     bands = {}
     for tiled in (True, False):
         monkeypatch.setattr(
@@ -2830,7 +2863,7 @@ def test_build_bottom_fits_each_rim_separately(half_torus: tuple[tm.Trimesh, wp.
     assert np.array_equal(same_vertices_wp.numpy(), vertices_wp.numpy())
 
 
-def _rim_successors(vertices_wp: wp.array, faces_wp: wp.array) -> dict[int, int]:
+def _rim_successors(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> dict[int, int]:
     """Map each rim vertex to the next one along the boundary, in face-winding direction."""
     return {
         int(u): int(v)
@@ -3102,7 +3135,7 @@ def test_bridge_edges_smooth_opposed_edges_stay_finite(device: str) -> None:
     )
 
     positions_np = strip_vertices_wp.numpy()
-    assert positions_np.shape[0] > vertices_np.shape[0]  # non-vacuity: it really did subdivide
+    assert len(positions_np) > vertices_np.shape[0]  # non-vacuity: it really did subdivide
     assert np.isfinite(positions_np).all()
     # A full strip, not the collapsed one-segment fan: two triangles per segment.
     n_new_faces = (strip_faces_wp.size - faces_wp.size) // 3
@@ -3164,6 +3197,8 @@ def test_bridge_edges_smooth_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Me
         [np.arange(n_faces, strip_faces_wp.size // 3)], append=True
     )
     strip_ml = smooth_ml.submesh([np.arange(n_faces, len(smooth_ml.faces))], append=True)
+    assert isinstance(strip_tm, tm.Trimesh)
+    assert isinstance(strip_ml, tm.Trimesh)
     agreement = hausdorff_surface_two_sided(
         np.asarray(strip_tm.vertices),
         np.asarray(strip_tm.faces),
@@ -3176,6 +3211,7 @@ def test_bridge_edges_smooth_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Me
     flat_tm = warp_to_trimesh(vertices_wp, flat_faces_wp).submesh(
         [np.arange(n_faces, flat_faces_wp.size // 3)], append=True
     )
+    assert isinstance(flat_tm, tm.Trimesh)
     # The probe that makes the bound above mean something: a chord-spanning patch is 3x further.
     assert (
         hausdorff_surface_two_sided(
@@ -3193,7 +3229,9 @@ def test_bridge_edges_smooth_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Me
 # ---------------------------------------------------------------------------
 
 
-def _open_shells_tm(hemisphere: tuple[tm.Trimesh, wp.Mesh], count: int, gap: float = 3.0):
+def _open_shells_tm(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], count: int, gap: float = 3.0
+) -> tm.Trimesh:
     """``count`` copies of the hemisphere fixture in a row, each ``gap`` apart along ``x``."""
     mesh_tm, _mesh_wp = hemisphere
     shells_tm = []
@@ -3201,7 +3239,7 @@ def _open_shells_tm(hemisphere: tuple[tm.Trimesh, wp.Mesh], count: int, gap: flo
         shell_tm = mesh_tm.copy()
         shell_tm.apply_translation([gap * index, 0.0, 0.0])
         shells_tm.append(shell_tm)
-    return tm.util.concatenate(shells_tm)
+    return cast("tm.Trimesh", tm.util.concatenate(shells_tm))
 
 
 @pytest.mark.parity("join_closest_components", "pymeshfix")
@@ -3272,6 +3310,7 @@ def test_join_closest_components_joins_the_nearest_pair(
     far_tm = mesh_tm.copy()
     far_tm.apply_translation([0.0, 40.0, 0.0])
     combined_tm = tm.util.concatenate([mesh_tm, near_tm, far_tm])
+    assert isinstance(combined_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(combined_tm.vertices, combined_tm.faces, device)
     n_faces = faces_wp.size // 3
 
@@ -3286,6 +3325,11 @@ def test_join_closest_components_joins_the_nearest_pair(
     assert max(component.vertices[:, 1].max() for component in components) > 39.0
 
 
+class _JoinBounds(TypedDict, total=False):
+    max_distance: float
+    max_joins: int
+
+
 @pytest.mark.parametrize(
     ("kwargs", "expected_joins"),
     [
@@ -3296,10 +3340,7 @@ def test_join_closest_components_joins_the_nearest_pair(
     ],
 )
 def test_join_closest_components_respects_its_bounds(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
-    device: str,
-    kwargs: dict[str, float | int],
-    expected_joins: int,
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str, kwargs: _JoinBounds, expected_joins: int
 ) -> None:
     """
     Not a library comparison: ``max_distance`` and ``max_joins`` have no pymeshfix counterpart.
@@ -3334,6 +3375,7 @@ def test_join_closest_components_leaves_closed_and_single_meshes_alone(
     second_tm = mesh_tm.copy()
     second_tm.apply_translation([5.0, 0.0, 0.0])
     for source_tm in (tm.util.concatenate([mesh_tm, second_tm]), _open_shells_tm(hemisphere, 1)):
+        assert isinstance(source_tm, tm.Trimesh)
         vertices_wp, faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
         joined_wp = tw.holes.join_closest_components(vertices_wp, faces_wp)
         assert np.array_equal(joined_wp.numpy(), faces_wp.numpy())

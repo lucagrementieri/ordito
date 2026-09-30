@@ -210,7 +210,7 @@ def _run_topology_pml(bench_case: BenchCase) -> None:
     """
     meshset_pml = bench_case.meshset_pml
 
-    def measure_pml() -> dict:
+    def measure_pml() -> dict[str, object]:
         meshset_pml.compute_selection_by_self_intersections_per_face()
         return meshset_pml.get_topological_measures()
 

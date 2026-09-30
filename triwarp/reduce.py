@@ -12,7 +12,7 @@ import warp as wp
 import triwarp.typing as twt
 from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
-from triwarp.array import _sorted_copy, astype
+from triwarp.array import _sorted_copy, astype  # pyright: ignore[reportPrivateUsage]
 from triwarp.constants import TILE_1D, TILE_2D
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import reduce as kernel_reduce
@@ -183,6 +183,10 @@ def minmax(
     )
 
 
+@overload
+def any(array: wp.array[wp.bool], *, axis: None = None) -> bool: ...
+@overload
+def any(array: wp.array[wp.bool], *, axis: Literal[0, 1]) -> wp.array[wp.bool]: ...
 def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.array[wp.bool] | bool:
     """
     Reduce a boolean array with logical OR.
@@ -424,6 +428,10 @@ def weighted_sum(
     return float(read_scalar(out, 0))
 
 
+@overload
+def all(array: wp.array[wp.bool], *, axis: None = None) -> bool: ...
+@overload
+def all(array: wp.array[wp.bool], *, axis: Literal[0, 1]) -> wp.array[wp.bool]: ...
 def all(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.array[wp.bool] | bool:
     """
     Reduce a boolean array with logical AND.
@@ -456,7 +464,7 @@ def all(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     return _reduce_bool(array, axis, _BOOL_REDUCE["all"])
 
 
-def median(array: twt.Array1dScalar) -> float:
+def median(array: twt.ArrayNdScalar) -> float:
     """
     Median of a 1D scalar array (``numpy.median``).
 
@@ -514,12 +522,12 @@ class _ScalarReduceSpec(NamedTuple):
 
 class _BoolReduceSpec(NamedTuple):
     name: str
-    bool_1d: wp.Kernel
-    axis_rows_tiled: wp.Kernel
-    axis_cols_tiled: wp.Kernel
-    axis_rows_serial: wp.Kernel
-    axis_cols_serial: wp.Kernel
-    tiled_1d: wp.Kernel
+    bool_1d: twt.Kernel
+    axis_rows_tiled: twt.Kernel
+    axis_cols_tiled: twt.Kernel
+    axis_rows_serial: twt.Kernel
+    axis_cols_serial: twt.Kernel
+    tiled_1d: twt.Kernel
     init_global: int
 
 
@@ -608,7 +616,7 @@ _BOOL_REDUCE: dict[str, _BoolReduceSpec] = {
 
 
 def _launch_vec3_tiled_sum(
-    kernel: wp.Kernel, n: int, device: wp.DeviceLike, inputs: list[twt.ArrayNd]
+    kernel: twt.Kernel, n: int, device: wp.DeviceLike, inputs: list[twt.ArrayNd]
 ) -> wp.vec3:
     """
     Shared boilerplate behind ``sum``'s and ``weighted_sum``'s ``wp.vec3`` branches.
@@ -647,7 +655,7 @@ def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.ve
 
 
 def _reduce_scalar(
-    array: twt.ScalarArray, axis: Literal[0, 1] | None, spec: _ScalarReduceSpec
+    array: twt.ArrayNdScalar, axis: Literal[0, 1] | None, spec: _ScalarReduceSpec
 ) -> (
     float
     | int
@@ -659,13 +667,13 @@ def _reduce_scalar(
     _validate_scalar_array(array, spec, axis)
 
     if array.ndim == 2 and axis is not None:
-        return _launch_axis_scalar(array, axis, spec)
+        return _launch_axis_scalar(cast("twt.Array2dScalar", array), axis, spec)
 
     return _launch_global_scalar_tiled(array, spec)
 
 
 def _launch_global_scalar_tiled(
-    array: twt.ScalarArray, spec: _ScalarReduceSpec
+    array: twt.ArrayNdScalar, spec: _ScalarReduceSpec
 ) -> float | int | tuple[float, float] | tuple[int, int]:
     if spec.global_output_slots == 2:
         out = _launch.array(
@@ -707,7 +715,7 @@ def _launch_global_scalar_tiled(
     return cast(float | int, out_np.item())
 
 
-def _flattened_for_global(array: twt.ScalarArray) -> twt.Array1dScalar | None:
+def _flattened_for_global(array: twt.ArrayNdScalar) -> twt.Array1dScalar | None:
     """
     Return a 1-D view when the 1-D kernel is the better way to reduce ``array``, else ``None``.
 
@@ -797,7 +805,7 @@ def _launch_axis_scalar(
 
 
 def _validate_scalar_array(
-    array: twt.ScalarArray, spec: _ScalarReduceSpec, axis: Literal[0, 1] | None
+    array: twt.ArrayNdScalar, spec: _ScalarReduceSpec, axis: Literal[0, 1] | None
 ) -> None:
     if int(array.size) == 0:
         raise ValueError(f"{spec.name} requires a non-empty array.")

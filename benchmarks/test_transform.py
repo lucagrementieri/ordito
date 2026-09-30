@@ -56,7 +56,8 @@ from conftest import BenchCase
 
 # The matrix every row applies: a rotation about an off-origin centre, so no component of the
 # multiply is trivially zero and none of the libraries can shortcut a translation-only path.
-_MATRIX_NP = tm.transformations.rotation_matrix(1.1, [0.3, 0.5, 0.81], [0.2, 0.1, 0.0])
+# ``np.asarray`` narrows trimesh's ``ndarray | sympy.Matrix`` return, the numeric branch here.
+_MATRIX_NP = np.asarray(tm.transformations.rotation_matrix(1.1, [0.3, 0.5, 0.81], [0.2, 0.1, 0.0]))
 _MATRIX_WP = wp.mat44(*_MATRIX_NP.flatten().tolist())
 
 

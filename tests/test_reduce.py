@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops.utils as p3d_ops_utils
 import torch
+import trimesh as tm
 import warp as wp
 
 import triwarp.reduce as tw_reduce
-from tests.conversions import points_to_torch, points_to_warp, trimesh_to_pyvista
+import triwarp.typing as twt
+from tests.conversions import points_to_torch, points_to_warp, trimesh_to_pyvista, warp_empty
 
 
 def _random_values(shape: tuple[int, ...] | int, seed: int = 42) -> np.ndarray:
@@ -40,10 +44,10 @@ def test_min_2d(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_min_2d_axis(device: str, axis: int) -> None:
+def test_min_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
+    values_wp = twt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
     got_wp = tw_reduce.min(values_wp, axis=axis)
     exp_np = values_np.min(axis=axis)
     assert np.array_equal(got_wp.numpy(), exp_np)
@@ -72,11 +76,11 @@ def test_max_2d(device: str) -> None:
 
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parity("max_axis1", "numpy")
-def test_max_2d_axis(device: str, axis: int) -> None:
+def test_max_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     """Class A: direct comparison against ``numpy.max(axis=...)`` over both axes."""
     rng = np.random.default_rng(42)
     values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
+    values_wp = twt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
     got_wp = tw_reduce.max(values_wp, axis=axis)
     exp_np = values_np.max(axis=axis)
     assert np.array_equal(got_wp.numpy(), exp_np)
@@ -131,15 +135,15 @@ def test_minmax_vec3(device: str) -> None:
 def test_minmax_vec3_rejects_axis_and_empty(device: str) -> None:
     points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="axis=None"):
-        tw_reduce.minmax(points_wp, axis=0)
+        tw_reduce.minmax(points_wp, axis=0)  # pyright: ignore[reportCallIssue, reportArgumentType]
     with pytest.raises(ValueError, match="non-empty"):
-        tw_reduce.minmax(wp.empty(0, dtype=wp.vec3, device=device))
+        tw_reduce.minmax(warp_empty(0, wp.vec3, device))
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_minmax_2d_axis(device: str, axis: int) -> None:
+def test_minmax_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     values_np = _random_values((32, 10))
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
+    values_wp = twt.as_array2d(wp.array(values_np, dtype=wp.float32, device=device), wp.float32)
     got_min_wp, got_max_wp = tw_reduce.minmax(values_wp, axis=axis)
     exp_min_np = values_np.min(axis=axis)
     exp_max_np = values_np.max(axis=axis)
@@ -170,7 +174,7 @@ def test_all_1d(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_any_2d_axis(device: str, axis: int) -> None:
+def test_any_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     mask_np = rng.choice([False, True], size=(32, 4), replace=True)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -193,7 +197,7 @@ def test_any_2d_global(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_all_2d_axis(device: str, axis: int) -> None:
+def test_all_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     mask_np = rng.choice([False, True], size=(32, 4), replace=True)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -219,7 +223,7 @@ def test_scalar_reduce_1d_axis_raises(device: str) -> None:
     values_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
     for fn in (tw_reduce.min, tw_reduce.max, tw_reduce.minmax, tw_reduce.sum):
         with pytest.raises(ValueError, match="requires axis=None for a 1D array"):
-            fn(values_wp, axis=0)
+            fn(values_wp, axis=0)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 def test_sum_bool_1d_axis_raises(device: str) -> None:
@@ -233,7 +237,7 @@ def test_scalar_reduce_2d_invalid_axis_raises(device: str) -> None:
     values_wp = wp.array([[1, 2], [3, 4]], dtype=wp.int32, device=device)
     for fn in (tw_reduce.min, tw_reduce.max, tw_reduce.minmax, tw_reduce.sum):
         with pytest.raises(ValueError, match="requires axis to be 0, 1, or None"):
-            fn(values_wp, axis=2)
+            fn(values_wp, axis=2)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 def test_bool_reduce_2d_invalid_axis_raises(device: str) -> None:
@@ -241,7 +245,7 @@ def test_bool_reduce_2d_invalid_axis_raises(device: str) -> None:
     mask_wp = wp.array([[True, False], [False, True]], dtype=wp.bool, device=device)
     for fn in (tw_reduce.any, tw_reduce.all):
         with pytest.raises(ValueError, match="requires axis to be 0, 1, or None"):
-            fn(mask_wp, axis=2)
+            fn(mask_wp, axis=2)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
 @pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
@@ -287,7 +291,7 @@ def test_scalar_reduce_global_noncontiguous(device: str, shape: tuple[int, int])
     rng = np.random.default_rng(99)
     wide_np = rng.integers(-1000, 1000, (shape[0], shape[1] * 2), dtype=np.int32)
     values_np = wide_np[:, ::2]
-    values_wp = wp.array(wide_np, dtype=wp.int32, device=device)[:, ::2]
+    values_wp = twt.as_dense(wp.array(wide_np, dtype=wp.int32, device=device)[:, ::2])
     assert not values_wp.is_contiguous
     assert np.array_equal(tw_reduce.min(values_wp), values_np.min())
     assert np.array_equal(tw_reduce.max(values_wp), values_np.max())
@@ -316,10 +320,12 @@ def test_all_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
 @pytest.mark.parametrize(
     ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
 )
-def test_scalar_reduce_partial_tiles_axis(device: str, shape: tuple[int, int], axis: int) -> None:
+def test_scalar_reduce_partial_tiles_axis(
+    device: str, shape: tuple[int, int], axis: Literal[0, 1]
+) -> None:
     rng = np.random.default_rng(99)
     values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
+    values_wp = twt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
     assert np.array_equal(tw_reduce.min(values_wp, axis=axis).numpy(), values_np.min(axis=axis))
     assert np.array_equal(tw_reduce.max(values_wp, axis=axis).numpy(), values_np.max(axis=axis))
     got_min, got_max = tw_reduce.minmax(values_wp, axis=axis)
@@ -331,7 +337,9 @@ def test_scalar_reduce_partial_tiles_axis(device: str, shape: tuple[int, int], a
 @pytest.mark.parametrize(
     ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
 )
-def test_bool_reduce_partial_tiles_axis(device: str, shape: tuple[int, int], axis: int) -> None:
+def test_bool_reduce_partial_tiles_axis(
+    device: str, shape: tuple[int, int], axis: Literal[0, 1]
+) -> None:
     rng = np.random.default_rng(99)
     mask_np = rng.choice([False, True], size=shape, replace=True)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -364,7 +372,7 @@ def test_sum_2d(device: str) -> None:
 
 @pytest.mark.parametrize("axis", [0, 1])
 @pytest.mark.parity("sum_axis0", "numpy")
-def test_sum_2d_axis(device: str, axis: int) -> None:
+def test_sum_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     """Class A: direct comparison against ``numpy.sum(axis=...)`` over both axes."""
     rng = np.random.default_rng(42)
     values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
@@ -392,7 +400,7 @@ def test_sum_bool_1d(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_sum_bool_2d_axis(device: str, axis: int) -> None:
+def test_sum_bool_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     mask_np = rng.choice([False, True], size=(32, 4), replace=True)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -430,7 +438,7 @@ def test_weighted_sum_1d(device: str) -> None:
 
 
 @pytest.mark.parity("weighted_sum", "pyvista")
-def test_weighted_sum_integrates_a_surface_field(half_torus) -> None:
+def test_weighted_sum_integrates_a_surface_field(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: ``sum(values * areas)`` is what VTK's ``integrate_data`` computes for a cell array.
 
@@ -497,7 +505,7 @@ def test_sum_bool_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
 @pytest.mark.parametrize(
     ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
 )
-def test_sum_partial_tiles_axis(device: str, shape: tuple[int, int], axis: int) -> None:
+def test_sum_partial_tiles_axis(device: str, shape: tuple[int, int], axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(99)
     values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
     values_wp = wp.array(values_np, dtype=wp.int32, device=device)
@@ -527,7 +535,7 @@ def test_mean_2d(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_mean_2d_axis(device: str, axis: int) -> None:
+def test_mean_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     values_np = _random_values((32, 10))
     values_wp = wp.array(values_np, dtype=wp.float32, device=device)
     mean_wp = tw_reduce.mean(values_wp, axis=axis)
@@ -535,7 +543,7 @@ def test_mean_2d_axis(device: str, axis: int) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_mean_2d_axis_int(device: str, axis: int) -> None:
+def test_mean_2d_axis_int(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
     values_wp = wp.array(values_np, dtype=wp.int32, device=device)
@@ -551,7 +559,7 @@ def test_mean_bool_global(device: str) -> None:
 
 
 @pytest.mark.parametrize("axis", [0, 1])
-def test_mean_bool_2d_axis(device: str, axis: int) -> None:
+def test_mean_bool_2d_axis(device: str, axis: Literal[0, 1]) -> None:
     rng = np.random.default_rng(42)
     mask_np = rng.choice([False, True], size=(32, 4), replace=True)
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
@@ -591,7 +599,7 @@ def test_mean_vec3_axis_raises(device: str) -> None:
 
 
 def test_mean_vec3_empty_raises(device: str) -> None:
-    values_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    values_wp = warp_empty(0, wp.vec3, device)
     with pytest.raises(ValueError, match="non-empty"):
         tw_reduce.mean(values_wp)
 
@@ -622,7 +630,7 @@ def test_sum_vec3_axis_raises(device: str) -> None:
 
 
 def test_sum_vec3_empty_raises(device: str) -> None:
-    values_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    values_wp = warp_empty(0, wp.vec3, device)
     with pytest.raises(ValueError, match="non-empty"):
         tw_reduce.sum(values_wp)
 

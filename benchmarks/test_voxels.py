@@ -70,18 +70,25 @@ omission with ``pytest.mark.parity(..., benchmarked=False)`` in ``tests/test_vox
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Literal, cast
+
 import igl
 import numpy as np
 import pytest
 import pytorch3d.ops as p3d_ops
 import pyvista as pv
 import trimesh as tm
+import trimesh.voxel.morphology as tm_morphology
+import trimesh.voxel.ops as tm_ops
 import warp as wp
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
 import triwarp.typing as twt
 from conftest import BenchCase, BenchLibrary, points_torch_from_numpy, skip_larger_than
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 # Cell widths as a fraction of the bounding-box diagonal. The pair is a slope check: 1/256 is 64x
 # the cells of 1/64, and the whole point of the flattened (triangle, cell) work-item design is that
@@ -250,8 +257,9 @@ def test_voxel_down_sample(bench_case: BenchCase, divisor: int) -> None:
         # ``PointCloudPart``, which does not own it.
         from meshlib import mrmeshnumpy as mn
 
+        # MeshLib's stubs type this as ``Buffer``, which numpy's stubs implement only from 3.12.
         cloud_ml = mn.pointCloudFromPoints(
-            np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+            cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
         )
         part_ml = mm.PointCloudPart(cloud_ml)
         sampled_ml = bench_case.run(lambda: mm.pointGridSampling(part_ml, voxel_size))
@@ -274,7 +282,7 @@ def test_voxel_down_sample(bench_case: BenchCase, divisor: int) -> None:
 @pytest.mark.benchmark(group="cells")
 @pytest.mark.benchlibs("triwarp")
 @pytest.mark.parametrize("order", ["grid", "sorted"])
-def test_cells(bench_case: BenchCase, order: str) -> None:
+def test_cells(bench_case: BenchCase, order: Literal["grid", "sorted"]) -> None:
     """
     The two row orders of the same readout, so the pair prices the ordering and nothing else.
 
@@ -393,7 +401,7 @@ def test_dilate(bench_case: BenchCase) -> None:
         encoding_tm = grid_tm.encoding
         if bench_case.kind == "trimesh":
             dilated_tm = bench_case.run(
-                lambda: tm.voxel.morphology.binary_dilation(encoding_tm), rounds=_HEAVY_ROUNDS
+                lambda: tm_morphology.binary_dilation(encoding_tm), rounds=_HEAVY_ROUNDS
             )
             assert dilated_tm.sum > 0
             return
@@ -430,7 +438,7 @@ def test_fill_cavities(bench_case: BenchCase) -> None:
         grid_tm = tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size)
         encoding_tm = grid_tm.encoding
         filled_tm = bench_case.run(
-            lambda: tm.voxel.morphology.fill_holes(encoding_tm), rounds=_HEAVY_ROUNDS
+            lambda: tm_morphology.fill_holes(encoding_tm), rounds=_HEAVY_ROUNDS
         )
         assert filled_tm.sum > 0
         return
@@ -457,7 +465,7 @@ def test_fill_orthographic(bench_case: BenchCase) -> None:
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         occupancy_np = tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size).matrix
         filled_tm = bench_case.run(
-            lambda: tm.voxel.ops.fill_orthographic(occupancy_np), rounds=_HEAVY_ROUNDS
+            lambda: tm_ops.fill_orthographic(occupancy_np), rounds=_HEAVY_ROUNDS
         )
         assert filled_tm.sum() > 0
         return
@@ -504,7 +512,7 @@ def test_to_boxes(bench_case: BenchCase) -> None:
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         centers_np = tm.voxel.creation.voxelize_subdivide(mesh_tm, pitch=voxel_size).points
         boxes_tm = bench_case.run(
-            lambda: tm.voxel.ops.multibox(centers_np, pitch=voxel_size), rounds=_HEAVY_ROUNDS
+            lambda: tm_ops.multibox(centers_np, pitch=voxel_size), rounds=_HEAVY_ROUNDS
         )
         assert boxes_tm.faces.shape[0] > 0
         return
@@ -642,7 +650,9 @@ def test_splat_onto_grid(bench_case: BenchCase) -> None:
     points = bench_case.vertices_wp
     bounds = _splat_bounds(bench_case)
     field, density = bench_case.run(
-        lambda: tw.voxels.splat_onto_grid(points, points, (resolution,) * 3, bounds=bounds)
+        lambda: tw.voxels.splat_onto_grid(
+            points, points, (resolution, resolution, resolution), bounds=bounds
+        )
     )
     assert field.shape == (resolution,) * 3
     assert int(density.shape[0]) == resolution

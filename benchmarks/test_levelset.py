@@ -51,6 +51,7 @@ from meshlib import mrmeshpy as mm
 from pytorch3d.ops.marching_cubes import marching_cubes as p3d_marching_cubes
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 # Cell widths as a fraction of the bounding-box diagonal, and the offset distance as a multiple of
@@ -222,13 +223,14 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
         field_wp, box = tw.proximity.signed_distance_grid(vertices_cpu, faces_cpu, cell)
         samples_np = tw.voxels.grid_points(field_wp.shape, bounds=box, device="cpu").numpy()
         scene_o3d = o3d.t.geometry.RaycastingScene()
+        # The stub omits ``Tensor``'s dtype/device defaults.
         scene_o3d.add_triangles(
-            o3d.core.Tensor(np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)),
-            o3d.core.Tensor(np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32)),
+            o3d.core.Tensor(np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)),  # pyright: ignore[reportCallIssue]
+            o3d.core.Tensor(np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32)),  # pyright: ignore[reportCallIssue]
         )
-        queries_o3d = o3d.core.Tensor(samples_np.astype(np.float32))
+        queries_o3d = o3d.core.Tensor(samples_np.astype(np.float32))  # pyright: ignore[reportCallIssue]
         distance_o3d = bench_case.run(lambda: scene_o3d.compute_signed_distance(queries_o3d))
-        assert distance_o3d.shape[0] == samples_np.shape[0]
+        assert distance_o3d.shape[0] == len(samples_np)
         return
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
@@ -247,7 +249,7 @@ _MARCHING_RESOLUTIONS = [64, 128]
 _MARCHING_TORUS = (0.65, 0.28, 1.1)
 
 _marching_field_cache: dict[int, np.ndarray] = {}
-_marching_field_wp_cache: dict[tuple[int, str], wp.array] = {}
+_marching_field_wp_cache: dict[tuple[int, str], twt.Array3dFloat32] = {}
 _marching_volume_ml_cache: dict[int, mm.SimpleVolume] = {}
 
 
@@ -281,7 +283,8 @@ def _marching_volume_ml(resolution: int) -> mm.SimpleVolume:
 
         half = _MARCHING_TORUS[2]
         spacing = 2.0 * half / (resolution - 1)
-        volume_ml = mn.simpleVolumeFrom3Darray(_marching_field_np(resolution))
+        # The stub names the parameter ``3DvoxelsArray``, not an identifier, so no call matches it.
+        volume_ml = mn.simpleVolumeFrom3Darray(_marching_field_np(resolution))  # pyright: ignore[reportCallIssue]
         volume_ml.voxelSize = mm.Vector3f(spacing, spacing, spacing)
         _marching_volume_ml_cache[resolution] = volume_ml
     return _marching_volume_ml_cache[resolution]
@@ -384,8 +387,8 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     device = bench_lib.device
     key = (resolution, str(device))
     if key not in _marching_field_wp_cache:
-        _marching_field_wp_cache[key] = wp.array(
-            _marching_field_np(resolution), dtype=wp.float32, device=device
+        _marching_field_wp_cache[key] = twt.as_array3d(
+            wp.array(_marching_field_np(resolution), dtype=wp.float32, device=device), wp.float32
         )
     field_wp = _marching_field_wp_cache[key]
     half = _MARCHING_TORUS[2]

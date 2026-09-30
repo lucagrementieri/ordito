@@ -63,17 +63,17 @@ import pymeshlab as ml
 import pytest
 import scipy.sparse as sp
 import warp as wp
-import warp.sparse as wps
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, skip_larger_than
 
-_adjacency_cache: dict[tuple[str, str], wps.BsrMatrix] = {}
+_adjacency_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
 _scipy_cache: dict[str, sp.csr_matrix] = {}
 
 
-def _adjacency(bench_case: BenchCase) -> wps.BsrMatrix:
+def _adjacency(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
     """Vertex adjacency as a warp BSR matrix -- an *input*, built once per (mesh, device)."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _adjacency_cache:
@@ -128,7 +128,8 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
-        components_ml = bench_case.run(lambda: mm.getAllComponentsVerts(mesh_ml, None))
+        # ``None`` is the whole mesh; the stub omits that the region is nullable.
+        components_ml = bench_case.run(lambda: mm.getAllComponentsVerts(mesh_ml, None))  # pyright: ignore[reportArgumentType]
         assert 0 < len(components_ml) <= n_vertices
         return
     if bench_case.kind == "pymeshlab":
@@ -254,10 +255,10 @@ def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
     assert labels.shape == (n_faces,)
 
 
-_weighted_cache: dict[tuple[str, str], wps.BsrMatrix] = {}
+_weighted_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
 
 
-def _length_weighted_adjacency(bench_case: BenchCase) -> wps.BsrMatrix:
+def _length_weighted_adjacency(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
     """Vertex adjacency weighted by Euclidean edge length -- an *input*, built once per case."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _weighted_cache:

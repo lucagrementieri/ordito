@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, TypedDict, cast, overload
+from typing import Literal, TypedDict, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
@@ -22,6 +22,8 @@ from triwarp.kernels import array as kernel_array
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import registration as kernel_registration
 from triwarp.kernels import transform as kernel_transform
+
+DType = TypeVar("DType")
 
 
 # ``return_cost`` is keyword-only, and that is what lets the overload set be unambiguous. The
@@ -442,7 +444,9 @@ def icp(
     # after the recording, so it finds round 0 finished and waits on nothing.
     iterate()
     if max_iterations > 1:
-        replay = record_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], iterate)
+        replay = record_device_loop(
+            device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), iterate
+        )
         if max_distance is not None and int(read_scalar(state, int(kernel_array.LOOP_ROUND))) == 0:
             # Weightless at the seed: ``total`` is the seed, and ``transformed`` its image.
             _apply_transform(a, total, transformed)
@@ -453,10 +457,11 @@ def icp(
     return total, transformed, float(read_scalar(acc, int(kernel_registration.ACC_KEPT_COST)))
 
 
-_ZERO_LENGTH: dict[tuple[str, type], wp.array[Any]] = {}
+# Values are zero-length arrays of the key's dtype; ``_zero_length`` restores the element type.
+_ZERO_LENGTH: dict[tuple[str, type], object] = {}
 
 
-def _zero_length(dtype: type, device: wp.DeviceLike) -> wp.array[Any]:
+def _zero_length(dtype: type[DType], device: wp.DeviceLike) -> wp.array[DType]:
     """
     Return a zero-length array of ``dtype``, shared per device: the kernels' "not given" sentinel.
 
@@ -468,7 +473,7 @@ def _zero_length(dtype: type, device: wp.DeviceLike) -> wp.array[Any]:
     key = (str(device), dtype)
     if key not in _ZERO_LENGTH:
         _ZERO_LENGTH[key] = _launch.empty(0, dtype=dtype, device=device)
-    return _ZERO_LENGTH[key]
+    return cast("wp.array[DType]", _ZERO_LENGTH[key])
 
 
 def icp_point_to_plane(
@@ -740,7 +745,9 @@ def icp_point_to_plane(
         # does not advance, and return the seed's answer; the others never pay the read.
         replay = None
         if max_iterations > 1:
-            replay = record_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], iterate)
+            replay = record_device_loop(
+                device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), iterate
+            )
         if (max_distance is not None or kind == _ROBUST_KINDS["tukey"]) and int(
             read_scalar(state, int(kernel_array.LOOP_ROUND))
         ) == 0:
@@ -906,7 +913,7 @@ def _resolve_initial(
     # A ``wp.mat44`` is a ctypes array, so NumPy views its 16 floats in place (its stub does not
     # declare the buffer protocol, hence the cast); a one-element list of it would make NumPy walk
     # the matrix row by row.
-    host = np.frombuffer(cast(Any, initial), dtype=np.float32).reshape(1, 4, 4)
+    host = np.frombuffer(cast("bytes", initial), dtype=np.float32).reshape(1, 4, 4)
     return _launch.array(host, dtype=wp.mat44, device=device)
 
 

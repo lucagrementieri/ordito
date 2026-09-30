@@ -48,6 +48,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless: this runs in CI and over SSH, never against a display
 import matplotlib.pyplot as plt
 import warp as wp
+from matplotlib.axes import Axes
 from matplotlib.offsetbox import AnnotationBbox, OffsetImage
 from matplotlib.patches import FancyBboxPatch
 
@@ -162,7 +163,7 @@ def _format_duration(seconds: float) -> str:
     return f"{seconds:.3f} s"
 
 
-def _rounded_hbar(ax, y: float, width: float, height: float, color: str) -> None:
+def _rounded_hbar(ax: Axes, y: float, width: float, height: float, color: str) -> None:
     """Draw one horizontal bar with a rounded tip and a square baseline (mark spec: 4px radius)."""
     radius = min(height * 0.4, width * 0.08) if width > 0 else 0.0
     ax.add_patch(
@@ -187,7 +188,7 @@ _LABEL_OFFSET_WITH_LOGO_PT = -34  # label's right edge, points from the axis, cl
 _LABEL_OFFSET_ALONE_PT = -10
 
 
-def _place_logo_and_label(ax, y: int, library_id: str, palette: _Palette) -> None:
+def _place_logo_and_label(ax: Axes, y: int, library_id: str, palette: _Palette) -> None:
     """Draw the library's logo (if it has one) and its text label to the left of row `y`."""
     label = registry.display_label(library_id)
     logo = registry.logo_path(library_id)

@@ -46,7 +46,6 @@ from __future__ import annotations
 from typing import Literal, cast
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -278,8 +277,8 @@ def laplacian_smoothing_loss(
 
 
 def k_harmonic(
-    laplacian: wps.BsrMatrix[wp.float32], mass: twt.Array1dFloat | None = None, k: int = 2
-) -> wps.BsrMatrix[wp.float32]:
+    laplacian: twt.BsrMatrix[wp.Float], mass: twt.ArrayNdFloat | None = None, k: int = 2
+) -> twt.BsrMatrix[wp.Float]:
     """
     Integrated k-harmonic operator ``Q = (-L) (M^-1 (-L))^(k-1)`` from a Laplacian and a mass.
 
@@ -339,7 +338,7 @@ def k_harmonic(
     require_same_device(laplacian=laplacian, mass=mass)
     if k < 1:
         raise ValueError(f"harmonic power k must be >= 1, got {k}.")
-    negated = cast("wps.BsrMatrix[wp.float32]", wps.bsr_axpy(x=laplacian, alpha=-1.0))
+    negated = twt.bsr_axpy(x=laplacian, alpha=-1.0)
     if k == 1:
         return negated
 
@@ -361,8 +360,8 @@ def k_harmonic(
 
 
 def _diagonal_sandwich(
-    a: wps.BsrMatrix[wp.float32], inverse_mass: wp.array[wp.Float], b: wps.BsrMatrix[wp.float32]
-) -> wps.BsrMatrix[wp.float32]:
+    a: twt.BsrMatrix[wp.Float], inverse_mass: wp.array[wp.Float], b: twt.BsrMatrix[wp.Float]
+) -> twt.BsrMatrix[wp.Float]:
     """
     Assemble ``A diag(inverse_mass) B`` for symmetric ``A``, ``B`` by one triplet pass.
 
@@ -411,10 +410,10 @@ def _diagonal_sandwich(
 def hessian_energy(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    dtype: type = wp.float64,
+    dtype: type[twt.Block] = wp.float64,
     *,
     vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None = None,
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[twt.Block]:
     """
     Hessian smoothness energy with natural boundary conditions.
 
@@ -530,8 +529,8 @@ def hessian_energy(
 
 
 def curved_hessian_energy(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type = wp.float64
-) -> wps.BsrMatrix[wp.float64]:
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[twt.Block] = wp.float64
+) -> twt.BsrMatrix[twt.Block]:
     """
     Curved Hessian smoothness energy on the Crouzeix-Raviart discretization.
 
@@ -666,7 +665,7 @@ def crouzeix_raviart_cotmatrix(
     *,
     unique_edges: twt.Array2dInt32 | None = None,
     edge_map: wp.array[wp.int32] | None = None,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Edge-based Crouzeix-Raviart cotangent stiffness matrix.
 
@@ -764,7 +763,7 @@ def crouzeix_raviart_massmatrix(
     *,
     unique_edges: twt.Array2dInt32 | None = None,
     edge_map: wp.array[wp.int32] | None = None,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Edge-based Crouzeix-Raviart mass matrix.
 
@@ -815,8 +814,8 @@ def crouzeix_raviart_massmatrix(
     n_edges = int(unique_edges.shape[0])
 
     return cast(
-        "wps.BsrMatrix[wp.float32]",
-        wps.bsr_diag(diag=_cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)),
+        "twt.BsrMatrix[wp.float32]",
+        twt.bsr_diag(diag=_cr_mass_diagonal(vertices, faces, edge_map, n_edges, dtype)),
     )
 
 
@@ -849,7 +848,7 @@ def _cr_mass_diagonal(
 
 def lscm_hessian(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.float64]:
     """
     LSCM Hessian ``Q = -repdiag(L, 2) - 2 A``.
 
@@ -924,14 +923,19 @@ def lscm_hessian(
         # of the combined buffer: assembling ``A`` as its own matrix and adding it would need a
         # second build plus a ``bsr_axpy``, where this one pass over exact-size buffers does.
         _vector_area_triplets(
-            boundary, n, -2.0, rows[2 * n_entries :], cols[2 * n_entries :], vals[2 * n_entries :]
+            boundary,
+            n,
+            -2.0,
+            twt.as_dense(rows[2 * n_entries :]),
+            twt.as_dense(cols[2 * n_entries :]),
+            twt.as_dense(vals[2 * n_entries :]),
         )
     return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
 
 def vector_area_matrix(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.float64]:
     """
     Boundary vector-area matrix ``A``: the signed area enclosed by the UV boundary curve.
 

@@ -10,6 +10,8 @@ continuation and the two libraries resolve that differently (see the module docs
 
 from __future__ import annotations
 
+from typing import cast
+
 import igl
 import numpy as np
 import potpourri3d as pp3d
@@ -21,7 +23,7 @@ from meshlib import mrmeshpy as mm
 import triwarp as tw
 import triwarp.typing as twt
 from tests.conftest import MESHES
-from tests.conversions import points_to_warp, trimesh_to_meshlib
+from tests.conversions import points_to_warp, trimesh_to_meshlib, warp_empty
 
 
 def _rays(mesh_tm: tm.Trimesh, n_rays: int, seed: int) -> tuple[np.ndarray, np.ndarray]:
@@ -169,7 +171,7 @@ def test_trace_from_vertex_matches_potpourri3d(
         assert np.linalg.norm(points[-1] - path_pp[-1]) < 0.5 * edge_length
 
 
-def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[object, wp.Mesh]) -> None:
+def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Not a library comparison: rays fired off the rim must stop there, not wrap or leave.
 
@@ -264,7 +266,7 @@ def test_trace_from_face_matches_potpourri3d(
 
 
 def test_trace_from_face_zero_direction_is_a_single_point(
-    icosahedron: tuple[object, wp.Mesh],
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _, mesh_wp = icosahedron
     points_wp, offsets_wp = tw.geodesic_walk.trace_from_face(
@@ -281,10 +283,10 @@ def test_trace_from_face_zero_direction_is_a_single_point(
 
 
 def test_trace_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    empty_int = wp.empty(0, dtype=wp.int32, device=device)
-    empty_vec = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_int = warp_empty(0, wp.int32, device)
+    empty_vec = warp_empty(0, wp.vec3, device)
     points_wp, offsets_wp = tw.geodesic_walk.trace_from_vertex(
         vertices_wp, faces_wp, empty_int, empty_vec
     )
@@ -343,13 +345,15 @@ def test_geodesic_path_is_never_shorter_than_the_exact_geodesic(
     paths = _paths_to_source(mesh_wp, targets_np)
     lengths_np = np.array([float(tw.polyline.polyline_length(path)) for path in paths])
 
-    exact_igl = igl.exact_geodesic(
-        vertices_np,
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
-        np.array([0], dtype=np.int64),
-        np.array([], dtype=np.int64),
-        targets_np.astype(np.int64),
-        np.array([], dtype=np.int64),
+    exact_igl = np.asarray(
+        igl.exact_geodesic(
+            vertices_np,
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+            np.array([0], dtype=np.int64),
+            np.array([], dtype=np.int64),
+            targets_np.astype(np.int64),
+            np.array([], dtype=np.int64),
+        )
     )
     assert np.all(exact_igl > 0.0)  # non-vacuity: the reference answered for every target
 
@@ -476,7 +480,7 @@ def test_geodesic_path_reaches_the_source_along_the_surface(
     diagonal = float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
     for target, path in zip(targets_np, paths, strict=True):
         path_np = path.numpy()
-        assert path_np.shape[0] >= 2
+        assert len(path_np) >= 2
         assert np.allclose(path_np[0], vertices_np[target], atol=1e-5)
         assert np.allclose(path_np[-1], vertices_np[0], atol=1e-5)
 
@@ -516,7 +520,9 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
     mesh_tm, hemi_wp = hemisphere
     rim_wp = tw.boundary.boundary_vertex_indices(hemi_wp.points, hemi_wp.indices)
     assert rim_wp.size > 0
-    hemi_distance_wp = tw.heat.heat_geodesic(hemi_wp.points, hemi_wp.indices, rim_wp[:1])
+    hemi_distance_wp = tw.heat.heat_geodesic(
+        hemi_wp.points, hemi_wp.indices, twt.as_dense(rim_wp[:1])
+    )
     interior_np = np.setdiff1d(
         np.arange(mesh_tm.vertices.shape[0], dtype=np.int32), rim_wp.numpy()
     )[:8]
@@ -584,7 +590,7 @@ def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
 
     field_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float64, device=device)
     points_wp, offsets_wp = tw.geodesic_walk.descend_field(
-        mesh_wp.points, mesh_wp.indices, field_wp, wp.empty(0, dtype=wp.int32, device=device)
+        mesh_wp.points, mesh_wp.indices, field_wp, warp_empty(0, wp.int32, device)
     )
     assert points_wp.shape == (0,)
     assert offsets_wp.shape == (1,)
@@ -791,7 +797,12 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
         )
         labels_np = tw.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
         assert np.unique(labels_np).size == 1
-        assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
+        assert (
+            len(
+                tw.boundary.boundary_loops(cast("wp.array[wp.vec3]", cut_vertices_wp), cut_faces_wp)
+            )
+            == 2
+        )
 
 
 def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:

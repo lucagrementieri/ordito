@@ -20,6 +20,9 @@ Recorded in ``README.md``.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal
+
 import igl
 import numpy as np
 import pytest
@@ -27,15 +30,24 @@ import pytorch3d.loss as p3d_loss
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase
 
-_operator_inputs_np_cache: dict[str, tuple] = {}
-_operator_inputs_wp_cache: dict[tuple[str, str], tuple] = {}
-_edge_numbering_np_cache: dict[str, tuple] = {}
-_edge_numbering_wp_cache: dict[tuple[str, str], tuple] = {}
+if TYPE_CHECKING:
+    import pytorch3d.structures as p3d_structures
+    import scipy.sparse as sp
+    import torch
+
+# igl's stubs spell its sparse returns ``csc_matrix[float]``, outside scipy-stubs' scalar bound.
+_OperatorInputsNp = tuple["sp.csc_matrix[float]", "sp.csc_matrix[float]"]  # pyright: ignore[reportInvalidTypeArguments]
+_OperatorInputsWp = tuple[twt.BsrMatrix[wp.float64], wp.array[wp.float64]]
+_operator_inputs_np_cache: dict[str, _OperatorInputsNp] = {}
+_operator_inputs_wp_cache: dict[tuple[str, str], _OperatorInputsWp] = {}
+_edge_numbering_np_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+_edge_numbering_wp_cache: dict[tuple[str, str], tuple[twt.Array2dInt32, wp.array[wp.int32]]] = {}
 
 
-def _laplacian_and_mass_np(bench_case: BenchCase) -> tuple:
+def _laplacian_and_mass_np(bench_case: BenchCase) -> _OperatorInputsNp:
     """Prebuild igl's cotangent Laplacian and barycentric mass, cached per mesh (the inputs)."""
     name = bench_case.mesh_name
     if name not in _operator_inputs_np_cache:
@@ -48,7 +60,7 @@ def _laplacian_and_mass_np(bench_case: BenchCase) -> tuple:
     return _operator_inputs_np_cache[name]
 
 
-def _laplacian_and_mass_wp(bench_case: BenchCase) -> tuple:
+def _laplacian_and_mass_wp(bench_case: BenchCase) -> _OperatorInputsWp:
     """Triwarp's float64 Laplacian and mass diagonal, cached per (mesh, device)."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _operator_inputs_wp_cache:
@@ -60,7 +72,9 @@ def _laplacian_and_mass_wp(bench_case: BenchCase) -> tuple:
     return _operator_inputs_wp_cache[key]
 
 
-def _run_loss_pytorch3d(bench_case: BenchCase, loss_fn) -> None:
+def _run_loss_pytorch3d(
+    bench_case: BenchCase, loss_fn: Callable[[p3d_structures.Meshes], torch.Tensor]
+) -> None:
     """
     Time one ``pytorch3d.loss`` regularizer with the ``Meshes`` built inside the timed callable.
 
@@ -138,7 +152,9 @@ def test_normal_consistency_loss(bench_case: BenchCase) -> None:
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("triwarp", "pytorch3d")
 @pytest.mark.parametrize("method", ["uniform", "cotcurv"])
-def test_laplacian_smoothing_loss(bench_case: BenchCase, method: str) -> None:
+def test_laplacian_smoothing_loss(
+    bench_case: BenchCase, method: Literal["uniform", "cotcurv"]
+) -> None:
     """
     The smoothness regularizer, at the cheap and the expensive end of its ``method`` axis.
 
@@ -230,7 +246,7 @@ def test_curved_hessian_energy(bench_case: BenchCase) -> None:
         assert operator_igl.shape == (n_vertices, n_vertices)
 
 
-def _edge_numbering_np(bench_case: BenchCase) -> tuple:
+def _edge_numbering_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
     """Igl's ``unique_edge_map`` numbering, cached per mesh: the CR bindings' explicit input."""
     name = bench_case.mesh_name
     if name not in _edge_numbering_np_cache:
@@ -239,7 +255,7 @@ def _edge_numbering_np(bench_case: BenchCase) -> tuple:
     return _edge_numbering_np_cache[name]
 
 
-def _edge_numbering_wp(bench_case: BenchCase) -> tuple:
+def _edge_numbering_wp(bench_case: BenchCase) -> tuple[twt.Array2dInt32, wp.array[wp.int32]]:
     """Triwarp's ``edges_unique`` numbering, cached per (mesh, device)."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _edge_numbering_wp_cache:

@@ -11,7 +11,7 @@ import math
 from collections import deque
 from collections.abc import Callable
 from functools import partial
-from typing import Literal
+from typing import Literal, cast
 
 import igl
 import numpy as np
@@ -35,6 +35,7 @@ from tests.conversions import (
     points_to_torch,
     points_to_warp,
     trimesh_to_meshlib,
+    warp_empty,
 )
 from triwarp.kernels import neighbors as kernel_neighbors
 
@@ -80,8 +81,8 @@ def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device
     past_threshold = tw.neighbors.hashgrid_from_points(
         points_to_warp(np.zeros((128**3 // 2 + 1, 3), np.float32), device), 1.0
     )
-    assert (at_threshold._dim_x, at_threshold._dim_y, at_threshold._dim_z) == (128, 128, 128)
-    assert (past_threshold._dim_x, past_threshold._dim_y, past_threshold._dim_z) == (160,) * 3
+    assert (at_threshold._dim_x, at_threshold._dim_y, at_threshold._dim_z) == (128, 128, 128)  # pyright: ignore[reportPrivateUsage]
+    assert (past_threshold._dim_x, past_threshold._dim_y, past_threshold._dim_z) == (160,) * 3  # pyright: ignore[reportPrivateUsage]
 
     rng = np.random.default_rng(11)
     points = rng.random((2_000, 3), dtype=np.float32) * 4.0
@@ -91,7 +92,7 @@ def test_hashgrid_from_points_sizes_its_default_grid_from_the_point_count(device
     points_wp = points_to_warp(points, device)
     for grid_bins in (None, 3):
         grid = tw.neighbors.hashgrid_from_points(points_wp, radius, grid_bins)
-        assert grid._dim_x == (128 if grid_bins is None else grid_bins)
+        assert grid._dim_x == (128 if grid_bins is None else grid_bins)  # pyright: ignore[reportPrivateUsage]
         counts_wp = tw.neighbors.query_ball_count(points_wp, points_wp, radius, grid_bins=grid_bins)
         assert np.array_equal(counts_wp.numpy(), counts_kd)
 
@@ -250,7 +251,12 @@ def test_query_ball_count_matches_scipy_and_the_list_form(
 
     counts_wp = query_ball_count(points_wp, queries_wp, radius)
     counts_np = np.array(
-        [len(indices) for indices in KDTree(points_np).query_ball_point(queries_np, radius)],
+        [
+            len(indices)
+            for indices in cast(
+                "list[list[int]]", KDTree(points_np).query_ball_point(queries_np, radius)
+            )
+        ],
         dtype=np.int32,
     )
 
@@ -287,7 +293,7 @@ def test_query_ball_is_its_packed_form_split(device: str, copy: bool) -> None:
         begin, end = int(bounds_np[query]), int(bounds_np[query + 1])
         assert np.array_equal(index_wp.numpy(), flat_wp.numpy()[begin:end])
         assert np.array_equal(distance_wp.numpy(), flat_distances_wp.numpy()[begin:end])
-        assert (index_wp._ref is None) == copy
+        assert (index_wp._ref is None) == copy  # pyright: ignore[reportPrivateUsage]
 
 
 def test_query_bvh_ball_matches_a_brute_force_ball_overlap(device: str) -> None:
@@ -359,7 +365,7 @@ def test_query_bvh_ball_degenerate_inputs(device: str) -> None:
     )
 
     empty_indices_wp, empty_offsets_wp = tw.neighbors.query_bvh_ball(
-        bvh, wp.empty(0, dtype=wp.vec3, device=device), 0.25
+        bvh, warp_empty(0, wp.vec3, device), 0.25
     )
     assert empty_indices_wp.shape == (0,)
     assert np.array_equal(empty_offsets_wp.numpy(), np.zeros(1, np.int32))
@@ -478,7 +484,7 @@ def test_query_bvh_box_matches_meshlib(device: str) -> None:
                 mm.Vector3f(*lower_np[query_index].tolist()),
                 mm.Vector3f(*upper_np[query_index].tolist()),
             ),
-            collect_into(hits_ml),
+            cast("mm.func_void_from_Id_VertTag_Vector3_float", collect_into(hits_ml)),
         )
         hits_wp = indices_np[offsets_np[query_index] : offsets_np[query_index + 1]]
         assert np.array_equal(np.sort(np.asarray(hits_ml, dtype=np.int32)), np.sort(hits_wp))
@@ -498,7 +504,7 @@ def test_query_bvh_box_degenerate_inputs(device: str) -> None:
         np.zeros((4, 3), dtype=np.float32) + np.array([0.0, 0.0, 0.0]), dtype=wp.vec3, device=device
     )
     bvh = tw.neighbors.bvh_from_points(points_wp)
-    empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
 
     indices_wp, offsets_wp = tw.neighbors.query_bvh_box(bvh, empty_wp, empty_wp)
     assert indices_wp.shape == (0,)
@@ -522,8 +528,8 @@ def test_query_ball_empty(device: str, backend: Literal["bvh", "hashgrid"]):
     points = rng.random((10, 3), dtype=np.float32)
 
     points_wp = points_to_warp(points, device)
-    empty_points_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    empty_queries_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_points_wp = warp_empty(0, wp.vec3, device)
+    empty_queries_wp = warp_empty(0, wp.vec3, device)
     query_wp = wp.vec3(points[0][0], points[0][1], points[0][2])
     queries_wp = points_to_warp(points[-3:], device)
     radius = 0.5
@@ -584,7 +590,7 @@ def test_knn_initial_radius_degenerate_clouds(device: str):
     # Degenerate box and k >= n both mean "one complete scan".
     assert radius_of(coincident_np) == math.inf
     assert radius_of(planar_np, k=500) == math.inf
-    assert tw.neighbors.knn_initial_radius(wp.empty(0, dtype=wp.vec3, device=device), 1) == math.inf
+    assert tw.neighbors.knn_initial_radius(warp_empty(0, wp.vec3, device), 1) == math.inf
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -864,9 +870,9 @@ def test_query_nearest_matches_open3d(
     query_nearest = partial(tw.neighbors.query_nearest, backend=backend)
     query_indices_wp, query_distances_wp = query_nearest(points_wp, queries_wp, k=k)
 
-    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))
+    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
     assert nns_o3d.knn_index()
-    indices_o3d, squared_o3d = nns_o3d.knn_search(o3d.core.Tensor(queries), k)
+    indices_o3d, squared_o3d = nns_o3d.knn_search(o3d.core.Tensor(queries), k)  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
 
     assert np.array_equal(
         query_indices_wp.numpy().reshape(queries.shape[0], k), indices_o3d.numpy()
@@ -902,10 +908,11 @@ def test_query_ball_matches_open3d(device: str, backend: Literal["bvh", "hashgri
     query_ball_with_offsets = partial(tw.neighbors.query_ball_with_offsets, backend=backend)
     neighbors_wp, _distances_wp, offsets_wp = query_ball_with_offsets(points_wp, queries_wp, radius)
 
-    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))
+    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
     assert nns_o3d.fixed_radius_index(radius)
     indices_o3d, _squared_o3d, offsets_o3d = nns_o3d.fixed_radius_search(
-        o3d.core.Tensor(queries), radius
+        o3d.core.Tensor(queries),  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+        radius,
     )
     indices_o3d = indices_o3d.numpy()
     offsets_o3d = offsets_o3d.numpy()
@@ -1089,8 +1096,8 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
     empty = np.empty((0, 3), dtype=np.float32)
 
     points_wp = points_to_warp(points, device)
-    empty_points_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    empty_queries_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_points_wp = warp_empty(0, wp.vec3, device)
+    empty_queries_wp = warp_empty(0, wp.vec3, device)
     query_wp = wp.vec3(points[0][0], points[0][1], points[0][2])
     queries_wp = points_to_warp(points[-3:], device)
     query_nearest = partial(tw.neighbors.query_nearest, backend=backend)
@@ -1102,7 +1109,7 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
     assert np.array_equal(distances.numpy(), np.full(k, np.inf))
 
     # The anchor: whatever rank a populated call returns is the rank both degenerate calls owe.
-    populated_distances_np = KDTree(points).query(points[-3:], k=k)[0]
+    populated_distances_np = np.asarray(KDTree(points).query(points[-3:], k=k)[0])
     indices, distances = query_nearest(points_wp, queries_wp, k=k)
     assert indices.shape == populated_distances_np.shape
     assert distances.shape == populated_distances_np.shape
@@ -1111,7 +1118,7 @@ def test_query_nearest_empty(device: str, backend: Literal["bvh", "hashgrid"], k
         (empty_points_wp, queries_wp, empty, points[-3:]),
         (points_wp, empty_queries_wp, points, empty),
     ):
-        distances_np = KDTree(points_np).query(queries_np, k=k)[0]
+        distances_np = np.asarray(KDTree(points_np).query(queries_np, k=k)[0])
         indices, distances = query_nearest(points_arg, queries_arg, k=k)
         assert indices.shape == distances_np.shape
         assert distances.shape == distances_np.shape
@@ -1195,7 +1202,7 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     near_np = np.ascontiguousarray(points_np[:500] + 1e-4, dtype=np.float32)
     points_wp = points_to_warp(points_np, device)
     builds = []
-    original = wp.Mesh.__init__
+    original = cast("Callable[..., None]", wp.Mesh.__init__)
 
     def counting_init(self: wp.Mesh, *args: object, **kwargs: object) -> None:
         builds.append(1)
@@ -1223,7 +1230,7 @@ def test_query_nearest_defers_far_rows_to_a_closest_point_query(device: str) -> 
     distances_np, indices_np = KDTree(points_np).query(far_np, k=1, distance_upper_bound=cap)
     in_range = np.isfinite(distances_np)
     assert 0 < in_range.sum() < len(far_np)  # non-vacuity: both kinds of row occur
-    assert np.array_equal(indices_wp.numpy()[in_range], indices_np[in_range])
+    assert np.array_equal(indices_wp.numpy()[in_range], np.asarray(indices_np)[in_range])
     assert (indices_wp.numpy()[~in_range] == -1).all()
     assert np.isinf(distances_wp.numpy()[~in_range]).all()
 
@@ -1277,7 +1284,7 @@ def test_query_nearest_defers_sparse_self_rows_to_the_bvh(
             assert np.allclose(named, distances_np, rtol=1e-5, atol=1e-6)
 
     points_wp = points_to_warp(graded_np, device)
-    distances_np = KDTree(graded_np).query(graded_np, k=8)[0]
+    distances_np = np.asarray(KDTree(graded_np).query(graded_np, k=8)[0])
     cap = float(np.quantile(distances_np[:, -1], 0.99))
     builds.clear()
     indices_wp, distances_wp = tw.neighbors.query_nearest(
@@ -1371,12 +1378,17 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
     bvh = tw.neighbors.bvh_from_points(points_wp)
     grid = tw.neighbors.hashgrid_from_points(points_wp, 0.25)
 
-    for query, extra in (
-        (tw.neighbors.query_ball, {"r": 0.25}),
-        (tw.neighbors.query_ball_count, {"r": 0.25}),
-        (tw.neighbors.query_ball_with_offsets, {"r": 0.25}),
-        (tw.neighbors.query_nearest, {"k": 2}),
-    ):
+    # Four signatures behind one loop: typed as the common call shape, not their union.
+    cases = cast(
+        "tuple[tuple[Callable[..., object], dict[str, object]], ...]",
+        (
+            (tw.neighbors.query_ball, {"r": 0.25}),
+            (tw.neighbors.query_ball_count, {"r": 0.25}),
+            (tw.neighbors.query_ball_with_offsets, {"r": 0.25}),
+            (tw.neighbors.query_nearest, {"k": 2}),
+        ),
+    )
+    for query, extra in cases:
         with pytest.raises(ValueError, match="contradicts the accelerator"):
             query(points_wp, points_wp, accelerator=bvh, backend="hashgrid", **extra)
         with pytest.raises(ValueError, match="contradicts the accelerator"):
@@ -1473,7 +1485,9 @@ def test_query_weighted_nearest_matches_meshlib(device: str) -> None:
 
     tree_ml = mm.AABBTreePoints(points_to_meshlib(points_np))
     params_ml = mm.DistanceFromWeightedPointsComputeParams()
-    params_ml.pointWeight = lambda vertex_id: float(weights_np[int(vertex_id)])
+    params_ml.pointWeight = cast(
+        "mm.func_float_from_Id_VertTag", lambda vertex_id: float(weights_np[int(vertex_id)])
+    )
     params_ml.maxWeight = float(weights_np.max())
     params_ml.minWeight = float(weights_np.min())
     for query_index in range(0, queries_np.shape[0], 8):  # every 8th: one Python call per query
@@ -1515,15 +1529,13 @@ def test_query_weighted_nearest_conventions(device: str) -> None:
     assert np.all(covered_distance_wp.numpy() < 0.0)  # every query is inside every site's radius
 
     empty_index_wp, empty_distance_wp = tw.neighbors.query_weighted_nearest(
-        points_wp, zero_wp, wp.empty(0, dtype=wp.vec3, device=device)
+        points_wp, zero_wp, warp_empty(0, wp.vec3, device)
     )
     assert empty_index_wp.shape == (0,)
     assert empty_distance_wp.shape == (0,)
 
     no_sites_index_wp, no_sites_distance_wp = tw.neighbors.query_weighted_nearest(
-        wp.empty(0, dtype=wp.vec3, device=device),
-        wp.empty(0, dtype=wp.float32, device=device),
-        queries_wp,
+        warp_empty(0, wp.vec3, device), warp_empty(0, wp.float32, device), queries_wp
     )
     assert np.all(no_sites_index_wp.numpy() == -1)
     assert np.all(np.isinf(no_sites_distance_wp.numpy()))
@@ -1587,7 +1599,10 @@ def test_nearest_neighbor_distance_matches_meshlib(device: str) -> None:
     points_np = rng.random((600, 3))
 
     cloud_ml = points_to_meshlib(points_np)
-    nearest_ml = meshlib_indices_to_numpy(mm.findNClosestPointsPerPoint(cloud_ml, 1))
+    nearest_ml = meshlib_indices_to_numpy(
+        # MeshLib's stub omits ``VertId.__index__``, which it implements at runtime.
+        mm.findNClosestPointsPerPoint(cloud_ml, 1)  # pyright: ignore[reportArgumentType]
+    )
     assert nearest_ml.shape == (points_np.shape[0],)
     assert np.all(nearest_ml != np.arange(points_np.shape[0]))  # the closest *other* point
     distance_ml = np.linalg.norm(points_np[nearest_ml] - points_np, axis=1)
@@ -1664,6 +1679,7 @@ def test_closest_pair_matches_meshlib(device: str) -> None:
 
     # scipy, through the k=2 self-query its benchmark row times, reduced by an argmin.
     distances_np, indices_np = KDTree(points_np).query(points_np, k=2)
+    distances_np, indices_np = np.asarray(distances_np), np.asarray(indices_np)
     nearest_np = int(np.argmin(distances_np[:, 1]))
     assert nearest_np == index_a_np
     assert int(indices_np[nearest_np, 1]) == index_b_np
@@ -1909,14 +1925,25 @@ def test_query_ball_matches_meshlib(device: str, backend: Literal["bvh", "hashgr
     for query_index, query_np in enumerate(queries_np):
         found_ml: list[tuple[int, float]] = []
 
-        def collect(result_ml: object, *_args: object, found=found_ml) -> mm.Processing:
+        def collect(
+            result_ml: mm.PointsProjectionResult,
+            *_args: object,
+            found: list[tuple[int, float]] = found_ml,
+        ) -> mm.Processing:
             found.append((int(result_ml.vId), float(result_ml.distSq)))
             return mm.Processing.Continue
 
         ball_ml = mm.Ball3f()
         ball_ml.center = mm.Vector3f(*query_np.tolist())
         ball_ml.radiusSq = radius * radius
-        mm.findPointsInBall(cloud_ml, ball_ml, collect)
+        mm.findPointsInBall(
+            cloud_ml,
+            ball_ml,
+            cast(
+                "mm.func_Processing_from_PointsProjectionResult_Vector3_float_Ball_Vector3_float",
+                collect,
+            ),
+        )
 
         indices_ml = np.array([index for index, _distance in found_ml], dtype=np.int32)
         squared_ml = np.array([distance for _index, distance in found_ml])
@@ -1939,14 +1966,21 @@ def test_query_ball_matches_meshlib(device: str, backend: Literal["bvh", "hashgr
     tie_indices_wp, _tie_distances_wp = query_ball(tie_wp, wp.vec3(0.0, 0.0, 0.0), 1.0)
     tie_found: list[int] = []
 
-    def collect_tie(result_ml: object, *_args: object) -> mm.Processing:
+    def collect_tie(result_ml: mm.PointsProjectionResult, *_args: object) -> mm.Processing:
         tie_found.append(int(result_ml.vId))
         return mm.Processing.Continue
 
     tie_ball_ml = mm.Ball3f()
     tie_ball_ml.center = mm.Vector3f(0.0, 0.0, 0.0)
     tie_ball_ml.radiusSq = 1.0
-    mm.findPointsInBall(points_to_meshlib(tie_np), tie_ball_ml, collect_tie)
+    mm.findPointsInBall(
+        points_to_meshlib(tie_np),
+        tie_ball_ml,
+        cast(
+            "mm.func_Processing_from_PointsProjectionResult_Vector3_float_Ball_Vector3_float",
+            collect_tie,
+        ),
+    )
     assert sorted(tie_found) == [0, 1, 2, 3]
     assert sorted(tie_indices_wp.list()) == [0, 1, 2, 3]
 

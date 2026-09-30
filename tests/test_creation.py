@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import NamedTuple
+from collections.abc import Sequence
+from typing import Literal, NamedTuple, TypeAlias, cast
 
 import igl
 import numpy as np
@@ -30,8 +31,13 @@ from tests.conversions import (
     points_to_warp,
     points_to_warp_uv,
     pytorch3d_to_numpy,
+    warp_empty,
     warp_to_trimesh,
 )
+from triwarp.creation import ParametricSurfaceKind
+
+# Every surface ``_build_parametric`` builds: the lattice kinds and the two superquadric builders.
+_Surface: TypeAlias = ParametricSurfaceKind | Literal["super_ellipsoid", "super_toroid"]
 
 
 def _assert_same_faces(
@@ -47,8 +53,8 @@ def _assert_same_faces(
     """
     vertices_np = vertices_wp.numpy().astype(np.float64)
     faces_np = faces_wp.numpy().reshape(-1, 3)
-    assert vertices_np.shape[0] == mesh_tm.vertices.shape[0], (
-        f"vertex count mismatch: got {vertices_np.shape[0]}, expected {mesh_tm.vertices.shape[0]}"
+    assert len(vertices_np) == mesh_tm.vertices.shape[0], (
+        f"vertex count mismatch: got {len(vertices_np)}, expected {mesh_tm.vertices.shape[0]}"
     )
     assert faces_np.shape[0] == mesh_tm.faces.shape[0], (
         f"face count mismatch: got {faces_np.shape[0]}, expected {mesh_tm.faces.shape[0]}"
@@ -56,8 +62,10 @@ def _assert_same_faces(
     centroids_wp = vertices_np[faces_np].mean(axis=1)
     centroids_tm = mesh_tm.vertices[mesh_tm.faces].mean(axis=1)
     distance_np, match_np = cKDTree(centroids_tm).query(centroids_wp)
-    assert distance_np.max() < 1e-5, f"face centroids differ by up to {distance_np.max():.3e}"
-    assert len(set(match_np.tolist())) == len(match_np), "face centroid match is not a bijection"
+    assert np.max(distance_np) < 1e-5, f"face centroids differ by up to {np.max(distance_np):.3e}"
+    assert len(set(np.asarray(match_np).tolist())) == len(np.asarray(match_np)), (
+        "face centroid match is not a bijection"
+    )
 
 
 def _assert_same_solid(
@@ -98,8 +106,8 @@ def _assert_same_vertices_and_faces(
     """Assert an exact face-set match after remapping triwarp's vertices onto trimesh's."""
     faces_np = faces_wp.numpy().reshape(-1, 3)
     distance_np, remap_np = cKDTree(mesh_tm.vertices).query(vertices_wp.numpy().astype(np.float64))
-    assert distance_np.max() < 1e-5, f"vertices differ by up to {distance_np.max():.3e}"
-    mapped_np = np.sort(remap_np[faces_np], axis=1)
+    assert np.max(distance_np) < 1e-5, f"vertices differ by up to {np.max(distance_np):.3e}"
+    mapped_np = np.sort(np.asarray(remap_np)[faces_np], axis=1)
     reference_np = np.sort(mesh_tm.faces, axis=1)
     assert np.array_equal(lexsort_rows(mapped_np), lexsort_rows(reference_np))
 
@@ -118,7 +126,7 @@ def _face_frames(points_np: np.ndarray, faces_np: np.ndarray) -> tuple[np.ndarra
 
 
 def _build_parametric(
-    surface: str, resolution: int, device: str
+    surface: _Surface, resolution: int, device: str
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """Build one surface at ``resolution`` in both directions, whichever builder owns it."""
     if surface == "super_ellipsoid":
@@ -342,8 +350,8 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
 
     # The same vertex set, matched by proximity: a bijection, at the float32 floor.
     distance_np, index_np = cKDTree(mesh_ref.vertices).query(mesh_wp.vertices, k=1)
-    assert len(set(index_np.tolist())) == len(index_np)
-    assert distance_np.max() < 1e-5
+    assert len(set(np.asarray(index_np).tolist())) == len(np.asarray(index_np))
+    assert np.max(distance_np) < 1e-5
 
 
 @pytest.mark.parity("revolve", "meshlib")
@@ -510,8 +518,8 @@ def test_primitives_match_pymeshlab(device: str) -> None:
         ), name
         if exact_vertices:
             distance_np, match_np = cKDTree(mesh_pml.vertices).query(mesh_wp.vertices)
-            assert distance_np.max() < 1e-5, name
-            assert len(set(match_np.tolist())) == match_np.size, name
+            assert np.max(distance_np) < 1e-5, name
+            assert len(set(np.asarray(match_np).tolist())) == match_np.size, name
 
 
 # --- table primitives -------------------------------------------------------------------
@@ -534,7 +542,9 @@ def test_box(device: str) -> None:
 
 def test_box_bounds(device: str) -> None:
     bounds_np = np.array([[-1.0, 0.0, 2.0], [3.0, 1.0, 5.0]])
-    vertices_wp, faces_wp = tw.creation.box(bounds=bounds_np, device=device)
+    vertices_wp, faces_wp = tw.creation.box(
+        bounds=cast("Sequence[Sequence[float]]", bounds_np), device=device
+    )
     _assert_same_vertices_and_faces(vertices_wp, faces_wp, tm.creation.box(bounds=bounds_np))
     assert np.allclose(
         warp_to_trimesh(vertices_wp, faces_wp).bounds, bounds_np, rtol=1e-5, atol=1e-5
@@ -542,7 +552,7 @@ def test_box_bounds(device: str) -> None:
 
 
 def test_box_transform(device: str) -> None:
-    matrix_np = tm.transformations.rotation_matrix(np.deg2rad(37.0), [1.0, 2.0, 3.0])
+    matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(37.0), [1.0, 2.0, 3.0]))
     matrix_np[:3, 3] = np.array([1.0, -2.0, 0.5])
     _assert_same_vertices_and_faces(
         *tw.creation.box(extents=(1.0, 2.0, 3.0), transform=_mat44(matrix_np), device=device),
@@ -564,11 +574,15 @@ def test_box_mirror_transform_keeps_outward_winding(device: str) -> None:
 def test_box_invalid(device: str) -> None:
     bounds_np = np.zeros((2, 3))
     with pytest.raises(ValueError, match="bounds overrides"):
-        tw.creation.box(extents=(1.0, 1.0, 1.0), bounds=bounds_np, device=device)
+        tw.creation.box(
+            extents=(1.0, 1.0, 1.0),
+            bounds=cast("Sequence[Sequence[float]]", bounds_np),
+            device=device,
+        )
     with pytest.raises(ValueError, match="bounds must be"):
-        tw.creation.box(bounds=np.zeros((3, 3)), device=device)
+        tw.creation.box(bounds=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device)
     with pytest.raises(ValueError, match="extents must be"):
-        tw.creation.box(extents=np.zeros(4), device=device)
+        tw.creation.box(extents=np.zeros(4), device=device)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parity("platonic_solids", "trimesh", "igl")
@@ -590,7 +604,7 @@ def test_icosahedron(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.icosahedron(device=device)
     _assert_same_vertices_and_faces(vertices_wp, faces_wp, tm.creation.icosahedron())
 
-    vertices_igl, faces_igl = igl.icosahedron()
+    vertices_igl, faces_igl = map(np.asarray, igl.icosahedron())
     mesh_igl = tm.Trimesh(vertices_igl, faces_igl, process=False)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
@@ -733,7 +747,7 @@ def test_grid_matches_igl(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.grid(
         count=(count, count), extents=(1.0, 1.0), center=False, device=device
     )
-    vertices_igl, faces_igl = igl.triangulated_grid(count, count)
+    vertices_igl, faces_igl = map(np.asarray, igl.triangulated_grid(count, count))
 
     assert faces_wp.size // 3 == faces_igl.shape[0]
     padded_igl = np.column_stack([vertices_igl, np.zeros(vertices_igl.shape[0])])
@@ -896,12 +910,12 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
 
     assert vertices_p3d.shape[0] == 10 * 4**subdivisions + 2
     assert faces_p3d.shape[0] == 20 * 4**subdivisions
-    assert vertices_np.shape[0] == vertices_p3d.shape[0]
+    assert len(vertices_np) == vertices_p3d.shape[0]
     assert faces_wp.size // 3 == faces_p3d.shape[0]
 
     distances_np, indices_np = cKDTree(vertices_p3d).query(vertices_np)
-    assert float(distances_np.max()) < 1e-4
-    assert np.unique(indices_np).size == vertices_np.shape[0]
+    assert float(np.max(distances_np)) < 1e-4
+    assert np.unique(indices_np).size == len(vertices_np)
 
 
 @pytest.mark.parametrize("subdivisions", [1, 2, 3, 5])
@@ -955,11 +969,12 @@ def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
     differed rather than a behaviour any reference defines.
     """
     count_np = np.array([31, 63], dtype=np.int64)
-    tw.creation.uv_sphere(count=count_np, device=device)
+    # An array rather than the annotated tuple, deliberately: it is the input that could be written.
+    tw.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
     assert np.array_equal(count_np, [31, 63])
     # A tuple cannot be written through, so it is the control: both spellings must round the same.
     from_tuple_wp, _ = tw.creation.uv_sphere(count=(31, 63), device=device)
-    from_array_wp, _ = tw.creation.uv_sphere(count=count_np, device=device)
+    from_array_wp, _ = tw.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
     assert from_tuple_wp.size == from_array_wp.size
 
 
@@ -999,7 +1014,11 @@ def test_capsule(device: str) -> None:
     ],
 )
 def test_solids_of_revolution_agree_with_the_general_engine(
-    device: str, monkeypatch: pytest.MonkeyPatch, name: str, kwargs: dict, expect_faces: bool
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    kwargs: dict[str, object],
+    expect_faces: bool,
 ) -> None:
     """
     Triwarp against triwarp: the closed-form path against ``revolve``, which carries the oracle.
@@ -1056,7 +1075,9 @@ def test_cylinder_segment(device: str) -> None:
     bounds comparison is what catches a rotation applied in the wrong order.
     """
     segment_np = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-    vertices_wp, faces_wp = tw.creation.cylinder(radius=0.5, segment=segment_np, device=device)
+    vertices_wp, faces_wp = tw.creation.cylinder(
+        radius=0.5, segment=cast("Sequence[Sequence[float]]", segment_np), device=device
+    )
     mesh_tm = tm.creation.cylinder(radius=0.5, segment=segment_np)
     _assert_same_faces(vertices_wp, faces_wp, mesh_tm)
     assert np.allclose(
@@ -1068,7 +1089,9 @@ def test_cylinder_requires_height_or_segment(device: str) -> None:
     with pytest.raises(ValueError, match="height or segment"):
         tw.creation.cylinder(radius=1.0, device=device)
     with pytest.raises(ValueError, match="segment must be"):
-        tw.creation.cylinder(radius=1.0, segment=np.zeros((3, 3)), device=device)
+        tw.creation.cylinder(
+            radius=1.0, segment=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device
+        )
 
 
 @pytest.mark.parity("cone", "trimesh")
@@ -1168,7 +1191,7 @@ def test_torus_matches_pytorch3d(device: str) -> None:
 
     assert vertices_p3d.shape[0] == major_sections * minor_sections
     assert faces_p3d.shape[0] == 2 * major_sections * minor_sections
-    assert vertices_np.shape[0] == vertices_p3d.shape[0]
+    assert len(vertices_np) == vertices_p3d.shape[0]
     assert faces_wp.size // 3 == faces_p3d.shape[0]
 
     # Distance from the major circle recovers the minor radius on both sides.
@@ -1178,8 +1201,8 @@ def test_torus_matches_pytorch3d(device: str) -> None:
         assert np.allclose(tube_np, minor, rtol=1e-5, atol=1e-6)
 
     distances_np, indices_np = cKDTree(vertices_p3d).query(vertices_np)
-    assert float(distances_np.max()) < 1e-6
-    assert np.unique(indices_np).size == vertices_np.shape[0]
+    assert float(np.max(distances_np)) < 1e-6
+    assert np.unique(indices_np).size == len(vertices_np)
 
 
 @pytest.mark.parametrize("name", sorted(_CLOSED_BUILDERS))
@@ -1301,10 +1324,10 @@ def test_extrude_polygon_matches_pyvista_and_open3d(device: str, ring_size: int)
 
     fan_np = np.array([[0, i, i + 1] for i in range(1, ring_size - 1)], dtype=np.int32)
     disc_o3d = o3d.t.geometry.TriangleMesh(
-        o3d.core.Tensor(np.ascontiguousarray(ring3_np, dtype=np.float64)),
-        o3d.core.Tensor(np.ascontiguousarray(fan_np)),
+        o3d.core.Tensor(np.ascontiguousarray(ring3_np, dtype=np.float64)),  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+        o3d.core.Tensor(np.ascontiguousarray(fan_np)),  # pyright: ignore[reportCallIssue]
     )
-    extruded_o3d = disc_o3d.extrude_linear([0.0, 0.0, 1.0])
+    extruded_o3d = disc_o3d.extrude_linear([0.0, 0.0, 1.0])  # pyright: ignore[reportArgumentType]  # takes any sequence
     mesh_o3d = tm.Trimesh(
         extruded_o3d.vertex.positions.numpy(), extruded_o3d.triangle.indices.numpy(), process=False
     )
@@ -1468,7 +1491,7 @@ def test_sweep_polygon_reversing_path_matches_trimesh_at_the_reversal(device: st
     _assert_closed(vertices_wp, faces_wp)
     assert vertices_wp.size == mesh_tm.vertices.shape[0]
     distance_np, _ = cKDTree(mesh_tm.vertices).query(vertices_wp.numpy().astype(np.float64))
-    assert distance_np.max() < 1e-4, f"vertices differ by up to {distance_np.max():.3e}"
+    assert np.max(distance_np) < 1e-4, f"vertices differ by up to {np.max(distance_np):.3e}"
 
 
 def test_sweep_polygon_angles_roll_the_profile(device: str) -> None:
@@ -1532,7 +1555,9 @@ def test_sweep_polygon_rejects_a_non_simple_ring(device: str) -> None:
 # --- composites -------------------------------------------------------------------------
 
 
-def _triangle_soup(device: str, seed: int = 7) -> tuple[np.ndarray, wp.array, wp.array]:
+def _triangle_soup(
+    device: str, seed: int = 7
+) -> tuple[np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]:
     triangles_np = np.random.default_rng(seed).random((5, 3, 3)) + np.array([0.0, 0.0, 1.0])
     vertices_wp = points_to_warp(triangles_np.reshape(-1, 3), device)
     faces_wp = wp.array(np.arange(15, dtype=np.int32), dtype=wp.int32, device=device)
@@ -1611,7 +1636,7 @@ def test_axis(device: str) -> None:
 
 
 def test_axis_transform(device: str) -> None:
-    matrix_np = tm.transformations.rotation_matrix(np.deg2rad(90.0), [1.0, 0.0, 0.0])
+    matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(90.0), [1.0, 0.0, 0.0]))
     matrix_np[:3, 3] = np.array([1.0, 0.0, 0.0])
     vertices_wp, faces_wp = tw.creation.axis(transform=_mat44(matrix_np), device=device)
     expected_np = tm.transform_points(
@@ -1625,7 +1650,7 @@ def test_axis_transform(device: str) -> None:
 @pytest.mark.parity("parametric_surface", "pyvista")
 @pytest.mark.parity("super_ellipsoid", "pyvista")
 @pytest.mark.parity("super_toroid", "pyvista")
-def test_parametric_surface_matches_pyvista(device: str, surface: str) -> None:
+def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> None:
     """
     Class A on the topology, Class B on the geometry, against ``pv.Parametric*(clean=True)``.
 
@@ -1656,27 +1681,27 @@ def test_parametric_surface_matches_pyvista(device: str, surface: str) -> None:
         # merges 40 lattice points the parameterization does not identify -- dropping the 2
         # triangles that thereby became degenerate. triwarp keeps the sheets apart.
         assert (reference_pv.n_points, reference_pv.n_faces) == (1560, 3040)
-        assert cKDTree(vertices_np).query(points_pv)[0].max() < 1e-5
+        assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
     else:
         assert (reference_pv.n_points, reference_pv.n_faces) == (expected.points, expected.faces)
         assert euler_characteristic(np.asarray(reference_pv.regular_faces)) == expected.chi
-        assert cKDTree(points_pv).query(vertices_np)[0].max() < 1e-5
-        assert cKDTree(vertices_np).query(points_pv)[0].max() < 1e-5
+        assert np.max(cKDTree(points_pv).query(vertices_np)[0]) < 1e-5
+        assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
     assert (len(vertices_np), len(faces_np)) == (expected.points, expected.faces)
 
     centroid_np, normal_np = _face_frames(vertices_np, faces_np)
     centroid_pv, normal_pv = _face_frames(points_pv, np.asarray(reference_pv.regular_faces))
     distance_np, match_np = cKDTree(centroid_pv).query(centroid_np)
-    matched = distance_np < 1e-5
+    matched = np.asarray(distance_np) < 1e-5
     assert matched.mean() > 0.9, "face centroids do not correspond"
-    aligned_np = np.einsum("ij,ij->i", normal_np[matched], normal_pv[match_np[matched]])
+    aligned_np = np.einsum("ij,ij->i", normal_np[matched], normal_pv[np.asarray(match_np)[matched]])
     # A handful of triangles are degenerate enough that their normal is float noise; every other
     # one must agree in *direction*, not just in plane.
     assert (aligned_np > 0.9).mean() > 0.999
 
 
 @pytest.mark.parametrize("surface", sorted(_PARAMETRIC_TABLE))
-def test_parametric_surface_topology(device: str, surface: str) -> None:
+def test_parametric_surface_topology(device: str, surface: _Surface) -> None:
     """
     Each surface has the topology it exists to provide, with open3d reading orientability.
 
@@ -1706,7 +1731,9 @@ def test_parametric_surface_topology(device: str, surface: str) -> None:
 
 
 @pytest.mark.parametrize("surface", ["boy", "mobius", "dini", "super_toroid"])
-def test_parametric_surface_topology_is_resolution_independent(device: str, surface: str) -> None:
+def test_parametric_surface_topology_is_resolution_independent(
+    device: str, surface: _Surface
+) -> None:
     """
     The identification is combinatorial, so the topology cannot move with the resolution.
 
@@ -1733,7 +1760,7 @@ def test_parametric_surface_topology_is_resolution_independent(device: str, surf
 
 def test_parametric_surface_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="unknown kind"):
-        tw.creation.parametric_surface("klein_bottle", device=device)
+        tw.creation.parametric_surface("klein_bottle", device=device)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="at least 2"):
         tw.creation.parametric_surface("mobius", 1, 40, device=device)
     with pytest.raises(ValueError, match="at least 2"):
@@ -1745,7 +1772,7 @@ def test_parametric_surface_invalid(device: str) -> None:
     [("klein", 40, 2), ("pseudosphere", 40, 2), ("bohemian_dome", 2, 40)],
 )
 def test_parametric_surface_rejects_resolution_2_on_a_wrapped_axis(
-    device: str, surface: str, u_resolution: int, v_resolution: int
+    device: str, surface: ParametricSurfaceKind, u_resolution: int, v_resolution: int
 ) -> None:
     """
     Not a library comparison: no reference builds these lattices combinatorially.
@@ -1787,7 +1814,7 @@ def test_super_ellipsoid_unit_exponents_are_a_sphere(device: str) -> None:
 
 def test_super_ellipsoid_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="radii must be"):
-        tw.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)
+        tw.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)  # pyright: ignore[reportArgumentType]
 
 
 def test_super_toroid_unit_exponents_are_a_torus(device: str) -> None:
@@ -1850,14 +1877,14 @@ def test_empty_results(device: str) -> None:
     assert vertices_wp.size == 0
     assert faces_wp.size == 0
 
-    empty_v = wp.empty(0, dtype=wp.vec3, device=device)
-    empty_f = wp.empty(0, dtype=wp.int32, device=device)
+    empty_v = warp_empty(0, wp.vec3, device)
+    empty_f = warp_empty(0, wp.int32, device)
     prism_v, prism_f = tw.creation.truncated_prisms(empty_v, empty_f)
     assert prism_v.size == 0
     assert prism_f.size == 0
 
     solid_v, solid_f = tw.creation.extrude_triangulation(
-        wp.empty(0, dtype=wp.vec2, device=device), empty_f, 1.0
+        warp_empty(0, wp.vec2, device), empty_f, 1.0
     )
     assert solid_v.size == 0
     assert solid_f.size == 0
@@ -1866,7 +1893,11 @@ def test_empty_results(device: str) -> None:
 @pytest.mark.parametrize("surface", ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral"])
 @pytest.mark.parametrize(("u_resolution", "v_resolution"), [(7, 5), (40, 40), (17, 33)])
 def test_parametric_lattice_paths_agree(
-    device: str, monkeypatch: pytest.MonkeyPatch, surface: str, u_resolution: int, v_resolution: int
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: ParametricSurfaceKind,
+    u_resolution: int,
+    v_resolution: int,
 ) -> None:
     """
     Triwarp against triwarp: the device lattice against the numpy one, which carries the oracle.
@@ -1885,7 +1916,7 @@ def test_parametric_lattice_paths_agree(
     (``boy``, ``cross_cap``), a wrap in each direction (``klein``), a twist with a boundary
     (``mobius``), a plain open patch (``dini``) and a pole on one end only (``conic_spiral``).
     """
-    forced = tw.creation._PARAMETRIC_LATTICE_DEVICE_FROM
+    forced = tw.creation._PARAMETRIC_LATTICE_DEVICE_FROM  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(tw.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 1 << 30)
     host_v, host_f = tw.creation.parametric_surface(
         surface, u_resolution, v_resolution, device=device
@@ -1898,7 +1929,7 @@ def test_parametric_lattice_paths_agree(
     )
     assert forced > 0, "the gate must be a positive sample count"
     # Not vacuous: the lattice really did produce a surface on both sides.
-    assert host_v_np.shape[0] > 0
+    assert len(host_v_np) > 0
     assert host_f_np.size > 0
     assert np.array_equal(device_v.numpy(), host_v_np)
     assert np.array_equal(device_f.numpy(), host_f_np)

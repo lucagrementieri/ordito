@@ -86,7 +86,7 @@ and launch-overhead fixes, which show up at these sizes.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import igl
 import numpy as np
@@ -102,6 +102,7 @@ from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 if TYPE_CHECKING:
     import open3d as o3d
+    from typing_extensions import Buffer
 
 # MeshLib's default neighbour count for local fan triangulation.
 _NUM_NEIGHBOURS = 18
@@ -165,11 +166,15 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
         from meshlib import mrmeshnumpy as mn
 
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
+        # MeshLib's stubs type these as ``Buffer``, which numpy's stubs implement from 3.12, and its
+        # ``normals`` setter as ``VertCoords``, which pybind11 converts the vector into.
         cloud_ml = mn.pointCloudFromPoints(
-            np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+            cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
         )
-        cloud_ml.normals = mn.fromNumpyArray(
-            np.ascontiguousarray(np.asarray(mesh_tm.vertex_normals), dtype=np.float64)
+        cloud_ml.normals = mn.fromNumpyArray(  # pyright: ignore[reportAttributeAccessIssue]
+            cast(
+                "Buffer", np.ascontiguousarray(np.asarray(mesh_tm.vertex_normals), dtype=np.float64)
+            )
         )
         _cloud_ml_cache[bench_case.mesh_name] = cloud_ml
     return _cloud_ml_cache[bench_case.mesh_name]

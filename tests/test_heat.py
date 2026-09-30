@@ -38,10 +38,10 @@ import potpourri3d as pp3d
 import pytest
 import trimesh as tm
 import warp as wp
-import warp.sparse as wps
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.conftest import MESHES
 from tests.conversions import (
     bsr_to_dense,
@@ -53,6 +53,7 @@ from tests.conversions import (
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
     trimesh_to_warp,
+    warp_empty,
 )
 
 # Not ``conftest.MESHES``: both predate that constant and neither has ever carried ``cave_cube``.
@@ -148,7 +149,7 @@ def test_heat_operators_reject_cot_entries_with_use_robust(
 
 
 def test_heat_operators_honour_an_explicit_diffusion_time(
-    icosphere_coarse: tuple[object, wp.Mesh],
+    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """``t`` reaches the assembled system rather than being recomputed from the edge lengths."""
     mesh_tm, mesh_wp = icosphere_coarse
@@ -303,7 +304,7 @@ def test_heat_geodesic_matches_meshlib(device: str, icosphere: tuple[tm.Trimesh,
     assert np.corrcoef(distance_wp, distance_ml)[0, 1] > 0.999
 
 
-def test_heat_geodesic_multi_source_matches_igl(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_heat_geodesic_multi_source_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the multi-source form, where the answer is the distance to the *nearest* source.
 
@@ -349,7 +350,7 @@ def test_heat_geodesic_matches_igl_far_from_the_sources(device: str, n_sources: 
     assert np.abs(distance_wp - distance_igl).max() < 5e-3 * np.ptp(distance_igl)
 
 
-def test_heat_geodesic_approximates_exact(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_heat_geodesic_approximates_exact(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
@@ -367,7 +368,9 @@ def test_heat_geodesic_approximates_exact(icosahedron: tuple[object, wp.Mesh]) -
     assert np.allclose(distance_wp.numpy(), distance_exact, rtol=8e-2, atol=1e-1)
 
 
-def test_heat_geodesic_source_is_zero_and_nonnegative(hemisphere: tuple[object, wp.Mesh]) -> None:
+def test_heat_geodesic_source_is_zero_and_nonnegative(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     _, mesh_wp = hemisphere
     sources_np = np.array([0], dtype=np.int32)
     sources_wp = wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device)
@@ -380,7 +383,7 @@ def test_heat_geodesic_source_is_zero_and_nonnegative(hemisphere: tuple[object, 
 
 def test_heat_geodesic_empty_faces(device: str) -> None:
     vertices = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces = wp.empty(0, dtype=wp.int32, device=device)
+    faces = warp_empty(0, wp.int32, device)
     sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
 
     distance = tw.heat.heat_geodesic(vertices, faces, sources)
@@ -389,9 +392,9 @@ def test_heat_geodesic_empty_faces(device: str) -> None:
     assert np.array_equal(distance.numpy(), np.zeros(4))
 
 
-def test_heat_geodesic_empty_sources(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_heat_geodesic_empty_sources(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    sources = wp.empty(0, dtype=wp.int32, device=mesh_wp.device)
+    sources = warp_empty(0, wp.int32, mesh_wp.device)
 
     distance = tw.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources)
 
@@ -608,7 +611,7 @@ def test_robust_heat_geodesic_matches_potpourri3d(
 
 
 def test_robust_heat_geodesic_survives_a_degenerate_triangle(
-    device: str, sliver_patch: tuple
+    device: str, sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]
 ) -> None:
     _, _, vertices_wp, faces_wp = sliver_patch
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
@@ -945,9 +948,9 @@ def test_invalid_level_set_constraint(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -
 
 
 def test_heat_signed_distance_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    empty_int = wp.empty(0, dtype=wp.int32, device=device)
+    empty_int = warp_empty(0, wp.int32, device)
     assert tw.heat.heat_signed_distance(vertices_wp, faces_wp, empty_int).shape == (0,)
 
 
@@ -956,7 +959,7 @@ def test_heat_signed_distance_empty(device: str) -> None:
 # --------------------------------------------------------------------------
 
 
-def _solver_pp(mesh_tm: object) -> pp3d.MeshVectorHeatSolver:
+def _solver_pp(mesh_tm: tm.Trimesh) -> pp3d.MeshVectorHeatSolver:
     return pp3d.MeshVectorHeatSolver(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
@@ -1057,7 +1060,7 @@ def test_extend_scalar_matches_potpourri3d_far_from_the_sources(device: str) -> 
     assert np.abs(extended_wp - extended_pp).max() < 1e-3
 
 
-def test_extend_scalar_single_source_is_constant(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_extend_scalar_single_source_is_constant(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     extended = tw.heat.extend_scalar(
         mesh_wp.points,
@@ -1193,7 +1196,7 @@ def test_transport_preserves_source_magnitudes(
     assert np.allclose(np.linalg.norm(transported.numpy(), axis=1), magnitude, rtol=1e-4, atol=1e-4)
 
 
-def test_transport_does_not_cross_components(cave_cube: tuple[object, wp.Mesh]) -> None:
+def test_transport_does_not_cross_components(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = cave_cube
     # ``cave_cube`` is a cube shell around a smaller cube shell: two components. Nothing can be
     # transported across the gap, so the cavity's vertices must come back at zero rather than with a
@@ -1237,7 +1240,7 @@ def test_transport_does_not_cross_components(cave_cube: tuple[object, wp.Mesh]) 
 
 
 def test_transport_cancels_at_a_symmetric_cut_locus_point(
-    cave_cube: tuple[object, wp.Mesh],
+    cave_cube: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class C: the transported direction at a symmetric cut-locus point is a cancellation.
@@ -1282,7 +1285,7 @@ def test_transport_cancels_at_a_symmetric_cut_locus_point(
 
 @pytest.mark.parametrize("scale", [1e-3, 1e5])
 def test_transport_is_invariant_to_mesh_scale(
-    hemisphere: tuple[object, wp.Mesh], scale: float
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], scale: float
 ) -> None:
     """
     Class A: the same surface in different units transports to the same tangent field.
@@ -1342,7 +1345,7 @@ def test_transport_validity_mask_flags_the_unresolvable(
 
 
 def test_transport_validity_mask_separates_the_cut_locus_from_the_unreached(
-    cave_cube: tuple[object, wp.Mesh],
+    cave_cube: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Class A: on ``cave_cube`` the mask is exactly "reachable, and not the antipodal corner".
@@ -1455,13 +1458,13 @@ def test_log_map_radius_matches_potpourri3d_far_from_the_sources(device: str) ->
     assert np.abs(radius_wp - exact_np).max() < 0.06
 
 
-def test_log_map_is_zero_at_its_source(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_log_map_is_zero_at_its_source(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     logarithm = tw.heat.log_map(mesh_wp.points, mesh_wp.indices, 3).numpy()
     assert np.allclose(logarithm[3], 0.0, rtol=1e-6, atol=1e-6)
 
 
-def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[object, wp.Mesh]) -> None:
+def test_log_map_is_invariant_to_mesh_scale(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A: the same surface in different units maps to the same angles, scaled.
 
@@ -1547,7 +1550,7 @@ def test_reused_operators_give_the_same_transport(
         assert np.allclose(fresh.numpy(), reused.numpy(), rtol=0.0, atol=1e-5 * span)
 
 
-def test_operators_fix_the_diffusion_time(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_operators_fix_the_diffusion_time(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
     vectors = wp.array(
@@ -1603,11 +1606,11 @@ def test_diffuse_tangent_field_solves_its_own_system(
     # Non-trivial: diffusion reaches every vertex, so this is not solving for zero.
     assert np.all(np.linalg.norm(diffused_wp.numpy(), axis=1) > 0.0)
     residual_wp = wp.zeros(n_vertices, dtype=wp.vec2d, device=mesh_wp.points.device)
-    wps.bsr_mv(vector_system, diffused_wp, residual_wp, alpha=1.0, beta=0.0)
+    twt.bsr_mv(vector_system, diffused_wp, residual_wp, alpha=1.0, beta=0.0)
     assert np.abs(residual_wp.numpy() - source_np).max() < 1e-7
 
 
-def test_diffuse_tangent_field_empty(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_diffuse_tangent_field_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """An empty source returns an empty field without entering the solver."""
     _mesh_tm, mesh_wp = icosahedron
     vector_system, _scalar, _frames, _preconditioner = tw.heat.vector_heat_operators(
@@ -1615,7 +1618,7 @@ def test_diffuse_tangent_field_empty(icosahedron: tuple[object, wp.Mesh]) -> Non
     )
 
     diffused_wp = tw.heat.diffuse_tangent_field(
-        vector_system, wp.empty(0, dtype=wp.vec2d, device=mesh_wp.points.device)
+        vector_system, warp_empty(0, wp.vec2d, mesh_wp.points.device)
     )
 
     assert diffused_wp.shape == (0,)
@@ -1626,7 +1629,7 @@ def test_diffuse_tangent_field_empty(icosahedron: tuple[object, wp.Mesh]) -> Non
 # ---------------------------------------------------------------------------
 
 
-def test_tangent_to_world_reproduces_the_frames(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_tangent_to_world_reproduces_the_frames(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     basis_x_wp, basis_y_wp, _ = tw.tangent_space.vertex_tangent_frames(
         mesh_wp.points, mesh_wp.indices
@@ -1642,14 +1645,14 @@ def test_tangent_to_world_reproduces_the_frames(icosahedron: tuple[object, wp.Me
 
 
 def test_vector_heat_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    empty_int = wp.empty(0, dtype=wp.int32, device=device)
+    empty_int = warp_empty(0, wp.int32, device)
     assert tw.heat.extend_scalar(
-        vertices_wp, faces_wp, empty_int, wp.empty(0, dtype=wp.float64, device=device)
+        vertices_wp, faces_wp, empty_int, warp_empty(0, wp.float64, device)
     ).shape == (0,)
     empty_transported, empty_resolved = tw.heat.transport_tangent_vectors(
-        vertices_wp, faces_wp, empty_int, wp.empty(0, dtype=wp.vec2, device=device)
+        vertices_wp, faces_wp, empty_int, warp_empty(0, wp.vec2, device)
     )
     assert empty_transported.shape == (0,)
     assert empty_resolved.shape == (0,)

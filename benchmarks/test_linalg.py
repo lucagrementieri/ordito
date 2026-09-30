@@ -72,7 +72,6 @@ import numpy as np
 import pytest
 import scipy.sparse as sp
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -92,12 +91,12 @@ _N_RHS = 2
 
 _SEED = 23
 
-_operator_cache: dict[tuple[str, str], wps.BsrMatrix] = {}
-_fixed_cache: dict[tuple[str, str, float], tuple] = {}
-_rhs_cache: dict[tuple[str, str], wp.array] = {}
+_operator_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float64]] = {}
+_fixed_cache: dict[tuple[str, str, float], tuple[wp.array[wp.bool], twt.Array2dFloat64]] = {}
+_rhs_cache: dict[tuple[str, str], wp.array[wp.float64]] = {}
 
 
-def _operator(bench_case: BenchCase) -> wps.BsrMatrix:
+def _operator(bench_case: BenchCase) -> twt.BsrMatrix[wp.float64]:
     """Float64 cotangent stiffness -- the *input*; its assembly is timed in test_laplacian."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _operator_cache:
@@ -121,7 +120,7 @@ def _fixed_mask_np(bench_case: BenchCase, fraction: float) -> np.ndarray:
     return mask_np
 
 
-def _fixed(bench_case: BenchCase, fraction: float) -> tuple:
+def _fixed(bench_case: BenchCase, fraction: float) -> tuple[wp.array[wp.bool], twt.Array2dFloat64]:
     """``(fixed_mask, fixed_values)`` pinning ``fraction`` of the vertices, at a fixed seed."""
     key = (bench_case.mesh_name, str(bench_case.device), fraction)
     if key not in _fixed_cache:
@@ -139,7 +138,7 @@ def _fixed(bench_case: BenchCase, fraction: float) -> tuple:
     return _fixed_cache[key]
 
 
-def _rhs(bench_case: BenchCase) -> wp.array:
+def _rhs(bench_case: BenchCase) -> wp.array[wp.float64]:
     """``(n_rhs, n)`` float64 right-hand sides taken from the vertex coordinates."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _rhs_cache:
@@ -196,8 +195,15 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
         equality_igl = sp.csr_matrix((0, n_vertices))
         rhs_igl = np.zeros((0, 1))
         solution_igl = bench_case.run(
+            # The binding converts any scipy sparse matrix; its stub spells ``csc_matrix``.
             lambda: igl.min_quad_with_fixed(
-                operator_igl, zeros_igl, known_igl, values_igl, equality_igl, rhs_igl, True
+                operator_igl,
+                zeros_igl,
+                known_igl,
+                values_igl,
+                equality_igl,  # pyright: ignore[reportArgumentType]
+                rhs_igl,
+                True,
             )
         )
         assert np.asarray(solution_igl).shape[0] == n_vertices
@@ -237,7 +243,7 @@ def test_solve_spd_columns(bench_case: BenchCase, check_every: int) -> None:
     solution_2d = twt.as_array2d(solution, wp.float64)
     rhs_2d = twt.as_array2d(rhs, wp.float64)
 
-    def run() -> tuple:
+    def run() -> tuple[int, float, float]:
         solution.zero_()
         return tw.linalg.solve_spd_columns(operator, rhs_2d, solution_2d, check_every=check_every)
 

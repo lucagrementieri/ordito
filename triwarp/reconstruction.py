@@ -29,7 +29,6 @@ import warnings
 from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 import numpy as np
-import numpy.typing as npt
 import warp as wp
 
 import triwarp as tw
@@ -47,6 +46,7 @@ from triwarp.kernels.algorithms import conjugate_gradient as kernel_cg
 if TYPE_CHECKING:
     # Type-checking only: the adaptive-backend helpers import ``warp.fem`` lazily (inside the
     # functions) so ``import triwarp`` never pays its tens-of-seconds first-call codegen unused.
+    import numpy.typing as npt
     import warp.fem as fem
 
 
@@ -103,16 +103,16 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     faces = _launch.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
 
     def launch(
-        adjacency,
-        adjacency_edges,
-        unshared,
-        sorted_keys,
-        edge_set,
-        edge_set_mask,
-        key_base,
-        out_flip,
-        out_quad,
-    ):
+        adjacency: twt.Array2dInt32,
+        adjacency_edges: twt.Array2dInt32,
+        unshared: twt.Array2dInt32,
+        sorted_keys: wp.array[wp.uint64],
+        edge_set: wp.array[wp.uint64],
+        edge_set_mask: wp.int32,
+        key_base: wp.uint64,
+        out_flip: wp.array[wp.bool],
+        out_quad: twt.Array2dInt32,
+    ) -> None:
         _launch.launch(
             kernel_remesh.incircle_flip_candidates,
             dim=int(adjacency.shape[0]),
@@ -132,7 +132,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
             device=device,
         )
 
-    tw.remesh._flip_interior_edges(faces, n, launch, max_iter)
+    tw.remesh._flip_interior_edges(faces, n, launch, max_iter)  # pyright: ignore[reportPrivateUsage]
     return faces
 
 
@@ -350,7 +350,7 @@ def _box_diagonal(bounds: tuple[wp.vec3, wp.vec3]) -> float:
 
 
 def _repeated_oriented_triangles(
-    tris: wp.array3d[wp.int32], inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
+    tris: twt.ArrayNdInt32, inclusive_counts: wp.array[wp.int32], n_candidates: int, n: int
 ) -> wp.array[wp.int32]:
     """
     Keep one oriented representative per candidate triangle two or three fans agree on.
@@ -611,7 +611,7 @@ def _poisson_cube(points: wp.array[wp.vec3], scale: float) -> tuple[wp.vec3, wp.
     """Return the padded cubic reconstruction domain (lower, upper, side) around the cloud AABB."""
     lo, hi = tw.bounds.aabb(points)
     center = 0.5 * (lo + hi)
-    max_extent = max(float(hi[0] - lo[0]), float(hi[1] - lo[1]), float(hi[2] - lo[2]))
+    max_extent = max(b - a for a, b in zip(twt.vec3_floats(lo), twt.vec3_floats(hi), strict=True))
     if max_extent <= 0.0:
         raise ValueError("screened_poisson requires points with a non-degenerate bounding box.")
     cube_size = scale * max_extent
@@ -657,7 +657,9 @@ def _extract_poisson_surface(
     the solvers carry their lattice flat, because that is the shape the linear solve wants.
     """
     return tw.levelset.marching_cubes(
-        field.reshape((res, res, res)), iso, bounds=(cube_lower, cube_upper)
+        twt.as_array3d(field.reshape((res, res, res)), wp.float32),
+        iso,
+        bounds=(cube_lower, cube_upper),
     )
 
 
@@ -841,8 +843,8 @@ def _solve_screened_poisson(
     # recurrence's four scalars.
     scalars = _launch.empty((10, 1), dtype=wp.float64, device=device)
     atol_sq = twt.as_dense(scalars[0, 0:1])
-    dots = twt.as_array2d(scalars[1:3], wp.float64)
-    coefficients = twt.as_array2d(scalars[3:6], wp.float64)
+    dots = twt.as_array2d(twt.as_dense(scalars[1:3]), wp.float64)
+    coefficients = twt.as_array2d(twt.as_dense(scalars[3:6]), wp.float64)
     gamma_old, alpha_old, gamma_new, alpha_new = (
         twt.as_dense(scalars[row, 0:1]) for row in range(6, 10)
     )
@@ -923,7 +925,7 @@ def _solve_screened_poisson(
         )
         multigrid.apply(r, u)
 
-    run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], round_)
+    run_device_loop(device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
     return twt.as_dense(scalars.flatten()[0:2])
 
 
@@ -1208,7 +1210,7 @@ def _screened_poisson_adaptive(
         hashgrid = tw.neighbors.hashgrid_from_points(positions, band_r + falloff)
         refinement = fem.ImplicitField(
             domain=fem.Cells(fem.Nanogrid(coarse_grid)),
-            func=kernel_poisson_fem.refinement_oracle,
+            func=cast("wp.Function", kernel_poisson_fem.refinement_oracle),
             values={
                 "grid": hashgrid.id,
                 "pts": positions,
@@ -1227,19 +1229,34 @@ def _screened_poisson_adaptive(
         trial = fem.make_trial(space, domain=domain)
         quadrature = fem.PicQuadrature(domain, positions, measures)
 
-        matrix = fem.integrate(kernel_poisson_fem.diffusion_form, fields={"u": trial, "v": test})
-        matrix += fem.integrate(
-            kernel_poisson_fem.screening_form,
-            quadrature=quadrature,
-            fields={"u": trial, "v": test},
-            values={"screen": wp.float32(screen)},
+        # ``kernels/`` is not type-checked, so its ``@fem.integrand`` forms reach here untyped; a
+        # bilinear form integrates to a ``float32`` matrix, a linear one to a ``float32`` array.
+        matrix = cast(
+            "twt.BsrMatrix[wp.float32]",
+            fem.integrate(
+                cast("fem.Integrand", kernel_poisson_fem.diffusion_form),
+                fields={"u": trial, "v": test},
+            ),
         )
-        rhs = fem.integrate(
-            kernel_poisson_fem.source_form,
-            quadrature=quadrature,
-            fields={"v": test},
-            values={"normals": unit_normals},
-            output_dtype=float,
+        screening = cast(
+            "twt.BsrMatrix[wp.float32]",
+            fem.integrate(
+                cast("fem.Integrand", kernel_poisson_fem.screening_form),
+                quadrature=quadrature,
+                fields={"u": trial, "v": test},
+                values={"screen": wp.float32(screen)},
+            ),
+        )
+        matrix = twt.bsr_axpy(screening, matrix)  # ``matrix += screening``, in place
+        rhs = cast(
+            "wp.array[wp.float32]",
+            fem.integrate(
+                cast("fem.Integrand", kernel_poisson_fem.source_form),
+                quadrature=quadrature,
+                fields={"v": test},
+                values={"normals": unit_normals},
+                output_dtype=float,
+            ),
         )
 
         solution = _launch.zeros_like(rhs)
@@ -1259,7 +1276,7 @@ def _screened_poisson_adaptive(
 
         sampled = _launch.zeros(n, dtype=wp.float32, device=device)
         fem.interpolate(
-            kernel_poisson_fem.sample_field,
+            cast("fem.Integrand", kernel_poisson_fem.sample_field),
             at=domain,
             dim=n,
             fields={"u": field},
@@ -1309,7 +1326,7 @@ def _extract_poisson_surface_fem(
     )
     values = _launch.zeros(res * res * res, dtype=wp.float32, device=device)
     fem.interpolate(
-        kernel_poisson_fem.sample_field,
+        cast("fem.Integrand", kernel_poisson_fem.sample_field),
         at=domain,
         dim=res * res * res,
         fields={"u": field},
@@ -1406,18 +1423,21 @@ def resample_uniform(
     # Three voxels of slack beyond the box and beyond the offset, so a dilated level set closes
     # inside the lattice instead of being cut off by it.
     pad = 3.0 * voxel_size + max(offset, 0.0)
-    grid_lower = wp.vec3(lower[0] - pad, lower[1] - pad, lower[2] - pad)
-    grid_upper = wp.vec3(upper[0] + pad, upper[1] + pad, upper[2] + pad)
+    grid_lower = wp.vec3(*(component - pad for component in twt.vec3_floats(lower)))
+    grid_upper = wp.vec3(*(component + pad for component in twt.vec3_floats(upper)))
+    # The ``float32`` corners just built, as floats: the extents below are taken from the rounded
+    # lattice the kernels see, not from the host values before rounding.
+    grid_lower_f, grid_upper_f = twt.vec3_floats(grid_lower), twt.vec3_floats(grid_upper)
     # Carry the extents as plain ints and build the ``wp.vec3i`` once, where the launch needs it:
     # a ``wp.vec3i`` has to be unpacked with ``int(...)`` at every use anyway.
     n_x, n_y, n_z = (
-        max(2, math.ceil((grid_upper[axis] - grid_lower[axis]) / voxel_size) + 1)
+        max(2, math.ceil((grid_upper_f[axis] - grid_lower_f[axis]) / voxel_size) + 1)
         for axis in range(3)
     )
-    resolution = wp.vec3i(n_x, n_y, n_z)
+    resolution = wp.vec3i(wp.int32(n_x), wp.int32(n_y), wp.int32(n_z))
     spacing = wp.vec3(
         *(
-            (grid_upper[axis] - grid_lower[axis]) / float(extent - 1)
+            (grid_upper_f[axis] - grid_lower_f[axis]) / float(extent - 1)
             for axis, extent in enumerate((n_x, n_y, n_z))
         )
     )
@@ -1584,7 +1604,7 @@ def ball_pivoting(
     _bpa_run(state, max_waves if max_waves > 0 else 16 * n)
 
     count = int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
-    faces = _launch.clone(state.all_faces[: count * 3])
+    faces = _launch.clone(twt.as_dense(state.all_faces[: count * 3]))
     return _clean_reconstruction(points, faces, crit_hole_length)
 
 
@@ -1771,7 +1791,7 @@ class _BpaState:
         )
 
 
-def _mean_positive_finite(values: wp.array[wp.float32]) -> float | None:
+def _mean_positive_finite(values: twt.ArrayNdFloat32) -> float | None:
     """
     Mean of the strictly positive finite entries of ``values``, or ``None`` if there are none.
 

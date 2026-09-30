@@ -53,6 +53,7 @@ problems.
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING, cast
 
 import igl
 import numpy as np
@@ -64,6 +65,9 @@ from meshlib import mrmeshpy as mm
 
 import triwarp as tw
 from conftest import BenchCase, skip_larger_than
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 _TARGET_SAMPLES = 2_000
 _SEED = 11
@@ -266,7 +270,10 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
             _POOL_FACTOR * target,
             seed=_SEED,
         )[:2]
-        cloud_ml = mn.pointCloudFromPoints(np.ascontiguousarray(pool_np, dtype=np.float64))
+        # MeshLib's stubs type this as ``Buffer``, which numpy's stubs implement only from 3.12.
+        cloud_ml = mn.pointCloudFromPoints(
+            cast("Buffer", np.ascontiguousarray(pool_np, dtype=np.float64))
+        )
         settings_ml = mm.UniformSamplingSettings()
         settings_ml.distance = radius
         sampled_ml = bench_case.run(lambda: mm.pointUniformSampling(cloud_ml, settings_ml))

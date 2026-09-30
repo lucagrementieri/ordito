@@ -395,7 +395,8 @@ def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     # vector types so a vector held in a variable resolves against them.
     unit_normal = twt.normalize(normal)
     axis = wp.vec3(1.0, 0.0, 0.0)
-    if abs(unit_normal[0]) > 0.9:
+    normal_x, _, _ = unit_normal
+    if abs(normal_x) > 0.9:
         axis = wp.vec3(0.0, 1.0, 0.0)
     u = twt.normalize(twt.cross(axis, unit_normal))
     v = twt.cross(unit_normal, u)
@@ -1550,7 +1551,8 @@ def radial_sort(
         # then `0 > 0`, False, so `helper = (1, 0, 0)` and
         # `cross((0, 0, 1), (1, 0, 0)) == (0, 1, 0)`, matching it bit for bit.
         helper = wp.vec3(1.0, 0.0, 0.0)
-        if abs(normal[0]) > abs(normal[1]):
+        normal_x, normal_y, _ = normal
+        if abs(normal_x) > abs(normal_y):
             helper = wp.vec3(0.0, 1.0, 0.0)
         # Python-scope builtin dispatch, once per call against a per-point device sort; NumPy is no
         # cheaper here, ``np.cross`` being slower than ``wp.cross``. Same decline as ``plane_basis``

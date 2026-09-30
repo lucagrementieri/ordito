@@ -25,13 +25,13 @@ from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels.array import update_argmax, update_argmin
 
 # Per-source scratch capacities (rows of the wrapper-allocated global-memory pools).
-# ``_PER_SOURCE_MAX_NEIGHBORS`` caps the queue — and therefore the collected set — as before;
+# ``PER_SOURCE_MAX_NEIGHBORS`` caps the queue — and therefore the collected set — as before;
 # the visited hash row is power-of-two sized with a 3/4 load-factor fill bound; the extras pool
 # only needs to hold the nearest out-of-ball frontier for the ``min_count`` backfill.
-_PER_SOURCE_MAX_NEIGHBORS = 512
-_VISITED_HASH_CAPACITY = 1024
+PER_SOURCE_MAX_NEIGHBORS = 512
+VISITED_HASH_CAPACITY = 1024
 _VISITED_MAX_FILL = 768
-_EXTRAS_CAPACITY = 64
+EXTRAS_CAPACITY = 64
 
 
 @wp.func

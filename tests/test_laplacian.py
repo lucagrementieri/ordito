@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import igl
 import numpy as np
 import potpourri3d as pp3d
@@ -13,6 +15,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.comparisons import assert_nonconstant
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -63,7 +66,7 @@ def test_face_gradients_matches_igl(request: pytest.FixtureRequest, mesh_name: s
     values_np = np.ascontiguousarray(vertices_np[:, 2])
 
     n_faces = faces_np.shape[0]
-    stacked_igl = igl.grad(vertices_np, faces_np) @ values_np
+    stacked_igl = np.asarray(igl.grad(vertices_np, faces_np) @ values_np)
     gradients_igl = np.stack(
         [stacked_igl[:n_faces], stacked_igl[n_faces : 2 * n_faces], stacked_igl[2 * n_faces :]],
         axis=1,
@@ -342,10 +345,11 @@ def test_cotmatrix_entries_intrinsic(request: pytest.FixtureRequest, mesh_name: 
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
-    edge_lengths_igl = igl.edge_lengths(vertices_np, faces_np)
+    edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
     cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
-    edge_lengths_wp = wp.array(
-        edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device
+    edge_lengths_wp = twt.as_array2d(
+        wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
+        wp.float32,
     )
     cot_entries_wp = tw.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp)
 
@@ -364,9 +368,10 @@ def test_cotmatrix_entries_intrinsic_float64(icosahedron: tuple[tm.Trimesh, wp.M
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
-    edge_lengths_igl = igl.edge_lengths(vertices_np, faces_np)
-    edge_lengths_wp = wp.array(
-        edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device
+    edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
+    edge_lengths_wp = twt.as_array2d(
+        wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
+        wp.float32,
     )
     cot_entries_wp = tw.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=wp.float64)
 
@@ -464,9 +469,10 @@ def test_cotmatrix_and_mass_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh
     mesh_tm, mesh_wp = icosphere
     n_vertices = len(mesh_tm.vertices)
     mesh_p3d = trimesh_to_pytorch3d(mesh_tm)
-    cotangent_p3d, inv_areas_p3d = p3d_ops.cot_laplacian(
-        mesh_p3d.verts_packed(), mesh_p3d.faces_packed()
-    )
+    verts_p3d, faces_p3d = mesh_p3d.verts_packed(), mesh_p3d.faces_packed()
+    assert verts_p3d is not None
+    assert faces_p3d is not None
+    cotangent_p3d, inv_areas_p3d = p3d_ops.cot_laplacian(verts_p3d, faces_p3d)
     cotangent_p3d = cotangent_p3d.to_dense().numpy()
     inv_areas_p3d = inv_areas_p3d.numpy().reshape(-1)
 
@@ -504,12 +510,11 @@ def test_laplacian_operators_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mes
     mesh_tm, mesh_wp = icosphere
     n_vertices = len(mesh_tm.vertices)
     mesh_p3d = trimesh_to_pytorch3d(mesh_tm)
-    uniform_p3d = (
-        p3d_ops.laplacian(mesh_p3d.verts_packed(), mesh_p3d.edges_packed()).to_dense().numpy()
-    )
-    inverse_p3d = (
-        p3d_ops.norm_laplacian(mesh_p3d.verts_packed(), mesh_p3d.edges_packed()).to_dense().numpy()
-    )
+    verts_p3d, edges_p3d = mesh_p3d.verts_packed(), mesh_p3d.edges_packed()
+    assert verts_p3d is not None
+    assert edges_p3d is not None
+    uniform_p3d = p3d_ops.laplacian(verts_p3d, edges_p3d).to_dense().numpy()
+    inverse_p3d = p3d_ops.norm_laplacian(verts_p3d, edges_p3d).to_dense().numpy()
     row_sums_p3d = inverse_p3d.sum(axis=1, keepdims=True)
     normalized_p3d = inverse_p3d / np.where(row_sums_p3d == 0.0, 1.0, row_sums_p3d)
 
@@ -541,7 +546,7 @@ def test_cotmatrix_null_space(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
     ones = np.ones(vertices_np.shape[0], dtype=np.float64)
-    assert np.linalg.norm(laplacian_igl @ ones) < 1e-10
+    assert np.linalg.norm(cast("np.ndarray", laplacian_igl @ ones)) < 1e-10
 
     laplacian_wp = bsr_to_csr(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
     ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
@@ -623,7 +628,12 @@ def test_mesh_operator_pattern_builds_agree(
 @pytest.mark.parametrize(
     "operator", ["cotmatrix", "connection_laplacian", "laplacian_symmetric", "laplacian_directed"]
 )
-def test_mesh_operator_pattern_reused_matches_a_fresh_build(operator: str, device: str) -> None:
+def test_mesh_operator_pattern_reused_matches_a_fresh_build(
+    operator: Literal[
+        "cotmatrix", "connection_laplacian", "laplacian_symmetric", "laplacian_directed"
+    ],
+    device: str,
+) -> None:
     """
     Triwarp against triwarp: an operator over a reused pattern equals one that builds its own.
 
@@ -686,7 +696,11 @@ def test_mesh_operator_pattern_rejects_a_mismatch(icosahedron: tuple[tm.Trimesh,
     with pytest.raises(ValueError, match="edges or pattern"):
         tw.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges, pattern=cot)
     with pytest.raises(ValueError, match="operator must be one of"):
-        tw.laplacian.mesh_operator_pattern(faces, n, operator="graph")
+        tw.laplacian.mesh_operator_pattern(
+            faces,
+            n,
+            operator="graph",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
+        )
 
 
 # -----------------------------------------------------------------------------------------
@@ -716,7 +730,9 @@ def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
     )
 
 
-def test_robust_laplacian_keeps_couplings_the_plain_one_drops(sliver_patch: tuple) -> None:
+def test_robust_laplacian_keeps_couplings_the_plain_one_drops(
+    sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]],
+) -> None:
     """
     Mollification's purpose, on a mesh with a triangle too thin to have cotangents.
 
@@ -900,7 +916,9 @@ def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(icosahedron: tuple[object,
     assert np.array_equal(mollified.numpy(), original.numpy())
 
 
-def test_mollify_intrinsic_restores_the_triangle_inequality(sliver_patch: tuple) -> None:
+def test_mollify_intrinsic_restores_the_triangle_inequality(
+    sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]],
+) -> None:
     _, _, vertices_wp, faces_wp = sliver_patch
     original = tw.edges.face_edge_lengths(vertices_wp, faces_wp).numpy()
     mollified, delta = tw.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
@@ -940,7 +958,7 @@ def test_mollify_intrinsic_restores_the_triangle_inequality(sliver_patch: tuple)
 # --- connection_laplacian / laplacian_entries -------------------------------------------
 
 
-def _dense_blocks_2x2(matrix: object, n_vertices: int) -> np.ndarray:
+def _dense_blocks_2x2(matrix: twt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
     """
     Densify a ``(n, n)`` matrix of ``mat22d`` blocks into a plain ``(2n, 2n)`` array.
 
@@ -959,7 +977,7 @@ def _dense_blocks_2x2(matrix: object, n_vertices: int) -> np.ndarray:
     return dense
 
 
-def _connection_complex(matrix, n_vertices: int) -> np.ndarray:
+def _connection_complex(matrix: twt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
     """
     Fold the ``2 x 2`` real blocks into one complex matrix, the form potpourri3d returns.
 

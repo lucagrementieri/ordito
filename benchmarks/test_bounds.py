@@ -136,7 +136,8 @@ def test_aabb(bench_case: BenchCase) -> None:
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
         box_ml = bench_case.run(
-            lambda: mm.computeBoundingBox(mesh_ml.topology, mesh_ml.points, None)
+            # ``None`` is the whole mesh; the stub omits that the region is nullable.
+            lambda: mm.computeBoundingBox(mesh_ml.topology, mesh_ml.points, None)  # pyright: ignore[reportArgumentType]
         )
         assert box_ml.min.x <= box_ml.max.x
         return

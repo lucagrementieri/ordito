@@ -493,7 +493,7 @@ def _upsample(
     polyline: wp.array[wp.vec3],
     step_size: float,
     closed: bool,
-    gather_kernel: wp.Kernel,
+    gather_kernel: twt.Kernel,
     extra_inputs: list[wp.int32 | wp.float32],
 ) -> wp.array[wp.vec3]:
     """
@@ -795,7 +795,7 @@ def polyline_simplify(
                 device=device,
             )
 
-        condition = state[kernel_array.LOOP_CONDITION_VIEW]
+        condition = twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
         run_device_loop(device, condition, split_round)
 
     simplified, indices = _gather_kept(keep, polyline, return_indices=True)
@@ -1322,7 +1322,7 @@ def _triangulate_ring(
             device=device,
         )
         count = int(read_scalar(count_wp, 0))
-        return n_ring, twt.as_array2d(out_faces[0:count], wp.int32)
+        return n_ring, twt.as_array2d(twt.as_dense(out_faces[0:count]), wp.int32)
 
     left = _launch.empty(n_ring, dtype=wp.int32, device=device)
     right = _launch.empty(n_ring, dtype=wp.int32, device=device)
@@ -1361,8 +1361,8 @@ def _triangulate_ring(
             device=device,
         )
 
-    condition = state[kernel_array.LOOP_CONDITION_VIEW]
+    condition = twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW])
     run_device_loop(device, condition, clip_round)
 
     count = int(read_scalar(state, int(kernel_polyline.EAR_COUNT)))
-    return n_ring, twt.as_array2d(out_faces[0:count], wp.int32)
+    return n_ring, twt.as_array2d(twt.as_dense(out_faces[0:count]), wp.int32)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, cast
 
 import igl
 import numpy as np
@@ -15,6 +15,7 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.comparisons import lexsort_rows
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -23,6 +24,7 @@ from tests.conversions import (
     trimesh_to_meshlib,
     trimesh_to_open3d,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 _Objective = Literal["volume", "surface_area", "diagonal"]
@@ -77,8 +79,8 @@ def test_aabb_matches_trimesh_open3d_and_igl(
     bounds_o3d = np.stack([box_o3d.get_min_bound(), box_o3d.get_max_bound()])
     assert np.allclose(bounds_wp, bounds_o3d, rtol=1e-5, atol=1e-5)
 
-    corners_igl, faces_igl = igl.bounding_box(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
+    corners_igl, faces_igl = map(
+        np.asarray, igl.bounding_box(np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64))
     )
     assert corners_igl.shape == (8, 3), "the box comes back as its 8 corner vertices"
     assert faces_igl.shape == (12, 3), "and the 12 triangles of its hull"
@@ -86,7 +88,8 @@ def test_aabb_matches_trimesh_open3d_and_igl(
     assert np.allclose(bounds_wp, bounds_igl, rtol=1e-5, atol=1e-5)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
-    box_ml = mm.computeBoundingBox(mesh_ml.topology, mesh_ml.points, None)
+    # MeshLib reads a ``None`` region as the whole mesh; its stub types the argument non-optional.
+    box_ml = mm.computeBoundingBox(mesh_ml.topology, mesh_ml.points, None)  # pyright: ignore[reportArgumentType]
     bounds_ml = np.stack([[*box_ml.min], [*box_ml.max]])
     assert np.allclose(bounds_wp, bounds_ml, rtol=1e-5, atol=1e-5)
 
@@ -167,13 +170,13 @@ def test_aabb_union_encloses_both_boxes() -> None:
 
     union_min, union_max = tw.bounds.aabb_union(a_min, a_max, b_min, b_max)
 
-    assert np.allclose([union_min.x, union_min.y, union_min.z], [-1.0, -5.0, 2.0])
-    assert np.allclose([union_max.x, union_max.y, union_max.z], [2.0, 3.0, 4.0])
+    assert np.allclose(twt.vec3_floats(union_min), [-1.0, -5.0, 2.0])
+    assert np.allclose(twt.vec3_floats(union_max), [2.0, 3.0, 4.0])
     # Idempotent, and each input box is contained in the result.
     for box_min, box_max in ((a_min, a_max), (b_min, b_max)):
         again_min, again_max = tw.bounds.aabb_union(union_min, union_max, box_min, box_max)
-        assert np.allclose([again_min.x, again_min.y, again_min.z], [-1.0, -5.0, 2.0])
-        assert np.allclose([again_max.x, again_max.y, again_max.z], [2.0, 3.0, 4.0])
+        assert np.allclose(twt.vec3_floats(again_min), [-1.0, -5.0, 2.0])
+        assert np.allclose(twt.vec3_floats(again_max), [2.0, 3.0, 4.0])
 
 
 def test_aabb_union_matches_a_pooled_reduction(device: str) -> None:
@@ -230,7 +233,7 @@ def test_enclosing_diagonal_ignores_an_empty_second_set(device: str) -> None:
     """``other=None`` and ``other=<empty>`` both measure ``points`` alone."""
     rng = np.random.default_rng(12)
     cloud_wp = points_to_warp(rng.normal(size=(128, 3)), device)
-    empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
 
     alone = tw.bounds.enclosing_diagonal(cloud_wp)
     assert alone == tw.bounds.enclosing_diagonal(cloud_wp, None)
@@ -311,7 +314,7 @@ def _original_face_rows(
     distance_np, original_np = cKDTree(vertices_np).query(sub_np)
     assert np.max(distance_np) < 1e-5, "a cropped vertex is not one of the input's"
     assert np.unique(original_np).size == original_np.size, "the vertex match is not 1:1"
-    rows_np = original_np[sub_faces_wp.numpy().reshape(-1, 3)]
+    rows_np = np.asarray(original_np)[sub_faces_wp.numpy().reshape(-1, 3)]
     return lexsort_rows(np.sort(rows_np, axis=1))
 
 
@@ -609,7 +612,7 @@ def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     """An empty cloud and an inverted box both select nothing, through all four entry points."""
     rng = np.random.default_rng(21)
     cloud_wp = points_to_warp(rng.normal(size=(64, 3)), device)
-    empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
     lower_wp, upper_wp = wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
     identity_wp = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
@@ -623,7 +626,9 @@ def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     assert tw.bounds.points_in_obb(cloud_wp, identity_wp, upper_wp, lower_wp).size == 0
 
 
-def _tilted_cloud(mesh_tm: tm.Trimesh, device: str) -> tuple[np.ndarray, wp.array[wp.vec3]]:
+def _tilted_cloud(
+    mesh_tm: tm.Trimesh, device: wp.DeviceLike
+) -> tuple[np.ndarray, wp.array[wp.vec3]]:
     """
     Stretch a fixture's vertices anisotropically and rotate them off the coordinate axes.
 
@@ -697,7 +702,7 @@ def test_oriented_bounding_box_matches_igl(
     )
 
     # igl applies its matrix on the right of a row vector, so its frame is triwarp's transposed.
-    frame_igl = igl.oriented_bounding_box(points_np, 512, igl_objective).T
+    frame_igl = np.asarray(igl.oriented_bounding_box(points_np, 512, igl_objective)).T
     frame_wp = _frame_np(rotation_wp)
     loss_wp = _achieved_loss(points_np, frame_wp, objective)
     loss_igl = _achieved_loss(points_np, frame_igl, objective)
@@ -738,7 +743,7 @@ def test_oriented_bounding_box_frame_matches_igl_transposed(
     rotation_wp, _, _ = tw.bounds.oriented_bounding_box(points_wp, 512, refine_iterations=0)
 
     frame_np = _frame_np(rotation_wp)
-    assert np.allclose(frame_np, igl.oriented_bounding_box(points_np, 512).T, atol=1e-5)
+    assert np.allclose(frame_np, np.asarray(igl.oriented_bounding_box(points_np, 512)).T, atol=1e-5)
     # A proper rotation, not a reflection: the box axes are right-handed.
     assert np.allclose(frame_np @ frame_np.T, np.eye(3), atol=1e-5)
     assert np.isclose(np.linalg.det(frame_np), 1.0, atol=1e-5)
@@ -819,7 +824,8 @@ def test_oriented_bounding_box_beats_the_pyvista_pca_box(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    volume_pv = float(pv.PolyData(points_np).oriented_bounding_box(as_composite=False).volume)
+    box_pv = cast("pv.PolyData", pv.PolyData(points_np).oriented_bounding_box(as_composite=False))
+    volume_pv = float(box_pv.volume)
     assert volume_pv > 0.0, "the reference produced a box before it is compared to"
 
     _rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(points_wp, 32768)
@@ -1094,6 +1100,6 @@ def test_oriented_bounding_box_rejects_bad_arguments(device: str) -> None:
     with pytest.raises(ValueError, match="rotations must be >= 1"):
         tw.bounds.oriented_bounding_box(points_wp, 0)
     with pytest.raises(ValueError, match="objective must be"):
-        tw.bounds.oriented_bounding_box(points_wp, 8, "perimeter")
+        tw.bounds.oriented_bounding_box(points_wp, 8, "perimeter")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="refine_iterations must be >= 0"):
         tw.bounds.oriented_bounding_box(points_wp, 8, refine_iterations=-1)

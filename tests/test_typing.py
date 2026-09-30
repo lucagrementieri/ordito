@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any, cast
+
 import numpy as np
 import pytest
 import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
+from tests.conversions import warp_empty
 
 
 def test_ensure_ndim_rejects_1d(device: str) -> None:
@@ -15,13 +19,13 @@ def test_ensure_ndim_rejects_1d(device: str) -> None:
 
 
 def test_as_array2d_accepts_2d(device: str) -> None:
-    arr = wp.empty((2, 3), dtype=wp.int32, device=device)
+    arr = warp_empty((2, 3), wp.int32, device)
     out = twt.as_array2d(arr, wp.int32)
     assert out.ndim == 2
     assert out.dtype == wp.int32
 
 
-_INT_WP_TO_NUMPY = (
+_INT_WP_TO_NUMPY: tuple[tuple[type, type[np.integer]], ...] = (
     (wp.int8, np.int8),
     (wp.uint8, np.uint8),
     (wp.int16, np.int16),
@@ -32,7 +36,7 @@ _INT_WP_TO_NUMPY = (
     (wp.uint64, np.uint64),
 )
 
-_FLOAT_DTYPES = (wp.float16, wp.float32, wp.float64)
+_FLOAT_DTYPES: tuple[type, ...] = (wp.float16, wp.float32, wp.float64)
 
 
 def test_dtype_max() -> None:
@@ -69,7 +73,12 @@ def test_the_empty_family_is_one_allocator_at_three_ranks(
     drifting apart again. Excludes: nothing about the *contents*, which are deliberately
     uninitialized.
     """
-    allocate = {1: twt.empty_1d, 2: twt.empty_2d, 3: twt.empty_3d}[len(shape)]
+    allocators: dict[int, Callable[..., wp.array[object, Any]]] = {
+        1: twt.empty_1d,
+        2: twt.empty_2d,
+        3: twt.empty_3d,
+    }
+    allocate = allocators[len(shape)]
     arr = allocate(shape[0] if len(shape) == 1 else shape, dtype_wp, device=device)
     assert arr.shape == shape
     assert arr.ndim == len(shape)
@@ -80,9 +89,9 @@ def test_the_empty_family_is_one_allocator_at_three_ranks(
 def test_the_empty_family_rejects_a_shape_of_the_wrong_rank(device: str) -> None:
     """The rank each entry point fixes is checked against ``shape``, not merely annotated."""
     with pytest.raises(ValueError, match="2D shape must have length 2"):
-        twt.empty_2d((2, 3, 4), wp.int32, device=device)
+        twt.empty_2d((2, 3, 4), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
     with pytest.raises(ValueError, match="3D shape must have length 3"):
-        twt.empty_3d((2, 3), wp.int32, device=device)
+        twt.empty_3d((2, 3), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
 
 
 def test_dtype_zero_splits_int_and_float_like_python() -> None:
@@ -108,7 +117,7 @@ def test_empty_3d_shape(device: str, dtype_wp: type) -> None:
     assert str(arr.device) == device
 
 
-_SCALAR_DTYPES = (
+_SCALAR_DTYPES: tuple[type, ...] = (
     wp.int8,
     wp.uint8,
     wp.int16,
@@ -178,6 +187,7 @@ def test_sortable_dtype_preserves_the_order_of_the_original_values(
     already-sortable dtype and says so, and this mirrors what ``grouping.group`` and
     ``grouping.unique_1d`` do with the answer.
     """
+    sort_dtype = twt.sortable_dtype(dtype_wp)
     if dtype_wp is wp.uint64:
         values_np = np.array([2**63 + 5, 1, 2**64 - 1, 0, 2**63], dtype=np.uint64)
     elif dtype_wp is wp.float16:
@@ -188,14 +198,14 @@ def test_sortable_dtype_preserves_the_order_of_the_original_values(
         values_np = np.array([65535, 0, 1, 32768, 7], dtype=np.uint16)
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
 
-    sort_dtype = twt.sortable_dtype(dtype_wp)
-    widened_wp = wp.empty(values_np.size, dtype=sort_dtype, device=device)
+    widened_wp = warp_empty(values_np.size, sort_dtype, device)
     if sort_dtype is dtype_wp:
         wp.copy(widened_wp, values_wp)
     else:
         wp.utils.array_cast(values_wp, widened_wp)
 
-    sorted_wp, order_wp = tw.array.sort_and_argsort(widened_wp)
+    # One array of a union dtype, where the sort takes a union of arrays: dtype is invariant.
+    sorted_wp, order_wp = tw.array.sort_and_argsort(cast("twt.ArrayNdScalar", widened_wp))
 
     # Compare against the *original* dtype's numpy order: the widening must not have changed it.
     assert np.array_equal(order_wp.numpy(), np.argsort(values_np, kind="stable"))

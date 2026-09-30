@@ -30,7 +30,7 @@ from meshlib import mrmeshpy as mm  # noqa: E402
 
 import triwarp as tw  # noqa: E402
 from tests.conversions import meshlib_to_trimesh, trimesh_to_warp, warp_to_trimesh  # noqa: E402
-from triwarp.mesh import _CachedProperty  # noqa: E402
+from triwarp.mesh import _CachedProperty  # noqa: E402  # pyright: ignore[reportPrivateUsage]
 
 # Reject a launch whose array arguments do not live on the launch device. Warp's default is
 # RELAXED, which passes the pointers straight through: a launch that forgets ``device=`` lands on
@@ -440,7 +440,9 @@ def torus_components(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 
 
 @pytest.fixture
-def sliver_patch(device: str) -> tuple[np.ndarray, np.ndarray, wp.array, wp.array]:
+def sliver_patch(
+    device: str,
+) -> tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Build a patch with one near-zero-area triangle, thin enough to break the triangle inequality.
 

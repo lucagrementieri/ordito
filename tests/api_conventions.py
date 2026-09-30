@@ -300,11 +300,11 @@ _DEVICE_CALL_OWNERS = frozenset({("wp",), ("_launch",)})
 # docstring of the function it sits in has to say the same thing -- an undocumented fallback is
 # the defect, not the fallback itself.
 _ALLOCATION_DEVICE_ALLOWLIST: dict[tuple[str, str], str] = {
-    ("combine", "wp.empty(0, dtype=wp.vec3)"): (
+    ("combine", "_launch.empty(0, dtype=wp.vec3)"): (
         "concatenate([]) has no input to take a device from, so the current device is the only "
         "answer available; its Returns block says so"
     ),
-    ("combine", "wp.empty(0, dtype=wp.int32)"): (
+    ("combine", "_launch.empty(0, dtype=wp.int32)"): (
         "the face half of the same empty return, for the same reason"
     ),
 }
@@ -849,7 +849,7 @@ def duplicate_name_problems() -> list[str]:
         f"{name!r} is public in {', '.join(sorted(modules))} -- two functions with one name are "
         "one name too few; say what each returns"
         for name, modules in sorted(homes.items())
-        if len(modules) > 1 and modules != _DUPLICATE_NAME_ALLOWLIST.get(name)
+        if len(modules) > 1 and frozenset(modules) != _DUPLICATE_NAME_ALLOWLIST.get(name)
     ]
 
 

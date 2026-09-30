@@ -1,6 +1,11 @@
 """Regression tests for ``triwarp.transform`` against Trimesh (CPU reference)."""
 
+# This file tests ``triwarp.Trimesh``'s private transform cache directly.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
+
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -15,10 +20,14 @@ from tests.conversions import (
     points_to_open3d,
     points_to_warp,
     trimesh_to_pyvista,
+    warp_empty,
     warp_to_trimesh,
 )
 from triwarp.mesh import _ORIENTATION_DEPENDENT_KEYS
 from triwarp.transform import TransformKind
+
+if TYPE_CHECKING:
+    import open3d as o3d
 
 # One representative matrix per class, reused across the classification and cache tests. The
 # similarity is a scale *composed with a rotation* on purpose: a pure scale leaves every direction
@@ -171,14 +180,12 @@ def test_transform_points_mismatched_out_length_raises(device: str) -> None:
     """
     points_wp = points_to_warp(np.random.default_rng(3).normal(size=(5, 3)), device)
     with pytest.raises(ValueError, match="out must have length"):
-        tw.transform.transform_points(
-            points_wp, _ROTATION, out=wp.empty(2, dtype=wp.vec3, device=device)
-        )
+        tw.transform.transform_points(points_wp, _ROTATION, out=warp_empty(2, wp.vec3, device))
     with pytest.raises(ValueError, match="out must have length"):
         tw.transform.transform_points(
             points_wp,
             wp.array([_ROTATION], dtype=wp.mat44, device=device),
-            out=wp.empty(2, dtype=wp.vec3, device=device),
+            out=warp_empty(2, wp.vec3, device),
         )
 
 
@@ -196,7 +203,7 @@ def test_as_mat44_mismatched_length_raises(device: str) -> None:
     with pytest.raises(ValueError, match="length-1"):
         tw.transform.as_mat44(wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device))
     with pytest.raises(ValueError, match="length-1"):
-        tw.transform.as_mat44(wp.empty(0, dtype=wp.mat44, device=device))
+        tw.transform.as_mat44(warp_empty(0, wp.mat44, device))
 
 
 def test_matrix_to_numpy_round_trips_a_scalar_and_a_device_matrix(device: str) -> None:
@@ -279,7 +286,7 @@ def test_transform_normals_singular_matrix_raises_on_empty_input(device: str) ->
     the same singular matrix that raises above was silently accepted whenever there was nothing to
     transform.
     """
-    normals_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    normals_wp = warp_empty(0, wp.vec3, device)
     with pytest.raises(ValueError, match="invertible"):
         tw.transform.transform_normals(normals_wp, tw.transform.scale_matrix((1.0, 1.0, 0.0)))
 
@@ -331,7 +338,9 @@ def test_transform_points_matches_open3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) 
     """Class A: ``transform_points`` against ``open3d.geometry.PointCloud.transform``."""
     mesh_tm, mesh_wp = icosphere
     matrix_np = np.array(_ROTATION, dtype=np.float64).reshape(4, 4)
-    cloud_o3d = points_to_open3d(mesh_tm.vertices).transform(matrix_np)
+    cloud_o3d = cast(
+        "o3d.geometry.PointCloud", points_to_open3d(mesh_tm.vertices).transform(matrix_np)
+    )
     assert np.allclose(
         tw.transform.transform_points(mesh_wp.points, _ROTATION).numpy(),
         np.asarray(cloud_o3d.points),
@@ -414,7 +423,7 @@ def test_transform_mesh_mismatched_out_faces_length_raises(
             mesh_wp.points,
             mesh_wp.indices,
             _ROTATION,
-            out_faces=wp.empty(3, dtype=wp.int32, device=mesh_wp.device),
+            out_faces=warp_empty(3, wp.int32, mesh_wp.device),
         )
 
 
@@ -529,7 +538,9 @@ def test_carried_cache_matches_recomputation(
         if key == "warp_mesh":
             continue
         if key in SET_VALUED_CACHE_KEYS:
-            assert csr_row_sets(carried) == csr_row_sets(getattr(reference, key)), (
+            assert csr_row_sets(
+                cast("tuple[wp.array[wp.int32], wp.array[wp.int32]]", carried)
+            ) == csr_row_sets(getattr(reference, key)), (
                 f"{kind} carried a stale {key} on {mesh_name}"
             )
             continue
@@ -590,7 +601,10 @@ def test_transform_rotates_the_tangent_frames_where_it_can(
     mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
     frames = mesh.vertex_tangent_frames
     moved = mesh.transform(matrix)
-    carried = moved._cache.get("vertex_tangent_frames")
+    carried = cast(
+        "tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None",
+        moved._cache.get("vertex_tangent_frames"),
+    )
 
     if kind in (TransformKind.REFLECTION, TransformKind.AFFINE, TransformKind.SINGULAR):
         assert carried is None, f"{kind} carried a frame it does not preserve"

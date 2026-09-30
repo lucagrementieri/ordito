@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import partial
+from typing import TYPE_CHECKING, Literal, Required, TypedDict, cast
 
 import numpy as np
 import open3d as o3d
@@ -22,8 +23,22 @@ from tests.conversions import (
     points_to_torch,
     points_to_warp,
     trimesh_to_meshlib,
+    warp_empty,
 )
 from triwarp.kernels import registration as kernel_registration
+
+if TYPE_CHECKING:
+    from numpy.typing import NDArray
+
+_RobustKernel = Literal["none", "huber", "tukey"]
+
+
+class _IcpOptions(TypedDict, total=False):
+    """The ICP keywords the ``options`` parametrizations vary."""
+
+    max_iterations: Required[int]
+    threshold: float
+    max_distance: float
 
 
 def _make_point_clouds(rng: np.random.Generator, n: int = 200) -> tuple[np.ndarray, np.ndarray]:
@@ -41,7 +56,7 @@ def _run_both(
     reflection: bool = True,
     translation: bool = True,
     scale: bool = True,
-) -> tuple:
+) -> tuple[np.ndarray, np.ndarray, float, np.ndarray, wp.array[wp.vec3], float]:
     """Return (matrix_tm, transformed_tm, cost_tm, matrix_tw, transformed_tw, cost_tw)."""
     kwargs = dict(reflection=reflection, translation=translation, scale=scale)
 
@@ -56,7 +71,7 @@ def _run_both(
     )
 
     matrix_wp, transformed_wp, cost_tw = tw.registration.procrustes(
-        a_wp, b_wp, weights=weights_wp, **kwargs
+        a_wp, b_wp, weights=weights_wp, reflection=reflection, translation=translation, scale=scale
     )
 
     matrix_tw = matrix_wp.numpy()[0]
@@ -99,7 +114,7 @@ def test_procrustes_matches_meshlib(device: str) -> None:
     """
     rng = np.random.default_rng(0)
     source_np = rng.standard_normal((200, 3))
-    rotation_np = tm.transformations.rotation_matrix(0.4, [0.3, 0.5, 0.8])[:3, :3]
+    rotation_np = np.asarray(tm.transformations.rotation_matrix(0.4, [0.3, 0.5, 0.8]))[:3, :3]
     translation_np = np.array([1.0, -2.0, 0.5])
     target_np = source_np @ rotation_np.T + translation_np
 
@@ -379,9 +394,13 @@ def test_procrustes_empty(device: str) -> None:
 # --- Iterative closest point (ICP) -----------------------------------------
 
 
-def _rigid_transform(angle: float, axis: list[float], trans: list[float]) -> tuple:
+def _rigid_transform(
+    angle: float, axis: list[float], trans: list[float]
+) -> tuple[np.ndarray, np.ndarray]:
     """Return ``(rotation (3, 3), translation (3,))`` float32 arrays."""
-    rotation = tm.transformations.rotation_matrix(angle, axis)[:3, :3].astype(np.float32)
+    rotation = np.asarray(tm.transformations.rotation_matrix(angle, axis))[:3, :3].astype(
+        np.float32
+    )
     translation = np.asarray(trans, dtype=np.float32)
     return rotation, translation
 
@@ -656,7 +675,7 @@ def test_icp_point_to_point_matches_meshlib(device: str) -> None:
 @pytest.mark.parity("icp_point_to_plane_cloud", "open3d")
 @pytest.mark.parity("icp_point_to_plane_tukey", "open3d")
 def test_icp_point_to_plane_matches_open3d(
-    device: str, robust_kernel: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    device: str, robust_kernel: _RobustKernel, icosphere: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
     Class C (a fit-error bound): point-to-plane ICP against Open3D's, plain and robust.
@@ -878,7 +897,9 @@ def test_icp_point_to_point_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None
     assert _rms(transformed_wp.numpy(), vertices_np) < 5e-2
 
 
-def _p2p_convergence_call(device: str) -> partial:
+def _p2p_convergence_call(
+    device: str,
+) -> partial[tuple[wp.array[wp.mat44], wp.array[wp.vec3], float]]:
     """Point-to-point ICP on a cloud whose cost falls smoothly over a dozen iterations."""
     rng = np.random.default_rng(24)
     target_np = rng.standard_normal((200, 3)).astype(np.float32)
@@ -939,7 +960,7 @@ def test_icp_convergence_stop_matches_the_host_rule(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "gated"],
 )
 def test_icp_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], target: str, options: dict
+    half_torus: tuple[tm.Trimesh, wp.Mesh], target: str, options: _IcpOptions
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.
@@ -1078,7 +1099,9 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
 
     source_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(source_np), faces_np)
     target_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(vertices_np), faces_np)
-    aligned_pv, matrix_pv = source_pv.align(target_pv, return_matrix=True)
+    aligned_pv, matrix_pv = cast(
+        "tuple[pv.PolyData, NDArray[np.float64]]", source_pv.align(target_pv, return_matrix=True)
+    )
     moved_pv = np.asarray(aligned_pv.points, dtype=np.float64)
     assert np.isclose(np.linalg.det(np.asarray(matrix_pv)[:3, :3]), 1.0, atol=1e-4)
 
@@ -1380,7 +1403,7 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
     index_np[order[n_valid : n_valid + 50]] = -1
     distance_np[order[n_valid : n_valid + 50]] = 0.5
 
-    scale = tw.registration._robust_scale_from_residuals(
+    scale = tw.registration._robust_scale_from_residuals(  # pyright: ignore[reportPrivateUsage]
         points_to_warp(current_np, device),
         points_to_warp(closest_np, device),
         points_to_warp(normals_np, device),
@@ -1421,7 +1444,7 @@ def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> N
     index_wp = tw.array.arange(n, device=device)
 
     def scale(normals_np: np.ndarray) -> float:
-        return tw.registration._robust_scale_from_residuals(
+        return tw.registration._robust_scale_from_residuals(  # pyright: ignore[reportPrivateUsage]
             points_to_warp(current_np, device),
             points_to_warp(closest_np, device),
             points_to_warp(normals_np, device),
@@ -1438,7 +1461,7 @@ def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> N
 
 @pytest.mark.parametrize("robust_kernel", ["huber", "tukey"])
 def test_icp_point_to_plane_accepts_non_unit_target_normals(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], robust_kernel: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh], robust_kernel: _RobustKernel
 ) -> None:
     """
     Triwarp against triwarp: a fit with non-unit target normals against one with unit normals.
@@ -1497,15 +1520,17 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     ).astype(np.float32)
     target_wp = points_to_warp(target_np, device)
     queries_wp = points_to_warp(queries_np, device)
-    target_index = tw.registration._target_index(target_wp)
+    target_index = tw.registration._target_index(target_wp)  # pyright: ignore[reportPrivateUsage]
 
-    def search(step_np: np.ndarray) -> tuple[wp.array, wp.array, wp.array, wp.array]:
+    def search(
+        step_np: np.ndarray,
+    ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.int32]]:
         step_wp = wp.array([wp.mat44(*step_np.ravel())], dtype=wp.mat44, device=device)
         outputs = (
-            wp.empty(200, dtype=wp.vec3, device=device),
-            wp.empty(200, dtype=wp.vec3, device=device),
-            wp.empty(200, dtype=wp.float32, device=device),
-            wp.empty(200, dtype=wp.int32, device=device),
+            warp_empty(200, wp.vec3, device),
+            warp_empty(200, wp.vec3, device),
+            warp_empty(200, wp.float32, device),
+            warp_empty(200, wp.int32, device),
         )
         wp.launch(
             kernel_registration.point_to_plane_correspondence_pass,
@@ -1554,7 +1579,7 @@ def test_correspondence_pass_matches_query_nearest(device: str) -> None:
     ids=["no_iteration", "one", "pinned", "converged", "all_rejected", "all_rejected_one"],
 )
 def test_icp_point_to_plane_mesh_transformed_is_matrix_image(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], options: dict
+    half_torus: tuple[tm.Trimesh, wp.Mesh], options: _IcpOptions
 ) -> None:
     """
     Not a library comparison: the returned points are the source under the returned matrix.
@@ -1797,7 +1822,11 @@ def test_icp_point_to_plane_rejects_an_off_menu_robust_kernel(device: str) -> No
     normals_wp = points_to_warp(normals_np, device)
     with pytest.raises(ValueError, match="robust_kernel must be one of"):
         tw.registration.icp_point_to_plane(
-            source_wp, target_wp, None, target_normals=normals_wp, robust_kernel="bogus"
+            source_wp,
+            target_wp,
+            None,
+            target_normals=normals_wp,
+            robust_kernel="bogus",  # pyright: ignore[reportArgumentType]  # deliberately off-menu
         )
     for robust_kernel in ("none", "huber", "tukey"):
         matrix_wp, _, _ = tw.registration.icp_point_to_plane(

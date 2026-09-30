@@ -197,6 +197,7 @@ def _spheres(subdivisions: int, count: int = 1, layout: str = "lattice") -> _Arr
             parts.append(part)
 
     combined = tm.util.concatenate(parts)
+    assert isinstance(combined, tm.Trimesh)
     return combined.vertices, combined.faces
 
 

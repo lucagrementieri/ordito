@@ -27,7 +27,7 @@ vertex indices the faces name, so the surface is geometrically identical and top
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, overload
 
 import warp as wp
 
@@ -146,6 +146,22 @@ def crease_edges(
     return edges
 
 
+@overload
+def cut_along_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    edges: twt.Array2dInt32,
+    *,
+    twins: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
+def cut_along_edges(
+    vertices: wp.array[wp.vec3d],
+    faces: wp.array[wp.int32],
+    edges: twt.Array2dInt32,
+    *,
+    twins: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.vec3d], wp.array[wp.int32]]: ...
 def cut_along_edges(
     vertices: wp.array[wp.vec3] | wp.array[wp.vec3d],
     faces: wp.array[wp.int32],

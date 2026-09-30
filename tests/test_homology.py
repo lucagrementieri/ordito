@@ -13,6 +13,7 @@ edges where MeshLib returns 72 and 32, both valid.
 from __future__ import annotations
 
 import itertools
+from collections.abc import Container
 
 import numpy as np
 import pytest
@@ -21,10 +22,10 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
-from tests.conversions import numpy_to_warp, trimesh_to_meshlib
+from tests.conversions import numpy_to_warp, trimesh_to_meshlib, warp_empty
 
 
-def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: set[tuple[int, int]]) -> bool:
+def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: Container[tuple[int, ...]]) -> bool:
     """Whether a vertex sequence closes up along mesh edges without repeating a vertex."""
     if len(loop) < 3 or len(set(loop.tolist())) != len(loop):
         return False
@@ -212,6 +213,7 @@ def test_homology_generators_reject_a_disconnected_surface(
     other = mesh_tm.copy()
     other.apply_translation([5.0, 0.0, 0.0])
     both = tm.util.concatenate([mesh_tm, other])
+    assert isinstance(both, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(np.asarray(both.vertices), np.asarray(both.faces), device)
 
     # Non-vacuity: the closed-surface guard passes, so connectivity is the only thing left to fail.
@@ -261,7 +263,7 @@ def test_homology_generators_satisfy_the_tree_cotree_identity(
 
 
 def test_homology_generators_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert tw.homology.homology_generators(vertices_wp, faces_wp) == []
 

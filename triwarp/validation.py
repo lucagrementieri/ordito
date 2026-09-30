@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Sequence
 
 import warp as wp
 
@@ -871,7 +870,11 @@ def _orientation_bits_from_keys(
 
 
 def _solve_orientation(
-    n_faces: int, hook: wp.Kernel, n_edges: int, hook_inputs: list[Any], device: wp.Device
+    n_faces: int,
+    hook: twt.Kernel,
+    n_edges: int,
+    hook_inputs: Sequence[object],
+    device: wp.DeviceLike,
 ) -> wp.array[wp.int32]:
     """
     Z2 potential of a signed face graph: the parity union-find, returning the parity alone.

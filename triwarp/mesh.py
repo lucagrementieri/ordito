@@ -7,7 +7,6 @@ from collections.abc import Callable
 from typing import Generic, NoReturn, TypeVar, cast, overload
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -257,9 +256,10 @@ class _CachedProperty(Generic[_R]):
     def __get__(self, obj: Trimesh | None, objtype: type | None = None) -> _CachedProperty[_R] | _R:
         if obj is None:
             return self
-        if self._key not in obj._cache:
-            obj._cache[self._key] = self._func(obj)
-        return cast(_R, obj._cache[self._key])
+        cache = obj._cache  # pyright: ignore[reportPrivateUsage]  # the owner class's own cache
+        if self._key not in cache:
+            cache[self._key] = self._func(obj)
+        return cast(_R, cache[self._key])
 
     def __set__(self, obj: Trimesh, value: object) -> NoReturn:
         raise AttributeError(f"'{self._key}' is read-only; call invalidate() after in-place edits")
@@ -402,7 +402,7 @@ class Trimesh:
     @property
     def device(self) -> wp.Device:
         """Warp device holding `vertices` and `faces`."""
-        return cast(wp.Device, self._vertices.device)
+        return cast("wp.Device", self._vertices.device)
 
     @_CachedProperty
     def warp_mesh(self) -> wp.Mesh:
@@ -1313,7 +1313,7 @@ class Trimesh:
         return tw.laplacian.cotmatrix_entries(self._vertices, self._faces)
 
     @_CachedProperty
-    def cotmatrix(self) -> wps.BsrMatrix[wp.float32]:
+    def cotmatrix(self) -> twt.BsrMatrix[wp.float32]:
         """
         Cotangent stiffness matrix: the ``float32`` discrete Laplace-Beltrami operator.
 
@@ -1363,7 +1363,7 @@ class Trimesh:
         )
 
     @_CachedProperty
-    def laplacian_operator(self) -> wps.BsrMatrix[wp.float32]:
+    def laplacian_operator(self) -> twt.BsrMatrix[wp.float32]:
         """
         Row-normalized 1-ring averaging operator (the uniform / umbrella Laplacian).
 
@@ -1892,9 +1892,13 @@ class Trimesh:
         [`trimesh.Trimesh.submesh`][]
         """
         if faces.dtype is wp.bool:
-            parts = tw.selection.submesh_from_face_mask(self._vertices, self._faces, faces)
+            parts = tw.selection.submesh_from_face_mask(
+                self._vertices, self._faces, cast("wp.array[wp.bool]", faces)
+            )
         elif faces.dtype is wp.int32:
-            parts = tw.selection.submesh_from_face_indices(self._vertices, self._faces, faces)
+            parts = tw.selection.submesh_from_face_indices(
+                self._vertices, self._faces, cast("wp.array[wp.int32]", faces)
+            )
         else:
             raise TypeError(f"submesh needs a wp.int32 or wp.bool array, got {faces.dtype}")
         return Trimesh(*parts)

@@ -57,7 +57,7 @@ def test_benchmark_suite_is_discoverable() -> None:
     ``triwarp*``), so a missing directory is a legitimate packaged-tree situation and skips. A
     directory that exists but yields nothing is a broken scanner or a bad path, and fails.
     """
-    from tests.parity import _BENCHMARKS_DIR
+    from tests.parity import _BENCHMARKS_DIR  # pyright: ignore[reportPrivateUsage]
 
     if not _BENCHMARKS_DIR.is_dir():
         pytest.skip("benchmarks/ is not present in this tree")

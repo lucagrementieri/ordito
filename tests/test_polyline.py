@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Literal, cast
+
 import numpy as np
 import pytest
 import shapely.geometry as sg
@@ -16,8 +19,12 @@ from tests.conversions import (
     points_to_warp,
     points_to_warp_uv,
     polyline_to_pyvista,
+    warp_empty,
 )
 from triwarp.kernels import polyline as kernel_polyline
+
+if TYPE_CHECKING:
+    import pyvista as pv
 
 
 def _random_open_polyline(seed: int, n: int = 12) -> np.ndarray:
@@ -357,7 +364,9 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
     pts_np = _random_open_polyline(2, n=50)
 
     length_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device))
-    arc_pv = np.asarray(polyline_to_pyvista(pts_np).compute_arc_length()["arc_length"])
+    arc_pv = np.asarray(
+        cast("pv.PolyData", polyline_to_pyvista(pts_np).compute_arc_length())["arc_length"]
+    )
     length_pv = float(arc_pv.max())
     assert length_pv > 0.0  # non-vacuity
     assert np.allclose(length_wp, length_pv, rtol=1e-5, atol=1e-5)
@@ -365,7 +374,9 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
     closed_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
     closed_pv = float(
         np.asarray(
-            polyline_to_pyvista(_closed_from(pts_np)).compute_arc_length()["arc_length"]
+            cast("pv.PolyData", polyline_to_pyvista(_closed_from(pts_np)).compute_arc_length())[
+                "arc_length"
+            ]
         ).max()
     )
     assert closed_pv > length_pv  # the closing segment is real
@@ -526,7 +537,10 @@ def test_distance_to_polyline_matches_pyvista(device: str) -> None:
 
     line_pv = polyline_to_pyvista(pts_np)
     assert line_pv.n_cells == 1  # one cell, or every filter restarts per segment
-    _cells_pv, closest_pv = line_pv.find_closest_cell(points_np, return_closest_point=True)
+    _cells_pv, closest_pv = cast(
+        "tuple[np.ndarray, np.ndarray]",
+        line_pv.find_closest_cell(points_np, return_closest_point=True),
+    )
     distances_pv = np.linalg.norm(points_np - np.asarray(closest_pv), axis=1)
 
     assert distances_pv.min() > 0.0  # non-vacuity: no query sits on the polyline
@@ -548,7 +562,7 @@ def test_distance_to_empty_polyline_is_infinite(device: str) -> None:
     """An empty curve is infinitely far, rather than whatever the allocator last held."""
     rng = np.random.default_rng(42)
     points_wp = points_to_warp(rng.standard_normal((5, 3)), device)
-    empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
 
     distances_wp = tw.polyline.polyline_point_distance(points_wp, empty_wp)
 
@@ -570,7 +584,7 @@ def test_polyline_point_distance_slices_match_one_thread_per_query(
     rng = np.random.default_rng(43)
     polyline_wp = points_to_warp(np.cumsum(rng.standard_normal((3000, 3)), axis=0), device)
     queries_wp = points_to_warp(rng.standard_normal((50, 3)) * 20.0, device)
-    unsliced_wp = wp.empty(50, dtype=wp.float32, device=device)
+    unsliced_wp = warp_empty(50, wp.float32, device)
     wp.launch(
         kernel_polyline.distance_to_segments,
         dim=50,
@@ -597,7 +611,7 @@ def test_upsample_point_count(device: str) -> None:
     seg_len = np.linalg.norm(np.diff(pts_np, axis=0), axis=-1)
     expected_count = int(np.clip(seg_len // step, 1, None).astype(np.int64).sum())
     upsampled = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
-    assert upsampled.shape[0] == expected_count
+    assert len(upsampled) == expected_count
 
 
 @pytest.mark.parity("polyline_upsample", "meshlib")
@@ -642,7 +656,7 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
 
     assert n_added_ml > 0  # non-vacuity: the reference really subdivided
     for resampled_np in (dense_np, dense_ml):
-        assert resampled_np.shape[0] > pts_np.shape[0]
+        assert len(resampled_np) > pts_np.shape[0]
         # Every emitted point is on the input polyline: neither library smooths.
         assert _max_deviation_np(resampled_np, pts_np) < 1e-5
         # Both land within a factor of two of the step, from opposite sides.
@@ -843,7 +857,7 @@ def test_downsample_polyline_branches_agree(device: str) -> None:
             device=device,
         )
         doubling_wp = wp.zeros(n, dtype=wp.int32, device=device)
-        tw.polyline._greedy_downsample_doubling(cumulative_wp, step, None, False, doubling_wp)
+        tw.polyline._greedy_downsample_doubling(cumulative_wp, step, None, False, doubling_wp)  # pyright: ignore[reportPrivateUsage]
 
         assert int(serial_wp.numpy().sum()) > 1, f"{spacing}: the walk kept only the first point"
         assert np.array_equal(serial_wp.numpy(), doubling_wp.numpy()), spacing
@@ -866,14 +880,14 @@ def test_downsample_polyline_above_the_doubling_threshold(device: str) -> None:
     rule itself), that reorders or moves them (subsequence and membership), or that drops the ends
     of the polyline it should start from.
     """
-    n = 2 * tw.polyline._DOWNSAMPLE_DOUBLING_FROM
+    n = 2 * tw.polyline._DOWNSAMPLE_DOUBLING_FROM  # pyright: ignore[reportPrivateUsage]
     rng = np.random.default_rng(5)
     points_np = np.cumsum(rng.standard_normal((n, 3)) * 0.01, axis=0)
     step = 0.05
     sparse_wp = tw.polyline.polyline_downsample(points_to_warp(points_np, device), step)
 
     kept_np = sparse_wp.numpy()
-    assert 2 < kept_np.shape[0] < n, "vacuous: the selection kept everything or nothing"
+    assert 2 < len(kept_np) < n, "vacuous: the selection kept everything or nothing"
     assert np.allclose(kept_np[0], points_np[0], rtol=1e-5, atol=1e-5)
     # Every kept point is an input point, in input order.
     matches = np.array([int(np.argmin(np.linalg.norm(points_np - p, axis=1))) for p in kept_np])
@@ -923,7 +937,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
             points_to_warp(pts_np, device), factor * spacing
         )
         sparse_np = sparse_wp.numpy().astype(np.float64)
-        n_expected = sparse_np.shape[0]
+        n_expected = len(sparse_np)
         # Non-vacuity: the reduction is real, and close enough to its target to be the right one.
         assert n_expected < n_bound
         assert n_expected > n_bound // 2
@@ -1000,7 +1014,7 @@ def test_resample_empty_polyline_is_returned_unchanged(device: str, closed: bool
     Not a library comparison: an edge-case contract. ``closed=True`` used to slice ``num_points``
     samples out of the empty result and raise Warp's zero-length-slice ``RuntimeError``.
     """
-    empty_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    empty_wp = warp_empty(0, wp.vec3, device)
     assert tw.polyline.polyline_resample(empty_wp, 5, closed=closed).shape == (0,)
 
 
@@ -1013,7 +1027,9 @@ def _planar_circle(n: int, radius: float) -> np.ndarray:
 
 
 @pytest.mark.parametrize("reduction", ["min", "max", "mean", "median"])
-def test_polyline_radius_explicit_plane_matches_reference(device: str, reduction: str) -> None:
+def test_polyline_radius_explicit_plane_matches_reference(
+    device: str, reduction: Literal["min", "max", "mean", "median"]
+) -> None:
     pts_np = _planar_circle(24, radius=2.0)
     center_np = np.zeros(3)
     normal_np = np.array([0.0, 0.0, 1.0])
@@ -1028,7 +1044,9 @@ def test_polyline_radius_explicit_plane_matches_reference(device: str, reduction
 
 
 @pytest.mark.parametrize("reduction", ["min", "max", "mean", "median"])
-def test_polyline_radius_default_plane_matches_reference(device: str, reduction: str) -> None:
+def test_polyline_radius_default_plane_matches_reference(
+    device: str, reduction: Literal["min", "max", "mean", "median"]
+) -> None:
     pts_np = _random_open_polyline(80)
     radius_wp = tw.polyline.polyline_radius(points_to_warp(pts_np, device), reduction)
     radius_np = _radius_np(pts_np, reduction)
@@ -1036,7 +1054,9 @@ def test_polyline_radius_default_plane_matches_reference(device: str, reduction:
 
 
 @pytest.mark.parametrize("reduction", ["min", "max", "mean", "median"])
-def test_polyline_radius_closed_matches_reference(device: str, reduction: str) -> None:
+def test_polyline_radius_closed_matches_reference(
+    device: str, reduction: Literal["min", "max", "mean", "median"]
+) -> None:
     """
     ``closed=True`` adds the seam segment, which changes both the reduction and the default plane.
 
@@ -1070,7 +1090,7 @@ def test_polyline_radius_closed_default_plane_differs_from_open(device: str) -> 
 
 @pytest.mark.parametrize("reduction", ["min", "max", "mean", "median"])
 def test_polyline_radius_closed_on_a_closed_input_adds_no_segment(
-    device: str, reduction: str
+    device: str, reduction: Literal["min", "max", "mean", "median"]
 ) -> None:
     """
     ``closed=True`` on a loop already ending on its first point is the open call, bit for bit.
@@ -1090,7 +1110,7 @@ def test_polyline_radius_closed_on_a_closed_input_adds_no_segment(
 def test_polyline_radius_rejects_unknown_reduction(device: str) -> None:
     pts_np = _random_open_polyline(81)
     with pytest.raises(ValueError, match="unsupported reduction"):
-        tw.polyline.polyline_radius(points_to_warp(pts_np, device), "sum")
+        tw.polyline.polyline_radius(points_to_warp(pts_np, device), "sum")  # pyright: ignore[reportArgumentType]
 
 
 def test_polyline_radius_two_points_raises_its_own_message(device: str) -> None:
@@ -1156,7 +1176,7 @@ def test_angles_short_polyline_is_zeros(device: str) -> None:
 
 def test_distance_empty_polyline(device: str) -> None:
     points = points_to_warp(np.random.default_rng(99).standard_normal((4, 3)), device)
-    empty = wp.empty(0, dtype=wp.vec3, device=device)
+    empty = warp_empty(0, wp.vec3, device)
     assert tw.polyline.polyline_point_distance(points, empty).size == 4
 
 
@@ -1261,7 +1281,7 @@ def test_triangulate_polyline_matches_meshlib(device: str) -> None:
         mesh_ml = meshlib_to_trimesh(mm.triangulateContours(contours_ml))
 
         assert mesh_ml.faces.shape[0] == polygon_np.shape[0] - 2, name
-        assert faces_wp.shape[0] == mesh_ml.faces.shape[0], name
+        assert len(faces_wp) == mesh_ml.faces.shape[0], name
         area_wp = _triangle_areas(points_np, faces_wp).sum()
         area_ml = _triangle_areas(
             np.asarray(mesh_ml.vertices), np.asarray(mesh_ml.faces, dtype=np.int32)
@@ -1298,7 +1318,7 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
         assert filled_pv.is_all_triangles, name
         assert filled_pv.n_points == polygon_np.shape[0], name  # no Steiner points
         assert filled_pv.n_cells == polygon_np.shape[0] - 2, name  # non-vacuity
-        assert faces_wp.shape[0] == filled_pv.n_cells, name
+        assert len(faces_wp) == filled_pv.n_cells, name
 
         area_wp = _triangle_areas(points_np, faces_wp).sum()
         assert np.isclose(area_wp, float(filled_pv.area), rtol=1e-5), name
@@ -1446,7 +1466,9 @@ def test_simplify_deep_split_tree_matches_reference(device: str) -> None:
         pytest.param(lambda: np.full((5, 3), np.nan).tolist(), id="all_nan"),
     ],
 )
-def test_simplify_non_finite_terminates(device: str, builder) -> None:
+def test_simplify_non_finite_terminates(
+    device: str, builder: Callable[[], list[list[float]]]
+) -> None:
     """
     A non-finite coordinate leaves the round loop terminating and the answer well-formed.
 
@@ -1633,7 +1655,7 @@ def test_simplify_matches_the_two_decimators(device: str, tolerance: float) -> N
         points_to_warp(pts_np, device), tolerance
     )
     simplified_np = simplified_wp.numpy().astype(np.float64)
-    n_kept = simplified_np.shape[0]
+    n_kept = len(simplified_np)
     assert 2 < n_kept < pts_np.shape[0]  # non-vacuity: it simplified, and did not collapse
 
     polyline_ml = _polyline_ml(pts_np)

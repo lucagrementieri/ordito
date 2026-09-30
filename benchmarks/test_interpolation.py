@@ -65,13 +65,14 @@ import pyvista as pv
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, skip_larger_than
 
 _FIELD_SEED = 5
 
-_face_field_cache: dict[tuple[str, str], wp.array] = {}
-_vertex_field_cache: dict[tuple[str, str], wp.array] = {}
-_edge_field_cache: dict[tuple[str, str], tuple] = {}
+_face_field_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
+_vertex_field_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
+_edge_field_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 _edge_length_cache: dict[tuple[str, str], float] = {}
 
 
@@ -240,8 +241,12 @@ def test_average_from_edges_onto_vertices(bench_case: BenchCase) -> None:
         return
     device = bench_case.device
     faces = bench_case.faces_wp
-    edges_wp = wp.array(edges_np.astype(np.int32), dtype=wp.int32, device=device)
-    orientation_wp = wp.array(orientation_np.astype(np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(edges_np.astype(np.int32), dtype=wp.int32, device=device), wp.int32
+    )
+    orientation_wp = twt.as_array2d(
+        wp.array(orientation_np.astype(np.int32), dtype=wp.int32, device=device), wp.int32
+    )
     values_wp = wp.array(
         np.ascontiguousarray(values_np, dtype=np.float32), dtype=wp.float32, device=device
     )
@@ -332,7 +337,7 @@ def test_transfer_through_operator(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values = _vertex_field_wp(bench_case)
 
-    def build() -> object:
+    def build() -> twt.BsrMatrix[wp.float32]:
         _new_vertices, _new_faces, operator = tw.remesh.subdivide_loop(
             vertices, faces, return_operator=True
         )

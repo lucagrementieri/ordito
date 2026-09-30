@@ -83,8 +83,8 @@ import triwarp as tw
 from conftest import BenchCase, mesh_ml_from_numpy, skip_larger_than
 
 # Off-axis so no cut is degenerate w.r.t. the (axis-aligned) scan-mesh geometry.
-_PLANE_NORMAL = np.array([0.3, 0.8, 0.5])
-_PLANE_NORMAL = _PLANE_NORMAL / np.linalg.norm(_PLANE_NORMAL)
+_PLANE_DIRECTION = np.array([0.3, 0.8, 0.5])
+_PLANE_NORMAL = _PLANE_DIRECTION / np.linalg.norm(_PLANE_DIRECTION)
 
 # Self-intersection offsets, as fractions of the mesh bounding-box diagonal. ``mesh_with_mesh``
 # costs the number of *actually overlapping* triangle pairs, not the face count, so the offset is
@@ -572,7 +572,7 @@ _ROUNDS = 3
 _FIELDS = {"plane": 0, "wave12": 12, "wave40": 40}
 
 _field_cache: dict[tuple[str, str], np.ndarray] = {}
-_field_wp_cache: dict[tuple[str, str, str], wp.array] = {}
+_field_wp_cache: dict[tuple[str, str, str], wp.array[wp.float64]] = {}
 
 
 def _field_np(bench_case: BenchCase, field: str) -> np.ndarray:
@@ -593,7 +593,7 @@ def _field_np(bench_case: BenchCase, field: str) -> np.ndarray:
     return _field_cache[key]
 
 
-def _field_wp(bench_case: BenchCase, field: str) -> wp.array:
+def _field_wp(bench_case: BenchCase, field: str) -> wp.array[wp.float64]:
     """Return the same field as a device buffer."""
     key = (bench_case.mesh_name, field, str(bench_case.device))
     if key not in _field_wp_cache:

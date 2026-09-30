@@ -86,6 +86,8 @@ establish, and the pymeshlab one skips ``sphere_large`` for the same reason.
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -704,7 +706,9 @@ def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
 @pytest.mark.benchaxis("quality")
 @pytest.mark.benchlibs("triwarp", "pymeshlab")
 @pytest.mark.parametrize("objective", ["planarity", "curvature"])
-def test_flip_by_objective(bench_case: BenchCase, objective: str) -> None:
+def test_flip_by_objective(
+    bench_case: BenchCase, objective: Literal["planarity", "curvature"]
+) -> None:
     """The Delone engine with another predicate: the same passes, a different candidate set."""
     if bench_case.kind == "pymeshlab":
         if objective == "curvature":

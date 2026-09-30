@@ -9,6 +9,9 @@ compare against libigl's ``igl.point_mesh_squared_distance`` (the primitive behi
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Literal, cast
+
 import igl
 import numpy as np
 import pymeshlab as ml
@@ -36,8 +39,11 @@ from tests.conversions import (
     trimesh_to_meshlib,
     trimesh_to_pytorch3d,
     trimesh_to_warp,
+    warp_empty,
 )
 from triwarp.kernels import metrics as kernel_metrics
+
+_DiffReduction = Literal["mean", "sum"]
 
 # igl requires float64 vertices / int64 faces; Warp uses float32 / int32, so mesh-surface
 # references diverge from Warp at roughly float32 precision.
@@ -182,8 +188,9 @@ def test_chamfer_points_to_points_matches_pytorch3d(device: str) -> None:
     rng = np.random.default_rng(7)
     a_np = rng.normal(size=(300, 3)).astype(np.float32)
     b_np = (rng.normal(size=(400, 3)) * 1.1).astype(np.float32)
-    chamfer_p3d, _ = p3d_loss.chamfer_distance(
-        points_to_torch(a_np, device), points_to_torch(b_np, device)
+    chamfer_p3d, _ = cast(
+        "tuple[torch.Tensor, object]",
+        p3d_loss.chamfer_distance(points_to_torch(a_np, device), points_to_torch(b_np, device)),
     )
     chamfer_wp = tw.metrics.chamfer_points_to_points(
         points_to_warp(a_np, device), points_to_warp(b_np, device)
@@ -193,7 +200,7 @@ def test_chamfer_points_to_points_matches_pytorch3d(device: str) -> None:
     assert np.allclose(chamfer_wp, float(chamfer_p3d), rtol=1e-6, atol=0.0)
 
 
-def _pairing(icosphere, pairing: str) -> tuple[np.ndarray, np.ndarray]:
+def _pairing(icosphere: tuple[tm.Trimesh, wp.Mesh], pairing: str) -> tuple[np.ndarray, np.ndarray]:
     """``(x, y)`` for the three pairings that decide the backward cloud search."""
     vertices_np = np.asarray(icosphere[0].vertices, dtype=np.float32)
     rng = np.random.default_rng(31)
@@ -216,7 +223,11 @@ _BACKWARD_BACKEND = {"coincident": None, "displaced": "bvh", "partial": "bvh"}
 @pytest.mark.parametrize("pairing", ["coincident", "displaced", "partial"])
 @pytest.mark.parametrize("size_gate", [False, True])
 def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
-    device: str, icosphere, pairing: str, size_gate: bool, monkeypatch: pytest.MonkeyPatch
+    device: str,
+    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    pairing: str,
+    size_gate: bool,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Class A: every per-point distance, both directions, against ``scipy.spatial.KDTree``.
@@ -235,10 +246,10 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     assert np.ptp(distance_yx_np) > 1e-5  # not a constant answer (7.4)
 
-    backends: list[str | None] = []
-    query_nearest = tw.neighbors.query_nearest
+    backends: list[object] = []
+    query_nearest = cast("Callable[..., object]", tw.neighbors.query_nearest)
 
-    def spy(*args, **kwargs):
+    def spy(*args: object, **kwargs: object):
         backends.append(kwargs.get("backend"))
         return query_nearest(*args, **kwargs)
 
@@ -254,13 +265,16 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     hausdorff_wp = tw.metrics.hausdorff_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device)
     )
-    expected = max(distance_xy_np.max(), distance_yx_np.max())
+    expected = max(np.max(distance_xy_np), np.max(distance_yx_np))
     assert np.isclose(hausdorff_wp, expected, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("pairing", ["coincident", "displaced", "partial"])
 def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
-    device: str, icosphere, pairing: str, monkeypatch: pytest.MonkeyPatch
+    device: str,
+    icosphere: tuple[tm.Trimesh, wp.Mesh],
+    pairing: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Class A: the loss and both gradients against the closed form over ``KDTree``'s assignment.
@@ -318,7 +332,7 @@ def test_chamfer_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) ->
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
-def test_chamfer_mesh_to_mesh_identical_is_zero(icosahedron) -> None:
+def test_chamfer_mesh_to_mesh_identical_is_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     chamfer_wp = tw.metrics.chamfer_mesh_to_mesh(
         mesh_wp.points, mesh_wp.indices, mesh_wp.points, mesh_wp.indices
@@ -424,7 +438,12 @@ def _point_triangle_squared(points_np: np.ndarray, triangles_np: np.ndarray) -> 
         weights_np = np.stack([va_np, vb_np, vc_np], axis=-1) / denominator_np[..., None]
     closest_np = np.einsum("ijk,jkl->ijl", weights_np, triangles_np)
 
-    def on_segment(start_np, end_np, numerator_np, denominator_np):
+    def on_segment(
+        start_np: np.ndarray,
+        end_np: np.ndarray,
+        numerator_np: np.ndarray,
+        denominator_np: np.ndarray,
+    ):
         """Take the closest point on one edge, with the parameter clamped to ``[0, 1]``."""
         safe_np = np.where(denominator_np == 0.0, 1.0, denominator_np)
         parameter_np = np.clip(
@@ -651,7 +670,7 @@ def test_hausdorff_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str
     points_np = (center + rng.normal(scale=0.6, size=(120, 3))).astype(np.float32)
 
     forward_np = np.sqrt(_igl_point_mesh_sqr_dist(points_np, vertices_np, faces_np).max())
-    backward_np = KDTree(points_np.astype(np.float64)).query(vertices_np)[0].max()
+    backward_np = np.max(KDTree(points_np.astype(np.float64)).query(vertices_np)[0])
     hausdorff_np = max(forward_np, backward_np)
 
     hausdorff_wp = tw.metrics.hausdorff_points_to_mesh(
@@ -666,13 +685,13 @@ def test_hausdorff_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str
 
 
 def test_chamfer_points_to_points_empty(device: str) -> None:
-    x_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
     assert tw.metrics.chamfer_points_to_points(x_wp, y_wp) == 0.0
 
 
 def test_chamfer_points_to_points_empty_unreduced(device: str) -> None:
-    x_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
     forward_wp, backward_wp = tw.metrics.chamfer_points_to_points(x_wp, y_wp, point_reduction=None)
     assert forward_wp.shape == (0,)
@@ -682,7 +701,7 @@ def test_chamfer_points_to_points_empty_unreduced(device: str) -> None:
 def test_hausdorff_points_to_mesh_empty_faces(device: str) -> None:
     points_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
     vertices_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
     assert tw.metrics.hausdorff_points_to_mesh(points_wp, vertices_wp, faces_wp) == 0.0
 
 
@@ -730,7 +749,7 @@ def _pt_tri_sq_np(p: np.ndarray, a: np.ndarray, b: np.ndarray, c: np.ndarray) ->
             r = q - s * e1 - t * e2
             return float(r @ r)
 
-    def seg(qq: np.ndarray, ss: np.ndarray, length_sq: float) -> float:
+    def seg(qq: np.ndarray, ss: np.ndarray, length_sq: float | np.ndarray) -> float:
         u = np.clip((qq @ ss) / length_sq, 0.0, 1.0)
         r = qq - u * ss
         return float(r @ r)
@@ -759,7 +778,7 @@ def _reduce_np(per_point: np.ndarray, reduction: str) -> float:
     return float(per_point.mean() if reduction == "mean" else per_point.sum())
 
 
-def _fd_grad(loss_fn, arr: np.ndarray, eps: float = 1e-3) -> np.ndarray:
+def _fd_grad(loss_fn: Callable[[], float], arr: np.ndarray, eps: float = 1e-3) -> np.ndarray:
     """Central finite-difference gradient of ``loss_fn`` w.r.t. in-place array ``arr``."""
     grad = np.zeros_like(arr)
     flat = arr.reshape(-1)
@@ -778,7 +797,7 @@ def _fd_grad(loss_fn, arr: np.ndarray, eps: float = 1e-3) -> np.ndarray:
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_points_to_points_loss_grad(
-    device: str, reduction: str, single_directional: bool
+    device: str, reduction: _DiffReduction, single_directional: bool
 ) -> None:
     rng = np.random.default_rng(20)
     x_np = (rng.random((25, 3)) * 4.0 - 2.0).astype(np.float32).astype(np.float64)
@@ -826,7 +845,7 @@ def test_chamfer_points_to_points_loss_grad(
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
-    device: str, reduction: str, single_directional: bool
+    device: str, reduction: _DiffReduction, single_directional: bool
 ) -> None:
     """
     Class A: pytorch3d's own autograd through ``loss.chamfer_distance`` is the gradient oracle.
@@ -845,8 +864,11 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
 
     x_t = torch.tensor(x_np, device=device, requires_grad=True)
     y_t = torch.tensor(y_np, device=device, requires_grad=True)
-    loss_p3d, _ = p3d_loss.chamfer_distance(
-        x_t[None], y_t[None], point_reduction=reduction, single_directional=single_directional
+    loss_p3d, _ = cast(
+        "tuple[torch.Tensor, object]",
+        p3d_loss.chamfer_distance(
+            x_t[None], y_t[None], point_reduction=reduction, single_directional=single_directional
+        ),
     )
     loss_p3d.backward()
 
@@ -870,7 +892,7 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_points_to_mesh_loss_grad(
-    icosahedron, reduction: str, single_directional: bool
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction, single_directional: bool
 ) -> None:
     mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.device
@@ -932,7 +954,9 @@ def test_chamfer_points_to_mesh_loss_grad(
     "vertices, so it *is* the forward-only oracle directly.",
 )
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
-def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(device: str, reduction: str) -> None:
+def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(
+    device: str, reduction: _DiffReduction
+) -> None:
     """
     Class B, forward-only: pytorch3d's ``point_mesh_distance.point_face_distance`` autograd.
 
@@ -1003,7 +1027,7 @@ def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(device: str, reducti
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
 @pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_mesh_to_mesh_loss_grad(
-    icosahedron, reduction: str, single_directional: bool
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction, single_directional: bool
 ) -> None:
     mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.device
@@ -1103,23 +1127,27 @@ def test_chamfer_loss_rejects_max_reduction(device: str) -> None:
     x_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
     y_wp = points_to_warp(np.ones((3, 3), dtype=np.float32), device)
     with pytest.raises(ValueError, match="mean"):
-        tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp, point_reduction="max")
+        tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp, point_reduction="max")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 def test_chamfer_points_to_points_loss_empty(device: str) -> None:
-    x_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((4, 3), dtype=np.float32), device)
     loss_wp = tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
     assert loss_wp.shape == (1,)
     assert float(loss_wp.numpy()[0]) == 0.0
 
 
-@wp.kernel
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
 def _probe_point_triangle_sq_dist(
     query: wp.array[wp.vec3], triangle: wp.array[wp.vec3], out_dist_sq: wp.array[wp.float32]
 ) -> None:
-    out_dist_sq[0] = kernel_metrics.point_triangle_sq_dist(
-        query[0], triangle[0], triangle[1], triangle[2]
+    # Kernel scope: Warp's stubs type an element read as an array.
+    out_dist_sq[0] = kernel_metrics.point_triangle_sq_dist(  # pyright: ignore[reportIndexIssue]
+        query[0],  # pyright: ignore[reportArgumentType]
+        triangle[0],  # pyright: ignore[reportArgumentType]
+        triangle[1],  # pyright: ignore[reportArgumentType]
+        triangle[2],  # pyright: ignore[reportArgumentType]
     )
 
 

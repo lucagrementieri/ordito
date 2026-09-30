@@ -56,7 +56,7 @@ import os
 import warnings
 from collections import defaultdict
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Any, TypedDict
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 import numpy as np
 import pytest
@@ -81,6 +81,7 @@ if TYPE_CHECKING:
     from meshlib import mrmeshpy as mm
     from pymeshfix._meshfix import PyTMesh
     from pytest_benchmark.fixture import BenchmarkFixture
+    from typing_extensions import Buffer
 
 # Number of timed rounds and untimed warm-up rounds. The warm-up covers Warp kernel JIT
 # compilation (first launch of each kernel) and CPU cache priming. Groups whose work runs into
@@ -131,7 +132,7 @@ _KNOWN_SLOW_LIBRARIES_PATH = os.path.join(os.path.dirname(__file__), "_known_slo
 
 @functools.cache
 def _known_slow_libraries() -> dict[
-    tuple[str, str | None, tuple[tuple[str, str], ...], str], float
+    tuple[str | None, str | None, tuple[tuple[str, str], ...], str], float
 ]:
     """
     Read the ``(group, mesh_name, rest, library)`` -> ratio table it names.
@@ -347,7 +348,8 @@ LIBRARIES_BY_ID = {lib["id"]: lib for lib in LIBRARIES}
 # ---------------------------------------------------------------------------
 
 _numpy_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-_wp_cache: dict[tuple[str, str, str], wp.array] = {}
+_faces_wp_cache: dict[tuple[str, str, str], wp.array[wp.int32]] = {}
+_vertices_wp_cache: dict[tuple[str, str, str], wp.array[wp.vec3]] = {}
 _mean_edge_cache: dict[str, float] = {}
 _o3d_cache: dict[str, o3d.geometry.TriangleMesh] = {}
 _pml_cache: dict[str, ml.MeshSet] = {}
@@ -388,12 +390,12 @@ def _load_numpy(name: str) -> tuple[np.ndarray, np.ndarray]:
 def _faces_wp(name: str, device: str) -> wp.array[wp.int32]:
     """Flat ``wp.int32`` face buffer on ``device``, cached per ``(name, device)``."""
     key = ("faces", name, device)
-    if key not in _wp_cache:
+    if key not in _faces_wp_cache:
         _, faces = _load_numpy(name)
-        _wp_cache[key] = wp.array(
+        _faces_wp_cache[key] = wp.array(
             np.ascontiguousarray(faces.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
         )
-    return _wp_cache[key]
+    return _faces_wp_cache[key]
 
 
 def _mean_edge(name: str) -> float:
@@ -504,8 +506,10 @@ def mesh_ml_from_numpy(vertices: np.ndarray, faces: np.ndarray) -> mm.Mesh:
     """
     from meshlib import mrmeshnumpy as mn
 
+    # MeshLib's stubs type these as ``Buffer``, which numpy's stubs implement only from Python 3.12.
     return mn.meshFromFacesVerts(
-        np.ascontiguousarray(np.asarray(faces).reshape(-1, 3)), np.ascontiguousarray(vertices)
+        cast("Buffer", np.ascontiguousarray(np.asarray(faces).reshape(-1, 3))),
+        cast("Buffer", np.ascontiguousarray(vertices)),
     )
 
 
@@ -595,12 +599,12 @@ def points_torch_from_numpy(points_np: np.ndarray, device: str) -> Any:
 def _vertices_wp(name: str, device: str) -> wp.array[wp.vec3]:
     """``wp.vec3`` (float32) vertex buffer on ``device``, cached per ``(name, device)``."""
     key = ("verts", name, device)
-    if key not in _wp_cache:
+    if key not in _vertices_wp_cache:
         vertices, _ = _load_numpy(name)
-        _wp_cache[key] = wp.array(
+        _vertices_wp_cache[key] = wp.array(
             np.ascontiguousarray(vertices, dtype=np.float32), dtype=wp.vec3, device=device
         )
-    return _wp_cache[key]
+    return _vertices_wp_cache[key]
 
 
 # ---------------------------------------------------------------------------

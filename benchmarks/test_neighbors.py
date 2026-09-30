@@ -86,6 +86,8 @@ magnitude ahead across the ``scale`` axis, the ratio growing because triwarp's c
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import igl
 import numpy as np
 import pytest
@@ -96,6 +98,10 @@ from scipy.spatial import KDTree
 
 import triwarp as tw
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+
+if TYPE_CHECKING:
+    import open3d as o3d
+    from typing_extensions import Buffer
 
 _SEED = 42
 _N_QUERIES = 20_000
@@ -128,10 +134,10 @@ _WEIGHT_SPREADS = [0.5, 4.0]
 _N_BOXES = 256
 
 _queries_np_cache: dict[str, np.ndarray] = {}
-_queries_wp_cache: dict[tuple[str, str], wp.array] = {}
+_queries_wp_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 _bvh_cache: dict[tuple[str, str], wp.Bvh] = {}
 _kdtree_cache: dict[str, KDTree] = {}
-_pcd_o3d_cache: dict[str, object] = {}
+_pcd_o3d_cache: dict[str, o3d.geometry.PointCloud] = {}
 _cloud_ml_cache: dict[str, mm.PointCloud] = {}
 _queries_ml_cache: dict[str, mm.std_vector_Vector3_float] = {}
 
@@ -173,8 +179,9 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
     if bench_case.mesh_name not in _cloud_ml_cache:
         from meshlib import mrmeshnumpy as mn
 
+        # MeshLib's stubs type this as ``Buffer``, which numpy's stubs implement only from 3.12.
         _cloud_ml_cache[bench_case.mesh_name] = mn.pointCloudFromPoints(
-            np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+            cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
         )
     return _cloud_ml_cache[bench_case.mesh_name]
 
@@ -197,7 +204,7 @@ def _bvh(bench_case: BenchCase) -> wp.Bvh:
     return _bvh_cache[key]
 
 
-def _pcd_o3d(bench_case: BenchCase):
+def _pcd_o3d(bench_case: BenchCase) -> o3d.geometry.PointCloud:
     """Open3D cloud over the same vertices, once per mesh: the pure query calls do not mutate it."""
     import open3d as o3d
 
@@ -238,10 +245,11 @@ def _run_o3d_nns_knn(bench_case: BenchCase, k: int) -> None:
     import open3d as o3d
 
     queries_np, points_np = _queries_np(bench_case), bench_case.vertices_np
-    queries_t = o3d.core.Tensor(queries_np)
-    points_t = o3d.core.Tensor(points_np)
+    # The stub omits Tensor's dtype/device defaults.
+    queries_t = o3d.core.Tensor(queries_np)  # pyright: ignore[reportCallIssue]
+    points_t = o3d.core.Tensor(points_np)  # pyright: ignore[reportCallIssue]
 
-    def knn_o3d() -> tuple:
+    def knn_o3d() -> tuple[o3d.core.Tensor, o3d.core.Tensor]:
         nns = o3d.core.nns.NearestNeighborSearch(points_t)
         nns.knn_index()
         return nns.knn_search(queries_t, k)
@@ -656,8 +664,9 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
     elif bench_case.kind == "open3d":
         import open3d as o3d
 
-        queries_t = o3d.core.Tensor(_queries_np(bench_case))
-        nns = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(bench_case.vertices_np))
+        # The stub omits Tensor's dtype/device defaults.
+        queries_t = o3d.core.Tensor(_queries_np(bench_case))  # pyright: ignore[reportCallIssue]
+        nns = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(bench_case.vertices_np))  # pyright: ignore[reportCallIssue]
         assert nns.fixed_radius_index(radius)
         _indices_o3d, _squared_o3d, offsets_o3d = bench_case.run(
             lambda: nns.fixed_radius_search(queries_t, radius)
@@ -754,8 +763,9 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     if bench_case.kind == "open3d":
         import open3d as o3d
 
-        queries_t = o3d.core.Tensor(_queries_np(bench_case))
-        nns = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(bench_case.vertices_np))
+        # The stub omits Tensor's dtype/device defaults.
+        queries_t = o3d.core.Tensor(_queries_np(bench_case))  # pyright: ignore[reportCallIssue]
+        nns = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(bench_case.vertices_np))  # pyright: ignore[reportCallIssue]
         assert nns.fixed_radius_index(radius)
         _indices_o3d, _squared_o3d, offsets_o3d = bench_case.run(
             lambda: nns.fixed_radius_search(queries_t, radius)
@@ -834,7 +844,7 @@ def test_closest_pair(bench_case: BenchCase) -> None:
         points_np = bench_case.vertices_np
 
         def closest_pair_np() -> tuple[int, int, float]:
-            distances, indices = KDTree(points_np).query(points_np, k=2)
+            distances, indices = (np.asarray(a) for a in KDTree(points_np).query(points_np, k=2))
             nearest = int(np.argmin(distances[:, 1]))
             return nearest, int(indices[nearest, 1]), float(distances[nearest, 1])
 

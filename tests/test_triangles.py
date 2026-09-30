@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import igl
 import numpy as np
 import potpourri3d as pp3d
@@ -26,7 +28,9 @@ from tests.conversions import (
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
     trimesh_to_pyvista,
+    warp_empty,
 )
+from triwarp.triangles import CornerNormalWeighting, FaceQualityMetric
 
 
 @pytest.mark.parity("face_normals_and_areas", "trimesh")
@@ -178,7 +182,7 @@ def test_corner_normals_matches_meshlib(
 @pytest.mark.parametrize("mesh_name", ["unit_box", "icosphere_coarse", "hemisphere"])
 @pytest.mark.parametrize("weighting", ["angle", "area"])
 def test_corner_normals_degenerate_crease_sets_are_exact(
-    request: pytest.FixtureRequest, mesh_name: str, weighting: str
+    request: pytest.FixtureRequest, mesh_name: str, weighting: CornerNormalWeighting
 ) -> None:
     """
     Not a library comparison: the two crease sets whose answer is another triwarp function, exactly.
@@ -246,7 +250,9 @@ def test_corner_normals_ccw_first_step_crease_does_not_skip_clockwise_walk(devic
     # corner within face i is flat index 3*i, and F3's own ``halfedge_prev`` edge is {p0, v}.
     faces_np = np.array([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    crease_wp = wp.array(np.array([[0, 1]], dtype=np.int32), device=device)
+    crease_wp = twt.as_array2d(
+        wp.array(np.array([[0, 1]], dtype=np.int32), device=device), wp.int32
+    )
 
     normals_wp = tw.triangles.corner_normals(
         vertices_wp, faces_wp, crease_wp, weighting="area"
@@ -261,7 +267,7 @@ def test_corner_normals_ccw_first_step_crease_does_not_skip_clockwise_walk(devic
 def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: an empty mesh, and the two argument errors."""
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    empty_faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_faces_wp = warp_empty(0, wp.int32, device)
     assert tw.triangles.corner_normals(empty_vertices_wp, empty_faces_wp).shape == (0, 3)
 
     _mesh_tm, mesh_wp = unit_box
@@ -273,7 +279,7 @@ def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.M
             twt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
         )
     with pytest.raises(ValueError, match="weighting must be"):
-        tw.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")
+        tw.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parity("face_normals_and_areas", "open3d")
@@ -350,7 +356,7 @@ def test_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
 )
 @pytest.mark.parity("face_quality", "pymeshlab")
 def test_face_quality_against_pymeshlab(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], metric: str, filter_metric: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh], metric: FaceQualityMetric, filter_metric: str
 ):
     """Class B (per-measure naming): the four VCG measures, against the filter they came from."""
     mesh_tm, mesh_wp = half_torus
@@ -373,7 +379,10 @@ def test_face_quality_against_pymeshlab(
 )
 @pytest.mark.parity("face_quality", "pyvista")
 def test_face_quality_against_the_verdict_measures(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], metric: str, measure: str, reciprocal: bool
+    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    metric: FaceQualityMetric,
+    measure: Literal["area", "radius_ratio", "shape", "aspect_frobenius"],
+    reciprocal: bool,
 ):
     """
     Decode VTK's Verdict measure names onto triwarp's, three Class A and one Class B.
@@ -582,7 +591,7 @@ def test_face_quality_aspect_ratio_against_igl(half_torus: tuple[tm.Trimesh, wp.
     mesh_tm, mesh_wp = half_torus
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
-    aspect_igl = np.asarray(igl.circumradius(vertices_np, faces_np)[0]) / (
+    aspect_igl = np.asarray(igl.circumradius(vertices_np, faces_np)[0]) / (  # pyright: ignore[reportCallIssue]  # the stub drops V's name
         2.0 * np.asarray(igl.inradius(vertices_np, faces_np))
     )
 
@@ -612,7 +621,9 @@ def test_face_quality_radius_ratio_equilateral(device: str):
     )
 
 
-def test_face_quality_degenerate(sliver_patch: tuple[np.ndarray, np.ndarray, wp.array, wp.array]):
+def test_face_quality_degenerate(
+    sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """The sliver reads ``+inf`` under ``aspect_ratio`` and ~0 under the bounded measures."""
     _vertices_np, _faces_np, vertices_wp, faces_wp = sliver_patch
     aspect_wp = tw.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio")
@@ -625,7 +636,7 @@ def test_face_quality_degenerate(sliver_patch: tuple[np.ndarray, np.ndarray, wp.
 def test_face_quality_unknown_metric(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="unknown metric"):
-        tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")
+        tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parametrize("with_degenerate", [False, True], ids=["clean", "with_degenerate"])

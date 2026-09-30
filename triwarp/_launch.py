@@ -19,18 +19,25 @@ packer does not recognise is marshalled by Warp's own ``pack_arg``, so conversio
 messages are Warp's.
 """
 
+# This module drives Warp's launch machinery directly (``_launch_bounds_classes``, a stream's
+# ``_stream``, the runtime's ``_apic_capture``, ``_raise_cuda_launch_error``), which is its purpose.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import ctypes
 import struct
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
 import warp._src.codegen as _codegen
 import warp._src.context as _ctx
 import warp._src.types as _types
+
+if TYPE_CHECKING:
+    import triwarp.typing as twt
 
 _RELAXED = wp.config.LaunchArrayAccessMode.RELAXED
 _Device = _ctx.Device
@@ -41,6 +48,9 @@ _c_void_p_arrays: dict[int, Any] = {}
 _SCALAR_PY = (int, float, bool)
 _HALF = (_types.float16, _types.bfloat16)
 _ARRAY = wp.array
+DType = TypeVar("DType")
+# Any Warp array type, kept whole: a union of array types in is the same union out.
+ArrayT = TypeVar("ArrayT", bound="wp.array[Any, Any]")
 
 
 class _Entry:
@@ -48,7 +58,7 @@ class _Entry:
 
     __slots__ = ("exec_", "hashers", "hooks", "kernel_dim", "packers", "pool", "tid_limit")
 
-    def __init__(self, kernel: wp.Kernel, exec_: Any, hashers: dict[Any, Any], hooks: Any) -> None:
+    def __init__(self, kernel: Any, exec_: Any, hashers: dict[Any, Any], hooks: Any) -> None:
         self.exec_ = exec_
         self.hashers = hashers
         self.hooks = hooks
@@ -102,7 +112,7 @@ class _Block:
         self.params = (ctypes.c_void_p * len(offsets))(*[base + o for o in offsets])
 
     @staticmethod
-    def build(kernel: wp.Kernel, kernel_dim: int) -> _Block | None:
+    def build(kernel: Any, kernel_dim: int) -> _Block | None:
         """Return the block for ``kernel``, or ``None`` if a parameter type has no packed form."""
         bounds_size = ctypes.sizeof(_bounds_classes[kernel_dim])
         fmt = ["=", f"{kernel_dim}i", "4x" if kernel_dim % 2 else "", "QQ"]
@@ -204,7 +214,7 @@ class _Block:
         return True
 
 
-def _packer(kernel: wp.Kernel, arg: Any) -> Any:
+def _packer(kernel: Any, arg: Any) -> Any:
     """Return a function packing one argument value for ``arg``, or ``None`` on a miss."""
     arg_type = arg.type
     label = arg.label
@@ -275,7 +285,7 @@ def _accept(accepted: set[Any], candidate: Any, target: Any) -> bool:
     return False
 
 
-def _entry(kernel: wp.Kernel, device: Any, block_dim: int) -> _Entry | bool | None:
+def _entry(kernel: Any, device: Any, block_dim: int) -> _Entry | Literal[False] | None:
     """
     Return ``kernel``'s cache entry on ``device``.
 
@@ -298,7 +308,7 @@ def _entry(kernel: wp.Kernel, device: Any, block_dim: int) -> _Entry | bool | No
     return entry
 
 
-def _remember(kernel: wp.Kernel, device: Any, block_dim: int) -> None:
+def _remember(kernel: Any, device: Any, block_dim: int) -> None:
     """After a ``wp.launch`` of ``kernel``, cache its launch state if it is eligible."""
     module = kernel.module
     key = (device.context, block_dim)
@@ -320,7 +330,7 @@ def _remember(kernel: wp.Kernel, device: Any, block_dim: int) -> None:
 
 
 def launch(
-    kernel: wp.Kernel,
+    kernel: twt.Kernel,
     dim: int | Sequence[int],
     inputs: Sequence[Any] = (),
     outputs: Sequence[Any] = (),
@@ -336,8 +346,10 @@ def launch(
 ) -> Any:
     """Launch ``kernel`` exactly as ``wp.launch`` would, with its resolution cached."""
     runtime = _ctx.runtime
+    kernel_any: Any = kernel
     if type(device) is not _Device:
-        device = None if runtime is None else runtime.get_device(device)
+        # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
+        device = None if runtime is None else runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
     if (
         device is None
         or not device.is_cuda
@@ -346,7 +358,7 @@ def launch(
         or record_cmd
         or adj_inputs
         or adj_outputs
-        or kernel.is_generic
+        or kernel_any.is_generic
         or runtime.tape is not None
         or runtime._apic_capture is not None
         or wp.config.verify_cuda
@@ -422,7 +434,7 @@ def launch(
                         current.cuda_stream,
                         None,
                     ):
-                        _ctx._raise_cuda_launch_error(kernel, device, hooks, False)
+                        _ctx._raise_cuda_launch_error(kernel_any, device, hooks, False)
                     return None
             finally:
                 pool.append(block)
@@ -479,7 +491,7 @@ def launch(
         current.cuda_stream,
         None,
     ):
-        _ctx._raise_cuda_launch_error(kernel, device, hooks, False)
+        _ctx._raise_cuda_launch_error(kernel_any, device, hooks, False)
     return None
 
 
@@ -535,8 +547,22 @@ def _extent(dim: Any, entry: _Entry) -> tuple[tuple[int, ...], int, int] | None:
     return dim[:kernel_dim], size, coord_mult
 
 
-def _fallback(kernel, dim, inputs, outputs, adj_inputs, adj_outputs, device, stream, adjoint,
-              record_tape, record_cmd, max_blocks, block_dim):  # fmt: skip
+def _fallback(
+    kernel: twt.Kernel,
+    dim: int | Sequence[int],
+    inputs: Sequence[Any],
+    outputs: Sequence[Any],
+    adj_inputs: Sequence[Any],
+    adj_outputs: Sequence[Any],
+    device: wp.DeviceLike,
+    stream: wp.Stream | None,
+    adjoint: bool,
+    record_tape: bool,
+    record_cmd: bool,
+    max_blocks: int,
+    block_dim: int,
+) -> Any:
+    """``wp.launch`` itself, for every launch the cache does not cover."""
     return wp.launch(
         kernel,
         dim,
@@ -554,7 +580,16 @@ def _fallback(kernel, dim, inputs, outputs, adj_inputs, adj_outputs, device, str
     )
 
 
-def _slow(kernel, dim, inputs, outputs, device, max_blocks, block_dim, entry):  # fmt: skip
+def _slow(
+    kernel: twt.Kernel,
+    dim: int | Sequence[int],
+    inputs: Sequence[Any],
+    outputs: Sequence[Any],
+    device: wp.Device,
+    max_blocks: int,
+    block_dim: int,
+    entry: _Entry | Literal[False] | None,
+) -> None:
     """Launch through ``wp.launch`` and, if the kernel had no cache entry, make one."""
     wp.launch(kernel, dim, inputs=inputs, outputs=outputs, device=device, max_blocks=max_blocks,
               block_dim=block_dim)  # fmt: skip
@@ -563,7 +598,7 @@ def _slow(kernel, dim, inputs, outputs, device, max_blocks, block_dim, entry):  
 
 
 def launch_tiled(
-    kernel: wp.Kernel,
+    kernel: twt.Kernel,
     dim: int | Sequence[int],
     inputs: Sequence[Any] = (),
     outputs: Sequence[Any] = (),
@@ -577,11 +612,11 @@ def launch_tiled(
     if device.is_cpu or kwargs:
         return wp.launch_tiled(kernel, dim=dim, inputs=inputs, outputs=outputs, device=device,
                                block_dim=block_dim, **kwargs)  # fmt: skip
-    dim = (dim,) if type(dim) is int else tuple(dim)
+    dim = (dim,) if isinstance(dim, int) else tuple(dim)
     return launch(kernel, (*dim, block_dim), inputs, outputs, device=device, block_dim=block_dim)
 
 
-_map_kernels: dict[tuple[Any, ...], tuple[wp.Kernel, tuple[set[Any], ...]]] = {}
+_map_kernels: dict[tuple[Any, ...], tuple[twt.Kernel, tuple[set[Any], ...]]] = {}
 _is_array = _types.is_array
 
 
@@ -595,6 +630,9 @@ def map(  # noqa: A001 - mirrors ``wp.map``
     or the scalar's type -- plus the output classes. Anything else (no output, an input that is
     neither an array nor a plain scalar or vector, a gradient-tracked input) is ``wp.map`` itself.
     """
+    raw_out: Any = (
+        out  # ``out`` is narrowed by the ``isinstance`` below; ``wp.map`` wants it as given
+    )
     key = [func]  # the object, not id(): a cached id could be recycled by a new function
     shape = None
     broadcast = False
@@ -608,37 +646,36 @@ def map(  # noqa: A001 - mirrors ``wp.map``
             elif value_shape != shape:
                 broadcast = True
             if getattr(value, "requires_grad", False):
-                return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+                return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
             key.append((type(value), value.dtype, value.ndim, tuple(d == 1 for d in value_shape)))
         else:
             value_type = type(value)
             if value_type not in _SCALAR_PY and not (
-                (isinstance(value_type, type) and hasattr(value_type, "_wp_scalar_type_"))
-                or value_type in _types.scalar_types
+                hasattr(value_type, "_wp_scalar_type_") or value_type in _types.scalar_types
             ):
-                return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+                return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
             key.append(value_type)
     if out is None or shape is None or broadcast:
-        return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+        return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
     outputs = out if isinstance(out, (list, tuple)) else (out,)
     for o in outputs:
         if not _is_array(o) or o.shape != shape:
-            return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+            return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
         key.append((type(o), o.dtype))
     key = tuple(key)
     cached = _map_kernels.get(key)
     if cached is None:
-        kernel = wp.map(
-            func, *inputs, out=out, return_kernel=True, block_dim=block_dim, device=device
+        kernel: Any = wp.map(
+            func, *inputs, out=raw_out, return_kernel=True, block_dim=block_dim, device=device
         )
         out_dtypes = tuple({arg.type.dtype} for arg in kernel.adj.args[len(inputs) :])
         if len(out_dtypes) != len(outputs):
-            return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+            return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
         cached = _map_kernels[key] = (kernel, out_dtypes)
     kernel, out_dtypes = cached
     for o, dtypes in zip(outputs, out_dtypes, strict=True):
         if o.dtype not in dtypes and not _accept(dtypes, o.dtype, next(iter(dtypes))):
-            return wp.map(func, *inputs, out=out, block_dim=block_dim, device=device)
+            return wp.map(func, *inputs, out=raw_out, block_dim=block_dim, device=device)
     launch(kernel, shape, inputs, outputs, device=device, block_dim=block_dim)
     return out
 
@@ -876,12 +913,21 @@ def _template(dtype: Any, ndim: int, device: Any) -> tuple[dict[str, Any], Any, 
     return template
 
 
+@overload
+def empty(
+    shape: Any, dtype: type[DType], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]: ...
+@overload
+def empty(
+    shape: Any = 0, *, device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[wp.float32, Any]: ...
 def empty(
     shape: Any = 0, dtype: Any = float, device: wp.DeviceLike = None, **kwargs: Any
 ) -> wp.array[Any]:
     """``wp.empty``, stamped from a cached template for a CUDA allocation outside capture."""
     if type(device) is not _Device:
-        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)
+        # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
+        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
     runtime = _ctx.runtime
     if kwargs and device is not None and device.is_cuda and kwargs.keys() == {"pinned"}:
         kwargs = {}  # ``pinned`` is a host-memory property; Warp ignores it on a CUDA device
@@ -944,6 +990,14 @@ def empty(
     return arr
 
 
+@overload
+def zeros(
+    shape: Any, dtype: type[DType], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]: ...
+@overload
+def zeros(
+    shape: Any = 0, *, device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[wp.float32, Any]: ...
 def zeros(
     shape: Any = 0, dtype: Any = float, device: wp.DeviceLike = None, **kwargs: Any
 ) -> wp.array[Any]:
@@ -970,6 +1024,18 @@ def _is_zero(value: Any) -> bool:
     )
 
 
+@overload
+def full(
+    shape: Any, value: Any, dtype: type[DType], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]: ...
+@overload
+def full(
+    shape: Any = None,
+    value: Any = 0,
+    dtype: None = None,
+    device: wp.DeviceLike = None,
+    **kwargs: Any,
+) -> wp.array[Any]: ...
 def full(
     shape: Any = None,
     value: Any = 0,
@@ -991,6 +1057,14 @@ def full(
     return arr
 
 
+@overload
+def ones(
+    shape: Any, dtype: type[DType], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]: ...
+@overload
+def ones(
+    shape: Any = None, *, device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[wp.float32, Any]: ...
 def ones(
     shape: Any = None, dtype: Any = float, device: wp.DeviceLike = None, **kwargs: Any
 ) -> wp.array[Any]:
@@ -1010,27 +1084,31 @@ def _like_fast(src: Any, device: Any, kwargs: dict[str, Any]) -> bool:
     )
 
 
-def empty_like(src: Any, device: wp.DeviceLike = None, **kwargs: Any) -> wp.array[Any]:
+def empty_like(
+    src: wp.array[DType, Any], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]:
     """``wp.empty_like`` through [`empty`][triwarp._launch.empty]."""
     if not _like_fast(src, device, kwargs):
         return wp.empty_like(src, device=device, **kwargs)
     return empty(src.shape, dtype=src.dtype, device=src.device)
 
 
-def zeros_like(src: Any, device: wp.DeviceLike = None, **kwargs: Any) -> wp.array[Any]:
+def zeros_like(
+    src: wp.array[DType, Any], device: wp.DeviceLike = None, **kwargs: Any
+) -> wp.array[DType, Any]:
     """``wp.zeros_like`` through [`zeros`][triwarp._launch.zeros]."""
     if not _like_fast(src, device, kwargs):
         return wp.zeros_like(src, device=device, **kwargs)
     return zeros(src.shape, dtype=src.dtype, device=src.device)
 
 
-def clone(src: Any, device: wp.DeviceLike = None, **kwargs: Any) -> wp.array[Any]:
+def clone(src: ArrayT, device: wp.DeviceLike = None, **kwargs: Any) -> ArrayT:
     """``wp.clone`` of a contiguous array through [`empty`][triwarp._launch.empty]."""
     if not _like_fast(src, device, kwargs) or not src.is_contiguous:
-        return wp.clone(src, device=device, **kwargs)
+        return cast("ArrayT", wp.clone(src, device=device, **kwargs))
     dst = empty(src.shape, dtype=src.dtype, device=src.device)
     copy(dst, src)
-    return dst
+    return cast("ArrayT", dst)  # ``src``'s own dtype and shape
 
 
 # -- host upload ----------------------------------------------------------------------------------
@@ -1059,10 +1137,21 @@ def _upload_layout(dtype: Any) -> tuple[Any, tuple[int, ...]] | None:
     return _upload_dtypes[dtype]
 
 
-def array(data: Any, dtype: Any, device: Any = None, **kwargs: Any) -> wp.array[Any]:
+@overload
+def array(
+    data: Any, dtype: type[DType], device: Any = None, **kwargs: Any
+) -> wp.array[DType, Any]: ...
+@overload
+def array(
+    data: Any, dtype: _codegen.Struct, device: Any = None, **kwargs: Any
+) -> wp.array[_codegen.StructInstance, Any]: ...
+def array(
+    data: Any, dtype: type[DType] | _codegen.Struct, device: Any = None, **kwargs: Any
+) -> wp.array[DType, Any] | wp.array[_codegen.StructInstance, Any]:
     """``wp.array(data, dtype=dtype, device=device)``, uploaded directly for the common case."""
     if type(device) is not _Device:
-        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)
+        # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
+        device = None if _ctx.runtime is None else _ctx.runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
     layout = None if kwargs or device is None or not device.is_cuda else _upload_layout(dtype)
     if (
         layout is not None
@@ -1089,7 +1178,8 @@ def array(data: Any, dtype: Any, device: Any = None, **kwargs: Any) -> wp.array[
             elif k:
                 shape = None
             if shape is not None:
-                out = empty(shape, dtype=dtype, device=device)
+                # A struct dtype has no upload layout, so this branch only sees a plain dtype.
+                out = empty(shape, dtype=cast("type[DType]", dtype), device=device)
                 if type(out) is _ARRAY and out.capacity:
                     if out.capacity != host.nbytes:
                         return wp.array(data, dtype=dtype, device=device)

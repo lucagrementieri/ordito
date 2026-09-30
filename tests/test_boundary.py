@@ -29,6 +29,7 @@ from tests.conversions import (
     trimesh_to_pymeshfix,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 
@@ -706,7 +707,7 @@ def test_boundary_edges_match_igl(request: pytest.FixtureRequest, mesh_name: str
     assert np.array_equal(
         lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(np.sort(edges_igl, axis=1))
     )
-    assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(edges_igl))
+    assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(np.asarray(edges_igl)))
 
 
 @pytest.mark.parametrize(
@@ -763,9 +764,9 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     ear_wp, ear_opp_wp = tw.boundary.ears(faces_wp)
 
     assert ear_wp.size == expected_ears
-    assert ear_igl.size == expected_ears
+    assert np.asarray(ear_igl).size == expected_ears
 
-    pairs_igl = np.stack([ear_igl, (ear_opp_igl + 1) % 3], axis=1)
+    pairs_igl = np.stack([ear_igl, (np.asarray(ear_opp_igl) + 1) % 3], axis=1)
     pairs_wp = np.stack([ear_wp.numpy(), ear_opp_wp.numpy()], axis=1)
     assert np.array_equal(lexsort_rows(pairs_wp), lexsort_rows(pairs_igl))
 
@@ -793,7 +794,7 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
     ear_igl, _ear_opp_igl = igl.ears(faces_np)
     ear_wp, ear_opp_wp = tw.boundary.ears(mesh_wp.indices)
 
-    assert ear_igl.size == 0
+    assert np.asarray(ear_igl).size == 0
     assert ear_wp.shape == (0,)
     assert ear_opp_wp.shape == (0,)
 
@@ -1004,7 +1005,7 @@ def test_loop_measures_empty(device: str) -> None:
     vertices_wp = wp.zeros(4, dtype=wp.vec3, device=device)
     assert tw.boundary.loop_perimeters(vertices_wp, []).shape == (0,)
     assert tw.boundary.loop_directed_areas(vertices_wp, []).shape == (0,)
-    empty_loop_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_loop_wp = warp_empty(0, wp.int32, device)
     assert tw.boundary.loop_perimeters(vertices_wp, [empty_loop_wp]).shape == (0,)
     # Both halves of the loop guard, which is ``twt.ensure_ndim`` at one call rather than the
     # hand-written rank-and-dtype test it replaced. Only the dtype half was ever reached before, so

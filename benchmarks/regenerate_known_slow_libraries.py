@@ -51,13 +51,17 @@ import collections
 import glob
 import json
 import os
+from typing import Any
 
 TRIWARP = {"triwarp-cuda", "triwarp-cpu"}
 OUT_PATH = os.path.join(os.path.dirname(__file__), "_known_slow_libraries.json")
 
+# ``(group, mesh_name, rest)``, the cell key every benchmark JSON row maps to.
+_Cell = tuple[str, str | None, tuple[tuple[str, str], ...]]
 
-def _load_cells(json_dir: str) -> dict:
-    cells: dict = collections.defaultdict(dict)
+
+def _load_cells(json_dir: str) -> dict[_Cell, dict[str, float]]:
+    cells: dict[_Cell, dict[str, float]] = collections.defaultdict(dict)
     for path in sorted(glob.glob(os.path.join(json_dir, "*.json"))):
         try:
             with open(path) as f:
@@ -75,8 +79,10 @@ def _load_cells(json_dir: str) -> dict:
     return cells
 
 
-def _known_slow_entries(cells: dict, ratio: float, min_rank: int) -> list[dict]:
-    records = []
+def _known_slow_entries(
+    cells: dict[_Cell, dict[str, float]], ratio: float, min_rank: int
+) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
     for (group, mesh_name, rest), libs in cells.items():
         triwarp_median = libs.get("triwarp-cuda") or libs.get("triwarp-cpu")
         refs = {lib: median for lib, median in libs.items() if lib not in TRIWARP}

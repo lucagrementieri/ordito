@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import igl
 import numpy as np
 import potpourri3d as pp3d
@@ -26,6 +28,9 @@ from tests.conversions import (
     trimesh_to_pyvista,
 )
 
+if TYPE_CHECKING:
+    import pyvista as pv
+
 # Not ``conftest.MESHES``: this predates that constant and has never carried ``cave_cube``.
 _EDGE_MESHES = ["icosahedron", "half_torus", "hemisphere"]
 
@@ -34,7 +39,7 @@ _EDGE_MESHES = ["icosahedron", "half_torus", "hemisphere"]
 # ---------------------------------------------------------------------------
 
 
-def _faces_np_to_wp(faces_np: np.ndarray, device: str) -> wp.array:
+def _faces_np_to_wp(faces_np: np.ndarray, device: str) -> wp.array[wp.int32]:
     return wp.array(faces_np.flatten().astype(np.int32), dtype=wp.int32, device=device)
 
 
@@ -78,7 +83,7 @@ def test_edges_match_igl(device: str) -> None:
     rng = np.random.default_rng(0)
     faces_np = rng.integers(0, 50, size=(20, 3), dtype=np.int32)
 
-    edges_igl = igl.oriented_facets(np.ascontiguousarray(faces_np, dtype=np.int64))
+    edges_igl = np.asarray(igl.oriented_facets(np.ascontiguousarray(faces_np, dtype=np.int64)))
     edges_wp = tw.edges.faces_to_edges(_faces_np_to_wp(faces_np, device))
 
     assert edges_igl.shape == (faces_np.shape[0] * 3, 2)
@@ -367,7 +372,7 @@ def test_edges_unique_matches_pyvista(request: pytest.FixtureRequest, mesh_name:
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     edges_pv = pyvista_edges_to_indices(
-        trimesh_to_pyvista(mesh_tm).extract_all_edges(), mesh_tm.vertices
+        cast("pv.PolyData", trimesh_to_pyvista(mesh_tm).extract_all_edges()), mesh_tm.vertices
     )
 
     unique_edges_wp, _inverse_wp = tw.edges.edges_unique(mesh_wp.indices)

@@ -13,17 +13,53 @@ re-exported unchanged so that a vector held in a variable resolves against them.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, TypeVar, cast, overload
+from typing import TYPE_CHECKING, Any, Literal, Protocol, TypeAlias, TypeVar, cast, overload
 
 import warp as wp
+import warp.sparse as wps
 
 from triwarp import _launch
 
 T = TypeVar("T")
 DType = TypeVar("DType")
 NDim = TypeVar("NDim", bound=int)
+# Any Warp array type, kept whole: a union of array types in is the same union out.
+ArrayT = TypeVar("ArrayT", bound="wp.array[Any, Any]")
+# The block type of a sparse matrix: the element dtype of its ``values``.
+Block = TypeVar("Block")
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from typing_extensions import TypeIs
+
+    # Anything ``wp.launch`` accepts as its kernel. ``wp.kernel`` carries no return annotation, so
+    # a checker infers a ``@wp.kernel``-decorated name as the Python function it wraps, while
+    # ``wp.overload``, ``wp.map(..., return_kernel=True)`` and ``wp.kernel(f, name=...)`` in a
+    # factory are real ``wp.Kernel`` objects. Every kernel is launched with ``None`` as its value.
+    Kernel: TypeAlias = wp.Kernel | Callable[..., None]
+
+    # A ``warp.sparse`` matrix whose blocks are ``Block`` (``wp.float32``, ``wp.float64``,
+    # ``wp.mat22d``), with the storage fields declared. Warp declares them only on the class
+    # ``bsr_matrix_t`` generates at runtime, of which every real matrix is an instance, so reading
+    # ``matrix.values`` off the base class is an unknown attribute to a checker.
+    class BsrMatrix(wps.BsrMatrix[Block]):
+        nrow: int
+        ncol: int
+        nnz: int
+        offsets: wp.array[wp.int32]
+        columns: wp.array[wp.int32]
+        row_counts: wp.array[wp.int32] | None
+        values: wp.array[Block]
+
+    # A scalar CSR matrix at either precision, and a sparse operator of any block type the solvers
+    # take (adding the ``wp.mat22d`` tangent-field operators). Unions rather than a ``TypeVar``:
+    # a function accepting any of them is called with the union itself, which no ``TypeVar``
+    # (constrained or not) accepts. Narrow one with ``has_blocks``; a private helper that returns
+    # the block type it was given is an overload set, across whose arms a union argument expands.
+    CsrMatrix: TypeAlias = BsrMatrix[wp.float32] | BsrMatrix[wp.float64]
+    SparseMatrix: TypeAlias = CsrMatrix | BsrMatrix[wp.mat22d]
+
     Array1dInt32: TypeAlias = wp.array[wp.int32, Literal[1]]
     Array1dFloat32: TypeAlias = wp.array[wp.float32, Literal[1]]
     Array1dFloat64: TypeAlias = wp.array[wp.float64, Literal[1]]
@@ -83,6 +119,10 @@ if TYPE_CHECKING:
         | type[wp.float64]
     )
 else:
+    BsrMatrix = wps.BsrMatrix
+    CsrMatrix = wps.BsrMatrix
+    SparseMatrix = wps.BsrMatrix
+    Kernel = wp.Kernel
     Array1dInt32 = wp.array
     Array1dFloat32 = wp.array
     Array1dFloat64 = wp.array
@@ -114,41 +154,141 @@ else:
     SortableDType = type
 
 
-# Warp's stubs annotate these three against the ``Vector`` / ``Matrix`` hint shells, which no
-# concrete Warp type derives from (``wp.vec3`` is ``vec3f``, based on ``ctypes.Array``), so a vector
-# held in a variable can never satisfy them -- only a value coming straight out of another builtin
-# does. The redeclarations below describe the same functions over the concrete vector types; at
-# runtime each name *is* the Warp builtin the ``else`` branch binds, so a call costs exactly what it
-# always did. Drop them once the upstream stubs take concrete types, and drop the ``_V`` TypeVar
-# with them.
-# They are deliberately absent from ``__all__``: mkdocstrings reads the runtime ``else``
-# branch, where each is a bare alias rather than a documented function, so an entry here
-# would advertise a page section that cannot render. They stay importable as ``twt.<name>``.
+# Typed views of Warp functions whose stubs cannot describe a triwarp call. Each is the Warp
+# function itself, bound once through a ``cast`` to a ``Protocol`` spelling its signature over the
+# concrete types, so a call costs exactly what it always did. They are deliberately absent from
+# ``__all__``: mkdocstrings would render them as bare module attributes. They stay importable as
+# ``twt.<name>``. Drop each once the upstream stub describes it.
+#
+# The vector builtins' stubs take the ``Vector`` / ``Matrix`` hint shells, which no concrete Warp
+# type derives from (``wp.vec3`` is ``vec3f``, based on ``ctypes.Array``), so a vector held in a
+# variable never satisfies them -- only a value coming straight out of another builtin does.
 _V = TypeVar("_V", wp.vec2, wp.vec3, wp.vec4)
 
-if TYPE_CHECKING:
 
-    def normalize(v: _V) -> _V:  # pyright: ignore[reportUnusedParameter]
+class _Normalize(Protocol):
+    def __call__(self, v: _V, /) -> _V:
         """Vector of unit length along ``v``, at ``v``'s own precision."""
         ...
 
-    def cross(a: _V, b: _V) -> _V:  # pyright: ignore[reportUnusedParameter]
+
+class _Cross(Protocol):
+    def __call__(self, a: _V, b: _V, /) -> _V:
         """Cross product of two vectors of the same type."""
         ...
 
-    def dot(a: _V, b: _V) -> float:  # pyright: ignore[reportUnusedParameter]
+
+class _Dot(Protocol):
+    def __call__(self, a: _V, b: _V, /) -> float:
         """Dot product of two vectors of the same type."""
         ...
 
-    def transform_point(matrix: wp.mat44, point: wp.vec3) -> wp.vec3:  # pyright: ignore[reportUnusedParameter]
+
+class _TransformPoint(Protocol):
+    def __call__(self, matrix: wp.mat44, point: wp.vec3, /) -> wp.vec3:
         """``point`` carried through the affine transform ``matrix``, translation included."""
         ...
 
-else:
-    normalize = wp.normalize
-    cross = wp.cross
-    dot = wp.dot
-    transform_point = wp.transform_point
+
+normalize = cast("_Normalize", wp.normalize)
+cross = cast("_Cross", wp.cross)
+dot = cast("_Dot", wp.dot)
+transform_point = cast("_TransformPoint", wp.transform_point)
+
+# ``warp.sparse`` parameterizes its matrices by a phantom ``BlockType[Rows, Cols, Scalar]`` that no
+# function returns, so no matrix a caller holds satisfies a ``bsr_*`` parameter, and every result
+# is ``BsrMatrix[Unknown]``. Below, ``BsrMatrix[Block]`` is parameterized by the element dtype of
+# its ``values`` and the functions triwarp calls take and return it. Only the parameters triwarp
+# passes are spelled; the rest keep Warp's defaults at runtime.
+_S = TypeVar("_S")
+
+
+class _BsrMatrixT(Protocol):
+    def __call__(self, dtype: type[Block], /) -> type[BsrMatrix[Block]]:
+        """Return the concrete matrix class whose blocks are ``dtype``."""
+        ...
+
+
+class _BsrDiag(Protocol):
+    def __call__(
+        self, diag: wp.array[Block, Any], *, device: wp.DeviceLike = None
+    ) -> BsrMatrix[Block]:
+        """Square block-diagonal matrix with ``diag`` on its diagonal."""
+        ...
+
+
+class _BsrIdentity(Protocol):
+    def __call__(
+        self, rows_of_blocks: int, block_type: type[Block], device: wp.DeviceLike = None
+    ) -> BsrMatrix[Block]:
+        """Identity matrix of ``rows_of_blocks`` blocks of ``block_type``."""
+        ...
+
+
+class _BsrAxpy(Protocol):
+    def __call__(
+        self,
+        x: BsrMatrix[Block],
+        y: BsrMatrix[Block] | None = None,
+        alpha: float = 1.0,
+        beta: float = 1.0,
+    ) -> BsrMatrix[Block]:
+        """``alpha * x + beta * y``, written into ``y`` when it is given."""
+        ...
+
+
+class _BsrMm(Protocol):
+    def __call__(self, x: BsrMatrix[Block], y: BsrMatrix[Block], /) -> BsrMatrix[Block]:
+        """Return the matrix product ``x @ y``."""
+        ...
+
+
+class _BsrMv(Protocol):
+    def __call__(
+        self,
+        matrix: SparseMatrix,
+        x: wp.array[_S, Any],
+        y: wp.array[_S, Any],
+        /,
+        *,
+        alpha: float = 1.0,
+        beta: float = 0.0,
+        tile_size: int = 0,
+    ) -> wp.array[_S, Any]:
+        """``alpha * matrix @ x + beta * y``, written into ``y``."""
+        ...
+
+
+class _BsrUnary(Protocol):
+    def __call__(self, matrix: BsrMatrix[Block], /) -> BsrMatrix[Block]:
+        """Return a new matrix derived from ``matrix``, with its block type."""
+        ...
+
+
+class _BsrGetDiag(Protocol):
+    def __call__(self, matrix: BsrMatrix[Block], /) -> wp.array[Block]:
+        """Return the diagonal blocks of ``matrix``."""
+        ...
+
+
+class _BsrCompress(Protocol):
+    def __call__(
+        self, matrix: BsrMatrix[Block], /, *, prune_numerical_zeros: bool = True
+    ) -> BsrMatrix[Block]:
+        """``matrix`` with its active blocks compacted, optionally dropping explicit zeros."""
+        ...
+
+
+bsr_matrix_t = cast("_BsrMatrixT", wps.bsr_matrix_t)
+bsr_diag = cast("_BsrDiag", wps.bsr_diag)
+bsr_identity = cast("_BsrIdentity", wps.bsr_identity)
+bsr_axpy = cast("_BsrAxpy", wps.bsr_axpy)
+bsr_mm = cast("_BsrMm", wps.bsr_mm)
+bsr_mv = cast("_BsrMv", wps.bsr_mv)
+bsr_copy = cast("_BsrUnary", wps.bsr_copy)
+bsr_transposed = cast("_BsrUnary", wps.bsr_transposed)
+bsr_get_diag = cast("_BsrGetDiag", wps.bsr_get_diag)
+bsr_compress = cast("_BsrCompress", wps.bsr_compress)
 
 __all__ = [
     "Array1dFloat",
@@ -176,10 +316,13 @@ __all__ = [
     "ArrayNdScalar",
     "ArrayNdUInt32",
     "ArrayNdUInt64",
+    "CsrMatrix",
     "FloatArray",
     "IntArray",
+    "Kernel",
     "ScalarArray",
     "SortableDType",
+    "SparseMatrix",
     "as_array2d",
     "as_array3d",
     "as_dense",
@@ -191,11 +334,13 @@ __all__ = [
     "empty_3d",
     "ensure_edge_pairs",
     "ensure_ndim",
+    "has_blocks",
     "sortable_dtype",
+    "vec3_floats",
 ]
 
 
-def ensure_ndim(arr: wp.array[T], ndim: int, *, dtype: type | None = None) -> wp.array[T]:
+def ensure_ndim(arr: ArrayT, ndim: int, *, dtype: type | None = None) -> ArrayT:
     """
     Validate the rank (and optionally the dtype) of a Warp array.
 
@@ -228,7 +373,7 @@ def ensure_ndim(arr: wp.array[T], ndim: int, *, dtype: type | None = None) -> wp
     return arr
 
 
-def ensure_edge_pairs(arr: wp.array[T], name: str) -> None:
+def ensure_edge_pairs(arr: wp.array[T, Any], name: str) -> None:
     """
     Validate that ``arr`` is a rank-2 ``wp.int32`` array with exactly two columns.
 
@@ -257,7 +402,7 @@ def ensure_edge_pairs(arr: wp.array[T], name: str) -> None:
         raise ValueError(f"{name} must have shape (k, 2), got {arr.shape}")
 
 
-def as_array2d(arr: wp.array[T], dtype: type[DType]) -> wp.array[DType, Literal[2]]:
+def as_array2d(arr: wp.array[T, Any], dtype: type[DType]) -> wp.array[DType, Literal[2]]:
     """
     Validate and narrow a Warp array to the rank-2 alias for ``dtype``.
 
@@ -285,7 +430,7 @@ def as_array2d(arr: wp.array[T], dtype: type[DType]) -> wp.array[DType, Literal[
     return _as_ranked(arr, 2, dtype)
 
 
-def as_array3d(arr: wp.array[T], dtype: type[DType]) -> wp.array[DType, Literal[3]]:
+def as_array3d(arr: wp.array[T, Any], dtype: type[DType]) -> wp.array[DType, Literal[3]]:
     """
     Validate and narrow a Warp array to the rank-3 alias for ``dtype``.
 
@@ -311,7 +456,7 @@ def as_array3d(arr: wp.array[T], dtype: type[DType]) -> wp.array[DType, Literal[
     return _as_ranked(arr, 3, dtype)
 
 
-def _as_ranked(arr: wp.array[T], ndim: int, dtype: type[DType]) -> wp.array[DType, Any]:
+def _as_ranked(arr: wp.array[T, Any], ndim: int, dtype: type[DType]) -> wp.array[DType, Any]:
     """Shared body of the ``as_array*`` pair: check the rank and the dtype, then narrow to both."""
     ensure_ndim(arr, ndim, dtype=dtype)
     return cast("wp.array[DType, Any]", arr)
@@ -355,6 +500,51 @@ def as_dense(view: wp.array[DType, NDim] | wp.indexedarray[DType, NDim]) -> wp.a
     if not isinstance(view, wp.array):
         raise TypeError(f"expected a dense wp.array slice, got {type(view).__name__}")
     return view
+
+
+def vec3_floats(v: wp.vec3) -> tuple[float, float, float]:
+    """
+    Components of a Python-scope 3-vector, as Python floats.
+
+    At Python scope indexing a ``wp.vec3`` already returns a native ``float``, but
+    Warp's stubs type the index as ``vec_t | bool | float32 | int32``, so arithmetic on two
+    components does not type-check. This names that fact once for host-side bounds arithmetic.
+
+    Parameters
+    ----------
+    v
+        Vector to unpack.
+
+    Returns
+    -------
+    tuple[float, float, float]
+        ``(v[0], v[1], v[2])``.
+    """
+    return cast("tuple[float, float, float]", (v[0], v[1], v[2]))
+
+
+def has_blocks(matrix: object, dtype: type[Block]) -> TypeIs[BsrMatrix[Block]]:
+    """
+    Whether ``matrix`` is a sparse matrix whose blocks are ``dtype``.
+
+    The runtime test a solver branches on (``wp.float32`` / ``wp.float64`` CSR, ``wp.mat22d``
+    blocks), and it narrows a [`SparseMatrix`][triwarp.typing.SparseMatrix] on both branches:
+    to ``BsrMatrix[dtype]`` where it holds and to the remaining block types where it does not.
+
+    Parameters
+    ----------
+    matrix
+        Value to test.
+    dtype
+        Block type to test for: the element dtype of ``matrix.values``.
+
+    Returns
+    -------
+    bool
+        ``True`` if ``matrix`` is a ``warp.sparse`` matrix and ``matrix.values.dtype`` is
+        ``dtype``.
+    """
+    return isinstance(matrix, BsrMatrix) and matrix.values.dtype == dtype
 
 
 @overload
@@ -594,4 +784,4 @@ def _empty_ranked(
     dims = tuple(int(extent) for extent in shape)
     if len(dims) != ndim:
         raise ValueError(f"{ndim}D shape must have length {ndim}, got {shape!r}")
-    return cast("wp.array[DType, Any]", _launch.empty(dims, dtype=dtype, device=device))
+    return _launch.empty(dims, dtype=dtype, device=device)

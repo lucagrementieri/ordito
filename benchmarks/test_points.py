@@ -79,6 +79,8 @@ both costs are close to linear in the direction count, so two points fix the lin
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -93,6 +95,9 @@ from meshlib import mrmeshpy as mm
 import triwarp as tw
 import triwarp.typing as twt
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 # Neighbour count for the PCA normal estimate (open3d's own default for KDTreeSearchParamKNN).
 _KNN = 30
@@ -274,7 +279,7 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
         from meshlib import mrmeshnumpy as mn
 
         _cloud_ml_cache[bench_case.mesh_name] = mn.pointCloudFromPoints(
-            np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
+            cast("Buffer", np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64))
         )
     return _cloud_ml_cache[bench_case.mesh_name]
 

@@ -23,7 +23,7 @@ its result splats straight into any of them.
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, NamedTuple
+from typing import TYPE_CHECKING, Literal, NamedTuple, TypeVar, cast, overload
 
 import numpy as np
 import warp as wp
@@ -37,6 +37,11 @@ from triwarp.kernels import graph as kernel_graph
 from triwarp.kernels import intersection as kernel_intersections
 from triwarp.kernels import predicates as kernel_predicates
 from triwarp.kernels import triangles as kernel_triangles
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
+
+DType = TypeVar("DType")
 
 # Segment count from which ``marching_triangles`` links its curves on the device.
 _LINK_ON_DEVICE_FROM = 1024
@@ -107,6 +112,24 @@ def segments_with_plane(
     return intersections, valid
 
 
+@overload
+def mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    return_faces: Literal[False] = False,
+) -> twt.Array2dVec3: ...
+@overload
+def mesh_with_plane(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    *,
+    return_faces: Literal[True],
+) -> tuple[twt.Array2dVec3, wp.array[wp.int32]]: ...
 def mesh_with_plane(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -342,7 +365,7 @@ def _upload_curves(
     points: wp.array[wp.vec3] | np.ndarray,
     bounds: list[int],
     closed: list[bool],
-    device: wp.context.Device,
+    device: wp.DeviceLike,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.bool]]:
     """
     Upload a link's host-side results -- offsets, closed flags, host-link points -- in one copy.
@@ -367,11 +390,14 @@ def _upload_curves(
     return points, offsets, flags
 
 
-def _byte_view(buffer: wp.array[wp.uint8], start: int, dtype: type, count: int) -> wp.array[Any]:
+def _byte_view(
+    buffer: wp.array[wp.uint8], start: int, dtype: type[DType], count: int
+) -> wp.array[DType]:
     """Return ``count`` ``dtype`` elements of ``buffer`` from byte ``start`` as a view of it."""
+    assert buffer.ptr is not None
     view = wp.array(ptr=int(buffer.ptr) + start, dtype=dtype, shape=(count,), device=buffer.device)
     # Warp's own back-reference from a view to the array it keeps alive, as ``flatten`` sets it.
-    view._ref = buffer
+    view._ref = buffer  # pyright: ignore[reportPrivateUsage]
     return view
 
 
@@ -439,7 +465,7 @@ def _link_curves(
     walk -- and on the CPU device, whose serial launches never beat NumPy's walk, through
     ``_link_segments``; both produce the identical packing.
     """
-    device = inclusive.device
+    device = cast("wp.Device", inclusive.device)
     if _links_on_device(device, n_segments):
         return _link_on_device(inclusive, segments, segment_edges, n_segments, key_base)
     n = n_segments
@@ -449,6 +475,7 @@ def _link_curves(
     # the curves' points itself and the caller uploads them, where a device gather would need the
     # slots uploaded, an output allocated and an indexed copy.
     record = _launch.empty(5 * n, dtype=wp.int64, device=device)
+    assert record.ptr is not None
     record_points = wp.array(
         ptr=int(record.ptr) + 16 * n, dtype=wp.vec3, shape=(n, 2), device=device
     )
@@ -464,7 +491,7 @@ def _link_curves(
     return _link_on_host(points_np, table[: 2 * n].reshape(n, 2))
 
 
-def _links_on_device(device: wp.context.Device, n_segments: int) -> bool:
+def _links_on_device(device: wp.Device, n_segments: int) -> bool:
     """Whether ``_link_curves`` chains ``n_segments`` segments on the device, not the host."""
     return device.is_cuda and n_segments >= _LINK_ON_DEVICE_FROM
 
@@ -542,7 +569,11 @@ def _link_on_device(
     if table[m] != 0:
         # Undo the sort to recover each endpoint's key, and let the host link decide.
         edges_np = np.empty(m, dtype=np.int64)
-        np.put(edges_np, twt.as_dense(endpoints[:m]).numpy(), twt.as_dense(keys[:m]).numpy())
+        np.put(
+            edges_np,
+            cast("npt.NDArray[np.int32]", twt.as_dense(endpoints[:m]).numpy()),
+            twt.as_dense(keys[:m]).numpy(),
+        )
         points_np = hit_segments.numpy().reshape(m, 3)
         return _link_on_host(points_np, edges_np.reshape(n, 2))
     scan = table[:m]
@@ -845,9 +876,7 @@ def _colliding_face_pairs(
     return None if pairs is None else twt.as_array2d(pairs, wp.int32)
 
 
-def _compact_crossing_candidates(
-    candidates: _Candidates, *, segments: bool
-) -> twt.Array2dInt32 | twt.Array2dVec3 | None:
+def _compact_crossing_candidates(candidates: _Candidates, *, segments: bool) -> twt.ArrayNd | None:
     """
     Narrow phase plus compaction of the broad-phase slots: the crossing pairs, or their segments.
 
@@ -1683,7 +1712,10 @@ def _clip_with_vertex_field(
     if n_in > 0:
         # Not ``tw.array.gather``: the destination is a *slice* of a larger buffer, and ``gather``
         # allocates its own.
-        _launch.copy(all_faces[: 3 * n_in].reshape((n_in, 3)), faces.reshape((-1, 3))[inside_idx])
+        _launch.copy(
+            twt.as_dense(all_faces[: 3 * n_in]).reshape((n_in, 3)),
+            faces.reshape((-1, 3))[inside_idx],
+        )
 
     vertex_base, face_base = n_vertices, 3 * n_in
     for face_indices, n_cut, emit, faces_per_cut in (
@@ -1707,7 +1739,9 @@ def _clip_with_vertex_field(
                 vertex_dots,
                 wp.int32(vertex_base),
                 all_vertices[vertex_base : vertex_base + 2 * n_cut],
-                all_faces[face_base : face_base + 3 * n_emitted].reshape((n_emitted, 3)),
+                twt.as_dense(all_faces[face_base : face_base + 3 * n_emitted]).reshape(
+                    (n_emitted, 3)
+                ),
             ],
             device=device,
         )

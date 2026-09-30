@@ -249,7 +249,7 @@ def boundary_loops_with_offsets(
     return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_NODES)
 
 
-def _no_loops(device: wp.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+def _no_loops(device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """Return the packed answer of a mesh with no boundary: no loop vertices, offsets ``[0]``."""
     return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
         1, dtype=wp.int32, device=device
@@ -748,7 +748,7 @@ def _validate_packed_loops(
 
 
 def _launch_loop_measure(
-    kernel: wp.Kernel,
+    kernel: twt.Kernel,
     dtype: type,
     vertices: wp.array[wp.vec3],
     flat_loops: wp.array[wp.int32],
@@ -885,7 +885,7 @@ def longest_boundary_loop(
     start = INT32_MAX - (key & 0xFFFFFFFF)
     size = key >> 32
     # Only the winner is materialized: the rest of the packed buffer is never copied.
-    return _launch.clone(flat_loops[start : start + size])
+    return _launch.clone(twt.as_dense(flat_loops[start : start + size]))
 
 
 def boundary_vertex_indices(
@@ -1073,7 +1073,9 @@ class _BoundaryHalfedges:
                 # and the ``(n_vertices, 2)`` degree table after those -- one allocation, and the
                 # total and both bits adjacent for the single readback.
                 flags = _launch.zeros(n + 2 + 2 * n_vertices, dtype=wp.int32, device=device)
-                degrees = twt.as_array2d(flags[n + 2 :].reshape((n_vertices, 2)), wp.int32)
+                degrees = twt.as_array2d(
+                    twt.as_dense(flags[n + 2 :]).reshape((n_vertices, 2)), wp.int32
+                )
             _launch.launch(
                 kernel_boundary.mark_boundary_runs,
                 dim=n,

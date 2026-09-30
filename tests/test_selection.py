@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Literal, cast
+
 import numpy as np
 import open3d as o3d
 import pytest
@@ -27,7 +29,11 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
+    warp_empty,
 )
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 
 def _grid_mesh(n: int = 5):
@@ -95,7 +101,7 @@ def test_region_boundary_edges(device: str):
     mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
     bits_ml = mn.getNumpyBitSet(
         mm.findRegionBoundaryUndirectedEdgesInsideMesh(
-            mesh_ml.topology, mn.faceBitSetFromBools(region)
+            mesh_ml.topology, mn.faceBitSetFromBools(cast("Buffer", region))
         )
     )
     edges_ml = {
@@ -105,7 +111,7 @@ def test_region_boundary_edges(device: str):
     assert edges_ml == expected
 
     # The name's "InsideMesh" is the content: over the whole mesh it excludes the rim entirely.
-    all_faces_ml = mn.faceBitSetFromBools(np.ones(n_faces, dtype=bool))
+    all_faces_ml = mn.faceBitSetFromBools(cast("Buffer", np.ones(n_faces, dtype=bool)))
     assert (
         mm.findRegionBoundaryUndirectedEdgesInsideMesh(mesh_ml.topology, all_faces_ml).count() == 0
     )
@@ -239,7 +245,9 @@ def test_region_boundary_edges_rejects_mismatched_face_mask(device: str) -> None
         tw.selection.region_boundary_edges(faces_wp, short_mask)
 
 
-def _meshlib_contour(topology_ml: mm.MeshTopology, contour_np: np.ndarray) -> object:
+def _meshlib_contour(
+    topology_ml: mm.MeshTopology, contour_np: np.ndarray
+) -> mm.std_vector_Id_EdgeTag:
     """Directed vertex pairs as MeshLib's ``EdgeId`` vector, as ``fillContourLeft`` takes it."""
     contour_ml = mm.std_vector_Id_EdgeTag()
     for start, end in contour_np.tolist():
@@ -456,7 +464,7 @@ def test_exclude_fully_selected_components_rejects_mismatched_mask(device: str) 
 def test_submesh_from_face_indices_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
-    face_indices_wp = wp.empty(0, dtype=wp.int32, device=device)
+    face_indices_wp = warp_empty(0, wp.int32, device)
     submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
         vertices_wp, faces_wp, face_indices_wp
     )
@@ -523,12 +531,14 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     mask_np[indices_np] = True
     mesh_o3d = o3d.t.geometry.TriangleMesh.from_legacy(trimesh_to_open3d(mesh_tm))
     selected_o3d = mesh_o3d.select_faces_by_mask(
-        o3d.core.Tensor(mask_np, dtype=o3d.core.Dtype.Bool)
+        o3d.core.Tensor(mask_np, dtype=o3d.core.Dtype.Bool)  # pyright: ignore[reportCallIssue]  # the stub drops the device default
     )
     # open3d compacts and returns no vertex map, so its positions are matched to the input's by
     # nearest neighbour -- its tensor API stores float32, so an exact key lookup raises KeyError.
     positions_o3d = selected_o3d.vertex.positions.numpy().astype(np.float64)
-    residual_o3d, original_o3d = KDTree(np.asarray(mesh_tm.vertices)).query(positions_o3d)
+    residual_o3d, original_o3d = map(
+        np.asarray, KDTree(np.asarray(mesh_tm.vertices)).query(positions_o3d)
+    )
     assert residual_o3d.max() < 1e-6  # every kept position is a copy, not a recomputation
     assert np.unique(original_o3d).size == original_o3d.size  # and the match is a bijection
     faces_o3d = original_o3d[selected_o3d.triangle.indices.numpy().astype(np.int64)]
@@ -744,7 +754,7 @@ def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
 def test_submeshes_from_face_groups_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
-    empty_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_wp = warp_empty(0, wp.int32, device)
     vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
         vertices_wp, faces_wp, empty_wp, wp.zeros(1, dtype=wp.int32, device=device)
     )
@@ -876,7 +886,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     assert sorted(loop.size for loop in new_loops) == sorted(len(loop_ml) for loop_ml in loops_ml)
     # The rim is a real cycle in the kept mesh, which the loop lengths alone would not say.
     kept_boundary_np = tw.boundary.boundary_edges(kept_vertices_wp, kept_faces_wp).numpy()
-    assert kept_boundary_np.shape[0] == sum(loop.size for loop in new_loops)
+    assert len(kept_boundary_np) == sum(loop.size for loop in new_loops)
 
 
 def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
@@ -925,7 +935,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     assert rim_vertices_np.size > 0  # the fixture has a rim to be confused by
 
     faces_np = mesh_tm.faces
-    touches_rim_np = np.isin(faces_np, rim_vertices_np).any(axis=1)
+    touches_rim_np = np.asarray(np.isin(faces_np, rim_vertices_np).any(axis=1))
     rim_distance_np = KDTree(mesh_tm.vertices[rim_vertices_np]).query(mesh_tm.triangles_center)[0]
 
     # A region away from the rim: one new loop, and the original rim is not reported.
@@ -1011,7 +1021,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
     rim_vertices_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
-    touches_rim_np = np.isin(mesh_tm.faces, rim_vertices_np).any(axis=1)
+    touches_rim_np = np.asarray(np.isin(mesh_tm.faces, rim_vertices_np).any(axis=1))
     interior_faces_np = np.flatnonzero(~touches_rim_np)
     mask_np = np.zeros(n_faces, dtype=bool)
     if region in ("interior", "two_interior"):
@@ -1113,7 +1123,9 @@ def _face_indices_from_vertex_indices_np(
 
 
 @pytest.mark.parametrize("face_mode", ["all", "any"])
-def test_submesh_from_vertex_indices(request: pytest.FixtureRequest, face_mode: str) -> None:
+def test_submesh_from_vertex_indices(
+    request: pytest.FixtureRequest, face_mode: Literal["all", "any"]
+) -> None:
     """
     Class B: trimesh's submesh of the faces a numpy predicate picks, over both ``face_mode`` values.
 
@@ -1143,7 +1155,9 @@ def test_submesh_from_vertex_indices(request: pytest.FixtureRequest, face_mode: 
 
 
 @pytest.mark.parametrize("face_mode", ["all", "any"])
-def test_submesh_from_vertex_mask(request: pytest.FixtureRequest, face_mode: str) -> None:
+def test_submesh_from_vertex_mask(
+    request: pytest.FixtureRequest, face_mode: Literal["all", "any"]
+) -> None:
     """
     The mask form and the index form of the same selection agree, in both ``face_mode`` branches.
 
@@ -1272,7 +1286,7 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
         )
 
         mesh_ml = numpy_to_meshlib(mesh_tm.vertices, mesh_tm.faces)
-        region_ml = mn.vertBitSetFromBools(np.ascontiguousarray(mask_np))
+        region_ml = mn.vertBitSetFromBools(cast("Buffer", np.ascontiguousarray(mask_np)))
         # The in-place overload: it returns None and rewrites `region_ml`.
         assert (mm.expand if grow else mm.shrink)(mesh_ml.topology, region_ml, hops) is None
         morphed_ml = meshlib_bitset_to_numpy(region_ml, n_vertices)
@@ -1341,7 +1355,9 @@ def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
 
 
 @pytest.mark.parametrize("face_mode", ["all", "any"])
-def test_face_indices_from_vertex_indices(request: pytest.FixtureRequest, face_mode: str) -> None:
+def test_face_indices_from_vertex_indices(
+    request: pytest.FixtureRequest, face_mode: Literal["all", "any"]
+) -> None:
     """Class A: both ``face_mode`` branches equal the numpy predicate, face index for face index."""
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
     vertex_indices_np = _vertex_selection(mesh_tm, seed=11, fraction=4)
@@ -1360,6 +1376,6 @@ def test_face_indices_from_vertex_indices(request: pytest.FixtureRequest, face_m
 
 def test_face_indices_from_vertex_indices_empty(device: str) -> None:
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    vertex_indices_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertex_indices_wp = warp_empty(0, wp.int32, device)
     face_indices_wp = tw.selection.face_indices_from_vertex_indices(faces_wp, vertex_indices_wp)
     assert face_indices_wp.shape == (0,)

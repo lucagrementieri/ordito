@@ -1,8 +1,12 @@
 """Regression tests for ``triwarp.mesh.Trimesh`` against Trimesh (CPU reference)."""
 
+# This file tests Trimesh's private property cache and key tables directly.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import cast
 
 import numpy as np
 import pytest
@@ -21,7 +25,7 @@ from tests.comparisons import (
     trimesh_outline_loops,
 )
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES, populate_cache
-from tests.conversions import numpy_to_warp, points_to_warp, points_to_warp_uv
+from tests.conversions import numpy_to_warp, points_to_warp, points_to_warp_uv, warp_empty
 from triwarp.mesh import _ORIENTATION_DEPENDENT_KEYS, _TOPOLOGY_KEYS
 
 # ---------------------------------------------------------------------------
@@ -69,8 +73,8 @@ def test_from_warp_mesh_seeds_warp_mesh_cache(icosahedron: tuple[tm.Trimesh, wp.
 def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
     # A warp.Mesh with zero triangles silently corrupts CUDA state (Warp 1.17); warp_mesh must
     # raise instead of building one.
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
     mesh = tw.Trimesh(vertices_wp, faces_wp)
     with pytest.raises(ValueError, match="zero triangles"):
         _ = mesh.warp_mesh
@@ -205,6 +209,7 @@ def test_body_count_counts_disconnected_bodies(device: str) -> None:
     for index, part in enumerate(parts):
         part.apply_translation([index * 10.0, 0.0, 0.0])
     combined_tm = tm.util.concatenate(parts)
+    assert isinstance(combined_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(combined_tm.vertices, combined_tm.faces, device)
 
     mesh = tw.Trimesh(vertices_wp, faces_wp)
@@ -385,6 +390,7 @@ def test_split_and_add_round_trip(device: str) -> None:
     for index, part in enumerate(parts):
         part.apply_translation([index * 10.0, 0.0, 0.0])
     combined_tm = tm.util.concatenate(parts)
+    assert isinstance(combined_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(combined_tm.vertices, combined_tm.faces, device)
     mesh = tw.Trimesh(vertices_wp, faces_wp)
 
@@ -940,7 +946,9 @@ def test_invert_carried_cache_matches_recomputation(
     reference = tw.Trimesh(inverted.vertices, inverted.faces)
     for key, carried in inverted._cache.items():
         if key in SET_VALUED_CACHE_KEYS:
-            assert csr_row_sets(carried) == csr_row_sets(getattr(reference, key)), (
+            assert csr_row_sets(
+                cast("tuple[wp.array[wp.int32], wp.array[wp.int32]]", carried)
+            ) == csr_row_sets(getattr(reference, key)), (
                 f"invert carried a stale {key} on {mesh_name}"
             )
             continue

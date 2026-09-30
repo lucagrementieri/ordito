@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+from typing import Any
 
 import numpy as np
 import pytest
@@ -62,7 +63,7 @@ def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
     twins = tw.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices)).numpy()
 
     halfedge_endpoints_tm = tm.geometry.faces_to_edges(mesh_tm.faces)
-    boundary_from_twins = halfedge_endpoints_tm[twins < 0]
+    boundary_from_twins = np.asarray(halfedge_endpoints_tm)[twins < 0]
     boundary_wp = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
     assert len(boundary_from_twins) > 0
@@ -193,12 +194,14 @@ def test_validate_false_skips_only_the_check(
     faces_wp, n_vertices = mesh_wp.indices, len(mesh_tm.vertices)
     twins_wp = tw.halfedge.halfedge_twins(faces_wp, n_vertices=n_vertices)
     rings_wp = tw.halfedge.vertex_one_rings(faces_wp, n_vertices=n_vertices)
-    readbacks = []
+    readbacks: list[tuple[int, ...]] = []
     original = wp.array.numpy
 
-    def counting_numpy(self: wp.array) -> np.ndarray:
+    def counting_numpy(
+        self: wp.array[object, Any], *, _suppress_bfloat16_warning: bool = False
+    ) -> np.ndarray:
         readbacks.append(self.shape)
-        return original(self)
+        return original(self, _suppress_bfloat16_warning=_suppress_bfloat16_warning)
 
     wp.array.numpy = counting_numpy
     try:
@@ -370,7 +373,9 @@ def test_vertex_one_rings_empty(device: str) -> None:
     assert is_boundary_wp.shape == (0,)
 
 
-def test_require_matching_twins_rejects_a_table_from_another_mesh(request) -> None:
+def test_require_matching_twins_rejects_a_table_from_another_mesh(
+    request: pytest.FixtureRequest,
+) -> None:
     """
     Triwarp against triwarp: a ``twins=`` table built for a different mesh must be rejected.
 

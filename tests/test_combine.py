@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from typing import cast
+
 import numpy as np
 import pytest
 import pytorch3d.structures as p3d_structures
@@ -21,6 +24,7 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
+    warp_empty,
 )
 
 
@@ -38,6 +42,7 @@ def test_concatenate_meshes(request: pytest.FixtureRequest) -> None:
     mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
 
     concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(concat_tm, tm.Trimesh)
     concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
@@ -190,6 +195,7 @@ def test_split_matches_meshlib(request: pytest.FixtureRequest) -> None:
     mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
     mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(combined_tm, tm.Trimesh)
 
     concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
         [
@@ -271,6 +277,7 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
     mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
     mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(combined_tm, tm.Trimesh)
     concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
@@ -283,7 +290,11 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
     labels_o3d = np.asarray(mesh_o3d.cluster_connected_triangles()[0])
     faces_i32 = np.ascontiguousarray(combined_tm.faces, dtype=np.int32)
     parts_o3d = [
-        open3d_to_trimesh(mesh_o3d.select_by_index(np.unique(faces_i32[labels_o3d == label])))
+        open3d_to_trimesh(
+            mesh_o3d.select_by_index(
+                cast("Sequence[int]", np.unique(faces_i32[labels_o3d == label]))
+            )
+        )
         for label in range(int(labels_o3d.max()) + 1)
     ]
 
@@ -305,7 +316,9 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
     ]
     assert len(parts_wp) == len(parts_o3d) == len(parts_pml) == 3
 
-    def by_faces(parts: list) -> list:
+    def by_faces(
+        parts: Sequence[tuple[np.ndarray, np.ndarray]],
+    ) -> list[tuple[np.ndarray, np.ndarray]]:
         return sorted(parts, key=lambda part: part[1].shape[0])
 
     reference_parts = [(part.vertices, part.faces) for part in parts_o3d]
@@ -318,8 +331,8 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
             centroids_wp = part_wp[0][part_wp[1]].mean(axis=1)
             centroids_ref = vertices_ref[faces_ref].mean(axis=1)
             distance_np, match_np = cKDTree(centroids_ref).query(centroids_wp)
-            assert distance_np.max() < 1e-5
-            assert len(set(match_np.tolist())) == match_np.size
+            assert np.max(distance_np) < 1e-5
+            assert len(set(np.asarray(match_np).tolist())) == np.asarray(match_np).size
 
 
 def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> None:
@@ -367,6 +380,7 @@ def test_split_copies_many_components(device: str) -> None:
     sphere_tm = tm.creation.icosphere(subdivisions=0)
     parts_tm = [sphere_tm.copy().apply_translation([3.0 * i, 0.0, 0.0]) for i in range(40)]
     mesh_tm = tm.util.concatenate(parts_tm)
+    assert isinstance(mesh_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
 
     views_wp = tw.combine.split(vertices_wp, faces_wp)
@@ -379,8 +393,8 @@ def test_split_copies_many_components(device: str) -> None:
         assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
         assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
         assert copy_faces_wp.size == 3 * sphere_tm.faces.shape[0]
-        assert copy_vertices_wp._ref is None
-        assert copy_faces_wp._ref is None
+        assert copy_vertices_wp._ref is None  # pyright: ignore[reportPrivateUsage]
+        assert copy_faces_wp._ref is None  # pyright: ignore[reportPrivateUsage]
 
 
 def test_split_single_component(request: pytest.FixtureRequest) -> None:
@@ -393,8 +407,8 @@ def test_split_single_component(request: pytest.FixtureRequest) -> None:
 
 
 def test_split_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
     assert tw.combine.split(vertices_wp, faces_wp) == []
     vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
         tw.combine.split_with_offsets(vertices_wp, faces_wp)

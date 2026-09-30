@@ -34,6 +34,8 @@ import trimesh as tm
 import warp as wp
 from scipy.spatial import cKDTree
 
+import triwarp.typing as twt
+
 
 def lexsort_rows(rows_np: np.ndarray) -> np.ndarray:
     """
@@ -401,8 +403,8 @@ def symmetric_chamfer(mesh_a: tm.Trimesh, mesh_b: tm.Trimesh, n_samples: int = 4
     rng = np.random.default_rng(0)
     sample_a, _ = tm.sample.sample_surface(mesh_a, n_samples, seed=int(rng.integers(1 << 30)))[:2]
     sample_b, _ = tm.sample.sample_surface(mesh_b, n_samples, seed=int(rng.integers(1 << 30)))[:2]
-    a_to_b = cKDTree(sample_b).query(sample_a)[0].mean()
-    b_to_a = cKDTree(sample_a).query(sample_b)[0].mean()
+    a_to_b = np.mean(cKDTree(sample_b).query(sample_a)[0])
+    b_to_a = np.mean(cKDTree(sample_a).query(sample_b)[0])
     return float(0.5 * (a_to_b + b_to_a))
 
 
@@ -488,7 +490,9 @@ def chamfer_two_sided(points_a: np.ndarray, points_b: np.ndarray) -> float:
     """
     a = np.asarray(points_a, dtype=np.float64)
     b = np.asarray(points_b, dtype=np.float64)
-    return float((cKDTree(b).query(a)[0] ** 2).mean() + (cKDTree(a).query(b)[0] ** 2).mean())
+    return float(
+        np.mean(np.square(cKDTree(b).query(a)[0])) + np.mean(np.square(cKDTree(a).query(b)[0]))
+    )
 
 
 def hausdorff_two_sided(points_a: np.ndarray, points_b: np.ndarray) -> float:
@@ -515,7 +519,7 @@ def hausdorff_two_sided(points_a: np.ndarray, points_b: np.ndarray) -> float:
     """
     a = np.asarray(points_a, dtype=np.float64)
     b = np.asarray(points_b, dtype=np.float64)
-    return float(max(cKDTree(b).query(a)[0].max(), cKDTree(a).query(b)[0].max()))
+    return float(max(np.max(cKDTree(b).query(a)[0]), np.max(cKDTree(a).query(b)[0])))
 
 
 def hausdorff_surface_two_sided(
@@ -569,7 +573,7 @@ def hausdorff_surface_two_sided(
     return float(max(a_to_b, b_to_a))
 
 
-def bsr_arrays(matrix: object) -> list[np.ndarray]:
+def bsr_arrays(matrix: twt.SparseMatrix) -> list[np.ndarray]:
     """
     Return a BSR matrix as ``[offsets, columns, values]``, sliced to its *true* entry count.
 
@@ -595,7 +599,7 @@ def comparable_arrays(value: object) -> list[np.ndarray]:
     """
     if isinstance(value, wp.array):
         return [value.numpy()]
-    if hasattr(value, "nnz_sync"):
+    if isinstance(value, twt.BsrMatrix):
         return bsr_arrays(value)
     if isinstance(value, tuple | list):
         return [array for item in value for array in comparable_arrays(item)]
@@ -616,7 +620,7 @@ def comparable_arrays(value: object) -> list[np.ndarray]:
 SET_VALUED_CACHE_KEYS = frozenset({"vertex_face_adjacency"})
 
 
-def csr_row_sets(csr: tuple[wp.array, wp.array]) -> list[frozenset[int]]:
+def csr_row_sets(csr: tuple[wp.array[wp.int32], wp.array[wp.int32]]) -> list[frozenset[int]]:
     """Per-row index sets of a ``(values, offsets)`` CSR pair."""
     values, offsets = csr
     flat, bounds = values.numpy(), offsets.numpy()

@@ -7,6 +7,7 @@ import trimesh as tm
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.comparisons import assert_nonconstant, fraction_within
 from tests.conversions import points_to_warp, trimesh_to_pymeshlab
 
@@ -21,7 +22,7 @@ def test_principal_curvature(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, _, pv1_igl, pv2_igl, _ = igl.principal_curvature(vertices_np, faces_np, useKring=False)
 
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # frame_independent=False reproduces igl::principal_curvature's symmetrized shape operator.
     _, _, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
         vertices_wp, faces_wp, frame_independent=False
@@ -37,12 +38,12 @@ def test_principal_curvature_half_torus(half_torus: tuple[tm.Trimesh, wp.Mesh]) 
 
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int32)
-    pd1_igl, pd2_igl, pv1_igl, pv2_igl, bad_igl = igl.principal_curvature(
-        vertices_np, faces_np, useKring=False
+    pd1_igl, pd2_igl, pv1_igl, pv2_igl, bad_igl = map(
+        np.asarray, igl.principal_curvature(vertices_np, faces_np, useKring=False)
     )
 
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # frame_independent=False reproduces igl::principal_curvature's symmetrized shape operator.
     pd1_wp, pd2_wp, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
         vertices_wp, faces_wp, frame_independent=False
@@ -50,7 +51,7 @@ def test_principal_curvature_half_torus(half_torus: tuple[tm.Trimesh, wp.Mesh]) 
 
     # Exclude vertices igl marked bad (degenerate) and umbilics where PV1 ~ PV2 (dirs undefined)
     bad = np.array(bad_igl, dtype=np.int32)
-    gap = np.abs(pv1_igl - pv2_igl)
+    gap = np.abs(np.asarray(pv1_igl) - np.asarray(pv2_igl))
     mask = np.ones(len(pv1_igl), dtype=bool)
     if len(bad) > 0:
         mask[bad] = False
@@ -81,10 +82,12 @@ def test_principal_curvature_frame_independent(half_torus: tuple[tm.Trimesh, wp.
 
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int32)
-    _, _, pv1_igl, pv2_igl, bad_igl = igl.principal_curvature(vertices_np, faces_np, useKring=False)
+    _, _, pv1_igl, pv2_igl, bad_igl = map(
+        np.asarray, igl.principal_curvature(vertices_np, faces_np, useKring=False)
+    )
 
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # Default (frame_independent=True): true Weingarten map, independent of the tangent frame.
     _, _, pv1_wp, pv2_wp = tw.curvature.principal_curvature(vertices_wp, faces_wp)
     pv1_indep = pv1_wp.numpy()
@@ -92,7 +95,7 @@ def test_principal_curvature_frame_independent(half_torus: tuple[tm.Trimesh, wp.
 
     # Same masking as the frame-dependent test: drop degenerate and umbilic vertices.
     bad = np.array(bad_igl, dtype=np.int32)
-    gap = np.abs(pv1_igl - pv2_igl)
+    gap = np.abs(np.asarray(pv1_igl) - np.asarray(pv2_igl))
     mask = np.ones(len(pv1_igl), dtype=bool)
     if len(bad) > 0:
         mask[bad] = False
@@ -100,7 +103,7 @@ def test_principal_curvature_frame_independent(half_torus: tuple[tm.Trimesh, wp.
 
     # Mean curvature (the shared trace invariant) must match libigl tightly.
     mean_indep = 0.5 * (pv1_indep + pv2_indep)
-    mean_igl = 0.5 * (pv1_igl + pv2_igl)
+    mean_igl = 0.5 * (np.asarray(pv1_igl) + np.asarray(pv2_igl))
     assert np.allclose(mean_indep[mask], mean_igl[mask], atol=5e-2, rtol=5e-2)
 
     # The principal values themselves stay close for the vast majority of vertices; genuine
@@ -190,8 +193,10 @@ def test_discrete_gaussian_curvature(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
 
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    face_angles_wp = wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
+    face_angles_wp = twt.as_array2d(
+        wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
     gauss_curvature_wp = tw.curvature.discrete_gaussian_curvature(
         points_wp, vertices_wp, faces_wp, face_angles_wp, radius
     )
@@ -258,8 +263,10 @@ def test_discrete_gaussian_curvature_ignores_the_current_device(
 
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    face_angles_wp = wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
+    face_angles_wp = twt.as_array2d(
+        wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
+    )
 
     with wp.ScopedDevice("cpu"):
         gauss_curvature_wp = tw.curvature.discrete_gaussian_curvature(
@@ -548,7 +555,7 @@ def test_principal_curvature_is_scale_equivariant(
     """
     mesh_tm, mesh_wp = icosphere
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
+    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
 
     _, _, pv1_unit_wp, pv2_unit_wp = tw.curvature.principal_curvature(
         points_to_warp(vertices_np, mesh_wp.device), faces_wp, radius=2

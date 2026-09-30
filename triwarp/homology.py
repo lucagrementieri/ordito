@@ -259,7 +259,7 @@ def _primal_spanning_tree(
         )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_levels, state], device=device)
 
-    run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], level)
+    run_device_loop(device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), level)
     return parents, distances
 
 
@@ -318,7 +318,7 @@ def _remove_dual_spanning_forest(
         )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)
 
-    run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], round_of_boruvka)
+    run_device_loop(device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_of_boruvka)
 
 
 def _trace_generator_loops(
@@ -364,7 +364,7 @@ def _trace_generator_loops(
     return loops, offsets
 
 
-def _no_loops(device: wp.context.Device) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
+def _no_loops(device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """Return the empty packed basis: no loop vertices and ``[0]`` offsets."""
     return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
         1, dtype=wp.int32, device=device

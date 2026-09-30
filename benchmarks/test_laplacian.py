@@ -81,7 +81,9 @@ def _edge_lengths_np(bench_case: BenchCase) -> np.ndarray:
     """``(n_faces, 3)`` opposite-edge lengths from ``igl.edge_lengths``, cached per mesh."""
     name = bench_case.mesh_name
     if name not in _edge_lengths_np_cache:
-        _edge_lengths_np_cache[name] = igl.edge_lengths(bench_case.vertices_np, bench_case.faces_np)
+        _edge_lengths_np_cache[name] = np.asarray(
+            igl.edge_lengths(bench_case.vertices_np, bench_case.faces_np)
+        )
     return _edge_lengths_np_cache[name]
 
 
@@ -109,7 +111,7 @@ def _edge_lengths_wp(bench_case: BenchCase) -> twt.Array2dFloat32:
 # runs clean, so a cap here would cost the four ``lucy`` comparisons for nothing. If a future
 # pytorch3d row fails here it will be a row whose own *peak* does not fit, which no teardown can
 # help and which wants a cap on that row.
-def _packed_p3d(bench_case: BenchCase, *, edges: bool = False) -> tuple:
+def _packed_p3d(bench_case: BenchCase, *, edges: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Return the ``(verts, faces)`` pair the ``ops`` assemblers take, or ``(verts, edges)``.
 
@@ -130,7 +132,11 @@ def _packed_p3d(bench_case: BenchCase, *, edges: bool = False) -> tuple:
     alone. The derivation stays where it belongs, in ``edges_unique``'s own group.
     """
     mesh_p3d = bench_case.mesh_p3d
-    return (mesh_p3d.verts_packed(), mesh_p3d.edges_packed() if edges else mesh_p3d.faces_packed())
+    verts_p3d = mesh_p3d.verts_packed()
+    topology_p3d = mesh_p3d.edges_packed() if edges else mesh_p3d.faces_packed()
+    assert verts_p3d is not None
+    assert topology_p3d is not None
+    return (verts_p3d, topology_p3d)
 
 
 _edges_wp_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
@@ -504,7 +510,7 @@ def test_mollify_intrinsic(bench_case: BenchCase) -> None:
     assert lengths.shape == (bench_case.n_faces, 3)
 
 
-_field_cache: dict[tuple[str, str], wp.array] = {}
+_field_cache: dict[tuple[str, str], wp.array[wp.float64]] = {}
 
 
 def _scalar_field_wp(bench_case: BenchCase) -> wp.array[wp.float64]:

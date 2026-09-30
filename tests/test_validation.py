@@ -24,6 +24,7 @@ from tests.conversions import (
     trimesh_to_pymeshfix,
     trimesh_to_pymeshlab,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 
@@ -344,7 +345,7 @@ def test_edge_manifold_mask(
     )
     if allow_boundary_edges:
         # libigl BF is per-corner; a face is manifold iff all three corners are.
-        edge_manifold_bf = igl.is_edge_manifold(_faces_igl(mesh_tm))[1]
+        edge_manifold_bf = np.asarray(igl.is_edge_manifold(_faces_igl(mesh_tm))[1])
         assert np.array_equal(mask_wp.numpy(), edge_manifold_bf.all(axis=1))
 
 
@@ -443,7 +444,7 @@ def test_is_vertex_manifold(request: pytest.FixtureRequest, mesh_name: str) -> N
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     manifold_wp = tw.validation.is_vertex_manifold(mesh_wp.indices)
-    manifold_igl = bool(igl.is_vertex_manifold(_faces_igl(mesh_tm)).all())
+    manifold_igl = bool(np.asarray(igl.is_vertex_manifold(_faces_igl(mesh_tm))).all())
     assert manifold_wp == manifold_igl
     assert manifold_wp is True
 
@@ -464,7 +465,7 @@ def test_is_vertex_manifold_bowtie(device: str) -> None:
     faces_np = np.array([[0, 1, 2], [0, 3, 4]])
     _, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     manifold_wp = tw.validation.is_vertex_manifold(faces_wp)
-    manifold_igl = bool(igl.is_vertex_manifold(faces_np.astype(np.int64)).all())
+    manifold_igl = bool(np.asarray(igl.is_vertex_manifold(faces_np.astype(np.int64))).all())
     assert manifold_wp == manifold_igl
     assert manifold_wp is False
     # The bow-tie is still edge-manifold (each edge used once).
@@ -492,7 +493,7 @@ def test_is_vertex_manifold_unreferenced_vertices(
         faces_np = np.where(faces_np >= n // 2, faces_np + 1, faces_np)
     n_bound = int(faces_np.max()) + 1
     faces_wp = wp.array(faces_np.astype(np.int32).ravel(), dtype=wp.int32, device=mesh_wp.device)
-    manifold_igl = bool(igl.is_vertex_manifold(faces_np).all())
+    manifold_igl = bool(np.asarray(igl.is_vertex_manifold(faces_np)).all())
     assert manifold_igl is expected
     answers = {
         tw.validation.is_vertex_manifold(faces_wp, n_vertices=n_vertices)
@@ -587,7 +588,7 @@ def test_vertex_manifold_mask_unreferenced(device: str) -> None:
 def test_vertex_manifold_mask_faces_without_vertices(device: str) -> None:
     # Vertices present but no faces: every vertex is unreferenced -> all False.
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
     mask_wp = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp)
     assert np.array_equal(mask_wp.numpy(), np.zeros(4, dtype=bool))
 
@@ -757,6 +758,7 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
         second_tm = tm.creation.icosphere(subdivisions=2)
         second_tm.apply_translation([0.7, 0.0, 0.0])
         mesh_tm = tm.util.concatenate([first_tm, second_tm])
+        assert isinstance(mesh_tm, tm.Trimesh)
         n_expected = 84
     else:
         mesh_tm = tm.creation.icosphere(subdivisions=2)
@@ -832,6 +834,7 @@ def test_face_self_intersecting_mask_matches_pymeshfix(device: str, kind: str) -
         second_tm = tm.creation.icosphere(subdivisions=2)
         second_tm.apply_translation([1.2, 0.0, 0.0])
         mesh_tm = tm.util.concatenate([first_tm, second_tm])
+        assert isinstance(mesh_tm, tm.Trimesh)
         n_expected = 72
     else:
         mesh_tm = tm.creation.icosphere(subdivisions=2)
@@ -1082,6 +1085,7 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     _, faces_wp = numpy_to_warp(vertices_np, flipped_np, device)
 
     oriented_igl, components_igl = igl.bfs_orient(np.ascontiguousarray(flipped_np, dtype=np.int64))
+    oriented_igl = np.asarray(oriented_igl)
     unchanged_igl = (oriented_igl == flipped_np).all(axis=1)
     reversed_igl = (oriented_igl == flipped_np[:, ::-1]).all(axis=1)
     assert bool((unchanged_igl | reversed_igl).all()), "a row is neither kept nor reversed"
@@ -1410,8 +1414,8 @@ def test_is_volume_inward_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
 
 
 def test_empty_mesh(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
     assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
     assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is True
     assert tw.validation.is_vertex_manifold(faces_wp) is True
@@ -1435,8 +1439,8 @@ def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:
 
 
 def test_new_masks_empty_mesh(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
     assert tw.validation.edge_winding_consistent_mask(faces_wp).size == 0
     assert tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).size == 0
     assert tw.validation.face_watertight_mask(faces_wp).size == 0
@@ -1536,7 +1540,7 @@ def test_face_defective_mask_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) ->
 
 def test_face_defective_mask_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
     assert tw.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
 
 

@@ -16,6 +16,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.conftest import MESHES
 from tests.conversions import (
     faces_igl,
@@ -94,7 +95,7 @@ def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     centroid_ml = np.array([*mm.findCenterFromFaces(mesh_ml.topology, mesh_ml.points)])
 
     centroid_wp = tw.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
-    centroid_wp = np.array([centroid_wp.x, centroid_wp.y, centroid_wp.z])
+    centroid_wp = np.array(twt.vec3_floats(centroid_wp))
     assert np.allclose(centroid_wp, centroid_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(centroid_wp, centroid_ml, rtol=1e-5, atol=1e-5)
 
@@ -130,10 +131,7 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
 
     centroid_wp = tw.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(
-        np.array([centroid_wp.x, centroid_wp.y, centroid_wp.z]),
-        mesh_tm.centroid,
-        rtol=1e-4,
-        atol=1e-4,
+        np.array(twt.vec3_floats(centroid_wp)), mesh_tm.centroid, rtol=1e-4, atol=1e-4
     )
 
 
@@ -141,7 +139,7 @@ def test_surface_centroid_empty(device: str):
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
     faces = wp.array([], dtype=wp.int32, device=device)
     centroid_wp = tw.measures.surface_centroid(vertices, faces)
-    centroid_wp = np.array([centroid_wp.x, centroid_wp.y, centroid_wp.z])
+    centroid_wp = np.array(twt.vec3_floats(centroid_wp))
     assert np.isnan(centroid_wp).all()
 
 
@@ -164,7 +162,7 @@ def test_surface_centroid_all_degenerate(device: str):
     _, areas_wp = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)
     assert float(areas_wp.numpy().max()) == 0.0
     centroid_wp = tw.measures.surface_centroid(vertices_wp, faces_wp)
-    assert np.isnan([centroid_wp.x, centroid_wp.y, centroid_wp.z]).all()
+    assert np.isnan(twt.vec3_floats(centroid_wp)).all()
 
 
 @pytest.mark.parity("surface_centroid", "pymeshlab")
@@ -189,7 +187,7 @@ def test_surface_centroid_matches_pymeshlab_shell_barycenter(
     measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
 
     centroid_wp = tw.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
-    centroid_np = np.array([centroid_wp.x, centroid_wp.y, centroid_wp.z])
+    centroid_np = np.array(twt.vec3_floats(centroid_wp))
 
     assert np.allclose(centroid_np, measures_pml["shell_barycenter"], rtol=1e-5, atol=1e-5)
     # The vertex mean is a different quantity; if it were not, the assert above would be weightless.
@@ -225,14 +223,9 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     assert np.isclose(volume_wp, volume_igl, rtol=1e-5)
     assert np.isclose(volume_wp, mesh_tm.volume, rtol=1e-5)
     assert np.allclose(
-        [center_wp.x, center_wp.y, center_wp.z],
-        np.asarray(first_moment_igl) / volume_igl,
-        rtol=1e-4,
-        atol=1e-5,
+        twt.vec3_floats(center_wp), np.asarray(first_moment_igl) / volume_igl, rtol=1e-4, atol=1e-5
     )
-    assert np.allclose(
-        [center_wp.x, center_wp.y, center_wp.z], mesh_tm.center_mass, rtol=1e-4, atol=1e-5
-    )
+    assert np.allclose(twt.vec3_floats(center_wp), mesh_tm.center_mass, rtol=1e-4, atol=1e-5)
     scale = float(np.abs(np.asarray(inertia_igl)).max())
     assert (
         np.abs(np.asarray(inertia_wp).reshape(3, 3) - np.asarray(inertia_igl)).max() < 1e-5 * scale
@@ -279,9 +272,7 @@ def test_moments_center_of_mass_differs_from_the_surface_centroid(
     surface_centroid = tw.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
     _volume, center_of_mass, _inertia = tw.measures.moments(mesh_wp.points, mesh_wp.indices)
     assert not np.allclose(
-        [surface_centroid.x, surface_centroid.y, surface_centroid.z],
-        [center_of_mass.x, center_of_mass.y, center_of_mass.z],
-        atol=1e-3,
+        twt.vec3_floats(surface_centroid), twt.vec3_floats(center_of_mass), atol=1e-3
     )
 
 
@@ -309,9 +300,7 @@ def test_moments_translation_shifts_only_the_center(device: str):
 
     assert np.isclose(volume_a, volume_b, rtol=1e-5)
     assert np.allclose(
-        [center_b.x, center_b.y, center_b.z],
-        np.array([center_a.x, center_a.y, center_a.z]) + offset_np,
-        atol=1e-5,
+        twt.vec3_floats(center_b), np.array(twt.vec3_floats(center_a)) + offset_np, atol=1e-5
     )
     assert np.abs(np.asarray(inertia_a) - np.asarray(inertia_b)).max() < 1e-4 * float(
         np.abs(np.asarray(inertia_a)).max()
@@ -323,7 +312,7 @@ def test_moments_empty(device: str):
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     volume, center, inertia = tw.measures.moments(vertices_wp, faces_wp)
     assert volume == 0.0
-    assert np.isnan([center.x, center.y, center.z]).all()
+    assert np.isnan(twt.vec3_floats(center)).all()
     assert np.array_equal(np.asarray(inertia).reshape(3, 3), np.zeros((3, 3)))
 
 

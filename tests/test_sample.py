@@ -6,6 +6,7 @@ import math
 
 import igl
 import numpy as np
+import numpy.typing as npt
 import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
@@ -25,7 +26,9 @@ from tests.conversions import (
     trimesh_to_open3d,
     trimesh_to_pymeshlab,
     trimesh_to_pytorch3d,
+    warp_empty,
 )
+from triwarp.kernels import sample as kernel_sample
 
 
 def test_sample_fibonacci_sphere_unit(device: str):
@@ -387,7 +390,7 @@ def test_find_local_maxima_flags_an_independent_set(device: str):
     is_max_wp = wp.zeros(5, dtype=wp.int32, device=device)
     count_wp = wp.zeros(1, dtype=wp.int32, device=device)
     wp.launch(
-        tw.kernels.sample.find_local_maxima,
+        kernel_sample.find_local_maxima,
         dim=5,
         inputs=[weights_wp, alive_wp, indices_wp, offsets_wp, is_max_wp, count_wp],
         device=device,
@@ -433,7 +436,7 @@ def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
     # closest pair must be no tighter than the reference construction's.
     def min_spacing(points_np: np.ndarray) -> float:
         distances, _ = cKDTree(points_np).query(points_np, k=2)
-        return float(distances[:, 1].min())
+        return float(np.asarray(distances)[:, 1].min())
 
     assert min_spacing(directions_np) >= 0.99 * min_spacing(expected_np)
 
@@ -489,7 +492,7 @@ def test_sample_surface_blue_noise_count_order_of_magnitude(
 
 
 def _blue_noise_statistics(
-    mesh_tm: tm.Trimesh, points_np: np.ndarray, radius: float, dense_np: np.ndarray
+    mesh_tm: tm.Trimesh, points_np: npt.ArrayLike, radius: float, dense_np: np.ndarray
 ) -> tuple[float, float, int]:
     """
     Return the three radius-relative quantities comparable across blue-noise samplers.
@@ -503,7 +506,7 @@ def _blue_noise_statistics(
     _closest, _distance, face_index_np = tm.proximity.closest_point(mesh_tm, points_np)
     return (
         float(pdist(points_np).min()) / radius,
-        float(cKDTree(points_np).query(dense_np)[0].max()) / radius,
+        float(np.max(cKDTree(points_np).query(dense_np)[0])) / radius,
         np.unique(face_index_np).size,
     )
 
@@ -627,7 +630,7 @@ def test_sample_surface_blue_noise_radius_invalid(icosahedron: tuple[tm.Trimesh,
 
 def test_sample_surface_blue_noise_empty_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     mesh_wp = icosahedron[1]
-    empty_faces = wp.empty(0, dtype=wp.int32, device=mesh_wp.points.device)
+    empty_faces = warp_empty(0, wp.int32, mesh_wp.points.device)
     points, face_indices = tw.sample.sample_surface_blue_noise(
         mesh_wp.points, empty_faces, 0.1, seed=0
     )

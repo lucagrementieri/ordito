@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, Literal, TypeVar, overload
+from typing import Any, Literal, TypeVar, cast, overload
 
 import warp as wp
 
@@ -255,23 +255,23 @@ def unique_1d(
     elif key_bytes in (4, 8):
         data_int = data.view(wp.int32 if key_bytes == 4 else wp.int64)
     else:
-        data_int = bitcast_to_int(data, n)
+        data_int = bitcast_to_int(cast("wp.array[Any]", data), n)
     return _unique_hash(data, data_int, data.dtype, n, mask, return_inverse, return_counts, end_bit)
 
 
 def _unique_hash(
-    data: wp.array[Scalar],
-    data_int: wp.array[wp.int32] | wp.array[wp.int64],
-    original_dtype: type[Scalar],
+    data: wp.array[Any],
+    data_int: wp.array[Any],
+    original_dtype: type[Any],
     n: int,
     mask: wp.int32,
     return_inverse: bool,
     return_counts: bool,
     end_bit: int | None,
 ) -> (
-    wp.array[Scalar]
-    | tuple[wp.array[Scalar], wp.array[wp.int32]]
-    | tuple[wp.array[Scalar], wp.array[wp.int32], wp.array[wp.int32]]
+    wp.array[Any]
+    | tuple[wp.array[Any], wp.array[wp.int32]]
+    | tuple[wp.array[Any], wp.array[wp.int32], wp.array[wp.int32]]
 ):
     key_dtype = data_int.dtype
     device = data_int.device
@@ -296,7 +296,7 @@ def _unique_hash(
     # and widening afterwards means ``bitcast_from_int`` allocates the double-width buffer and
     # copies the keys into it -- an allocation and a full copy, to move bytes that could have been
     # written here in the first place.
-    sort_dtype = twt.sortable_dtype(original_dtype)
+    sort_dtype = cast("type[Any]", twt.sortable_dtype(original_dtype))
     keys_compact = _launch.empty(2 * n_unique, dtype=key_dtype, device=device)
     cnts_compact = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
     perm_buf = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
@@ -334,7 +334,7 @@ def _unique_hash(
     if cnts_compact is not None:
         # A contiguous prefix slice, not a gather-unsafe strided view (CLAUDE.md §3.4) -- no copy
         # needed before handing it to ``gather`` as the index array.
-        unique_counts = gather(cnts_compact, perm_buf[:n_unique])
+        unique_counts = gather(cnts_compact, twt.as_dense(perm_buf[:n_unique]))
 
     unique_inverse = None
     if return_inverse:
@@ -764,10 +764,10 @@ def hash_rows(
         If ``data`` has an unsupported dtype or shape.
     """
     if data.dtype == wp.vec3:
-        return hash_vector_rows(data)
+        return hash_vector_rows(cast("wp.array[wp.vec3]", data))
     twt.ensure_ndim(data, 2)
     if data.dtype == wp.int32:
-        return hash_indices_rows(data)
+        return hash_indices_rows(cast("twt.Array2dInt32", data))
     if data.dtype == wp.float32:
         n = int(data.shape[0])
         if int(data.shape[1]) != 3:
@@ -777,7 +777,7 @@ def hash_rows(
             # them as such; the copy below is only for a strided table, which a view cannot retype.
             return hash_vector_rows(data.view(wp.vec3))
         vec = _launch.empty(n, dtype=wp.vec3, device=data.device)
-        wp.utils.array_cast(data, vec)
+        wp.utils.array_cast(cast("wp.array[wp.float32]", data), vec)
         return hash_vector_rows(vec)
     raise ValueError(f"hash_rows unsupported dtype {data.dtype}")
 
@@ -978,6 +978,7 @@ def hash_indices_rows(
             max_index = max_data + 1
     hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
     if n > 0:
+        assert max_index is not None  # set by the bound above whenever ``n > 0``
         _launch.launch(
             kernel_grouping.pack_indices,
             dim=n,

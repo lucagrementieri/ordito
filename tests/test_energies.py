@@ -14,6 +14,7 @@ mistaken for a direct one.
 from __future__ import annotations
 
 import itertools
+from typing import Literal, cast
 
 import igl
 import numpy as np
@@ -22,17 +23,19 @@ import pytorch3d.loss as p3d_loss
 import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
+import warp.sparse as wps
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.conversions import bsr_to_csr, mesh_igl, numpy_to_warp, trimesh_to_pytorch3d
 
 
 def _upload_bsr_float64(
-    matrix_sp: sp.spmatrix, device: str | wp.context.Device
-) -> wp.sparse.BsrMatrix:
+    matrix_sp: sp.csc_matrix | sp.csr_matrix, device: wp.DeviceLike
+) -> twt.BsrMatrix[wp.float64]:
     """Upload a scipy sparse matrix as a float64 1x1-block BSR on ``device``."""
     coo = matrix_sp.tocoo()
-    return wp.sparse.bsr_from_triplets(
+    matrix_wp = wps.bsr_from_triplets(
         coo.shape[0],
         coo.shape[1],
         wp.array(coo.row.astype(np.int32), dtype=wp.int32, device=device),
@@ -40,6 +43,8 @@ def _upload_bsr_float64(
         wp.array(coo.data.astype(np.float64), dtype=wp.float64, device=device),
         prune_numerical_zeros=False,
     )
+    assert twt.has_blocks(matrix_wp, wp.float64)
+    return matrix_wp
 
 
 @pytest.mark.parametrize("target_length", [0.0, 0.3])
@@ -117,7 +122,7 @@ def test_normal_consistency_loss_matches_pytorch3d(
 @pytest.mark.parametrize("method", ["uniform", "cot", "cotcurv"])
 @pytest.mark.parity("laplacian_smoothing_loss", "pytorch3d")
 def test_laplacian_smoothing_loss_matches_pytorch3d(
-    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], method: str
+    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], method: Literal["uniform", "cot", "cotcurv"]
 ) -> None:
     """
     Class B: all three of ``mesh_laplacian_smoothing``'s methods, each under its own rescaling.
@@ -170,7 +175,11 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
     assert tw.energies.edge_length_loss(empty_vertices_wp, empty_faces_wp) == 0.0
     assert tw.energies.normal_consistency_loss(empty_vertices_wp, empty_faces_wp) == 0.0
     with pytest.raises(ValueError, match="method must be"):
-        tw.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, "cotan")
+        tw.energies.laplacian_smoothing_loss(
+            mesh_wp.points,
+            mesh_wp.indices,
+            "cotan",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
+        )
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])
@@ -444,7 +453,7 @@ def test_curved_hessian_and_crouzeix_raviart_cotmatrix_reject_non_edge_manifold(
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_lscm_hessian_matches_igl(request, mesh_name):
+def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
@@ -472,7 +481,7 @@ def test_lscm_hessian_matches_igl(request, mesh_name):
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_vector_area_matrix_matches_igl_derived(request, mesh_name):
+def test_vector_area_matrix_matches_igl_derived(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: ``vector_area_matrix`` is unbound, so it is solved for from two functions that are.
 
@@ -490,7 +499,9 @@ def test_vector_area_matrix_matches_igl_derived(request, mesh_name):
     pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
     _, hessian_igl = igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
-    area_igl = (-sp.block_diag([laplacian_igl, laplacian_igl]) - hessian_igl) / 2.0
+    area_igl = (
+        cast(sp.csr_matrix, -sp.block_diag([laplacian_igl, laplacian_igl]) - hessian_igl) / 2.0
+    )
 
     area_wp = tw.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)
     area_dense = sp.csr_matrix(

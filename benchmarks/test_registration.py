@@ -80,6 +80,7 @@ delta on a *fixed* mesh, not the absolute time. Two things the two targets do sa
 from __future__ import annotations
 
 import math
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import open3d as o3d
@@ -93,6 +94,9 @@ from meshlib import mrmeshpy as mm
 
 import triwarp as tw
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 _SEED = 42
 _N_POINTS = 20_000
@@ -118,9 +122,9 @@ _PML_ROUNDS = 3
 
 _source_np_cache: dict[tuple[str, float], tuple[np.ndarray, np.ndarray]] = {}
 _source_mesh_np_cache: dict[str, np.ndarray] = {}
-_source_wp_cache: dict[tuple[str, str, float], wp.array] = {}
+_source_wp_cache: dict[tuple[str, str, float], wp.array[wp.vec3]] = {}
 _normals_np_cache: dict[str, np.ndarray] = {}
-_normals_wp_cache: dict[tuple[str, str], wp.array] = {}
+_normals_wp_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 _pcd_cache: dict[tuple[str, str], o3d.geometry.PointCloud] = {}
 
 
@@ -366,8 +370,13 @@ def test_icp_point_cloud(bench_case: BenchCase) -> None:
         def icp_ml() -> mm.AffineXf3f:
             from meshlib import mrmeshnumpy as mn
 
-            source_ml = mn.pointCloudFromPoints(np.ascontiguousarray(source_np, dtype=np.float64))
-            target_ml = mn.pointCloudFromPoints(np.ascontiguousarray(target_np, dtype=np.float64))
+            # MeshLib's stubs type these as ``Buffer``, which numpy's stubs implement from 3.12.
+            source_ml = mn.pointCloudFromPoints(
+                cast("Buffer", np.ascontiguousarray(source_np, dtype=np.float64))
+            )
+            target_ml = mn.pointCloudFromPoints(
+                cast("Buffer", np.ascontiguousarray(target_np, dtype=np.float64))
+            )
             icp = mm.ICP(
                 mm.MeshOrPoints(source_ml),
                 mm.MeshOrPoints(target_ml),
@@ -532,9 +541,12 @@ def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
         def icp_ml() -> mm.AffineXf3f:
             from meshlib import mrmeshnumpy as mn
 
-            source_ml = mn.pointCloudFromPoints(np.ascontiguousarray(source_np, dtype=np.float64))
+            source_ml = mn.pointCloudFromPoints(
+                cast("Buffer", np.ascontiguousarray(source_np, dtype=np.float64))
+            )
             target_ml = mn.pointCloudFromPoints(
-                np.ascontiguousarray(target_np, dtype=np.float64), normals_np
+                cast("Buffer", np.ascontiguousarray(target_np, dtype=np.float64)),
+                cast("Buffer", normals_np),
             )
             icp = mm.ICP(
                 mm.MeshOrPoints(source_ml),

@@ -47,6 +47,8 @@ before/after self-comparison.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, cast
+
 import numpy as np
 import pymeshlab as ml
 import pytest
@@ -57,7 +59,11 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase
+
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
 
 _SEED = 5
 
@@ -70,9 +76,9 @@ _SEED_FRACTION = 0.01
 # Fraction of faces extracted into the submesh.
 _SUBMESH_FRACTION = 0.5
 
-_mask_cache: dict[tuple[str, str], wp.array] = {}
-_edges_cache: dict[tuple[str, str], wp.array] = {}
-_indices_cache: dict[tuple[str, str], tuple] = {}
+_mask_cache: dict[tuple[str, str], wp.array[wp.bool]] = {}
+_edges_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
+_indices_cache: dict[tuple[str, str], tuple[wp.array[wp.int32], np.ndarray]] = {}
 
 
 def _seed_mask(bench_case: BenchCase) -> wp.array[wp.bool]:
@@ -96,7 +102,7 @@ def _seed_mask_np(bench_case: BenchCase) -> np.ndarray:
     return mask_np
 
 
-def _unique_edges(bench_case: BenchCase) -> wp.array:
+def _unique_edges(bench_case: BenchCase) -> twt.Array2dInt32:
     """Build the unique edge table once: an *input*, so morphology never re-times the sort."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _edges_cache:
@@ -139,7 +145,7 @@ def test_expand_vertex_mask(bench_case: BenchCase, hops: int) -> None:
         seed_np = np.ascontiguousarray(_seed_mask_np(bench_case))
 
         def expand_ml() -> int:
-            region_ml = mn.vertBitSetFromBools(seed_np)
+            region_ml = mn.vertBitSetFromBools(cast("Buffer", seed_np))
             mm.expand(mesh_ml.topology, region_ml, hops)
             return region_ml.count()
 
@@ -186,12 +192,12 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
         seed_np = np.ascontiguousarray(_seed_mask_np(bench_case))
-        grown_ml = mn.vertBitSetFromBools(seed_np)
+        grown_ml = mn.vertBitSetFromBools(cast("Buffer", seed_np))
         mm.expand(mesh_ml.topology, grown_ml, max(_HOPS))
         grown_np = np.ascontiguousarray(mn.getNumpyBitSet(grown_ml))
 
         def shrink_ml() -> int:
-            region_ml = mn.vertBitSetFromBools(grown_np)
+            region_ml = mn.vertBitSetFromBools(cast("Buffer", grown_np))
             mm.shrink(mesh_ml.topology, region_ml, hops)
             return region_ml.count()
 
@@ -215,7 +221,7 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
         bench_case.run(erode_pml)
 
 
-def _face_indices(bench_case: BenchCase) -> tuple:
+def _face_indices(bench_case: BenchCase) -> tuple[wp.array[wp.int32], np.ndarray]:
     """Half the faces as a ``(indices_wp, indices_np)`` pair, already unique and sorted."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _indices_cache:
@@ -261,7 +267,8 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
             mask_np[indices_np] = True
             return int(
                 mesh_o3d.select_faces_by_mask(
-                    o3d.core.Tensor(mask_np, dtype=o3d.core.Dtype.Bool)
+                    # The stub omits ``Tensor``'s device default.
+                    o3d.core.Tensor(mask_np, dtype=o3d.core.Dtype.Bool)  # pyright: ignore[reportCallIssue]
                 ).triangle.indices.shape[0]
             )
 
@@ -287,10 +294,10 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
         assert len(parts[0].faces) == indices_np.shape[0]
 
 
-_region_cache: dict[tuple[str, str], tuple] = {}
+_region_cache: dict[tuple[str, str], tuple[wp.array[wp.bool], np.ndarray]] = {}
 
 
-def _cap_region(bench_case: BenchCase) -> tuple:
+def _cap_region(bench_case: BenchCase) -> tuple[wp.array[wp.bool], np.ndarray]:
     """
     Select a **contiguous** face region: the cap above the mesh's 80th height percentile.
 
@@ -451,7 +458,7 @@ def test_region_boundary_edges(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
-        region_ml = mn.faceBitSetFromBools(region_np)
+        region_ml = mn.faceBitSetFromBools(cast("Buffer", region_np))
         bits_ml = bench_case.run(
             lambda: mm.findRegionBoundaryUndirectedEdgesInsideMesh(mesh_ml.topology, region_ml)
         )
@@ -532,7 +539,7 @@ def _oriented_seam_np(bench_case: BenchCase, region_np: np.ndarray) -> np.ndarra
     ).numpy()
 
 
-def _faces_for_reference(bench_case: BenchCase) -> wp.array:
+def _faces_for_reference(bench_case: BenchCase) -> wp.array[wp.int32]:
     """Build a host face buffer: a reference case has no device, so ``faces_wp`` is absent."""
     return wp.array(
         np.ascontiguousarray(bench_case.faces_np.ravel(), dtype=np.int32),

@@ -917,8 +917,10 @@ def _run_hole_dp(
             inputs=[wp.int32(group), tables.span_base],
             device=device,
         )
+    graph = capture.graph
+    assert graph is not None
     for _ in range((n_spans + group - 1) // group):
-        wp.capture_launch(capture.graph)
+        wp.capture_launch(graph)
 
 
 def _pack_loops(loops: list[wp.array[wp.int32]]) -> _PackedLoops:
@@ -1576,7 +1578,7 @@ def _extend_packed_rims(
             plane_origins,
             wp.int32(n_vertices),
             extended_vertices[n_vertices:],
-            extended_faces[3 * n_faces :].reshape((2 * total, 3)),
+            twt.as_dense(extended_faces[3 * n_faces :]).reshape((2 * total, 3)),
         ],
         device=device,
     )

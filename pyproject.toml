@@ -48,11 +48,8 @@ keywords = [
 ]
 
 # ``triwarp.neighbors`` and ``triwarp.proximity`` are the package's hard 1.17 dependencies: their
-# ball queries call ``wp.bvh_query_sphere``, which does not exist before it. ``triwarp.voxels`` was
-# the previous floor's reason and still holds -- it needs CPU ``wp.Volume.allocate_by_voxels``
-# (CUDA-only through 1.15) and ``Volume.get_active_stats``, the only occupancy read that is correct
-# on a rebuildable grid.
-#
+# ball queries call ``wp.bvh_query_sphere``, which does not exist before it.
+
 # ``numpy`` is core, not optional: 16 of the modules ``triwarp/__init__.py`` imports eagerly use it
 # for host-side metadata math. It adds nothing to an install, since ``warp-lang`` itself declares an
 # unconditional ``Requires-Dist: numpy`` and ``import warp`` loads it before triwarp gets a say.
@@ -133,9 +130,9 @@ test = [
     # pytorch3d's ``_C`` is a torch C++ extension, so it is ABI-bound to the torch it was compiled
     # against, and uv keys its build cache on the git *commit* alone -- not on the build
     # environment.
+    "py-cpuinfo>=9.0.0",
     "torch==2.11.0",
     "trimesh>=5.0.0",
-    "py-cpuinfo>=9.0.0",
 ]
 
 
@@ -258,21 +255,21 @@ target-version = "py311"
 [tool.ruff.lint]
 # Core rules to enable
 select = [
-    "A",   # Builtins shadowing (Don't name a mesh variable 'id' or 'max')
-    "B",   # Bugbear (Finds subtle, design-level bugs)
-    "BLE", # Blind-except (No generic 'except:')
-    "D",   # Pydocstyle (Enforces docstrings for complex geometry algorithms)
+    "A",      # Builtins shadowing (Don't name a mesh variable 'id' or 'max')
+    "B",      # Bugbear (Finds subtle, design-level bugs)
+    "BLE",    # Blind-except (No generic 'except:')
+    "D",      # Pydocstyle (Enforces docstrings for complex geometry algorithms)
     "E",
-    "F",   # Pyflakes (Severe syntax/runtime errors)
-    "I",   # Isort (Clean, sorted imports)
-    "ICN", # Import conventions (Forces 'import numpy as np')
-    "N",   # Pep8-naming (Mathematical & PEP8 naming conventions)
-    "PT",  # Pytest-style (Clean testing framework)
-    "RUF", # Ruff-specific internal rules
+    "F",      # Pyflakes (Severe syntax/runtime errors)
+    "I",      # Isort (Clean, sorted imports)
+    "ICN",    # Import conventions (Forces 'import numpy as np')
+    "N",      # Pep8-naming (Mathematical & PEP8 naming conventions)
+    "PT",     # Pytest-style (Clean testing framework)
+    "RUF",    # Ruff-specific internal rules
     "TID251", # Banned APIs (see flake8-tidy-imports.banned-api below)
-    "UP",  # Pyupgrade (Keeps syntax modern and performant)
-    "W",   # Pycodestyle (Standard PEP 8 formatting)
-    "YTT", # Sys.version checks (Prevents compatibility bugs)
+    "UP",     # Pyupgrade (Keeps syntax modern and performant)
+    "W",      # Pycodestyle (Standard PEP 8 formatting)
+    "YTT",    # Sys.version checks (Prevents compatibility bugs)
 ]
 
 ignore = [
@@ -325,95 +322,34 @@ exclude = [
     # triwarp/kernels/ is inherently un-typecheckable. Excluded wholesale.
     "triwarp/kernels",
 ]
-include = ["triwarp", "tests", "benchmarks"]
+include = ["benchmarks", "tests", "triwarp"]
 pythonVersion = "3.11"
-typeCheckingMode = "standard"
+# Test-only stubs for reference libraries that ship none a checker can read (pymeshlab).
+stubPath = "tests/typings"
+typeCheckingMode = "strict"
 venv = ".venv"
 venvPath = "."
 
-# Warp's Python-scope stubs are weak: wp.empty returns a bare warp.array, i.e.
-# array[Unknown, int], whatever dtype and rank it was handed; array's NDim parameter is
-# invariant, so the twt.Array2d* aliases (wp.array[dtype, Literal[2]]) and Warp's own
-# array[Unknown, int] are not assignable to one another in either direction;
-# wp.array.__getitem__ carries no annotations, so every slice infers as
-# "indexedarray | array"; warp.sparse's bsr_* builders return BsrMatrix[BlockType[...]];
-# BsrMatrix.offsets/.columns/.values exist at runtime but not in the stub; vec_t's
-# __getitem__ is typed as returning "_wp_scalar_type_ | vec_t" rather than a scalar; and
-# wp.array.numpy() carries no return annotation at all. So the type-flow rules that touch a
-# Warp array fire almost entirely on false positives, and the three expensive ones below stay
-# off so the residual diagnostics are actionable rather than drowned out.
-#
-# Each "none" carries the error count it is actually buying, measured by re-enabling it alone.
-# These three were measured at ba4f7d8 and have NOT been re-measured since -- a24bc72 and the
-# reportCallIssue pass below both moved the tree under them, so read them as upper bounds.
-# Re-measure after a warp-lang upgrade -- a stub fix turns one of these into a cheap re-enable,
-# and nothing else will tell you.
-#
-#   reportArgumentType         1172   wp.empty/zeros lose their dtype, so every wrapper->wrapper
-#                                     array argument mismatches. Never actionable.
-#   reportAttributeAccessIssue  127   BsrMatrix.offsets/.columns/.values/.nrow, absent from the
-#                                     stub. graph.py annotates its own sites inline.
-#   reportOperatorIssue          23   vec_t.__getitem__'s union under arithmetic (18 sites), and
-#                                     reduce.sum's dtype-blind input widening its return (4).
-reportArgumentType = "none"
-reportAttributeAccessIssue = "none"
-reportMissingTypeArgument = "error"
-reportMissingTypeStubs = "error"
-reportOperatorIssue = "none"
+# ``strict``, less the ``reportUnknown*`` family. Warp's Python-scope stubs leave most of
+# ``wp.array`` untyped (``.device``, ``.shape``, ``.numpy()``, slicing), so every expression over an
+# array is partially ``Unknown``.
+reportUnknownArgumentType = "none"
+reportUnknownLambdaType = "none"
+reportUnknownMemberType = "none"
+reportUnknownParameterType = "none"
+reportUnknownVariableType = "none"
 reportUnnecessaryTypeIgnoreComment = "error"
-
-# Three rules above ``standard``, the ones whose hits were real rather than Warp stub fallout.
-# ``reportUnnecessaryCast`` is also the staleness half of the narrowings above: a Warp stub fix
-# turns a cast into a no-op, and this is what says so. Enabling them reported 4 / 1 / 10 on
-# ``triwarp/`` (a dead ``voxels._cell_slots``, an unread ``n_vertices``, protocol-signature and
-# stub parameters), plus 3 casts and 1 dead helper in ``tests/`` / ``benchmarks/``, where
-# ``reportUnusedParameter`` also enforces section 7.1's ``device`` rule (152 hits: 150 ``device``
-# parameters a mesh fixture already supplied, and two ``parametrize`` labels). The stricter
-# modes are ~12 500 ``reportUnknown*`` hits on Warp's stubs and were declined.
-reportUnnecessaryCast = "error"
-reportUnusedFunction = "error"
 reportUnusedParameter = "error"
 
-# ``tests/`` and ``benchmarks/`` are checked too, but not against the same bar. Two things are
-# true there and nowhere else: they import all nine reference libraries of section 7.6, none of
-# which ships stubs and none of which ever will; and they read Warp arrays back through
-# ``.numpy()`` constantly, which carries no return annotation. Those are the same stub gaps the
-# three ``"none"`` rules above already concede for ``triwarp/`` -- conceded here in the two extra
-# places the reference stack reaches. The gate for the shipped package is unchanged: measured,
-# ``triwarp/`` reports 0 errors under this config exactly as it did under ``include = ["triwarp"]``.
-#
-# ``extraPaths`` is load-bearing, not tidiness: an execution environment's ``root`` re-bases import
-# resolution, so without it 240 imports break (``triwarp`` x98, ``tests.conversions`` x47) and the
-# stub errors below are merely replaced by ``reportMissingImports``.
-#
-# Each "none" carries the error count it is actually buying, measured by re-enabling it alone:
-#
-#   reportMissingTypeStubs      308   the nine reference libraries -- meshlib 98, igl 63, open3d
-#                                     46, pymeshlab 35, pytorch3d 43, potpourri3d 14, pymeshfix 4.
-#                                     Stays "error" at the root, so triwarp/'s meshio guard holds.
-#   reportMissingTypeArgument   150   bare wp.array / np.ndarray in test helper signatures.
-#   reportCallIssue             154   numpy scalar __getitem__ unions, and Warp builtins whose
-#                                     stubs take the Vector/Matrix hint shells (see triwarp/typing).
-#   reportGeneralTypeIssues     103   wp.array.numpy()'s missing return annotation, read as
-#                                     ndarray[tuple[()], ...] whose .shape indexes out of range.
-#   reportIndexIssue             77   __getitem__ on numpy scalar types (intp, complex, _Buffer).
 [[tool.basedpyright.executionEnvironments]]
-root = "tests"
 extraPaths = ["."]
-reportCallIssue = "none"
-reportGeneralTypeIssues = "none"
-reportIndexIssue = "none"
-reportMissingTypeArgument = "none"
 reportMissingTypeStubs = "none"
+root = "tests"
 
 [[tool.basedpyright.executionEnvironments]]
-root = "benchmarks"
 extraPaths = ["."]
-reportCallIssue = "none"
-reportGeneralTypeIssues = "none"
-reportIndexIssue = "none"
-reportMissingTypeArgument = "none"
 reportMissingTypeStubs = "none"
+root = "benchmarks"
 
 [[tool.basedpyright.executionEnvironments]]
 root = "."

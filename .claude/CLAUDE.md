@@ -2149,62 +2149,80 @@ uv run basedpyright
 
 - **`triwarp/kernels/` is excluded**: the kernel DSL is not modelled by any stubs. Do not make
   kernels type-clean or add `# pyright: ignore` there.
-- **Warp-stub type-flow rules are off — exactly three:** `reportArgumentType`,
-  `reportAttributeAccessIssue`, `reportOperatorIssue`. Warp's Python-scope stubs are weak
-  (`wp.empty` returns `array[Unknown, int]`; `wp.array.__getitem__` types every slice as
-  `indexedarray | array`; `warp.sparse` returns `BsrMatrix[BlockType[...]]`;
-  `BsrMatrix.offsets/.columns/.values` are absent), so those rules fire almost only on false
-  positives. **basedpyright therefore does not catch genuine argument or index type errors in
-  wrappers** — rely on §7's tests. It also cannot see a cross-module private call through an
-  attribute path (`tw.holes._mean_rim_edge_length`). `reportIndexIssue` and
-  `reportGeneralTypeIssues` run at `standard`'s default. Read the config, not this prose.
-    - **`reportReturnType` is ON.** `wp.empty`'s element type is `Unknown`, assignable to
-      anything, so the dtype never fails a return; what fails is **`NDim`, which is invariant**:
-      `wp.array[wp.float32]` and `twt.Array1dFloat32` are not assignable to each other in either
-      direction, so the two rank-1 spellings cannot mix in one return.
-    - **`reportCallIssue` is ON.** It fires only where the callee is **overloaded** (the same
-      defect against a non-overloaded callee lands in the disabled `reportArgumentType`).
-      Convention:
-      **accept wide, return narrow** — a *parameter* takes the `Any`-ranked `twt.ArrayNd*` family,
-      a *return* keeps the `Literal`-ranked `twt.Array1d*` / `Array2d*` aliases. The dtype still
-      discriminates; only the rank check is given up. `reduce`'s `axis=` overloads keep
-      `Array2dScalar`.
-    - **Widened overloads make `wp.empty` bind silently to the first arm** (`Unknown` satisfies
-      every arm; `reduce.max` on a `float64` buffer infers `int`). Allocate buffers that feed
-      `reduce` with [`twt.empty_1d`][triwarp.typing.empty_1d], which carries dtype and rank. A
-      buffer also *returned* from a `wp.array[dtype]`-annotated function cannot be converted (`NDim`
-      invariant) and takes a `cast` at the call. Check what a buffer is returned as before
-      converting its allocation.
-    - **`wp.vec3` / `wp.mat44` values never satisfy `wp.normalize` / `wp.transform_point`**: the
-      stubs annotate `Vector` / `Matrix` hint shells nothing concrete derives from (a builtin's
-      *output* resolves; a variable never does). `triwarp/typing.py` carries a `TYPE_CHECKING`-only
-      redeclaration of `normalize` / `cross` / `dot` / `transform_point` that binds `wp.<name>` at
-      runtime (zero cost, kernels untouched). Narrower spellings fail (a `cast` on the argument, an
-      annotated local, the parameter declared as the shell, widening only one argument);
-      `n: Any = v` passes and is declined (erases every check on the name). Fixing one builtin
-      pushes the gap to the next, hence `dot` in the table. Delete the block and the `_V` TypeVar
-      when upstream takes concrete types.
+- **`strict`, less the five `reportUnknown*` rules.** Warp's Python-scope stubs leave most of
+  `wp.array` untyped (`.device`, `.shape`, `.numpy()`, slicing), so every expression over an
+  array is partially `Unknown`: 4 844 of strict's 4 967 errors on `triwarp/` when it was adopted
+  (`arr.device` alone ~2 000). Every other strict rule is on, including `reportArgumentType`,
+  `reportAttributeAccessIssue`, `reportOperatorIssue` and `reportPrivateUsage` on `triwarp/`.
+  Read the config, not this prose; it carries the counts.
+- **No local Warp stubs — decided, not overlooked.** A generated `typings/warp/_src` stub set was
+  built and removed. A `stubPath` never reaches a derived library (its checker reads Warp's own
+  stubs), so triwarp would be checked against types its users do not see. Shipping it as a PEP 561
+  partial `warp-stubs` package works only with Warp's `__init__.pyi` copied in verbatim (without it
+  every Warp name reads `Unknown`), needs a second PyPI distribution, and pins private `warp._src`
+  internals to one Warp minor. The gaps that can be closed in one place are closed in
+  `triwarp/typing.py`; the rest take a `cast` at the site.
+- **`triwarp/typing.py` is where Warp's typing gaps are closed**, so a call site does not need
+  `Any`:
+    - `twt.Kernel` (`wp.Kernel | Callable[..., None]`): `wp.kernel` has no return annotation, so
+      a decorated kernel reads as the Python function it wraps.
+    - `twt.BsrMatrix[Block]`, a `TYPE_CHECKING`-only subclass of `wps.BsrMatrix` declaring the
+      storage fields `bsr_matrix_t` generates at runtime (`nrow`, `offsets`, `values`, ...), with
+      `Block` the element dtype of `values`. Warp parameterizes by a phantom
+      `BlockType[Rows, Cols, Scalar]` no function returns. `twt.CsrMatrix` (`float32 | float64`)
+      and `twt.SparseMatrix` (`CsrMatrix | BsrMatrix[mat22d]`) are the solver-facing unions;
+      `twt.has_blocks(matrix, dtype)` is a `TypeIs` narrowing both branches.
+    - **Typed views of Warp functions** (`twt.bsr_mm`, `bsr_mv`, `bsr_axpy`, `bsr_diag`, ...,
+      `normalize`, `cross`, `dot`, `transform_point`): the Warp function itself bound once through
+      `cast` to a `Protocol` spelling its signature over concrete types (zero call cost). Protocol
+      `__call__` parameters are exempt from `reportUnusedParameter`, which a `TYPE_CHECKING` `def`
+      redeclaration is not. Call `twt.bsr_*`, never `wps.bsr_*`, on a triwarp-typed matrix.
+    - `twt.as_dense` (slice narrowing, below) and `twt.vec3_floats` (Warp types `vec3[i]` as
+      `vec_t | bool | float32 | int32`; at Python scope it is a `float`).
+- **Type variables versus unions — measured, and the root of most remaining casts.**
+    - A **union argument solves neither a plain nor a constrained `TypeVar`**
+      (`BsrMatrix[float32] | BsrMatrix[float64]` into `BsrMatrix[B]` is an error). A function
+      accepting "any of these" takes the union alias; one that returns its argument's own type
+      uses a **`TypeVar` bounded by `wp.array`** (`ArrayT` in `_launch.clone`, `twt.ensure_ndim`),
+      which does accept a union and returns it; or it is an **overload set**, across whose arms a
+      union argument expands (`linalg._owned_copy`).
+    - **A dtype parameter is `dtype: type[twt.Block] = wp.float32`** returning `BsrMatrix[Block]`
+      / `wp.array[Block]`: the checker solves from the default when omitted, exactly when given,
+      and to `Unknown` (assignable) for a runtime `type`. The constrained `wp.Float` would bind a
+      runtime `type` to `float`.
+    - **Never add `float32` / `float64` overload arms ahead of a generic one**: an `Unknown` or
+      `Any` argument binds the first arm silently (a `float64` builder then reads as `float32`).
+    - A predicate that also checks other conditions narrows with `TypeGuard` (positive branch
+      only; `linalg._one_block_eligible`), never `TypeIs`.
+    - Heterogeneous values that are only forwarded, hashed or duck-typed are `object`, not `Any`
+      (`require_same_device(**named: object)`, cache keys `tuple[object, ...]`); a sequence
+      parameter is `Sequence[object]` (a `list` is invariant).
+- **Rank `Any` is the one deliberate `Any`.** `NDim` is invariant, so `wp.array[wp.float32]`
+  (`array[float32, int]`) and `twt.Array1dFloat32` are not assignable in either direction, and a
+  `TypeVar` used once in a signature is itself an error. Convention: **accept wide, return
+  narrow** — a *parameter* takes the `Any`-ranked `twt.ArrayNd*` family, a *return* keeps the
+  `Literal`-ranked `twt.Array1d*` / `Array2d*` aliases; the dtype still discriminates.
+    - **`wp.empty` binds silently to an overload's first arm** (`Unknown` satisfies every arm).
+      Allocate through `_launch.empty` / `twt.empty_1d`, which carry the dtype.
     - **Narrowings are two shapes.** A Python-scope *slice* is always a dense `wp.array`:
-      `twt.as_dense` narrows it with a real `isinstance` (`wp.indexedarray` is not a `wp.array`
-      subclass). A gather (`src[indices]`) *is* an `indexedarray` (§3.4) and is materialized with
-      `wp.copy`. Everything else (`BsrMatrix[...]`, `wp.array.list()`, `wp.normalize` /
-      `wp.cross`) is a plain `cast`. Re-measure the narrowings after a `warp-lang` upgrade;
-      `reportUnnecessaryCast` doubles as their staleness check.
+      `twt.as_dense` narrows it with a real `isinstance` (`wp.indexedarray` is not a subclass). A
+      gather (`src[indices]`) *is* an `indexedarray` (§3.4) and is materialized with `wp.copy`.
+      `reportUnnecessaryCast` is every cast's staleness check.
+- **Order of preference:** a correct annotation or helper in `twt` > `cast` > a scoped
+  `# pyright: ignore[rule]` with its reason. In `_launch.py`'s hot path an ignore beats a `cast`
+  (a `cast` is a function call per launch); that module also carries one file-level
+  `reportPrivateUsage=false`, since driving Warp internals is its purpose. Cross-module private
+  uses that api_conventions check 5 allowlists carry the matching scoped ignore.
 - **`reportPossiblyUnboundVariable` is an error** — it catches §1.4's conditional-scope gotcha. On a
-  *correlated* condition (two separate `if is_mesh:` blocks) initialize to `None` before the branch
-  and `assert x is not None` at the use (`triwarp/registration.py`). Never suppress it.
-- **Three rules above `standard` are ON:** `reportUnnecessaryCast`, `reportUnusedFunction`,
-  `reportUnusedParameter` (the only ones in `recommended` / `all` whose hits were real).
-  `reportUnusedParameter` covers `tests/` and `benchmarks/` too, which enforces §7.1's `device`
-  rule. A protocol-signature parameter is `_`-prefixed (`matvec`'s `_y`); the `TYPE_CHECKING`
-  redeclarations carry a scoped ignore; a `parametrize` value used only as a label goes in
-  `pytest.param(..., id=)` / `ids=`.
-- **Measured and declined:** `strict` reports ~12 900 on `triwarp/`, ~12 500 of them
-  `reportUnknown*` on Warp names; `reportUnreachable` flags exactly §4.2's off-menu `Literal`
-  guards; `reportImportCycles` flags §3.1's lazy `__init__`; `reportUninitializedInstanceVariable`
-  misreads `__slots__`. Local Warp stubs (typed `wp.empty` / `wp.zeros` / `array.shape` /
-  `wp.launch`) are the lever for catching more, and might let `reportArgumentType` back on —
-  unmeasured.
+  *correlated* condition initialize to `None` before the branch and `assert x is not None` at the
+  use (`triwarp/registration.py`). Never suppress it.
+- **Two rules above strict are ON:** `reportUnnecessaryTypeIgnoreComment` and
+  `reportUnusedParameter` (which covers `tests/` and `benchmarks/`, enforcing §7.1's `device`
+  rule). A protocol-signature parameter is `_`-prefixed (`matvec`'s `_y`); a `parametrize` value
+  used only as a label goes in `pytest.param(..., id=)` / `ids=`.
+- **Measured and declined:** `reportUnreachable` flags exactly §4.2's off-menu `Literal` guards;
+  `reportImportCycles` flags §3.1's lazy `__init__`; `reportUninitializedInstanceVariable`
+  misreads `__slots__`.
 - The gate stays at **0 errors**. An error is almost always a real possibly-unbound bug or a
   missing dependency — resolve it, do not widen the disabled-rule list.
 
@@ -2227,11 +2245,21 @@ uv sync --all-groups
   `uv run basedpyright triwarp` (an explicit path overrides `include`; this is CI's fast
   `typecheck` job). The wide gate runs in `pytest-cpu`, the only job with all nine reference
   libraries.
-- `tests/` and `benchmarks/` are checked under a per-directory `executionEnvironments` block that
-  concedes five rules the reference stack and `wp.array.numpy()` make unactionable
-  (`reportMissingTypeStubs`, `reportMissingTypeArgument`, `reportCallIssue`,
-  `reportGeneralTypeIssues`, `reportIndexIssue`). **An execution environment's `root` re-bases
-  import resolution**, so each entry needs `extraPaths = ["."]`.
+- `tests/` and `benchmarks/` are checked **at the same bar as `triwarp/`**, conceding only
+  `reportMissingTypeStubs` (no reference library ships stubs) through a per-directory
+  `executionEnvironments` block. **An execution environment's `root` re-bases import resolution**,
+  so each entry needs `extraPaths = ["."]`. Test-side typing gaps have one home each:
+    - `tests.conversions.warp_empty(shape, dtype, device)`: Warp leaves `wp.empty`'s `dtype`
+      unannotated, so the checker types it `type[float]` from the default.
+    - `tests/typings/pymeshlab/__init__.pyi` (the top-level `stubPath`, so it serves `benchmarks/`
+      too): pymeshlab's names come from a compiled `import *` and its filters are bound at runtime,
+      so the stub declares the four classes with dynamic members.
+    - A matrix a test builds with `warp.sparse` directly is `wps.BsrMatrix`, not `twt.BsrMatrix`:
+      narrow with `assert twt.has_blocks(matrix, dtype)` or `isinstance(matrix, twt.BsrMatrix)`.
+    - A private helper exercised on purpose takes a scoped `# pyright: ignore[reportPrivateUsage]`;
+      a file whose purpose is testing a module's internals carries one file-level
+      `# pyright: reportPrivateUsage=false` with its reason.
+  A fixture parameter is annotated with its fixture's return type.
 - Keep `# type: ignore` directives to the few verified load-bearing by
   `reportUnnecessaryTypeIgnoreComment`. **Set the rule set first, then delete what the checker
   flags** — the unnecessary count is a function of the rules.

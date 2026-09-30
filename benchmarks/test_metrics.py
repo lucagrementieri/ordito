@@ -41,8 +41,6 @@ appears here.
 
 from __future__ import annotations
 
-from typing import cast
-
 import igl
 import numpy as np
 import open3d as o3d
@@ -54,15 +52,14 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
-import triwarp.typing as twt
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
 
 _TRANSLATION_FRACTION = 0.05
 
-_grad_cache: dict[tuple[str, str], tuple] = {}
+_grad_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.vec3]]] = {}
 _cloud_np_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-_cloud_wp_cache: dict[tuple[str, str], tuple] = {}
-_cloud_o3d_cache: dict[str, tuple] = {}
+_cloud_wp_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.vec3]]] = {}
+_cloud_o3d_cache: dict[str, tuple[o3d.geometry.PointCloud, o3d.geometry.PointCloud]] = {}
 _cloud_pml_cache: dict[str, ml.MeshSet] = {}
 
 
@@ -91,25 +88,27 @@ def _clouds_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.ve
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _cloud_wp_cache:
         cloud_a, cloud_b = _clouds_np(bench_case)
-        _cloud_wp_cache[key] = tuple(
+        cloud_a_wp, cloud_b_wp = (
             wp.array(
                 np.ascontiguousarray(c, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
             )
             for c in (cloud_a, cloud_b)
         )
+        _cloud_wp_cache[key] = (cloud_a_wp, cloud_b_wp)
     return _cloud_wp_cache[key]
 
 
 def _clouds_o3d(bench_case: BenchCase) -> tuple[o3d.geometry.PointCloud, o3d.geometry.PointCloud]:
     name = bench_case.mesh_name
     if name not in _cloud_o3d_cache:
-        _cloud_o3d_cache[name] = tuple(
+        cloud_a_o3d, cloud_b_o3d = (
             o3d.geometry.PointCloud(o3d.utility.Vector3dVector(c)) for c in _clouds_np(bench_case)
         )
+        _cloud_o3d_cache[name] = (cloud_a_o3d, cloud_b_o3d)
     return _cloud_o3d_cache[name]
 
 
-def _grad_inputs(bench_case: BenchCase) -> tuple:
+def _grad_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3]]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _grad_cache:
         vertices = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
@@ -132,10 +131,10 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
     vertices_a, vertices_b = _grad_inputs(bench_case)
     faces = bench_case.faces_wp
 
-    def run() -> twt.Array1dFloat32:
+    def run() -> wp.array[wp.float32]:
         tape = wp.Tape()
         loss = tw.metrics.chamfer_mesh_to_mesh_loss(vertices_a, faces, vertices_b, faces, tape=tape)
-        tape.backward(loss=cast(wp.array, loss))
+        tape.backward(loss=loss)
         tape.zero()
         return loss
 
@@ -202,7 +201,7 @@ def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: boo
     assert chamfer > 0.0
 
 
-_jittered_wp_cache: dict[tuple[str, str], tuple] = {}
+_jittered_wp_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.vec3]]] = {}
 
 
 def _jittered_clouds_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3]]:
@@ -212,12 +211,13 @@ def _jittered_clouds_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.ar
         vertices = bench_case.vertices_np
         diagonal = np.linalg.norm(vertices.max(axis=0) - vertices.min(axis=0))
         jitter = np.random.default_rng(0).normal(scale=1e-4 * diagonal, size=vertices.shape)
-        _jittered_wp_cache[key] = tuple(
+        points_wp, jittered_wp = (
             wp.array(
                 np.ascontiguousarray(c, dtype=np.float32), dtype=wp.vec3, device=bench_case.device
             )
             for c in (vertices, vertices + jitter)
         )
+        _jittered_wp_cache[key] = (points_wp, jittered_wp)
     return _jittered_wp_cache[key]
 
 

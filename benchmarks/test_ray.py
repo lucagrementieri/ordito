@@ -66,6 +66,7 @@ half.
 from __future__ import annotations
 
 from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -74,6 +75,9 @@ from meshlib import mrmeshpy as mm
 
 import triwarp as tw
 from conftest import BenchCase
+
+if TYPE_CHECKING:
+    import open3d as o3d
 
 # Ray count. Fixed rather than swept: the crossing axis is the interesting one and a query-count
 # sweep here would measure the same launch scaling ``test_proximity.py`` already sweeps.
@@ -153,24 +157,25 @@ def _mesh_wp(bench_case: BenchCase) -> wp.Mesh:
     return _mesh_cache[key]
 
 
-_scene_o3d_cache: dict[str, object] = {}
-_ray_o3d_cache: dict[str, object] = {}
+_scene_o3d_cache: dict[str, o3d.t.geometry.RaycastingScene] = {}
+_ray_o3d_cache: dict[str, o3d.core.Tensor] = {}
 
 
-def _rays_o3d(bench_case: BenchCase) -> object:
+def _rays_o3d(bench_case: BenchCase) -> o3d.core.Tensor:
     """Pack the same ray cloud into one ``(n_rays, 6)`` float32 tensor: open3d's layout."""
     import open3d as o3d
 
     if bench_case.mesh_name not in _ray_o3d_cache:
         origins_np, directions_np = _rays_np(bench_case)
-        _ray_o3d_cache[bench_case.mesh_name] = o3d.core.Tensor(
+        # The stub omits Tensor's device default.
+        _ray_o3d_cache[bench_case.mesh_name] = o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
             np.ascontiguousarray(np.hstack([origins_np, directions_np]), dtype=np.float32),
             dtype=o3d.core.Dtype.Float32,
         )
     return _ray_o3d_cache[bench_case.mesh_name]
 
 
-def _scene_o3d(bench_case: BenchCase) -> object:
+def _scene_o3d(bench_case: BenchCase) -> o3d.t.geometry.RaycastingScene:
     """
     Build the Embree scene once per mesh and pre-warm it, so a row prices the traversal.
 
@@ -183,11 +188,12 @@ def _scene_o3d(bench_case: BenchCase) -> object:
     if bench_case.mesh_name not in _scene_o3d_cache:
         scene_o3d = o3d.t.geometry.RaycastingScene()
         scene_o3d.add_triangles(
-            o3d.core.Tensor(
+            # The stub omits Tensor's device default.
+            o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
                 np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32),
                 dtype=o3d.core.Dtype.Float32,
             ),
-            o3d.core.Tensor(
+            o3d.core.Tensor(  # pyright: ignore[reportCallIssue]
                 np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32),
                 dtype=o3d.core.Dtype.UInt32,
             ),

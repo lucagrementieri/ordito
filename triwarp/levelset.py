@@ -146,7 +146,7 @@ def marching_cubes(
         upper = wp.vec3(float(shape[0] - 1), float(shape[1] - 1), float(shape[2] - 1))
     else:
         lower, upper = bounds
-    return wp.MarchingCubes.extract_surface_marching_cubes(field, wp.float32(iso), lower, upper)
+    return wp.MarchingCubes.extract_surface_marching_cubes(field, float(iso), lower, upper)
 
 
 def offset_mesh(

@@ -32,10 +32,9 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 
 from __future__ import annotations
 
-from typing import Literal, NamedTuple, cast, overload
+from typing import Literal, NamedTuple, overload
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -272,7 +271,7 @@ def cotmatrix(
     dtype: type[wp.float32] = wp.float32,
     *,
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float32]: ...
+) -> twt.BsrMatrix[wp.float32]: ...
 @overload
 def cotmatrix(
     vertices: wp.array[wp.vec3],
@@ -281,7 +280,7 @@ def cotmatrix(
     dtype: type[wp.float64],
     *,
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float64]: ...
+) -> twt.BsrMatrix[wp.float64]: ...
 @overload
 def cotmatrix(
     vertices: wp.array[wp.vec3],
@@ -290,7 +289,7 @@ def cotmatrix(
     *,
     dtype: type[wp.float64],
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float64]: ...
+) -> twt.BsrMatrix[wp.float64]: ...
 def cotmatrix(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -298,7 +297,7 @@ def cotmatrix(
     dtype: type = wp.float32,
     *,
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float32] | wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.float32] | twt.BsrMatrix[wp.float64]:
     """
     Cotangent stiffness matrix of the mesh: the discrete Laplace-Beltrami operator.
 
@@ -401,7 +400,7 @@ def robust_laplacian(
     dtype: type = wp.float32,
     *,
     use_intrinsic_delaunay: bool = True,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Cotangent Laplacian that a bad triangulation cannot poison, via mollification and flips.
 
@@ -543,7 +542,7 @@ def connection_laplacian(
     transport_angles: wp.array[wp.float32] | None = None,
     *,
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float64]:
+) -> twt.BsrMatrix[wp.mat22d]:
     """
     Vector (connection) Laplacian: the cotangent Laplacian for *tangent vector* fields.
 
@@ -688,7 +687,7 @@ class MeshOperatorPattern(NamedTuple):
 
 
 # ``mesh_operator_pattern``'s menu, mapped to ``_mesh_operator_pattern``'s build switches.
-_PATTERN_BUILDS = {
+_PATTERN_BUILDS: dict[str, tuple[bool, Literal["self", "referenced", "all"]]] = {
     "cotmatrix": (False, "referenced"),
     "laplacian_symmetric": (False, "self"),
     "laplacian_directed": (True, "self"),
@@ -921,11 +920,11 @@ def laplacian_entries(
     faces: wp.array[wp.int32],
     equal_weight: bool = True,
     symmetric: bool | None = None,
-    dtype: type = wp.float32,
+    dtype: type[twt.Block] = wp.float32,
     edges: twt.Array2dInt32 | None = None,
     *,
     validate: bool = True,
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], twt.Array1dFloat]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[twt.Block]]:
     """
     Per-edge weight triplets for the 1-ring Laplacian, before assembly.
 
@@ -1043,12 +1042,12 @@ def laplacian(
     faces: wp.array[wp.int32],
     equal_weight: bool = True,
     symmetric: bool | None = None,
-    dtype: type = wp.float32,
+    dtype: type[twt.Block] = wp.float32,
     edges: twt.Array2dInt32 | None = None,
     *,
     validate: bool = True,
     pattern: MeshOperatorPattern | None = None,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[twt.Block]:
     """
     Row-normalized 1-ring averaging operator (uniform / umbrella Laplacian).
 
@@ -1179,8 +1178,8 @@ def laplacian(
 
 
 def graph_laplacian(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type = wp.float32
-) -> wps.BsrMatrix[wp.float32]:
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], dtype: type[twt.Block] = wp.float32
+) -> twt.BsrMatrix[twt.Block]:
     """
     Combinatorial (graph) Laplacian ``L = A - diag(deg)`` from mesh connectivity.
 
@@ -1241,10 +1240,7 @@ def graph_laplacian(
         inputs=[offsets, columns, values],
         device=device,
     )
-    return cast(
-        "wps.BsrMatrix[wp.float32]",
-        tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values),
-    )
+    return tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
 
 
 @overload
@@ -1346,7 +1342,7 @@ def mass_matrix(
     dtype: type = wp.float32,
     *,
     face_areas: wp.array[wp.float32] | None = None,
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Diagonal barycentric lumped mass matrix of the mesh.
 
@@ -1386,7 +1382,6 @@ def mass_matrix(
     Matches ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
-    return cast(
-        "wps.BsrMatrix[wp.float32]",
-        wps.bsr_diag(diag=mass_matrix_entries(vertices, faces, dtype=dtype, face_areas=face_areas)),
+    return twt.bsr_diag(
+        diag=mass_matrix_entries(vertices, faces, dtype=dtype, face_areas=face_areas)
     )

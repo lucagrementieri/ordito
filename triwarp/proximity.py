@@ -970,12 +970,13 @@ def signed_distance_grid(
 
     lower, upper = bounds if bounds is not None else tw.bounds.aabb(vertices)
     margin = float(pad) * spacing
-    lower = wp.vec3(lower[0] - margin, lower[1] - margin, lower[2] - margin)
+    lower = wp.vec3(*(component - margin for component in twt.vec3_floats(lower)))
     # One sample per spacing, and at least the two marching cubes needs to have a cell at all.
-    shape = tuple(
+    shape_x, shape_y, shape_z = (
         max(2, math.floor((float(upper[axis]) + margin - float(lower[axis])) / spacing) + 1)
         for axis in range(3)
     )
+    shape = (shape_x, shape_y, shape_z)
     snapped_upper = wp.vec3(
         *(float(lower[axis]) + (shape[axis] - 1) * spacing for axis in range(3))
     )

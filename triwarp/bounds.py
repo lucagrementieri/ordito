@@ -110,9 +110,13 @@ def aabb_union(
     # function does no device work at all, so Warp's Python-scope builtin dispatch was its entire
     # cost, and the plain spelling is several times cheaper and byte-identical. A ``wp.vec3``
     # indexes to a native ``float``, which is what makes the plain builtins applicable.
+    a_min_x, a_min_y, a_min_z = a_min
+    b_min_x, b_min_y, b_min_z = b_min
+    a_max_x, a_max_y, a_max_z = a_max
+    b_max_x, b_max_y, b_max_z = b_max
     return (
-        wp.vec3(min(a_min[0], b_min[0]), min(a_min[1], b_min[1]), min(a_min[2], b_min[2])),
-        wp.vec3(max(a_max[0], b_max[0]), max(a_max[1], b_max[1]), max(a_max[2], b_max[2])),
+        wp.vec3(min(a_min_x, b_min_x), min(a_min_y, b_min_y), min(a_min_z, b_min_z)),
+        wp.vec3(max(a_max_x, b_max_x), max(a_max_y, b_max_y), max(a_max_z, b_max_z)),
     )
 
 

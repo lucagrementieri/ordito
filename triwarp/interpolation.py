@@ -27,7 +27,6 @@ from __future__ import annotations
 from typing import TypeVar
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -331,7 +330,7 @@ def transfer_onto_vertices(
 
 
 def transfer_through_operator(
-    values: wp.array[DType], operator: wps.BsrMatrix[wp.float32]
+    values: wp.array[DType], operator: twt.BsrMatrix[wp.float32]
 ) -> wp.array[DType]:
     """
     Carry a per-vertex field through a topology edit, using the edit's own interpolation operator.

@@ -56,12 +56,13 @@ import trimesh as tm
 from meshlib import mrmeshpy as mm
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, skip_larger_than
 
-_adjacency_cache: dict[tuple[str, str], tuple] = {}
+_adjacency_cache: dict[tuple[str, str], tuple[twt.Array2dInt32, twt.Array2dInt32]] = {}
 
 
-def _adjacency(bench_case: BenchCase) -> tuple:
+def _adjacency(bench_case: BenchCase) -> tuple[twt.Array2dInt32, twt.Array2dInt32]:
     """Precomputed ``(face_adjacency, face_adjacency_edges)`` for the derived-quantity groups."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _adjacency_cache:

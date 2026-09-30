@@ -8,14 +8,26 @@ exercises the fallbacks, which must be Warp itself.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
+from typing import TypedDict
+
 import numpy as np
 import pytest
 import warp as wp
 
+from tests.conversions import warp_empty
 from triwarp import _launch
 
 
-@wp.kernel
+class _CopyKwargs(TypedDict, total=False):
+    """The optional ``wp.copy`` keywords the copy test varies."""
+
+    dest_offset: int
+    src_offset: int
+    count: int
+
+
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
 def _mixed_arguments(
     a: wp.array[wp.float32],
     grid: wp.array2d[wp.float32],
@@ -29,26 +41,27 @@ def _mixed_arguments(
     out: wp.array[wp.float32],
     out_vectors: wp.array[wp.vec3],
 ) -> None:
-    i = wp.int32(wp.tid())
-    value = a[i] * scale + wp.float32(shift) + grid[i, 1] + wp.float32(big % wp.uint64(7))
+    # Kernel scope: Warp's stubs type tid() and element access for Python scope.
+    i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]
+    value = a[i] * scale + wp.float32(shift) + grid[i, 1] + wp.float32(big % wp.uint64(7))  # pyright: ignore[reportArgumentType, reportIndexIssue]
     if flag:
         value += 1.0
-    out[i] = value
-    out_vectors[i] = frame * (vectors[i] + offset)
+    out[i] = value  # pyright: ignore[reportIndexIssue]
+    out_vectors[i] = frame * (vectors[i] + offset)  # pyright: ignore[reportIndexIssue]
 
 
-@wp.kernel
+@wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
 def _tile_index(out: wp.array2d[wp.int32]) -> None:
-    i, j = wp.tid()  # pyright: ignore[reportAssignmentType]  # Warp's stub types tid() loosely
-    out[i, j] = i * 100 + j
+    i, j = wp.tid()  # pyright: ignore[reportAssignmentType, reportGeneralTypeIssues]  # Warp's stub types tid() loosely
+    out[i, j] = i * 100 + j  # pyright: ignore[reportIndexIssue]
 
 
 @wp.func
 def _scaled_point(point: wp.vec3, matrix: wp.mat44) -> wp.vec3:
-    return wp.transform_point(matrix, point)
+    return wp.transform_point(matrix, point)  # pyright: ignore[reportCallIssue, reportArgumentType]
 
 
-def _inputs(device: str, n: int = 257) -> dict:
+def _inputs(device: str, n: int = 257) -> dict[str, wp.array[object]]:
     rng = np.random.default_rng(3)
     return {
         "a": wp.array(rng.random(n, dtype=np.float32), device=device),
@@ -57,7 +70,9 @@ def _inputs(device: str, n: int = 257) -> dict:
     }
 
 
-def _launch_both(kernel_launch, device: str, args: list, n: int) -> tuple[np.ndarray, np.ndarray]:
+def _launch_both(
+    kernel_launch: Callable[..., object], device: str, args: Sequence[object], n: int
+) -> tuple[np.ndarray, np.ndarray]:
     out = wp.zeros(n, dtype=wp.float32, device=device)
     out_vectors = wp.zeros(n, dtype=wp.vec3, device=device)
     kernel_launch(_mixed_arguments, dim=n, inputs=[*args, out, out_vectors], device=device)
@@ -132,6 +147,7 @@ def test_launch_inside_a_graph_capture_replays(device: str) -> None:
     with wp.ScopedCapture(device=device) as capture:
         _launch.launch(_mixed_arguments, dim=n, inputs=[*args, out, out_vectors], device=device)
     out.zero_()
+    assert capture.graph is not None
     wp.capture_launch(capture.graph)
     assert np.array_equal(out.numpy(), expected[0])
     assert np.array_equal(out_vectors.numpy(), expected[1])
@@ -206,7 +222,12 @@ def test_radix_sort_pairs_matches_warp(device: str, end_bit: int | None) -> None
 def test_copy_matches_warp(device: str) -> None:
     """Whole, offset and counted copies; ``count=0`` copies everything, as in Warp."""
     src = wp.array(np.arange(100, dtype=np.int32), device=device)
-    for kwargs in ({}, {"dest_offset": 3, "src_offset": 10, "count": 20}, {"count": 0}):
+    cases: tuple[_CopyKwargs, ...] = (
+        {},
+        {"dest_offset": 3, "src_offset": 10, "count": 20},
+        {"count": 0},
+    )
+    for kwargs in cases:
         expected = wp.full(120, -1, dtype=wp.int32, device=device)
         got = wp.full(120, -1, dtype=wp.int32, device=device)
         wp.copy(expected, src, **kwargs)
@@ -225,8 +246,8 @@ def test_copy_out_of_bounds_raises_like_warp(device: str) -> None:
 @pytest.mark.parametrize("value", [0, 2.5, -0.0, 7])
 def test_fill_and_zero_match_warp(device: str, value: float) -> None:
     """``fill_`` / ``zero_`` write Warp's bytes, ``-0.0`` included (it is not a zero memset)."""
-    expected = wp.empty(50, dtype=wp.float32, device=device)
-    got = wp.empty(50, dtype=wp.float32, device=device)
+    expected = warp_empty(50, wp.float32, device)
+    got = warp_empty(50, wp.float32, device)
     expected.fill_(value)
     _launch.fill_(got, value)
     assert np.array_equal(got.numpy().view(np.uint32), expected.numpy().view(np.uint32))
@@ -252,7 +273,9 @@ def test_fill_and_zero_match_warp(device: str, value: float) -> None:
         pytest.param(np.zeros(0, dtype=np.int32), wp.int32, id="empty"),
     ],
 )
-def test_array_upload_matches_wp_array(device: str, data: object, dtype: type) -> None:
+def test_array_upload_matches_wp_array(
+    device: str, data: list[object] | np.ndarray, dtype: type
+) -> None:
     """Shape, strides, dtype and contents equal ``wp.array``'s, the reshape-lenient cases too."""
     expected = wp.array(data, dtype=dtype, device=device)
     got = _launch.array(data, dtype=dtype, device=device)
@@ -265,6 +288,6 @@ def test_array_upload_matches_wp_array(device: str, data: object, dtype: type) -
 def test_array_upload_rejects_a_scalar_like_wp_array(device: str) -> None:
     """A scalar is not array data; the error is Warp's."""
     with pytest.raises(RuntimeError):
-        wp.array(3, dtype=wp.int32, device=device)
+        wp.array(3, dtype=wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # deliberately a scalar
     with pytest.raises(RuntimeError):
         _launch.array(3, dtype=wp.int32, device=device)

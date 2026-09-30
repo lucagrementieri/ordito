@@ -227,7 +227,7 @@ def voxelize_mesh(
     # ``point_mask`` lets the builder skip the rejected candidates in place, so no compaction pass
     # and no second cell buffer.
     grid = wp.Volume.allocate_by_voxels(
-        candidate_cells,
+        cast("wp.array[wp.int32]", candidate_cells),
         voxel_size=voxel_size,
         translation=_translation(origin, voxel_size),
         point_mask=accepted,
@@ -280,6 +280,24 @@ def voxelize_points(
     return from_cells(cell_indices(points, voxel_size, origin=origin), voxel_size, origin)
 
 
+@overload
+def voxel_down_sample(
+    points: wp.array[wp.vec3],
+    voxel_size: float | None = None,
+    *,
+    origin: wp.vec3 | None = None,
+    pooling: Literal["mean", "min", "max", "sum"] = "mean",
+    return_inverse: Literal[False] = False,
+) -> wp.array[wp.vec3]: ...
+@overload
+def voxel_down_sample(
+    points: wp.array[wp.vec3],
+    voxel_size: float | None = None,
+    *,
+    origin: wp.vec3 | None = None,
+    pooling: Literal["mean", "min", "max", "sum"] = "mean",
+    return_inverse: Literal[True],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 def voxel_down_sample(
     points: wp.array[wp.vec3],
     voxel_size: float | None = None,
@@ -681,7 +699,7 @@ def cells(grid: wp.Volume, *, order: Literal["grid", "sorted"] = "grid") -> twt.
     n_voxels = _voxel_count(grid)
     if n_voxels == 0:
         return twt.empty_2d((0, 3), wp.int32, device=grid.device)
-    rows = twt.as_array2d(grid.get_voxels()[:n_voxels], wp.int32)
+    rows = twt.as_array2d(twt.as_dense(grid.get_voxels()[:n_voxels]), wp.int32)
     if order == "grid":
         return rows
 
@@ -742,7 +760,7 @@ def from_cells(cells: twt.Array2dInt32, voxel_size: float, origin: wp.vec3) -> w
     # The builder reads the buffer as if contiguous, so a strided view has to be densified first.
     rows = cells if cells.is_contiguous else _launch.clone(cells)
     return wp.Volume.allocate_by_voxels(
-        rows,
+        cast("wp.array[wp.int32]", rows),
         voxel_size=voxel_size,
         translation=_translation(origin, voxel_size),
         device=cells.device,
@@ -1660,10 +1678,12 @@ def revoxelize(
     )
     candidates = twt.empty_2d((total, 3), wp.int32, device=grid.device)
     mask = _launch.empty(total, dtype=wp.int32, device=grid.device)
+    dims_i = wp.vec3i(wp.int32(dims[0]), wp.int32(dims[1]), wp.int32(dims[2]))
+    base_i = wp.vec3i(*base_cell)
     _launch.launch(
         kernel_voxels.resampled_cell_candidates,
         dim=dims,
-        inputs=[grid.id, lower, step, wp.vec3i(*dims), wp.vec3i(*base_cell), candidates, mask],
+        inputs=[grid.id, lower, step, dims_i, base_i, candidates, mask],
         device=grid.device,
     )
     return _allocate_masked(candidates, mask, voxel_size, origin)
@@ -1747,10 +1767,13 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     # ``from_dense`` would derive from a filled lattice -- so that lattice is never stored.
     candidates = twt.empty_2d((n_nodes, 3), wp.int32, device=device)
     mask = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    origin_i = wp.vec3i(
+        wp.int32(origin_cell[0]), wp.int32(origin_cell[1]), wp.int32(origin_cell[2])
+    )
     _launch.launch(
         kernel_voxels.enclosed_cell_candidates,
         dim=dims,
-        inputs=[occupancy, labels, outside, wp.vec3i(*origin_cell), candidates, mask],
+        inputs=[occupancy, labels, outside, origin_i, candidates, mask],
         device=device,
     )
     return _allocate_masked(candidates, mask, voxel_size, origin)
@@ -2274,9 +2297,10 @@ def to_field(
         inputs=[grid.id, wp.vec3i(*(int(c) for c in base)), field],
         device=grid.device,
     )
-    lower = wp.vec3(*(origin[axis] + (base[axis] + 0.5) * voxel_size for axis in range(3)))
+    origin_f = twt.vec3_floats(origin)
+    lower = wp.vec3(*(origin_f[axis] + (base[axis] + 0.5) * voxel_size for axis in range(3)))
     upper = wp.vec3(
-        *(origin[axis] + (base[axis] + dims[axis] - 0.5) * voxel_size for axis in range(3))
+        *(origin_f[axis] + (base[axis] + dims[axis] - 0.5) * voxel_size for axis in range(3))
     )
     return twt.as_array3d(field, wp.float32), (lower, upper)
 
@@ -2436,7 +2460,7 @@ def voxel_corners(grid: wp.Volume) -> tuple[twt.Array2dInt32, twt.Array2dInt32]:
 
     corner_grid = fem.Nanogrid(grid).vertex_grid
     n_corners = int(corner_grid.get_active_stats().voxel_count)
-    corner_cells = twt.as_array2d(corner_grid.get_voxels()[:n_corners], wp.int32)
+    corner_cells = twt.as_array2d(twt.as_dense(corner_grid.get_voxels()[:n_corners]), wp.int32)
     cell_corners = twt.empty_2d((n_voxels, 8), wp.int32, device=device)
     _launch.launch(
         kernel_voxels.cell_corner_indices,
@@ -2530,9 +2554,10 @@ def _lattice_step(
     if bounds is None:
         return wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)
     lower, upper = bounds
+    lower_f, upper_f = twt.vec3_floats(lower), twt.vec3_floats(upper)
     step = wp.vec3(
         *(
-            (upper[axis] - lower[axis]) / float(dims[axis] - 1) if dims[axis] > 1 else 0.0
+            (upper_f[axis] - lower_f[axis]) / float(dims[axis] - 1) if dims[axis] > 1 else 0.0
             for axis in range(3)
         )
     )
@@ -2550,7 +2575,7 @@ def _allocate_masked(
     non-empty; an all-zero ``mask`` builds a legal empty grid.
     """
     return wp.Volume.allocate_by_voxels(
-        candidates,
+        cast("wp.array[wp.int32]", candidates),
         voxel_size=voxel_size,
         translation=_translation(origin, voxel_size),
         point_mask=mask,

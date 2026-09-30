@@ -345,7 +345,7 @@ def sample_surface_poisson_disk(
 
     # 2. Surface area (for radius computation)
     _, areas = face_normals_and_areas(vertices, faces)
-    surface_area = float(wp.utils.array_sum(areas))
+    surface_area = float(cast("float", wp.utils.array_sum(areas)))
 
     # 3. Poisson disk radii (Öztireli & Gross 2012 constants)
     #
@@ -466,7 +466,7 @@ def _top_maxima_by_weight(
     _sorted, order = tw.array.sort_and_argsort(descending)
     # No clone: ``order`` need not outlive this frame (no further sort call reuses its scratch),
     # and ``gather`` only requires a contiguous index array, which a prefix slice already is.
-    chosen = gather(flagged, order[:excess])
+    chosen = gather(flagged, twt.as_dense(order[:excess]))
     return tw.array.astype(
         tw.array.indices_to_mask(chosen, n_pool, device=candidates.device), wp.int32
     )
@@ -537,7 +537,7 @@ def sample_surface_blue_noise(
         )
 
     _, areas = face_normals_and_areas(vertices, faces)
-    surface_area = float(wp.utils.array_sum(areas))
+    surface_area = float(cast("float", wp.utils.array_sum(areas)))
     expected = surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     nx = max(1, int(30.0 * expected))
 

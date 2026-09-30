@@ -57,7 +57,6 @@ verb.
 
 from __future__ import annotations
 
-import itertools
 import math
 from collections.abc import Callable
 from typing import Literal, cast, overload
@@ -1163,6 +1162,26 @@ def collapse_small_triangles(
     return current_vertices, current_faces
 
 
+@overload
+def straighten_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    min_normal_dot: float = 0.9,
+    max_aspect_ratio: float = 10.0,
+    iterations: int = 1,
+    return_count: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+@overload
+def straighten_boundary(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    min_normal_dot: float = 0.9,
+    max_aspect_ratio: float = 10.0,
+    iterations: int = 1,
+    return_count: Literal[True],
+) -> tuple[wp.array[wp.int32], int]: ...
 def straighten_boundary(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1439,7 +1458,7 @@ def remove_degree3_vertices(
     lost = state[per_pass + 2 * n_vertices + 1 :]
     fans = twt.empty_2d((n_vertices, 3), wp.int32, device=device)
     face_slots = _launch.empty(3 * n_slots, dtype=wp.int32, device=device)
-    new_faces = face_slots[3 * n_input :].reshape((n_slots - n_input, 3))
+    new_faces = twt.as_dense(face_slots[3 * n_input :]).reshape((n_slots - n_input, 3))
     emit_inputs = [
         face_slots,
         fans,
@@ -2345,8 +2364,9 @@ def remove_tunnels(
     if np.unique(labels_np).size > 1:
         selected = _independent_loops(selected, labels_np, sides())
     cut_vertices, cut_faces = _cut_along_loops(vertices, faces, selected)
+    cut_vertices = cast("wp.array[wp.vec3]", cut_vertices)
     return (
-        cast("wp.array[wp.vec3]", cut_vertices),
+        cut_vertices,
         tw.holes.fill_min_weight(cut_vertices, cut_faces, metric=metric),
         len(selected),
     )
@@ -2383,7 +2403,8 @@ def _measure_loops(
         lengths_list[index] = _cycle_length(vertices, twt.as_dense(packed[start:stop]))
     packed_np = packed.numpy()
     return lengths_list, [
-        packed_np[start:stop] for start, stop in itertools.pairwise(bounds_np.tolist())
+        packed_np[start:stop]
+        for start, stop in zip(bounds_np[:-1].tolist(), bounds_np[1:].tolist(), strict=True)
     ]
 
 

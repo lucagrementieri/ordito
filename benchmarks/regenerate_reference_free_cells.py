@@ -40,9 +40,12 @@ import os
 TRIWARP = {"triwarp-cuda", "triwarp-cpu"}
 OUT_PATH = os.path.join(os.path.dirname(__file__), "_reference_free_cells.json")
 
+# ``(group, mesh_name, rest)``, the cell key every benchmark JSON row maps to.
+_Cell = tuple[str, str | None, tuple[tuple[str, str], ...]]
 
-def _load_cells(json_dir: str) -> dict:
-    cells: dict = collections.defaultdict(set)
+
+def _load_cells(json_dir: str) -> dict[_Cell, set[str]]:
+    cells: dict[_Cell, set[str]] = collections.defaultdict(set)
     for path in sorted(glob.glob(os.path.join(json_dir, "*.json"))):
         try:
             with open(path) as f:

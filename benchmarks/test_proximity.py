@@ -60,7 +60,7 @@ sweep is the axis, not the mesh: the cost is exactly linear in it on both sides.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import TYPE_CHECKING, Literal, cast
 
 import igl
 import numpy as np
@@ -77,6 +77,9 @@ import triwarp as tw
 import triwarp.typing as twt
 from conftest import BenchCase, BenchLibrary, mesh_ml_from_numpy, skip_larger_than
 
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
+
 _QUERY_SEED = 42
 _N_QUERIES = 10_000
 
@@ -84,7 +87,7 @@ _N_QUERIES = 10_000
 # other half of its product, swept independently of the mesh.
 _N_QUERIES_SWEEP = [10_000, 100_000]
 
-_query_cache: dict[tuple[str, str, int], wp.array] = {}
+_query_cache: dict[tuple[str, str, int], wp.array[wp.vec3]] = {}
 _pml_distance_cache: dict[tuple[str, str], ml.MeshSet] = {}
 _ml_query_cache: dict[tuple[str, str, int], mm.std_vector_Vector3_float] = {}
 
@@ -186,7 +189,12 @@ def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
         def winding_ml() -> mm.std_vector_float:
             result_ml = mm.std_vector_float()
             mm.FastWindingNumber(mesh_ml).calcFromVector(
-                result_ml, points_ml, 20.0, mm.FaceId(), lambda _progress: True
+                result_ml,
+                points_ml,
+                20.0,
+                mm.FaceId(),
+                # pybind11 wraps the Python callable in the functor the stub names.
+                lambda _progress: True,  # pyright: ignore[reportArgumentType]
             )
             return result_ml
 
@@ -477,12 +485,13 @@ def test_signed_distance_on_mesh(
 
         vertices_f32 = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
         faces_u32 = np.ascontiguousarray(bench_case.faces_np, dtype=np.uint32)
-        queries_t = o3d.core.Tensor(np.ascontiguousarray(_query_points_np(bench_case), np.float32))
+        # The stub omits Tensor's dtype/device defaults.
+        queries_t = o3d.core.Tensor(np.ascontiguousarray(_query_points_np(bench_case), np.float32))  # pyright: ignore[reportCallIssue]
 
         def signed_distance_o3d() -> o3d.core.Tensor:
             # The Embree BVH build goes inside, mirroring triwarp's own in-call wp.Mesh build.
             scene = o3d.t.geometry.RaycastingScene()
-            scene.add_triangles(o3d.core.Tensor(vertices_f32), o3d.core.Tensor(faces_u32))
+            scene.add_triangles(o3d.core.Tensor(vertices_f32), o3d.core.Tensor(faces_u32))  # pyright: ignore[reportCallIssue]
             return scene.compute_signed_distance(queries_t)
 
         assert bench_case.run(signed_distance_o3d).shape == (_N_QUERIES,)
@@ -499,7 +508,7 @@ def test_signed_distance_on_mesh(
         # no-hoisting position triwarp's per-call ``wp.Mesh`` is in.
         mesh_np = (bench_case.vertices_np, bench_case.faces_np)
         cloud_ml = mn.pointCloudFromPoints(
-            np.ascontiguousarray(_query_points_np(bench_case), dtype=np.float64)
+            cast("Buffer", np.ascontiguousarray(_query_points_np(bench_case), dtype=np.float64))
         )
 
         def signed_distance_ml() -> mm.VertScalars:
@@ -706,7 +715,8 @@ def test_mesh_to_mesh_distance(bench_case: BenchCase, offset: float) -> None:
                 mm.findDistance(
                     mm.MeshPart(first_ml),
                     mm.MeshPart(second_ml),
-                    None,
+                    # None is the identity transform; the stub omits that it is nullable.
+                    None,  # pyright: ignore[reportArgumentType]
                     float(np.finfo(np.float32).max),
                 ).distSq
             )

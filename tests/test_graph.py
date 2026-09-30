@@ -17,14 +17,19 @@ from meshlib import mrmeshpy as mm
 import triwarp as tw
 import triwarp.typing as twt
 from tests.comparisons import same_partition
-from tests.conversions import meshlib_bitset_to_numpy, trimesh_to_meshlib, trimesh_to_pymeshlab
+from tests.conversions import (
+    meshlib_bitset_to_numpy,
+    trimesh_to_meshlib,
+    trimesh_to_pymeshlab,
+    warp_empty,
+)
 from triwarp import _launch
 
 
 def test_edges_to_csr_roundtrip(device: str) -> None:
     edges_np = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.int32)
     node_count = 3
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     adjacency = tw.graph.edges_to_csr(node_count, edges_wp)
     offsets = adjacency.offsets.numpy()
     indices = adjacency.columns.numpy()
@@ -166,7 +171,7 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
     edges_np = np.stack(
         [np.zeros(degree, dtype=np.int32), np.arange(1, degree + 1, dtype=np.int32)], axis=1
     )
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
     neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(
         degree + 1, edges_wp, sort_rows=True
@@ -179,14 +184,17 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
 
 def test_edges_to_neighbor_lists_rejects_an_out_of_range_endpoint(device: str) -> None:
     """The guard that keeps an unchecked index off a raw ``degree[a]`` write (section 12.1)."""
-    edges_wp = wp.array(np.array([[0, 1], [1, 5]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[0, 1], [1, 5]], dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
     with pytest.raises(ValueError, match="edge indices must lie in"):
         tw.graph.edges_to_neighbor_lists(3, edges_wp)
 
 
 def test_edges_to_neighbor_lists_empty(device: str) -> None:
     """No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form."""
-    edges_wp = wp.zeros((0, 2), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(4, edges_wp)
     assert neighbors_wp.size == 0
     assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
@@ -214,7 +222,7 @@ def test_connected_component_labels_random(device: str) -> None:
     n_edges = 24
     edges_np = rng.integers(0, node_count, size=(n_edges, 2), dtype=np.int32)
 
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_np = _scipy_component_labels(edges_np, node_count)
 
@@ -261,8 +269,10 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     ).tocsr()
     adjacency_np = adjacency_np + adjacency_np.T
 
-    n_components_igl, labels_igl, sizes_igl = igl.connected_components(adjacency_np)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    n_components_igl, labels_igl, sizes_igl = igl.connected_components(
+        adjacency_np  # pyright: ignore[reportArgumentType]
+    )
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
 
     assert int(n_components_igl) == np.unique(labels_wp.numpy()).size
@@ -299,7 +309,9 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
         base = rng.integers(0, node_count, size=(200, 2), dtype=np.int32)
         loops = np.repeat(rng.integers(0, node_count, size=(40, 1), dtype=np.int32), 2, axis=1)
         edges_np = np.concatenate([base, base[:50, ::-1], loops])
-    edges_wp = wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
+    )
 
     labels_edges = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_csr = tw.graph.connected_component_labels(tw.graph.edges_to_csr(node_count, edges_wp))
@@ -338,6 +350,7 @@ def test_connected_component_labels_matches_pymeshlab(
     mesh_b_tm, _mesh_b_wp = request.getfixturevalue("hemisphere")
     mesh_c_tm, _mesh_c_wp = request.getfixturevalue("half_torus")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(combined_tm, tm.Trimesh)
     device = str(_mesh_a_wp.points.device)
     faces_wp = wp.array(
         np.ascontiguousarray(combined_tm.faces.reshape(-1), dtype=np.int32),
@@ -386,6 +399,7 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     mesh_b_tm, _mesh_b_wp = request.getfixturevalue("hemisphere")
     mesh_c_tm, _mesh_c_wp = request.getfixturevalue("half_torus")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(combined_tm, tm.Trimesh)
     n_vertices = combined_tm.vertices.shape[0]
     faces_wp = wp.array(
         np.ascontiguousarray(combined_tm.faces.reshape(-1), dtype=np.int32),
@@ -393,7 +407,10 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
         device=mesh_a_wp.points.device,
     )
 
-    components_ml = mm.getAllComponentsVerts(trimesh_to_meshlib(combined_tm), None)
+    components_ml = mm.getAllComponentsVerts(
+        trimesh_to_meshlib(combined_tm),
+        None,  # pyright: ignore[reportArgumentType]
+    )
     labels_ml = np.full(n_vertices, -1, dtype=np.int64)
     for label, component_ml in enumerate(components_ml):
         labels_ml[meshlib_bitset_to_numpy(component_ml, n_vertices)] = label
@@ -435,7 +452,7 @@ def test_connected_component_labels_path_graph(device: str) -> None:
     """
     n = 2048
     edges_np = np.stack([np.arange(n - 1, dtype=np.int32), np.arange(1, n, dtype=np.int32)], axis=1)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
     labels_exp = _scipy_component_labels(edges_np, n)
     assert same_partition(labels_wp.numpy(), labels_exp)
@@ -446,7 +463,7 @@ def test_connected_component_labels_star_graph(device: str) -> None:
     hub = 0
     leaves = np.arange(1, n, dtype=np.int32)
     edges_np = np.stack([np.full(n - 1, hub, dtype=np.int32), leaves], axis=1)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
     labels_exp = _scipy_component_labels(edges_np, n)
     assert same_partition(labels_wp.numpy(), labels_exp)
@@ -463,7 +480,7 @@ def test_connected_component_parity_random(device: str) -> None:
     edges_np = np.stack([a_np, b_np], axis=1)
     signs_np = (potential_np[a_np] ^ potential_np[b_np]).astype(np.int32)
 
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
     labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
 
@@ -482,7 +499,7 @@ def test_connected_component_parity_long_path(device: str) -> None:
     rng = np.random.default_rng(5)
     edges_np = np.stack([np.arange(n - 1), np.arange(1, n)], axis=1).astype(np.int32)
     signs_np = rng.integers(0, 2, size=n - 1).astype(np.int32)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
     labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
@@ -497,7 +514,7 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
     n = 1025
     edges_np = np.stack([np.arange(n), (np.arange(n) + 1) % n], axis=1).astype(np.int32)
     signs_np = np.ones(n, dtype=np.int32)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
     labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
@@ -509,7 +526,7 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
 
 
 def test_connected_component_parity_no_edges(device: str) -> None:
-    edges_wp = wp.zeros((0, 2), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.zeros(0, dtype=wp.int32, device=device)
     labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 7)
     assert np.array_equal(labels_wp.numpy(), np.arange(7, dtype=np.int32))
@@ -517,7 +534,7 @@ def test_connected_component_parity_no_edges(device: str) -> None:
 
 
 def test_connected_component_parity_signs_length_mismatch(device: str) -> None:
-    edges_wp = wp.zeros((4, 2), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.zeros((4, 2), dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.zeros(3, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="signs must have length 4"):
         tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 4)
@@ -530,7 +547,9 @@ def test_connected_component_parity_validates_range(device: str) -> None:
     Without this, ``ecl_hook_parity`` indexes a ``node_count``-element buffer by the raw
     endpoint -- an out-of-range value reads and writes out of bounds rather than raising.
     """
-    edges_wp = wp.array(np.array([[0, 10]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[0, 10]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
+    )
     signs_wp = wp.zeros(1, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
         tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 5)
@@ -547,7 +566,9 @@ def test_connected_component_parity_validates_signs(device: str) -> None:
     parent of ``-1`` that the next find read out of bounds. Both arms are asserted: the checked
     path raises, and the unchecked path still joins the edge.
     """
-    edges_wp = wp.array(np.array([[2, 3]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[2, 3]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
+    )
     for bad in (2, -1, 1 << 20):
         signs_wp = wp.array(np.array([bad], dtype=np.int32), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="signs must be 0 or 1"):
@@ -584,6 +605,7 @@ def test_face_connected_component_labels(request: pytest.FixtureRequest) -> None
     mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
 
     concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    assert isinstance(concat_tm, tm.Trimesh)
     _, concat_faces_wp = tw.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
@@ -613,8 +635,13 @@ def _scipy_component_labels(edges: np.ndarray, node_count: int) -> np.ndarray:
 
 def test_successor_cycles_single_cycle(device: str) -> None:
     """One 4-cycle: the result starts at the smallest node and follows the edge direction."""
-    edges_wp = wp.array(
-        np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32), dtype=wp.int32, device=device
+    edges_wp = twt.as_array2d(
+        wp.array(
+            np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32),
+            dtype=wp.int32,
+            device=device,
+        ),
+        wp.int32,
     )
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
 
@@ -636,7 +663,7 @@ def test_successor_cycles_multiple_cycles(device: str) -> None:
     ]
     order = rng.permutation(len(edge_rows))
     edges_np = np.array(edge_rows, dtype=np.int32)[order]
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 11)
 
@@ -674,7 +701,7 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
     rows = [(cycle[i], cycle[(i + 1) % length]) for i in range(length)]
     rows += [(chain[i], chain[i + 1]) for i in range(length)]
     edges_np = np.array(rows, dtype=np.int32)[rng.permutation(len(rows))]
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 3 * length)
 
@@ -685,7 +712,10 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
 
 def test_successor_cycles_validates_range(device: str) -> None:
     """The default range check rejects an endpoint outside ``[0, node_count)``."""
-    edges_wp = wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
     with pytest.raises(ValueError, match="edge indices must lie in"):
         tw.graph.successor_cycles(edges_wp, 4)
 
@@ -705,7 +735,7 @@ def test_successor_cycles_validates_before_launching(
     device, which reads the bounds back on the host).
     """
     launched: list[str] = []
-    real_launches = {"wp": wp.launch, "_launch": _launch.launch}
+    real_launches: dict[str, Callable[..., object]] = {"wp": wp.launch, "_launch": _launch.launch}
 
     def recording(owner: str) -> Callable[..., object]:
         def recording_launch(kernel: wp.Kernel, *args: object, **kwargs: object) -> object:
@@ -718,7 +748,10 @@ def test_successor_cycles_validates_before_launching(
     # and routes ``launch_tiled`` through its own ``launch``; record every path.
     monkeypatch.setattr(wp, "launch", recording("wp"))
     monkeypatch.setattr(_launch, "launch", recording("_launch"))
-    edges_wp = wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
     with pytest.raises(ValueError, match="edge indices must lie in"):
         tw.graph.successor_cycles(edges_wp, 4)
     assert set(launched) <= {"triwarp.kernels.reduce"}, launched
@@ -732,7 +765,7 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     the packed buffer stays a valid node index and the offsets still partition it.
     """
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [3, 1]], dtype=np.int32)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 4)
 
     flat_np = flat_wp.numpy()
@@ -750,7 +783,10 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     the two collided and fabricated a bogus "cycle" out of the collision -- one that could even
     contain a node id that never appeared in the input at all.
     """
-    edges_wp = wp.array(np.array([[5, 3], [3, 7]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[5, 3], [3, 7]], dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
@@ -759,7 +795,7 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
 def test_successor_cycles_mixed_cycle_and_chain(device: str) -> None:
     """A real cycle is reported unchanged alongside a chain that contributes nothing."""
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [5, 3], [3, 7]], dtype=np.int32)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
     assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2], dtype=np.int32))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 3], dtype=np.int32))
@@ -784,7 +820,7 @@ def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[twt.Array2dInt32, int]:
 # ---------------------------------------------------------------------------
 
 
-def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> object:
+def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> twt.BsrMatrix[wp.float32]:
     """
     Build the mesh edge graph with Euclidean lengths as weights, divided by ``threshold``.
 
@@ -794,7 +830,7 @@ def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> object:
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
     lengths = tw.edges.edges_unique_length(mesh_wp.points, mesh_wp.indices, edges)
     if threshold != 1.0:
-        scaled = wp.empty(lengths.size, dtype=wp.float32, device=mesh_wp.device)
+        scaled = warp_empty(lengths.size, wp.float32, mesh_wp.device)
         wp.map(wp.div, lengths, wp.float32(threshold), out=scaled)
         lengths = scaled
     return tw.graph.edges_to_csr(n_vertices, edges, lengths)
@@ -907,7 +943,7 @@ def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     with pytest.raises(ValueError, match="max_iterations must be non-negative"):
         tw.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=-1)
     with pytest.raises(ValueError, match="one entry per node"):
-        tw.graph.shortest_path_envelope(adjacency, values_wp[:3])
+        tw.graph.shortest_path_envelope(adjacency, twt.as_dense(values_wp[:3]))
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
     with pytest.raises(ValueError, match="one entry per edge"):
         tw.graph.edges_to_csr(n_vertices, edges, values_wp)
@@ -921,7 +957,9 @@ def test_shortest_path_envelope_rejects_negative_weights(device: str) -> None:
     ``max_iterations`` grows -- silently wrong rather than raising, exactly what the docstring's
     "not admissible" note warns about.
     """
-    edges_wp = wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.int32, device=device)
+    edges_wp = twt.as_array2d(
+        wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
+    )
     weights_wp = wp.array(np.array([-1.0], dtype=np.float32), dtype=wp.float32, device=device)
     adjacency = tw.graph.edges_to_csr(2, edges_wp, weights_wp)
     values_wp = wp.array(np.array([0.0, 1000.0], dtype=np.float32), dtype=wp.float32, device=device)

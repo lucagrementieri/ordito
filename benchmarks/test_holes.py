@@ -285,10 +285,10 @@ def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
     assert result[1].size >= faces.size
 
 
-_region_cache: dict[tuple[str, str], tuple] = {}
+_region_cache: dict[tuple[str, str], tuple[wp.array[wp.bool], np.ndarray]] = {}
 
 
-def _cap_region(bench_case: BenchCase) -> tuple:
+def _cap_region(bench_case: BenchCase) -> tuple[wp.array[wp.bool], np.ndarray]:
     """
     Build a contiguous face region: the cap above the mesh's 80th height percentile.
 
@@ -391,7 +391,8 @@ def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> 
 
 # --- Stitching two rims: the same DP over a band rather than a cap -----------------------------
 
-_stitch_cache: dict[tuple[str, str], tuple] = {}
+_Submesh = tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+_stitch_cache: dict[tuple[str, str], tuple[_Submesh, _Submesh]] = {}
 _stitch_np_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
 
 
@@ -400,14 +401,14 @@ def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
     return wp.array(np.arange(lo, hi, dtype=np.int32), dtype=wp.int32, device=bench_case.device)
 
 
-def _submesh(bench_case: BenchCase, lo: int, hi: int) -> tuple:
+def _submesh(bench_case: BenchCase, lo: int, hi: int) -> _Submesh:
     """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
     return tw.selection.submesh_from_face_indices(
         bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
     )
 
 
-def _stitch_halves(bench_case: BenchCase) -> tuple:
+def _stitch_halves(bench_case: BenchCase) -> tuple[_Submesh, _Submesh]:
     """
     Cut the open tube into two rings, so each half has exactly one boundary loop to stitch.
 
@@ -493,7 +494,7 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
         assert bench_case.run(run_ml, rounds=_ROUNDS) > len(faces_np)
         return
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
-    up = wp.vec3(0.0, 0.0, 1.0)
+    up = (0.0, 0.0, 1.0)
     _vertices, faces = bench_case.run(
         lambda: tw.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
     )

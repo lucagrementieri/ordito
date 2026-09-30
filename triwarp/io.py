@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Required, TypedDict
 
 import numpy as np
 import warp as wp
@@ -25,7 +25,23 @@ _COLOR_COLUMNS = ("red", "green", "blue")
 _COLOR_COLUMNS_RGBA = ("red", "green", "blue", "alpha")
 
 
-def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[str, wp.array[Any]]:
+class MeshData(TypedDict, total=False):
+    """
+    The attributes [`load_mesh_data`][triwarp.io.load_mesh_data] read from a file, by name.
+
+    A plain ``dict`` at runtime. ``vertices`` is always present; every other key only when the
+    file carries that attribute.
+    """
+
+    vertices: Required[wp.array[wp.vec3]]
+    faces: wp.array[wp.int32]
+    vertex_normals: wp.array[wp.vec3]
+    uv: wp.array[wp.vec2]
+    colors: wp.array[wp.vec3] | wp.array[wp.vec4]
+    face_normals: wp.array[wp.vec3]
+
+
+def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshData:
     """
     Load every mesh attribute ``meshio`` can read from a file into Warp arrays.
 
@@ -43,7 +59,7 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[st
 
     Returns
     -------
-    dict
+    MeshData
         Mapping with these possible keys:
 
         - ``vertices`` : ``wp.array[wp.vec3]`` of ``float32`` vertex positions (always present).
@@ -67,10 +83,8 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[st
     meshio = _import_meshio()
     mesh = meshio.read(path)
 
-    result: dict[str, wp.array[Any]] = {}
-
     points = np.ascontiguousarray(mesh.points, dtype=np.float32)
-    result["vertices"] = _launch.array(points, dtype=wp.vec3, device=device)
+    result: MeshData = {"vertices": _launch.array(points, dtype=wp.vec3, device=device)}
 
     faces_np = mesh.cells_dict.get("triangle")
     if faces_np is not None and len(faces_np) > 0:
@@ -94,16 +108,18 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> dict[st
             break
 
     colors_raw = _stack_columns(point_data, _COLOR_COLUMNS_RGBA)
-    color_dtype = wp.vec4
+    has_alpha = colors_raw is not None
     if colors_raw is None:
         colors_raw = _stack_columns(point_data, _COLOR_COLUMNS)
-        color_dtype = wp.vec3
     if colors_raw is not None:
         colors = colors_raw.astype(np.float32)
         if np.issubdtype(colors_raw.dtype, np.integer):
             colors /= 255.0
-        result["colors"] = _launch.array(
-            np.ascontiguousarray(colors, dtype=np.float32), dtype=color_dtype, device=device
+        colors = np.ascontiguousarray(colors, dtype=np.float32)
+        result["colors"] = (
+            _launch.array(colors, dtype=wp.vec4, device=device)
+            if has_alpha
+            else _launch.array(colors, dtype=wp.vec3, device=device)
         )
 
     face_normals = _face_normals_from_cell_data(mesh)

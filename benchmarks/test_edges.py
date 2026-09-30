@@ -54,7 +54,7 @@ from conftest import BenchCase, skip_larger_than
 
 @pytest.mark.benchmark(group="faces_to_edges")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl")
-def test_faces_to_edges(bench_case) -> None:
+def test_faces_to_edges(bench_case: BenchCase) -> None:
     """
     The directed ``(3F, 2)`` all-edges table: the cheapest thing in the module on every library.
 
@@ -78,7 +78,7 @@ def test_faces_to_edges(bench_case) -> None:
 
 @pytest.mark.benchmark(group="faces_to_edges_sorted")
 @pytest.mark.benchlibs("triwarp", "trimesh")
-def test_faces_to_edges_sorted(bench_case) -> None:
+def test_faces_to_edges_sorted(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         faces = bench_case.faces_wp
         result = bench_case.run(lambda: tw.edges.faces_to_edges(faces, sorted=True))
@@ -91,7 +91,7 @@ def test_faces_to_edges_sorted(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_face")
 @pytest.mark.benchlibs("triwarp", "trimesh")
-def test_edges_face(bench_case) -> None:
+def test_edges_face(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         faces = bench_case.faces_wp
         result = bench_case.run(lambda: tw.edges.edges_face(faces))
@@ -102,7 +102,7 @@ def test_edges_face(bench_case) -> None:
         assert result.shape == (n_faces * 3,)
 
 
-def _run_edges_pytorch3d(bench_case, *, inverse: bool = False) -> None:
+def _run_edges_pytorch3d(bench_case: BenchCase, *, inverse: bool = False) -> None:
     """
     Time ``edges_packed`` (or its face map) with the ``Meshes`` built inside the timed callable.
 
@@ -131,7 +131,7 @@ def _run_edges_pytorch3d(bench_case, *, inverse: bool = False) -> None:
     assert bench_case.run(run_p3d).shape[1] == (3 if inverse else 2)
 
 
-def _run_edges_unique_reference(bench_case) -> None:
+def _run_edges_unique_reference(bench_case: BenchCase) -> None:
     """
     Time whichever unique-undirected-edge reference this case names.
 
@@ -166,7 +166,7 @@ def _run_edges_unique_reference(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_unique")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista", "pytorch3d")
-def test_edges_unique(bench_case) -> None:
+def test_edges_unique(bench_case: BenchCase) -> None:
 
     if bench_case.kind != "triwarp":
         _run_edges_unique_reference(bench_case)
@@ -178,7 +178,7 @@ def test_edges_unique(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_unique_auto_nv")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista", "pytorch3d")
-def test_edges_unique_auto_n_vertices(bench_case) -> None:
+def test_edges_unique_auto_n_vertices(bench_case: BenchCase) -> None:
     """
     Time ``edges_unique`` without the ``n_vertices=`` shortcut.
 
@@ -211,7 +211,7 @@ def test_edges_unique_auto_n_vertices(bench_case) -> None:
 @pytest.mark.benchmark(group="edges_unique_manifold")
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("triwarp", "igl", "potpourri3d")
-def test_edges_unique_manifold(bench_case) -> None:
+def test_edges_unique_manifold(bench_case: BenchCase) -> None:
     """
     The same unique-edge list on the clean synthetic meshes, where potpourri3d can run.
 
@@ -239,7 +239,7 @@ def test_edges_unique_manifold(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_unique_inverse")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pytorch3d")
-def test_edges_unique_inverse(bench_case) -> None:
+def test_edges_unique_inverse(bench_case: BenchCase) -> None:
     if bench_case.kind == "pytorch3d":
         _run_edges_pytorch3d(bench_case, inverse=True)
         return
@@ -263,7 +263,7 @@ def test_edges_unique_inverse(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_unique_length")
 @pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
-def test_edges_unique_length(bench_case) -> None:
+def test_edges_unique_length(bench_case: BenchCase) -> None:
     """
     One length per undirected edge, which on both sides is really a deduplication.
 
@@ -309,7 +309,7 @@ def test_edges_unique_length(bench_case) -> None:
 
 @pytest.mark.benchmark(group="edges_length")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl")
-def test_edges_length(bench_case) -> None:
+def test_edges_length(bench_case: BenchCase) -> None:
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         result = bench_case.run(lambda: tw.edges.edges_length(vertices, faces))
@@ -330,7 +330,7 @@ def test_edges_length(bench_case) -> None:
 
 @pytest.mark.benchmark(group="mean_edge_length")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl")
-def test_mean_edge_length(bench_case) -> None:
+def test_mean_edge_length(bench_case: BenchCase) -> None:
     """
     The **per-face** edge average -- ``3 * n_faces`` lengths, every interior edge counted twice.
 
@@ -356,12 +356,12 @@ def test_mean_edge_length(bench_case) -> None:
         bench_case.run(run)
     else:  # igl.edge_lengths -> (#F, 3), the per-face table; its mean is getAverageEdge
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
-        bench_case.run(lambda: float(igl.edge_lengths(vertices, faces).mean()))
+        bench_case.run(lambda: float(np.asarray(igl.edge_lengths(vertices, faces)).mean()))
 
 
 @pytest.mark.benchmark(group="mean_unique_edge_length")
 @pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pymeshlab", "meshlib")
-def test_mean_unique_edge_length(bench_case) -> None:
+def test_mean_unique_edge_length(bench_case: BenchCase) -> None:
     """
     The **unique** edge average, where the deduplication is most of the cost.
 

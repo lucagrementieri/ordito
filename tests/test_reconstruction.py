@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from typing import Literal
 
 import igl
 import numpy as np
@@ -47,6 +48,7 @@ from tests.conversions import (
     points_to_pyvista,
     points_to_warp,
     points_to_warp_uv,
+    warp_empty,
     warp_to_trimesh,
 )
 from triwarp.kernels import reconstruction as kernel_reconstruction
@@ -89,15 +91,13 @@ def _edge_set(faces_flat: np.ndarray) -> np.ndarray:
 
 def _incircle_violations(points_np: np.ndarray, faces_flat: np.ndarray) -> int:
     """Count interior edges whose opposite apex lies inside the adjacent triangle circumcircle."""
-    from scipy.spatial import Delaunay  # noqa: F401 — parity handled by caller
-
     faces = faces_flat.reshape(-1, 3)
     edge_faces: dict[tuple[int, int], list[int]] = {}
     for fi, t in enumerate(faces):
         for a, b in ((t[0], t[1]), (t[1], t[2]), (t[2], t[0])):
             edge_faces.setdefault((int(min(a, b)), int(max(a, b))), []).append(fi)
 
-    def in_circle(a, b, c, d):
+    def in_circle(a: np.ndarray, b: np.ndarray, c: np.ndarray, d: np.ndarray):
         m = np.array(
             [
                 [a[0] - d[0], a[1] - d[1], (a[0] - d[0]) ** 2 + (a[1] - d[1]) ** 2],
@@ -561,7 +561,7 @@ def test_invalid_parameters(device: str):
         tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=8, radius=1.0)
     with pytest.raises(ValueError, match="max_neighbours must be <="):
         tw.reconstruction.triangulate_point_cloud(
-            points_wp, max_neighbours=tw.kernels.reconstruction.MAX_NEIGHBOURS + 1
+            points_wp, max_neighbours=kernel_reconstruction.MAX_NEIGHBOURS + 1
         )
 
 
@@ -907,7 +907,9 @@ _POISSON_WATERTIGHT_CASES = [
 
 
 @pytest.mark.parametrize(("shape", "method"), _POISSON_WATERTIGHT_CASES)
-def test_poisson_watertight_manifold(device: str, shape: str, method: str) -> None:
+def test_poisson_watertight_manifold(
+    device: str, shape: str, method: Literal["dense", "adaptive"]
+) -> None:
     """
     Not a library comparison: reconstructing a closed surface from a clean, oriented cloud closes.
 
@@ -1019,7 +1021,7 @@ def test_poisson_invalid_method(device: str):
     points_np, normals_np = _sphere_cloud(2)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     with pytest.raises(ValueError, match="method"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, method="bogus")
+        tw.reconstruction.screened_poisson(points_wp, normals_wp, method="bogus")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 # ---------------------------------------------------------------------------
@@ -1275,7 +1277,7 @@ def test_resample_uniform_invalid(device: str) -> None:
 
 def test_resample_uniform_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
     out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(vertices_wp, faces_wp)
     assert out_vertices_wp.size == 0
     assert out_faces_wp.size == 0
@@ -1303,9 +1305,9 @@ def test_ball_pivoting_interpolates_input(device: str):
     from scipy.spatial import cKDTree
 
     distances = cKDTree(points_np).query(vertices_np)[0]
-    assert distances.max() < 1e-6
+    assert np.max(distances) < 1e-6
     # Most input points are incorporated on a well-sampled sphere.
-    assert vertices_np.shape[0] >= 0.8 * points_np.shape[0]
+    assert len(vertices_np) >= 0.8 * points_np.shape[0]
 
 
 def test_ball_pivoting_edge_manifold(device: str):
@@ -1344,7 +1346,7 @@ def test_ball_pivoting_closes_a_dense_sphere(device: str):
     assert faces_np.shape[0] == 2 * n_referenced - 4  # Euler, for a closed genus-0 surface
 
     # And it interpolates: every input point is a vertex of the result.
-    assert cKDTree(vertices_wp.numpy().astype(np.float64)).query(points_np)[0].max() < 1e-6
+    assert np.max(cKDTree(vertices_wp.numpy().astype(np.float64)).query(points_np)[0]) < 1e-6
 
 
 def test_ball_pivoting_is_reproducible(device: str):
@@ -1391,10 +1393,10 @@ def test_ball_pivoting_is_reproducible(device: str):
     bvh = tw.neighbors.bvh_from_points(points_wp)
     raw_runs = []
     for _ in range(2):
-        state = tw.reconstruction._BpaState(
+        state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
         )
-        tw.reconstruction._bpa_run(state, 16 * n_points)
+        tw.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
         n_faces = int(state.counters.numpy()[kernel_bpa.CNT_FACE])
         raw_runs.append(state.all_faces.numpy()[: n_faces * 3].reshape(-1, 3))
 
@@ -1423,10 +1425,10 @@ def test_ball_pivoting_grows_the_triangle_budget(device: str):
 
     faces_per_budget = []
     for start_budget in (64, 4 * points_np.shape[0] + 16):
-        state = tw.reconstruction._BpaState(
+        state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, 0.2, 0.2, math.cos(math.pi / 2.0), start_budget
         )
-        tw.reconstruction._bpa_run(state, 16 * points_np.shape[0])
+        tw.reconstruction._bpa_run(state, 16 * points_np.shape[0])  # pyright: ignore[reportPrivateUsage]
         counters_np = state.counters.numpy()
         assert counters_np[kernel_bpa.CNT_DONE] == 1
         faces_per_budget.append(int(counters_np[kernel_bpa.CNT_FACE]))
@@ -1475,23 +1477,23 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     radius = 0.2
     grid = tw.neighbors.hashgrid_from_points(points_wp, radius)
     bvh = tw.neighbors.bvh_from_points(points_wp)
-    state = tw.reconstruction._BpaState(
+    state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
         points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
     )
 
     # The buffer that should be live, appended to by whatever last established it.
     live: list[int] = []
     resyncs = 0
-    unpatched_wave = tw.reconstruction._bpa_wave
-    unpatched = {name: getattr(tw.reconstruction._BpaState, name) for name in ("compact", "grow")}
+    unpatched_wave = tw.reconstruction._bpa_wave  # pyright: ignore[reportPrivateUsage]
+    unpatched = {name: getattr(tw.reconstruction._BpaState, name) for name in ("compact", "grow")}  # pyright: ignore[reportPrivateUsage]
 
-    def recording_wave(tracked: tw.reconstruction._BpaState, waves: int) -> None:
+    def recording_wave(tracked: tw.reconstruction._BpaState, waves: int) -> None:  # pyright: ignore[reportPrivateUsage]
         if int(tracked.counters.numpy()[kernel_bpa.CNT_CONTINUE]):
             live.append(id(tracked.front_out))
         unpatched_wave(tracked, waves)
 
     def checked(name: str):
-        def wrapper(tracked: tw.reconstruction._BpaState) -> None:
+        def wrapper(tracked: tw.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]
             nonlocal resyncs
             resyncs += 1
             if name == "compact":
@@ -1506,8 +1508,8 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
 
     monkeypatch.setattr(tw.reconstruction, "_bpa_wave", recording_wave)
     for name in unpatched:
-        monkeypatch.setattr(tw.reconstruction._BpaState, name, checked(name))
-    tw.reconstruction._bpa_run(state, max_waves)
+        monkeypatch.setattr(tw.reconstruction._BpaState, name, checked(name))  # pyright: ignore[reportPrivateUsage]
+    tw.reconstruction._bpa_run(state, max_waves)  # pyright: ignore[reportPrivateUsage]
 
     counters_np = state.counters.numpy()
     waves_run = int(counters_np[kernel_bpa.CNT_WAVE])

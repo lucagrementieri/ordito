@@ -1,8 +1,11 @@
+# This file tests triwarp.linalg's private solver states and helpers directly.
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
 import gc
 import warnings
 import weakref
+from typing import Any, TypedDict, cast
 
 import igl
 import numpy as np
@@ -18,7 +21,16 @@ from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, trimesh_to_pymeshlab
 
 
-def _spd_system(device: str, n: int = 64, n_rhs: int = 3, seed: int = 11):
+class _CgOptions(TypedDict):
+    tol: float
+    maxiter: int
+    check_every: int
+    preconditioner: str
+
+
+def _spd_system(
+    device: str, n: int = 64, n_rhs: int = 3, seed: int = 11
+) -> tuple[twt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
     """
     Build an SPD operator with ``n_rhs`` right-hand sides, plus its NumPy form to solve.
 
@@ -42,12 +54,15 @@ def _spd_system(device: str, n: int = 64, n_rhs: int = 3, seed: int = 11):
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(dense_np.ravel()), dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(matrix_wp, wp.float64)
     rhs_np = rng.standard_normal((n_rhs, n))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
     return matrix_wp, twt.as_array2d(rhs_wp, wp.float64), dense_np, rhs_np
 
 
-def _grid_laplacian_system(device: str, k: int = 24, n_rhs: int = 3, shift: float = 1e-3, seed=5):
+def _grid_laplacian_system(
+    device: str, k: int = 24, n_rhs: int = 3, shift: float = 1e-3, seed: int = 5
+) -> tuple[twt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
     """
     Build a ``k x k`` five-point Laplacian plus a small shift: sparse, SPD, and it coarsens.
 
@@ -78,6 +93,7 @@ def _grid_laplacian_system(device: str, k: int = 24, n_rhs: int = 3, shift: floa
         wp.array(columns_np, dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(values_np), dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(matrix_wp, wp.float64)
     dense_np = np.zeros((k * k, k * k))
     np.add.at(dense_np, (rows_np, columns_np), values_np)
     rng = np.random.default_rng(seed)
@@ -157,7 +173,7 @@ def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
             np.zeros((n_vertices, 1)),
             np.ascontiguousarray(np.array([low, high], dtype=np.int64)),
             np.array([[0.0], [1.0]]),
-            sp.csr_matrix((0, n_vertices)),
+            sp.csr_matrix((0, n_vertices)),  # pyright: ignore[reportArgumentType]  # binding says csc
             np.zeros((0, 1)),
             True,
         )
@@ -367,7 +383,12 @@ def test_two_column_solve_costs_no_more_iterations_than_its_worst_column(
     mechanism validated on the well-conditioned arm alone is exactly the failure this pins.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=40, n_rhs=2, shift=shift)
-    kwargs = {"tol": 1e-10, "maxiter": 40_000, "check_every": 1, "preconditioner": "diag"}
+    kwargs: _CgOptions = {
+        "tol": 1e-10,
+        "maxiter": 40_000,
+        "check_every": 1,
+        "preconditioner": "diag",
+    }
 
     both_solution = wp.zeros_like(rhs_wp)
     both_iterations, _residual, _tol = tw.linalg._BatchedCg(
@@ -386,11 +407,12 @@ def test_two_column_solve_costs_no_more_iterations_than_its_worst_column(
             twt.as_array2d(single_solution, wp.float64),
             **kwargs,
         )()
-        worst_single = max(worst_single, int(iterations))
+        worst_single = max(worst_single, int(cast("int", iterations)))
 
     assert np.allclose(
         both_solution.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )
+    both_iterations = cast("int", both_iterations)  # a host scalar: ``check_every`` is 1
     assert int(both_iterations) == worst_single, (
         f"a two-column solve took {int(both_iterations)} iterations where its worst column alone "
         f"takes {worst_single}: the columns are no longer independent"
@@ -510,6 +532,7 @@ def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
         wp.array(np.array(cols, dtype=np.int32), dtype=wp.int32, device=device),
         wp.array(np.array(values, dtype=np.float64), dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(matrix, wp.float64)
     rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
     solution = wp.zeros(n, dtype=wp.float64, device=device)
 
@@ -526,6 +549,7 @@ def test_solve_spd_is_quiet_when_it_converges(device: str) -> None:
     indices = wp.array(np.arange(n, dtype=np.int32), dtype=wp.int32, device=device)
     values = wp.array(np.full(n, 2.0, dtype=np.float64), dtype=wp.float64, device=device)
     matrix = wps.bsr_from_triplets(n, n, indices, wp.clone(indices), values)
+    assert twt.has_blocks(matrix, wp.float64)
     rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
     solution = wp.zeros(n, dtype=wp.float64, device=device)
 
@@ -595,7 +619,9 @@ def test_pooled_solver_state_follows_each_operator(
     monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     systems = [_spd_system(device, n_rhs=1, seed=seed) for seed in (31, 32, 33)]
 
-    def solve(matrix_wp: wps.BsrMatrix, rhs_wp: wp.array) -> np.ndarray:
+    def solve(
+        matrix_wp: twt.BsrMatrix[wp.float64], rhs_wp: wp.array[wp.float64, Any]
+    ) -> np.ndarray:
         solution_wp = wp.zeros(int(rhs_wp.shape[1]), dtype=wp.float64, device=device)
         preconditioner = None
         if kind == "chebyshev":
@@ -629,9 +655,9 @@ def test_pooled_solver_state_follows_each_operator(
         # The refit is a rate, not a fixed point, so the answers above cannot see it: compare the
         # pooled polynomial with the one a new state would fit to the last operator.
         pooled = list(tw.linalg._SOLVER_POOL.values())[-1]
-        fresh = tw.linalg._JacobiChebyshev(matrix_wp)._steps.numpy()
+        fresh = tw.linalg._JacobiChebyshev(matrix_wp).steps.numpy()
         assert isinstance(pooled._cycle, tw.linalg._JacobiChebyshevApply)
-        assert np.array_equal(pooled._cycle.owner._steps.numpy(), fresh)
+        assert np.array_equal(pooled._cycle.owner.steps.numpy(), fresh)
 
 
 def test_pooled_squared_laplacian_state_follows_each_system(
@@ -653,11 +679,13 @@ def test_pooled_squared_laplacian_state_follows_each_system(
     systems = [_spd_system(device, n_rhs=2, seed=seed) for seed in (41, 42, 43)]
     preconditioners = []
 
-    def solve(matrix_wp: wps.BsrMatrix, rhs_wp: twt.Array2dFloat64) -> np.ndarray:
+    def solve(matrix_wp: twt.BsrMatrix[wp.float64], rhs_wp: twt.Array2dFloat64) -> np.ndarray:
         weights_wp = wp.full(int(matrix_wp.nrow), 2.0, dtype=wp.float64, device=device)
         preconditioner = tw.linalg.squared_laplacian_preconditioner(matrix_wp, weights_wp)
         preconditioners.append(preconditioner)
-        solution_wp = twt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+        solution_wp = twt.as_array2d(
+            wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device), wp.float64
+        )
         tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
         return solution_wp.numpy()
 
@@ -730,6 +758,7 @@ def test_solve_spd_block_operator_matches_numpy(device: str) -> None:
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
     )
+    assert twt.has_blocks(matrix_wp, wp.mat22d)
     rhs_np = rng.standard_normal((n_blocks, 2))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)
     solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
@@ -802,7 +831,11 @@ def test_solve_spd_float32_system_matches_numpy(
         monkeypatch.setattr(tw.linalg, "CG_FOLD_MAX_BLOCKS", 0)
         monkeypatch.setattr(tw.linalg, "CG_HEAVY_ROW_ENTRIES", 0)
     matrix64_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device, n_rhs=1)
-    matrix_wp = wps.bsr_copy(matrix64_wp, scalar_type=wp.float32)
+    matrix_wp = wps.bsr_copy(
+        matrix64_wp,
+        scalar_type=wp.float32,  # pyright: ignore[reportArgumentType]  # Warp types it an instance
+    )
+    assert twt.has_blocks(matrix_wp, wp.float32)
     rhs_np = np.random.default_rng(31).standard_normal(dense_np.shape[0]).astype(np.float32)
     rhs_wp = wp.array(rhs_np, dtype=wp.float32, device=device)
     solution_wp = wp.zeros_like(rhs_wp)
@@ -827,6 +860,7 @@ def test_adaptive_preconditioner_escalates_only_past_its_probe(device: str, shif
         matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
     )
     solver()
+    assert isinstance(solver, tw.linalg._AdaptiveCg)
     assert (solver._escalation is not None) == (shift < 1e-2)
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
@@ -982,6 +1016,7 @@ def test_offdiagonal_dominance_matches_a_numpy_reduction(device: str) -> None:
         wp.array(columns_np, dtype=wp.int32, device=device),
         wp.array(values_np, dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(matrix_wp, wp.float64)
     dense_np = np.zeros((4, 4))
     np.add.at(dense_np, (rows_np, columns_np), values_np)
     diagonal_np = np.diag(dense_np)
@@ -1032,7 +1067,7 @@ def test_multigrid_preconditioner_auto_gate_takes_both_branches(device: str) -> 
         "a large but weakly-dominant operator must still be declined"
     )
 
-    squared_wp = wps.bsr_mm(large_wp, large_wp)
+    squared_wp = twt.bsr_mm(large_wp, large_wp)
     assert tw.linalg._offdiagonal_dominance(squared_wp) > tw.linalg.CG_MULTIGRID_DOMINANCE
     assert tw.linalg._wants_multigrid(squared_wp), "the squared operator must clear the gate"
     answers = {}
@@ -1078,6 +1113,7 @@ def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
         wp.array(index_np, dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(diagonal_np), dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(matrix_wp, wp.float64)
     rhs_np = rng.standard_normal((2, n))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
     solution_wp = wp.zeros_like(rhs_wp)
@@ -1094,7 +1130,14 @@ def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
 
 def _normal_equations_system(
     device: str, *, negative: bool, k: int = 28, n_rhs: int = 3, seed: int = 13
-) -> tuple:
+) -> tuple[
+    twt.BsrMatrix[wp.float64],
+    wp.array[wp.float64, Any],
+    twt.BsrMatrix[wp.float64],
+    wp.array[wp.float64],
+    np.ndarray,
+    np.ndarray,
+]:
     """
     Build ``smoothing.smooth_region``'s least-squares umbrella system on a ``k x k`` grid graph.
 
@@ -1135,18 +1178,22 @@ def _normal_equations_system(
     m_np = umbrella[rows_np][:, free_index].toarray()
     positions_np = np.random.default_rng(seed).standard_normal((n_nodes, n_rhs))
     positions_np[free_np] = 0.0
-    b_np = -(umbrella[rows_np] @ positions_np)
+    b_np = cast("np.ndarray", -(umbrella[rows_np] @ positions_np))
     system_np, rhs_np = m_np.T @ m_np, (m_np.T @ b_np).T
-    laplacian_np = (sp.diags(sums_np) - w_np)[free_index][:, free_index].tocoo()
+    laplacian_np = cast("sp.csr_matrix", sp.diags(sums_np) - w_np)[free_index][
+        :, free_index
+    ].tocoo()
 
-    def upload(matrix_np: sp.coo_matrix) -> wps.BsrMatrix:
-        return wps.bsr_from_triplets(
+    def upload(matrix_np: sp.coo_matrix) -> twt.BsrMatrix[wp.float64]:
+        matrix_wp = wps.bsr_from_triplets(
             matrix_np.shape[0],
             matrix_np.shape[1],
             wp.array(matrix_np.row.astype(np.int32), dtype=wp.int32, device=device),
             wp.array(matrix_np.col.astype(np.int32), dtype=wp.int32, device=device),
             wp.array(np.ascontiguousarray(matrix_np.data), dtype=wp.float64, device=device),
         )
+        assert twt.has_blocks(matrix_wp, wp.float64)
+        return matrix_wp
 
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
     sums_wp = wp.array(np.ascontiguousarray(sums_np[free_index]), dtype=wp.float64, device=device)
@@ -1319,7 +1366,7 @@ def test_chebyshev_preconditioner_solves_the_same_system(
     rhs_wp = twt.as_array2d(
         wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device), wp.float64
     )
-    solution_wp = wp.zeros_like(rhs_wp)
+    solution_wp = wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device)
     tw.linalg.solve_spd_columns(
         laplacian_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="chebyshev"
     )
@@ -1378,6 +1425,7 @@ def test_block_diag_matches_scipy(device: str) -> None:
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
     )
+    assert twt.has_blocks(vector_wp, wp.mat22d)
     n = 9
     rows = rng.integers(0, n, 40).astype(np.int32)
     cols = rng.integers(0, n, 40).astype(np.int32)
@@ -1389,6 +1437,7 @@ def test_block_diag_matches_scipy(device: str) -> None:
         wp.array(cols, dtype=wp.int32, device=device),
         wp.array(vals, dtype=wp.float64, device=device),
     )
+    assert twt.has_blocks(scalar_wp, wp.float64)
     # Duplicates, so the triplet build's ``nnz`` really is a capacity.
     assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
     scalar_np = sp.coo_matrix((vals, (rows, cols)), shape=(n, n)).toarray()
@@ -1405,7 +1454,13 @@ def test_block_diag_matches_scipy(device: str) -> None:
 
 def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
     """Not a library comparison: a rectangular block has no place on a diagonal."""
-    rectangular_wp = wps.bsr_zeros(3, 4, wp.float64, device=device)
+    rectangular_wp = wps.bsr_zeros(
+        3,
+        4,
+        wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
+        device=device,
+    )
+    assert twt.has_blocks(rectangular_wp, wp.float64)
     with pytest.raises(ValueError, match="square"):
         tw.linalg.block_diag((rectangular_wp,))
     with pytest.raises(ValueError, match="at least one"):

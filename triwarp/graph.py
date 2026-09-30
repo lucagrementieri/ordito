@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import warp as wp
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.typing as twt
@@ -18,7 +17,7 @@ from triwarp.kernels.algorithms import connected_components as kernel_connected_
 
 def edges_to_csr(
     node_count: int, edges: twt.Array2dInt32, weights: wp.array[wp.float32] | None = None
-) -> wps.BsrMatrix[wp.float32]:
+) -> twt.BsrMatrix[wp.float32]:
     """
     Undirected adjacency as a 1x1-block ``warp.sparse.BsrMatrix`` (CSR form).
 
@@ -215,7 +214,7 @@ def edges_to_neighbor_lists(
     return neighbors, offsets
 
 
-def connected_component_labels(adjacency: wps.BsrMatrix[wp.Scalar]) -> wp.array[wp.int32]:
+def connected_component_labels(adjacency: twt.BsrMatrix[wp.Scalar]) -> wp.array[wp.int32]:
     """
     Per-node connected-component labels from a sparse adjacency matrix.
 
@@ -680,7 +679,7 @@ def successor_cycles(
 
 
 def shortest_path_envelope(
-    adjacency: wps.BsrMatrix[wp.float32], values: wp.array[wp.float32], max_iterations: int = 0
+    adjacency: twt.BsrMatrix[wp.float32], values: wp.array[wp.float32], max_iterations: int = 0
 ) -> wp.array[wp.float32]:
     """
 
@@ -807,7 +806,7 @@ def shortest_path_envelope(
         # No conditional-graph capture on the CPU backend, so the pass loop runs on the host;
         # the plain per-pass loop below, with its one 4-byte readback per pass, is already the
         # cheapest thing a CPU launch can do here.
-        progress = state[kernel_array.LOOP_PROGRESS_VIEW]
+        progress = twt.as_dense(state[kernel_array.LOOP_PROGRESS_VIEW])
         for _ in range(max_pass_count):
             _launch.zero_(progress)
             _launch.launch(
@@ -863,7 +862,9 @@ def shortest_path_envelope(
             kernel_array.loop_advance, dim=1, inputs=[max_pass_count_i32, state], device=device
         )
 
-    run_device_loop(device, state[kernel_array.LOOP_CONDITION_VIEW], envelope_pass_body)
+    run_device_loop(
+        device, twt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), envelope_pass_body
+    )
     return labels
 
 
@@ -871,7 +872,7 @@ def shortest_path_envelope(
 
 
 def _validate_square_csr(
-    adjacency: wps.BsrMatrix[wp.Scalar],
+    adjacency: twt.BsrMatrix[wp.Scalar],
 ) -> tuple[int, wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Check a CSR adjacency is square with scalar blocks, and unpack what the traversals need.

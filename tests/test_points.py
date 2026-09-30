@@ -1,3 +1,5 @@
+from typing import cast
+
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -24,6 +26,7 @@ from tests.conversions import (
     points_to_pymeshlab,
     points_to_torch,
     points_to_warp,
+    warp_empty,
 )
 
 
@@ -169,7 +172,7 @@ def test_half_space_mask_defaults_to_the_origin(device: str) -> None:
         np.array([True, False, False]),
     )
 
-    empty_wp = tw.half_space_mask(wp.empty(0, dtype=wp.vec3, device=device), wp.vec3(1.0, 0.0, 0.0))
+    empty_wp = tw.half_space_mask(warp_empty(0, wp.vec3, device), wp.vec3(1.0, 0.0, 0.0))
     assert empty_wp.shape == (0,)
     assert empty_wp.dtype == wp.bool
 
@@ -190,7 +193,7 @@ def test_gram_matrix(device: str) -> None:
 
 
 def test_gram_matrix_empty(device: str) -> None:
-    points_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    points_wp = warp_empty(0, wp.vec3, device)
     assert np.allclose(tw.gram_matrix(points_wp).numpy()[0], np.zeros((3, 3)))
 
 
@@ -500,7 +503,10 @@ def test_fit_plane_normal_matches_pyvista(device: str) -> None:
     # returns is not the centroid.
     points_np = (rng.standard_normal((500, 3)) @ np.diag([3.0, 1.0, 0.05])) + 5.0
 
-    _plane_pv, centre_pv, normal_pv = pv.fit_plane_to_points(points_np, return_meta=True)
+    _plane_pv, centre_pv, normal_pv = cast(
+        "tuple[pv.PolyData, np.ndarray, np.ndarray]",
+        pv.fit_plane_to_points(points_np, return_meta=True),
+    )
 
     points_wp = points_to_warp(points_np, device)
     normal_wp, centroid_wp = tw.fit_plane(points_wp)
@@ -920,7 +926,9 @@ def test_estimate_normals_rejects_a_table_that_is_not_one_row_per_point(device: 
     """
     points_wp = points_to_warp(_fibonacci_sphere(10), device)
     for rows in (6, 14):
-        neighbor_idx_wp = wp.zeros((rows, 4), dtype=wp.int32, device=device)
+        neighbor_idx_wp = twt.as_array2d(
+            wp.zeros((rows, 4), dtype=wp.int32, device=device), wp.int32
+        )
         with pytest.raises(ValueError, match=r"one row per point"):
             tw.estimate_normals(points_wp, neighbor_idx_wp)
 
@@ -953,7 +961,7 @@ def _loop_reference(points_np: np.ndarray, k: int, scale: float = 3.0) -> np.nda
     from scipy.special import erf
 
     distance_np, idx_np = cKDTree(points_np).query(points_np, k=k)
-    sigma_np = np.sqrt((distance_np**2).mean(axis=1))
+    sigma_np = np.sqrt(np.mean(distance_np**2, axis=1))
     plof_np = sigma_np / sigma_np[idx_np].mean(axis=1) - 1.0
     normalizer = scale * np.sqrt((plof_np**2).mean())
     return np.maximum(0.0, erf(plof_np / (normalizer * np.sqrt(2.0))))
@@ -1134,8 +1142,8 @@ def test_statistical_outlier_mask_flags_coincident_and_empty_rows_below_two_coun
     one fully coincident (every neighbour at distance 0), two fully empty (every slot ``inf``) --
     every one of the three must read ``True``.
     """
-    neighbor_distance_wp = wp.array(
-        np.array([[0.0], [np.inf], [np.inf]], dtype=np.float32), device=device
+    neighbor_distance_wp = twt.as_array2d(
+        wp.array(np.array([[0.0], [np.inf], [np.inf]], dtype=np.float32), device=device), wp.float32
     )
     outlier_wp = tw.statistical_outlier_mask(neighbor_distance_wp).numpy()
     assert np.array_equal(outlier_wp, np.array([True, True, True]))
@@ -1297,7 +1305,8 @@ def test_point_duplicate_mask_matches_meshlib(device: str) -> None:
     )
 
     representative_ml = meshlib_indices_to_numpy(
-        mm.findSmallestCloseVertices(points_to_meshlib(points_np), 0.0)
+        # MeshLib's stub omits ``VertId.__index__``, which it implements at runtime.
+        mm.findSmallestCloseVertices(points_to_meshlib(points_np), 0.0)  # pyright: ignore[reportArgumentType]
     )
     duplicate_ml = representative_ml != np.arange(points_np.shape[0])
 
@@ -1508,8 +1517,8 @@ def test_vector_angle(device: str) -> None:
 
 
 def test_vector_angle_empty(device: str) -> None:
-    vecs_a_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    vecs_b_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vecs_a_wp = warp_empty(0, wp.vec3, device)
+    vecs_b_wp = warp_empty(0, wp.vec3, device)
     angles_wp = tw.vector_angle(vecs_a_wp, vecs_b_wp)
     assert angles_wp.shape == (0,)
 
@@ -1562,8 +1571,8 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
     def hull_indices(hull_vertices: np.ndarray, tolerance: float = 1e-9) -> set[int]:
         """Map a hull's vertex positions back onto indices into the input cloud."""
         distance_np, index_np = scipy.spatial.cKDTree(points_np).query(np.asarray(hull_vertices))
-        assert distance_np.max() < tolerance  # every returned position is one of the inputs
-        return set(index_np[distance_np < tolerance].tolist())
+        assert np.max(distance_np) < tolerance  # every returned position is one of the inputs
+        return set(np.asarray(index_np)[distance_np < tolerance].tolist())
 
     # The compacted entry point resolves back to the identical index set, so the assertions below
     # speak for both benchmark groups rather than only the mask one. Its positions come back
@@ -1643,7 +1652,7 @@ def test_convex_subset_points(device: str) -> None:
 
 
 def test_convex_subset_mask_empty(device: str) -> None:
-    points_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    points_wp = warp_empty(0, wp.vec3, device)
     mask_wp = tw.convex_subset_mask(points_wp)
     assert mask_wp.shape == (0,)
 
@@ -1766,7 +1775,7 @@ def test_convex_superset_mask_degenerate_keeps_everything(device: str, kind: str
 
 
 def test_convex_superset_mask_empty(device: str) -> None:
-    points_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    points_wp = warp_empty(0, wp.vec3, device)
     mask_wp = tw.convex_superset_mask(points_wp)
     assert mask_wp.shape == (0,)
 

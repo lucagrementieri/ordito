@@ -15,6 +15,7 @@ from tests.conversions import (
     points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pyvista,
+    warp_empty,
 )
 
 
@@ -319,14 +320,14 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
 
     scene_o3d = o3d.t.geometry.RaycastingScene()
     scene_o3d.add_triangles(
-        o3d.core.Tensor(
+        o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
             np.ascontiguousarray(mesh_tm.vertices, dtype=np.float32), dtype=o3d.core.Dtype.Float32
         ),
-        o3d.core.Tensor(
+        o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
             np.ascontiguousarray(mesh_tm.faces, dtype=np.uint32), dtype=o3d.core.Dtype.UInt32
         ),
     )
-    rays_o3d = o3d.core.Tensor(
+    rays_o3d = o3d.core.Tensor(  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
         np.ascontiguousarray(np.hstack([origins_np, directions_np]), dtype=np.float32),
         dtype=o3d.core.Dtype.Float32,
     )
@@ -361,8 +362,8 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
 
 def test_intersects_empty_rays(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    origins_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
-    directions_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
+    origins_wp = warp_empty(0, wp.vec3, mesh_wp.device)
+    directions_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     assert tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
     assert tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
     loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
@@ -386,8 +387,8 @@ def test_intersects_rejects_mismatched_shapes(
     guard passes wherever it is placed, so the ``0`` arm is the one doing the work.
     """
     _, mesh_wp = icosahedron
-    origins_wp = wp.empty(n_origins, dtype=wp.vec3, device=mesh_wp.device)
-    directions_wp = wp.empty(n_origins + 3, dtype=wp.vec3, device=mesh_wp.device)
+    origins_wp = warp_empty(n_origins, wp.vec3, mesh_wp.device)
+    directions_wp = warp_empty(n_origins + 3, wp.vec3, mesh_wp.device)
     for query in (
         tw.ray.intersects_first,
         tw.ray.intersects_any,
@@ -531,5 +532,5 @@ def test_contains_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
 
 def test_contains_empty_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    points_wp = wp.empty(0, dtype=wp.vec3, device=mesh_wp.device)
+    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     assert tw.ray.contains_points(mesh_wp, points_wp).numpy().shape == (0,)

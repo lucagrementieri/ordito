@@ -100,7 +100,19 @@ def chamfer_points_to_points(
     y: wp.array[wp.vec3],
     *,
     point_reduction: None,
-    single_directional: bool = ...,
+    single_directional: Literal[True],
+) -> twt.Array1dFloat32: ...
+@overload
+def chamfer_points_to_points(
+    x: wp.array[wp.vec3],
+    y: wp.array[wp.vec3],
+    *,
+    point_reduction: None,
+    single_directional: Literal[False] = ...,
+) -> tuple[twt.Array1dFloat32, twt.Array1dFloat32]: ...
+@overload
+def chamfer_points_to_points(
+    x: wp.array[wp.vec3], y: wp.array[wp.vec3], *, point_reduction: None, single_directional: bool
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_points(
     x: wp.array[wp.vec3],
@@ -176,7 +188,25 @@ def chamfer_points_to_mesh(
     faces: wp.array[wp.int32],
     *,
     point_reduction: None,
-    single_directional: bool = ...,
+    single_directional: Literal[True],
+) -> twt.Array1dFloat32: ...
+@overload
+def chamfer_points_to_mesh(
+    points: wp.array[wp.vec3],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    point_reduction: None,
+    single_directional: Literal[False] = ...,
+) -> tuple[twt.Array1dFloat32, twt.Array1dFloat32]: ...
+@overload
+def chamfer_points_to_mesh(
+    points: wp.array[wp.vec3],
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    point_reduction: None,
+    single_directional: bool,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_mesh(
     points: wp.array[wp.vec3],
@@ -257,7 +287,27 @@ def chamfer_mesh_to_mesh(
     faces_b: wp.array[wp.int32],
     *,
     point_reduction: None,
-    single_directional: bool = ...,
+    single_directional: Literal[True],
+) -> twt.Array1dFloat32: ...
+@overload
+def chamfer_mesh_to_mesh(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    *,
+    point_reduction: None,
+    single_directional: Literal[False] = ...,
+) -> tuple[twt.Array1dFloat32, twt.Array1dFloat32]: ...
+@overload
+def chamfer_mesh_to_mesh(
+    vertices_a: wp.array[wp.vec3],
+    faces_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    faces_b: wp.array[wp.int32],
+    *,
+    point_reduction: None,
+    single_directional: bool,
 ) -> _UnreducedChamfer: ...
 def chamfer_mesh_to_mesh(
     vertices_a: wp.array[wp.vec3],
@@ -355,7 +405,7 @@ def chamfer_points_to_points_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
-) -> twt.Array1dFloat32:
+) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between two point clouds.
 
@@ -435,7 +485,7 @@ def chamfer_points_to_mesh_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
-) -> twt.Array1dFloat32:
+) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between a point cloud and a triangle mesh.
 
@@ -517,7 +567,7 @@ def chamfer_mesh_to_mesh_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
-) -> twt.Array1dFloat32:
+) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between two triangle meshes (vertex-to-surface).
 
@@ -1045,9 +1095,10 @@ def _reduction_scale(point_reduction: _DiffReduction, count: int) -> float:
     return (1.0 / count) if point_reduction == "mean" else 1.0
 
 
-def _zero_loss(device: wp.DeviceLike) -> twt.Array1dFloat32:
-    zeros = _launch.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
-    return cast(twt.Array1dFloat32, zeros)
+def _zero_loss(device: wp.DeviceLike) -> wp.array[wp.float32]:
+    # Rank ``int``, not ``Literal[1]``: the loss is handed to ``wp.Tape.backward``, which takes a
+    # plain ``wp.array``, and rank is invariant.
+    return _launch.zeros(1, dtype=wp.float32, device=device, requires_grad=True)
 
 
 def _accumulate_chamfer_terms(tape: wp.Tape | None, terms: list[Callable[[], None]]) -> None:
@@ -1079,7 +1130,7 @@ def _launch_nn_term(
     y: wp.array[wp.vec3],
     nearest: wp.array[wp.int32],
     scale: float,
-    loss: twt.Array1dFloat32,
+    loss: wp.array[wp.float32],
 ) -> None:
     """Accumulate the point-to-point Chamfer term for ``x`` into ``loss``."""
     _launch_reduction_pair(
@@ -1098,7 +1149,7 @@ def _launch_surface_term(
     faces: wp.array[wp.int32],
     face_id: wp.array[wp.int32],
     scale: float,
-    loss: twt.Array1dFloat32,
+    loss: wp.array[wp.float32],
 ) -> None:
     """Accumulate the point-to-surface Chamfer term for ``points`` into ``loss``."""
     _launch_reduction_pair(
@@ -1112,12 +1163,12 @@ def _launch_surface_term(
 
 
 def _launch_reduction_pair(
-    kernel_tiled: wp.Kernel,
-    kernel_sliced: wp.Kernel,
+    kernel_tiled: twt.Kernel,
+    kernel_sliced: twt.Kernel,
     n: int,
     device: wp.DeviceLike,
     common_inputs: list[object],
-    loss: twt.Array1dFloat32,
+    loss: wp.array[wp.float32],
 ) -> None:
     """
     Dispatch one of a matched ``*_tiled`` / ``*_sliced`` kernel pair over ``n`` items into ``loss``.

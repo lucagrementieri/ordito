@@ -443,12 +443,15 @@ def face_signed_volumes(
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
     device = vertices.device
-    scalar = wp.float64 if vertices.dtype is wp.vec3d else wp.float32
-    volumes = _launch.empty(n_faces, dtype=scalar, device=device)
+    volumes: wp.array[wp.float32] | wp.array[wp.float64] = (
+        _launch.empty(n_faces, dtype=wp.float64, device=device)
+        if vertices.dtype is wp.vec3d
+        else _launch.empty(n_faces, dtype=wp.float32, device=device)
+    )
     if n_faces == 0:
         return volumes
     if apex is None:
-        apex = wp.vec3d(0.0, 0.0, 0.0) if vertices.dtype is wp.vec3d else wp.vec3(0.0, 0.0, 0.0)
+        apex = wp.vec3d() if vertices.dtype is wp.vec3d else wp.vec3()
     _launch.launch(
         kernel_triangles.FACE_SIGNED_VOLUMES[vertices.dtype],
         dim=n_faces,

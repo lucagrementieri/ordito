@@ -24,8 +24,11 @@ gained a CPU path in Warp 1.16, so nothing here is CUDA-only.
 
 from __future__ import annotations
 
+from typing import Literal, cast
+
 import igl
 import numpy as np
+import numpy.typing as npt
 import open3d as o3d
 import pytest
 import pytorch3d.ops as p3d_ops
@@ -33,6 +36,7 @@ import pyvista as pv
 import scipy.ndimage as ndi
 import torch
 import trimesh as tm
+import trimesh.voxel.ops as tm_voxel_ops
 import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
@@ -51,6 +55,7 @@ from tests.conversions import (
     pytorch3d_to_numpy,
     trimesh_to_open3d,
     trimesh_to_pyvista,
+    warp_empty,
     warp_to_trimesh,
 )
 
@@ -66,7 +71,7 @@ _IGL_CORNER_ORDER = [1, 0, 2, 3, 5, 4, 6, 7]
 @pytest.fixture
 def sphere(
     device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
-) -> tuple[tm.Trimesh, wp.array, wp.array]:
+) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Move the shared ``icosphere`` to a non-round offset, as trimesh plus its Warp buffers.
 
@@ -78,13 +83,17 @@ def sphere(
     return (mesh_tm, *numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device))
 
 
-def _cloud(mesh_tm: tm.Trimesh, device: str, n: int = 20000) -> tuple[np.ndarray, wp.array]:
+def _cloud(
+    mesh_tm: tm.Trimesh, device: str, n: int = 20000
+) -> tuple[np.ndarray, wp.array[wp.vec3]]:
     """Sample the surface of ``mesh_tm`` deterministically, as NumPy and Warp."""
     points_np = tm.sample.sample_surface(mesh_tm, n, seed=7)[0]
     return points_np, points_to_warp(points_np, device)
 
 
-def _dense(grid: wp.Volume, origin_cell, shape) -> np.ndarray:
+def _dense(
+    grid: wp.Volume, origin_cell: tuple[int, int, int], shape: tuple[int, int, int]
+) -> np.ndarray:
     """Dense occupancy of ``grid`` over an explicit cell box, as NumPy."""
     return tw.voxels.to_dense(grid, origin_cell=origin_cell, shape=shape)[0].numpy()
 
@@ -95,7 +104,9 @@ def _dense(grid: wp.Volume, origin_cell, shape) -> np.ndarray:
 
 
 @pytest.mark.parity("voxelize_mesh", "open3d")
-def test_voxelize_mesh_matches_open3d(sphere):
+def test_voxelize_mesh_matches_open3d(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class A: the accepted cell sets are identical, compared after ``lexsort_rows`` on both sides.
 
@@ -124,7 +135,9 @@ def test_voxelize_mesh_matches_open3d(sphere):
 
 
 @pytest.mark.parity("voxelize_mesh", "meshlib")
-def test_voxelize_mesh_matches_meshlib(sphere, device: str):
+def test_voxelize_mesh_matches_meshlib(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """
     Class C (two representations): MeshLib returns a **distance field**, not an occupancy set.
 
@@ -163,14 +176,17 @@ def test_voxelize_mesh_matches_meshlib(sphere, device: str):
     params_ml = mm.MeshToVolumeParams()
     params_ml.voxelSize = mm.Vector3f(voxel_size, voxel_size, voxel_size)
     params_ml.surfaceOffset = surface_offset
-    field_np = mn.getNumpy3Darray(
-        mm.vdbVolumeToSimpleVolume(mm.meshToVolume(mm.MeshPart(mesh_ml), params_ml))
+    field_np = cast(
+        npt.NDArray[np.float64],
+        mn.getNumpy3Darray(
+            mm.vdbVolumeToSimpleVolume(mm.meshToVolume(mm.MeshPart(mesh_ml), params_ml))
+        ),
     )
     origin_np = vertices_np.min(axis=0) - surface_offset * voxel_size
 
     # Non-vacuity: a narrow band around the surface, not a constant field.
     assert field_np.min() < 0.1 < field_np.max()
-    assert centres_np.shape[0] > 100
+    assert len(centres_np) > 100
 
     # 1. Every accepted cell's centre is within half a cell diagonal of the surface.
     sampled_np = ndi.map_coordinates(
@@ -187,7 +203,9 @@ def test_voxelize_mesh_matches_meshlib(sphere, device: str):
 
 
 @pytest.mark.parity("voxelize_mesh", "pyvista")
-def test_voxelize_mesh_solid_contains_the_pyvista_mask(sphere):
+def test_voxelize_mesh_solid_contains_the_pyvista_mask(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class B, and the named transform is the **sample convention**, which is the whole finding.
 
@@ -234,7 +252,9 @@ def test_voxelize_mesh_solid_contains_the_pyvista_mask(sphere):
     assert not (excess_np & ~surface_np).any(), "every extra cell is a boundary-shell cell"
 
 
-def test_voxelize_mesh_solid_is_sealed(sphere, device: str):
+def test_voxelize_mesh_solid_is_sealed(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """``mode="solid"`` fills the interior, and no 6-connected path leaves it."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     surface = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.12)
@@ -251,7 +271,9 @@ def test_voxelize_mesh_solid_is_sealed(sphere, device: str):
     ).numpy()[0]
 
 
-def test_voxelize_mesh_rejects_too_many_candidates(sphere):
+def test_voxelize_mesh_rejects_too_many_candidates(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """The candidate guard raises before allocating, and names ``voxel_size``."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     with pytest.raises(ValueError, match="voxel_size"):
@@ -259,7 +281,9 @@ def test_voxelize_mesh_rejects_too_many_candidates(sphere):
 
 
 @pytest.mark.parity("voxelize_points", "open3d")
-def test_voxelize_points_matches_open3d(sphere, device: str):
+def test_voxelize_points_matches_open3d(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """
     Class A: same occupied cells for the same cloud and pitch, both sides ``lexsort``ed.
 
@@ -282,7 +306,9 @@ def test_voxelize_points_matches_open3d(sphere, device: str):
 
 
 @pytest.mark.parity("voxel_down_sample", "open3d")
-def test_voxel_down_sample_matches_open3d(sphere, device: str):
+def test_voxel_down_sample_matches_open3d(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """
     Class B: both sides re-keyed by the integer cell before their positions are compared.
 
@@ -314,7 +340,9 @@ def test_voxel_down_sample_matches_open3d(sphere, device: str):
 
 @pytest.mark.parametrize("voxel_size", [0.13, 0.26])
 @pytest.mark.parity("voxel_down_sample", "meshlib")
-def test_voxel_down_sample_matches_meshlib(sphere, device: str, voxel_size: float):
+def test_voxel_down_sample_matches_meshlib(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str, voxel_size: float
+):
     """
     Class C (a count statistic): ``pointGridSampling`` *selects* a point, it does not pool one.
 
@@ -346,7 +374,9 @@ def test_voxel_down_sample_matches_meshlib(sphere, device: str, voxel_size: floa
     assert 1.0 / 1.3 < n_cells_wp / n_cells_ml < 1.3
 
 
-def test_voxel_down_sample_pooling_modes(sphere, device: str):
+def test_voxel_down_sample_pooling_modes(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """``min`` / ``max`` bracket the cell mean, and ``sum`` is that mean times the count."""
     mesh_tm, _vertices_wp, _faces_wp = sphere
     _points_np, points_wp = _cloud(mesh_tm, device, n=4000)
@@ -366,7 +396,9 @@ def test_voxel_down_sample_pooling_modes(sphere, device: str):
     assert np.allclose(total, average.numpy() * counts[:, None], rtol=1e-5, atol=1e-5)
 
 
-def test_voxel_down_sample_mean_is_reproducible(sphere, device: str):
+def test_voxel_down_sample_mean_is_reproducible(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """The deterministic branch is bitwise stable: no float atomics in the ``mean`` reduce."""
     mesh_tm, _vertices_wp, _faces_wp = sphere
     _points_np, points_wp = _cloud(mesh_tm, device, n=8000)
@@ -505,7 +537,7 @@ def test_cells_sorted_order_is_the_unique_rows_order(device: str):
     """``order="sorted"`` reproduces ``grouping.unique_rows``'s row order exactly."""
     rng = np.random.default_rng(17)
     cells_np = np.ascontiguousarray(rng.integers(0, 12, size=(600, 3)).astype(np.int32))
-    cells_wp = wp.array(cells_np, dtype=wp.int32, device=device)
+    cells_wp = twt.as_array2d(wp.array(cells_np, dtype=wp.int32, device=device), wp.int32)
     grid = tw.voxels.from_cells(cells_wp, 0.5, wp.vec3(0.0, 0.0, 0.0))
     assert np.array_equal(
         tw.voxels.cells(grid, order="sorted").numpy(), tw.grouping.unique_rows(cells_wp).numpy()
@@ -524,7 +556,9 @@ def test_cells_sorted_order_handles_negative_cells(device: str):
 
 
 @pytest.mark.parity("occupancy_at_points", "open3d")
-def test_occupancy_at_points_matches_open3d(sphere, device: str):
+def test_occupancy_at_points_matches_open3d(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]], device: str
+):
     """
     Class A: identical boolean masks against ``check_if_included``.
 
@@ -565,7 +599,7 @@ def test_grid_points_matches_igl(device: str):
     lattice_wp = tw.voxels.grid_points(
         shape, bounds=(wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0)), device=device
     ).numpy()
-    lattice_igl = igl.grid(np.array(shape))
+    lattice_igl = np.asarray(igl.grid(np.array(shape)))
 
     assert lattice_igl.shape == lattice_wp.shape
     assert np.allclose(
@@ -628,7 +662,7 @@ def test_splat_onto_grid_matches_pytorch3d(device: str):
     field_wp, density_wp = tw.voxels.splat_onto_grid(
         points_to_warp(points_np, device),
         points_to_warp(values_np, device),
-        (resolution,) * 3,
+        (resolution, resolution, resolution),
         bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)),
     )
 
@@ -697,7 +731,9 @@ def test_sample_grid_trilinear_matches_pytorch3d(device: str):
     values_np = rng.normal(size=lattice_np.shape[0]).astype(np.float32)
     lattice_wp = points_to_warp(lattice_np, device)
     splatted_wp, density_wp = tw.voxels.splat_onto_grid(
-        lattice_wp, wp.array(values_np, dtype=wp.float32, device=device), (resolution,) * 3
+        lattice_wp,
+        wp.array(values_np, dtype=wp.float32, device=device),
+        (resolution, resolution, resolution),
     )
     round_trip_wp = tw.voxels.sample_grid_trilinear(splatted_wp, lattice_wp)
 
@@ -718,7 +754,7 @@ def test_splat_onto_grid_invalid_arguments(device: str):
     with pytest.raises(ValueError, match="min_weight must be positive"):
         tw.voxels.splat_onto_grid(points_wp, values_wp, (4, 4, 4), min_weight=0.0)
     with pytest.raises(ValueError, match="rank-3 lattice"):
-        tw.voxels.sample_grid_trilinear(values_wp, points_wp)
+        tw.voxels.sample_grid_trilinear(values_wp, points_wp)  # pyright: ignore[reportArgumentType]  # deliberately rank 1
 
     # An empty cloud is a zero field and a zero density, not an error.
     empty_wp = points_to_warp(np.zeros((0, 3), dtype=np.float32), device)
@@ -760,7 +796,9 @@ def test_splat_and_sample_handle_a_single_slice_axis(device: str, axis: int):
     points_wp = points_to_warp(points_np, device)
     values_wp = wp.array(values_np, dtype=wp.float32, device=device)
 
-    field_wp, density_wp = tw.voxels.splat_onto_grid(points_wp, values_wp, tuple(shape))
+    field_wp, density_wp = tw.voxels.splat_onto_grid(
+        points_wp, values_wp, cast("tuple[int, int, int]", tuple(shape))
+    )
     assert field_wp.shape == tuple(shape)
     # The eight weights sum to one per point, so the density is the point count exactly -- the
     # invariant `splat_onto_grid`'s own Notes states, and it fails if a corner escaped the lattice.
@@ -773,7 +811,9 @@ def test_splat_and_sample_handle_a_single_slice_axis(device: str, axis: int):
     # weight is 1 at slice 0 and 0 at slice 1, so slice 0 must match element for element.
     thick = list(shape)
     thick[axis] = 2
-    thick_field_wp, thick_density_wp = tw.voxels.splat_onto_grid(points_wp, values_wp, tuple(thick))
+    thick_field_wp, thick_density_wp = tw.voxels.splat_onto_grid(
+        points_wp, values_wp, cast("tuple[int, int, int]", tuple(thick))
+    )
     slice_0 = [slice(None)] * 3
     slice_0[axis] = slice(0, 1)
     assert np.allclose(field_wp.numpy(), thick_field_wp.numpy()[tuple(slice_0)], atol=1e-6)
@@ -816,7 +856,9 @@ def _shifted(grid: wp.Volume, offset: tuple[int, int, int]) -> wp.Volume:
     "trimesh's ops.boolean_sparse is the other candidate row and needs the optional `sparse` "
     "package, which is not a test dependency here.",
 )
-def test_set_algebra_matches_meshlib(sphere):
+def test_set_algebra_matches_meshlib(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class A on the dense occupancy: MeshLib's ``VoxelBitSet`` ``|``, ``&`` and ``-``.
 
@@ -832,8 +874,8 @@ def test_set_algebra_matches_meshlib(sphere):
     left = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16, mode="solid")
     right = _shifted(left, (3, 0, 0))
     lower, extent = _bounds_of(tw.voxels.union(left, right))
-    padded_lower = tuple(c - 1 for c in lower)
-    padded_shape = tuple(n + 2 for n in extent)
+    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
+    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
     left_np = _dense(left, padded_lower, padded_shape)
     right_np = _dense(right, padded_lower, padded_shape)
     assert left_np.any()
@@ -850,7 +892,9 @@ def test_set_algebra_matches_meshlib(sphere):
         assert np.array_equal(result_np, _dense_from_mask_ml(expected_ml, padded_shape))
 
 
-def test_set_algebra_needs_one_lattice(sphere):
+def test_set_algebra_needs_one_lattice(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """Triwarp against triwarp: a cell coordinate is meaningless across two transforms."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     coarse = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.2)
@@ -869,7 +913,9 @@ def test_set_algebra_needs_one_lattice(sphere):
     "already carry the fill_cavities and fill_orthographic groups. trimesh's own revoxelized is "
     "additionally not a comparable row, for the sampling reason this test records.",
 )
-def test_revoxelize_matches_trimesh(sphere):
+def test_revoxelize_matches_trimesh(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class B: ``trimesh.voxel.VoxelGrid.is_filled`` evaluated at the new cell centres.
 
@@ -908,7 +954,7 @@ def test_revoxelize_matches_trimesh(sphere):
     for factor in (1.0, 0.5, 3.0):
         resampled = tw.voxels.revoxelize(grid, factor * voxel_size)
         centers_np = tw.voxels.cell_centers(resampled).numpy()
-        assert centers_np.shape[0] > 0
+        assert len(centers_np) > 0
         assert np.array_equal(voxel_tm.is_filled(centers_np), np.ones(len(centers_np), bool))
 
         # And the other direction, which ``is_filled`` on the kept cells cannot see: no occupied
@@ -921,7 +967,9 @@ def test_revoxelize_matches_trimesh(sphere):
         assert np.array_equal(lexsort_rows(filled_tm), lexsort_rows(centers_np))
 
 
-def test_revoxelize_round_trips_and_refines(sphere):
+def test_revoxelize_round_trips_and_refines(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Triwarp against triwarp: the oracle is ``test_revoxelize_matches_trimesh`` above.
 
@@ -947,7 +995,9 @@ def test_revoxelize_round_trips_and_refines(sphere):
     )
 
 
-def test_revoxelize_samples_only_the_occupied_box(sphere):
+def test_revoxelize_samples_only_the_occupied_box(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Triwarp against triwarp: the oracle is ``test_revoxelize_matches_trimesh`` above.
 
@@ -961,7 +1011,7 @@ def test_revoxelize_samples_only_the_occupied_box(sphere):
     voxel_size, _origin = tw.voxels.grid_transform(grid)
     offset = np.array([10000, 0, 0], dtype=np.int32)
 
-    far = _shifted(grid, tuple(int(x) for x in offset))
+    far = _shifted(grid, cast("tuple[int, int, int]", tuple(int(x) for x in offset)))
     resampled = tw.voxels.revoxelize(far, voxel_size, max_cells=1 << 20)
     assert np.array_equal(
         lexsort_rows(tw.voxels.cells(resampled).numpy()),
@@ -969,7 +1019,9 @@ def test_revoxelize_samples_only_the_occupied_box(sphere):
     )
 
 
-def test_revoxelize_rejects_an_unaffordable_lattice(sphere):
+def test_revoxelize_rejects_an_unaffordable_lattice(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """The budget guard raises before allocating, and names ``voxel_size`` like its sibling."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     grid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.2)
@@ -983,7 +1035,7 @@ def test_revoxelize_rejects_an_unaffordable_lattice(sphere):
 
 
 @pytest.mark.parity("dilate", "trimesh")
-def test_dilate_matches_scipy(sphere):
+def test_dilate_matches_scipy(sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]]):
     """
     Class A: dense occupancy against ``scipy.ndimage.binary_dilation``.
 
@@ -995,14 +1047,17 @@ def test_dilate_matches_scipy(sphere):
     occupancy_np = _dense(grid, lower, extent)
     assert occupancy_np.any()
 
-    padded_lower = tuple(c - 1 for c in lower)
-    padded_shape = tuple(n + 2 for n in extent)
+    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
+    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
     dilated = _dense(tw.voxels.dilate(grid), padded_lower, padded_shape)
     assert np.array_equal(dilated, ndi.binary_dilation(np.pad(occupancy_np, 1)))
 
 
 @pytest.mark.parametrize("connectivity", [6, 18, 26])
-def test_erode_matches_scipy(sphere, connectivity: int):
+def test_erode_matches_scipy(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+    connectivity: Literal[6, 18, 26],
+):
     """Class A: erosion against ``scipy.ndimage.binary_erosion`` at the matching structure rank."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     solid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.14, mode="solid")
@@ -1037,7 +1092,7 @@ def _voxel_mask_ml(occupancy_np: np.ndarray) -> tuple[mm.VoxelBitSet, mm.VolumeI
     return mask_ml, indexer_ml
 
 
-def _dense_from_mask_ml(mask_ml: mm.VoxelBitSet, shape) -> np.ndarray:
+def _dense_from_mask_ml(mask_ml: mm.VoxelBitSet, shape: tuple[int, int, int]) -> np.ndarray:
     """
     Read a ``VoxelBitSet`` back as a dense bool array of ``shape``.
 
@@ -1057,7 +1112,9 @@ def _dense_from_mask_ml(mask_ml: mm.VoxelBitSet, shape) -> np.ndarray:
     "candidate buffer, and a second row would price the same pass under another name. The dilate "
     "group carries the timed MeshLib row, and test_erode_matches_scipy is the scipy oracle.",
 )
-def test_dilate_and_erode_match_meshlib(sphere):
+def test_dilate_and_erode_match_meshlib(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class A on the occupancy: ``expandVoxelsMask`` / ``shrinkVoxelsMask`` are the 6-neighbour forms.
 
@@ -1080,8 +1137,8 @@ def test_dilate_and_erode_match_meshlib(sphere):
     _mesh_tm, vertices_wp, faces_wp = sphere
     solid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.2, mode="solid")
     lower, extent = _bounds_of(solid)
-    padded_lower = tuple(c - 1 for c in lower)
-    padded_shape = tuple(n + 2 for n in extent)
+    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
+    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
     occupancy_np = _dense(solid, padded_lower, padded_shape)
     assert occupancy_np.any()
 
@@ -1117,7 +1174,10 @@ def test_dilate_and_erode_match_meshlib(sphere):
     "already, and the dense reference measures the padded box rather than the voxel set.",
 )
 @pytest.mark.parametrize("connectivity", [6, 18, 26])
-def test_closing_and_opening_match_scipy(sphere, connectivity: int):
+def test_closing_and_opening_match_scipy(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+    connectivity: Literal[6, 18, 26],
+):
     """
     Class A: ``scipy.ndimage.binary_closing`` / ``binary_opening`` at the matching structure rank.
 
@@ -1136,8 +1196,8 @@ def test_closing_and_opening_match_scipy(sphere, connectivity: int):
     _mesh_tm, vertices_wp, faces_wp = sphere
     shell = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
     lower, extent = _bounds_of(shell)
-    padded_lower = tuple(c - 2 for c in lower)
-    padded_shape = tuple(n + 4 for n in extent)
+    padded_lower = cast("tuple[int, int, int]", tuple(c - 2 for c in lower))
+    padded_shape = cast("tuple[int, int, int]", tuple(n + 4 for n in extent))
     occupancy_np = _dense(shell, padded_lower, padded_shape)
     rank = {6: 1, 18: 2, 26: 3}[connectivity]
     structure_np = ndi.generate_binary_structure(3, rank)
@@ -1154,7 +1214,9 @@ def test_closing_and_opening_match_scipy(sphere, connectivity: int):
     assert opened_np.sum() < occupancy_np.sum() < closed_np.sum()
 
 
-def test_closing_and_opening_are_the_two_compositions(sphere):
+def test_closing_and_opening_are_the_two_compositions(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Triwarp against triwarp: the oracle is ``test_closing_and_opening_match_scipy`` above.
 
@@ -1166,8 +1228,8 @@ def test_closing_and_opening_are_the_two_compositions(sphere):
     _mesh_tm, vertices_wp, faces_wp = sphere
     shell = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
     lower, extent = _bounds_of(shell)
-    padded_lower = tuple(c - 2 for c in lower)
-    padded_shape = tuple(n + 4 for n in extent)
+    padded_lower = cast("tuple[int, int, int]", tuple(c - 2 for c in lower))
+    padded_shape = cast("tuple[int, int, int]", tuple(n + 4 for n in extent))
     occupancy_np = _dense(shell, padded_lower, padded_shape)
 
     closed_np = _dense(tw.voxels.closing(shell), padded_lower, padded_shape)
@@ -1182,7 +1244,9 @@ def test_closing_and_opening_are_the_two_compositions(sphere):
     assert np.array_equal(opened_np & occupancy_np, opened_np)  # opening is contained in it
 
 
-def test_surface_voxels_is_the_erosion_complement(sphere):
+def test_surface_voxels_is_the_erosion_complement(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """``surface_voxels`` is exactly ``grid`` minus ``erode(grid)``, by definition of the shell."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     solid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.14, mode="solid")
@@ -1196,7 +1260,7 @@ def test_surface_voxels_is_the_erosion_complement(sphere):
 
 
 @pytest.mark.parity("fill_cavities", "trimesh")
-def test_fill_cavities_matches_scipy(cave_cube):
+def test_fill_cavities_matches_scipy(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
     """
     Class A: dense occupancy against ``scipy.ndimage.binary_fill_holes``.
 
@@ -1216,7 +1280,9 @@ def test_fill_cavities_matches_scipy(cave_cube):
 
 
 @pytest.mark.parity("fill_orthographic", "trimesh")
-def test_fill_orthographic_matches_trimesh(sphere):
+def test_fill_orthographic_matches_trimesh(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """Class A: dense occupancy against ``trimesh.voxel.ops.fill_orthographic``."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     grid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
@@ -1224,7 +1290,7 @@ def test_fill_orthographic_matches_trimesh(sphere):
     occupancy_np = _dense(grid, lower, extent)
 
     filled = _dense(tw.voxels.fill_orthographic(grid), lower, extent)
-    reference = tm.voxel.ops.fill_orthographic(occupancy_np)
+    reference = tm_voxel_ops.fill_orthographic(occupancy_np)
     assert reference.sum() > occupancy_np.sum()
     assert np.array_equal(filled, reference)
 
@@ -1313,7 +1379,7 @@ def test_resolve_voxel_grid_passes_both_arguments_through(device: str) -> None:
 
 def test_resolve_voxel_grid_empty_input_takes_a_unit_diagonal(device: str) -> None:
     """An empty set has no bounding box, so the documented fallback is a diagonal of one."""
-    voxel_size, origin = tw.voxels.resolve_voxel_grid(wp.empty(0, dtype=wp.vec3, device=device))
+    voxel_size, origin = tw.voxels.resolve_voxel_grid(warp_empty(0, wp.vec3, device))
 
     assert voxel_size == pytest.approx(0.01)
     assert np.allclose(list(origin), -0.005, rtol=0, atol=1e-7)
@@ -1425,7 +1491,10 @@ def test_dense_round_trip_with_negative_cells(device: str):
     assert np.array_equal(lexsort_rows(tw.voxels.cells(rebuilt).numpy()), lexsort_rows(cells_np))
 
 
-def test_to_field_round_trips_through_marching_cubes(sphere, cave_cube):
+def test_to_field_round_trips_through_marching_cubes(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+    cave_cube: tuple[tm.Trimesh, wp.Mesh],
+):
     """
     The ``bounds`` handoff, end to end and on two topologies.
 
@@ -1466,14 +1535,17 @@ def test_to_field_round_trips_through_marching_cubes(sphere, cave_cube):
     _assert_surfaces_within(shell_out, mesh_tm, 2.0 * voxel_size)
 
 
-def test_grid_points_round_trips_through_marching_cubes(icosahedron, device: str):
+def test_grid_points_round_trips_through_marching_cubes(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str
+):
     """Not a library comparison: the ``bounds`` handoff, sampling an SDF and re-extracting."""
     mesh_tm, mesh_wp = icosahedron
     lower, upper = tw.bounds.aabb(mesh_wp.points)
     pad = 0.1 * float(wp.length(upper - lower))
+    lower_floats, upper_floats = twt.vec3_floats(lower), twt.vec3_floats(upper)
     bounds = (
-        wp.vec3(*(lower[axis] - pad for axis in range(3))),
-        wp.vec3(*(upper[axis] + pad for axis in range(3))),
+        wp.vec3(*(lower_floats[axis] - pad for axis in range(3))),
+        wp.vec3(*(upper_floats[axis] + pad for axis in range(3))),
     )
     shape = (40, 40, 40)
     samples = tw.voxels.grid_points(shape, bounds=bounds, device=device)
@@ -1481,7 +1553,7 @@ def test_grid_points_round_trips_through_marching_cubes(icosahedron, device: str
         mesh_wp.points, mesh_wp.indices, samples, sign_mode="winding"
     )
     vertices_out, faces_out = tw.levelset.marching_cubes(
-        distance.reshape(shape), 0.0, bounds=bounds
+        twt.as_array3d(distance.reshape(shape), wp.float32), 0.0, bounds=bounds
     )
     surface = tm.Trimesh(vertices_out.numpy(), faces_out.numpy().reshape(-1, 3), process=True)
     tm.repair.fix_normals(surface)
@@ -1491,7 +1563,9 @@ def test_grid_points_round_trips_through_marching_cubes(icosahedron, device: str
 
 
 @pytest.mark.parity("to_boxes", "trimesh", "pyvista")
-def test_to_boxes_matches_trimesh_multibox(sphere):
+def test_to_boxes_matches_trimesh_multibox(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class B: ``cull_internal=False`` against ``trimesh.voxel.ops.multibox`` and VTK's glyph filter.
 
@@ -1515,7 +1589,7 @@ def test_to_boxes_matches_trimesh_multibox(sphere):
     grid = tw.voxels.voxelize_mesh(vertices_wp, faces_wp, voxel_size)
     vertices_out, faces_out = tw.voxels.to_boxes(grid, cull_internal=False)
     boxes_wp = warp_to_trimesh(vertices_out, faces_out)
-    boxes_tm = tm.voxel.ops.multibox(tw.voxels.cell_centers(grid).numpy(), pitch=voxel_size)
+    boxes_tm = tm_voxel_ops.multibox(tw.voxels.cell_centers(grid).numpy(), pitch=voxel_size)
 
     assert boxes_tm.faces.shape[0] > 0
     assert boxes_wp.faces.shape[0] == boxes_tm.faces.shape[0]
@@ -1526,7 +1600,7 @@ def test_to_boxes_matches_trimesh_multibox(sphere):
     # stated as a two-way nearest-neighbour bound against triwarp's exactly-shared corners.
     corners_wp = np.unique(boxes_wp.vertices[boxes_wp.faces.reshape(-1)], axis=0)
     corners_tm = boxes_tm.vertices[boxes_tm.faces.reshape(-1)]
-    assert cKDTree(corners_wp).query(corners_tm)[0].max() < 1e-5
+    assert np.max(cKDTree(corners_wp).query(corners_tm)[0]) < 1e-5
 
     # pyvista instances the same template cube, and its corners land on the same lattice.
     centers_np = tw.voxels.cell_centers(grid).numpy()
@@ -1536,14 +1610,16 @@ def test_to_boxes_matches_trimesh_multibox(sphere):
         .glyph(geom=cube_pv, scale=False, orient=False)
         .triangulate()
     )
-    assert boxes_pv.n_cells == 12 * centers_np.shape[0] == boxes_wp.faces.shape[0]
+    assert boxes_pv.n_cells == 12 * len(centers_np) == boxes_wp.faces.shape[0]
     corners_pv = np.asarray(boxes_pv.points)
-    assert cKDTree(corners_wp).query(corners_pv)[0].max() < 1e-5
-    assert cKDTree(corners_tm).query(corners_wp)[0].max() < 1e-5
+    assert np.max(cKDTree(corners_wp).query(corners_pv)[0]) < 1e-5
+    assert np.max(cKDTree(corners_tm).query(corners_wp)[0]) < 1e-5
     assert boxes_wp.volume == pytest.approx(boxes_tm.volume, rel=1e-5)
 
 
-def test_to_boxes_culled_is_a_closed_outward_shell(sphere):
+def test_to_boxes_culled_is_a_closed_outward_shell(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """The culled shell is watertight and its enclosed volume is the occupied cell volume."""
     _mesh_tm, vertices_wp, faces_wp = sphere
     voxel_size = 0.2
@@ -1623,8 +1699,8 @@ def test_to_boxes_matches_pytorch3d(device: str):
     vertices_np, faces_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
 
     assert vertices_p3d.shape[0] > 0
-    assert np.unique(faces_np).size == vertices_np.shape[0], "to_boxes left a corner unreferenced"
-    assert vertices_np.shape[0] == vertices_p3d.shape[0]
+    assert np.unique(faces_np).size == vertices_wp.size, "to_boxes left a corner unreferenced"
+    assert vertices_wp.size == vertices_p3d.shape[0]
     assert faces_np.shape[0] == faces_p3d.shape[0]
     assert np.allclose(
         lexsort_rows(np.round(_bbox_normalized(vertices_np), 5)),
@@ -1634,7 +1710,9 @@ def test_to_boxes_matches_pytorch3d(device: str):
 
 
 @pytest.mark.parity("voxel_corners", "igl")
-def test_voxel_corners_matches_igl(sphere):
+def test_voxel_corners_matches_igl(
+    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
+):
     """
     Class B: ``igl.unique_sparse_voxel_corners`` after two named transforms.
 
@@ -1659,13 +1737,13 @@ def test_voxel_corners_matches_igl(sphere):
         depth,
         cells_np[:, [1, 0, 2]].astype(np.int64),
     )
-    corners_igl = corners_igl[:, [1, 0, 2]].astype(np.int32)
+    corners_igl = np.asarray(corners_igl)[:, [1, 0, 2]].astype(np.int32)
 
     assert corners_igl.shape[0] > 0
     assert np.array_equal(lexsort_rows(corners_igl), lexsort_rows(corners_wp.numpy()))
     # Per-cell indices agree once igl's corner numbering is permuted onto triwarp's.
     ours = corners_wp.numpy()[cell_corners_wp.numpy()]
-    theirs = corners_igl[indices_igl]
+    theirs = corners_igl[np.asarray(indices_igl)]
     assert np.array_equal(ours, theirs[:, _IGL_CORNER_ORDER, :])
     assert np.allclose(
         positions_igl, corners_igl * voxel_size + np.asarray(origin, dtype=np.float64), atol=1e-6
@@ -1686,7 +1764,7 @@ def test_every_entry_point_survives_an_empty_input(device: str):
     """
     no_points = wp.zeros(0, dtype=wp.vec3, device=device)
     no_faces = wp.zeros(0, dtype=wp.int32, device=device)
-    empty_cells = wp.zeros((0, 3), dtype=wp.int32, device=device)
+    empty_cells = twt.as_array2d(wp.zeros((0, 3), dtype=wp.int32, device=device), wp.int32)
 
     grids = [
         tw.voxels.voxelize_points(no_points),
@@ -1731,7 +1809,7 @@ def test_cells_reports_the_active_length_of_a_rebuildable_grid(device: str):
 
     assert grid.get_voxel_count() > 2  # the capacity, padded with [0, 0, 0]
     rows = tw.voxels.cells(grid).numpy()
-    assert rows.shape[0] == 2
+    assert len(rows) == 2
     assert np.array_equal(lexsort_rows(rows), lexsort_rows(cells_np[:2]))
 
 
@@ -1760,21 +1838,25 @@ def test_voxels_imports_warp_fem_lazily():
 def test_invalid_arguments_raise(device: str):
     """Each documented ``ValueError`` / ``TypeError`` is reachable."""
     points = wp.array([wp.vec3(0.0, 0.0, 0.0)], dtype=wp.vec3, device=device)
-    empty_cells = wp.zeros((0, 3), dtype=wp.int32, device=device)
+    empty_cells = twt.as_array2d(wp.zeros((0, 3), dtype=wp.int32, device=device), wp.int32)
     grid = tw.voxels.voxelize_points(points, 1.0)
 
     with pytest.raises(ValueError, match="voxel_size"):
         tw.voxels.voxelize_points(points, -1.0)
     with pytest.raises(ValueError, match="mode"):
-        tw.voxels.voxelize_mesh(points, wp.zeros(0, dtype=wp.int32, device=device), 1.0, mode="x")
+        tw.voxels.voxelize_mesh(points, wp.zeros(0, dtype=wp.int32, device=device), 1.0, mode="x")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="order"):
-        tw.voxels.cells(grid, order="lexicographic")
+        tw.voxels.cells(grid, order="lexicographic")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="pooling"):
-        tw.voxels.pool_by_voxel(grid, points, points, pooling="median")
+        tw.voxels.pool_by_voxel(grid, points, points, pooling="median")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="connectivity"):
-        tw.voxels.dilate(grid, connectivity=7)
+        tw.voxels.dilate(grid, connectivity=7)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     with pytest.raises(ValueError, match="three columns"):
-        tw.voxels.from_cells(wp.zeros((0, 2), dtype=wp.int32, device=device), 1.0, wp.vec3())
+        tw.voxels.from_cells(
+            twt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32),
+            1.0,
+            wp.vec3(),
+        )
     with pytest.raises(ValueError, match="voxel_size"):
         tw.voxels.from_cells(empty_cells, 0.0, wp.vec3())
     with pytest.raises(ValueError, match="shape"):

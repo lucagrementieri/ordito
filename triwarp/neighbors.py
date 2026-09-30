@@ -197,7 +197,8 @@ def hashgrid_from_points(
     grid = wp.HashGrid(bins, bins, bins, device=points.device)
     grid.reserve(n)
     grid.build(points, radius)
-    grid.cell_width = float(radius)
+    # Documented on the returned object; ``warp.HashGrid`` declares no such attribute.
+    grid.cell_width = float(radius)  # pyright: ignore[reportAttributeAccessIssue]
     return grid
 
 
@@ -565,7 +566,7 @@ def query_ball(
     require_same_device(points=points, queries=queries, accelerator=accelerator)
     device = points.device
 
-    single_query = isinstance(queries, wp.vec3)
+    single_query = not isinstance(queries, wp.array)
     if single_query:
         queries = _launch.array([queries], dtype=wp.vec3, device=device)
 
@@ -784,7 +785,7 @@ def _ball_with_offsets(
     """
     device = points.device
 
-    if isinstance(queries, wp.vec3):
+    if not isinstance(queries, wp.array):
         queries = _launch.array([queries], dtype=wp.vec3, device=device)
     m = queries.size
 
@@ -842,8 +843,8 @@ def _ball_with_offsets(
     )
     # The sort needs a second half of scratch; copying the sorted half out lets it go.
     return (
-        _launch.clone(neighbor_indices_flat[:total_neighbors]),
-        _launch.clone(neighbor_distances_flat[:total_neighbors]),
+        _launch.clone(twt.as_dense(neighbor_indices_flat[:total_neighbors])),
+        _launch.clone(twt.as_dense(neighbor_distances_flat[:total_neighbors])),
         offsets,
     )
 
@@ -898,8 +899,8 @@ def knn_initial_radius(
 
     if bounds is None:
         bounds = tw.bounds.aabb(points)
-    min_bound, max_bound = bounds
-    extents = sorted((float(max_bound[axis] - min_bound[axis]) for axis in range(3)), reverse=True)
+    lower, upper = (twt.vec3_floats(corner) for corner in bounds)
+    extents = sorted((upper[axis] - lower[axis] for axis in range(3)), reverse=True)
     if extents[0] <= 0.0:
         return math.inf
 
@@ -1080,7 +1081,7 @@ def query_nearest(
     _validate_nearest(k, max_radius, initial_radius)
 
     device = points.device
-    single_query = isinstance(queries, wp.vec3)
+    single_query = not isinstance(queries, wp.array)
     if single_query:
         queries = _launch.array([queries], dtype=wp.vec3, device=device)
 
@@ -1298,7 +1299,8 @@ def _knn_cell_size(
     displacement is large enough to trigger it, nearly every row takes it and the launch is
     uniformly expensive rather than held up by stragglers.
     """
-    extent = max(float(max_bound[axis] - min_bound[axis]) for axis in range(3))
+    lower, upper = twt.vec3_floats(min_bound), twt.vec3_floats(max_bound)
+    extent = max(upper[axis] - lower[axis] for axis in range(3))
     if extent <= 0.0:
         # Every point is at the same position, so any positive width buckets them together.
         return 1.0
@@ -1349,8 +1351,8 @@ def _empty_nearest(
 
 
 def _shape_nearest(
-    neighbor_indices: wp.array[wp.int32],
-    neighbor_distances: wp.array[wp.float32],
+    neighbor_indices: twt.ArrayNdInt32,
+    neighbor_distances: twt.ArrayNdFloat32,
     k: int,
     single_query: bool,
 ) -> tuple[twt.Array2dInt32 | twt.Array1dInt32, twt.Array2dFloat32 | twt.Array1dFloat32]:
@@ -1675,7 +1677,7 @@ def geodesic_ball(
     [`edges_to_neighbor_lists`][triwarp.graph.edges_to_neighbor_lists] with sorted rows, then a
     single-pass BFS collects each ball into its per-source queue row (the queue prefix *is* the
     result) and a scan + gather compacts the rows into the CSR neighbor buffer. Each source uses
-    fixed-capacity scratch of ``_PER_SOURCE_MAX_NEIGHBORS`` neighbors
+    fixed-capacity scratch of ``PER_SOURCE_MAX_NEIGHBORS`` neighbors
     (``triwarp.kernels.algorithms.bfs``, currently 512);
     if a vertex collects more than that the surplus is dropped and a warning is emitted.
 
@@ -1745,13 +1747,13 @@ def geodesic_ball(
     # nearest-fallback pool) instead of kilobytes of per-thread local arrays.
     chunk = min(n, 1 << 15)
     queue_pool = _launch.empty(
-        (chunk, kernel_bfs._PER_SOURCE_MAX_NEIGHBORS), dtype=wp.int32, device=device
+        (chunk, kernel_bfs.PER_SOURCE_MAX_NEIGHBORS), dtype=wp.int32, device=device
     )
     visited_pool = _launch.full(
-        (chunk, kernel_bfs._VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
+        (chunk, kernel_bfs.VISITED_HASH_CAPACITY), -1, dtype=wp.int32, device=device
     )
-    ext_dist_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.float32, device=device)
-    ext_idx_pool = twt.empty_2d((chunk, kernel_bfs._EXTRAS_CAPACITY), wp.int32, device=device)
+    ext_dist_pool = twt.empty_2d((chunk, kernel_bfs.EXTRAS_CAPACITY), wp.float32, device=device)
+    ext_idx_pool = twt.empty_2d((chunk, kernel_bfs.EXTRAS_CAPACITY), wp.int32, device=device)
 
     counts = _launch.empty(n, dtype=wp.int32, device=device)
     # CSR row bounds in the length-``n + 1`` form. The leading zero from ``wp.zeros`` is the first
@@ -1820,7 +1822,7 @@ def geodesic_ball(
         if chunk_total > 0:
             _launch.launch(
                 kernel_neighbors.gather_queue_rows,
-                dim=(m, kernel_bfs._PER_SOURCE_MAX_NEIGHBORS),
+                dim=(m, kernel_bfs.PER_SOURCE_MAX_NEIGHBORS),
                 inputs=[queue_pool, counts, local_offsets, wp.int32(start), flat_chunk],
                 device=device,
             )
@@ -1829,7 +1831,7 @@ def geodesic_ball(
     if n_overflow > 0:
         warnings.warn(
             f"geodesic_ball: {n_overflow} neighborhood capacity breaches "
-            f"(fixed cap {kernel_bfs._PER_SOURCE_MAX_NEIGHBORS}); surplus neighbors dropped.",
+            f"(fixed cap {kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}); surplus neighbors dropped.",
             stacklevel=2,
         )
 

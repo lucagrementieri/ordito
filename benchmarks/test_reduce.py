@@ -101,7 +101,7 @@ import triwarp as tw
 import triwarp.typing as twt
 from conftest import BenchCase
 
-_mask_cache: dict[tuple[str, str], wp.array] = {}
+_mask_cache: dict[tuple[str, str], wp.array[wp.bool]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
 _rows_cache: dict[tuple[str, str], twt.Array2dFloat32] = {}
 _scalar_np_cache: dict[str, np.ndarray] = {}
@@ -449,6 +449,7 @@ def test_median(bench_case: BenchCase) -> None:
         middle_np = bench_case.run(lambda: float(np.median(values_np)))
         assert np.isfinite(middle_np)
         return
+    # ``reduce.median`` is annotated rank-1 only; the cache holds the package's ``wp.array``.
     values = _scalars_wp(bench_case)
     middle = bench_case.run(lambda: tw.reduce.median(values))
     assert np.isfinite(middle)

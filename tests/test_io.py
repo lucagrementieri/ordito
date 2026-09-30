@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import meshio
 import numpy as np
@@ -9,6 +10,9 @@ import pytorch3d.io as p3d_io
 import warp as wp
 
 import triwarp as tw
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike
 
 
 def _write_synthetic_mesh(path: Path) -> dict[str, np.ndarray]:
@@ -22,7 +26,7 @@ def _write_synthetic_mesh(path: Path) -> dict[str, np.ndarray]:
     )
     colors_np = np.array([[10, 20, 30], [200, 100, 50], [0, 0, 0], [255, 255, 255]], dtype=np.uint8)
     uv_np = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.5, 0.5]], dtype=np.float32)
-    point_data_mio = {
+    point_data_mio: dict[str, ArrayLike] = {
         "nx": normals_np[:, 0],
         "ny": normals_np[:, 1],
         "nz": normals_np[:, 2],
@@ -43,12 +47,16 @@ def _write_synthetic_mesh(path: Path) -> dict[str, np.ndarray]:
     }
 
 
-def test_load_mesh_data_roundtrip(tmp_path, device):
+def test_load_mesh_data_roundtrip(tmp_path: Path, device: str):
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
 
     data_wp = tw.io.load_mesh_data(path, device=device)
 
+    assert "faces" in data_wp
+    assert "vertex_normals" in data_wp
+    assert "uv" in data_wp
+    assert "colors" in data_wp
     assert np.allclose(data_wp["vertices"].numpy(), source["vertices"], rtol=1e-5, atol=1e-5)
     assert np.array_equal(data_wp["faces"].numpy().reshape(-1, 3), source["faces"])
     assert np.allclose(
@@ -62,7 +70,7 @@ def test_load_mesh_data_roundtrip(tmp_path, device):
     assert "face_normals" not in data_wp
 
 
-def test_load_mesh_returns_wp_mesh(tmp_path, device):
+def test_load_mesh_returns_wp_mesh(tmp_path: Path, device: str):
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
 
@@ -83,7 +91,7 @@ def test_load_mesh_returns_wp_mesh(tmp_path, device):
     "_MODULES_WITHOUT_BENCHMARKS for that reason. The values are still worth comparing, which is "
     "what this test does.",
 )
-def test_load_mesh_matches_pytorch3d(tmp_path, device):
+def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
     """
     Class B: ``pytorch3d.io.load_ply`` reads the same file to the same buffers after a float cast.
 
@@ -106,7 +114,7 @@ def test_load_mesh_matches_pytorch3d(tmp_path, device):
     assert np.array_equal(mesh_wp.indices.numpy().reshape(-1, 3), faces_p3d.numpy())
 
 
-def test_face_normals_cover_every_triangle_block(monkeypatch, device):
+def test_face_normals_cover_every_triangle_block(monkeypatch: pytest.MonkeyPatch, device: str):
     """
     Triwarp against meshio: ``face_normals`` must be row-aligned with ``faces``, block count aside.
 
@@ -128,9 +136,12 @@ def test_face_normals_cover_every_triangle_block(monkeypatch, device):
     vertices_np = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]], dtype=np.float64
     )
-    blocks = [("triangle", np.array([[0, 1, 2]])), ("triangle", np.array([[1, 3, 2]]))]
+    blocks: list[tuple[str, ArrayLike] | meshio.CellBlock] = [
+        ("triangle", np.array([[0, 1, 2]])),
+        ("triangle", np.array([[1, 3, 2]])),
+    ]
     normals_np = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
-    cell_data_mio = {
+    cell_data_mio: dict[str, list[ArrayLike]] = {
         name: [normals_np[:1, k], normals_np[1:, k]] for k, name in enumerate(("nx", "ny", "nz"))
     }
     mesh_mio = meshio.Mesh(vertices_np, blocks, cell_data=cell_data_mio)
@@ -145,12 +156,14 @@ def test_face_normals_cover_every_triangle_block(monkeypatch, device):
     )
     assert faces_mio.shape[0] == 2
     assert normals_mio.shape == (2, 3)
+    assert "faces" in data_wp
+    assert "face_normals" in data_wp
     assert np.array_equal(data_wp["faces"].numpy().reshape(-1, 3), faces_mio)
     assert data_wp["face_normals"].size == faces_mio.shape[0]
     assert np.allclose(data_wp["face_normals"].numpy(), normals_mio, rtol=1e-5, atol=1e-5)
 
 
-def test_load_mesh_without_faces_raises(tmp_path, device):
+def test_load_mesh_without_faces_raises(tmp_path: Path, device: str):
     path = tmp_path / "cloud.ply"
     points_np = np.random.default_rng(0).random((10, 3)).astype(np.float64)
     meshio.write(str(path), meshio.Mesh(points_np, []))

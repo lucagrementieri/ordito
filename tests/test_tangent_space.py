@@ -13,13 +13,14 @@ import igl
 import numpy as np
 import potpourri3d as pp3d
 import pytest
+import trimesh as tm
 import warp as wp
 
 import triwarp as tw
 from tests.conftest import MESHES
 
 
-def _vector_heat_solver_pp(mesh_tm: object) -> pp3d.MeshVectorHeatSolver:
+def _vector_heat_solver_pp(mesh_tm: tm.Trimesh) -> pp3d.MeshVectorHeatSolver:
     # ``use_intrinsic_delaunay=False`` so both sides discretize the same triangulation; potpourri3d
     # defaults to flipping to an intrinsic Delaunay triangulation first.
     return pp3d.MeshVectorHeatSolver(

@@ -24,6 +24,8 @@ import numpy as np
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
+from tests.conversions import warp_empty
 
 
 def test_column_view_is_a_correct_array_on_its_own(device: str) -> None:
@@ -50,8 +52,8 @@ def test_gather_through_a_column_view_ignores_the_stride(device: str) -> None:
     payload_wp = wp.array(payload_np, dtype=wp.float32, device=device)
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
 
-    gathered_wp = wp.empty(edges_np.shape[0], dtype=wp.float32, device=device)
-    wp.copy(gathered_wp, payload_wp[edges_wp[:, 0]])
+    gathered_wp = warp_empty(edges_np.shape[0], wp.float32, device)
+    wp.copy(gathered_wp, payload_wp[edges_wp[:, 0]])  # pyright: ignore[reportArgumentType]  # wp.copy takes an indexedarray; its stub says array
 
     flat_prefix_np = payload_np[edges_np.reshape(-1)[: edges_np.shape[0]]]
     assert np.array_equal(gathered_wp.numpy(), flat_prefix_np)
@@ -66,7 +68,7 @@ def test_cloning_the_index_view_first_is_correct(device: str) -> None:
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
 
     for column in (0, 1):
-        dense_wp = wp.clone(edges_wp[:, column])
+        dense_wp = wp.clone(twt.as_dense(edges_wp[:, column]))
         assert dense_wp.is_contiguous
         gathered_wp = tw.array.gather(payload_wp, dense_wp)
         assert np.array_equal(gathered_wp.numpy(), payload_np[edges_np[:, column]])
@@ -83,8 +85,8 @@ def test_step_slice_index_also_ignores_the_stride(device: str) -> None:
     assert not stepped_wp.is_contiguous
     assert np.array_equal(stepped_wp.numpy(), indices_np[::2])
 
-    gathered_wp = wp.empty(stepped_wp.size, dtype=wp.float32, device=device)
-    wp.copy(gathered_wp, payload_wp[stepped_wp])
+    gathered_wp = warp_empty(stepped_wp.size, wp.float32, device)
+    wp.copy(gathered_wp, payload_wp[stepped_wp])  # pyright: ignore[reportArgumentType]  # wp.copy takes an indexedarray; its stub says array
     assert np.array_equal(gathered_wp.numpy(), payload_np[indices_np[: stepped_wp.size]])
     assert not np.array_equal(gathered_wp.numpy(), payload_np[indices_np[::2]])
 
@@ -96,7 +98,7 @@ def test_contiguous_prefix_slice_index_is_safe(device: str) -> None:
     payload_wp = wp.array(payload_np, dtype=wp.float32, device=device)
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
 
-    prefix_wp = indices_wp[:4]
+    prefix_wp = twt.as_dense(indices_wp[:4])
     assert prefix_wp.is_contiguous
     gathered_wp = tw.array.gather(payload_wp, prefix_wp)
     assert np.array_equal(gathered_wp.numpy(), payload_np[indices_np[:4]])
@@ -113,4 +115,4 @@ def test_indexed_assignment_is_unsupported(device: str) -> None:
     # Deliberately a bare ``Exception``: what is being probed is *whether* it raises at all, and
     # pinning the type would make this fail on a Warp release that merely reworded the error.
     with np.testing.assert_raises(Exception):
-        values_wp[indices_wp] = 1.0
+        values_wp[indices_wp] = 1.0  # pyright: ignore[reportIndexIssue]  # the probed absence

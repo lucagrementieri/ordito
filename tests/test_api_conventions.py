@@ -14,12 +14,16 @@ of failing. The example test *is* parametrized, because there are four of them a
 to name which one.
 """
 
+# This file tests the scan helpers of tests/api_conventions.py, private ones included, directly.
+# pyright: reportPrivateUsage=false
+
 from __future__ import annotations
 
 import ast
 import subprocess
 import sys
 import textwrap
+from collections.abc import Mapping
 
 import numpy as np
 import pytest
@@ -68,6 +72,7 @@ from tests.api_conventions import (
     warp_suffix_problems,
     warp_version_problems,
 )
+from tests.conversions import warp_empty
 from triwarp.kernels import array as kernel_array
 
 
@@ -244,7 +249,7 @@ def test_strict_launch_mode_rejects_a_cross_device_launch() -> None:
     assert wp.config.launch_array_access_mode == wp.config.LaunchArrayAccessMode.STRICT
     if not wp.is_cuda_available():
         pytest.skip("a cross-device launch needs a CUDA device to launch on")
-    indices = wp.empty(4, dtype=wp.int32, device="cpu")
+    indices = warp_empty(4, wp.int32, "cpu")
     with pytest.raises(RuntimeError, match="device"):
         wp.launch(kernel_array.arange, dim=4, inputs=[indices], device="cuda:0")
 
@@ -475,7 +480,7 @@ def _triwarp_kernel_modules() -> list[str]:
     return [name for name in list(_warp_user_modules()) if name.startswith("triwarp.kernels")]
 
 
-def _warp_user_modules() -> dict:
+def _warp_user_modules() -> Mapping[str, object]:
     """Warp's registry of user modules, which has no public accessor."""
     from warp._src.context import user_modules
 

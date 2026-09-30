@@ -46,7 +46,7 @@ from conftest import BenchCase
 
 _NON_EDGE_MANIFOLD = frozenset({"bunny_decimated", "lucy"})
 
-_barycentre_cache: dict[tuple[str, str], wp.array] = {}
+_barycentre_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 
 
 def _barycentres_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
@@ -229,7 +229,8 @@ def test_face_quality(bench_case: BenchCase) -> None:
         ratio_igl = bench_case.run(
             lambda: (
                 np.asarray(igl.inradius(vertices_np, faces_np))
-                / np.asarray(igl.circumradius(vertices_np, faces_np)[0])
+                # The stub drops ``circumradius``' first parameter name, so no call matches it.
+                / np.asarray(igl.circumradius(vertices_np, faces_np)[0])  # pyright: ignore[reportCallIssue]
             )
         )
         assert ratio_igl.shape == (n_faces,)

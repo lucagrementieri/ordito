@@ -27,16 +27,19 @@ import trimesh as tm
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from conftest import BenchCase, skip_larger_than
 
 # Fraction of the rows that are distinct: everything unique, against a tenth as many distinct
 # values repeated ten times. The input length is identical, so only the collision density moves.
 _UNIQUE_FRACTIONS = [1.0, 0.1]
 
-_rows_cache: dict[tuple[str, str, float], tuple] = {}
+_rows_cache: dict[tuple[str, str, float], tuple[twt.Array2dInt32, np.ndarray]] = {}
 
 
-def _duplicate_rows(bench_case: BenchCase, unique_fraction: float) -> tuple:
+def _duplicate_rows(
+    bench_case: BenchCase, unique_fraction: float
+) -> tuple[twt.Array2dInt32, np.ndarray]:
     """Build an ``(n, 3)`` int32 row block whose distinct-row count is ``unique_fraction * n``."""
     key = (bench_case.mesh_name, str(bench_case.device), unique_fraction)
     if key not in _rows_cache:
@@ -46,11 +49,11 @@ def _duplicate_rows(bench_case: BenchCase, unique_fraction: float) -> tuple:
         rows_wp = wp.array(rows_np.reshape(-1), dtype=wp.int32, device=bench_case.device).reshape(
             rows_np.shape
         )
-        _rows_cache[key] = (rows_wp, rows_np)
+        _rows_cache[key] = (twt.as_array2d(rows_wp, wp.int32), rows_np)
     return _rows_cache[key]
 
 
-_inverse_cache: dict[tuple[str, str], wp.array] = {}
+_inverse_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
 
 
 def _edge_inverse(bench_case: BenchCase) -> wp.array[wp.int32]:

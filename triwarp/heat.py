@@ -36,11 +36,10 @@ live in [`triwarp.laplacian`][triwarp.laplacian], tangent frames in
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import cast
 
 import warp as wp
 import warp.optim.linear as wpl
-import warp.sparse as wps
 
 import triwarp as tw
 import triwarp.linalg as twl
@@ -84,10 +83,10 @@ _HEAT_SETTLE_ROUNDS = 192
 
 
 HeatOperators = tuple[
-    wps.BsrMatrix[wp.float64],
+    twt.BsrMatrix[wp.float64],
     wpl.LinearOperator,
-    wps.BsrMatrix[wp.float64],
-    wps.BsrMatrix[wp.float64],
+    twt.BsrMatrix[wp.float64],
+    twt.BsrMatrix[wp.float64],
     wpl.LinearOperator,
     twt.Array2dFloat32,
     wp.array[wp.vec3],
@@ -309,9 +308,9 @@ def heat_geodesic(
 
 
 def _diffuse(
-    system: wps.BsrMatrix[Any],
-    rhs: wp.array[Any],
-    solution: wp.array[Any],
+    system: twt.SparseMatrix,
+    rhs: twt.ArrayNd,
+    solution: twt.ArrayNd,
     preconditioner: wpl.LinearOperator | None,
 ) -> None:
     """
@@ -511,7 +510,7 @@ def heat_signed_distance(
 
 
 def _solve_poisson_zero_set(
-    operator: wps.BsrMatrix[wp.float64],
+    operator: twt.BsrMatrix[wp.float64],
     divergence: wp.array[wp.float64],
     curve_vertices: wp.array[wp.int32],
     n_vertices: int,
@@ -565,7 +564,7 @@ def _solve_poisson_zero_set(
 
 
 def _solve_poisson_shifted(
-    operator: wps.BsrMatrix[wp.float64],
+    operator: twt.BsrMatrix[wp.float64],
     preconditioner: wpl.LinearOperator,
     divergence: wp.array[wp.float64],
     curve_vertices: wp.array[wp.int32],
@@ -621,7 +620,7 @@ _RESOLVED_FRACTION = 1e-4
 
 
 VectorHeatOperators = tuple[
-    wps.BsrMatrix[wp.mat22d],
+    twt.BsrMatrix[wp.mat22d],
     HeatOperators,
     tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]],
     wpl.LinearOperator,
@@ -755,7 +754,7 @@ def vector_heat_operators(
         outputs=[vector_values, None],
         device=device,
     )
-    vector_system = cast("wps.BsrMatrix[wp.mat22d]", twl.bsr_with_values(connection, vector_values))
+    vector_system = twl.bsr_with_values(connection, vector_values)
     if frames is None:
         frames = vertex_tangent_frames(vertices, faces)
     preconditioner = twl.jacobi_preconditioner(vector_system)
@@ -808,13 +807,7 @@ def _heat_operators(
     # downstream as float32 only, so a caller-supplied float64 table must be narrowed before it is
     # returned rather than passed through at whatever precision it arrived in.
     if cot_entries.dtype is not wp.float32:
-        narrowed_cot_entries = twt.empty_2d(
-            (int(cot_entries.shape[0]), int(cot_entries.shape[1])),
-            wp.float32,
-            device=vertices.device,
-        )
-        wp.utils.array_cast(cot_entries.flatten(), narrowed_cot_entries.flatten())
-        cot_entries = narrowed_cot_entries
+        cot_entries = twt.as_array2d(tw.array.astype(cot_entries, wp.float32), wp.float32)
 
     # Face normals / areas (float32) for the gradient; the lumped mass is built natively in float64
     # by ``mass_matrix_entries``.
@@ -843,10 +836,8 @@ def _heat_operators(
         outputs=[heat_values, poisson_values],
         device=vertices.device,
     )
-    heat_system = cast("wps.BsrMatrix[wp.float64]", twl.bsr_with_values(laplacian, heat_values))
-    poisson_system = cast(
-        "wps.BsrMatrix[wp.float64]", twl.bsr_with_values(laplacian, poisson_values)
-    )
+    heat_system = twl.bsr_with_values(laplacian, heat_values)
+    poisson_system = twl.bsr_with_values(laplacian, poisson_values)
     operators = (
         heat_system,
         twl.jacobi_preconditioner(heat_system),
@@ -862,7 +853,7 @@ def _heat_operators(
 
 
 def _edge_length_sums(
-    vertices: wp.array[wp.vec3], operator: wps.BsrMatrix[Any]
+    vertices: wp.array[wp.vec3], operator: twt.SparseMatrix
 ) -> wp.array[wp.float64]:
     """
     Sum and count of the unique-edge lengths, read off an operator with one entry per edge.
@@ -953,7 +944,7 @@ def extend_scalar(
 
 
 def _extend(
-    heat_system: wps.BsrMatrix[wp.float64],
+    heat_system: twt.BsrMatrix[wp.float64],
     sources: wp.array[wp.int32],
     values: wp.array[wp.float64],
     n_vertices: int,
@@ -1217,7 +1208,9 @@ def log_map(
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
-    distance = _distance_from_heat(vertices, faces, sources, scalar, diffused[2 * n_vertices :])
+    distance = _distance_from_heat(
+        vertices, faces, sources, scalar, twt.as_dense(diffused[2 * n_vertices :])
+    )
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
     vertex_gradient = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
@@ -1356,7 +1349,7 @@ def tangent_to_world(
 
 
 def diffuse_tangent_field(
-    system: wps.BsrMatrix[wp.float64],
+    system: twt.SparseMatrix,
     source: wp.array[wp.vec2d],
     *,
     preconditioner: wpl.LinearOperator | None = None,

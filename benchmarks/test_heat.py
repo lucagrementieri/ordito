@@ -129,7 +129,7 @@ _SOURCES = np.array([0], dtype=np.int32)
 
 # Two float64 CG solves plus a direct Cholesky on the reference side; both run into hundreds of
 # milliseconds at the top of the scale axis.
-_ROUNDS = 3
+_GEODESIC_ROUNDS = 3
 
 _sources_cache: dict[str, wp.array[wp.int32]] = {}
 
@@ -163,7 +163,7 @@ def _run_case_pml(bench_case: BenchCase, *, amortized: bool) -> None:
         warm_pml.compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex()
         bench_case.run(
             warm_pml.compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex,
-            rounds=_ROUNDS,
+            rounds=_GEODESIC_ROUNDS,
         )
         assert warm_pml.current_mesh().vertex_scalar_array().shape == (bench_case.n_vertices,)
         return
@@ -173,7 +173,7 @@ def _run_case_pml(bench_case: BenchCase, *, amortized: bool) -> None:
             bench_case
         ).compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex()
 
-    bench_case.run(solve_pml, rounds=_ROUNDS)
+    bench_case.run(solve_pml, rounds=_GEODESIC_ROUNDS)
 
 
 def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
@@ -199,7 +199,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
         mesh_pv = bench_case.mesh_pv
         target = n_vertices - 1
         distance_pv = bench_case.run(
-            lambda: float(mesh_pv.geodesic_distance(0, target)), rounds=_ROUNDS
+            lambda: float(mesh_pv.geodesic_distance(0, target)), rounds=_GEODESIC_ROUNDS
         )
         assert np.isfinite(distance_pv)
         return
@@ -212,7 +212,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
         operators = tw.heat.heat_operators(vertices, faces) if amortized else None
         distance = bench_case.run(
             lambda: tw.heat.heat_geodesic(vertices, faces, sources, operators=operators),
-            rounds=_ROUNDS,
+            rounds=_GEODESIC_ROUNDS,
         )
         assert distance.shape == (n_vertices,)
         return
@@ -232,7 +232,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
                 solver = pp3d.MeshHeatMethodDistanceSolver(vertices_np, faces_np, use_robust=False)
                 return np.asarray(solver.compute_distance(0))
 
-        assert np.asarray(bench_case.run(solve_pp, rounds=_ROUNDS)).shape == (n_vertices,)
+        assert np.asarray(bench_case.run(solve_pp, rounds=_GEODESIC_ROUNDS)).shape == (n_vertices,)
         return
 
     if amortized:
@@ -246,7 +246,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
             igl.heat_geodesics_precompute(vertices_np, faces_np, data)
             return np.asarray(igl.heat_geodesics_solve(data, _SOURCES))
 
-    assert bench_case.run(solve_igl, rounds=_ROUNDS).shape == (n_vertices,)
+    assert bench_case.run(solve_igl, rounds=_GEODESIC_ROUNDS).shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="heat_geodesic")
@@ -325,7 +325,7 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
         starts_ml.resize(mesh_ml.points.size(), False)
         starts_ml.set(mm.VertId(int(_SOURCES[0])), True)
         distances_ml = bench_case.run(
-            lambda: mm.computeSurfaceDistances(mesh_ml, starts_ml), rounds=_ROUNDS
+            lambda: mm.computeSurfaceDistances(mesh_ml, starts_ml), rounds=_GEODESIC_ROUNDS
         )
         assert distances_ml.size() == bench_case.n_vertices
         return
@@ -357,7 +357,7 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
             ).compute_scalar_by_geodesic_distance_from_given_point_per_vertex(
                 startpoint=start_np, maxdistance=ml.PureValue(0.0)
             ),
-            rounds=_ROUNDS,
+            rounds=_GEODESIC_ROUNDS,
         )
         return
     vertices_np = bench_case.vertices_np
@@ -369,7 +369,7 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
         solver = pp3d.MeshFastMarchingDistanceSolver(vertices_np, faces_np)
         return np.asarray(solver.compute_distance(sources_pp))
 
-    assert bench_case.run(solve_pp, rounds=_ROUNDS).shape == (bench_case.n_vertices,)
+    assert bench_case.run(solve_pp, rounds=_GEODESIC_ROUNDS).shape == (bench_case.n_vertices,)
 
 
 # --------------------------------------------------------------------------
@@ -377,7 +377,7 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
 # --------------------------------------------------------------------------
 
 # Three float64 solves per case on triwarp's side; two factorizations on the reference's.
-_ROUNDS = 3
+_SIGNED_DISTANCE_ROUNDS = 3
 
 _curve_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
 
@@ -431,7 +431,8 @@ def test_heat_signed_distance(bench_case: BenchCase, curve_kind: str) -> None:
         curve = wp.array(curve_np, dtype=wp.int32, device=bench_case.device)
         offsets = wp.array(bounds_np, dtype=wp.int32, device=bench_case.device)
         distance = bench_case.run(
-            lambda: tw.heat.heat_signed_distance(vertices, faces, curve, offsets), rounds=_ROUNDS
+            lambda: tw.heat.heat_signed_distance(vertices, faces, curve, offsets),
+            rounds=_SIGNED_DISTANCE_ROUNDS,
         )
         assert distance.shape == (bench_case.n_vertices,)
     else:
@@ -446,7 +447,9 @@ def test_heat_signed_distance(bench_case: BenchCase, curve_kind: str) -> None:
             solver = pp3d.MeshSignedHeatSolver(vertices_np, faces_np)
             return np.asarray(solver.compute_distance(curves_pp, level_set_constraint="ZeroSet"))
 
-        assert bench_case.run(solve_pp, rounds=_ROUNDS).shape == (bench_case.n_vertices,)
+        assert bench_case.run(solve_pp, rounds=_SIGNED_DISTANCE_ROUNDS).shape == (
+            bench_case.n_vertices,
+        )
 
 
 @pytest.mark.benchmark(group="heat_signed_distance_constraint")
@@ -461,7 +464,7 @@ def test_heat_signed_distance_constraint(bench_case: BenchCase, level_set_constr
         lambda: tw.heat.heat_signed_distance(
             vertices, faces, curve, level_set_constraint=level_set_constraint
         ),
-        rounds=_ROUNDS,
+        rounds=_SIGNED_DISTANCE_ROUNDS,
     )
     assert distance.shape == (bench_case.n_vertices,)
 
@@ -479,7 +482,7 @@ def test_heat_signed_distance_conditioning(bench_case: BenchCase) -> None:
 # --------------------------------------------------------------------------
 
 # Every case is at least two float64 CG solves; the reference also factors two sparse systems.
-_ROUNDS = 3
+_VECTOR_HEAT_ROUNDS = 3
 
 
 def _solver_pp(bench_case: BenchCase) -> pp3d.MeshVectorHeatSolver:
@@ -501,12 +504,15 @@ def test_extend_scalar(bench_case: BenchCase) -> None:
         sources = _sources_wp(bench_case)
         values = wp.array(np.array([1.0]), dtype=wp.float64, device=bench_case.device)
         extended = bench_case.run(
-            lambda: tw.heat.extend_scalar(vertices, faces, sources, values), rounds=_ROUNDS
+            lambda: tw.heat.extend_scalar(vertices, faces, sources, values),
+            rounds=_VECTOR_HEAT_ROUNDS,
         )
         assert extended.shape == (n_vertices,)
     else:
         assert np.asarray(
-            bench_case.run(lambda: _solver_pp(bench_case).extend_scalar([0], [1.0]), rounds=_ROUNDS)
+            bench_case.run(
+                lambda: _solver_pp(bench_case).extend_scalar([0], [1.0]), rounds=_VECTOR_HEAT_ROUNDS
+            )
         ).shape == (n_vertices,)
 
 
@@ -524,7 +530,7 @@ def _run_transport(bench_case: BenchCase, *, amortized: bool) -> None:
             lambda: tw.heat.transport_tangent_vectors(
                 vertices, faces, sources, vectors, operators=operators
             ),
-            rounds=_ROUNDS,
+            rounds=_VECTOR_HEAT_ROUNDS,
         )
         assert transported.shape == (n_vertices,)
         assert resolved.shape == (n_vertices,)
@@ -533,14 +539,15 @@ def _run_transport(bench_case: BenchCase, *, amortized: bool) -> None:
         solver = _solver_pp(bench_case)
         assert np.asarray(
             bench_case.run(
-                lambda: solver.transport_tangent_vectors([0], [[1.0, 0.0]]), rounds=_ROUNDS
+                lambda: solver.transport_tangent_vectors([0], [[1.0, 0.0]]),
+                rounds=_VECTOR_HEAT_ROUNDS,
             )
         ).shape == (n_vertices, 2)
     else:
         assert np.asarray(
             bench_case.run(
                 lambda: _solver_pp(bench_case).transport_tangent_vectors([0], [[1.0, 0.0]]),
-                rounds=_ROUNDS,
+                rounds=_VECTOR_HEAT_ROUNDS,
             )
         ).shape == (n_vertices, 2)
 
@@ -562,13 +569,16 @@ def test_log_map(bench_case: BenchCase) -> None:
     n_vertices = bench_case.n_vertices
     if bench_case.kind == "triwarp":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        logarithm = bench_case.run(lambda: tw.heat.log_map(vertices, faces, 0), rounds=_ROUNDS)
+        logarithm = bench_case.run(
+            lambda: tw.heat.log_map(vertices, faces, 0), rounds=_VECTOR_HEAT_ROUNDS
+        )
         assert logarithm.shape == (n_vertices,)
     else:
         # geometry-central's own strategy name for the same construction.
         assert np.asarray(
             bench_case.run(
-                lambda: _solver_pp(bench_case).compute_log_map(0, "VectorHeat"), rounds=_ROUNDS
+                lambda: _solver_pp(bench_case).compute_log_map(0, "VectorHeat"),
+                rounds=_VECTOR_HEAT_ROUNDS,
             )
         ).shape == (n_vertices, 2)
 

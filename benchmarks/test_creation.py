@@ -81,7 +81,7 @@ already covered by ``cylinder`` / ``uv_sphere`` and ``extrude_polygon``.
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import igl
 import numpy as np
@@ -650,11 +650,12 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         ring_np = np.column_stack([_ring_np(ring_size), np.zeros(ring_size)])
         # Already-triangulated cap: extrude_linear walls a mesh, it does not triangulate a ring.
         fan_np = np.array([[0, i, i + 1] for i in range(1, ring_size - 1)], dtype=np.int32)
+        # The stubs omit ``Tensor``'s dtype/device defaults and the list-to-tensor conversion.
         disc_o3d = o3d.t.geometry.TriangleMesh(
-            o3d.core.Tensor(np.ascontiguousarray(ring_np, dtype=np.float64)),
-            o3d.core.Tensor(np.ascontiguousarray(fan_np)),
+            o3d.core.Tensor(np.ascontiguousarray(ring_np, dtype=np.float64)),  # pyright: ignore[reportCallIssue]
+            o3d.core.Tensor(np.ascontiguousarray(fan_np)),  # pyright: ignore[reportCallIssue]
         )
-        extruded_o3d = bench_lib.run(lambda: disc_o3d.extrude_linear([0.0, 0.0, 1.0]))
+        extruded_o3d = bench_lib.run(lambda: disc_o3d.extrude_linear([0.0, 0.0, 1.0]))  # pyright: ignore[reportArgumentType]
         assert int(extruded_o3d.triangle.indices.shape[0]) == 2 * (ring_size - 2) + 2 * ring_size
         return
     if bench_lib.kind == "triwarp":
@@ -716,7 +717,9 @@ def test_truncated_prisms(bench_lib: BenchLibrary, face_count: int) -> None:
 @pytest.mark.benchlibs("triwarp", "pyvista")
 @pytest.mark.parametrize("surface", ["boy", "dini"])
 @pytest.mark.parametrize("resolution", [40, 160, 640])
-def test_parametric_surface(bench_lib: BenchLibrary, surface: str, resolution: int) -> None:
+def test_parametric_surface(
+    bench_lib: BenchLibrary, surface: Literal["boy", "dini"], resolution: int
+) -> None:
     """
     Analytic surface evaluation on a ``resolution ** 2`` lattice, against VTK's own generator.
 

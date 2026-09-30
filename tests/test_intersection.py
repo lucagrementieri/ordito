@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import cast
+from collections.abc import Callable, Iterable
+from typing import Any, cast
 
 import igl
 import numpy as np
@@ -29,6 +30,7 @@ from tests.conversions import (
     trimesh_to_meshlib,
     trimesh_to_pyvista,
     trimesh_to_warp,
+    warp_empty,
     warp_to_trimesh,
 )
 from triwarp.constants import TOLERANCE_MERGE
@@ -51,7 +53,7 @@ def _plane_ml(normal_np: np.ndarray, origin_np: np.ndarray) -> mm.Plane3f:
     )
 
 
-def _section_points_ml(mesh_ml: mm.Mesh, section_ml: object) -> np.ndarray:
+def _section_points_ml(mesh_ml: mm.Mesh, section_ml: Iterable[mm.EdgePoint]) -> np.ndarray:
     """
     Decode one ``EdgePoint`` section into ``(n, 3)`` positions.
 
@@ -221,7 +223,9 @@ _MESH_WITH_PLANE_CASES = [
 @pytest.mark.parametrize(("mesh_name", "plane_scenario"), _MESH_WITH_PLANE_CASES)
 @pytest.mark.parity("mesh_with_plane", "trimesh")
 def test_mesh_with_plane_matches_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str, plane_scenario
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    plane_scenario: Callable[[tm.Trimesh], list[tuple[np.ndarray, np.ndarray]]],
 ) -> None:
     """
     Class B (segment canonicalization): the cross-section as an unordered set of segments.
@@ -243,7 +247,7 @@ def test_mesh_with_plane_matches_trimesh(
             wp.vec3(*plane_normal.tolist()),
             wp.vec3(*plane_origin.tolist()),
         )
-        assert _segments_equal(lines_wp.numpy(), lines_tm)
+        assert _segments_equal(lines_wp.numpy(), cast("np.ndarray", lines_tm))
 
 
 def test_mesh_with_plane_return_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -307,7 +311,7 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     assert len(sections_ml) == 1  # one closed rim, so the length comparison is not over fragments
     points_ml = _section_points_ml(mesh_ml, sections_ml[0])
     assert np.allclose(points_ml[:, 2], origin_np[2], atol=1e-5)  # the plane really is where it is
-    assert points_ml.shape[0] == segments_wp.shape[0] + 1  # closed: the first point repeats
+    assert points_ml.shape[0] == len(segments_wp) + 1  # closed: the first point repeats
 
     length_wp = float(np.linalg.norm(segments_wp[:, 1] - segments_wp[:, 0], axis=1).sum())
     length_ml = float(np.linalg.norm(np.diff(points_ml, axis=0), axis=1).sum())
@@ -420,7 +424,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
     points_ml = _section_points_ml(mesh_ml, isolines_ml[0])
     curve_np = curves_wp[0].numpy()
 
-    assert points_ml.shape[0] == curve_np.shape[0] + 1  # its closed contour repeats the first point
+    assert points_ml.shape[0] == len(curve_np) + 1  # its closed contour repeats the first point
     assert np.allclose(points_ml[0], points_ml[-1], atol=1e-6)
     length_wp = float(
         np.linalg.norm(np.diff(np.vstack([curve_np, curve_np[:1]]), axis=0), axis=1).sum()
@@ -548,6 +552,7 @@ def test_marching_triangles_matches_igl(request: pytest.FixtureRequest, mesh_nam
     points_igl, segments_igl, _values_igl = igl.isolines(
         vertices_np, faces_np, values_np, np.array([isovalue])
     )
+    points_igl, segments_igl = np.asarray(points_igl), np.asarray(segments_igl)
     curves_wp, closed_wp = tw.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, isovalue, n_vertices=len(vertices_np)
     )
@@ -555,7 +560,8 @@ def test_marching_triangles_matches_igl(request: pytest.FixtureRequest, mesh_nam
     assert segments_igl.shape[0] > 0
     length_igl = float(
         np.linalg.norm(
-            points_igl[segments_igl[:, 0]] - points_igl[segments_igl[:, 1]], axis=1
+            np.asarray(points_igl)[segments_igl[:, 0]] - np.asarray(points_igl)[segments_igl[:, 1]],
+            axis=1,
         ).sum()
     )
     assert np.isclose(
@@ -612,7 +618,7 @@ def test_marching_triangles_many_components_matches_potpourri3d(device: str) -> 
 
 
 def test_marching_triangles_open_curve_ends_on_the_boundary(
-    hemisphere: tuple[object, wp.Mesh],
+    hemisphere: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = hemisphere
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -669,7 +675,7 @@ def test_marching_triangles_exact_vertex_hit_is_reported_once(device: str) -> No
 
 
 def test_marching_triangles_level_set_is_the_piecewise_linear_one(
-    icosahedron: tuple[object, wp.Mesh],
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     mesh_tm, mesh_wp = icosahedron
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -689,7 +695,7 @@ def test_marching_triangles_level_set_is_the_piecewise_linear_one(
     assert sum(curve.size for curve in curves_wp) == cut_faces
 
 
-def test_marching_triangles_no_crossing(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_marching_triangles_no_crossing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
     values_wp = wp.array(
         np.ascontiguousarray(np.asarray(mesh_tm.vertices)[:, 2]),
@@ -703,9 +709,9 @@ def test_marching_triangles_no_crossing(icosahedron: tuple[object, wp.Mesh]) -> 
 
 
 def test_marching_triangles_empty(device: str) -> None:
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    values_wp = wp.empty(0, dtype=wp.float32, device=device)
+    values_wp = warp_empty(0, wp.float32, device)
     assert tw.intersection.marching_triangles(vertices_wp, faces_wp, values_wp) == ([], [])
 
 
@@ -748,7 +754,7 @@ def test_marching_triangles_is_its_packed_form_split(
         )
 
 
-def test_marching_triangles_with_offsets_empty(icosahedron: tuple[object, wp.Mesh]) -> None:
+def test_marching_triangles_with_offsets_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """An empty level set is no points, ``[0]`` offsets and no flags."""
     _, mesh_wp = icosahedron
     values_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float32, device=mesh_wp.device)
@@ -762,9 +768,9 @@ def test_marching_triangles_with_offsets_empty(icosahedron: tuple[object, wp.Mes
 
 def _marching_triangles_both_links(
     monkeypatch: pytest.MonkeyPatch,
-    vertices_wp: wp.array,
-    faces_wp: wp.array,
-    values_wp: wp.array,
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    values_wp: wp.array[wp.float32] | wp.array[wp.float64],
     isovalue: float,
 ) -> list[tuple[list[np.ndarray], list[bool]]]:
     """Run ``marching_triangles`` once through the host link and once through the device link."""
@@ -975,7 +981,7 @@ def test_mesh_with_mesh_near_tangent_pair_is_not_dropped(device: str) -> None:
     faces_a_wp = wp.array(faces_a_np, dtype=wp.int32, device=device)
     faces_b_wp = wp.array(faces_b_np, dtype=wp.int32, device=device)
 
-    crossing = tw.intersection._colliding_face_pairs(
+    crossing = tw.intersection._colliding_face_pairs(  # pyright: ignore[reportPrivateUsage]
         verts_wp, faces_a_wp, verts_wp, faces_b_wp, 16, "probe"
     )
     assert crossing is not None, "the float64 broad phase must confirm this pair genuinely crosses"
@@ -1033,7 +1039,7 @@ def test_mesh_collision_pairs_matches_meshlib(
     pairs_np = tw.intersection.mesh_collision_pairs(
         sphere_wp.points, sphere_wp.indices, box_wp.points, box_wp.indices
     ).numpy()
-    assert pairs_np.shape[0] > 0
+    assert len(pairs_np) > 0
     assert pairs_np[:, 0].max() < mesh_tm.faces.shape[0]
     assert pairs_np[:, 1].max() < box_tm.faces.shape[0]
     assert set(pairs_np[:, 0].tolist()) == set(np.flatnonzero(sphere_ml).tolist())
@@ -1174,7 +1180,7 @@ def test_mesh_collision_pairs_degenerate(device: str) -> None:
     assert not bool(first_mask_wp.numpy().any())
     assert not bool(far_mask_wp.numpy().any())
 
-    empty_faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_faces_wp = warp_empty(0, wp.int32, device)
     empty_pairs_wp = tw.intersection.mesh_collision_pairs(
         first_wp.points, first_wp.indices, first_wp.points, empty_faces_wp
     )
@@ -1254,7 +1260,10 @@ _SLICE_MESH_WITH_PLANE_CASES = [
 )
 @pytest.mark.parity("slice_mesh_with_plane", "trimesh")
 def test_slice_mesh_with_plane_matches_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str, plane_scenario, expected_face_count: int | None
+    request: pytest.FixtureRequest,
+    mesh_name: str,
+    plane_scenario: Callable[[tm.Trimesh], list[tuple[np.ndarray, np.ndarray]]],
+    expected_face_count: int | None,
 ) -> None:
     """
     Class B: cross-sections against ``slice_faces_plane``, compared as canonical winding rows.
@@ -1407,8 +1416,8 @@ def test_split_mesh_with_plane_matches_pyvista(device: str) -> None:
     )
 
     union_pv = np.vstack([np.asarray(kept_pv.points), np.asarray(clipped_pv.points)])
-    assert KDTree(union_pv).query(points_np)[0].max() < 1e-5
-    assert KDTree(points_np).query(union_pv)[0].max() < 1e-5
+    assert np.max(KDTree(union_pv).query(points_np)[0]) < 1e-5
+    assert np.max(KDTree(points_np).query(union_pv)[0]) < 1e-5
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus"])
@@ -1439,7 +1448,7 @@ def test_split_mesh_with_plane_refines_without_cracking(
     above_np = above_wp.numpy()
 
     # Anti-vacuity: a plane through the centroid must actually cut.
-    assert points_np.shape[0] > n_vertices_in
+    assert len(points_np) > n_vertices_in
     assert 0 < int(above_np.sum()) < above_np.size
 
     # Every inserted vertex lies on the plane.
@@ -1517,7 +1526,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
 
     # The apex is the unique highest vertex of an icosahedron, so a plane through it touches the
     # surface at that point alone: nothing is crossed and nothing is inserted.
-    assert points_np.shape[0] == n_vertices_in
+    assert len(points_np) == n_vertices_in
     assert faces_wp.size == mesh_wp.indices.size
     # No zero-area face was introduced anywhere.
     assert (
@@ -1588,8 +1597,8 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(device: str) -> None:
     assert clipped_f.size // 3 == clipped_pv.n_faces
     points_np = clipped_v.numpy().astype(np.float64)
     points_pv = np.asarray(clipped_pv.points)
-    assert KDTree(points_pv).query(points_np)[0].max() < 1e-5
-    assert KDTree(points_np).query(points_pv)[0].max() < 1e-5
+    assert np.max(KDTree(points_pv).query(points_np)[0]) < 1e-5
+    assert np.max(KDTree(points_np).query(points_pv)[0]) < 1e-5
     assert np.isclose(
         tm.Trimesh(points_np, clipped_f.numpy().reshape(-1, 3), process=False).area,
         clipped_pv.area,
@@ -1696,7 +1705,7 @@ def test_clip_mesh_with_field_through_a_saddle_vertex_reuses_it(device: str) -> 
 
     # Exactly one genuine crossing (corner 1 to corner 2) plus the reused on-plane corner: three
     # vertices, one triangle -- not four vertices from two independently-interpolated corners.
-    assert positions_np.shape[0] == 3
+    assert len(positions_np) == 3
     assert new_f.size == 3
     assert np.any(np.all(positions_np == vertices_np[0], axis=1)), (
         "the on-plane vertex must be reused bit-exactly, not interpolated near it"
@@ -1744,7 +1753,7 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
     rim_edges_np = tw.boundary.boundary_edges(welded_v, welded_f).numpy()
     positions_np = welded_v.numpy().astype(np.float64)
     rim_np = positions_np[np.unique(rim_edges_np)]
-    assert rim_np.shape[0] == contour_np.shape[0]
+    assert len(rim_np) == len(contour_np)
     assert hausdorff_two_sided(rim_np, contour_np) < 1e-5
 
     rim_segments_np = positions_np[rim_edges_np]
@@ -1815,7 +1824,7 @@ _INTERSECTION_EMPTY_MESH_CASES = [
     (
         "clip_mesh_with_field",
         lambda v, f: tw.intersection.clip_mesh_with_field(
-            v, f, wp.empty(0, dtype=wp.float32, device=f.device)
+            v, f, warp_empty(0, wp.float32, f.device)
         ),
         ((0,), (0,)),
     ),
@@ -1827,10 +1836,14 @@ _INTERSECTION_EMPTY_MESH_CASES = [
     [case[1:] for case in _INTERSECTION_EMPTY_MESH_CASES],
     ids=[case[0] for case in _INTERSECTION_EMPTY_MESH_CASES],
 )
-def test_intersection_empty_mesh_is_a_noop(device: str, intersection_fn, expected_shapes) -> None:
+def test_intersection_empty_mesh_is_a_noop(
+    device: str,
+    intersection_fn: Callable[[wp.array[wp.vec3], wp.array[wp.int32]], tuple[wp.array[Any], ...]],
+    expected_shapes: tuple[tuple[int, ...], ...],
+) -> None:
     """Not a library comparison: every operator returns an all-empty result on an empty mesh."""
-    vertices_wp = wp.empty(0, dtype=wp.vec3, device=device)
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    faces_wp = warp_empty(0, wp.int32, device)
     result = intersection_fn(vertices_wp, faces_wp)
     for got_wp, expected_shape in zip(result, expected_shapes, strict=True):
         assert got_wp.shape == expected_shape

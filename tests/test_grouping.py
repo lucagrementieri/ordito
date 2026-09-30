@@ -7,8 +7,9 @@ import trimesh as tm
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from tests.comparisons import lexsort_rows, same_partition
-from tests.conversions import points_to_warp
+from tests.conversions import points_to_warp, warp_empty
 from triwarp.kernels.grouping import VEC3_PACK_PRECISION, VEC3_PACK_SHIFT
 
 # Host data, uploaded per test onto the fixture's device -- not ``wp.array`` at module scope. A
@@ -84,7 +85,7 @@ def test_group_int_rows(device: str) -> None:
     length = 2
     groups_np = np.sort(tm.grouping.group_rows(data_np, require_count=length), axis=1)
 
-    data_wp = wp.array(data_np, dtype=wp.int32, device=device)
+    data_wp = twt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
     groups_wp = tw.grouping.group_int_rows(data_wp, length)
     assert np.array_equal(np.sort(groups_wp.numpy(), axis=1), groups_np)
 
@@ -153,7 +154,7 @@ def test_unique_1d_inverse_counts(device: str):
 
 
 @pytest.mark.parametrize("dtype", [wp.int32, wp.uint64])
-def test_unique_1d_max_value(device: str, dtype) -> None:
+def test_unique_1d_max_value(device: str, dtype: type) -> None:
     """
     Class A against ``numpy.unique``, at the tightest ``max_value`` the data allows.
 
@@ -257,17 +258,17 @@ def test_unique_rows_empty_unsupported_dtype_raises(device: str) -> None:
     Before this test, an empty, unsupported-dtype array silently fell into the ``float32`` guess
     rather than raising, so an empty input and a non-empty one disagreed about the same bad dtype.
     """
-    empty_wp = wp.empty((0, 3), dtype=wp.int64, device=device)
+    empty_wp = warp_empty((0, 3), wp.int64, device)
     non_empty_wp = wp.array([[1, 2, 3]], dtype=wp.int64, device=device)
     with pytest.raises(ValueError, match="unsupported dtype"):
-        tw.grouping.unique_rows(empty_wp)
+        tw.grouping.unique_rows(empty_wp)  # pyright: ignore[reportArgumentType, reportCallIssue]
     with pytest.raises(ValueError, match="unsupported dtype"):
         tw.grouping.unique_rows(non_empty_wp)
 
 
 def test_unique_rows_empty_wrong_rank_raises(device: str) -> None:
     """A rank-1, non-``vec3`` array must raise consistently whether or not it is empty."""
-    empty_wp = wp.empty(0, dtype=wp.int32, device=device)
+    empty_wp = warp_empty(0, wp.int32, device)
     non_empty_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
     with pytest.raises(TypeError):
         tw.grouping.unique_rows(empty_wp)
@@ -336,7 +337,7 @@ def test_unique_faces(device: str):
 
 
 def test_unique_faces_empty(device: str):
-    faces_wp = wp.empty(0, dtype=wp.int32, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
     unique_wp, inverse_wp = tw.grouping.unique_faces(faces_wp, return_inverse=True)
     assert unique_wp.size == 0
     assert inverse_wp.size == 0
@@ -391,7 +392,9 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
         expected_wp = tw.grouping.hash_vector_rows(data_wp)
     elif kind == "int32_rows":
         rows_np = np.array([[1, 2], [3, 4], [1, 2]], dtype=np.int32)
-        data_wp = wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device)
+        data_wp = twt.as_array2d(
+            wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device), wp.int32
+        )
         expected_wp = tw.grouping.hash_indices_rows(data_wp)
     else:
         data_wp = wp.array(np.ascontiguousarray(positions_np), dtype=wp.float32, device=device)
@@ -488,7 +491,7 @@ def test_hash_indices_rows_valid(device: str) -> None:
     packed_np = _pack_indices_rows_np(indices_np, max_index)
     packed_default_np = _pack_indices_rows_np(indices_np)
 
-    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    indices_wp = twt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
     packed_wp = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
     packed_default_wp = tw.grouping.hash_indices_rows(indices_wp)
     assert np.array_equal(packed_wp.numpy(), packed_np)
@@ -497,19 +500,25 @@ def test_hash_indices_rows_valid(device: str) -> None:
 
 def test_hash_indices_rows_invalid(device: str) -> None:
     max_index = 8
-    indices_wp = wp.array([[0, 1, 2], [-3, 4, 1]], dtype=wp.int32, device=device)
+    indices_wp = twt.as_array2d(
+        wp.array([[0, 1, 2], [-3, 4, 1]], dtype=wp.int32, device=device), wp.int32
+    )
 
     with pytest.raises(ValueError, match="data must be non-negative, got a minimum of -3"):
         _ = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
 
-    indices_oob = wp.array([[0, 1, 2], [3, 8, 1]], dtype=wp.int32, device=device)
+    indices_oob = twt.as_array2d(
+        wp.array([[0, 1, 2], [3, 8, 1]], dtype=wp.int32, device=device), wp.int32
+    )
     with pytest.raises(ValueError, match="data must be less than max_index 8, got a maximum of 8"):
         _ = tw.grouping.hash_indices_rows(indices_oob, max_index=max_index)
 
     with pytest.raises(ValueError, match="max_index must be positive, got 0"):
         _ = tw.grouping.hash_indices_rows(indices_wp, max_index=0)
 
-    indices_ok = wp.array([[0, 1, 2], [3, 4, 5]], dtype=wp.int32, device=device)
+    indices_ok = twt.as_array2d(
+        wp.array([[0, 1, 2], [3, 4, 5]], dtype=wp.int32, device=device), wp.int32
+    )
     indices_np_ok = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int32)
     packed_np = _pack_indices_rows_np(indices_np_ok, max_index)
     packed_wp = tw.grouping.hash_indices_rows(indices_ok, max_index=max_index)
@@ -520,7 +529,7 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     rng = np.random.default_rng(11)
     max_index = 23
     indices_np = rng.integers(0, max_index, size=(64, 2), dtype=np.int32)
-    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
+    indices_wp = twt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
 
     # Skipping validation must not change the keys, only the range check that produces them.
     validated_wp = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
@@ -544,14 +553,16 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     assert len(np.unique(indices_np[:, 1])) > 1
 
     # A wider row still needs one, because its radix has to keep ``radix ** w`` inside a uint64.
-    wide_wp = wp.array(rng.integers(0, max_index, size=(64, 3), dtype=np.int32), device=device)
+    wide_wp = twt.as_array2d(
+        wp.array(rng.integers(0, max_index, size=(64, 3), dtype=np.int32), device=device), wp.int32
+    )
     with pytest.raises(ValueError, match="validate=False requires an explicit max_index"):
         _ = tw.grouping.hash_indices_rows(wide_wp, validate=False)
 
 
 def test_hash_indices_rows_empty(device: str) -> None:
     """An empty ``data`` must not reach ``reduce.minmax``, which raises on an empty array."""
-    empty_wp = wp.empty((0, 3), dtype=wp.int32, device=device)
+    empty_wp = twt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
     packed_wp = tw.grouping.hash_indices_rows(empty_wp)
     assert packed_wp.shape == (0,)
     assert packed_wp.dtype == wp.uint64
@@ -562,7 +573,7 @@ def test_hash_indices_rows_empty(device: str) -> None:
 
 def test_group_int_rows_unvalidated(device: str) -> None:
     data_np = np.array([[1, 2], [3, 4], [1, 2], [3, 4], [5, 6]], dtype=np.int32)
-    data_wp = wp.array(data_np, dtype=wp.int32, device=device)
+    data_wp = twt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
     groups_wp = tw.grouping.group_int_rows(data_wp, 2, max_value=7)
     groups_unvalidated_wp = tw.grouping.group_int_rows(data_wp, 2, max_value=7, validate=False)
     assert np.array_equal(groups_unvalidated_wp.numpy(), groups_wp.numpy())
@@ -574,7 +585,7 @@ def test_group_int_rows_empty(device: str) -> None:
 
     Not crash inside ``hash_indices_rows``'s default validation on the way there.
     """
-    empty_wp = wp.empty((0, 3), dtype=wp.int32, device=device)
+    empty_wp = twt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
     groups_wp = tw.grouping.group_int_rows(empty_wp, 2)
     assert groups_wp.shape == (0, 2)
 
@@ -593,6 +604,5 @@ def _pack_vec3_np(vectors_np: np.ndarray) -> np.ndarray:
 
 def _pack_indices_rows_np(indices_np: np.ndarray, max_index: int | None = None) -> np.ndarray:
     """CPU reference for ``pack_indices``: mixed-radix sum with wrapping ``uint64`` math."""
-    if max_index is None:
-        max_index = np.max(indices_np) + 1
-    return np.sum(indices_np * np.power(max_index, np.arange(indices_np.shape[1])), axis=1)
+    radix = np.max(indices_np) + 1 if max_index is None else max_index
+    return np.sum(indices_np * np.power(radix, np.arange(indices_np.shape[1])), axis=1)

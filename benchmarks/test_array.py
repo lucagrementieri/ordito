@@ -69,13 +69,13 @@ _SEGMENT_COUNTS = [4, 256]
 # output changes size.
 _SELECTIVITIES = [0.5, 0.01]
 
-_segments_cache: dict[tuple[str, str, int], list] = {}
-_keys_cache: dict[tuple[str, str], wp.array] = {}
-_mask_cache: dict[tuple[str, str, float], wp.array] = {}
-_gather_cache: dict[tuple[str, str], tuple] = {}
+_segments_cache: dict[tuple[str, str, int], list[wp.array[wp.int32]]] = {}
+_keys_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
+_mask_cache: dict[tuple[str, str, float], wp.array[wp.bool]] = {}
+_gather_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.int32]]] = {}
 
 
-def _segments(bench_case: BenchCase, n_segments: int) -> list:
+def _segments(bench_case: BenchCase, n_segments: int) -> list[wp.array[wp.int32]]:
     """Split the flat face buffer into ``n_segments`` contiguous 1-D pieces, same total length."""
     key = (bench_case.mesh_name, str(bench_case.device), n_segments)
     if key not in _segments_cache:
@@ -130,7 +130,7 @@ def _mask(bench_case: BenchCase, selectivity: float) -> wp.array[wp.bool]:
     return _mask_cache[key]
 
 
-def _gather_inputs(bench_case: BenchCase) -> tuple:
+def _gather_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """``(vertices, indices)`` for a half-size vertex gather."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _gather_cache:
@@ -188,7 +188,9 @@ def test_concatenate(bench_case: BenchCase, n_segments: int) -> None:
         for row, segment_np in enumerate(segments_np):
             padded_np[row, : segment_np.size] = segment_np
         padded_p3d = torch.as_tensor(padded_np, device=bench_case.torch_device)
-        flat_p3d = bench_case.run(lambda: p3d_ops.padded_to_packed(padded_p3d, first_p3d, total))
+        flat_p3d = bench_case.run(
+            lambda: p3d_ops.padded_to_packed(padded_p3d, cast("torch.LongTensor", first_p3d), total)
+        )
         assert flat_p3d.shape[0] == total
         return
     if bench_case.kind == "numpy":

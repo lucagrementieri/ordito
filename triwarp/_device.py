@@ -17,14 +17,17 @@ bearing at the public boundary.
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import warp as wp
 
 import triwarp as tw
+import triwarp.typing as twt
 from triwarp import _launch
 from triwarp.constants import ITEMS_PER_SLICE_CPU, ITEMS_PER_SLICE_CUDA
+
+T = TypeVar("T")
 
 
 def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
@@ -76,7 +79,7 @@ def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
 
 
 def run_device_loop(
-    device: wp.DeviceLike, condition: wp.array[wp.int32], body: Callable[[], None]
+    device: wp.DeviceLike, condition: wp.array[wp.int32, Any], body: Callable[[], None]
 ) -> None:
     """
     Run ``body`` until the device-side ``condition`` word reads zero, without a host readback.
@@ -112,7 +115,7 @@ def run_device_loop(
 
 
 def record_device_loop(
-    device: wp.DeviceLike, condition: wp.array[wp.int32], body: Callable[[], None]
+    device: wp.DeviceLike, condition: wp.array[wp.int32, Any], body: Callable[[], None]
 ) -> Callable[[], None]:
     """
     Record [`run_device_loop`][triwarp._device.run_device_loop]'s loop now; return what runs it.
@@ -132,10 +135,11 @@ def record_device_loop(
     # calling ``wp.capture_while`` directly, as ``remesh._quadric_collapse_rounds`` does.
     if resolved.is_cuda and wp.is_conditional_graph_supported():
         with wp.ScopedCapture(resolved) as capture:
-            wp.capture_while(condition, body)
+            wp.capture_while(cast("wp.array[int]", condition), body)
         graph = capture.graph
+        assert graph is not None
         return lambda: wp.capture_launch(graph)
-    return lambda: wp.capture_while(condition, body)
+    return lambda: wp.capture_while(cast("wp.array[int]", condition), body)
 
 
 def items_per_slice(device: wp.DeviceLike) -> int:
@@ -271,7 +275,7 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
         )
 
 
-def require_same_device(**named: Any) -> None:
+def require_same_device(**named: object) -> None:
     """
     Raise if two or more of the given device-bearing arguments disagree on device.
 
@@ -304,13 +308,13 @@ def require_same_device(**named: Any) -> None:
     """
     # Scan unlabelled first: the labels are only needed for the message, and building one per
     # element of a long list of loops or rings costs more than the comparison itself.
-    first: list[Any] = []
+    first: list[object] = []
     for value in named.values():
         if _first_device_mismatch(value, first):
             _raise_device_mismatch(named)
 
 
-def _first_device_mismatch(value: Any, first: list[Any]) -> bool:
+def _first_device_mismatch(value: object, first: list[object]) -> bool:
     """Whether ``value`` (or an element of it) disagrees with ``first[0]``, seeding it if empty."""
     if value is None:
         return False
@@ -336,9 +340,9 @@ def _first_device_mismatch(value: Any, first: list[Any]) -> bool:
     return device is not first[0] and device != first[0]
 
 
-def _raise_device_mismatch(named: dict[str, Any]) -> None:
+def _raise_device_mismatch(named: dict[str, object]) -> None:
     """Raise naming the first mismatched pair, if the labelled walk confirms the fast scan's."""
-    seen: list[tuple[str, Any]] = []
+    seen: list[tuple[str, object]] = []
     for name, value in named.items():
         seen.extend(_named_devices(name, value))
     if not seen:
@@ -353,12 +357,12 @@ def _raise_device_mismatch(named: dict[str, Any]) -> None:
             )
 
 
-def _named_devices(name: str, value: Any) -> list[tuple[str, Any]]:
+def _named_devices(name: str, value: object) -> list[tuple[str, object]]:
     """Flatten ``value`` into ``(label, device)`` pairs, descending into a list/tuple."""
     if value is None:
         return []
     if isinstance(value, (list, tuple)):
-        found: list[tuple[str, Any]] = []
+        found: list[tuple[str, object]] = []
         for i, item in enumerate(value):
             found.extend(_named_devices(f"{name}[{i}]", item))
         return found
@@ -371,7 +375,7 @@ def _named_devices(name: str, value: Any) -> list[tuple[str, Any]]:
 _SCALAR_SCRATCH: dict[type, wp.array[Any]] = {}
 
 
-def read_scalar(arr: wp.array[Any], index: int = -1) -> Any:
+def read_scalar(arr: twt.ArrayNd, index: int = -1) -> Any:
     """
     One element of ``arr``, read back to the host as a Python scalar.
 
@@ -479,6 +483,6 @@ def read_values(arr: wp.array[Any], start: int, count: int) -> list[Any]:
 _VALUES_SCRATCH: dict[tuple[type, int], wp.array[Any]] = {}
 
 
-def _detached(value: Any) -> Any:
+def _detached(value: T) -> T:
     """Copy ``value`` when it is a view, so a vector or matrix element outlives the next read."""
     return value.copy() if isinstance(value, np.ndarray) else value

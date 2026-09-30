@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from typing import TYPE_CHECKING, Any, Protocol, SupportsIndex, TypeVar, cast
+
 import numpy as np
 import open3d as o3d
 import pymeshlab as ml
@@ -16,8 +19,41 @@ from meshlib import mrmeshpy as mm
 from pymeshfix import _meshfix
 from scipy.spatial import cKDTree
 
+import triwarp.typing as twt
 
-def trimesh_to_warp(mesh: tm.Trimesh, device: str) -> wp.Mesh:
+if TYPE_CHECKING:
+    from typing_extensions import Buffer
+
+DType = TypeVar("DType")
+
+
+class _MeshlibScalars(Protocol):
+    """A MeshLib scalar container: iterable, with a ``size()`` method and no ``len()``."""
+
+    def __iter__(self) -> Iterator[float]: ...
+    def size(self) -> int: ...
+
+
+class _MeshlibIndices(Protocol):
+    """A MeshLib id container, whose elements implement ``__index__``."""
+
+    def __iter__(self) -> Iterator[SupportsIndex]: ...
+    def size(self) -> int: ...
+
+
+def warp_empty(
+    shape: int | tuple[int, ...], dtype: type[DType], device: wp.DeviceLike
+) -> wp.array[DType, Any]:
+    """
+    ``wp.empty`` with its ``dtype`` carried into the return type.
+
+    Warp leaves ``wp.empty``'s ``dtype`` parameter unannotated, so a checker types it from its
+    ``float`` default and rejects every other element type. This is the one place that says so.
+    """
+    return wp.empty(shape, dtype=cast("type[float]", dtype), device=device)
+
+
+def trimesh_to_warp(mesh: tm.Trimesh, device: wp.DeviceLike) -> wp.Mesh:
     vertices = wp.array(
         np.ascontiguousarray(mesh.vertices, dtype=np.float32), dtype=wp.vec3, device=device
     )
@@ -28,8 +64,8 @@ def trimesh_to_warp(mesh: tm.Trimesh, device: str) -> wp.Mesh:
 
 
 def numpy_to_warp(
-    vertices_np: np.ndarray, faces_np: np.ndarray, device: str
-) -> tuple[wp.array, wp.array]:
+    vertices_np: np.ndarray, faces_np: np.ndarray, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Upload a NumPy mesh as triwarp's ``(wp.array[wp.vec3], flat wp.array[wp.int32])`` pair.
 
@@ -70,8 +106,8 @@ def numpy_to_warp(
 
 
 def numpy_to_warp_uv(
-    uv_np: np.ndarray, faces_np: np.ndarray, device: str
-) -> tuple[wp.array, wp.array]:
+    uv_np: np.ndarray, faces_np: np.ndarray, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec2], wp.array[wp.int32]]:
     """
     Upload a 2-D vertex buffer and its faces as ``(wp.array[wp.vec2], flat wp.array[wp.int32])``.
 
@@ -91,7 +127,7 @@ def numpy_to_warp_uv(
     )
 
 
-def points_to_warp(points_np: np.ndarray, device: str) -> wp.array:
+def points_to_warp(points_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.vec3]:
     """
     Upload an ``(n, 3)`` point cloud as ``wp.array[wp.vec3]``.
 
@@ -130,7 +166,7 @@ def points_to_warp(points_np: np.ndarray, device: str) -> wp.array:
     return wp.array(np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec3, device=device)
 
 
-def points_to_warp_uv(points_np: np.ndarray, device: str) -> wp.array:
+def points_to_warp_uv(points_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.vec2]:
     """
     Upload an ``(n, 2)`` planar point set as ``wp.array[wp.vec2]``.
 
@@ -170,7 +206,7 @@ def trimesh_to_pymeshlab(mesh: tm.Trimesh, scalars: np.ndarray | None = None) ->
     return meshset
 
 
-def warp_to_pymeshlab(vertices_wp: wp.array, faces_wp: wp.array) -> ml.MeshSet:
+def warp_to_pymeshlab(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> ml.MeshSet:
     """
     Read triwarp's ``(vertices, flat faces)`` pair back into a ``pymeshlab.MeshSet``.
 
@@ -402,6 +438,7 @@ def pyvista_edges_to_indices(edges_pv: pv.PolyData, vertices_np: np.ndarray) -> 
     points_np = np.asarray(edges_pv.points)
     reference_np = np.ascontiguousarray(vertices_np, dtype=points_np.dtype)
     distances_np, indices_np = cKDTree(reference_np).query(points_np)
+    indices_np = np.asarray(indices_np)
     assert float(np.max(distances_np, initial=0.0)) == 0.0
     # One-to-one, or the rounding merged two vertices and the match picked one of them.
     assert np.unique(indices_np).size == indices_np.size
@@ -440,8 +477,10 @@ def numpy_to_meshlib(vertices_np: np.ndarray, faces_np: np.ndarray) -> mm.Mesh:
     [`warp_to_meshlib`][tests.conversions.warp_to_meshlib]
         The same conversion from a triwarp output.
     """
+    # MeshLib's stubs type these as ``Buffer``, which numpy's stubs implement only from Python 3.12.
     return mn.meshFromFacesVerts(
-        np.ascontiguousarray(np.asarray(faces_np).reshape(-1, 3)), np.ascontiguousarray(vertices_np)
+        cast("Buffer", np.ascontiguousarray(np.asarray(faces_np).reshape(-1, 3))),
+        cast("Buffer", np.ascontiguousarray(vertices_np)),
     )
 
 
@@ -455,7 +494,7 @@ def trimesh_to_meshlib(mesh: tm.Trimesh) -> mm.Mesh:
     return numpy_to_meshlib(mesh.vertices, mesh.faces)
 
 
-def warp_to_meshlib(vertices_wp: wp.array, faces_wp: wp.array) -> mm.Mesh:
+def warp_to_meshlib(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> mm.Mesh:
     """
     Read triwarp's ``(vertices, flat faces)`` pair into a ``meshlib.mrmeshpy.Mesh``.
 
@@ -484,11 +523,11 @@ def points_to_meshlib(points_np: np.ndarray, normals_np: np.ndarray | None = Non
     worse than quietly: at its default ``mask`` of ``All`` it **segfaults** on a cloud with no
     normals, because that set includes the ``AwayNormal`` criterion.
     """
+    # ``Buffer``: see numpy_to_meshlib.
+    points_ml = cast("Buffer", np.ascontiguousarray(points_np))
     if normals_np is None:
-        return mn.pointCloudFromPoints(np.ascontiguousarray(points_np))
-    return mn.pointCloudFromPoints(
-        np.ascontiguousarray(points_np), np.ascontiguousarray(normals_np)
-    )
+        return mn.pointCloudFromPoints(points_ml)
+    return mn.pointCloudFromPoints(points_ml, cast("Buffer", np.ascontiguousarray(normals_np)))
 
 
 def numpy_to_meshlib_bitset(flags_np: np.ndarray) -> mm.BitSet:
@@ -552,7 +591,7 @@ def meshlib_to_trimesh(mesh_ml: mm.Mesh, *, pack: bool = True) -> tm.Trimesh:
     )
 
 
-def meshlib_scalars_to_numpy(scalars_ml: object) -> np.ndarray:
+def meshlib_scalars_to_numpy(scalars_ml: _MeshlibScalars) -> np.ndarray:
     """
     Read a MeshLib scalar container (``VertScalars`` / ``FaceScalars`` / ...) as a float64 array.
 
@@ -569,7 +608,7 @@ def meshlib_scalars_to_numpy(scalars_ml: object) -> np.ndarray:
     return np.fromiter(iter(scalars_ml), np.float64, scalars_ml.size())
 
 
-def meshlib_indices_to_numpy(indices_ml: object) -> np.ndarray:
+def meshlib_indices_to_numpy(indices_ml: _MeshlibIndices) -> np.ndarray:
     """
     Read a MeshLib index container (``Buffer_VertId`` / ``VertMap`` / ...) as an int64 array.
 
@@ -586,7 +625,7 @@ def meshlib_indices_to_numpy(indices_ml: object) -> np.ndarray:
     return np.fromiter((int(index_ml) for index_ml in indices_ml), np.int64, indices_ml.size())
 
 
-def meshlib_bitset_to_numpy(bitset_ml: object, size: int) -> np.ndarray:
+def meshlib_bitset_to_numpy(bitset_ml: mm.BitSet, size: int) -> np.ndarray:
     """
     Read a MeshLib bitset as a ``bool`` array of exactly ``size`` entries.
 
@@ -677,7 +716,9 @@ def trimesh_to_pymeshfix(mesh: tm.Trimesh) -> _meshfix.PyTMesh:
     return numpy_to_pymeshfix(mesh.vertices, mesh.faces)
 
 
-def warp_to_pymeshfix(vertices_wp: wp.array, faces_wp: wp.array) -> _meshfix.PyTMesh:
+def warp_to_pymeshfix(
+    vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
+) -> _meshfix.PyTMesh:
     """
     Read triwarp's ``(vertices, flat faces)`` pair into a fresh ``pymeshfix._meshfix.PyTMesh``.
 
@@ -714,7 +755,9 @@ def pymeshfix_to_numpy(tin_pmf: _meshfix.PyTMesh) -> tuple[np.ndarray, np.ndarra
     return tin_pmf.return_arrays()
 
 
-def pymeshfix_intersecting_faces(tin_pmf: _meshfix.PyTMesh, **kwargs: object) -> np.ndarray:
+def pymeshfix_intersecting_faces(
+    tin_pmf: _meshfix.PyTMesh, *, tris_per_cell: int, justproper: bool
+) -> np.ndarray:
     """
     Face indices from ``select_intersecting_triangles``, with the uninitialised tail dropped.
 
@@ -731,7 +774,9 @@ def pymeshfix_intersecting_faces(tin_pmf: _meshfix.PyTMesh, **kwargs: object) ->
     triwarp per-face mask has to remap through the canonical sorted rows. The result is sorted, so
     it compares directly against ``np.flatnonzero`` of a mask once remapped.
     """
-    out_pmf = tin_pmf.select_intersecting_triangles(**kwargs)
+    out_pmf = tin_pmf.select_intersecting_triangles(
+        tris_per_cell=tris_per_cell, justproper=justproper
+    )
     return np.sort(out_pmf.ravel()[: out_pmf.shape[0]])
 
 
@@ -862,7 +907,7 @@ def trimesh_to_pytorch3d(mesh: tm.Trimesh, device: str = "cpu") -> p3d_structure
 
 
 def warp_to_pytorch3d(
-    vertices_wp: wp.array, faces_wp: wp.array, device: str | None = None
+    vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], device: str | None = None
 ) -> p3d_structures.Meshes:
     """
     Wrap a triwarp ``(vertices, flat faces)`` pair in a ``Meshes``, on the buffers' own device.
@@ -919,7 +964,7 @@ def pytorch3d_to_numpy(meshes_p3d: p3d_structures.Meshes) -> tuple[np.ndarray, n
     )
 
 
-def warp_to_trimesh(vertices_wp: wp.array, faces_wp: wp.array) -> tm.Trimesh:
+def warp_to_trimesh(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> tm.Trimesh:
     """
     Read a triwarp ``(vertices, flat faces)`` pair back into a ``tm.Trimesh``.
 
@@ -935,7 +980,7 @@ def warp_to_trimesh(vertices_wp: wp.array, faces_wp: wp.array) -> tm.Trimesh:
     )
 
 
-def bsr_to_dense(matrix: object, n_vertices: int) -> np.ndarray:
+def bsr_to_dense(matrix: twt.SparseMatrix, n_vertices: int) -> np.ndarray:
     """
     Densify a ``BsrMatrix``, reading only the entries its offsets actually address.
 
@@ -954,7 +999,7 @@ def bsr_to_dense(matrix: object, n_vertices: int) -> np.ndarray:
     return dense
 
 
-def bsr_to_csr(matrix: object) -> sp.csr_matrix:
+def bsr_to_csr(matrix: twt.SparseMatrix) -> sp.csr_matrix:
     """
     Convert a ``BsrMatrix`` to a scipy CSR, at its own declared shape.
 
@@ -971,7 +1016,9 @@ def bsr_to_csr(matrix: object) -> sp.csr_matrix:
     )
 
 
-def meshlib_corner_normals_to_numpy(corner_normals_ml: object, n_faces: int) -> np.ndarray:
+def meshlib_corner_normals_to_numpy(
+    corner_normals_ml: mm.Vector_std_array_Vector3f_3_FaceId, n_faces: int
+) -> np.ndarray:
     """
     Read ``computePerCornerNormals``' result into an ``(n_faces, 3, 3)`` array.
 

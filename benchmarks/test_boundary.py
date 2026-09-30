@@ -245,10 +245,8 @@ def test_loop_directed_areas(bench_case: BenchCase) -> None:
             pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
 
         def areas_ml() -> int:
-            return sum(
-                1
-                for edge in holes_ml
-                if mm.holeDirArea(mesh_ml.topology, mesh_ml.points, edge) is not None
+            return len(
+                [mm.holeDirArea(mesh_ml.topology, mesh_ml.points, edge) for edge in holes_ml]
             )
 
         assert bench_case.run(areas_ml) == len(holes_ml)

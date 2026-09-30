@@ -39,6 +39,7 @@ from tests.conversions import (
     points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
+    warp_empty,
     warp_to_trimesh,
 )
 
@@ -107,7 +108,9 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
         np.ascontiguousarray(field_np, dtype=np.float32), dtype=wp.float32, device=device
     )
     bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
-    vertices_wp, faces_wp = tw.levelset.marching_cubes(field_wp, 0.0, bounds=bounds)
+    vertices_wp, faces_wp = tw.levelset.marching_cubes(
+        twt.as_array3d(field_wp, wp.float32), 0.0, bounds=bounds
+    )
     vertices_np = vertices_wp.numpy().astype(np.float64)
 
     lattice_igl = np.ascontiguousarray(
@@ -133,12 +136,12 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
     contour_pv = grid_pv.contour([0.0], scalars="field")
     vertices_pv = np.asarray(contour_pv.points, dtype=np.float64)
 
-    assert vertices_np.shape[0] > 0  # non-vacuity: there is a surface to compare
+    assert len(vertices_np) > 0  # non-vacuity: there is a surface to compare
     for reference_np, n_faces in (
-        (np.asarray(vertices_igl, dtype=np.float64), faces_igl.shape[0]),
+        (np.asarray(vertices_igl, dtype=np.float64), np.asarray(faces_igl).shape[0]),
         (vertices_pv, contour_pv.n_cells),
     ):
-        assert reference_np.shape[0] == vertices_np.shape[0]
+        assert reference_np.shape[0] == len(vertices_np)
         assert n_faces == faces_wp.size // 3
         # A half-voxel origin error moves this by 0.065; the tolerance is 1e-04.
         assert np.isclose(
@@ -148,7 +151,7 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
             atol=1e-4,
         )
         # The vertex sets match as sets: no library promises an emission order.
-        residual_np, matched_np = cKDTree(vertices_np).query(reference_np)
+        residual_np, matched_np = map(np.asarray, cKDTree(vertices_np).query(reference_np))
         assert residual_np.max() < 1e-5
         assert np.unique(matched_np).size == reference_np.shape[0]
 
@@ -189,7 +192,8 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
 
     def march_ml(origin: float) -> tuple[np.ndarray, np.ndarray]:
         """March the identical field with the lower corner at ``origin`` on every axis."""
-        volume_ml = mn.simpleVolumeFrom3Darray(field_np)
+        # The stub names the parameter ``3DvoxelsArray``, which is not an identifier.
+        volume_ml = mn.simpleVolumeFrom3Darray(field_np)  # pyright: ignore[reportCallIssue]
         volume_ml.voxelSize = mm.Vector3f(spacing, spacing, spacing)
         params_ml = mm.MarchingCubesParams()
         params_ml.iso = 0.0
@@ -200,7 +204,7 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
 
     vertices_ml_np, faces_ml_np = march_ml(-1.0 - spacing / 2)
     assert faces_ml_np.shape[0] > 0
-    assert vertices_ml_np.shape[0] == vertices_np.shape[0]
+    assert vertices_ml_np.shape[0] == len(vertices_np)
     assert faces_ml_np.shape[0] == faces_tw_np.shape[0]
     assert hausdorff_two_sided(vertices_np, vertices_ml_np) < 1e-5
     assert (
@@ -263,7 +267,7 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     assert vertices_p3d.shape[0] > 0
     assert vertices_wp.size == vertices_p3d.shape[0]
     assert faces_wp.size // 3 == faces_p3d[0].shape[0]
-    distance_np, match_np = cKDTree(vertices_p3d).query(vertices_wp.numpy())
+    distance_np, match_np = map(np.asarray, cKDTree(vertices_p3d).query(vertices_wp.numpy()))
     assert distance_np.max() == 0.0, f"vertices differ by up to {distance_np.max():.3e}"
     assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
 
@@ -487,7 +491,7 @@ def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) 
     with pytest.raises(ValueError, match="voxel_size must be positive"):
         tw.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
     with pytest.raises(ValueError, match="at least one face"):
-        tw.levelset.offset_mesh(vertices_wp, wp.empty(0, dtype=wp.int32, device=device), 0.1)
+        tw.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse", "unit_box"])
@@ -570,11 +574,11 @@ def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
 
     # The bijection, then the face sets through it.
     shell_np = shell_vertices_wp.numpy().astype(np.float64)
-    distance_np, match_np = cKDTree(np.asarray(shell_ml.vertices)).query(shell_np)
+    distance_np, match_np = map(np.asarray, cKDTree(np.asarray(shell_ml.vertices)).query(shell_np))
     assert distance_np.max() < 1e-4
     assert len(set(match_np.tolist())) == match_np.size
     inverse_np = np.empty(shell_ml.vertices.shape[0], dtype=np.int64)
-    inverse_np[match_np] = np.arange(shell_np.shape[0])
+    inverse_np[match_np] = np.arange(len(shell_np))
     assert_unordered_rows_equal(
         canonical_winding(shell_faces_wp.numpy().reshape(-1, 3)),
         canonical_winding(inverse_np[np.asarray(shell_ml.faces)]),
@@ -642,6 +646,4 @@ def test_thicken_mesh_guards(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> No
     with pytest.raises(ValueError, match="outside must be non-negative"):
         tw.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.1, outside=-1.0)
     with pytest.raises(ValueError, match="at least one face"):
-        tw.levelset.thicken_mesh(
-            mesh_wp.points, wp.empty(0, dtype=wp.int32, device=mesh_wp.device), 0.1
-        )
+        tw.levelset.thicken_mesh(mesh_wp.points, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
