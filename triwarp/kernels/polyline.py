@@ -140,6 +140,19 @@ def segment_range_distance(
     return best
 
 
+@wp.func
+def closing_segment_distance(
+    polyline: wp.array[wp.vec3], wrap_open: wp.int32, p: wp.vec3, best: wp.float32
+) -> wp.float32:
+    # ``best`` lowered by the distance from ``p`` to the closing segment ``closed=True`` adds, when
+    # it adds one (``closing_segment_flag``); tested after the open segments, in the order the
+    # ``polyline_close`` copy put it in -- last.
+    n = polyline.shape[0]
+    if closing_segment_flag(polyline, wrap_open) != 0:
+        best = wp.min(best, point_to_segment_distance(polyline[n - 1], polyline[0], p))
+    return best
+
+
 @wp.kernel
 def distance_to_segments(
     points: wp.array[wp.vec3],
@@ -156,9 +169,7 @@ def distance_to_segments(
     p = points[tid]
     n = polyline.shape[0]
     best = segment_range_distance(polyline, p, 0, n - 1, wp.float32(FLOAT32_INF_CONSTANT))
-    if closing_segment_flag(polyline, wrap_open) != 0:
-        best = wp.min(best, point_to_segment_distance(polyline[n - 1], polyline[0], p))
-    out_distances[tid] = best
+    out_distances[tid] = closing_segment_distance(polyline, wrap_open, p, best)
 
 
 # ``polyline_point_distance``'s slicing on CUDA: enough ``(query, slice)`` threads to fill the
@@ -193,8 +204,8 @@ def distance_to_segment_slices(
     begin = slice_index * slice_length
     end = wp.min(begin + slice_length, n - 1)
     best = segment_range_distance(polyline, p, begin, end, wp.float32(FLOAT32_INF_CONSTANT))
-    if end == n - 1 and closing_segment_flag(polyline, wrap_open) != 0:
-        best = wp.min(best, point_to_segment_distance(polyline[n - 1], polyline[0], p))
+    if end == n - 1:
+        best = closing_segment_distance(polyline, wrap_open, p, best)
     wp.atomic_min(out_distances, tid, best)
 
 

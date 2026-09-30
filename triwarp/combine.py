@@ -225,7 +225,7 @@ def split_with_offsets(
 
     if int(face_offsets.shape[0]) == 2:
         component_vertices, component_faces = tw.selection.submesh_from_face_indices(
-            vertices, faces, sorted_face_ids, unique_indices=True
+            vertices, faces, sorted_face_ids
         )
         vertex_offsets = wp.array(
             [0, int(component_vertices.shape[0])], dtype=wp.int32, device=device

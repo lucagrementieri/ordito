@@ -14,7 +14,7 @@ from triwarp.kernels.array import (
     update_argmin,
 )
 from triwarp.kernels.array import wrap_index as _wrap
-from triwarp.kernels.halfedge import halfedge_prev
+from triwarp.kernels.halfedge import halfedge_endpoints, halfedge_prev
 from triwarp.kernels.predicates import (
     circumcircle_diameter,
     dihedral_angle,
@@ -864,7 +864,7 @@ def scatter_loop_positions(
 
 @wp.kernel
 def mark_forbidden_chords(
-    edges_sorted: wp.array2d[wp.int32],
+    faces: wp.array[wp.int32],
     flat_slot: wp.array[wp.int32],
     loop_id: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
@@ -874,10 +874,12 @@ def mark_forbidden_chords(
     # Chords (non-adjacent loop positions) that already exist as mesh edges are forbidden
     # outright, rather than re-routed. Idempotent writes: no atomics needed. One pass
     # over the whole mesh marks the masks of *all* loops, because ``flat_slot`` distinguishes them:
-    # an edge whose endpoints land in two different loops is not a chord of either.
-    e = wp.int32(wp.tid())
-    tu = flat_slot[edges_sorted[e, 0]]
-    tv = flat_slot[edges_sorted[e, 1]]
+    # an edge whose endpoints land in two different loops is not a chord of either. One thread per
+    # halfedge, its endpoints read off ``faces``: an interior edge is visited from both sides, and
+    # the second visit writes what the first did.
+    u, v = halfedge_endpoints(faces, wp.int32(wp.tid()))
+    tu = flat_slot[u]
+    tv = flat_slot[v]
     if tu < 0 or tv < 0:
         return
     ell = loop_id[tu]

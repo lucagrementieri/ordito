@@ -30,7 +30,6 @@ def is_edge_manifold(
     faces: wp.array[wp.int32],
     allow_boundary_edges: bool = True,
     *,
-    edges_sorted: twt.Array2dInt32 | None = None,
     n_vertices: int | None = None,
     validate: bool = True,
 ) -> bool:
@@ -48,11 +47,6 @@ def is_edge_manifold(
     allow_boundary_edges
         When ``True`` (default) boundary edges (used by a single face) are allowed. When ``False``
         every edge must be shared by exactly two faces.
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Not read: the edge keys are
-        packed straight from ``faces``, which costs no more than hashing these rows and lets the
-        range check ride on the same pass.
     n_vertices
         Optional vertex count (the edge-hash base and the upper bound checked). When ``None``, the
         keys pack against a bound on every ``int32`` and only the negative half is checked.
@@ -72,8 +66,6 @@ def is_edge_manifold(
     ------
     ValueError
         If ``validate`` is ``True`` and a face index is negative or reaches the vertex count.
-    RuntimeError
-        If ``faces`` and ``edges_sorted`` are not all on one device.
 
     See Also
     --------
@@ -90,7 +82,6 @@ def is_edge_manifold(
     each halfedge's own count and so sorts the keys. Delegating would add the sort to the cheap
     path.
     """
-    require_same_device(faces=faces, edges_sorted=edges_sorted)
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
         return True
@@ -98,9 +89,9 @@ def is_edge_manifold(
     device = faces.device
     # ``flags[0]`` is the verdict and ``flags[1]`` the range check, read back together.
     flags = wp.zeros(2, dtype=wp.int32, device=device)
-    # The keys come straight off ``faces``, never off ``edges_sorted``: packing them there costs no
-    # more than hashing the rows, and the range check rides on the same pass, so validating costs
-    # no reduction and no readback of its own; unvalidated, its flag is simply not read.
+    # The keys come straight off ``faces``: packing them there costs no more than hashing the
+    # sorted edge rows, and the range check rides on the same pass, so validating costs no
+    # reduction and no readback of its own; unvalidated, its flag is simply not read.
     keys = wp.empty(3 * n_faces, dtype=wp.uint64, device=device)
     wp.launch(
         kernel_validation.face_edge_keys_checked,
@@ -136,7 +127,6 @@ def edge_manifold_mask(
     faces: wp.array[wp.int32],
     allow_boundary_edges: bool = True,
     *,
-    edges_sorted: twt.Array2dInt32 | None = None,
     n_vertices: int | None = None,
     validate: bool = True,
 ) -> wp.array[wp.bool]:
@@ -157,11 +147,6 @@ def edge_manifold_mask(
     allow_boundary_edges
         When ``True`` (default) boundary edges (used by a single face) count as manifold. When
         ``False`` every edge of a face must be shared by exactly two faces.
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order (each row min-first). Not read:
-        the halfedge keys are packed straight from ``faces``, which costs less than hashing these
-        rows.
     n_vertices
         Optional vertex count (the edge-hash base). When ``None`` and ``validate`` is ``True``,
         inferred from ``faces`` by the same reduction that checks them; unvalidated, no bound is
@@ -181,15 +166,12 @@ def edge_manifold_mask(
     ------
     ValueError
         If ``validate`` is ``True`` and a face index is negative or reaches the vertex count.
-    RuntimeError
-        If ``faces`` and ``edges_sorted`` are not all on one device.
 
     See Also
     --------
     [`is_edge_manifold`][triwarp.validation.is_edge_manifold]
     [`vertex_manifold_mask`][triwarp.validation.vertex_manifold_mask]
     """
-    require_same_device(faces=faces, edges_sorted=edges_sorted)
     n_faces = int(faces.shape[0]) // 3
     device = faces.device
     if n_faces == 0:
@@ -616,9 +598,7 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
 
 
 def edge_winding_consistent_mask(
-    faces: wp.array[wp.int32],
-    edges: twt.Array2dInt32 | None = None,
-    edges_sorted: twt.Array2dInt32 | None = None,
+    faces: wp.array[wp.int32], edges: twt.Array2dInt32 | None = None
 ) -> wp.array[wp.bool]:
     """
     Per shared-edge flag: whether an undirected edge's two faces traverse it in opposite directions.
@@ -637,9 +617,6 @@ def edge_winding_consistent_mask(
         Optional precomputed ``(n_faces * 3, 2)`` directed edges in
         [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Built from ``faces`` when
         ``None``.
-    edges_sorted
-        Optional precomputed sorted (min-first) edges in the same row order. Built from ``faces``
-        when ``None``.
 
     Returns
     -------
@@ -649,14 +626,14 @@ def edge_winding_consistent_mask(
     Raises
     ------
     RuntimeError
-        If ``faces``, ``edges`` and ``edges_sorted`` are not all on one device.
+        If ``faces`` and ``edges`` are not all on one device.
 
     See Also
     --------
     [`is_winding_consistent`][triwarp.validation.is_winding_consistent]
     [`face_flip_mask`][triwarp.validation.face_flip_mask]
     """
-    require_same_device(faces=faces, edges=edges, edges_sorted=edges_sorted)
+    require_same_device(faces=faces, edges=edges)
     n_faces = int(faces.shape[0]) // 3
     device = faces.device
     if n_faces == 0:
@@ -925,7 +902,6 @@ def is_watertight(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     *,
-    edges_sorted: twt.Array2dInt32 | None = None,
     mesh: wp.Mesh | Callable[[], wp.Mesh] | None = None,
 ) -> bool:
     """
@@ -940,11 +916,6 @@ def is_watertight(
         ``(n_vertices,)`` vertex positions.
     faces
         Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges in
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Not read: the vertex count is
-        known here, and packing the halfedge keys straight from ``faces`` against it costs less
-        than hashing these rows.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, forwarded to the
         self-intersection broad phase so its BVH is not rebuilt -- or a zero-argument callable
@@ -961,8 +932,7 @@ def is_watertight(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces``, ``edges_sorted`` and a ``wp.Mesh`` ``mesh`` are not all on one
-        device.
+        If ``vertices``, ``faces`` and a ``wp.Mesh`` ``mesh`` are not all on one device.
 
     See Also
     --------
@@ -986,10 +956,7 @@ def is_watertight(
     function. Every other ``is_*`` / ``*_mask`` pair in this module does relate that way.
     """
     require_same_device(
-        vertices=vertices,
-        faces=faces,
-        edges_sorted=edges_sorted,
-        mesh=mesh if isinstance(mesh, wp.Mesh) else None,
+        vertices=vertices, faces=faces, mesh=mesh if isinstance(mesh, wp.Mesh) else None
     )
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
@@ -1019,10 +986,7 @@ def is_watertight(
 
 
 def face_watertight_mask(
-    faces: wp.array[wp.int32],
-    edges_sorted: twt.Array2dInt32 | None = None,
-    *,
-    n_vertices: int | None = None,
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
 ) -> wp.array[wp.bool]:
     """
     Per-face flag: whether all three of a face's undirected edges are shared by exactly two faces.
@@ -1036,9 +1000,6 @@ def face_watertight_mask(
     ----------
     faces
         Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges forwarded to
-        [`edge_manifold_mask`][triwarp.validation.edge_manifold_mask].
     n_vertices
         Optional vertex count forwarded as the edge-hash base. When ``None``, inferred from
         ``faces`` with a device-host sync.
@@ -1052,26 +1013,17 @@ def face_watertight_mask(
     ------
     ValueError
         If a face index is negative or reaches the vertex count.
-    RuntimeError
-        If ``faces`` and ``edges_sorted`` are not all on one device.
 
     See Also
     --------
     [`is_watertight`][triwarp.validation.is_watertight]
     [`edge_manifold_mask`][triwarp.validation.edge_manifold_mask]
     """
-    require_same_device(faces=faces, edges_sorted=edges_sorted)
-    return edge_manifold_mask(
-        faces, edges_sorted=edges_sorted, allow_boundary_edges=False, n_vertices=n_vertices
-    )
+    return edge_manifold_mask(faces, allow_boundary_edges=False, n_vertices=n_vertices)
 
 
 def is_volume(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    *,
-    edges: twt.Array2dInt32 | None = None,
-    edges_sorted: twt.Array2dInt32 | None = None,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, edges: twt.Array2dInt32 | None = None
 ) -> bool:
     """
     Whether the mesh is a valid closed volume with outward-facing normals.
@@ -1091,10 +1043,6 @@ def is_volume(
         Optional precomputed ``(n_faces * 3, 2)`` directed edges in
         [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. When ``None``, built from
         ``faces``.
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges (same row order). Not read: the
-        halfedge keys are packed straight from ``faces`` against the vertex count, which costs less
-        than hashing these rows.
 
     Returns
     -------
@@ -1105,7 +1053,7 @@ def is_volume(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces``, ``edges`` and ``edges_sorted`` are not all on one device.
+        If ``vertices``, ``faces`` and ``edges`` are not all on one device.
 
     See Also
     --------
@@ -1126,7 +1074,7 @@ def is_volume(
     volumes ``dot(v0, cross(v1, v2)) / 6`` measured from the origin; for a closed surface this is
     independent of the reference point and its sign encodes the normal orientation.
     """
-    require_same_device(vertices=vertices, faces=faces, edges=edges, edges_sorted=edges_sorted)
+    require_same_device(vertices=vertices, faces=faces, edges=edges)
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
         return False

@@ -155,10 +155,7 @@ def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
 def _submesh(bench_case: BenchCase, lo: int, hi: int) -> tuple:
     """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
     return tw.selection.submesh_from_face_indices(
-        bench_case.vertices_wp,
-        bench_case.faces_wp,
-        _face_slice(bench_case, lo, hi),
-        unique_indices=True,
+        bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
     )
 
 

@@ -93,7 +93,9 @@ def region_boundary_edges(
     wp.utils.radix_sort_pairs(
         keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
     )
-    inclusive = wp.empty(n, dtype=wp.int32, device=device)
+    # The sort leaves its result in the leading halves, so the payload buffer's upper half is free
+    # scratch: the seam flags are written and scanned there instead of in a fresh ``n`` buffer.
+    inclusive = twt.as_dense(order[n:])
     wp.launch(
         kernel_selection.mark_region_seam,
         dim=n,
@@ -348,7 +350,6 @@ def submesh_from_face_indices(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    unique_indices: bool = ...,
     return_index: Literal[False] = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
 @overload
@@ -357,7 +358,6 @@ def submesh_from_face_indices(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    unique_indices: bool = ...,
     return_index: Literal[True],
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32]]: ...
 def submesh_from_face_indices(
@@ -365,7 +365,6 @@ def submesh_from_face_indices(
     faces: wp.array[wp.int32],
     face_indices: wp.array[wp.int32],
     *,
-    unique_indices: bool = False,
     return_index: bool = False,
 ) -> (
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
@@ -388,11 +387,8 @@ def submesh_from_face_indices(
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     face_indices
         1D ``wp.int32`` array of face indices into the source mesh
-        (``0 .. n_faces - 1``), on the same device as ``vertices``.
-    unique_indices
-        Whether ``face_indices`` is known to hold no duplicates. Not read: a duplicated face
-        reaches the vertices it already reached and keeps its own row, so the extraction is the
-        same either way.
+        (``0 .. n_faces - 1``), on the same device as ``vertices``. May repeat a face: each
+        occurrence keeps its own row of ``sub_faces``.
     return_index
         If ``True``, also return the vertex map below -- which the extraction computes anyway, so it
         costs nothing.
@@ -1033,7 +1029,7 @@ def submesh_from_vertex_indices(
     face_indices = face_indices_from_vertex_indices(
         faces, vertex_indices, face_mode=face_mode, n_vertices=int(vertices.shape[0])
     )
-    return submesh_from_face_indices(vertices, faces, face_indices, unique_indices=True)
+    return submesh_from_face_indices(vertices, faces, face_indices)
 
 
 def submesh_from_vertex_mask(

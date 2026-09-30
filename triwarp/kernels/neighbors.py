@@ -840,9 +840,8 @@ def _hashgrid_nearest_row_kernel(row_size: int, name: str):
 
         row_write(row_distances, row_indices, tid, k, out_indices, out_distances)
 
-    _kernel.__name__ = name
-    _kernel.__qualname__ = name
-    return wp.kernel(_kernel, enable_backward=False)  # ``wp.ref`` helpers, as in the BVH twin
+    # ``enable_backward=False`` for the ``wp.ref`` helpers, as in the BVH twin.
+    return wp.kernel(_kernel, name=name, enable_backward=False)
 
 
 _HASHGRID_NEAREST_ROW_KERNELS = {

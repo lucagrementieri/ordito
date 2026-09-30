@@ -1,7 +1,7 @@
 import warp as wp
 
 from triwarp.kernels import array as kernel_array
-from triwarp.kernels.array import OverloadTable, sort3
+from triwarp.kernels.array import OverloadTable, pack_triangle_key, sorted_run_start
 from triwarp.kernels.triangles import corner_triple
 
 
@@ -11,19 +11,6 @@ def scatter_first_occurrence(inverse: wp.array[wp.int32], out_first: wp.array[wp
     # least ``inverse.shape[0]``, so a class with no member keeps it.
     i = wp.int32(wp.tid())
     wp.atomic_min(out_first, inverse[i], i)
-
-
-@wp.func
-def sorted_run_start(sorted_values: wp.array[wp.Int], i: wp.int32) -> wp.bool:
-    # Does position ``i`` begin a run of equal values? The one test every run-length grouping in
-    # the package shares, and its callers add their own conditions on top: ``mark_group_starts``
-    # requires the run to be exactly ``length`` long, ``remesh``'s ``mark_edge_pair_starts``
-    # specialises that to two, and the plain run-start markers want every run whatever its length.
-    # Bounding the *data* is the caller's job too -- the buffer is usually over-allocated
-    # radix-sort scratch.
-    if i == 0:
-        return True
-    return sorted_values[i] != sorted_values[i - 1]
 
 
 @wp.func
@@ -70,8 +57,8 @@ def emit_groups(
     # launch do the compaction and the emit together, instead of a ``flatnonzero`` of the starts
     # followed by a launch over them.
     i = wp.int32(wp.tid())
-    g = offsets[i]
-    if offsets[i + 1] == g:
+    g, starts = kernel_array.scanned_slot(offsets, i)
+    if not starts:
         return
     for j in range(out_groups.shape[1]):
         out_groups[g, j] = indices[i + j]
@@ -118,6 +105,22 @@ def hash_slot(key: wp.Int, mask: wp.int32) -> wp.int32:
     # gone once the ids were merely strided.
     h = h ^ (h >> HASH_FOLD_SHIFT)
     return wp.int32(h & wp.uint64(mask))
+
+
+@wp.func
+def hash_slot_words3(high: wp.int32, low: wp.int32, spread: wp.int32, mask: wp.int32) -> wp.int32:
+    """Home slot of a three-word key: ``high`` and ``low`` side by side, xor ``spread`` spread."""
+    # The mixing every open-addressing table of *indices* keyed on three 32-bit words shares
+    # (``points.position_hash_slot`` over a position's bits, ``voxels.cell_hash_slot`` over a
+    # cell, ``remesh.cluster_mark_faces`` over a sorted cluster triple): two words side by side in
+    # one 64-bit word, xor'ed with the third spread by the Fibonacci multiplier, then
+    # ``hash_slot``'s fold. Any mixing works -- every caller resolves a collision by comparing the
+    # stored entry's key, never trusting the slot -- so this only has to spread the probes,
+    # including over an axis-aligned lattice.
+    x = wp.uint64(wp.uint32(high))
+    y = wp.uint64(wp.uint32(low))
+    z = wp.uint64(wp.uint32(spread))
+    return hash_slot(wp.int64(((x << wp.uint64(32)) | y) ^ (z * HASH_MULT_U64)), mask)
 
 
 @wp.func
@@ -342,31 +345,17 @@ def pack_indices(
     out_packed[tid] = packed_value
 
 
-@wp.func
-def pack_index_triple(a: wp.int32, b: wp.int32, c: wp.int32, max_index: wp.uint64) -> wp.uint64:
-    # The key ``pack_indices`` gives the three-column row ``(a, b, c)``, for a caller holding the
-    # row in registers: ``pack_sorted_face_keys`` below and ``kernels/remesh.cluster_cell_keys``,
-    # which would otherwise write an ``(n, 3)`` table only for this packing to read.
-    packed = wp.uint64(0)
-    power = wp.uint64(1)
-    packed, power = pack_index_digit(packed, power, a, max_index)
-    packed, power = pack_index_digit(packed, power, b, max_index)
-    packed, power = pack_index_digit(packed, power, c, max_index)
-    return packed
-
-
 @wp.kernel
 def pack_sorted_face_keys(
     faces: wp.array[wp.int32], max_index: wp.uint64, out_packed: wp.array[wp.uint64]
 ) -> None:
-    # A face's orientation-free key: its three corners in ascending order, packed as
-    # ``pack_indices`` packs a three-column row. Sorting in registers and packing in the same
-    # thread drops the ``(n, 3)`` table of sorted rows a separate sort launch would write for this
-    # one to read.
+    # A face's orientation-free key, ``array.pack_triangle_key``: its three corners in ascending
+    # order, packed as ``pack_indices`` packs a three-column row. Sorting in registers and packing
+    # in the same thread drops the ``(n, 3)`` table of sorted rows a separate sort launch would
+    # write for this one to read.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
-    s0, s1, s2 = sort3(a, b, c)
-    out_packed[f] = pack_index_triple(s0, s1, s2, max_index)
+    out_packed[f] = pack_triangle_key(a, b, c, max_index)
 
 
 @wp.kernel

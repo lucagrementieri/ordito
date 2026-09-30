@@ -12,11 +12,6 @@ Two axes, and neither is the face count:
   then an all-selected test per component, so it inherits the component-count sensitivity that
   [`test_combine.py`](test_combine.py) documents for ``split``.
 
-``submesh_from_face_indices`` gets a ``unique_indices`` sweep instead. That flag skips a dedup sort
-the caller can promise is unnecessary, and ``combine.split`` relies on the fast path -- so the gap
-between the two rows is exactly what ``split`` saves per component, which is worth knowing given
-that ``split``'s per-component host sequence is the package's largest single slowness path.
-
 References
 ----------
 **trimesh**'s ``Trimesh.submesh`` is the reference for the extraction group; it takes a sequence of
@@ -236,14 +231,9 @@ def _face_indices(bench_case: BenchCase) -> tuple:
 @pytest.mark.benchmark(group="submesh_from_face_indices")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pyvista")
-@pytest.mark.parametrize("unique_indices", [False, True], ids=["dedup", "presorted"])
-def test_submesh_from_face_indices(bench_case: BenchCase, unique_indices: bool) -> None:
+def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
     """
-    Face gather plus a vertex remap, with and without the dedup sort.
-
-    ``unique_indices=True`` is the promise ``combine.split`` makes on every component, so the gap
-    between these two rows is what the fast path buys there -- and ``split``'s per-component host
-    sequence is the largest single slowness path the axis set has surfaced.
+    Face gather plus a vertex remap.
 
     Three references, and all three do the same two things triwarp does -- gather the faces and
     **compact** the vertex buffer. So the rows are like-for-like on the work; what differs is
@@ -262,8 +252,6 @@ def test_submesh_from_face_indices(bench_case: BenchCase, unique_indices: bool) 
     if bench_case.kind == "open3d":
         import open3d as o3d
 
-        if unique_indices:
-            pytest.skip("open3d takes a mask, so it has no presorted fast path to compare against")
         _indices_wp, indices_np = _face_indices(bench_case)
         mesh_o3d = o3d.t.geometry.TriangleMesh.from_legacy(bench_case.mesh_o3d)
         n_faces = bench_case.n_faces
@@ -280,8 +268,6 @@ def test_submesh_from_face_indices(bench_case: BenchCase, unique_indices: bool) 
         assert bench_case.run(select_faces_o3d) <= indices_np.shape[0]
         return
     if bench_case.kind == "pyvista":
-        if unique_indices:
-            pytest.skip("pyvista has no presorted fast path to compare against")
         _indices_wp, indices_np = _face_indices(bench_case)
         mesh_pv = bench_case.mesh_pv
         extracted_pv = bench_case.run(lambda: mesh_pv.extract_cells(indices_np))
@@ -291,14 +277,10 @@ def test_submesh_from_face_indices(bench_case: BenchCase, unique_indices: bool) 
         indices_wp, _indices_np = _face_indices(bench_case)
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         _sub_vertices, sub_faces = bench_case.run(
-            lambda: tw.selection.submesh_from_face_indices(
-                vertices, faces, indices_wp, unique_indices=unique_indices
-            )
+            lambda: tw.selection.submesh_from_face_indices(vertices, faces, indices_wp)
         )
         assert int(sub_faces.shape[0]) == 3 * int(indices_wp.shape[0])
     else:
-        if unique_indices:
-            pytest.skip("trimesh's submesh has no presorted fast path to compare against")
         _indices_wp, indices_np = _face_indices(bench_case)
         mesh_tm = tm.Trimesh(bench_case.vertices_np, bench_case.faces_np, process=False)
         parts = bench_case.run(lambda: mesh_tm.submesh([indices_np], append=False))

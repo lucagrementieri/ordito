@@ -42,6 +42,28 @@ _GLOBAL_BEST_RELAX = wp.float32(1.0 + 1e-4)
 # device on overlapping pairs, and not always the same one twice.
 _MIN_POSITIVE_FLOAT32 = wp.float32(1.1754943508222875e-38)
 
+# ``mesh_to_mesh_distance``'s three running scalars, one ``float32`` buffer: the published global
+# best squared distance every walker prunes against (slot 0, which ``update_nearest_face_pair``
+# reads), the brute-force corner seed that caps the sampled bound queries, and the sampled upper
+# bound itself, which grows every query face's broad-phase box. The bound stays on the device, so
+# the walk is issued behind the sampling with no readback in between.
+BEST_SQ_SLOT = wp.constant(wp.int32(0))
+SEED_SQ_SLOT = wp.constant(wp.int32(1))
+UPPER_BOUND_SLOT = wp.constant(wp.int32(2))
+
+
+@wp.func
+def publish_best_sq(global_best_sq: wp.array[wp.float32], distance_sq: wp.float32) -> None:
+    # Publish a real squared distance between the surfaces into the running prune limit, relaxed by
+    # ``_GLOBAL_BEST_RELAX`` and floored at ``_MIN_POSITIVE_FLOAT32`` for the reasons above. The
+    # map is monotone in ``distance_sq``, so the minimum of the publications is the publication of
+    # the minimum: the sampled bound phase seeds the limit with this rule too, one point at a time.
+    wp.atomic_min(
+        global_best_sq,
+        BEST_SQ_SLOT,
+        wp.max(distance_sq * _GLOBAL_BEST_RELAX, _MIN_POSITIVE_FLOAT32),
+    )
+
 
 @wp.func
 def closest_point_query(
@@ -238,12 +260,10 @@ def update_nearest_face_pair(
         target_lower,
         target_upper,
         candidate,
-        wp.min(best, global_best_sq[0]),
+        wp.min(best, global_best_sq[BEST_SQ_SLOT]),
     )
     if distance_sq < best:
-        wp.atomic_min(
-            global_best_sq, 0, wp.max(distance_sq * _GLOBAL_BEST_RELAX, _MIN_POSITIVE_FLOAT32)
-        )
+        publish_best_sq(global_best_sq, distance_sq)
         return distance_sq, candidate
     return best, witness
 
@@ -277,12 +297,13 @@ def sampled_corner_gap_sq(
     target_faces: wp.array[wp.int32],
     target_stride: wp.int32,
     n_target_samples: wp.int32,
-    out_min_sq: wp.array[wp.float32],
+    out_bounds: wp.array[wp.float32],
 ) -> None:
     # Brute force over two small corner samples: the smallest squared distance between a sample
-    # point of the query surface and one of the target surface. Both are surface points, so it is
-    # an upper bound on the surfaces' distance -- a loose one, but it is only the ``max_dist`` that
-    # lets ``sampled_corner_distance_min`` stop a far query early instead of walking the BVH.
+    # point of the query surface and one of the target surface, into ``out_bounds[SEED_SQ_SLOT]``.
+    # Both are surface points, so it is an upper bound on the surfaces' distance -- a loose one,
+    # but it is only the ``max_dist`` that lets ``sampled_corner_distance_min`` stop a far query
+    # early instead of walking the BVH.
     #
     # ``dim=(slices, query samples)``: the query sample is the lane index, so every lane of a warp
     # reads the same target sample at each step and the load broadcasts; the slices split the
@@ -294,8 +315,8 @@ def sampled_corner_gap_sq(
     for j in range(s, n_target_samples, SEED_SLICES):
         q = sampled_corner(target_vertices, target_faces, target_stride, j)
         best = wp.min(best, wp.length_sq(p - q))
-    if best < out_min_sq[0]:
-        wp.atomic_min(out_min_sq, 0, best)
+    if best < out_bounds[SEED_SQ_SLOT]:
+        wp.atomic_min(out_bounds, SEED_SQ_SLOT, best)
 
 
 @wp.kernel
@@ -304,23 +325,25 @@ def sampled_corner_distance_min(
     query_vertices: wp.array[wp.vec3],
     query_faces: wp.array[wp.int32],
     query_stride: wp.int32,
-    seed_sq: wp.array[wp.float32],
-    out_bound: wp.array[wp.float32],
+    out_bounds: wp.array[wp.float32],
 ) -> None:
     # The smallest distance from a sample point of the query surface to the target -- the upper
-    # bound the broad phase is grown by. ``max_dist`` is ``sampled_corner_gap_sq``'s seed, so a
-    # point farther than it is a miss that stops near the top of the BVH and returns ``max_dist``,
-    # which is still a valid upper bound; and the seed's own query point is a sample here too, so
-    # the minimum never rests on a miss.
+    # bound the broad phase is grown by, into ``out_bounds[UPPER_BOUND_SLOT]`` -- and the same
+    # distance published into the walk's prune limit (``publish_best_sq``), so the walk starts
+    # from it with no host round trip. ``max_dist`` is ``sampled_corner_gap_sq``'s seed, so a point
+    # farther than it is a miss that stops near the top of the BVH and returns ``max_dist``, which
+    # is still a valid upper bound; and the seed's own query point is a sample here too, so the
+    # minimum never rests on a miss.
     #
-    # The ``<`` read before the atomic keeps the single-slot contention to the points that improve
+    # The ``<`` read before the atomics keeps the single-slot contention to the points that improve
     # it; ``atomic_min`` is exact, so the minimum is the one a reduction would return.
     p = sampled_corner(query_vertices, query_faces, query_stride, wp.int32(wp.tid()))
     _closest, distance, _face = closest_point_query(
-        target_mesh, p, wp.sqrt(seed_sq[0]) * _SEED_RELAX
+        target_mesh, p, wp.sqrt(out_bounds[SEED_SQ_SLOT]) * _SEED_RELAX
     )
-    if distance < out_bound[0]:
-        wp.atomic_min(out_bound, 0, distance)
+    if distance < out_bounds[UPPER_BOUND_SLOT]:
+        wp.atomic_min(out_bounds, UPPER_BOUND_SLOT, distance)
+        publish_best_sq(out_bounds, distance * distance)
 
 
 @wp.kernel
@@ -332,7 +355,6 @@ def face_to_mesh_distance(
     target_lower: wp.array[wp.vec3],
     target_upper: wp.array[wp.vec3],
     target_mesh: wp.uint64,
-    upper_bound: wp.float32,
     candidate_cap: wp.int32,
     global_best_sq: wp.array[wp.float32],
     out_distance_sq: wp.array[wp.float32],
@@ -340,9 +362,10 @@ def face_to_mesh_distance(
     counter: wp.array[wp.int32],
     overflow: wp.array[wp.int32],
 ) -> None:
-    # One thread per face of the query mesh: expand its own AABB by ``upper_bound`` and test every
+    # One thread per face of the query mesh: expand its own AABB by the upper bound
+    # (``global_best_sq[UPPER_BOUND_SLOT]``, the same buffer's third slot) and test every
     # target face whose AABB it then meets. That bound is what makes the broad phase sound -- the
-    # true minimum is at most ``upper_bound``, so the pair achieving it has AABBs within that
+    # true minimum is at most the bound, so the pair achieving it has AABBs within that
     # distance and cannot be missed.
     #
     # Two prunes stand between a candidate and the fifteen-case leaf test, both inside
@@ -363,7 +386,7 @@ def face_to_mesh_distance(
     target_bvh = wp.mesh_get_bvh(target_mesh)
     f = wp.int32(wp.tid())
     a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
-        query_vertices, query_faces, f, upper_bound
+        query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
     )
 
     best = FLOAT32_INF_CONSTANT
@@ -410,7 +433,6 @@ def face_to_mesh_distance_tiled(
     target_lower: wp.array[wp.vec3],
     target_upper: wp.array[wp.vec3],
     target_mesh: wp.uint64,
-    upper_bound: wp.float32,
     overflow: wp.array[wp.int32],
     global_best_sq: wp.array[wp.float32],
     out_distance_sq: wp.array[wp.float32],
@@ -433,7 +455,7 @@ def face_to_mesh_distance_tiled(
     f = overflow[slot]
     n_target_faces = target_faces.shape[0] // 3
     a0, a1, a2, lower, upper, grown_lower, grown_upper = query_face_broad_phase(
-        query_vertices, query_faces, f, upper_bound
+        query_vertices, query_faces, f, global_best_sq[UPPER_BOUND_SLOT]
     )
 
     best = FLOAT32_INF_CONSTANT

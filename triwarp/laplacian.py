@@ -32,7 +32,7 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 
 from __future__ import annotations
 
-from typing import Literal, cast, overload
+from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
 import warp.sparse as wps
@@ -52,7 +52,7 @@ from triwarp.triangles import face_normals_and_areas
 
 # Face count from which a mesh operator's pattern is built from undirected keys plus a 32-bit
 # second sort rather than one sort of directed keys (``_mesh_operator_pattern``). Both give the
-# identical matrix; the undirected build sorts less and holds less memory, for five more launches.
+# identical matrix; the undirected build sorts less and holds less memory, for three more launches.
 # Measured on ``cotmatrix``: directed wins below ~0.5 M faces (undirected 0.55-0.59x at 16-82 k,
 # 0.78x at 328 k), undirected above (1.35x at 871 k and 28 M, 1.45x at 1.3 M), where it also holds
 # a fifth less memory.
@@ -269,6 +269,8 @@ def cotmatrix(
     faces: wp.array[wp.int32],
     cot_entries: twt.Array2dFloat | None = None,
     dtype: type[wp.float32] = wp.float32,
+    *,
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float32]: ...
 @overload
 def cotmatrix(
@@ -276,6 +278,8 @@ def cotmatrix(
     faces: wp.array[wp.int32],
     cot_entries: twt.Array2dFloat | None,
     dtype: type[wp.float64],
+    *,
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float64]: ...
 @overload
 def cotmatrix(
@@ -284,12 +288,15 @@ def cotmatrix(
     cot_entries: twt.Array2dFloat | None = None,
     *,
     dtype: type[wp.float64],
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float64]: ...
 def cotmatrix(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     cot_entries: twt.Array2dFloat | None = None,
     dtype: type = wp.float32,
+    *,
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float32] | wps.BsrMatrix[wp.float64]:
     """
     Cotangent stiffness matrix of the mesh: the discrete Laplace-Beltrami operator.
@@ -315,6 +322,10 @@ def cotmatrix(
         ``wp.float64`` when the matrix feeds an ill-conditioned solve (e.g. the biharmonic operator
         in [`harmonic`][triwarp.parametrization.harmonic]); the entries are always assembled in
         the requested precision, in one build.
+    pattern
+        Optional sparsity from [`mesh_operator_pattern`][triwarp.laplacian.mesh_operator_pattern]
+        (``operator="cotmatrix"``) built on these same ``faces``. Only the values are then
+        computed; the returned matrix shares the pattern's ``offsets`` and ``columns``.
 
     Returns
     -------
@@ -325,9 +336,10 @@ def cotmatrix(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and ``cot_entries`` are not all on one device.
+        If ``vertices``, ``faces``, ``cot_entries`` and ``pattern`` are not all on one device.
     ValueError
-        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count.
+        If ``cot_entries`` is given and its row count does not match ``faces``' triangle count, or
+        ``pattern`` was built for another operator or vertex count.
 
     See Also
     --------
@@ -343,10 +355,16 @@ def cotmatrix(
     -----
     Matches ``igl::cotmatrix``, sign convention included; asserted in ``tests/test_laplacian.py``.
     """
-    require_same_device(vertices=vertices, faces=faces, cot_entries=cot_entries)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        cot_entries=cot_entries,
+        pattern=None if pattern is None else pattern.offsets,
+    )
     n_vertices = int(vertices.shape[0])
     n_faces = int(faces.shape[0]) // 3
     device = vertices.device
+    _check_pattern(pattern, "cotmatrix", n_vertices)
 
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
@@ -362,7 +380,9 @@ def cotmatrix(
     # The pattern comes from the faces (``_mesh_operator_pattern``) with no triplets in between;
     # one row kernel then forms each off-diagonal from its contributing half-cotangents and the
     # diagonal from the row sum, casting the (float32 or float64) weights to the matrix dtype.
-    offsets, columns, run_start, keys, count, order = _mesh_operator_pattern(faces, n_vertices)
+    if pattern is None:
+        pattern = mesh_operator_pattern(faces, n_vertices)
+    _, _, offsets, columns, run_start, keys, count, order = pattern
     values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
     wp.launch(
         kernel_laplacian.COTMATRIX_ROWS[cot_entries.dtype, dtype],
@@ -520,6 +540,8 @@ def connection_laplacian(
     faces: wp.array[wp.int32],
     cot_entries: twt.Array2dFloat | None = None,
     transport_angles: wp.array[wp.float32] | None = None,
+    *,
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float64]:
     """
     Vector (connection) Laplacian: the cotangent Laplacian for *tangent vector* fields.
@@ -555,6 +577,10 @@ def connection_laplacian(
         convention [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames] uses to
         pick ``basis_x`` — so a caller-supplied frame cannot change these angles, and solutions are
         already consistent with the frames that convention produces.
+    pattern
+        Optional sparsity from [`mesh_operator_pattern`][triwarp.laplacian.mesh_operator_pattern]
+        (``operator="cotmatrix"``, the same pattern ``cotmatrix`` takes) built on these same
+        ``faces``. Only the values are then computed.
 
     Returns
     -------
@@ -564,11 +590,11 @@ def connection_laplacian(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces``, ``cot_entries`` and ``transport_angles`` are not all on one
-        device.
+        If ``vertices``, ``faces``, ``cot_entries``, ``transport_angles`` and ``pattern`` are not
+        all on one device.
     ValueError
         If ``cot_entries`` or ``transport_angles`` is given and does not match ``faces``' triangle
-        count.
+        count, or ``pattern`` was built for another operator or vertex count.
 
     See Also
     --------
@@ -577,11 +603,16 @@ def connection_laplacian(
     [`transport_tangent_vectors`][triwarp.heat.transport_tangent_vectors]
     """
     require_same_device(
-        vertices=vertices, faces=faces, cot_entries=cot_entries, transport_angles=transport_angles
+        vertices=vertices,
+        faces=faces,
+        cot_entries=cot_entries,
+        transport_angles=transport_angles,
+        pattern=None if pattern is None else pattern.offsets,
     )
     n_vertices = int(vertices.shape[0])
     n_faces = int(faces.shape[0]) // 3
     device = vertices.device
+    _check_pattern(pattern, "cotmatrix", n_vertices)
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, wp.mat22d, device)
 
@@ -600,7 +631,9 @@ def connection_laplacian(
             f"got {int(transport_angles.shape[0])}"
         )
 
-    offsets, columns, run_start, keys, count, order = _mesh_operator_pattern(faces, n_vertices)
+    if pattern is None:
+        pattern = mesh_operator_pattern(faces, n_vertices)
+    _, _, offsets, columns, run_start, keys, count, order = pattern
     values = wp.empty(int(columns.shape[0]), dtype=wp.mat22d, device=device)
     wp.launch(
         kernel_laplacian.CONNECTION_LAPLACIAN_ROWS[cot_entries.dtype],
@@ -620,6 +653,99 @@ def connection_laplacian(
         device=device,
     )
     return tw.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
+
+
+class MeshOperatorPattern(NamedTuple):
+    """
+    The sparsity of a vertex operator on one face buffer, with each entry's contributing corners.
+
+    Built by [`mesh_operator_pattern`][triwarp.laplacian.mesh_operator_pattern] and taken as
+    ``pattern=`` by [`cotmatrix`][triwarp.laplacian.cotmatrix],
+    [`connection_laplacian`][triwarp.laplacian.connection_laplacian] and
+    [`laplacian`][triwarp.laplacian.laplacian], so a caller that assembles an operator repeatedly
+    over fixed connectivity -- only the geometry moving -- builds the pattern once. Every matrix
+    built from one pattern shares its ``offsets`` and ``columns`` arrays.
+    """
+
+    operator: str
+    """The operator family the pattern serves: ``"cotmatrix"``, ``"laplacian_symmetric"`` or
+    ``"laplacian_directed"``."""
+    n_vertices: int
+    """Row and column count."""
+    offsets: wp.array[wp.int32]
+    """``n_vertices + 1`` row bounds, total-terminated."""
+    columns: wp.array[wp.int32]
+    """Sorted column of each entry, per row; a capacity, of which ``offsets[-1]`` are written."""
+    run_start: wp.array[wp.int32]
+    """Each entry's first position in the sorted ``keys``."""
+    keys: wp.array[wp.uint64]
+    """The sorted entry keys; an entry's contributors are its run of equal keys."""
+    n_keys: int
+    """The number of sorted keys."""
+    order: wp.array[wp.int32]
+    """Each sorted key's corner slot ``3 * f + e`` (the corner opposite the edge), or halfedge."""
+
+
+# ``mesh_operator_pattern``'s menu, mapped to ``_mesh_operator_pattern``'s build switches.
+_PATTERN_BUILDS = {
+    "cotmatrix": (False, "referenced"),
+    "laplacian_symmetric": (False, "self"),
+    "laplacian_directed": (True, "self"),
+}
+
+
+def mesh_operator_pattern(
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    *,
+    operator: Literal["cotmatrix", "laplacian_symmetric", "laplacian_directed"] = "cotmatrix",
+) -> MeshOperatorPattern:
+    """
+    Sparsity of a vertex operator on ``faces``, reusable while the geometry changes.
+
+    Every entry of the operators [`cotmatrix`][triwarp.laplacian.cotmatrix],
+    [`connection_laplacian`][triwarp.laplacian.connection_laplacian] and
+    [`laplacian`][triwarp.laplacian.laplacian] build is determined by the connectivity alone, so
+    a caller rebuilding one of them over fixed ``faces`` -- a smoothing flow re-linearising on the
+    moving surface, or two operators over one mesh -- passes this as their ``pattern=`` and pays
+    only for the values.
+
+    Parameters
+    ----------
+    faces
+        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+    n_vertices
+        Vertex count; the operator is ``(n_vertices, n_vertices)``.
+    operator
+        Which operator the pattern serves. ``"cotmatrix"`` (default) serves ``cotmatrix`` and
+        ``connection_laplacian`` -- every edge both ways plus every referenced vertex's diagonal.
+        ``"laplacian_symmetric"`` and ``"laplacian_directed"`` serve ``laplacian`` with
+        ``symmetric=True`` and ``False``: every edge both ways, or one entry per halfedge.
+
+    Returns
+    -------
+    MeshOperatorPattern
+        The pattern, on ``faces.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``operator`` is not one of the three names above.
+
+    See Also
+    --------
+    [`cotmatrix`][triwarp.laplacian.cotmatrix]
+    [`laplacian`][triwarp.laplacian.laplacian]
+    """
+    if operator not in _PATTERN_BUILDS:
+        raise ValueError(f"operator must be one of {list(_PATTERN_BUILDS)}, got {operator!r}")
+    halfedges, diagonal = _PATTERN_BUILDS[operator]
+    offsets, columns, run_start, keys, count, order = _mesh_operator_pattern(
+        faces, n_vertices, halfedges=halfedges, diagonal=diagonal
+    )
+    return MeshOperatorPattern(
+        operator, n_vertices, offsets, columns, run_start, keys, count, order
+    )
 
 
 def _mesh_operator_pattern(
@@ -654,7 +780,7 @@ def _mesh_operator_pattern(
     Two builds give the identical pattern. Below ``_UNDIRECTED_PATTERN_FROM_FACES`` one sort of
     ``6 * n_faces`` directed keys plus the diagonal slots is cheapest; above it one sort of the
     ``3 * n_faces`` undirected keys plus a 32-bit sort of the unique edges does less sorting in less
-    memory, for five more launches.
+    memory, for three more launches.
     """
     device = faces.device
     n_faces = int(faces.shape[0]) // 3
@@ -671,26 +797,20 @@ def _mesh_operator_pattern(
             keys, order, count, n_vertices, n_vertices
         )
         return offsets, columns, starts, keys, count, order
-    if n_faces < _UNDIRECTED_PATTERN_FROM_FACES:
+    if n_faces < _UNDIRECTED_PATTERN_FROM_FACES or n_vertices == 0:
         # A self-edge's own keys are its diagonal entry, so ``"self"`` needs no diagonal slots.
         tail = 0 if diagonal == "self" else n_vertices
         count = 6 * n_faces + tail
         keys, order = tw.array.csr_key_buffers(count, device)
-        if diagonal == "referenced":
+        mode = {"self": 0, "referenced": 1, "all": 2}[diagonal]
+        if mode == 1 and n_vertices > 0:
             # The diagonal slots start as the sentinel: a vertex no face references stays out of
             # the pattern, so its row is empty, as ``cotmatrix``'s callers rely on.
             keys[6 * n_faces : count].fill_(n_vertices * n_vertices)
-        elif diagonal == "all":
-            wp.launch(
-                kernel_laplacian.diagonal_keys,
-                dim=n_vertices,
-                inputs=[wp.int32(n_vertices), wp.int32(6 * n_faces), keys],
-                device=device,
-            )
         wp.launch(
             kernel_laplacian.mesh_operator_keys,
-            dim=n_faces,
-            inputs=[faces, wp.int32(n_vertices), wp.int32(diagonal == "referenced"), keys, order],
+            dim=max(n_faces, n_vertices) if mode == 2 else n_faces,
+            inputs=[faces, wp.int32(n_vertices), wp.int32(mode), keys, order],
             device=device,
         )
         offsets, columns, starts = tw.array.csr_from_keys(
@@ -701,22 +821,14 @@ def _mesh_operator_pattern(
     count = 3 * n_faces
     sentinel = n_vertices * n_vertices
     keys, order = tw.array.csr_key_buffers(count, device)
-    # Rows: per-vertex upper-half count, lower-half count, referenced flag; then their scans.
+    # Rows: per-vertex upper-half count, lower-half count, referenced flag; then their scan.
     tallies = wp.zeros((3, n_vertices), dtype=wp.int32, device=device)
     upper, lower, referenced = tallies[0], tallies[1], tallies[2]
-    if diagonal == "all":
-        referenced.fill_(1)
+    mark = {"self": 2, "referenced": 1, "all": 3}[diagonal]
     wp.launch(
         kernel_laplacian.mesh_edge_keys,
-        dim=n_faces,
-        inputs=[
-            faces,
-            wp.int32(n_vertices),
-            wp.int32({"self": 2, "referenced": 1, "all": 0}[diagonal]),
-            keys,
-            order,
-            referenced,
-        ],
+        dim=max(n_faces, n_vertices) if mark == 3 else n_faces,
+        inputs=[faces, wp.int32(n_vertices), wp.int32(mark), keys, order, referenced],
         device=device,
     )
     wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
@@ -746,21 +858,15 @@ def _mesh_operator_pattern(
         device=device,
     )
     wp.utils.array_scan(flags, out_array=flags, inclusive=True)
-    offsets = wp.zeros(n_vertices + 1, dtype=wp.int32, device=device)
-    wp.launch(
-        kernel_laplacian.mesh_row_counts,
-        dim=n_vertices,
-        inputs=[upper, lower, referenced, offsets[1:]],
-        device=device,
-    )
-    wp.utils.array_scan(offsets[1:], out_array=offsets[1:], inclusive=True)
-    before = wp.empty((2, n_vertices), dtype=wp.int32, device=device)
-    wp.utils.array_scan(upper, out_array=before[0], inclusive=False)
-    wp.utils.array_scan(lower, out_array=before[1], inclusive=False)
+    # One exclusive scan of the three tally rows taken as one array places every part of every row
+    # (``kernels/laplacian.mesh_row_start``); ``mesh_place_lower`` writes the offsets from it.
+    before = wp.empty((3, n_vertices), dtype=wp.int32, device=device)
+    wp.utils.array_scan(tallies.flatten(), out_array=before.flatten(), inclusive=False)
     wp.utils.radix_sort_pairs(
         second_keys, second_order, count=count, end_bit=max(1, n_vertices.bit_length())
     )
     capacity = 2 * count + n_vertices
+    offsets = wp.empty(n_vertices + 1, dtype=wp.int32, device=device)
     columns = wp.empty(capacity, dtype=wp.int32, device=device)
     run_start = wp.empty(capacity, dtype=wp.int32, device=device)
     wp.launch(
@@ -771,10 +877,8 @@ def _mesh_operator_pattern(
             flags,
             wp.uint64(sentinel),
             wp.int32(n_vertices),
-            offsets,
-            lower,
-            referenced,
-            before[0],
+            tallies,
+            before,
             columns,
             run_start,
         ],
@@ -789,16 +893,26 @@ def _mesh_operator_pattern(
             second_order,
             wp.int32(count),
             wp.int32(n_vertices),
+            tallies,
+            before,
             offsets,
-            lower,
-            referenced,
-            before[1],
             columns,
             run_start,
         ],
         device=device,
     )
     return offsets, columns, run_start, keys, count, order
+
+
+def _check_pattern(pattern: MeshOperatorPattern | None, operator: str, n_vertices: int) -> None:
+    """Raise if a caller's ``pattern`` was not built for ``operator`` over ``n_vertices``."""
+    if pattern is None:
+        return
+    if pattern.operator != operator or pattern.n_vertices != n_vertices:
+        raise ValueError(
+            f"pattern was built for operator={pattern.operator!r} over {pattern.n_vertices} "
+            f"vertices; this operator needs operator={operator!r} over {n_vertices}"
+        )
 
 
 def laplacian_entries(
@@ -932,6 +1046,7 @@ def laplacian(
     edges: twt.Array2dInt32 | None = None,
     *,
     validate: bool = True,
+    pattern: MeshOperatorPattern | None = None,
 ) -> wps.BsrMatrix[wp.float32]:
     """
     Row-normalized 1-ring averaging operator (uniform / umbrella Laplacian).
@@ -963,18 +1078,20 @@ def laplacian(
         row-normalized natively in the requested precision, in one build.
     edges
         Optional precomputed ``(m, 2)`` unique undirected edges, forwarded to
-        [`laplacian_entries`][triwarp.laplacian.laplacian_entries]. Read its note before skipping
-        this: on the ``symmetric`` branch (the ``equal_weight=False`` default) deriving the edge
-        set can dominate the call, so a caller that already holds one -- or that assembles the
-        operator repeatedly over fixed connectivity, as
-        [`filter_taubin`][triwarp.smoothing.filter_taubin] does at ``recompute=True`` -- should
-        pass it. Ignored when the adjacency is directed.
+        [`laplacian_entries`][triwarp.laplacian.laplacian_entries], which assembles the operator
+        from them as triplets. Ignored when the adjacency is directed. Without ``edges`` the
+        operator's pattern is built straight from ``faces``, which is usually cheaper.
     validate
         Forwarded to [`laplacian_entries`][triwarp.laplacian.laplacian_entries]: when ``True``
         (default) and ``edges`` is given, check its indices fall in ``[0, n_vertices)`` before
-        launching. Pass ``False`` only when ``edges`` is known correct by construction (e.g.
-        derived once outside a loop over fixed connectivity, as
-        [`filter_taubin`][triwarp.smoothing.filter_taubin] does).
+        launching. Pass ``False`` only when ``edges`` is known correct by construction.
+    pattern
+        Optional sparsity from [`mesh_operator_pattern`][triwarp.laplacian.mesh_operator_pattern]
+        built on these same ``faces`` -- ``operator="laplacian_symmetric"`` or
+        ``"laplacian_directed"``, matching ``symmetric`` -- for a caller that assembles the
+        operator repeatedly over fixed connectivity, as
+        [`filter_taubin`][triwarp.smoothing.filter_taubin] does at ``recompute=True``. Only the
+        weights are then computed. Not combined with ``edges``.
 
     Returns
     -------
@@ -986,9 +1103,11 @@ def laplacian(
     Raises
     ------
     RuntimeError
-        If ``vertices``, ``faces`` and ``edges`` are not all on one device.
+        If ``vertices``, ``faces``, ``edges`` and ``pattern`` are not all on one device.
     ValueError
-        If ``validate`` and ``edges`` references a vertex index outside ``[0, n_vertices)``.
+        If ``validate`` and ``edges`` references a vertex index outside ``[0, n_vertices)``; if
+        both ``edges`` and ``pattern`` are given; or if ``pattern`` was built for another adjacency
+        or vertex count.
 
     See Also
     --------
@@ -997,20 +1116,29 @@ def laplacian(
     [`edges_unique`][triwarp.edges.edges_unique]
     [`trimesh.smoothing.laplacian_calculation`][]
     """
-    require_same_device(vertices=vertices, faces=faces, edges=edges)
+    require_same_device(
+        vertices=vertices,
+        faces=faces,
+        edges=edges,
+        pattern=None if pattern is None else pattern.offsets,
+    )
     n_vertices = int(vertices.shape[0])
     device = vertices.device
+    if symmetric is None:
+        symmetric = not equal_weight
+    if pattern is not None and edges is not None:
+        raise ValueError("laplacian: pass edges or pattern, not both")
+    operator = "laplacian_symmetric" if symmetric else "laplacian_directed"
+    _check_pattern(pattern, operator, n_vertices)
     if edges is None:
         # The adjacency follows from the faces: its pattern is built straight from them and one row
         # kernel writes the weights and normalizes. Directed is one entry per halfedge; symmetric
         # both directions of every edge, plus a degenerate face's self-edge as a diagonal entry.
-        if symmetric is None:
-            symmetric = not equal_weight
         if int(faces.shape[0]) == 0:
             return tw.array.empty_square_bsr(n_vertices, dtype, device)
-        offsets, columns, run_start, keys, count, _ = _mesh_operator_pattern(
-            faces, n_vertices, halfedges=not symmetric, diagonal="self"
-        )
+        if pattern is None:
+            pattern = mesh_operator_pattern(faces, n_vertices, operator=operator)
+        _, _, offsets, columns, run_start, keys, count, _ = pattern
         values = wp.empty(int(columns.shape[0]), dtype=dtype, device=device)
         wp.launch(
             kernel_laplacian.LAPLACIAN_ROWS[dtype],
@@ -1038,15 +1166,15 @@ def laplacian(
         edges=edges,
         validate=validate,
     )
-    operator = tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
-    if n_vertices > 0 and operator.nnz > 0:
+    matrix = tw.array.csr_from_triplets(n_vertices, n_vertices, rows, cols, vals)
+    if n_vertices > 0 and matrix.nnz > 0:
         wp.launch(
-            kernel_laplacian.ROW_NORMALIZE[operator.values.dtype],
+            kernel_laplacian.ROW_NORMALIZE[matrix.values.dtype],
             dim=n_vertices,
-            inputs=[operator.offsets, operator.values],
+            inputs=[matrix.offsets, matrix.values],
             device=device,
         )
-    return operator
+    return matrix
 
 
 def graph_laplacian(

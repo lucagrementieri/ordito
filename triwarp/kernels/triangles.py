@@ -7,7 +7,6 @@ from triwarp.kernels.array import (
     OverloadTable,
     binary_search_sorted_contains,
     pack_edge_key,
-    scanned_count,
     to_vec3d,
 )
 from triwarp.kernels.halfedge import halfedge_next, halfedge_prev
@@ -145,25 +144,6 @@ def write_corner_triple_reversible(
         write_corner_triple(out, row, c, b, a)
     else:
         write_corner_triple(out, row, a, b, c)
-
-
-@wp.func
-def copy_scanned_face(
-    faces: wp.array[wp.int32],
-    inclusive: wp.array[wp.int32],
-    f: wp.int32,
-    out_faces: wp.array[wp.int32],
-) -> None:
-    """
-    Move face ``f`` to row ``inclusive[f] - 1`` of ``out_faces`` where its scanned flag steps up.
-
-    ``inclusive`` is the in-place inclusive scan of 0/1 kept flags, so this is ``flatnonzero`` and
-    the row gather of a face compaction in one step, in input order.
-    """
-    row, kept = scanned_count(inclusive, f)
-    if kept != 0:
-        a, b, c = corner_triple(faces, f)
-        write_corner_triple(out_faces, row, a, b, c)
 
 
 @wp.func

@@ -8,12 +8,12 @@ from triwarp.kernels.array import (
     binary_search_index,
     mark_at,
     scanned_count,
+    sorted_run_start,
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
     unpack_edge_key,
 )
-from triwarp.kernels.grouping import sorted_run_start
 
 
 @wp.func
@@ -238,20 +238,6 @@ def scatter_edges_sum_and_valence(
             out_sum,
             out_valence,
         )
-
-
-@wp.kernel
-def scatter_unique_edges_sum_and_valence(
-    edges: wp.array2d[wp.int32],
-    edge_values: wp.array[wp.float32],
-    out_sum: wp.array[wp.float32],
-    out_valence: wp.array[wp.float32],
-) -> None:
-    # Unique-edge form: launch over the ``(m, 2)`` unique-edge list, which already holds each edge
-    # once, so there is no orientation to skip and no face buffer to read. Use this when the caller
-    # holds ``edges_unique`` output rather than an oriented half-edge table.
-    e = wp.int32(wp.tid())
-    accumulate_endpoint_value(edges[e, 0], edges[e, 1], edge_values[e], out_sum, out_valence)
 
 
 @wp.func

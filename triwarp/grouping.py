@@ -909,13 +909,11 @@ def hash_indices_rows(
 
         **A caller that derived its ``max_index`` from
         [`index_bound`][triwarp.array.index_bound] has *not* thereby made this
-        redundant, and four of them deliberately keep it on.** ``index_bound`` is a ``max``
-        reduction; the validation is a ``minmax``, and it is the ``min`` half -- the negative-index
-        guard -- that has no counterpart above it, so skipping it would turn a malformed face
-        buffer from a raise into a silently wrong grouping. So ``edges.edges_unique``,
-        ``validation.is_edge_manifold``, ``validation.edge_manifold_mask`` and ``holes._EdgeTable``
-        all validate, and the ten callers that pass ``False`` are the ones whose bound *and*
-        non-negativity are structural.
+        redundant.** ``index_bound`` is a ``max`` reduction; the validation is a ``minmax``, and
+        it is the ``min`` half -- the negative-index guard -- that has no counterpart above it, so
+        skipping it would turn a malformed face buffer from a raise into a silently wrong
+        grouping. So ``edges.edges_unique`` validates by default, and the callers that pass
+        ``False`` are the ones whose bound *and* non-negativity are structural.
 
     Returns
     -------

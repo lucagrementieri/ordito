@@ -5,7 +5,13 @@ import warp as wp
 from triwarp.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import triangles as kernel_triangles
-from triwarp.kernels.array import OverloadTable, declare_map_signatures, map_probe, map_probe_single
+from triwarp.kernels.array import (
+    OverloadTable,
+    csr_run_start,
+    declare_map_signatures,
+    map_probe,
+    map_probe_single,
+)
 from triwarp.kernels.predicates import point_plane_dot, triangles_intersect
 from triwarp.kernels.proximity import mesh_aabb_collect
 
@@ -942,10 +948,7 @@ def split_crossed_edge_flags(
     # ``1`` at the first of each run of equal crossed-edge keys in the sorted halfedges: one new
     # vertex per crossed edge, numbered in ascending edge order by the inclusive scan of these.
     q = wp.int32(wp.tid())
-    key = keys[q]
-    first = key < key_base * key_base
-    if q > 0:
-        first = first and keys[q - 1] != key
+    first = csr_run_start(keys, q, key_base * key_base)
     out_flags[q] = wp.where(first, wp.int32(1), wp.int32(0))
 
 
@@ -963,8 +966,14 @@ def split_crossed_edge_vertices(
 ) -> None:
     # Give every crossed cut-face halfedge its edge's new vertex, and have the first halfedge of
     # each edge write the crossing point. ``canonical_edge_crossing`` interpolates from the lower
-    # endpoint, so both faces' views of the edge agree.
+    # endpoint, so both faces' views of the edge agree. ``out_points`` is the whole output vertex
+    # buffer: the input's ``vertex_base`` positions, copied by the first threads of this launch (it
+    # runs over ``max(n_halfedges, vertex_base)``), then the crossings.
     q = wp.int32(wp.tid())
+    if q < vertex_base:
+        out_points[q] = vertices[q]
+    if q >= rank.shape[0]:
+        return
     key = keys[q]
     if key >= key_base * key_base:
         return
@@ -974,7 +983,7 @@ def split_crossed_edge_vertices(
     if first != 0:
         high = wp.int32(key // key_base)
         low = wp.int32(key % key_base)
-        out_points[slot] = canonical_edge_crossing(vertices, vertex_dots, low, high)
+        out_points[vertex_base + slot] = canonical_edge_crossing(vertices, vertex_dots, low, high)
 
 
 @wp.func

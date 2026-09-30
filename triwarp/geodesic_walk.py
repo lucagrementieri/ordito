@@ -36,7 +36,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device
+from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.halfedge import halfedge_twins, vertex_one_rings
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import geodesic_walk as kernel_geodesic_walk
@@ -687,14 +687,13 @@ def shorten_loop_with_offsets(
     # written; a sweep that accepts nothing leaves them alone. The offsets are total-terminated,
     # which is what every kernel below reads ``loop_offsets[l + 1]`` against.
     packed = loops
-    changed = wp.zeros(1, dtype=wp.int32, device=device)
 
     sweeps = 0
     # Requires TWO CONSECUTIVE sweeps to accept nothing, not "this sweep is odd and accepted
     # nothing" -- a rewrite can shift which loop positions land on even/odd parity, so a single
     # unchanged sweep says nothing about whether the *other* parity would still find something.
     consecutive_unchanged = 0
-    position_loop = counts = arc_slot = arc_step = None
+    position_loop = positions = counts = changed = arc_slot = arc_step = None
     for sweep in range(max_iter):
         n_positions = int(packed.shape[0])
         if n_positions == 0:
@@ -709,14 +708,22 @@ def shorten_loop_with_offsets(
                 inputs=[loop_offsets, position_loop],
                 device=device,
             )
-            counts = wp.empty(n_positions, dtype=wp.int32, device=device)
+            # One zeroed buffer: a leading zero, the per-position counts, and the accepted-anything
+            # flag after them. Scanning the counts in place makes the head the exclusive offsets
+            # and entry ``n`` the total, so the total and the flag come back in one read. The flag
+            # stays zero across unchanged sweeps -- that is what unchanged means -- so it is never
+            # re-zeroed, and the leading zero is outside the scan.
+            positions = wp.zeros(n_positions + 2, dtype=wp.int32, device=device)
+            counts = twt.as_dense(positions[1 : n_positions + 1])
+            changed = twt.as_dense(positions[n_positions + 1 :])
             arc_slot = wp.empty(n_positions, dtype=wp.int32, device=device)
             arc_step = wp.empty(n_positions, dtype=wp.int32, device=device)
         assert position_loop is not None
+        assert positions is not None
         assert counts is not None
+        assert changed is not None
         assert arc_slot is not None
         assert arc_step is not None
-        changed.zero_()
         wp.launch(
             kernel_geodesic_walk.shorten_loop_counts,
             dim=n_positions,
@@ -739,17 +746,28 @@ def shorten_loop_with_offsets(
             device=device,
         )
         sweeps = sweep + 1
-        # One 4-byte readback per sweep, and the only way to stop early: whether any replacement was
+        wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+        # One readback per sweep, and the only way to stop early: whether any replacement was
         # accepted is a device-side fact, and the alternative -- always running `max_iter` sweeps --
-        # costs a full pass over every loop for each one that would have been skipped.
-        if int(read_scalar(changed, 0)) == 0:
+        # costs a full pass over every loop for each one that would have been skipped. The same
+        # read carries the rewritten length that sizes the rewrite.
+        total, n_changed = read_values(positions, n_positions, 2)
+        if int(n_changed) == 0:
             consecutive_unchanged += 1
             if consecutive_unchanged >= 2:
                 break  # both parities have now had a turn with nothing to do
             continue
         consecutive_unchanged = 0
         packed, loop_offsets = _rewrite_loops(
-            faces, ring_offsets, ring_halfedges, packed, counts, arc_slot, arc_step, loop_offsets
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            packed,
+            positions,
+            int(total),
+            arc_slot,
+            arc_step,
+            loop_offsets,
         )
         packed, loop_offsets = _compact_repeats(packed, loop_offsets, n_loops)
 
@@ -761,14 +779,19 @@ def _rewrite_loops(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     packed: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    total: int,
     arc_slot: wp.array[wp.int32],
     arc_step: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """Scatter each position's replacement into a freshly sized buffer, and remap the offsets."""
+    """
+    Scatter each position's replacement into a freshly sized buffer, and remap the offsets.
+
+    ``positions`` is the sweep's counts scanned in place behind a leading zero (its first
+    ``len(packed) + 1`` entries are the exclusive offsets, entry ``len(packed)`` the ``total``).
+    """
     device = packed.device
-    positions, total = tw.array.counts_to_offsets(counts)
     rewritten = wp.empty(max(total, 1), dtype=wp.int32, device=device)
     wp.launch(
         kernel_geodesic_walk.shorten_loop_write,
@@ -778,7 +801,6 @@ def _rewrite_loops(
             ring_offsets,
             ring_halfedges,
             packed,
-            counts,
             arc_slot,
             arc_step,
             positions,
@@ -796,8 +818,8 @@ def _compact_repeats(
     Drop positions repeating their cyclic predecessor, which a contracted spur leaves behind.
 
     Shares its resize-then-scatter-then-remap tail with
-    [`_rewrite_loops`][triwarp.geodesic_walk._rewrite_loops] (both call
-    ``counts_to_offsets``/allocate/launch/slice, then ``_offsets_through``), and the two are kept
+    [`_rewrite_loops`][triwarp.geodesic_walk._rewrite_loops] (both scan counts in place behind a
+    zeroed head, then allocate/launch/slice, then ``_offsets_through``), and the two are kept
     separate rather than merged: this function has a legitimate optimization
     ``_rewrite_loops`` does not need -- when ``total == n_positions`` (nothing was dropped) it
     returns the original buffers unchanged instead of allocating and launching a no-op scatter. A
@@ -817,21 +839,26 @@ def _compact_repeats(
         inputs=[loop_offsets, position_loop],
         device=device,
     )
-    counts = wp.empty(n_positions, dtype=wp.int32, device=device)
+    # The 0/1 counts are written behind a zeroed head and scanned in place, so the buffer is the
+    # exclusive offsets with the total at its end: ``counts_to_offsets`` without the counts buffer.
+    positions = wp.zeros(n_positions + 1, dtype=wp.int32, device=device)
+    counts = twt.as_dense(positions[1:])
     wp.launch(
         kernel_geodesic_walk.distinct_from_predecessor,
         dim=n_positions,
         inputs=[packed, position_loop, loop_offsets, counts],
         device=device,
     )
-    positions, total = tw.array.counts_to_offsets(counts)
+    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+    # Sizes the output: the one host readback of the compaction.
+    total = int(read_scalar(positions))
     if total == n_positions:
         return packed, loop_offsets
     kept = wp.empty(max(total, 1), dtype=wp.int32, device=device)
     wp.launch(
         kernel_geodesic_walk.compact_kept,
         dim=n_positions,
-        inputs=[packed, counts, positions, kept],
+        inputs=[packed, positions, kept],
         device=device,
     )
     return twt.as_dense(kept[:total]), _offsets_through(positions, loop_offsets)

@@ -1154,7 +1154,9 @@ def query_nearest(
     # ``_KNN_DEFER_MIN_POINTS`` and the global-row kernel past the largest register bucket never
     # defer above ``k == 1``.
     defer = k == 1 or (k <= kernel_neighbors.KNN_ROW_BUCKETS[-1] and n >= _KNN_DEFER_MIN_POINTS)
-    deferred = wp.zeros(1, dtype=wp.int32, device=device)
+    # The deferral counter exists only when rows may be deferred; otherwise the kernel never
+    # touches it and takes a null descriptor.
+    deferred = wp.zeros(1, dtype=wp.int32, device=device) if defer else None
     wp.launch(
         kernel_neighbors.hashgrid_nearest_kernel(k),
         dim=m,
@@ -1171,7 +1173,7 @@ def query_nearest(
         ],
         device=device,
     )
-    if defer:
+    if deferred is not None:
         _finish_deferred_nearest(
             points,
             queries,

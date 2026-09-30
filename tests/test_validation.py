@@ -348,20 +348,11 @@ def test_edge_manifold_mask(
         assert np.array_equal(mask_wp.numpy(), edge_manifold_bf.all(axis=1))
 
 
-def test_edge_manifold_mask_edges_sorted_shortcut(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
-    edges_sorted = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
-    mask_default = tw.validation.edge_manifold_mask(mesh_wp.indices)
-    mask_shortcut = tw.validation.edge_manifold_mask(mesh_wp.indices, edges_sorted=edges_sorted)
-    assert np.array_equal(mask_default.numpy(), mask_shortcut.numpy())
-
-
 def test_is_edge_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    edges_sorted = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
-    n_vertices = tw.array.index_bound(edges_sorted)
+    n_vertices = tw.array.index_bound(mesh_wp.indices)
     assert tw.validation.is_edge_manifold(
-        mesh_wp.indices, edges_sorted=edges_sorted, n_vertices=n_vertices
+        mesh_wp.indices, n_vertices=n_vertices
     ) == tw.validation.is_edge_manifold(mesh_wp.indices)
 
 
@@ -431,17 +422,11 @@ def test_is_vertex_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, 
         tw.validation.is_vertex_manifold(mesh_wp.indices, face_adjacency=adjacency)
 
 
-def test_is_watertight_is_volume_precomputed_shortcut(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
+def test_is_volume_precomputed_edges(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     edges = tw.edges.faces_to_edges(mesh_wp.indices)
-    edges_sorted = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
-    assert tw.validation.is_watertight(
-        mesh_wp.points, mesh_wp.indices, edges_sorted=edges_sorted
-    ) == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
     assert tw.validation.is_volume(
-        mesh_wp.points, mesh_wp.indices, edges=edges, edges_sorted=edges_sorted
+        mesh_wp.points, mesh_wp.indices, edges=edges
     ) == tw.validation.is_volume(mesh_wp.points, mesh_wp.indices)
 
 

@@ -10,21 +10,23 @@ from triwarp.kernels.array import (
     binary_search_sorted_contains,
     lowbias32,
     pack_edge_key,
+    pack_index_triple,
+    scanned_slot,
     sort3,
+    sorted_run_start,
     to_vec2d,
     to_vec3,
     to_vec3d,
+    unpack_edge_key,
 )
 from triwarp.kernels.grouping import (
-    HASH_MULT_U64,
     hash_find,
     hash_find_or_insert,
     hash_slot,
+    hash_slot_words3,
     key_set_remove,
     next_slot,
-    pack_index_triple,
     sorted_run_of_length,
-    sorted_run_start,
 )
 from triwarp.kernels.predicates import (
     delone_metrics,
@@ -39,6 +41,7 @@ from triwarp.kernels.predicates import (
     vector_angle,
 )
 from triwarp.kernels.scatter import (
+    accumulate_endpoint_value,
     add_corner_triple,
     lock_two_rings,
     mark_corners,
@@ -47,7 +50,6 @@ from triwarp.kernels.scatter import (
     two_rings_hold,
 )
 from triwarp.kernels.triangles import (
-    copy_scanned_face,
     corner_triple,
     face_normal,
     face_normals_and_area,
@@ -602,20 +604,47 @@ def mark_long_region_edges(
 
 
 @wp.kernel
-def outside_region_flags(region: wp.array[wp.bool], out_flags: wp.array[wp.int32]) -> None:
-    # ``1`` for a face outside ``region``, as the ``int32`` an in-place ``wp.utils.array_scan``
-    # reads: ``array.mask_not`` and ``array.bool_flags`` in one pass, for
-    # ``remesh._vertex_scale_attribute``'s compaction of the surrounding faces.
+def scale_attribute_edge_keys(
+    faces: wp.array[wp.int32],
+    region: wp.array[wp.bool],
+    base: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+) -> None:
+    # ``adjacency.face_edge_keys`` with every ``region`` face's keys lifted by
+    # ``base ** 2``, above any key an outside face packs: one sort then puts the surrounding
+    # mesh's edges first, in ``edges_unique``'s ascending-key order, and the region's after them,
+    # so ``scatter_scale_attribute`` reads either class off the sort with no compaction.
     f = wp.int32(wp.tid())
-    out_flags[f] = wp.where(region[f], 0, 1)
+    write_face_edge_keys(faces, f, 3 * f, base, out_keys)
+    lift = wp.where(region[f], base * base, wp.uint64(0))
+    for k in range(3):
+        out_keys[3 * f + k] = out_keys[3 * f + k] + lift
 
 
 @wp.kernel
-def compact_scanned_faces(
-    faces: wp.array[wp.int32], inclusive: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+def scatter_scale_attribute(
+    vertices: wp.array[wp.vec3],
+    sorted_keys: wp.array[wp.uint64],
+    base: wp.uint64,
+    out_sum: wp.array[wp.float32],
+    out_valence: wp.array[wp.float32],
 ) -> None:
-    # A face compaction in input order: ``triangles.copy_scanned_face`` over every face.
-    copy_scanned_face(faces, inclusive, wp.int32(wp.tid()), out_faces)
+    # One unique edge per run of ``scale_attribute_edge_keys``' sorted keys: its length added to
+    # both endpoints and counted at each, in ``edges_unique``'s orientation and order. Only the
+    # outside class is counted, unless it is empty (the smallest key is already lifted), when the
+    # whole mesh is.
+    i = wp.int32(wp.tid())
+    lift = base * base
+    key = sorted_keys[i]
+    everything = sorted_keys[0] >= lift
+    if not sorted_run_start(sorted_keys, i):
+        return
+    if key >= lift:
+        if not everything:
+            return
+        key = key - lift
+    lo, hi = unpack_edge_key(key, base)
+    accumulate_endpoint_value(lo, hi, wp.length(vertices[hi] - vertices[lo]), out_sum, out_valence)
 
 
 @wp.func
@@ -2515,10 +2544,7 @@ def cluster_mark_faces(
         out_keys,
         out_cells,
     )
-    mixed = (wp.uint64(wp.uint32(s0)) | (wp.uint64(wp.uint32(s1)) << wp.uint64(32))) ^ (
-        wp.uint64(wp.uint32(s2)) * HASH_MULT_U64
-    )
-    h = hash_slot(wp.int64(mixed), face_mask)
+    h = hash_slot_words3(s1, s0, s2, face_mask)
     while True:
         # Read before claiming, as for the clusters: a welded face is usually one of several
         # duplicates, and all of them probe the same slot. A stale read is safe both ways -- a
@@ -2590,53 +2616,35 @@ def cluster_means(
 
 
 @wp.kernel
-def cluster_min_center_distance(
-    vertex_cell: wp.array[wp.int32],
-    cell_rank: wp.array[wp.int32],
-    vertices: wp.array[wp.vec3],
-    origin: wp.vec3,
-    voxel_size: wp.float32,
-    out_min_distance: wp.array[wp.float32],
-) -> None:
-    # Pass 1 of the "closest to the cell centre" representative: the winning *distance* per kept
-    # cluster. Split from the index pick so both passes use 32-bit atomics only; the two together
-    # are deterministic because pass 2 breaks ties by lowest vertex index.
-    v = wp.int32(wp.tid())
-    r = vertex_cluster_rank(vertex_cell, cell_rank, v)
-    if r >= 0:
-        wp.atomic_min(
-            out_min_distance,
-            r,
-            squared_distance_to_own_cell_center(vertices[v], origin, voxel_size),
-        )
-
-
-@wp.kernel
 def cluster_pick_closest(
     vertex_cell: wp.array[wp.int32],
     cell_rank: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     voxel_size: wp.float32,
-    min_distance: wp.array[wp.float32],
-    out_representative: wp.array[wp.int32],
+    out_closest: wp.array[wp.uint64],
 ) -> None:
-    # Pass 2: whichever vertices tie for their cluster's winning distance, the lowest index wins.
+    # The "closest to the cell centre" representative of every kept cluster, in one ``uint64``
+    # ``atomic_min``: the squared distance's bits above the vertex index. A non-negative
+    # ``float32`` orders as its bit pattern does, so the minimum is the winning distance and, among
+    # the vertices tying for it, the lowest index -- a deterministic pick whatever the arrival
+    # order. ``out_closest`` arrives holding ``UINT64_MAX``.
     v = wp.int32(wp.tid())
     r = vertex_cluster_rank(vertex_cell, cell_rank, v)
     if r >= 0:
-        if squared_distance_to_own_cell_center(vertices[v], origin, voxel_size) <= min_distance[r]:
-            wp.atomic_min(out_representative, r, v)
+        d = squared_distance_to_own_cell_center(vertices[v], origin, voxel_size)
+        key = (wp.uint64(wp.cast(d, wp.uint32)) << wp.uint64(32)) | wp.uint64(wp.uint32(v))
+        wp.atomic_min(out_closest, r, key)
 
 
 @wp.kernel
 def cluster_gather_representatives(
-    vertices: wp.array[wp.vec3], representative: wp.array[wp.int32], out_vertices: wp.array[wp.vec3]
+    vertices: wp.array[wp.vec3], closest: wp.array[wp.uint64], out_vertices: wp.array[wp.vec3]
 ) -> None:
     # ``cluster_means``' sibling for the closest-to-centre contraction: the representative
-    # vertex's own position.
+    # vertex's own position, its index the low half of ``cluster_pick_closest``'s key.
     r = wp.int32(wp.tid())
-    out_vertices[r] = vertices[representative[r]]
+    out_vertices[r] = vertices[wp.int32(closest[r] & wp.uint64(0xFFFFFFFF))]
 
 
 @wp.func
@@ -2717,16 +2725,6 @@ def mark_surviving_faces(
     # corners are not stored: ``compact_surviving_faces`` re-reads them through ``remap`` for the
     # faces that survive. ``remap_and_mark_faces`` is the same marking with the corners written.
     mark_surviving_face(faces, remap, wp.int32(wp.tid()), out_flags)
-
-
-@wp.func
-def scanned_slot(offsets: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32, wp.bool]:
-    # Element ``i``'s compacted slot and whether it is kept, from an exclusive scan of 0/1 marks
-    # that ends in its total: kept exactly where the scan steps. The slot is taken relative to
-    # ``offsets[0]`` because the scan may be the tail of a longer one (the vertex marks scanned
-    # after the face flags), whose leading entry is then the count of everything before it.
-    slot = offsets[i]
-    return slot - offsets[0], offsets[i + 1] != slot
 
 
 @wp.kernel

@@ -332,6 +332,18 @@ def scanned_block_row(inclusive: wp.array[wp.int32], n: wp.int32, k: wp.int32, h
     return start - base, flag
 
 
+@wp.func
+def write_canonical_pair_row(
+    forwards: wp.int32, backwards: wp.int32, row: wp.int32, out_rows: wp.array2d[wp.int32]
+) -> None:
+    # A seam or foldover row: the ``(face, corner)`` pair of both canonical halfedges, under the
+    # ``h = 3 * f + k`` convention.
+    out_rows[row, 0] = forwards // 3
+    out_rows[row, 1] = forwards % 3
+    out_rows[row, 2] = backwards // 3
+    out_rows[row, 3] = backwards % 3
+
+
 @wp.kernel
 def scatter_uv_halfedges(
     faces: wp.array[wp.int32],
@@ -359,15 +371,9 @@ def scatter_uv_halfedges(
         return
     forwards, backwards = canonical_edge_halfedges(faces, h, twins[h])
     if is_seam != 0:
-        out_seams[seam_row, 0] = forwards // 3
-        out_seams[seam_row, 1] = forwards % 3
-        out_seams[seam_row, 2] = backwards // 3
-        out_seams[seam_row, 3] = backwards % 3
+        write_canonical_pair_row(forwards, backwards, seam_row, out_seams)
     else:
-        out_foldovers[foldover_row, 0] = forwards // 3
-        out_foldovers[foldover_row, 1] = forwards % 3
-        out_foldovers[foldover_row, 2] = backwards // 3
-        out_foldovers[foldover_row, 3] = backwards % 3
+        write_canonical_pair_row(forwards, backwards, foldover_row, out_foldovers)
 
 
 @wp.kernel

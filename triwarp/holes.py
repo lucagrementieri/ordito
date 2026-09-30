@@ -327,17 +327,15 @@ class _EdgeTable:
     builds a table of the mesh's edges: the one sort is of the rim's own keys.
     """
 
-    def __init__(
-        self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], edges_sorted: twt.Array2dInt32
-    ) -> None:
+    def __init__(self, vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> None:
         device = faces.device
-        # Derived from the rows rather than taken from ``len(vertices)``, deliberately: the ``min``
-        # half of this reduction is the only negative-index guard between a malformed face buffer
-        # and the gathers below, which would otherwise read out of bounds instead of raising.
-        n_vertices = tw.array.index_bound(edges_sorted, require_non_negative=True)
+        # Derived from the face indices rather than taken from ``len(vertices)``, deliberately: the
+        # ``min`` half of this reduction is the only negative-index guard between a malformed face
+        # buffer and the gathers below, which would otherwise read out of bounds instead of raising.
+        n_vertices = tw.array.index_bound(faces, require_non_negative=True)
         self.vertices = vertices
         self.faces = faces
-        self.edges_sorted = edges_sorted
+        self.n_halfedges = int(faces.shape[0]) // 3 * 3
         self.base = wp.uint64(n_vertices)
         self.n_vertices = n_vertices
         self.device = device
@@ -397,8 +395,8 @@ class _EdgeTable:
         mask = wp.zeros(loops.dp_total, dtype=wp.int32, device=self.device)
         wp.launch(
             kernel_holes.mark_forbidden_chords,
-            dim=int(self.edges_sorted.shape[0]),
-            inputs=[self.edges_sorted, slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
+            dim=self.n_halfedges,
+            inputs=[self.faces, slot, loops.loop_id, loops.offsets, loops.dp_offsets, mask],
             device=self.device,
         )
         return mask
@@ -510,12 +508,11 @@ def fill_min_weight(
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
         return wp.clone(faces)
-    edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
-    loops = _hole_loops(vertices, faces, preserve_largest_hole, edges_sorted)
+    loops = _hole_loops(vertices, faces, preserve_largest_hole)
     if loops is None:
         return wp.clone(faces)
     return _fill_packed_loops(
-        vertices, faces, loops, metric, resolve_multiple_edges, smooth_boundary, edges_sorted
+        vertices, faces, loops, metric, resolve_multiple_edges, smooth_boundary
     )
 
 
@@ -588,7 +585,6 @@ def _fill_packed_loops(
     metric: str,
     resolve_multiple_edges: bool,
     smooth_boundary: bool,
-    edges_sorted: twt.Array2dInt32 | None = None,
 ) -> wp.array[wp.int32]:
     """
     Min-weight-triangulate every packed loop **together** and append the fill faces.
@@ -600,18 +596,9 @@ def _fill_packed_loops(
     one-thread-per-loop traceback that keeps the predecessor table on the device. What is left on
     the host is two scalar reads of one small state buffer: whether any loop needs the fallback
     metric, and whether the traceback fell short of a full triangulation anywhere.
-
-    ``edges_sorted`` lets a caller that already built the sorted edge rows hand them over.
-    ``fill_min_weight`` does; ``fill_small`` and ``fill_smooth`` deliberately do **not**, and it is
-    not an oversight to fix. Threading it there was measured and declined: the rebuild is well under
-    a percent of either call and the share *falls* with mesh size, which section 9 calls a decline
-    rather than a small win -- the saving would be largest exactly where the call is already cheap,
-    and threading a derived buffer adds a stays-in-sync-with-``faces`` obligation for it.
     """
     device = faces.device
-    if edges_sorted is None:
-        edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
-    edge_table = _EdgeTable(vertices, faces, edges_sorted)
+    edge_table = _EdgeTable(vertices, faces)
     primary_id = _METRIC_IDS[metric]
     combine_id = _METRIC_COMBINE.get(metric, 0)
     min_area_id = _METRIC_IDS["min_area"]
@@ -2479,8 +2466,8 @@ def stitch_loops_min_weight(
     lb_wp = wp.array(lb, dtype=wp.int32, device=device)
     a_pos = tw.array.gather(vertices_a, la_wp)
     b_pos = tw.array.gather(vertices_b, lb_wp)
-    table_a = _EdgeTable(vertices_a, faces_a, tw.edges.faces_to_edges(faces_a, sorted=True))
-    table_b = _EdgeTable(vertices_b, faces_b, tw.edges.faces_to_edges(faces_b, sorted=True))
+    table_a = _EdgeTable(vertices_a, faces_a)
+    table_b = _EdgeTable(vertices_b, faces_b)
     # The stitch DP works on exactly one rim per side, so each rim is its own one-loop batch.
     a_opp, a_opp_valid = table_a.rim_opposite(_PackedLoops(la_wp, np.array([n_a], dtype=np.int64)))
     b_opp, b_opp_valid = table_b.rim_opposite(_PackedLoops(lb_wp, np.array([n_b], dtype=np.int64)))
@@ -3298,10 +3285,7 @@ def _mean_rim_edge_length(
 
 
 def _hole_loops(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    preserve_largest_hole: bool = False,
-    edges_sorted: twt.Array2dInt32 | None = None,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], preserve_largest_hole: bool = False
 ) -> _PackedLoops | None:
     """
     Pack the fillable boundary loops (>= 3 vertices) of a mesh for on-device triangulation.
@@ -3322,7 +3306,7 @@ def _hole_loops(
     [`polyline_length`][triwarp.polyline.polyline_length] call per loop (two synchronizations
     each).
     """
-    packed = _boundary_loops_packed(vertices, faces, edges_sorted)
+    packed = _boundary_loops_packed(vertices, faces)
     if packed is None:
         return None
 
@@ -3359,9 +3343,7 @@ def _compact_packed_loops(
 
 
 def _boundary_loops_packed(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    edges_sorted: twt.Array2dInt32 | None = None,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
 ) -> tuple[wp.array[wp.int32], np.ndarray] | None:
     """
     Every boundary loop of a mesh as one packed buffer plus its host sizes, or ``None`` if none.
@@ -3370,7 +3352,7 @@ def _boundary_loops_packed(
     [`boundary_loops_with_offsets`][triwarp.boundary.boundary_loops_with_offsets]' own, handed on
     unsplit; the sizes come from the single offsets readback the ragged indexing needs anyway.
     """
-    flat_loops, offsets = tw.boundary.boundary_loops_with_offsets(vertices, faces, edges_sorted)
+    flat_loops, offsets = tw.boundary.boundary_loops_with_offsets(vertices, faces)
     if int(offsets.shape[0]) == 1:
         return None
     return flat_loops, np.diff(offsets.numpy().astype(np.int64))

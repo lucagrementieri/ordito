@@ -513,7 +513,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 
     sub_vertices_wp, sub_faces_wp, vertex_map_wp = tw.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, indices_wp, unique_indices=True, return_index=True
+        mesh_wp.points, mesh_wp.indices, indices_wp, return_index=True
     )
     # triwarp's faces, lifted back into the input's vertex numbering.
     faces_wp = vertex_map_wp.numpy()[sub_faces_wp.numpy().reshape(-1, 3)]
@@ -567,7 +567,7 @@ def test_submesh_from_face_indices_single_face(request: pytest.FixtureRequest) -
     face_indices = wp.array([0], dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [[0]], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, face_indices, unique_indices=True
+        mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.shape == (3,)
     assert submesh_faces_wp.shape == (3,)
@@ -581,7 +581,7 @@ def test_submesh_from_face_indices_duplicated(request: pytest.FixtureRequest) ->
 
     A face named three times must appear three times -- the output length is asserted exactly --
     while its vertices are shared, so the vertex count is bounded rather than fixed. trimesh agrees
-    on both, which is what makes this the test for ``unique_indices=False``.
+    on both.
     """
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
     face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
@@ -636,7 +636,7 @@ def test_submesh_from_face_indices_all_faces(
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, face_indices, unique_indices=True
+        mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.shape[0] <= mesh_tm.vertices.shape[0]
     assert submesh_faces_wp.shape[0] == n_faces * 3
@@ -683,7 +683,6 @@ def test_submeshes_from_face_groups_matches_single(
             mesh_wp.points,
             mesh_wp.indices,
             wp.array(group.astype(np.int32), dtype=wp.int32, device=device),
-            unique_indices=True,
         )
         assert np.array_equal(vertices_all_wp.numpy()[v_begin:v_end], single_vertices_wp.numpy())
         assert np.array_equal(
@@ -790,11 +789,7 @@ def test_submesh_return_index_carries_an_attribute(
     assert np.allclose(carried_wp.numpy(), sub_vertices_wp.numpy())
 
     _index_vertices_wp, _index_faces_wp, index_map_wp = tw.selection.submesh_from_face_indices(
-        mesh_wp.points,
-        mesh_wp.indices,
-        tw.array.flatnonzero(face_mask_wp),
-        unique_indices=True,
-        return_index=True,
+        mesh_wp.points, mesh_wp.indices, tw.array.flatnonzero(face_mask_wp), return_index=True
     )
     assert np.array_equal(index_map_wp.numpy(), vertex_index_np)
     assert int(sub_faces_wp.shape[0]) > 0
@@ -825,7 +820,6 @@ def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) 
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device),
-        unique_indices=True,
     )
     assert np.allclose(got_vertices_wp.numpy(), exp_vertices_wp.numpy())
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())

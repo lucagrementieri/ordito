@@ -1,13 +1,7 @@
 import warp as wp
 
 from triwarp.kernels.adjacency import edge_endpoints
-from triwarp.kernels.array import (
-    loop_rim_edge,
-    pack_directed_key,
-    pack_ranked_key,
-    scanned_count,
-    wrap_index,
-)
+from triwarp.kernels.array import loop_rim_edge, pack_ranked_key, scanned_count, wrap_index
 from triwarp.kernels.grouping import sorted_run_of_length
 from triwarp.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
 
@@ -18,29 +12,12 @@ from triwarp.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
 # ever built. The kernels below write the sort's input and read its verdict.
 
 
-@wp.kernel
-def table_edge_keys_and_order(
-    edges_sorted: wp.array2d[wp.int32],
-    base: wp.uint64,
-    out_keys: wp.array[wp.uint64],
-    out_order: wp.array[wp.int32],
-) -> None:
-    # The same sort input from a caller's precomputed ``(3F, 2)`` sorted edge table: row ``h`` is
-    # already ``[min, max]``, so it packs as it stands, exactly as ``grouping.pack_indices`` would.
-    h = wp.int32(wp.tid())
-    out_keys[h] = pack_directed_key(edges_sorted[h, 0], edges_sorted[h, 1], base)
-    out_order[h] = h
-
-
 @wp.func
 def boundary_halfedge_pair(
-    faces: wp.array[wp.int32], table: wp.array2d[wp.int32], sort_pair: wp.bool, h: wp.int32
+    faces: wp.array[wp.int32], sort_pair: wp.bool, h: wp.int32
 ) -> tuple[wp.int32, wp.int32]:
-    # Row ``h`` of the edge table the caller holds, or of the one ``faces`` implies when ``table``
-    # is ``None`` (a null descriptor, whose ``shape[0]`` reads 0): halfedge ``h``'s directed pair,
-    # ascending when ``sort_pair``.
-    if table.shape[0] > 0:
-        return table[h, 0], table[h, 1]
+    # Halfedge ``h``'s row of ``edges.faces_to_edges``: its directed pair, ascending when
+    # ``sort_pair`` -- read off ``faces``, so no ``(3F, 2)`` table is built or read.
     if sort_pair:
         return edge_endpoints(faces, h)
     return halfedge_endpoints(faces, h)
@@ -52,14 +29,13 @@ def mark_boundary_runs(
     order: wp.array[wp.int32],
     n: wp.int32,
     faces: wp.array[wp.int32],
-    table: wp.array2d[wp.int32],
     out_degrees: wp.array2d[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
     # 1 where a sorted position holds a key occurring exactly once -- a boundary edge -- as the
     # ``int32`` flag ``wp.utils.array_scan`` then scans in place, over ``out_flags``' first ``n``
     # entries. With ``out_degrees`` (else ``None``), ``boundary_loops_with_offsets``' degree census
-    # of the directed rows (see ``boundary_halfedge_pair``) rides in the same launch, its two defect
+    # of the directed rows (``halfedge_endpoints``) rides in the same launch, its two defect
     # bits stamped into the zeroed ``out_flags[n]`` and ``out_flags[n + 1]`` -- the scan does not
     # reach them, so the total and both bits come back in one readback.
     #
@@ -78,7 +54,7 @@ def mark_boundary_runs(
     boundary = sorted_run_of_length(sorted_keys, n, i, 1)
     out_flags[i] = wp.where(boundary, wp.int32(1), wp.int32(0))
     if boundary and out_degrees.shape[0] > 0:
-        tail, head = boundary_halfedge_pair(faces, table, False, order[i])
+        tail, head = halfedge_endpoints(faces, order[i])
         if wp.atomic_add(out_degrees, tail, 0, 1) >= 1:
             out_flags[n] = 1
         if wp.atomic_add(out_degrees, tail, 1, 1) >= 2:
@@ -92,19 +68,18 @@ def emit_boundary_edges(
     inclusive: wp.array[wp.int32],
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
-    table: wp.array2d[wp.int32],
     sort_pair: wp.bool,
     out_edges: wp.array2d[wp.int32],
 ) -> None:
     # One thread per sorted position; ``inclusive`` is ``mark_boundary_runs``' flags scanned in
     # place, so a boundary edge is where the scan steps and its rank is the step's start. Rows come
-    # out in ascending key order -- the order ``grouping.group`` emitted them in -- read from the
-    # caller's table or from ``faces`` (see ``boundary_halfedge_pair``).
+    # out in ascending key order -- the order ``grouping.group`` emitted them in -- read from
+    # ``faces`` (see ``boundary_halfedge_pair``).
     i = wp.int32(wp.tid())
     g, count = scanned_count(inclusive, i)
     if count == 0:
         return
-    a, b = boundary_halfedge_pair(faces, table, sort_pair, order[i])
+    a, b = boundary_halfedge_pair(faces, sort_pair, order[i])
     out_edges[g, 0] = a
     out_edges[g, 1] = b
 
@@ -115,7 +90,6 @@ def mark_boundary_vertices(
     order: wp.array[wp.int32],
     n: wp.int32,
     faces: wp.array[wp.int32],
-    table: wp.array2d[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
     # Flag both endpoints of every boundary edge in a zeroed per-vertex ``int32`` array, which the
@@ -124,7 +98,7 @@ def mark_boundary_vertices(
     i = wp.int32(wp.tid())
     if not sorted_run_of_length(sorted_keys, n, i, 1):
         return
-    a, b = boundary_halfedge_pair(faces, table, False, order[i])
+    a, b = halfedge_endpoints(faces, order[i])
     out_flags[a] = 1
     out_flags[b] = 1
 
@@ -253,7 +227,6 @@ def emit_boundary_successors(
     inclusive: wp.array[wp.int32],
     order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
-    table: wp.array2d[wp.int32],
     twins: wp.array[wp.int32],
     out_tails: wp.array[wp.int32],
     out_next: wp.array[wp.int32],
@@ -261,7 +234,7 @@ def emit_boundary_successors(
     # The boundary as a successor graph, straight off the sorted keys (``emit_boundary_edges``'
     # scan) with no edge rows in between: the ranked nodes in ``out_tails`` and their successors in
     # the node-sized ``out_next``. Without ``twins`` (``None``) the nodes are the vertices, the
-    # directed rows' tails (see ``boundary_halfedge_pair``). With it they are the boundary
+    # directed rows' tails (``halfedge_endpoints``). With it they are the boundary
     # *halfedges*, each followed by the boundary halfedge leaving its tip in its own sector: over
     # vertices a pinch point has two successors, over halfedges every node has one. A fan that
     # does not close (a malformed twin table) maps to a self-loop, so the walk stays bounded.
@@ -275,7 +248,7 @@ def emit_boundary_successors(
         out_tails[g] = h
         out_next[h] = wp.where(following >= 0, following, h)
     else:
-        a, b = boundary_halfedge_pair(faces, table, False, h)
+        a, b = halfedge_endpoints(faces, h)
         out_tails[g] = a
         out_next[a] = b
 

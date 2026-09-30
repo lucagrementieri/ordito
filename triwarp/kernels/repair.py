@@ -246,11 +246,11 @@ def write_face_winding(
 
 @wp.kernel
 def flip_faces_masked(
-    faces: wp.array[wp.int32], flip: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+    faces: wp.array[wp.int32], flip: wp.array[wp.bool], out_faces: wp.array[wp.int32]
 ) -> None:
-    """Copy ``faces`` to ``out_faces``, reversing winding (swap corners 1,2) where ``flip > 0``."""
+    """Copy ``faces`` to ``out_faces``, reversing winding (swap corners 1,2) where ``flip``."""
     f = wp.int32(wp.tid())
-    write_face_winding(faces, f, flip[f] > wp.int32(0), out_faces)
+    write_face_winding(faces, f, flip[f], out_faces)
 
 
 @wp.kernel

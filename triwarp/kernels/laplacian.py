@@ -1,6 +1,6 @@
 import warp as wp
 
-from triwarp.kernels.array import OverloadTable, csr_key, csr_run_start
+from triwarp.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
 from triwarp.kernels.halfedge import halfedge_destination
 from triwarp.kernels.predicates import doublearea_from_lengths, squared_edge_lengths
 from triwarp.kernels.triangles import face_vertices, row_triple
@@ -199,36 +199,36 @@ def mesh_operator_keys(
     # for the *directed* pattern build (small meshes): for each face and each corner ``e``, the
     # edge opposite it both ways -- slots ``6 * f + 2 * e`` and ``+ 1`` hold ``(i, j)`` and
     # ``(j, i)``, where ``i`` is corner ``e + 1`` and ``j`` corner ``e + 2`` -- and one diagonal
-    # slot per vertex in the tail ``[6 * n_faces, 6 * n_faces + n_vertices)``. The caller fills that
-    # tail with the sentinel first, so a vertex no face references keeps an empty row; every face
-    # writes the same key into a shared vertex's slot, so the race is benign. Both directions carry
-    # the corner slot ``3 * f + e`` as payload -- the convention ``mesh_edge_keys`` shares, so one
-    # value kernel serves both builds; it reads the direction off the row. A diagonal slot's
-    # payload is never read, so it is not written. ``diagonal == 0`` writes no diagonal keys: the
-    # pattern has none, or the caller writes every vertex's (``diagonal_keys``). A degenerate face's
+    # slot per vertex in the tail ``[6 * n_faces, 6 * n_faces + n_vertices)``. ``diagonal`` chooses
+    # what the tail holds: nothing (0: the pattern has no diagonal slots), the diagonal of every
+    # vertex a face references (1), or of every vertex (2). For 1 the caller fills the tail with the
+    # sentinel first, so a vertex no face references keeps an empty row; every face writes the same
+    # key into a shared vertex's slot, so the race is benign. For 2 the launch covers
+    # ``max(n_faces, n_vertices)`` threads and thread ``v`` writes vertex ``v``'s key. Both
+    # directions carry the corner slot ``3 * f + e`` as payload -- the convention
+    # ``mesh_edge_keys`` shares, so one value kernel serves both builds; it reads the direction off
+    # the row. A diagonal slot's payload is never read, so it is not written. A degenerate face's
     # self-edge keeps its keys and lands on the diagonal entry; each value kernel decides what that
     # means.
-    f = wp.int32(wp.tid())
-    tail = 6 * (faces.shape[0] // 3)
+    t = wp.int32(wp.tid())
+    n_faces = faces.shape[0] // 3
+    tail = 6 * n_faces
+    if diagonal == 2 and t < n_vertices:
+        out_keys[tail + t] = csr_key(t, t, n_vertices, n_vertices)
+    if t >= n_faces:
+        return
     for e in range(3):
-        i = faces[f * 3 + (e + 1) % 3]
-        j = faces[f * 3 + (e + 2) % 3]
-        out_keys[f * 6 + e * 2] = csr_key(i, j, n_vertices, n_vertices)
-        out_keys[f * 6 + e * 2 + 1] = csr_key(j, i, n_vertices, n_vertices)
-        out_order[f * 6 + e * 2] = f * 3 + e
-        out_order[f * 6 + e * 2 + 1] = f * 3 + e
+        i = faces[t * 3 + (e + 1) % 3]
+        j = faces[t * 3 + (e + 2) % 3]
+        out_keys[t * 6 + e * 2] = csr_key(i, j, n_vertices, n_vertices)
+        out_keys[t * 6 + e * 2 + 1] = csr_key(j, i, n_vertices, n_vertices)
+        out_order[t * 6 + e * 2] = t * 3 + e
+        out_order[t * 6 + e * 2 + 1] = t * 3 + e
         # Range-checked at the write (CLAUDE.md 12.1): an index past the vertex count must not
         # become a store past the tail.
-        vertex = faces[f * 3 + e]
-        if diagonal != 0 and vertex >= 0 and vertex < n_vertices:
+        vertex = faces[t * 3 + e]
+        if diagonal == 1 and vertex >= 0 and vertex < n_vertices:
             out_keys[tail + vertex] = csr_key(vertex, vertex, n_vertices, n_vertices)
-
-
-@wp.kernel
-def diagonal_keys(n_vertices: wp.int32, base: wp.int32, out_keys: wp.array[wp.uint64]) -> None:
-    # Every vertex's diagonal key, referenced or not, into the tail starting at ``base``.
-    v = wp.int32(wp.tid())
-    out_keys[base + v] = csr_key(v, v, n_vertices, n_vertices)
 
 
 @wp.kernel
@@ -265,20 +265,26 @@ def mesh_edge_keys(
 ) -> None:
     # Corner ``e``'s opposite edge as an undirected ``(min, max)`` key with the corner slot
     # ``3 * f + e`` as payload. A degenerate face's self-edge never gets a key; instead ``mark``
-    # chooses which vertices ``out_referenced`` flags for a diagonal slot: none (0), every in-range
-    # corner (1), or the endpoint of a self-edge (2) -- the entry the directed build keeps for it.
-    f = wp.int32(wp.tid())
+    # chooses which vertices ``out_referenced`` flags for a diagonal slot: every in-range corner
+    # (1), the endpoint of a self-edge (2) -- the entry the directed build keeps for it -- or every
+    # vertex (3), for which the launch covers ``max(n_faces, n_vertices)`` threads and thread ``v``
+    # flags vertex ``v``.
+    t = wp.int32(wp.tid())
+    if mark == 3 and t < n_vertices:
+        out_referenced[t] = 1
+    if t >= faces.shape[0] // 3:
+        return
     for e in range(3):
-        i = faces[f * 3 + (e + 1) % 3]
-        j = faces[f * 3 + (e + 2) % 3]
+        i = faces[t * 3 + (e + 1) % 3]
+        j = faces[t * 3 + (e + 2) % 3]
         key = csr_key(wp.min(i, j), wp.max(i, j), n_vertices, n_vertices)
         if i == j:
             key = wp.uint64(n_vertices) * wp.uint64(n_vertices)
             if mark == 2 and i >= 0 and i < n_vertices:
                 out_referenced[i] = 1
-        out_keys[f * 3 + e] = key
-        out_order[f * 3 + e] = f * 3 + e
-        vertex = faces[f * 3 + e]
+        out_keys[t * 3 + e] = key
+        out_order[t * 3 + e] = t * 3 + e
+        vertex = faces[t * 3 + e]
         if mark == 1 and vertex >= 0 and vertex < n_vertices:
             out_referenced[vertex] = 1
 
@@ -312,25 +318,14 @@ def mesh_edge_runs(
     out_second_order[i] = i
 
 
-@wp.kernel
-def mesh_row_counts(
-    upper: wp.array[wp.int32],
-    lower: wp.array[wp.int32],
-    referenced: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    r = wp.int32(wp.tid())
-    out_counts[r] = lower[r] + referenced[r] + upper[r]
-
-
 @wp.func
-def sorted_run_end(keys: wp.array[wp.uint64], i: wp.int32, count: wp.int32) -> wp.int32:
-    """One past the last sorted position of the run of equal keys that starts at ``i``."""
-    key = keys[i]
-    p = i + 1
-    while p < count and keys[p] == key:
-        p += 1
-    return p
+def mesh_row_start(before: wp.array2d[wp.int32], r: wp.int32) -> wp.int32:
+    # Row ``r``'s first entry in the undirected build's ``[lower | diagonal | upper]`` rows.
+    # ``before`` is the exclusive scan of the ``(3, n_vertices)`` tallies (upper-half count,
+    # lower-half count, diagonal flag) taken as one flat array, so its second and third rows carry
+    # the whole upper total and the upper-plus-lower total ahead of them; ``before[1, 0]`` and
+    # ``before[2, 0]`` are exactly those totals, and removing them leaves each part's own prefix.
+    return before[0, r] + (before[1, r] - before[1, 0]) + (before[2, r] - before[2, 0])
 
 
 @wp.kernel
@@ -339,10 +334,8 @@ def mesh_place_upper(
     inclusive: wp.array[wp.int32],
     sentinel: wp.uint64,
     n_vertices: wp.int32,
-    offsets: wp.array[wp.int32],
-    lower: wp.array[wp.int32],
-    referenced: wp.array[wp.int32],
-    upper_before: wp.array[wp.int32],
+    tallies: wp.array2d[wp.int32],
+    before: wp.array2d[wp.int32],
     out_columns: wp.array[wp.int32],
     out_run_start: wp.array[wp.int32],
 ) -> None:
@@ -352,8 +345,8 @@ def mesh_place_upper(
     if not csr_run_start(keys, i, sentinel):
         return
     lo = wp.int32(keys[i] // wp.uint64(n_vertices))
-    rank = inclusive[i] - 1 - upper_before[lo]
-    slot = offsets[lo] + lower[lo] + referenced[lo] + rank
+    rank = inclusive[i] - 1 - before[0, lo]
+    slot = mesh_row_start(before, lo) + tallies[1, lo] + tallies[2, lo] + rank
     out_columns[slot] = wp.int32(keys[i] % wp.uint64(n_vertices))
     out_run_start[slot] = i
 
@@ -365,26 +358,31 @@ def mesh_place_lower(
     second_order: wp.array[wp.int32],
     count: wp.int32,
     n_vertices: wp.int32,
-    offsets: wp.array[wp.int32],
-    lower: wp.array[wp.int32],
-    referenced: wp.array[wp.int32],
-    lower_before: wp.array[wp.int32],
+    tallies: wp.array2d[wp.int32],
+    before: wp.array2d[wp.int32],
+    out_offsets: wp.array[wp.int32],
     out_columns: wp.array[wp.int32],
     out_run_start: wp.array[wp.int32],
 ) -> None:
-    # Launched over ``max(count, n_vertices)``. As a sorted position of the second sort: edge
-    # ``(lo, hi)`` in row ``hi``, at its rank among the edges whose larger endpoint is ``hi`` --
-    # stable, so in ascending ``lo``. As a vertex: its row's diagonal, which has no contributors.
+    # Launched over ``max(count, n_vertices)``. As a vertex: its row's offset (the last also closes
+    # the total) and its diagonal, which has no contributors. As a sorted position of the second
+    # sort: edge ``(lo, hi)`` in row ``hi``, at its rank among the edges whose larger endpoint is
+    # ``hi`` -- stable, so in ascending ``lo``.
     t = wp.int32(wp.tid())
-    if t < n_vertices and referenced[t] != 0:
-        slot = offsets[t] + lower[t]
-        out_columns[slot] = t
-        out_run_start[slot] = 0
+    if t < n_vertices:
+        start = mesh_row_start(before, t)
+        out_offsets[t] = start
+        if t == n_vertices - 1:
+            out_offsets[n_vertices] = start + tallies[0, t] + tallies[1, t] + tallies[2, t]
+        if tallies[2, t] != 0:
+            slot = start + tallies[1, t]
+            out_columns[slot] = t
+            out_run_start[slot] = 0
     if t < count:
         hi = second_keys[t]
         if hi < n_vertices:
             i = second_order[t]
-            slot = offsets[hi] + t - lower_before[hi]
+            slot = mesh_row_start(before, hi) + t - (before[1, hi] - before[1, 0])
             out_columns[slot] = wp.int32(keys[i] // wp.uint64(n_vertices))
             out_run_start[slot] = i
 

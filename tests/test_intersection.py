@@ -32,6 +32,7 @@ from tests.conversions import (
     warp_to_trimesh,
 )
 from triwarp.constants import TOLERANCE_MERGE
+from triwarp.kernels import graph as kernel_graph
 
 _SPLIT_MESHES = ["icosphere", "unit_box", "torus"]
 
@@ -801,11 +802,11 @@ def test_marching_triangles_device_link_matches_host_link(
     MeshLib comparisons above; this pins the device link to it -- the same curves in the same
     order, each from the same first point, with the same closed flags -- on both devices, with the
     gate forced each way. The open meshes put open contours in the set, which rank from their
-    unique first segment rather than from their lowest one, and ``hops`` walks the pointer-jumping
-    rounds through several round counts, 2 and 3 putting the curve lengths on both sides of many
-    round boundaries.
+    unique first segment rather than from their lowest one, and ``hops`` -- the widest jump
+    ``graph.pointer_jump_schedule`` may take -- walks the pointer-jumping rounds through several
+    round counts, 2 and 3 putting the curve lengths on both sides of many round boundaries.
     """
-    monkeypatch.setattr(tw.intersection, "_LINK_HOPS", hops)
+    monkeypatch.setattr(kernel_graph, "POINTER_JUMP_MAX_HOPS", hops)
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     rng = np.random.default_rng(23)

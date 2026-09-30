@@ -31,7 +31,7 @@ from triwarp.kernels.array import (
     lattice_position,
     ravel_index,
 )
-from triwarp.kernels.grouping import HASH_MULT_U64, hash_slot, next_slot
+from triwarp.kernels.grouping import hash_slot_words3, next_slot
 from triwarp.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from triwarp.kernels.triangles import face_vertices, row_triple, write_row_triple
 
@@ -435,14 +435,9 @@ def pool_point_extremum(
 
 @wp.func
 def cell_hash_slot(cell: wp.vec3i, mask: wp.int32) -> wp.int32:
-    # Home slot of a cell in ``voxel_down_sample``'s open-addressing table: x and y side by side in
-    # one 64-bit word, xor'ed with z spread by the Fibonacci multiplier, then ``hash_slot``'s own
-    # fold -- ``points.position_hash_slot``'s mixing over the cell's integers rather than a
-    # position's bits. A collision is resolved by comparing cells, never trusted.
-    x = wp.uint64(wp.uint32(cell[0]))
-    y = wp.uint64(wp.uint32(cell[1]))
-    z = wp.uint64(wp.uint32(cell[2]))
-    return hash_slot(wp.int64(((x << wp.uint64(32)) | y) ^ (z * HASH_MULT_U64)), mask)
+    # Home slot of a cell in ``voxel_down_sample``'s open-addressing table. A collision is
+    # resolved by comparing cells, never trusted.
+    return hash_slot_words3(cell[0], cell[1], cell[2], mask)
 
 
 @wp.func

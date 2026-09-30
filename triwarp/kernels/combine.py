@@ -3,7 +3,7 @@
 import warp as wp
 
 from triwarp.kernels import array as kernel_array
-from triwarp.kernels.grouping import sorted_run_start
+from triwarp.kernels.array import sorted_run_start
 
 
 @wp.kernel

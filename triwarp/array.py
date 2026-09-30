@@ -1147,10 +1147,9 @@ def csr_from_keys(
     device = keys.device
     offsets = wp.zeros(n_rows + 1, dtype=wp.int32, device=device)
     columns = wp.empty(count, dtype=wp.int32, device=device)
-    starts = wp.empty(count + 1, dtype=wp.int32, device=device)
     if count == 0:
-        starts.zero_()
-        return offsets, columns, starts
+        return offsets, columns, wp.zeros(1, dtype=wp.int32, device=device)
+    starts = wp.empty(count + 1, dtype=wp.int32, device=device)
     sentinel = n_rows * n_cols
     wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # The run flags and their scan live in the payload buffer's upper half, which is sort scratch.
@@ -1273,34 +1272,33 @@ def csr_from_triplets(
         )
     sentinel = n_rows * n_cols
     wp.utils.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
-    # One pass sums each run at its start and flags it (pruning on the sum), one scan numbers the
-    # kept entries, and one pass places them -- the values never go through a separate launch.
-    # Both scratch arrays live in the sort buffers' upper halves.
+    # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and
+    # one pass places them, summing each run where it lands; the flags and their scan live in the
+    # payload buffer's upper half, which is sort scratch.
     flags = order[count:]
-    run_values = wp.empty(count, dtype=values.dtype, device=device)
-    wp.launch(
-        kernel_array.CSR_RUN_VALUES[values.dtype],
-        dim=count,
-        inputs=[
-            keys,
-            order,
-            values,
-            wp.uint64(sentinel),
-            wp.int32(prune_numerical_zeros),
-            values.dtype(),
-            flags,
-            run_values,
-        ],
-        device=device,
-    )
+    if prune_numerical_zeros:
+        wp.launch(
+            kernel_array.CSR_NONZERO_RUN_FLAGS[values.dtype],
+            dim=count,
+            inputs=[keys, order, values, wp.uint64(sentinel), values.dtype(), flags],
+            device=device,
+        )
+    else:
+        wp.launch(
+            kernel_array.csr_run_flags,
+            dim=count,
+            inputs=[keys, wp.uint64(sentinel), flags],
+            device=device,
+        )
     wp.utils.array_scan(flags, out_array=flags, inclusive=True)
     wp.launch(
         kernel_array.CSR_FROM_FLAGGED_RUNS[values.dtype],
         dim=count,
         inputs=[
             keys,
+            order,
+            values,
             flags,
-            run_values,
             wp.uint64(sentinel),
             wp.int32(n_rows),
             wp.uint64(n_cols),

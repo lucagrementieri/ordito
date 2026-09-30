@@ -59,11 +59,11 @@ schedule.
 
 **The tracing is two kernels and a scan rather than a Python loop per generator.** Each
 generator edge ``(a, b)`` closes into a loop through the tree as ``a -> lca(a, b) -> b``, and its
-length is ``depth(a) + depth(b) - 2 * depth(lca) + 1`` -- so ``generator_loop_lengths`` finds the
-apex, the wrapper scans the lengths into offsets, and ``write_generator_loops`` fills each loop's
-slice from both ends at once. ``distances`` is the depth array the level loop already wrote, which
-is why dropping the *order* from the traversal and keeping the *distances* was the right half to
-cut: the tracer needs the depths to size a loop without walking it.
+length is ``depth(a) + depth(b) - 2 * depth(lca) + 1`` -- so ``generator_loop_counts`` finds the
+apex, the wrapper scans the counts into ranks and offsets, and ``write_generator_loops`` fills
+each loop's slice from both ends at once. ``distances`` is the depth array the level loop already
+wrote, which is why dropping the *order* from the traversal and keeping the *distances* was the
+right half to cut: the tracer needs the depths to size a loop without walking it.
 """
 
 import warp as wp
@@ -332,49 +332,67 @@ def tree_apex(
 
 
 @wp.kernel
-def generator_loop_lengths(
-    generator_edge_ids: wp.array[wp.int32],
+def generator_loop_counts(
+    candidate: wp.array[wp.bool],
     unique_edges: wp.array2d[wp.int32],
     parents: wp.array[wp.int32],
     distances: wp.array[wp.int32],
     out_apex: wp.array[wp.int32],
-    out_lengths: wp.array[wp.int32],
+    out_counts: wp.array[wp.vec2i],
 ) -> None:
-    # Size each generator's loop without writing it, so the wrapper can scan the lengths into
-    # offsets and allocate once. The length is pure depth arithmetic given the apex -- the two legs
-    # are ``depth(a) - depth(apex)`` and ``depth(b) - depth(apex)`` edges long and the apex is
-    # counted once -- which is the whole reason the level loop keeps ``distances`` after dropping
-    # its discovery order.
-    g = wp.int32(wp.tid())
-    e = generator_edge_ids[g]
+    # Size each generator's loop without writing it, straight off the edge-space generator mask:
+    # ``(1, length)`` at a generator edge and ``(0, 0)`` elsewhere, so one inclusive scan of the
+    # pairs gives every generator its rank and its offset together, and its tail is the generator
+    # count and the packed length in one read -- no ``flatnonzero`` of the mask and no second scan.
+    # The length is pure depth arithmetic given the apex -- the two legs are
+    # ``depth(a) - depth(apex)`` and ``depth(b) - depth(apex)`` edges long and the apex is counted
+    # once -- which is the whole reason the level loop keeps ``distances`` after dropping its
+    # discovery order.
+    e = wp.int32(wp.tid())
+    if not candidate[e]:
+        out_counts[e] = wp.vec2i(0, 0)
+        return
     a = unique_edges[e, 0]
     b = unique_edges[e, 1]
     apex = tree_apex(parents, distances, a, b)
-    out_apex[g] = apex
-    out_lengths[g] = distances[a] + distances[b] - 2 * distances[apex] + 1
+    out_apex[e] = apex
+    out_counts[e] = wp.vec2i(1, distances[a] + distances[b] - 2 * distances[apex] + 1)
 
 
 @wp.kernel
 def write_generator_loops(
-    generator_edge_ids: wp.array[wp.int32],
+    candidate: wp.array[wp.bool],
     unique_edges: wp.array2d[wp.int32],
     parents: wp.array[wp.int32],
     apex: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    counts: wp.array[wp.vec2i],
+    out_offsets: wp.array[wp.int32],
     out_loops: wp.array[wp.int32],
 ) -> None:
     # Fill one generator's slice from both ends: the ``a`` leg forward from the slice's start up to
     # and including the apex, the ``b`` leg backward from its last slot down to the apex's child.
-    # The two cursors meet exactly because ``generator_loop_lengths`` sized the slice from the same
+    # The two cursors meet exactly because ``generator_loop_counts`` sized the slice from the same
     # two depths, so neither bound needs re-deriving and the apex is written once.
+    #
+    # ``counts`` is that kernel's pairs scanned inclusively in place, so the entry below a
+    # generator is ``(its rank, its offset)``. Each generator writes its own offset and its end into
+    # the total-terminated ``out_offsets``; the end is the next generator's offset, so every
+    # interior entry is written twice with the same value.
     #
     # The resulting order is the closed walk ``a -> apex -> b``, with the generator edge ``(b, a)``
     # closing it implicitly -- the start vertex is not repeated, matching ``boundary_loops``.
-    g = wp.int32(wp.tid())
-    e = generator_edge_ids[g]
-    top = apex[g]
+    e = wp.int32(wp.tid())
+    if not candidate[e]:
+        return
+    top = apex[e]
+    exclusive = wp.vec2i(0, 0)
+    if e > 0:
+        exclusive = counts[e - 1]
+    inclusive = counts[e]
+    out_offsets[exclusive[0]] = exclusive[1]
+    out_offsets[inclusive[0]] = inclusive[1]
 
-    slot = offsets[g]
+    slot = exclusive[1]
     node = unique_edges[e, 0]
     while node != top:
         out_loops[slot] = node
@@ -382,7 +400,7 @@ def write_generator_loops(
         node = parents[node]
     out_loops[slot] = top
 
-    back = offsets[g + 1] - 1
+    back = inclusive[1] - 1
     node = unique_edges[e, 1]
     while node != top:
         out_loops[back] = node

@@ -5395,24 +5395,14 @@
   {
    "group": "submesh_from_face_indices",
    "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "unique_indices",
-     "False"
-    ]
-   ],
+   "rest": [],
    "library": "pyvista",
    "ratio": 5.6
   },
   {
    "group": "submesh_from_face_indices",
    "mesh_name": "sphere_med",
-   "rest": [
-    [
-     "unique_indices",
-     "False"
-    ]
-   ],
+   "rest": [],
    "library": "trimesh",
    "ratio": 9.4
   },

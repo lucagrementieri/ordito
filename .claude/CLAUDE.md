@@ -834,7 +834,10 @@ host readback:
   (given faces): below `_UNDIRECTED_PATTERN_FROM_FACES` one sort of six directed keys per face
   plus the diagonal slots, above it one sort of the three undirected keys per face plus a stable
   32-bit sort of the unique edges by their larger endpoint for each row's transposed half -- the
-  identical matrix either way, and a forced-threshold test pins the two to each other.
+  identical matrix either way, and a forced-threshold test pins the two to each other. **A caller
+  assembling an operator repeatedly over fixed faces builds the pattern once** with the public
+  `laplacian.mesh_operator_pattern` and passes it as `pattern=` (`filter_implicit_fairing`,
+  `filter_taubin(recompute=True)`, `vector_heat_operators`; §16.29).
 - **The input is genuinely an unordered coordinate list:
   [`csr_from_triplets`][triwarp.array.csr_from_triplets]**. Unpruned it is `bsr_from_triplets`
   (summed in triplet order, out-of-range triplets dropped; bit-identical on CUDA, where Warp also
@@ -7081,7 +7084,7 @@ green. What generalises:
 - **A caller-supplied `edges_sorted` is never cheaper than packing keys from `faces`** since
   `sorted_face_edge_keys` (one launch into the sort buffer, `end_bit`) -- the rows path is a hash
   launch, a staging copy and a full-width sort. Every validation / adjacency / `Trimesh` property
-  now ignores the table (still accepted and device-checked, documented "Not read"). A `Trimesh`
+  now ignores the table (the parameters were removed in round 26, §16.29). A `Trimesh`
   property that built `edges_sorted` cold to feed a callee was pure overhead:
   `is_winding_consistent` 2.3x, `is_edge_manifold` 1.6x, `face_adjacency` 1.3-1.5x, cold
   `is_watertight` 1.69x open / 1.10x closed -- the last also because `is_watertight(mesh=)` now
@@ -7127,8 +7130,7 @@ green. What generalises:
   port must reproduce it or sit 1 ulp off. `normals_at_closest_faces` without a table forms the hit
   face's normal in the query thread. `intersects_location` returns prefix views of its per-ray
   buffers. `geodesic_ball` reads its overflow counter with its total. **A box predicate with an
-  optional rotation must branch, not multiply by the identity**: `0 * inf` is `nan`. The two face
-  compactions share `kernels/triangles.copy_scanned_face`. `remove_degenerate_faces`' fusion was
+  optional rotation must branch, not multiply by the identity**: `0 * inf` is `nan`. `remove_degenerate_faces`' fusion was
   declined (at most one launch, <= 1.07x).
 - **Agent hygiene, two more.** `ruff format triwarp/` run by one agent reformats files others are
   editing mid-Edit: always name your files. And `pkill -f <probe>` kills the shell running it, the
@@ -7307,3 +7309,89 @@ API spend limit; each partial tree was finished and re-gated before anything bel
   alternating-process probe. A row whose code did not change but whose *module* did is §15.7's
   order effect until an isolated probe says otherwise.
 
+
+### 16.29 Round 26: the rounds-20-25 kernel de-duplication pass (2026-09-30)
+
+Every kernel changed in `e34051f..4849a2b`, read against the rest of `kernels/` by seven reviewers
+with disjoint file ownership (brief: `plans/benchmark-round-26-data/BRIEF.md`), counts as evidence,
+CPU byte-identity against a detached `4849a2b` worktree (`/tmp/tw26base`). Every probed output is
+byte-identical on CPU (A 174 arrays, B the operators and heat bundles under both pattern builds,
+C 104 cases, D 39 cases, E 30 arrays, F 32, G 24) and on CUDA outside the float-atomic cases a
+second baseline run also moves. Harness A/B, one process per module, 22 modules, triwarp rows
+only, min of 2 rounds: **891 cells, median 1.00x, geomean 1.008** -- a de-duplication round on a
+host-bound surface, as §16.1 predicts. Every cell under 0.9x was re-run alone or probed in
+isolation and is an order effect (`laplacian_equal_weight` 0.81 -> 1.00x alone;
+`face_adjacency[happy_buddha]` 0.85x in the module, **faster** in an isolated probe with one
+allocation and its memset fewer; `mollify_intrinsic` 0.89x in the module with identical counts,
+wall and device time in isolation -- untouched code, a changed module, §16.28 again).
+
+Where it moved: `refine_region_to_density` **2.0-2.1x**, `make_winding_consistent` **1.5-2.0x**,
+`face_adjacency(_unshared)` 1.15-1.25x, `isotropic_remesh` 1.13-1.14x, `graph_laplacian` 1.13-1.17x,
+`make_volume`, `remove_degree3_vertices`, `split_faces_along_field`, the slicers 1.1-1.15x. Counts:
+`filter_taubin(recompute=True)` at 4 passes 45 / 50 / 1 -> 19 / 16 / 0 launches / allocations /
+readbacks; `filter_implicit_fairing` -5 launches and -5 allocations per pass; `isotropic_remesh`
+812 -> 701 allocations; `shorten_loop` on `handles_64` 59 -> 41 readbacks; `mesh_to_mesh_distance`
+3 -> 2 readbacks. What generalises:
+
+- **Solve parity through the sorted halfedge keys, not an adjacency table.**
+  `make_winding_consistent` takes its flips from `validation.face_flip_mask`, the parity union-find
+  run straight off `sorted_face_edge_keys`: 10 launches / 10 allocations / 1 readback -> 6 / 6 / 0.
+  Declined: reading the orientation sign off halfedge origins instead of `pair_flip_sign`'s corner
+  search -- the two disagree on a face with a repeated vertex, which changes `is_orientable`.
+- **A region question over a sort: lift the region's keys, sort once.** `_vertex_scale_attribute`
+  compacted the outside faces and ran `edges_unique` over them; lifting region faces' keys by
+  `base**2` puts the outside edges first in `edges_unique` order in one `end_bit` sort, and the
+  empty-outside fallback is free (the smallest key is already lifted). The same shape as §16.14's
+  deleted-face rule.
+- **A two-pass argmin with an index tie-break is one `uint64` `atomic_min`** on the non-negative
+  float's bits above the index (`cluster_decimate(contraction="closest")`, same winner, same
+  lowest-index tie).
+- **Row order a consumer cannot see is free to drop**: `_collapse_pass` builds its rings with
+  `edges_to_neighbor_lists` (no sort) after reading every consumer -- each counts, exits early or
+  takes a row minimum. Check the *consumers*, not the producer.
+- **The radix sort's upper half is free scratch after the sort** (§16.23's aliasing, extended):
+  `region_boundary_edges`' seam flags, the adjacency emit's scan and the component forest all live
+  in `order[n:]` now, each one allocation (up to 336 MB at `lucy`) fewer.
+- **A reusable operator pattern** (`laplacian.MeshOperatorPattern`) -- §3.7. The undirected build
+  is now three launches more than the directed one, not five: one exclusive scan of the whole
+  `(3, n)` tallies replaces the row-count kernel and two scans, flat on the device at `lucy`.
+- **Publish a bound on the device when the consumer is a later launch.** `mesh_to_mesh_distance`
+  kept its sampled bound in a device slot the walk reads, instead of reading it back to pass as a
+  scalar; the relax-and-floor rule is monotone, so the minimum of the publications is the
+  publication of the minimum.
+- **Readbacks merged** with `read_values` (§3.10): `shorten_loop`'s count total and changed flag,
+  `split_faces_along_field`'s class counts, `max_tangent_sphere`'s two boxes.
+- **Helpers now shared** (`kernels/array.py` unless noted): `sorted_run_start` (moved from
+  `grouping`, which imports `array`, so `csr_run_start` could build on it rather than re-spell it --
+  a circular-import objection is answered by moving the helper to the lower module, not by keeping
+  the copy), `sorted_run_end`, `csr_run_sum`, `csr_row_offsets`, `scanned_slot`,
+  `pack_index_triple`, `grouping.hash_slot_words3` (the three-word mixing points, voxels and remesh
+  each spelled), `graph.pointer_jump_schedule` for `marching_triangles`' device link,
+  `seams.write_canonical_pair_row`, `polyline.closing_segment_distance`,
+  `proximity.publish_best_sq`. Deleted with no caller left: `triangles.copy_scanned_face`,
+  `scatter.scatter_unique_edges_sum_and_valence`, `remesh.cluster_min_center_distance`,
+  `boundary.table_edge_keys_and_order`, `laplacian.diagonal_keys` / `mesh_row_counts`.
+- **Unread parameters are removed, not kept as documented no-ops.** The `boundary` edge tables
+  went unread this round (keys pack from `faces` in one launch), joining the validation /
+  adjacency ones §16.26 had already stopped reading; all of them -- `edges_sorted` / `edges` on
+  the `boundary` entry points, `edges_sorted` on `face_adjacency`, `is_edge_manifold`,
+  `edge_manifold_mask`, `face_watertight_mask`, `is_watertight`, `is_volume` and
+  `edge_winding_consistent_mask` (whose docstring claimed it built the table), and
+  `submesh_from_face_indices(unique_indices=)` -- are now gone, with the tests that only pinned
+  "passing the table changes nothing" and the benchmark's `dedup` / `presorted` axis, two rows of
+  the same code. A "Not read" parameter is a signature promising a lever that does not exist;
+  a caller passing one now gets a `TypeError` rather than a silent no-op. `is_volume(edges=)` and
+  `edges_unique(edges_sorted=)` are read and stay.
+- **Declined on speed, not on taste: `halfedge.opposite_edge` for the `(e + 1) % 3` reads in the
+  pattern-key kernels.** There `e` is an unrolled literal and the offsets fold at compile time,
+  where `halfedge_next(3 t + e)` computes the modulo at runtime in kernels that are device-bound at
+  `lucy`; the helper is only a name there. Also declined, each with its reason in the reviewer's
+  report: a shared ball-walk helper for `interpolate_from_points_in_ball` / `ball_collect` (a
+  4-line loop, the predicate already shared), fusing half-cotangents into `cotmatrix_rows`
+  (doubles the geometry on a device-bound kernel), a hash-only `remove_degree3_vertices` count,
+  and `split_faces_along_field`'s second readback (not derivable on boundary / non-manifold input).
+- **Open leads, measured by count only**: `mollify_intrinsic`'s two readbacks can be one (sum and
+  minimum excess in one block reduction); three multi-hop window rankings (`boundary`,
+  `intersection`, `graph.jump_rank`) share one merge rule that no `@wp.func` names yet;
+  `validation.is_winding_consistent` / `is_orientable` would take an `end_bit` sort given
+  `n_vertices=`.

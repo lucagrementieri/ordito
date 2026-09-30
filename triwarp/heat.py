@@ -50,11 +50,13 @@ from triwarp.constants import TILE_1D
 from triwarp.kernels import heat as kernel_heat
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.laplacian import (
+    MeshOperatorPattern,
     connection_laplacian,
     cotmatrix,
     cotmatrix_entries,
     cotmatrix_entries_intrinsic,
     mass_matrix_entries,
+    mesh_operator_pattern,
     mollify_intrinsic,
 )
 from triwarp.tangent_space import vertex_tangent_frames
@@ -714,7 +716,9 @@ def vector_heat_operators(
     require_same_device(vertices=vertices, faces=faces, frames=frames)
     device = vertices.device
     n_vertices = int(vertices.shape[0])
-    connection = connection_laplacian(vertices, faces)
+    # One sparsity for both operators: the connection Laplacian's is the cotangent Laplacian's.
+    pattern = mesh_operator_pattern(faces, n_vertices) if int(faces.shape[0]) > 0 else None
+    connection = connection_laplacian(vertices, faces, pattern=pattern)
     edge_sums = None
     if t is None:
         # Shares the scalar solver's timestep convention -- the unique-edge mean, matching
@@ -727,7 +731,9 @@ def vector_heat_operators(
         edge_sums = _edge_length_sums(vertices, connection)
 
     if scalar_operators is None:
-        scalar_operators, mass = _heat_operators(vertices, faces, t, edge_sums=edge_sums)
+        scalar_operators, mass = _heat_operators(
+            vertices, faces, t, edge_sums=edge_sums, pattern=pattern
+        )
     else:
         mass = mass_matrix_entries(vertices, faces, dtype=wp.float64)
     mass_blocks = wp.empty(n_vertices, dtype=wp.mat22d, device=device)
@@ -766,13 +772,15 @@ def _heat_operators(
     use_robust: bool = False,
     cot_entries: twt.Array2dFloat | None = None,
     edge_sums: wp.array[wp.float64] | None = None,
+    pattern: MeshOperatorPattern | None = None,
 ) -> tuple[HeatOperators, wp.array[wp.float64]]:
     """
     ``heat_operators``' assembly, returning the ``float64`` lumped mass it built alongside.
 
     ``vector_heat_operators`` reuses the mass for its own system, and hands over the edge-length
     sums it already reduced for the default timestep as ``edge_sums``: the connection Laplacian's
-    sparsity is the cotangent Laplacian's, so the sums are the ones this would reduce.
+    sparsity is the cotangent Laplacian's, so the sums are the ones this would reduce -- and the
+    ``pattern`` it built them over, so the sparsity is built once for both.
     """
     # Per-face half-cotangent weights (float32, O(1) and safe) reused for both the Laplacian and
     # the divergence. The cotangent stiffness follows the igl convention (negative diagonal, so
@@ -787,7 +795,9 @@ def _heat_operators(
         cot_entries = cotmatrix_entries(vertices, faces)
     # ``cotmatrix`` casts the shared float32 half-cotangent weights to float64 and assembles the
     # operator natively in a single build, avoiding a recast rebuild (see cotmatrix's kernel note).
-    laplacian = cotmatrix(vertices, faces, cot_entries=cot_entries, dtype=wp.float64)
+    laplacian = cotmatrix(
+        vertices, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
+    )
     if t is None and edge_sums is None:
         # The unique-edge average, which is what ``igl::heat_geodesics`` uses for its timestep --
         # read off the Laplacian's own sparsity, which already holds the unique edges, and left on

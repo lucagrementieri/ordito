@@ -9,7 +9,7 @@ from triwarp.kernels.array import (
     pack_farthest_key,
     unpack_ranked_index,
 )
-from triwarp.kernels.grouping import HASH_MULT_U64, hash_slot, next_slot
+from triwarp.kernels.grouping import hash_slot_words3, next_slot
 from triwarp.kernels.predicates import point_plane_dot, triangle_normal
 from triwarp.kernels.reduce import (
     block_chunk_1d,
@@ -490,15 +490,14 @@ def same_position_bits(a: wp.vec3, b: wp.vec3) -> wp.bool:
 
 @wp.func
 def position_hash_slot(point: wp.vec3, mask: wp.int32) -> wp.int32:
-    # The home slot of a position: the x and y bit patterns side by side in one 64-bit word,
-    # xor'ed with the z bits spread by the Fibonacci multiplier, then ``grouping.hash_slot``'s own
-    # fold. Any mixing works -- a colliding slot is resolved by ``same_position_bits``, never
-    # trusted -- so this only has to spread the probes, including over an axis-aligned lattice.
-    x_bits = wp.uint64(wp.uint32(zero_normalized_bits(point[0])))
-    y_bits = wp.uint64(wp.uint32(zero_normalized_bits(point[1])))
-    z_bits = wp.uint64(wp.uint32(zero_normalized_bits(point[2])))
-    key = ((x_bits << wp.uint64(32)) | y_bits) ^ (z_bits * HASH_MULT_U64)
-    return hash_slot(wp.int64(key), mask)
+    # The home slot of a position's bit pattern. A colliding slot is resolved by
+    # ``same_position_bits``, never trusted.
+    return hash_slot_words3(
+        zero_normalized_bits(point[0]),
+        zero_normalized_bits(point[1]),
+        zero_normalized_bits(point[2]),
+        mask,
+    )
 
 
 @wp.kernel

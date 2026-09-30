@@ -22,12 +22,12 @@ from triwarp.kernels.array import (
     pack_triangle_key,
     ravel_index,
     scanned_count,
+    sorted_run_start,
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
     update_argmax,
 )
-from triwarp.kernels.grouping import sorted_run_start
 from triwarp.kernels.predicates import (
     delone_metrics,
     is_unfold_quadrangle_convex,

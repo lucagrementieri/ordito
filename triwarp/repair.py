@@ -1787,13 +1787,12 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     if n_faces == 0:
         return wp.empty(0, dtype=wp.int32, device=device)
 
-    orient, _, _, _ = tw.validation.face_orientation_bits(faces)
+    # The flip mask solves the bits straight off the sorted halfedge keys, with no adjacency table
+    # and no host read of its length -- the bits ``face_orientation_bits`` gives.
+    flip = tw.validation.face_flip_mask(faces)
     out_faces = wp.empty(3 * n_faces, dtype=wp.int32, device=device)
     wp.launch(
-        kernel_repair.flip_faces_masked,
-        dim=n_faces,
-        inputs=[faces, orient, out_faces],
-        device=device,
+        kernel_repair.flip_faces_masked, dim=n_faces, inputs=[faces, flip, out_faces], device=device
     )
     return out_faces
 

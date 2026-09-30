@@ -620,6 +620,75 @@ def test_mesh_operator_pattern_builds_agree(
         assert np.array_equal(directed_np, undirected_np)
 
 
+@pytest.mark.parametrize(
+    "operator", ["cotmatrix", "connection_laplacian", "laplacian_symmetric", "laplacian_directed"]
+)
+def test_mesh_operator_pattern_reused_matches_a_fresh_build(operator: str, device: str) -> None:
+    """
+    Triwarp against triwarp: an operator over a reused pattern equals one that builds its own.
+
+    The pattern is built once on the faces and handed over with *moved* vertices, the use it
+    exists for (a smoothing flow re-linearising on the moving surface). ``test_cotmatrix`` and the
+    ``laplacian`` tests carry the oracles for the fresh build; this pins the reused one to it bit
+    for bit, and checks the two share the pattern's storage rather than copying it.
+    """
+    sphere = tm.creation.icosphere(3)
+    rng = np.random.default_rng(26)
+    vertices_np = sphere.vertices * (1.0 + 0.1 * rng.standard_normal((len(sphere.vertices), 1)))
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, sphere.faces, device)
+    kind = "cotmatrix" if operator == "connection_laplacian" else operator
+    builds = {
+        "cotmatrix": tw.laplacian.cotmatrix,
+        "connection_laplacian": tw.laplacian.connection_laplacian,
+        "laplacian_symmetric": lambda v, f, **kw: tw.laplacian.laplacian(
+            v, f, equal_weight=False, **kw
+        ),
+        "laplacian_directed": lambda v, f, **kw: tw.laplacian.laplacian(v, f, **kw),
+    }
+    build = builds[operator]
+    pattern = tw.laplacian.mesh_operator_pattern(faces_wp, len(vertices_np), operator=kind)
+    reused = build(vertices_wp, faces_wp, pattern=pattern)
+    fresh = build(vertices_wp, faces_wp)
+    n_entries = fresh.nnz_sync()
+    assert n_entries > len(vertices_np)  # a real pattern, not an empty one
+    assert reused.nnz_sync() == n_entries
+    assert reused.offsets is pattern.offsets
+    assert np.array_equal(reused.offsets.numpy(), fresh.offsets.numpy())
+    assert np.array_equal(reused.columns.numpy()[:n_entries], fresh.columns.numpy()[:n_entries])
+    assert np.array_equal(reused.values.numpy()[:n_entries], fresh.values.numpy()[:n_entries])
+
+
+def test_mesh_operator_pattern_rejects_a_mismatch(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    A pattern built for another operator, adjacency or vertex count raises rather than being read.
+
+    Not a library comparison: no reference exposes a reusable operator pattern. Each misuse would
+    otherwise index a pattern whose rows mean something else and return a wrong matrix silently.
+    """
+    mesh_tm, mesh_wp = icosahedron
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    n = len(mesh_tm.vertices)
+    directed = tw.laplacian.mesh_operator_pattern(faces, n, operator="laplacian_directed")
+    cot = tw.laplacian.mesh_operator_pattern(faces, n)
+    with pytest.raises(ValueError, match="operator='laplacian_directed'"):
+        tw.laplacian.cotmatrix(vertices, faces, pattern=directed)
+    with pytest.raises(ValueError, match="operator='laplacian_directed'"):
+        tw.laplacian.connection_laplacian(vertices, faces, pattern=directed)
+    with pytest.raises(ValueError, match="operator='cotmatrix'"):
+        tw.laplacian.laplacian(vertices, faces, equal_weight=False, pattern=cot)
+    with pytest.raises(ValueError, match="operator='laplacian_directed'"):
+        tw.laplacian.laplacian(vertices, faces, symmetric=True, pattern=directed)
+    tw.laplacian.laplacian(vertices, faces, pattern=directed)  # the matching adjacency is accepted
+    larger = tw.laplacian.mesh_operator_pattern(faces, n + 1)
+    with pytest.raises(ValueError, match=f"over {n + 1} vertices"):
+        tw.laplacian.cotmatrix(vertices, faces, pattern=larger)
+    edges, _ = tw.edges.edges_unique(faces, n_vertices=n)
+    with pytest.raises(ValueError, match="edges or pattern"):
+        tw.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges, pattern=cot)
+    with pytest.raises(ValueError, match="operator must be one of"):
+        tw.laplacian.mesh_operator_pattern(faces, n, operator="graph")
+
+
 # -----------------------------------------------------------------------------------------
 # robust_laplacian (libigl reference)
 #

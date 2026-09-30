@@ -30,6 +30,7 @@ import triwarp.typing as twt
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import INDEX_RADIX_PAIR, TOLERANCE_MERGE_CONSTANT
 from triwarp.kernels import adjacency as kernel_adjacency
+from triwarp.kernels import array as kernel_array
 from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.kernels.algorithms import connected_components as kernel_connected_components
@@ -38,7 +39,6 @@ from triwarp.kernels.algorithms import connected_components as kernel_connected_
 @overload
 def face_adjacency(
     faces: wp.array[wp.int32],
-    edges_sorted: twt.Array2dInt32 | None = None,
     *,
     return_edges: Literal[False] = False,
     n_vertices: int | None = None,
@@ -47,7 +47,6 @@ def face_adjacency(
 @overload
 def face_adjacency(
     faces: wp.array[wp.int32],
-    edges_sorted: twt.Array2dInt32 | None = None,
     *,
     return_edges: Literal[True],
     n_vertices: int | None = None,
@@ -55,7 +54,6 @@ def face_adjacency(
 ) -> tuple[twt.Array2dInt32, twt.Array2dInt32]: ...
 def face_adjacency(
     faces: wp.array[wp.int32],
-    edges_sorted: twt.Array2dInt32 | None = None,
     *,
     return_edges: bool = False,
     n_vertices: int | None = None,
@@ -75,12 +73,6 @@ def face_adjacency(
         Length-``3 * n_faces`` ``wp.int32`` buffer of triangle vertex indices, the
         same flat layout as [`triwarp.triangles`][triwarp.triangles] and
         [`faces_to_edges`][triwarp.edges.faces_to_edges].
-    edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` edge rows with each row sorted
-        so the smaller vertex index is first (as from
-        [`faces_to_edges`][triwarp.edges.faces_to_edges] with
-        ``sorted=True``). Not read: the edge keys and the shared edges are read straight off
-        ``faces``, which packs these rows identically for less than hashing them.
     return_edges
         If ``True``, also return the shared vertex indices for each adjacency row.
     n_vertices
@@ -112,8 +104,6 @@ def face_adjacency(
 
     Raises
     ------
-    RuntimeError
-        If ``faces`` and ``edges_sorted`` are not all on one device.
     ValueError
         If ``edges_paired`` is given for an odd face count, where no pairing exists.
 
@@ -131,7 +121,6 @@ def face_adjacency(
     [`face_connected_component_labels`][triwarp.adjacency.face_connected_component_labels]
     [`trimesh.graph.face_adjacency`][]
     """
-    require_same_device(faces=faces, edges_sorted=edges_sorted)
     device = faces.device
     n_faces = int(faces.shape[0]) // 3
     if n_faces == 0:
@@ -152,9 +141,9 @@ def face_adjacency(
         n_pairs = int(edge_groups.shape[0])
         kernel, dim, sources = kernel_adjacency.edge_pairs_to_face_pairs, n_pairs, [edge_groups]
     else:
-        order, offsets, n_pairs = _sorted_pair_offsets(faces, n_vertices)
-        kernel, dim = kernel_adjacency.emit_sorted_face_pairs, int(order.shape[0])
-        sources = [offsets, order]
+        order, inclusive, n_pairs = _sorted_pair_scan(faces, n_vertices)
+        kernel, dim = kernel_adjacency.emit_sorted_face_pairs, int(inclusive.shape[0])
+        sources = [inclusive, order]
     adjacency = twt.empty_2d((n_pairs, 2), wp.int32, device=device)
     adjacency_edges = twt.empty_2d((n_pairs, 2), wp.int32, device=device) if return_edges else None
     if n_pairs > 0:
@@ -226,21 +215,22 @@ def _paired_edge_groups(faces: wp.array[wp.int32], n_vertices: int | None) -> tw
     position and the run detection of [`group`][triwarp.grouping.group] would emit sorted slots
     ``2k, 2k + 1`` as row ``k``: the sort's permutation, read two to a row, is that answer already.
     """
-    _, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    return twt.as_array2d(order.reshape((int(order.shape[0]) // 2, 2)), wp.int32)
+    _, order, n = _sorted_face_edge_buffers(faces, n_vertices)
+    return twt.as_array2d(twt.as_dense(order[:n]).reshape((n // 2, 2)), wp.int32)
 
 
-def _sorted_pair_offsets(
+def _sorted_pair_scan(
     faces: wp.array[wp.int32], n_vertices: int | None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Sort the ``3 * n_faces`` undirected halfedge keys and locate the runs of exactly two.
 
-    Returns ``(order, offsets, m)``: the sorting permutation (sorted position ``i`` is halfedge
-    ``order[i]``, which belongs to face ``order[i] // 3``), the total-terminated exclusive scan of
-    the positions that start a run of exactly two equal keys -- one edge shared by exactly two
-    faces, i.e. one adjacency pair, whose row is the scan's value at its first position -- and
-    the pair count ``m``, read back because it sizes the answer.
+    Returns ``(order, inclusive, m)``: the sorting permutation's double-width buffer (sorted
+    position ``i`` is halfedge ``order[i]``, which belongs to face ``order[i] // 3``), the in-place
+    inclusive scan of the positions that start a run of exactly two equal keys -- one edge shared
+    by exactly two faces, i.e. one adjacency pair, whose row is the scan's exclusive offset at its
+    first position -- and the pair count ``m``, read back because it sizes the answer. The scan
+    lives in the payload buffer's upper half, which the sort leaves free.
 
     The keys hash the edge rows over the vertex-index range (the caller's ``n_vertices``, or
     ``INDEX_RADIX_PAIR``); using ``n_faces`` as the base is wrong whenever the largest vertex
@@ -249,19 +239,17 @@ def _sorted_pair_offsets(
     written or read back; hashing those rows would give byte-identical keys, hence identical pair
     order, for more work.
     """
-    keys, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    n = int(keys.shape[0])
-    offsets = wp.zeros(n + 1, dtype=wp.int32, device=faces.device)
-    flags = offsets[1:]
+    keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
+    inclusive = twt.as_dense(order[n:])
     wp.launch(
         kernel_grouping.MARK_GROUP_STARTS[keys.dtype],
         dim=n,
-        inputs=[keys, n, 2, flags],
+        inputs=[keys, n, 2, inclusive],
         device=faces.device,
     )
-    wp.utils.array_scan(flags, flags, inclusive=True)
+    wp.utils.array_scan(inclusive, inclusive, inclusive=True)
     # The pair count sizes the output, so it has to come back to the host.
-    return order, offsets, int(read_scalar(offsets))
+    return order, inclusive, int(read_scalar(inclusive))
 
 
 def vertex_face_adjacency(
@@ -420,8 +408,8 @@ def face_adjacency_unshared(
     if face_adjacency is None:
         m, dim, tables = 0, 0, ()
         if int(faces.shape[0]) >= 3:
-            order, offsets, m = _sorted_pair_offsets(faces, n_vertices)
-            dim, tables = int(order.shape[0]), (offsets, order)
+            order, inclusive, m = _sorted_pair_scan(faces, n_vertices)
+            dim, tables = int(inclusive.shape[0]), (inclusive, order)
         kernel = kernel_adjacency.emit_sorted_unshared
     else:
         assert face_adjacency_edges is not None
@@ -780,11 +768,15 @@ def face_connected_component_labels(
     # self-loop where no pair starts), formed inside the pre-hook and hook kernels: no compacted
     # table, no host read of its length, and no per-halfedge edge table written only to be read
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
+    # The forest lives in the payload buffer's upper half, which the sort leaves free.
     device = faces.device
-    sorted_keys, order = sorted_face_edge_keys(faces, n_vertices=n_vertices)
-    parents = tw.array.arange(n_faces, device=device)
+    keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
+    # Trimmed: the run classification reads its length off the keys' shape.
+    sorted_keys = twt.as_dense(keys[:n])
+    parents = twt.as_dense(order[n : n + n_faces])
+    wp.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
     for kernel in (kernel_adjacency.sorted_pair_prehook, kernel_adjacency.sorted_pair_hook):
-        wp.launch(kernel, dim=3 * n_faces, inputs=[sorted_keys, order, parents], device=device)
+        wp.launch(kernel, dim=n, inputs=[sorted_keys, order, parents], device=device)
     labels = wp.empty(n_faces, dtype=wp.int32, device=device)
     wp.launch(
         kernel_connected_components.ecl_flatten,
@@ -831,18 +823,31 @@ def sorted_face_edge_keys(
     ValueError
         If ``n_vertices`` is not positive.
     """
+    keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
+    return twt.as_dense(keys[:n]), twt.as_dense(order[:n])
+
+
+def _sorted_face_edge_buffers(
+    faces: wp.array[wp.int32], n_vertices: int | None
+) -> tuple[wp.array[wp.uint64], wp.array[wp.int32], int]:
+    """
+    Untrimmed sorted edge keys and permutation, as ``(keys, order, n)``.
+
+    [`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys]' sort, returning its two
+    ``2 * n`` buffers, sorted in their leading halves. The upper halves are free scratch once
+    the sort has run, which the internal callers borrow for a scan or a union-find forest instead
+    of allocating one.
+    """
     device = faces.device
     n = int(faces.shape[0]) // 3 * 3
     radix = _hash_radix(n_vertices)
-    if n == 0:
-        return wp.empty(0, dtype=wp.uint64, device=device), wp.empty(
-            0, dtype=wp.int32, device=device
-        )
     # The keys and the identity payload are written straight into the leading halves of the radix
     # sort's double-width buffers in one launch, so no staging copy of every halfedge key is made
     # and the scratch halves are never filled; a known radix bounds the sorted bits.
     keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
     order = wp.empty(2 * n, dtype=wp.int32, device=device)
+    if n == 0:
+        return keys, order, 0
     wp.launch(
         kernel_adjacency.face_edge_keys_and_order,
         dim=n // 3,
@@ -852,7 +857,7 @@ def sorted_face_edge_keys(
     wp.utils.radix_sort_pairs(
         keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
     )
-    return twt.as_dense(keys[:n]), twt.as_dense(order[:n])
+    return keys, order, n
 
 
 def _hash_radix(n_vertices: int | None) -> int:

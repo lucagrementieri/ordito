@@ -2,7 +2,7 @@ import warp as wp
 
 from triwarp.constants import FLOAT32_INF_CONSTANT
 from triwarp.kernels.algorithms.connected_components import ecl_hook_pair, ecl_prehook_pair
-from triwarp.kernels.array import pack_edge_key
+from triwarp.kernels.array import pack_edge_key, scanned_count
 from triwarp.kernels.halfedge import halfedge_endpoints
 from triwarp.kernels.predicates import vector_angle
 from triwarp.kernels.triangles import corner_triple
@@ -171,20 +171,20 @@ def edge_pairs_to_face_pairs(
 def emit_sorted_face_pairs(
     faces: wp.array[wp.int32],
     edges_sorted: wp.array2d[wp.int32],
-    offsets: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
     order: wp.array[wp.int32],
     out_adjacency: wp.array2d[wp.int32],
     out_edges: wp.array2d[wp.int32],
 ) -> None:
     # ``write_adjacency_row`` straight off the sorted halfedge keys, launched over the sorted
-    # positions with ``offsets`` the total-terminated exclusive scan of the exact-pair starts
+    # positions with ``inclusive`` the in-place inclusive scan of the exact-pair starts
     # (``grouping.mark_group_starts`` at length two): a position starts a pair exactly where the
-    # scan steps, and the step's value is the pair's row -- ``grouping.emit_groups``' compaction,
-    # with the pair's faces and edge written in the same launch rather than from an intermediate
-    # ``(m, 2)`` group table.
+    # scan steps, and the exclusive offset is the pair's row -- ``grouping.emit_groups``'
+    # compaction, with the pair's faces and edge written in the same launch rather than from an
+    # intermediate ``(m, 2)`` group table.
     i = wp.int32(wp.tid())
-    row = offsets[i]
-    if offsets[i + 1] == row:
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
         return
     write_adjacency_row(faces, edges_sorted, order[i], order[i + 1], row, out_adjacency, out_edges)
 
@@ -287,7 +287,7 @@ def edge_pair_topology(
 @wp.kernel
 def emit_sorted_unshared(
     faces: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
     order: wp.array[wp.int32],
     out_unshared: wp.array2d[wp.int32],
 ) -> None:
@@ -296,8 +296,8 @@ def emit_sorted_unshared(
     # pairs, so the rows align with ``face_adjacency``'s. Column order follows that kernel, which
     # emits the face pair ascending.
     i = wp.int32(wp.tid())
-    row = offsets[i]
-    if offsets[i + 1] == row:
+    row, count = scanned_count(inclusive, i)
+    if count == 0:
         return
     _shared_a, _shared_b, face_0, face_1, unshared_0, unshared_1 = edge_pair_topology(
         faces, order[i], order[i + 1]

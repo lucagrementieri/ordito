@@ -2033,7 +2033,7 @@ def test_flip_topology_matches_the_composed_adjacency(
 
     edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
     adjacency_ref, adjacency_edges_ref = tw.adjacency.face_adjacency(
-        faces, edges_sorted, return_edges=True, n_vertices=n_vertices
+        faces, return_edges=True, n_vertices=n_vertices
     )
     unshared_ref = tw.adjacency.face_adjacency_unshared(faces, adjacency_ref, adjacency_edges_ref)
     keys_ref, _order = tw.array.sort_and_argsort(

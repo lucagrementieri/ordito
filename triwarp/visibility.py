@@ -40,8 +40,9 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_same_device
+from triwarp._device import read_scalar, read_values, require_same_device
 from triwarp.bounds import enclosing_diagonal
+from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import visibility as kernel_visibility
 from triwarp.proximity import ITEMS_PER_QUERY_SLICE, normals_at_closest_faces
 
@@ -535,22 +536,32 @@ def max_tangent_sphere(
         kernel_visibility.ray_direction, normals, wp.float32(-1.0 if inwards else 1.0), out=ray_dirs
     )
 
-    # One reduction of ``mesh.points``, not two: ``max_t`` needs the box enclosing the mesh *and*
-    # the queries, while the convergence threshold is a fraction of the mesh's own diagonal. Taking
-    # the mesh corners once and deriving both saves an ``aabb`` pass and its host sync.
+    # ``max_t`` needs the box enclosing the mesh *and* the queries, while the convergence threshold
+    # is a fraction of the mesh's own diagonal. Both boxes reduce into one twelve-slot corner
+    # buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the queries' second), read
+    # back once; the union is then the componentwise extreme of the two, exact in any order.
     #
     # ``max_t`` is part of the answer, not only a bound: the shrink step's closest-point query is
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
-    mesh_lower, mesh_upper = tw.bounds.aabb(mesh.points)
-    query_lower, query_upper = tw.bounds.aabb(points)
-    union_lower, union_upper = tw.bounds.aabb_union(
-        mesh_lower, mesh_upper, query_lower, query_upper
-    )
-    # ``math.dist`` rather than ``float(wp.length(upper - lower))``: a Warp operator and a
-    # Warp builtin at Python scope each route through builtin dispatch, several times dearer. It
-    # computes in float64 where ``wp.length`` is float32, i.e. the correctly-rounded answer for
-    # float32 corners. Section 13.1.
+    corners = wp.full(12, math.inf, dtype=wp.float32, device=device)
+    for cloud, box in ((mesh.points, corners), (points, twt.as_dense(corners[6:]))):
+        n_cloud = int(cloud.shape[0])
+        if n_cloud > 0:
+            wp.launch(
+                kernel_reduce.minmax_vec3_chunked,
+                dim=kernel_reduce.chunks_1d(n_cloud),
+                inputs=[cloud, box],
+                device=device,
+            )
+    # Slots 3..5 and 9..11 hold the *negated* upper corners. ``math.dist`` on plain floats rather
+    # than ``wp.length`` of a Warp vector difference: a Warp operator or builtin at Python scope
+    # routes through builtin dispatch, several times dearer. It computes in float64 where
+    # ``wp.length`` is float32, i.e. the correctly-rounded answer for float32 corners.
+    c = read_values(corners, 0, 12)
+    mesh_lower, mesh_upper = c[0:3], [-x for x in c[3:6]]
+    union_lower = [min(a, b) for a, b in zip(mesh_lower, c[6:9], strict=True)]
+    union_upper = [max(a, -b) for a, b in zip(mesh_upper, c[9:12], strict=True)]
     max_t = math.dist(union_lower, union_upper)
     mesh_diagonal = math.dist(mesh_lower, mesh_upper)
 

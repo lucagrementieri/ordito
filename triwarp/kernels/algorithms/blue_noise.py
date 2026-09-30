@@ -60,8 +60,7 @@ counts.
 import warp as wp
 
 from triwarp.kernels import array as kernel_array
-from triwarp.kernels.array import element_priority
-from triwarp.kernels.grouping import sorted_run_start
+from triwarp.kernels.array import element_priority, sorted_run_start
 
 INVALID = wp.constant(wp.int32(-1))
 

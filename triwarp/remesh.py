@@ -454,8 +454,7 @@ def _classify(
     if m == 0:
         return wp.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
-    # Every entry is written by the map below.
-    codes = wp.empty(n_vertices, dtype=wp.int32, device=device)
+    # The feature counts become the codes in place.
     feature_count = wp.zeros(n_vertices, dtype=wp.int32, device=device)
     wp.launch(
         kernel_remesh.scatter_feature_edge_counts,
@@ -472,8 +471,8 @@ def _classify(
         ],
         device=device,
     )
-    wp.map(kernel_remesh.finalize_vertex_codes, feature_count, out=codes)
-    return codes, boundary_vertex
+    wp.map(kernel_remesh.finalize_vertex_codes, feature_count, out=feature_count)
+    return feature_count, boundary_vertex
 
 
 def _edge_incidence(faces: wp.array[wp.int32], n_vertices: int) -> _EdgeIncidence:
@@ -539,9 +538,15 @@ def _collapse_pass(
         if m == 0:
             break
         codes, _boundary = _classify(vertices, faces, feature, incidence)
-        csr = tw.graph.edges_to_csr(n_vertices, unique_edges)
+        # Only the neighbour *sets* are read -- the link condition counts shared neighbours, the
+        # band walks and the ring locks exit or take a minimum over a whole row -- so the rows need
+        # no order, and a degree count and a cursor fill build them with no sort. The unique edges
+        # came from this very face buffer, so they are in range.
+        ring_neighbors, ring_offsets = tw.graph.edges_to_neighbor_lists(
+            n_vertices, unique_edges, validate=False
+        )
         # The vertex-face CSR exists only for ``collapse_candidates``' fold veto, which needs the
-        # faces incident to a vertex where ``csr`` above has only its neighbours. It is about a
+        # faces incident to a vertex where the rings above have only its neighbours. It is about a
         # percent of the collapse stage, and the veto's own per-candidate work does not show above
         # run-to-run noise -- see the veto itself in ``kernels/remesh.collapse_candidates``.
         vertex_faces, face_offsets = tw.adjacency.vertex_face_adjacency(
@@ -566,8 +571,8 @@ def _collapse_pass(
                 faces,
                 codes,
                 incidence.face_count,
-                csr.offsets,
-                csr.columns,
+                ring_offsets,
+                ring_neighbors,
                 face_offsets,
                 vertex_faces,
                 low,
@@ -591,7 +596,7 @@ def _collapse_pass(
         wp.launch(
             kernel_remesh.claim_collapse_key,
             dim=m,
-            inputs=[survivor, removed, csr.offsets, csr.columns, claim],
+            inputs=[survivor, removed, ring_offsets, ring_neighbors, claim],
             device=device,
         )
         wp.launch(
@@ -601,8 +606,8 @@ def _collapse_pass(
                 survivor,
                 removed,
                 target_pos,
-                csr.offsets,
-                csr.columns,
+                ring_offsets,
+                ring_neighbors,
                 claim,
                 remap,
                 positions,
@@ -1162,16 +1167,12 @@ class _FlipTopology:
     def _sort(self) -> None:
         """Pack every corner's edge key and radix-sort them, with the corner order as payload."""
         n = self._n_corners
+        # Keys and identity payload in one launch, into the leading halves only: the upper halves
+        # are the sort's scratch and need no fill.
         wp.launch(
-            kernel_adjacency.face_edge_keys,
+            kernel_adjacency.face_edge_keys_and_order,
             dim=self._n_faces,
-            inputs=[self._faces, self._radix, self._keys],
-            device=self._device,
-        )
-        wp.launch(
-            kernel_array.SORT_PAIR_INDICES[wp.int32],
-            dim=2 * n,
-            inputs=[wp.int32(n), wp.int32(-1), self._order],
+            inputs=[self._faces, self._radix, self._keys, self._order],
             device=self._device,
         )
         wp.utils.radix_sort_pairs(self._keys, self._order, count=n, end_bit=self._key_bits)
@@ -1498,27 +1499,19 @@ def _cluster_positions(
         )
         return out
 
-    min_distance = wp.full(n_kept, float("inf"), dtype=wp.float32, device=device)
-    wp.launch(
-        kernel_remesh.cluster_min_center_distance,
-        dim=n_vertices,
-        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size)],
-        outputs=[min_distance],
-        device=device,
-    )
-    representative = wp.full(n_kept, n_vertices, dtype=wp.int32, device=device)
+    closest = wp.full(n_kept, UINT64_MAX, dtype=wp.uint64, device=device)
     wp.launch(
         kernel_remesh.cluster_pick_closest,
         dim=n_vertices,
-        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size), min_distance],
-        outputs=[representative],
+        inputs=[vertex_cell, cell_rank, vertices, origin, wp.float32(voxel_size)],
+        outputs=[closest],
         device=device,
     )
     out = wp.empty(n_kept, dtype=wp.vec3, device=device)
     wp.launch(
         kernel_remesh.cluster_gather_representatives,
         dim=n_kept,
-        inputs=[vertices, representative],
+        inputs=[vertices, closest],
         outputs=[out],
         device=device,
     )
@@ -1582,7 +1575,7 @@ def _compact_remapped_faces(
     are distinct; the targets kept are those a surviving face names, in target order, and
     ``compacted_faces`` holds the surviving faces in input order renumbered onto them -- a
     face-mask ``submesh`` followed by ``repair.remove_unreferenced_vertices``. ``ranks`` is the
-    ``n_targets + 1`` scan ``kernels/remesh.scanned_slot`` reads each target's slot from.
+    ``n_targets + 1`` scan ``kernels/array.scanned_slot`` reads each target's slot from.
 
     One marking launch, one scan over the face flags and the target marks together, one compaction
     that also publishes both counts, and one read of them. The compacted buffer is sized for every
@@ -3858,8 +3851,8 @@ def _vertex_scale_attribute(
     ``alpha * sigma(c) > sigma(v_m)`` clause fails there, and the patch is left unrefined.
 
     Over the **unique** edge list, so an interior edge counts once at each endpoint rather than
-    twice -- which is why this goes through ``scatter_unique_edges_sum_and_valence`` rather than the
-    half-edge form beside it. A vertex with no surrounding edge at all keeps ``0`` (the guarded
+    twice -- which is why the scatter reads one edge per run of the sorted edge keys rather than
+    one per halfedge. A vertex with no surrounding edge at all keeps ``0`` (the guarded
     division rather than ``nan``), which makes its clause fail and leaves its triangles alone; when
     the region is the *whole* mesh there is no surrounding mesh to measure and every edge is
     counted instead, so the criterion degrades to the mesh's own average rather than to zero.
@@ -3867,34 +3860,32 @@ def _vertex_scale_attribute(
     device = vertices.device
     n_vertices = int(vertices.shape[0])
     n_faces = int(region.shape[0])
-    # The outside faces, compacted straight from the in-place scan of their flags: one count read
-    # sizes the buffer, with no complement mask, index list or gathered copy in between.
-    inclusive = wp.empty(n_faces, dtype=wp.int32, device=device)
+    n = 3 * n_faces
+    # Every halfedge's edge key, the region's lifted past the surrounding mesh's, sorted once: the
+    # unique surrounding edges are the leading runs, in ``edges_unique``'s order, so the class the
+    # attribute measures is chosen on the device and nothing is compacted or read back. The sort's
+    # buffers are double width, the upper halves its scratch; its payload is carried and never
+    # read, so it is not initialized.
+    keys = wp.empty(2 * n, dtype=wp.uint64, device=device)
+    order = wp.empty(2 * n, dtype=wp.int32, device=device)
+    base = wp.uint64(n_vertices)
     wp.launch(
-        kernel_remesh.outside_region_flags, dim=n_faces, inputs=[region, inclusive], device=device
+        kernel_remesh.scale_attribute_edge_keys,
+        dim=n_faces,
+        inputs=[faces, region, base, keys],
+        device=device,
     )
-    wp.utils.array_scan(inclusive, out_array=inclusive, inclusive=True)
-    n_outside = int(read_scalar(inclusive))
-    surrounding = faces
-    if n_outside > 0:
-        surrounding = wp.empty(3 * n_outside, dtype=wp.int32, device=device)
-        wp.launch(
-            kernel_remesh.compact_scanned_faces,
-            dim=n_faces,
-            inputs=[faces, inclusive, surrounding],
-            device=device,
-        )
-    unique_edges, _inverse = tw.edges.edges_unique(
-        surrounding, n_vertices=n_vertices, validate=False
+    wp.utils.radix_sort_pairs(
+        keys, order, count=n, end_bit=max(1, (2 * n_vertices * n_vertices - 1).bit_length())
     )
-    lengths = tw.edges.edges_unique_length(vertices, surrounding, unique_edges=unique_edges)
-
-    total = wp.zeros(n_vertices, dtype=wp.float32, device=device)
-    valence = wp.zeros(n_vertices, dtype=wp.float32, device=device)
+    # The sum and the valence share one zeroed buffer.
+    sums = wp.zeros(2 * n_vertices, dtype=wp.float32, device=device)
+    total = twt.as_dense(sums[:n_vertices])
+    valence = twt.as_dense(sums[n_vertices:])
     wp.launch(
-        kernel_scatter.scatter_unique_edges_sum_and_valence,
-        dim=int(unique_edges.shape[0]),
-        inputs=[unique_edges, lengths, total, valence],
+        kernel_remesh.scatter_scale_attribute,
+        dim=n,
+        inputs=[vertices, keys, base, total, valence],
         device=device,
     )
     wp.map(kernel_array.divide_if_positive, total, valence, out=total)

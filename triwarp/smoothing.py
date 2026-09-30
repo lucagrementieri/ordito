@@ -1129,9 +1129,10 @@ def filter_taubin(
     would rebuild the identical matrix every pass and cost without doing anything. Only the
     geometry-dependent branch has anything to recompute.
 
-    ``recompute`` reassembles a sparse operator every pass instead of once, which is markedly more
-    expensive; the connectivity never changes, though, so ``laplacian``'s ``edges`` keyword lets
-    every pass share one ``edges_unique`` call rather than re-deriving it each time.
+    ``recompute`` reassembles a sparse operator every pass instead of once, which is more
+    expensive; the connectivity never changes, though, so every pass shares one
+    [`mesh_operator_pattern`][triwarp.laplacian.mesh_operator_pattern] and only rewrites the
+    weights.
     """
     require_same_device(vertices=vertices, faces=faces)
     if recompute and laplacian_operator is not None:
@@ -1143,26 +1144,18 @@ def filter_taubin(
 
     operator = None if recompute else _resolved_operator(vertices, faces, laplacian_operator)
     # The recompute path reassembles the operator every pass from *moved* positions, but over
-    # connectivity that never changes -- so the unique-edge set is derived once here rather than
-    # inside the loop, which would otherwise repay the same derivation once per iteration for an
-    # identical answer.
-    recompute_edges = (
-        tw.edges.edges_unique(faces, n_vertices=n, validate=False)[0] if recompute else None
+    # connectivity that never changes -- so its sparsity is built once here and every pass only
+    # writes the weights.
+    pattern = (
+        laplacian.mesh_operator_pattern(faces, n, operator="laplacian_symmetric")
+        if recompute and int(faces.shape[0]) > 0
+        else None
     )
     positions = _as_vec3d(vertices)
     nxt = wp.empty(n, dtype=wp.vec3d, device=device)
     for index in range(iterations):
         pass_operator = (
-            laplacian.laplacian(
-                _as_vec3(positions),
-                faces,
-                equal_weight=False,
-                edges=recompute_edges,
-                # ``recompute_edges`` was derived from this same ``faces``/``n`` a few lines up and
-                # never changes across the loop, so re-checking it every pass would only re-pay the
-                # per-iteration cost this hoist exists to remove.
-                validate=False,
-            )
+            laplacian.laplacian(_as_vec3(positions), faces, equal_weight=False, pattern=pattern)
             if operator is None
             else operator
         )
@@ -1558,12 +1551,16 @@ def filter_implicit_fairing(
         # Every vertex is pinned, so the flow has no unknown to move and the pass is the identity.
         return _as_vec3(positions)
 
+    # The sparsity depends on the connectivity alone, so it is built once for every pass.
+    pattern = laplacian.mesh_operator_pattern(faces, n)
     for _ in range(iterations):
         current = _as_vec3(positions)
         # Rebuilt every iteration on purpose: the cotangent weights depend on ``current``, which
         # the fairing step moves, so implicit fairing must re-linearise on the moving surface.
         cot_entries = laplacian.cotmatrix_entries(current, faces)
-        stiffness = laplacian.cotmatrix(current, faces, cot_entries=cot_entries, dtype=wp.float64)
+        stiffness = laplacian.cotmatrix(
+            current, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
+        )
 
         mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)
 

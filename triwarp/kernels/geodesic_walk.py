@@ -739,14 +739,15 @@ def shorten_loop_write(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     loop_vertices: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
     arc_slot: wp.array[wp.int32],
     arc_step: wp.array[wp.int32],
     positions: wp.array[wp.int32],
     out_loop_vertices: wp.array[wp.int32],
 ) -> None:
+    # ``positions`` is ``shorten_loop_counts``' counts scanned in place behind a leading zero, so a
+    # position's count is the step between its offset and the next.
     t = wp.int32(wp.tid())
-    count = counts[t]
+    count = positions[t + 1] - positions[t]
     if count == 0:
         return  # b dropped: either the loop doubled back through it, or a -- c is itself an edge
     if arc_slot[t] < 0:
@@ -782,12 +783,11 @@ def distinct_from_predecessor(
 
 @wp.kernel
 def compact_kept(
-    values: wp.array[wp.int32],
-    counts: wp.array[wp.int32],
-    positions: wp.array[wp.int32],
-    out_kept: wp.array[wp.int32],
+    values: wp.array[wp.int32], positions: wp.array[wp.int32], out_kept: wp.array[wp.int32]
 ) -> None:
-    # Stream compaction against a 0/1 count and its exclusive scan: a scatter, so it stays a kernel.
+    # Stream compaction against 0/1 counts scanned in place behind a leading zero, so a kept
+    # position is a step of the scan: a scatter, so it stays a kernel.
     t = wp.int32(wp.tid())
-    if counts[t] != 0:
-        out_kept[positions[t]] = values[t]
+    slot = positions[t]
+    if positions[t + 1] != slot:
+        out_kept[slot] = values[t]

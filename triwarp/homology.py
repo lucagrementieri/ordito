@@ -25,7 +25,7 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import require_same_device, run_device_loop
+from triwarp._device import read_scalar, require_same_device, run_device_loop
 from triwarp.constants import INT32_MAX, TILE_1D
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import homology as kernel_homology
@@ -205,10 +205,7 @@ def homology_generators_with_offsets(
         )
 
     _remove_dual_spanning_forest(candidate, edge_faces, n_faces)
-    generator_edge_ids = tw.array.flatnonzero(candidate)
-    if int(generator_edge_ids.shape[0]) == 0:
-        return _no_loops(device)
-    return _trace_generator_loops(generator_edge_ids, unique_edges, parents, distances)
+    return _trace_generator_loops(candidate, unique_edges, parents, distances)
 
 
 def _primal_spanning_tree(
@@ -324,7 +321,7 @@ def _remove_dual_spanning_forest(
 
 
 def _trace_generator_loops(
-    generator_edge_ids: wp.array[wp.int32],
+    candidate: wp.array[wp.bool],
     unique_edges: twt.Array2dInt32,
     parents: wp.array[wp.int32],
     distances: wp.array[wp.int32],
@@ -332,30 +329,35 @@ def _trace_generator_loops(
     """
     Close each generator edge into a loop through the primal tree, on the device.
 
-    Two launches and a scan: one thread per generator finds the apex (the lowest common ancestor of
-    the edge's endpoints) and the loop's length from the two depths, the lengths scan into offsets,
-    and a second thread per generator fills its slice from both ends. The grid is ``2 * g`` wide and
-    so tiny, but so is the work — the alternative is one Python walk per generator over a
-    ``parents`` array read back in full.
+    Two launches and a scan over the edge-space generator mask ``candidate``: one thread per edge
+    finds a generator's apex (the lowest common ancestor of the edge's endpoints) and the loop's
+    length from the two depths, the ``(1, length)`` pairs scan into every generator's rank and
+    offset at once, and a second thread per edge fills its generator's slice from both ends. One
+    readback, of the generator count and the packed length together; the generators come out in
+    ascending edge order, as a compaction of the mask would list them.
     """
     device = unique_edges.device
-    n_generators = int(generator_edge_ids.shape[0])
-    apex = wp.empty(n_generators, dtype=wp.int32, device=device)
-    lengths = wp.empty(n_generators, dtype=wp.int32, device=device)
+    n_edges = int(candidate.shape[0])
+    apex = wp.empty(n_edges, dtype=wp.int32, device=device)
+    counts = wp.empty(n_edges, dtype=wp.vec2i, device=device)
     wp.launch(
-        kernel_homology.generator_loop_lengths,
-        dim=n_generators,
-        inputs=[generator_edge_ids, unique_edges, parents, distances, apex, lengths],
+        kernel_homology.generator_loop_counts,
+        dim=n_edges,
+        inputs=[candidate, unique_edges, parents, distances, apex, counts],
         device=device,
     )
-    # The total-terminated form: ``write_generator_loops`` reads ``offsets[g + 1]`` as its slice's
-    # end, and the total is the packed length, so one call answers both.
-    offsets, total = tw.array.counts_to_offsets(lengths)
-    loops = wp.empty(total, dtype=wp.int32, device=device)
+    wp.utils.array_scan(counts, out_array=counts, inclusive=True)
+    # Sizes both outputs: the generator count and the packed length, in one read.
+    total = read_scalar(counts)
+    n_generators, n_packed = int(total[0]), int(total[1])
+    if n_generators == 0:
+        return _no_loops(device)
+    offsets = wp.empty(n_generators + 1, dtype=wp.int32, device=device)
+    loops = wp.empty(n_packed, dtype=wp.int32, device=device)
     wp.launch(
         kernel_homology.write_generator_loops,
-        dim=n_generators,
-        inputs=[generator_edge_ids, unique_edges, parents, apex, offsets, loops],
+        dim=n_edges,
+        inputs=[candidate, unique_edges, parents, apex, counts, offsets, loops],
         device=device,
     )
     return loops, offsets

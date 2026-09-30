@@ -162,36 +162,6 @@ def test_boundary_vertices(request: pytest.FixtureRequest, mesh_name: str) -> No
     assert np.allclose(vertices_wp.numpy(), vertices_tm, rtol=1e-4, atol=1e-4)
 
 
-def test_boundary_precomputed_edges(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = hemisphere
-    edges_sorted_wp = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
-    edges_wp = tw.edges.faces_to_edges(mesh_wp.indices)
-
-    # Boundary row order is non-deterministic (group compacts via an atomic counter), so
-    # the precomputed-edge path must yield the same edge *set* as the derived path.
-    boundary_default = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
-    boundary_precomputed = tw.boundary.boundary_edges(
-        mesh_wp.points, mesh_wp.indices, edges_sorted=edges_sorted_wp
-    )
-    assert np.array_equal(
-        lexsort_rows(boundary_default.numpy()), lexsort_rows(boundary_precomputed.numpy())
-    )
-
-    oriented_default = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
-    oriented_precomputed = tw.boundary.oriented_boundary_edges(
-        mesh_wp.points, mesh_wp.indices, edges_sorted=edges_sorted_wp, edges=edges_wp
-    )
-    assert np.array_equal(
-        lexsort_rows(oriented_default.numpy()), lexsort_rows(oriented_precomputed.numpy())
-    )
-
-    indices_default = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices)
-    indices_precomputed = tw.boundary.boundary_vertex_indices(
-        mesh_wp.points, mesh_wp.indices, edges_sorted=edges_sorted_wp
-    )
-    assert np.array_equal(indices_default.numpy(), indices_precomputed.numpy())
-
-
 def test_boundary_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     assert tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)

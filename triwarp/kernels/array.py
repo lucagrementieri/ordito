@@ -173,6 +173,17 @@ def scanned_count(inclusive: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32,
 
 
 @wp.func
+def scanned_slot(offsets: wp.array[wp.int32], i: wp.int32) -> tuple[wp.int32, wp.bool]:
+    # ``scanned_count``'s sibling for the *exclusive* scan that ends in its total -- the
+    # total-terminated offsets of 0/1 marks: element ``i``'s compacted slot, and whether it is kept,
+    # which is exactly where the scan steps. The slot is taken relative to ``offsets[0]`` because
+    # the scan may be the tail of a longer one (``remesh``'s vertex marks scanned after its face
+    # flags), whose leading entry is then the count of everything before it.
+    slot = offsets[i]
+    return slot - offsets[0], offsets[i + 1] != slot
+
+
+@wp.func
 def loop_next_slot(
     loop_id: wp.array[wp.int32], offsets: wp.array[wp.int32], slot: wp.int32
 ) -> wp.int32:
@@ -808,7 +819,7 @@ def coo_keys_nonzero(
 ) -> None:
     # ``coo_keys`` for a pruning build: a triplet whose value is exactly ``zero`` gets the sentinel,
     # so it is never sorted. That cannot change any entry's sum (``x + 0 == x``), so it is purely
-    # a saving; ``csr_run_values`` then drops the entries whose remaining triplets cancel.
+    # a saving; ``csr_nonzero_run_flags`` then drops the entries whose remaining triplets cancel.
     i = wp.int32(wp.tid())
     key = csr_key(rows[i], cols[i], n_rows, n_cols)
     if values[i] == zero:
@@ -818,10 +829,80 @@ def coo_keys_nonzero(
 
 
 @wp.func
-def csr_run_start(keys: wp.array[wp.uint64], i: wp.int32, sentinel: wp.uint64) -> wp.bool:
-    """Whether sorted position ``i`` opens a run of equal in-range keys: the first of an entry."""
+def sorted_run_start(sorted_values: wp.array[wp.Int], i: wp.int32) -> wp.bool:
+    # Does position ``i`` begin a run of equal values? The one test every run-length grouping in
+    # the package shares, and its callers add their own conditions on top: ``mark_group_starts``
+    # requires the run to be exactly ``length`` long, ``remesh``'s ``mark_edge_pair_starts``
+    # specialises that to two, and the plain run-start markers want every run whatever its length.
+    # Bounding the *data* is the caller's job too -- the buffer is usually over-allocated
+    # radix-sort scratch.
+    if i == 0:
+        return True
+    return sorted_values[i] != sorted_values[i - 1]
+
+
+@wp.func
+def csr_run_start(keys: wp.array[wp.Int], i: wp.int32, sentinel: wp.Int) -> wp.bool:
+    """Whether sorted position ``i`` opens a run of equal keys below ``sentinel``."""
+    # ``sorted_run_start`` over a sort whose tail holds out-of-range keys at or above
+    # ``sentinel`` (a hole, not a value): the CSR entries, and ``intersection``'s crossed edges.
+    return keys[i] < sentinel and sorted_run_start(keys, i)
+
+
+@wp.func
+def sorted_run_end(keys: wp.array[wp.uint64], i: wp.int32, count: wp.int32) -> wp.int32:
+    """One past the last sorted position of the run of equal keys that starts at ``i``."""
     key = keys[i]
-    return key < sentinel and (i == 0 or keys[i - 1] != key)
+    p = i + 1
+    while p < count and keys[p] == key:
+        p += 1
+    return p
+
+
+@wp.func
+def csr_run_sum(
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[Any],
+    i: wp.int32,
+    count: wp.int32,
+) -> Any:
+    # The summed value of the entry whose run starts at sorted position ``i``: its contributors in
+    # sorted -- that is, triplet -- order. The one summation both of ``csr_from_triplets``' passes
+    # form, so the pruning test and the placed value are the same number bit for bit.
+    acc = values[order[i]]
+    for p in range(i + 1, sorted_run_end(keys, i, count)):
+        acc += values[order[p]]
+    return acc
+
+
+@wp.func
+def csr_row_offsets(
+    keys: wp.array[wp.uint64],
+    inclusive: wp.array[wp.int32],
+    i: wp.int32,
+    before: wp.int32,
+    sentinel: wp.uint64,
+    n_rows: wp.int32,
+    n_cols: wp.uint64,
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # The row bounds sorted in-range position ``i`` owns, ``before`` being the number of entries
+    # ranked ahead of it (``scanned_count``'s start): a run start that opens a new row writes the
+    # bound of every row from the previous run's row up to its own -- so an empty row gets the right
+    # value -- and the last in-range position writes the rest. The rule both CSR placements share;
+    # ``out_offsets`` arrives zero-filled, which is the whole answer when nothing is in range.
+    key = keys[i]
+    row = wp.int32(key // n_cols)
+    if i == 0 or keys[i - 1] != key:
+        previous = wp.int32(-1)
+        if i > 0:
+            previous = wp.int32(keys[i - 1] // n_cols)
+        for r in range(previous + 1, row + 1):
+            out_offsets[r] = before
+    if i + 1 == inclusive.shape[0] or keys[i + 1] >= sentinel:
+        for r in range(row + 1, n_rows + 1):
+            out_offsets[r] = inclusive[i]
 
 
 @wp.kernel
@@ -844,61 +925,41 @@ def csr_from_runs(
     out_starts: wp.array[wp.int32],
 ) -> None:
     # Launched over the sorted positions; ``inclusive`` is the inclusive scan of
-    # ``csr_run_flags``, so an entry's index is its run start's scan value minus one. Each run
-    # start that opens a new row writes the offsets of every row from the previous run's row up to
-    # its own, so empty rows get the right bound, and the last in-range position writes the rest
-    # and closes ``out_starts``. ``out_offsets`` is zero-filled by the caller, which is the whole
-    # answer when nothing is in range.
+    # ``csr_run_flags``, so an entry's index is its run start's exclusive scan value. A run start
+    # writes its column and first sorted position, the last in-range position closes
+    # ``out_starts``, and ``csr_row_offsets`` fills the row bounds.
     i = wp.int32(wp.tid())
-    count = inclusive.shape[0]
     key = keys[i]
     if key >= sentinel:
         return
-    row = wp.int32(key // n_cols)
-    entry = inclusive[i] - 1
-    if i == 0 or keys[i - 1] != key:
+    entry, opens = scanned_count(inclusive, i)
+    if opens != 0:
         out_columns[entry] = wp.int32(key % n_cols)
         out_starts[entry] = i
-        previous = wp.int32(-1)
-        if i > 0:
-            previous = wp.int32(keys[i - 1] // n_cols)
-        for r in range(previous + 1, row + 1):
-            out_offsets[r] = entry
-    if i + 1 == count or keys[i + 1] >= sentinel:
-        total = inclusive[i]
-        out_starts[total] = i + 1
-        for r in range(row + 1, n_rows + 1):
-            out_offsets[r] = total
+    if i + 1 == inclusive.shape[0] or keys[i + 1] >= sentinel:
+        out_starts[inclusive[i]] = i + 1
+    csr_row_offsets(keys, inclusive, i, entry, sentinel, n_rows, n_cols, out_offsets)
 
 
 @wp.kernel
-def csr_run_values(
+def csr_nonzero_run_flags(
     keys: wp.array[wp.uint64],
     order: wp.array[wp.int32],
     values: wp.array[Any],
     sentinel: wp.uint64,
-    prune: wp.int32,
     zero: Any,
     out_flags: wp.array[wp.int32],
-    out_run_values: wp.array[Any],
 ) -> None:
-    # ``csr_from_triplets``' fused pass over the sorted triplets: each run start sums its run in
-    # sorted -- that is, triplet -- order into ``out_run_values`` at its own position and flags
-    # itself as an entry, unless pruning is on and the sum is exactly ``zero``. Pruning therefore
-    # acts on the *assembled* entry: one whose triplets cancel is dropped, which is where the value
-    # a caller sees is zero. The flags' inclusive scan numbers the kept entries.
+    # ``csr_run_flags`` for a pruning build: a run start is an entry only if its summed value is not
+    # exactly ``zero``. Pruning therefore acts on the *assembled* entry -- one whose triplets cancel
+    # is dropped, which is where the value a caller sees is zero. The flags' inclusive scan numbers
+    # the kept entries; ``csr_from_flagged_runs`` forms the same sum again rather than reading a
+    # table-sized buffer of them.
     i = wp.int32(wp.tid())
     flag = 0
     if csr_run_start(keys, i, sentinel):
-        key = keys[i]
-        acc = values[order[i]]
-        p = i + 1
-        while p < out_flags.shape[0] and keys[p] == key:
-            acc += values[order[p]]
-            p += 1
-        out_run_values[i] = acc
         flag = 1
-        if prune != 0 and acc == zero:
+        if csr_run_sum(keys, order, values, i, out_flags.shape[0]) == zero:
             flag = 0
     out_flags[i] = flag
 
@@ -906,8 +967,9 @@ def csr_run_values(
 @wp.kernel
 def csr_from_flagged_runs(
     keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[Any],
     inclusive: wp.array[wp.int32],
-    run_values: wp.array[Any],
     sentinel: wp.uint64,
     n_rows: wp.int32,
     n_cols: wp.uint64,
@@ -915,30 +977,19 @@ def csr_from_flagged_runs(
     out_columns: wp.array[wp.int32],
     out_values: wp.array[Any],
 ) -> None:
-    # ``csr_from_runs`` for a build whose values ``csr_run_values`` already summed: a kept run
-    # start writes its column and value at its rank, and a row's offset is the number of kept
-    # entries before its first run start, pruned or not, so a row left empty by pruning still gets
-    # its bound. ``out_offsets`` is zero-filled by the caller.
+    # ``csr_from_runs`` for a triplet build: ``inclusive`` is the scan of ``csr_run_flags`` or,
+    # pruning, of ``csr_nonzero_run_flags``. A kept run start sums its run (``csr_run_sum``) and
+    # writes its column and value at its rank; a row's offset is the number of kept entries before
+    # its first run start, pruned or not, so a row left empty by pruning still gets its bound.
     i = wp.int32(wp.tid())
-    count = inclusive.shape[0]
     key = keys[i]
     if key >= sentinel:
         return
-    row = wp.int32(key // n_cols)
-    if i == 0 or keys[i - 1] != key:
-        before = wp.int32(0)
-        previous = wp.int32(-1)
-        if i > 0:
-            before = inclusive[i - 1]
-            previous = wp.int32(keys[i - 1] // n_cols)
-        if inclusive[i] != before:
-            out_columns[before] = wp.int32(key % n_cols)
-            out_values[before] = run_values[i]
-        for r in range(previous + 1, row + 1):
-            out_offsets[r] = before
-    if i + 1 == count or keys[i + 1] >= sentinel:
-        for r in range(row + 1, n_rows + 1):
-            out_offsets[r] = inclusive[i]
+    before, kept = scanned_count(inclusive, i)
+    if kept != 0:
+        out_columns[before] = wp.int32(key % n_cols)
+        out_values[before] = csr_run_sum(keys, order, values, i, inclusive.shape[0])
+    csr_row_offsets(keys, inclusive, i, before, sentinel, n_rows, n_cols, out_offsets)
 
 
 # Concrete overloads, registered at import -- rationale in ``triwarp/kernels/reduce.py``, rule in
@@ -1054,7 +1105,7 @@ ISIN_LOOKUP_SORTED: OverloadTable
 MAP_SORTED_INVERSE: OverloadTable
 SORT_ROWS_INSERTION: OverloadTable
 COO_KEYS_NONZERO: OverloadTable
-CSR_RUN_VALUES: OverloadTable
+CSR_NONZERO_RUN_FLAGS: OverloadTable
 CSR_FROM_FLAGGED_RUNS: OverloadTable
 
 
@@ -1067,7 +1118,7 @@ def _register_overloads() -> None:
         ISIN_LOOKUP_SORTED, \
         MAP_SORTED_INVERSE, \
         SORT_ROWS_INSERTION
-    global COO_KEYS_NONZERO, CSR_RUN_VALUES, CSR_FROM_FLAGGED_RUNS
+    global COO_KEYS_NONZERO, CSR_NONZERO_RUN_FLAGS, CSR_FROM_FLAGGED_RUNS
     ARANGE = OverloadTable(arange, {d: [wp.array[d]] for d in _INDEX_DTYPES})
     ARANGE_AFFINE = OverloadTable(arange_affine, {d: [d, d, wp.array[d]] for d in _INDEX_DTYPES})
     ARANGE_REPEAT = OverloadTable(arange_repeat, {d: [d, wp.array[d]] for d in _INDEX_DTYPES})
@@ -1115,18 +1166,16 @@ def _register_overloads() -> None:
             for d in _CSR_VALUE_DTYPES
         },
     )
-    CSR_RUN_VALUES = OverloadTable(
-        csr_run_values,
+    CSR_NONZERO_RUN_FLAGS = OverloadTable(
+        csr_nonzero_run_flags,
         {
             d: [
                 wp.array[wp.uint64],
                 wp.array[wp.int32],
                 wp.array[d],
                 wp.uint64,
-                wp.int32,
                 d,
                 wp.array[wp.int32],
-                wp.array[d],
             ]
             for d in _CSR_VALUE_DTYPES
         },
@@ -1138,6 +1187,7 @@ def _register_overloads() -> None:
                 wp.array[wp.uint64],
                 wp.array[wp.int32],
                 wp.array[d],
+                wp.array[wp.int32],
                 wp.uint64,
                 wp.int32,
                 wp.uint64,
@@ -1351,10 +1401,20 @@ def pack_edge_key(u: wp.int32, v: wp.int32, base: wp.uint64) -> wp.uint64:
 
 
 @wp.func
+def pack_index_triple(a: wp.int32, b: wp.int32, c: wp.int32, base: wp.uint64) -> wp.uint64:
+    """Key ``grouping.pack_indices`` gives the three-column row ``(a, b, c)``, from registers."""
+    # For a caller holding the row in registers -- ``pack_triangle_key`` below, and
+    # ``kernels/remesh.py``'s cluster cell and face keys -- which would otherwise write an
+    # ``(n, 3)`` table only for the packing to read. The digits are those of
+    # ``grouping.pack_index_digit``; modular arithmetic makes the two groupings bit-identical.
+    return pack_directed_key(a, b, base) + wp.uint64(wp.uint32(c)) * base * base
+
+
+@wp.func
 def pack_triangle_key(a: wp.int32, b: wp.int32, c: wp.int32, base: wp.uint64) -> wp.uint64:
     """Key of unoriented triangle ``(a, b, c)``: ``pack_indices`` of its sorted 3-index row."""
     s0, s1, s2 = sort3(a, b, c)
-    return pack_directed_key(s0, s1, base) + wp.uint64(wp.uint32(s2)) * base * base
+    return pack_index_triple(s0, s1, s2, base)
 
 
 @wp.func

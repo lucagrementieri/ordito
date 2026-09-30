@@ -30,17 +30,15 @@ import warp as wp
 
 import triwarp as tw
 import triwarp.typing as twt
-from triwarp._device import read_scalar, require_nonempty_mesh, require_same_device
+from triwarp._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
 from triwarp.constants import TOLERANCE_MERGE
+from triwarp.kernels import graph as kernel_graph
 from triwarp.kernels import intersection as kernel_intersections
 from triwarp.kernels import predicates as kernel_predicates
 from triwarp.kernels import triangles as kernel_triangles
 
 # Segment count from which ``marching_triangles`` links its curves on the device.
 _LINK_ON_DEVICE_FROM = 1024
-
-# Hops merged per pointer-jumping launch of the device link.
-_LINK_HOPS = 16
 
 
 def segments_with_plane(
@@ -513,18 +511,20 @@ def _link_on_device(
         inputs=[keys, endpoints, m, m, link, state, weights],
         device=device,
     )
-    # Rank until the windows cover the longest possible curve, all ``n`` segments.
+    # Rank until the windows cover the longest possible curve, all ``n`` segments, in the fewest
+    # launches and, for that count, the fewest chased pointers (``graph.pointer_jump_schedule``).
     scratch = wp.empty(n, dtype=wp.vec4i, device=device)
+    hops, rounds = kernel_graph.pointer_jump_schedule(n)
     width = 1
-    while width < n:
+    for _round in range(rounds):
         wp.launch(
             kernel_intersections.link_rank_round,
             dim=n,
-            inputs=[state, _LINK_HOPS, width, scratch],
+            inputs=[state, hops, width, scratch],
             device=device,
         )
         state, scratch = scratch, state
-        width *= _LINK_HOPS
+        width *= hops
 
     head_of_tail = wp.empty(n, dtype=wp.int32, device=device)
     wp.launch(
@@ -1572,11 +1572,11 @@ def _split_with_vertex_field(
     )
     n_new = _scan_cut_flags(rank)
     all_vertices = wp.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
-    wp.copy(all_vertices[:n_vertices], vertices)
     cut_vertices = wp.empty(n_halfedges, dtype=wp.int32, device=device)
+    # The same launch copies the input positions to the front of ``all_vertices``.
     wp.launch(
         kernel_intersections.split_crossed_edge_vertices,
-        dim=n_halfedges,
+        dim=max(n_halfedges, n_vertices),
         inputs=[
             vertices,
             vertex_dots,
@@ -1586,7 +1586,7 @@ def _split_with_vertex_field(
             key_base,
             wp.int32(n_vertices),
             cut_vertices,
-            all_vertices[n_vertices:],
+            all_vertices,
         ],
         device=device,
     )
@@ -1662,9 +1662,7 @@ def _clip_with_vertex_field(
             return wp.empty(0, dtype=wp.vec3, device=device), wp.empty(
                 0, dtype=wp.int32, device=device
             )
-        return tw.selection.submesh_from_face_indices(
-            vertices, faces, inside_idx, unique_indices=True
-        )
+        return tw.selection.submesh_from_face_indices(vertices, faces, inside_idx)
 
     # Both cuts contribute two intersection points and keep the original vertices addressable, so
     # the un-compacted output is exactly this long -- allocated once, written in place.
@@ -1739,7 +1737,7 @@ def _slice_class_partition(
         device=device,
     )
     # The one host synchronization in the slice: these counts size every buffer downstream.
-    class_counts = [int(count) for count in counts.numpy()]
+    class_counts = read_values(counts, 0, n_classes)
 
     def block(start: int, count: int) -> wp.array[wp.int32]:
         # Warp rejects a zero-length slice outright, so an empty class gets its own empty buffer.

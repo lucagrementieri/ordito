@@ -585,17 +585,14 @@ def curved_hessian_energy(
     if n_faces == 0:
         return tw.array.empty_square_bsr(n_vertices, dtype, device)
 
-    # Reused below for ``edges_unique`` too, so the manifold check costs no extra sort.
-    edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
-    if not tw.validation.is_edge_manifold(
-        faces, edges_sorted=edges_sorted, n_vertices=n_vertices, validate=False
-    ):
+    if not tw.validation.is_edge_manifold(faces, n_vertices=n_vertices, validate=False):
         raise ValueError(
             "mesh must be edge-manifold (every edge shared by at most two faces); the "
             "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
             "otherwise, like igl::curved_hessian_energy, which asserts it"
         )
 
+    edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
     unique_edges, inverse = edges_unique(faces, edges_sorted, n_vertices=n_vertices, validate=False)
     n_edges = int(unique_edges.shape[0])
 

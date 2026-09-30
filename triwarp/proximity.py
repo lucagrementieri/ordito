@@ -454,13 +454,16 @@ def mesh_to_mesh_distance(
     require_nonempty_mesh(faces_b, "mesh_to_mesh_distance")
     mesh_b = wp.Mesh(points=vertices_b, indices=faces_b)
 
+    # The walk's three running scalars in one buffer (``kernels.proximity.*_SLOT``): the published
+    # prune limit, the corner seed and the upper bound that grows every face's query box.
     if upper_bound is None:
         # The smallest distance from a *sample* of A's surface to B is a real distance between the
-        # surfaces, so it bounds the answer from above. One readback, and it is what lets the broad
-        # phase cull at all. A subsample because a minimum over a subset is still an upper bound
-        # and this query can otherwise dominate the call on a large mesh -- see
-        # ``_BOUND_SAMPLE_TARGET``; face corners rather than vertices, because a vertex no face
-        # references is not a point of A's surface and would bound nothing.
+        # surfaces, so it bounds the answer from above; it is what lets the broad phase cull at
+        # all. A subsample because a minimum over a subset is still an upper bound and this query
+        # can otherwise dominate the call on a large mesh -- see ``_BOUND_SAMPLE_TARGET``; face
+        # corners rather than vertices, because a vertex no face references is not a point of A's
+        # surface and would bound nothing. The bound and the prune limit it seeds are written on
+        # the device, so the walk below is issued behind them with no readback.
         sample_stride = min(max(1, n_faces_a // _BOUND_SAMPLE_TARGET), _BOUND_SAMPLE_MAX_STRIDE)
         n_samples = (n_faces_a + sample_stride - 1) // sample_stride
         # Unbounded, a closest-point query from a point far from B walks most of B's BVH. So the
@@ -469,7 +472,7 @@ def mesh_to_mesh_distance(
         # the top of the tree. See ``_SEED_SAMPLE_TARGET``.
         seed_step = max(1, n_samples // _SEED_SAMPLE_TARGET)
         target_stride = max(1, n_faces_b // _SEED_SAMPLE_TARGET)
-        seed_sq = wp.full(1, math.inf, dtype=wp.float32, device=device)
+        bounds = wp.full(3, math.inf, dtype=wp.float32, device=device)
         wp.launch(
             kernel_proximity.sampled_corner_gap_sq,
             dim=(kernel_proximity.SEED_SLICES, (n_samples + seed_step - 1) // seed_step),
@@ -481,18 +484,41 @@ def mesh_to_mesh_distance(
                 faces_b,
                 target_stride,
                 (n_faces_b + target_stride - 1) // target_stride,
-                seed_sq,
+                bounds,
             ],
             device=device,
         )
-        bound = wp.full(1, math.inf, dtype=wp.float32, device=device)
         wp.launch(
             kernel_proximity.sampled_corner_distance_min,
             dim=n_samples,
-            inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, seed_sq, bound],
+            inputs=[mesh_b.id, vertices_a, faces_a, sample_stride, bounds],
             device=device,
         )
-        upper_bound = float(read_scalar(bound, 0))
+    else:
+        # Seeded at the caller's bound, so every thread prunes against it from its first candidate
+        # instead of waiting for some other thread to publish one.
+        #
+        # Seeded at *exactly* ``upper_bound ** 2`` this is wrong: the prune skips a candidate whose
+        # box gap is ``>=`` the limit, so when the bound *is* the answer -- two spheres whose
+        # closest points are vertices -- the very pair achieving it is skipped and the result comes
+        # back ``inf``. The relative bump is what keeps that pair, and it is a relative ``1e-4``
+        # rather than an ulp because a bound from ``mesh_query_point_no_sign`` is itself accurate
+        # to a few times 1e-5; the margin clears that by several times and weakens the prune by
+        # nothing measurable. ``max`` covers touching meshes, where the bound is ``0`` and any
+        # positive limit keeps the exactly-zero-gap pair. The sampled bound above is published
+        # into the limit by the identical rule, on the device (``publish_best_sq``).
+        bounds = wp.array(
+            np.array(
+                [
+                    max(upper_bound * upper_bound * (1.0 + 1e-4), _MIN_POSITIVE_FLOAT32),
+                    math.inf,
+                    upper_bound,
+                ],
+                dtype=np.float32,
+            ),
+            dtype=wp.float32,
+            device=device,
+        )
 
     # The per-face AABBs stay: the kernel's box-gap prune reads them, so they are not merely the
     # input to a build. There is no second acceleration structure built over them -- the kernels
@@ -507,23 +533,6 @@ def mesh_to_mesh_distance(
     )
     distance_sq = wp.empty(n_faces_a, dtype=wp.float32, device=device)
     witness = wp.empty(n_faces_a, dtype=wp.int32, device=device)
-    # Seeded at the bound the sampled query already paid for, so every thread prunes against it from
-    # its first candidate instead of waiting for some other thread to publish one.
-    #
-    # Seeded at *exactly* ``upper_bound ** 2`` this is wrong: the prune skips a candidate whose box
-    # gap is ``>=`` the limit, so when the bound *is* the answer -- two spheres whose closest points
-    # are vertices -- the very pair achieving it is skipped and the result comes back ``inf``. The
-    # relative bump is what keeps that pair, and it is a relative ``1e-4`` rather than an ulp
-    # because ``upper_bound`` comes from ``mesh_query_point_no_sign``, whose own accuracy is
-    # documented at a few times 1e-5; the margin clears that by several times and weakens the prune
-    # by nothing measurable. ``max`` covers touching meshes, where the bound is ``0`` and any
-    # positive limit keeps the exactly-zero-gap pair.
-    global_best_sq = wp.full(
-        1,
-        max(upper_bound * upper_bound * (1.0 + 1e-4), _MIN_POSITIVE_FLOAT32),
-        dtype=wp.float32,
-        device=device,
-    )
     # The broad phase is wildly unbalanced -- most query faces return no candidate at all, while a
     # few carry most of the traversal -- so the walk runs in two passes on CUDA: a thread per face,
     # capped, then a *block* per face that exceeded the cap. See ``_QUERY_CANDIDATE_CAP``. On the
@@ -544,9 +553,8 @@ def mesh_to_mesh_distance(
             lower,
             upper,
             mesh_b.id,
-            wp.float32(upper_bound),
             wp.int32(candidate_cap),
-            global_best_sq,
+            bounds,
             distance_sq,
             witness,
             counter,
@@ -570,9 +578,8 @@ def mesh_to_mesh_distance(
                     lower,
                     upper,
                     mesh_b.id,
-                    wp.float32(upper_bound),
                     overflow,
-                    global_best_sq,
+                    bounds,
                     distance_sq,
                     witness,
                 ],

@@ -68,15 +68,12 @@ def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
     """
     Class A: the edge grouping is unchanged by any base above ``max(faces)``.
 
-    ``_sorted_pair_offsets`` asserts the partition is invariant to a sufficiently large radix,
+    ``_sorted_pair_scan`` asserts the partition is invariant to a sufficiently large radix,
     which is what lets a caller holding a vertex buffer with *unreferenced* vertices pass
     ``vertices.shape[0]`` rather than pay the ``reduce.minmax`` that infers ``max(faces) + 1``.
-    Both spellings are exercised: ``edges_sorted=None`` hashes off ``faces`` in one launch,
-    supplying it hashes the edge rows.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     tight = tw.array.index_bound(mesh_wp.indices)
-    edges_sorted = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
 
     baseline_wp = tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=tight)
     for base in (tight + 1, tight + 1000):
@@ -84,43 +81,36 @@ def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
             tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=base).numpy(),
             baseline_wp.numpy(),
         )
-        assert np.array_equal(
-            tw.adjacency.face_adjacency(mesh_wp.indices, edges_sorted, n_vertices=base).numpy(),
-            baseline_wp.numpy(),
-        )
 
 
 @pytest.mark.parametrize("mesh_name", [*CLOSED_MESHES, "icosphere", "boy_surface"])
-@pytest.mark.parametrize("with_edges_sorted", [False, True])
 @pytest.mark.parametrize("n_vertices_given", [False, True])
 def test_face_adjacency_edges_paired_matches_the_grouped_path(
-    request: pytest.FixtureRequest, mesh_name: str, with_edges_sorted: bool, n_vertices_given: bool
+    request: pytest.FixtureRequest, mesh_name: str, n_vertices_given: bool
 ) -> None:
     """
     Triwarp against triwarp: ``edges_paired=True`` is byte-identical to the run-detecting path.
 
     The default path carries the oracle (``test_face_adjacency``); this pins the shortcut to it on
-    every closed fixture, including the non-orientable ``boy_surface``, over both key spellings
-    and both radix sources. The row *order* is compared, not only the set, because callers mix
-    the two paths and rely on row alignment.
+    every closed fixture, including the non-orientable ``boy_surface``, over both radix sources.
+    The row *order* is compared, not only the set, because callers mix the two paths and rely on
+    row alignment.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
     assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
-    edges_sorted = tw.edges.faces_to_edges(faces_wp, sorted=True) if with_edges_sorted else None
     n_vertices = int(mesh_wp.points.shape[0]) if n_vertices_given else None
     grouped_wp, grouped_edges_wp = tw.adjacency.face_adjacency(
-        faces_wp, edges_sorted, return_edges=True, n_vertices=n_vertices
+        faces_wp, return_edges=True, n_vertices=n_vertices
     )
     paired_wp, paired_edges_wp = tw.adjacency.face_adjacency(
-        faces_wp, edges_sorted, return_edges=True, n_vertices=n_vertices, edges_paired=True
+        faces_wp, return_edges=True, n_vertices=n_vertices, edges_paired=True
     )
     assert paired_wp.shape == (3 * (int(faces_wp.shape[0]) // 3) // 2, 2)
     assert np.array_equal(paired_wp.numpy(), grouped_wp.numpy())
     assert np.array_equal(paired_edges_wp.numpy(), grouped_edges_wp.numpy())
     assert np.array_equal(
-        tw.adjacency.face_adjacency(faces_wp, edges_sorted, edges_paired=True).numpy(),
-        grouped_wp.numpy(),
+        tw.adjacency.face_adjacency(faces_wp, edges_paired=True).numpy(), grouped_wp.numpy()
     )
 
 
