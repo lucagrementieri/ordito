@@ -82,6 +82,9 @@ follows is the one-line claim each check makes, so a failure message reads in co
 27. **No ``warp.sparse`` triplet build under ``triwarp/``** (section 3.7). An operator's matrix
     is assembled from sorted keys (``array.csr_from_keys``) or, for genuinely unordered input,
     ``array.csr_from_triplets``.
+28. **Every public module is shelved in ``docs/SUMMARY.md`` exactly once.** Zensical's
+    ``api-autonav`` builds a page for each module, but the nav is authored by hand, and a module
+    missing from it is built and unreachable with ``zensical build --strict`` still green.
 
 Why a static scan rather than importing ``triwarp``
 ---------------------------------------------------
@@ -2324,4 +2327,37 @@ def triplet_build_problems() -> list[str]:
                     f"{site}:{node.lineno}: calls {name} -- assemble the CSR from keys "
                     "(array.csr_from_keys) or through array.csr_from_triplets"
                 )
+    return problems
+
+
+# --- check 28 -----------------------------------------------------------------------------------
+
+_DOCS_NAV = _REPO_ROOT / "docs" / "SUMMARY.md"
+_DOCS_API_LINK = re.compile(r"\(api/triwarp/(\w+)\.md\)")
+
+
+def docs_nav_problems() -> list[str]:
+    """
+    Check 28: a public module missing from ``docs/SUMMARY.md``, listed twice, or no longer there.
+
+    ``api-autonav`` generates one API page per public module and the committed nav shelves them
+    by theme. The plugin places no page the nav does not name, so without this a new module ships
+    a page nothing links to. Abstains when the nav file is absent (an sdist without ``docs/``).
+    """
+    if not _DOCS_NAV.exists():
+        return []
+    listed = _DOCS_API_LINK.findall(_DOCS_NAV.read_text(encoding="utf-8"))
+    public = {path.stem for path in _PACKAGE_DIR.glob("*.py") if not path.stem.startswith("_")}
+    problems = [
+        f"docs/SUMMARY.md: triwarp.{name} is not in the nav -- shelve it in an API section"
+        for name in sorted(public - set(listed))
+    ]
+    problems += [
+        f"docs/SUMMARY.md: triwarp.{name} is listed but the module does not exist"
+        for name in sorted(set(listed) - public)
+    ]
+    problems += [
+        f"docs/SUMMARY.md: triwarp.{name} is listed {listed.count(name)} times -- once only"
+        for name in sorted({name for name in listed if listed.count(name) > 1})
+    ]
     return problems

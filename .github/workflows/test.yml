@@ -72,12 +72,6 @@ jobs:
           enable-cache: true
       - run: uv python install
       - run: uv sync --group docs
-      # Zensical has no `gen-files` equivalent and ignores an unsupported plugin entry silently,
-      # so this step is what puts `docs/api/` and `docs/SUMMARY.md` on disk. Skipping it builds a
-      # site with no API reference at all, which only `--strict` reports -- as one unresolved
-      # cross-reference per API symbol.
-      - name: Generate API reference pages
-        run: uv run python docs/gen_ref_pages.py
       # The mechanical backstop for the five artifacts a moved or renamed public function has to
       # take with it (section 4.4): `--strict` exits 1 on a dangling `[name][triwarp.old.path]`.
       - name: Build docs

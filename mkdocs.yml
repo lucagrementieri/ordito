@@ -8,10 +8,9 @@ docs_dir: docs
 # `mkdocs.yml` as-is, so the filename and every key below are unchanged. Build the site with
 # `--strict`, which is what fails on a dangling `[`name`][triwarp.old.path]` cross-reference.
 #
-# `docs/gen_ref_pages.py` must run first, every time: it materializes `docs/api/` and
-# `docs/SUMMARY.md`, which `gen-files` used to serve from a virtual filesystem. Zensical has no
-# `gen-files` equivalent and ignores the unsupported plugin entry silently, so a build without it
-# yields a site with no API reference and only `--strict` reports it.
+# The API pages come from Zensical's native `api-autonav` (one page per public module, at
+# `api/triwarp/<module>/`); the nav, including the themed shelving of those pages, is the committed
+# `docs/SUMMARY.md`. A plain `zensical build` / `serve` needs no pre-build step.
 #
 # No `exclude_docs:` here, though MkDocs had one for `assets/benchmarks/*.md` -- Zensical has no
 # whole-file exclusion setting. Those sidecar tables carry `search: exclude: true` front matter
@@ -60,6 +59,17 @@ plugins:
   - literate-nav:
       nav_file: SUMMARY.md
   - section-index
+  # `triwarp` itself is excluded: its docstring is about the lazy-import mechanism, not a page for
+  # a caller. Private `_*.py` modules are excluded by the plugin's default.
+  - api-autonav:
+      modules: [triwarp]
+      exclude: [triwarp.kernels, "re:^triwarp$"]
+      api_root_uri: api
+      # `triwarp.typing`'s aliases are linked from every return annotation (85 referrers for
+      # `Array2dInt32`), so a "Referenced by" block there lists signatures, not uses.
+      module_options:
+        "triwarp\\.typing":
+          backlinks: false
   - mkdocstrings:
       handlers:
         python:
@@ -78,3 +88,6 @@ plugins:
             show_signature_annotations: true
             show_if_no_docstring: true
             members_order: source
+            # "Referenced by": every docstring that cross-links an object, grouped by nav path.
+            # It is the consumer list a hub function's See Also deliberately does not carry.
+            backlinks: tree

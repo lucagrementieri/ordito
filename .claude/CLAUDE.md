@@ -1319,7 +1319,7 @@ Five artifacts, every time:
    Renaming a group is allowed and sometimes required — but the group name is the parity key, so
    **every `parity` / `noparity` marker citing it must be updated in the same commit**, and
    `uv run python -m tests.parity` must show the same pair count before and after.
-5. **Its docs entry** in `docs/gen_ref_pages.py` `SECTIONS`, plus every `[`name`][triwarp.old.path]`
+5. **Its docs entry** in `docs/SUMMARY.md` (check 28), plus every `[`name`][triwarp.old.path]`
    cross-reference — `zensical build --strict` is what finds the ones you missed.
 
 **Renaming a *keyword argument* has its own artifact list, and a call-site scan sees none of it.**
@@ -1342,7 +1342,7 @@ a targeted per-file run does not — a rename is not done until the whole suite 
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-**Twenty-seven checks**, and they fail the default `pytest` run.
+**Twenty-eight checks**, and they fail the default `pytest` run.
 
 - **Eight scan the public surface of `triwarp/` (excluding `kernels/`)**: a summary line naming a
   reference library (1); a `*_mask` producer that does not return `wp.array[wp.bool]` (2); a module
@@ -1449,6 +1449,10 @@ a targeted per-file run does not — a rename is not done until the whole suite 
 - **Check 27**: a call to `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` anywhere under
   `triwarp/` (§3.7). Empty allowlist; tests may still call it, where it builds an *input*
   independently of the code under test.
+- **Check 28**: a public module missing from `docs/SUMMARY.md`, listed twice, or listed after it
+  is gone (§6). `api-autonav` builds a page for every module but places none the nav does not
+  name, so an unshelved module ships a page nothing links to while `zensical build --strict`
+  stays green. Abstains when `docs/` is absent.
 
 Each check carries a written allowlist — read the reason before adding an entry, and prefer fixing
 the code. **The gate does not replace review**: it cannot tell whether a *new* name is a good one,
@@ -1521,23 +1525,30 @@ Zensical is the Material for MkDocs team's ground-up replacement for the MkDocs 
 because MkDocs has been unmaintained since 2024-08; it reads **`mkdocs.yml`** unchanged, so the
 config filename, `theme: name: material`, the palette and `extra.css` are all as they were.
 
-**Two commands, and the first is not optional:**
-
 ```bash
-uv run python docs/gen_ref_pages.py     # ALWAYS first -- materializes docs/api/ + docs/SUMMARY.md
 uv run zensical build --strict          # validate: exits 1 on a broken cross-reference
 uv run zensical serve                   # preview locally
 ```
 
-`docs/gen_ref_pages.py` generates one API reference page per public module under `triwarp/`
-(`triwarp/kernels/` is excluded), so a new module needs **no manual nav entry** — but it is a
-**standalone pre-build script, not a plugin hook**, because Zensical has no `gen-files` equivalent
-(`zensical/zensical#51`, still open). Five facts about that runtime, each of which fails quietly:
+**The API pages come from Zensical's native `api-autonav` (0.0.66+)**, configured in
+`mkdocs.yml`: one page per public module at `api/triwarp/<module>/`, with `triwarp.kernels`, the
+`_*.py` modules and the package root (its docstring is about lazy imports, not for a caller)
+excluded. No pre-build step and no `mkdocs-gen-files`; the standalone `docs/gen_ref_pages.py` that
+preceded it existed only because Zensical had no `gen-files` (`zensical/zensical#51`, still in the
+backlog). **The nav is the committed `docs/SUMMARY.md`**, which shelves the generated pages by
+theme and carries the reasoning for the non-obvious placements in its header comment: the plugin
+nests by package, which for a flat package is one alphabetical list, and it adds no page the nav
+does not name — so a new module needs a line there, and check 28 (§4.5) fails without one.
+Facts about that runtime, each of which fails quietly:
 
-- **Zensical ignores an unsupported plugin entry silently — no warning, no error.** A build with
-  `gen-files` still listed in `plugins:` exits 0 and publishes a site with **no API reference at
-  all**. `--strict` is the only thing that reports it, as one unresolved cross-reference per API
-  symbol. Never register `gen-files`; always run the script first.
+- **Zensical ignores an unsupported plugin entry silently — no warning, no error.** Never register
+  `gen-files`: a build with it exits 0 and generates nothing, and only `--strict` reports the
+  resulting unresolved cross-references.
+- **Backlinks are on (`backlinks: tree`, 0.0.65+)**: each object that something cross-links gets
+  a "Referenced by" block, which is the consumer list §4.2 says a hub's `See Also` should not
+  carry by hand. Measured at enabling: 590 blocks, median 4 referrers, 90th percentile 13.
+  `triwarp.typing` opts out through `api-autonav`'s `module_options`, because its aliases are
+  linked from every return annotation (`Array2dInt32`: 85) and the block listed signatures.
 - **`--strict` is the cross-reference backstop** §4.4's five-artifact discipline leans on, and it
   works: it exits 1 on a dangling `[`name`][triwarp.old.path]`. The four external inventories still
   resolve under it.
@@ -1562,8 +1573,8 @@ uv run zensical serve                   # preview locally
   from the previous docstring in under a second, which `--strict` also passes.
 - **`literate-nav` and `section-index` are implemented natively**, so neither package is installed
   — the built site is byte-identical without them — and their `plugins:` entries are read as
-  configuration rather than as a request to load a plugin. `mkdocs-gen-files` *is* installed, for
-  its `Nav` helper alone.
+  configuration rather than as a request to load a plugin. `api-autonav` is the same: native,
+  and not installed.
 
 **The one-line summary says what the function returns, never which C++ call it wraps.** mkdocstrings
 renders that first line as the function's entry in its module's API index, so a reference library's
@@ -3036,7 +3047,7 @@ Three things about it that are decisions rather than defaults:
 - **`triwarp/kernels/` is omitted, and this is measured, not tidiness.** A `@wp.kernel` /
   `@wp.func` body is never *called* as Python, so coverage.py reports a kernel that runs on every
   test as entirely unexecuted — the numbers are §12.6. Never "fix" a low kernel-module figure by
-  writing tests at it; the same module tree basedpyright and `docs/gen_ref_pages.py` already
+  writing tests at it; the same module tree basedpyright and the docs' `api-autonav` already
   exclude, for the adjacent reason.
 - **The badge is the CPU wrapper layer.** No GPU on a runner, so every `device.is_cuda` branch and
   everything behind `_device.prefers_tiled_reduction` is unreachable there. Do **not** raise the

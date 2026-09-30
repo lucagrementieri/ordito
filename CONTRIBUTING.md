@@ -68,7 +68,7 @@ uv run python -m tests.parity                  # the cross-suite parity matrix
 If you touch docstrings or cross-references:
 
 ```bash
-uv run python docs/gen_ref_pages.py && uv run zensical build --strict
+uv run zensical build --strict
 ```
 
 ## The bar for a pull request

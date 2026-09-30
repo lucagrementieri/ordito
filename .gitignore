@@ -26,8 +26,6 @@ htmlcov/
 
 # Docs build output
 site/
-docs/api/
-docs/SUMMARY.md
 
 # Mesh files
 *.obj

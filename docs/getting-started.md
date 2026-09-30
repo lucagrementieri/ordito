@@ -126,4 +126,4 @@ principle in practice; see [Concepts](concepts.md) for the rest of it.
   watertight surfaces, geodesic distance fields, aligning two scans.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a function-by-function map.
-- **[API Reference](api/creation.md)** — every public module, generated from its own docstrings.
+- **[API Reference](api/triwarp/creation.md)** — every public module, generated from its own docstrings.

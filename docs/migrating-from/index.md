@@ -30,6 +30,6 @@ Three things worth knowing before diving into a specific mapping:
   array in triwarp.
 
 These pages name the closest triwarp equivalent for each function; they are not exhaustive — the
-full picture is the generated [API Reference](../api/creation.md), and every mapping asserted here
+full picture is the generated [API Reference](../api/triwarp/creation.md), and every mapping asserted here
 is one this project's own test suite checks by comparing outputs directly against the reference
 library, not merely by name.

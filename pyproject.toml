@@ -84,16 +84,12 @@ dev = ["basedpyright>=1.39", "ruff>=0.9", "scipy-stubs>=1.17.1.5"]
 # gone: Zensical implements the latter two itself -- measured, the built site is byte-identical
 # with both packages uninstalled -- so the ``literate-nav`` and ``section-index`` entries left in
 # ``mkdocs.yml``'s ``plugins:`` are read as configuration for Zensical's own implementations,
-# not as a request to load a plugin.
+# not as a request to load a plugin. The same holds for ``api-autonav``, which generates the API
+# pages natively from 0.0.66 on (hence the floor) and is not installed either.
 docs = [
-    # Imported by ``docs/gen_ref_pages.py`` for ``Nav`` alone, a self-contained nav-tree builder.
-    # Deliberately NOT registered in ``mkdocs.yml``'s ``plugins:``: Zensical has no ``gen-files``
-    # support and ignores an unsupported plugin entry silently, which is why that script is a
-    # standalone pre-build step instead.
-    "mkdocs-gen-files>=0.5",
     "mkdocstrings[python]>=0.27",
     # Pre-1.0 and moving fast; the exact version is pinned in ``uv.lock``, as ``warp-lang`` is.
-    "zensical>=0.0.61",
+    "zensical>=0.0.66",
 ]
 test = [
     "embreex>=4.4",

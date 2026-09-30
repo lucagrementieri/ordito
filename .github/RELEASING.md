@@ -78,7 +78,7 @@ uv run python -m tests.devices             # both devices, as two processes
 uv run python -m tests.parity              # pair count unchanged unless intentional
 uv run pytest benchmarks/test_meshes.py    # registry/topology self-check, not in the default run
 
-uv run python docs/gen_ref_pages.py && uv run zensical build --strict
+uv run zensical build --strict
 ```
 
 - [ ] All green; `tests.parity` reports the same pair count as the last release, or the change is

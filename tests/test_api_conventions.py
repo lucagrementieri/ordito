@@ -46,6 +46,7 @@ from tests.api_conventions import (
     claude_section_reference_problems,
     comparison_label_problems,
     coverage_location_problems,
+    docs_nav_problems,
     docstring_examples,
     duplicate_name_problems,
     helper_order_problems,
@@ -934,3 +935,13 @@ def test_no_warp_sparse_triplet_builds_in_the_package() -> None:
     shows it bites: reverting ``laplacian.cotmatrix`` to its triplet build reports one problem.
     """
     _fail("warp.sparse triplet build(s) in the package:", triplet_build_problems())
+
+
+def test_every_public_module_is_in_the_docs_nav() -> None:
+    """
+    ``docs/SUMMARY.md`` shelves every public module exactly once.
+
+    Not a library comparison: this is a property of the docs source. Check 28. The probe that
+    shows it bites: deleting the ``voxels`` line from the nav reports one problem.
+    """
+    _fail("docs nav out of sync with triwarp/:", docs_nav_problems())

@@ -114,7 +114,7 @@ uv run pytest                   # regression tests against the reference librari
 uv run ruff format triwarp tests && uv run ruff check triwarp tests
 uv run basedpyright             # type checking (0 errors expected)
 
-uv run python docs/gen_ref_pages.py && uv run zensical serve   # preview the docs locally
+uv run zensical serve           # preview the docs locally
 ```
 
 See the [source repository](https://github.com/lucagrementieri/triwarp) for contribution
