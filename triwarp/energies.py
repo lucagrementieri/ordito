@@ -72,7 +72,7 @@ def edge_length_loss(
     vertices
         ``(n_vertices,)`` positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     target_length
         Resting edge length ``L0``.
 
@@ -128,7 +128,7 @@ def normal_consistency_loss(vertices: wp.array[wp.vec3], faces: wp.array[wp.int3
     vertices
         ``(n_vertices,)`` positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -190,7 +190,7 @@ def laplacian_smoothing_loss(
     vertices
         ``(n_vertices,)`` positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     method
         Which normalization, as above.
 
@@ -232,43 +232,28 @@ def laplacian_smoothing_loss(
     if n_vertices == 0 or faces.size == 0:
         return 0.0
     device = vertices.device
-    # The three methods initialize the two scale buffers three different ways, so each branch
-    # allocates them holding what it needs -- ``wp.full`` where the value is a constant,
-    # ``wp.empty`` where a launch writes every element, ``wp.zeros`` where the value is zero.
+    mass = None
     if method == "uniform":
         operator = tw.laplacian.laplacian(vertices, faces, equal_weight=True)
-        row_scale = _launch.full(n_vertices, 1.0, dtype=wp.float32, device=device)
-        self_scale = _launch.full(n_vertices, -1.0, dtype=wp.float32, device=device)
+        selector = kernel_energies.SMOOTHING_UNIFORM
     else:
         operator = cotmatrix(vertices, faces)
-        row_scale = _launch.empty(n_vertices, dtype=wp.float32, device=device)
-        if method == "cot":
-            self_scale = _launch.empty(n_vertices, dtype=wp.float32, device=device)
-            _launch.launch(
-                kernel_energies.cot_row_scales,
-                dim=n_vertices,
-                inputs=[operator.offsets, operator.columns, operator.values, row_scale, self_scale],
-                device=device,
-            )
-        else:
-            _launch.map(
-                kernel_energies.reciprocal_scaled_or_zero,
-                mass_matrix_entries(vertices, faces),
-                wp.float32(1.0 / 6.0),
-                out=row_scale,
-            )
-            self_scale = _launch.zeros(n_vertices, dtype=wp.float32, device=device)
+        selector = kernel_energies.SMOOTHING_COT
+        if method == "cotcurv":
+            mass = mass_matrix_entries(vertices, faces)
+            selector = kernel_energies.SMOOTHING_COTCURV
+    # Each method's per-row scales are formed in the row's own thread, so no scale buffer exists.
     norms = _launch.empty(n_vertices, dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_energies.laplacian_residual_norms,
+        kernel_energies.laplacian_smoothing_norms,
         dim=n_vertices,
         inputs=[
             operator.offsets,
             operator.columns,
             operator.values,
             vertices,
-            row_scale,
-            self_scale,
+            mass,
+            selector,
             norms,
         ],
         device=device,
@@ -303,11 +288,11 @@ def k_harmonic(
     Parameters
     ----------
     laplacian
-        Square 1x1-block BSR Laplacian in igl's sign convention (negative diagonal, each row
-        summing to zero), e.g. from [`cotmatrix`][triwarp.laplacian.cotmatrix] or
+        ``(n_vertices, n_vertices)`` 1x1-block BSR Laplacian in igl's sign convention (negative
+        diagonal, each row summing to zero), e.g. from [`cotmatrix`][triwarp.laplacian.cotmatrix] or
         [`graph_laplacian`][triwarp.laplacian.graph_laplacian].
     mass
-        Length-``n_vertices`` lumped mass diagonal, e.g. from
+        ``(n_vertices,)`` lumped mass diagonal, e.g. from
         [`mass_matrix_entries`][triwarp.laplacian.mass_matrix_entries]; cast to the Laplacian's
         scalar type if it differs. ``None`` (identity mass) composes plain powers of ``-L``, the
         [`tutte`][triwarp.parametrization.tutte] convention. Zero entries are treated as killed
@@ -318,7 +303,7 @@ def k_harmonic(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` positive semi-definite operator in the Laplacian's
+        ``(n_vertices, n_vertices)`` positive semi-definite operator in the Laplacian's
         scalar type on its device.
 
     Raises
@@ -437,14 +422,15 @@ def hessian_energy(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar block type of the assembled matrix: ``wp.float64`` (default) or ``wp.float32``.
         Float64 is the default, unlike the first-order operators in this module, because the
         entries scale as the inverse fourth power of the mesh size and the operator exists to be
         solved against.
     vertex_faces
-        Optional precomputed [`vertex_face_adjacency`][triwarp.adjacency.vertex_face_adjacency] as
+        ``(3 * n_faces,)`` and ``(n_vertices + 1,)`` optional precomputed
+        [`vertex_face_adjacency`][triwarp.adjacency.vertex_face_adjacency] as
         ``(vertex_faces, offsets)``. Depends on the connectivity alone, so one CSR serves every
         incidence walk over the same mesh --
         [`Trimesh.vertex_face_adjacency`][triwarp.mesh.Trimesh.vertex_face_adjacency] has it cached.
@@ -452,7 +438,7 @@ def hessian_energy(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` positive semi-definite energy matrix on
+        ``(n_vertices, n_vertices)`` positive semi-definite energy matrix on
         ``vertices.device``.
 
     Raises
@@ -553,7 +539,7 @@ def curved_hessian_energy(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar block type of the assembled matrix: ``wp.float64`` (default) or ``wp.float32``,
         with float64 the default for the same conditioning reason as
@@ -562,7 +548,7 @@ def curved_hessian_energy(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` positive semi-definite energy matrix on
+        ``(n_vertices, n_vertices)`` positive semi-definite energy matrix on
         ``vertices.device``.
 
     Raises
@@ -604,16 +590,12 @@ def curved_hessian_energy(
         inputs=[vertices, faces, angles, angle_sums],
         device=device,
     )
-    # ``angle_defect / angle_sum``, zeroed on the boundary (curvature is only corrected at interior
-    # vertices) and for a non-positive angle sum -- igl::cr_vector_curvature_correction's kappa
-    # scaling.
-    scaled_kappa = _launch.empty(n_vertices, dtype=wp.float64, device=device)
-    _launch.map(kernel_energies.scaled_angle_defect, angle_sums, out=scaled_kappa)
-    _zero_at_boundary(vertices, faces, scaled_kappa)
-
+    # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
+    # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
+    # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
+    # kappa as it reads it, and it forms each edge's inverse mass likewise.
+    _zero_at_boundary(vertices, faces, angle_sums)
     mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
-    inverse_mass = _launch.empty(n_edges, dtype=wp.float64, device=device)
-    _launch.map(kernel_energies.reciprocal_or_zero, mass, out=inverse_mass)
 
     edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
     cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
@@ -643,8 +625,8 @@ def curved_hessian_energy(
             faces,
             inverse,
             angles,
-            scaled_kappa,
-            inverse_mass,
+            angle_sums,
+            mass,
             vertex_slots,
             par,
             perp,
@@ -682,15 +664,15 @@ def crouzeix_raviart_cotmatrix(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     cot_entries
-        Optional precomputed ``(n_faces, 3)`` weights from
+        ``(n_faces, 3)`` optional precomputed weights from
         [`cotmatrix_entries`][triwarp.laplacian.cotmatrix_entries]; computed in ``dtype`` when
         ``None``.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``.
     unique_edges, edge_map
-        Optional precomputed edge numbering from
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` optional precomputed edge numbering from
         [`edges_unique`][triwarp.edges.edges_unique] — pass both or neither. Sharing it with
         [`crouzeix_raviart_massmatrix`][triwarp.energies.crouzeix_raviart_massmatrix] keeps the
         two operators on identical rows without recomputing the sort.
@@ -698,7 +680,7 @@ def crouzeix_raviart_cotmatrix(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_edges, n_edges)`` stiffness matrix in 1x1-block BSR form on
+        ``(n_edges, n_edges)`` stiffness matrix in 1x1-block BSR form on
         ``vertices.device``.
 
     Raises
@@ -777,17 +759,17 @@ def crouzeix_raviart_massmatrix(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``.
     unique_edges, edge_map
-        Optional precomputed edge numbering from
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` optional precomputed edge numbering from
         [`edges_unique`][triwarp.edges.edges_unique] — pass both or neither.
 
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_edges, n_edges)`` diagonal mass matrix in 1x1-block BSR form on
+        ``(n_edges, n_edges)`` diagonal mass matrix in 1x1-block BSR form on
         ``vertices.device``.
 
     Raises
@@ -866,12 +848,12 @@ def lscm_hessian(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(2n, 2n)`` float64 matrix in 1x1-block BSR form on ``vertices.device``.
+        ``(2 * n_vertices, 2 * n_vertices)`` matrix in 1x1-block BSR form on ``vertices.device``.
 
     Raises
     ------
@@ -956,12 +938,12 @@ def vector_area_matrix(
     vertices
         ``(n_vertices,)`` mesh vertex positions; only the count and device are used.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(2n, 2n)`` float64 matrix in 1x1-block BSR form on ``vertices.device``.
+        ``(2 * n_vertices, 2 * n_vertices)`` matrix in 1x1-block BSR form on ``vertices.device``.
 
     Raises
     ------

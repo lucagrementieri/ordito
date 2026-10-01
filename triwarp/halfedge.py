@@ -55,7 +55,7 @@ def halfedge_twins(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     n_vertices
         Total vertex count. It is only ever the key radix here, so passing it is an optimization
         rather than a requirement: when ``None`` the keys pack against
@@ -70,7 +70,8 @@ def halfedge_twins(
     Returns
     -------
     wp.array[wp.int32]
-        Length ``3 * n_faces`` on ``faces.device``; ``-1`` for boundary halfedges.
+        ``(3 * n_faces,)`` twin halfedge indices on ``faces.device``; ``-1`` for boundary
+        halfedges.
 
     Raises
     ------
@@ -132,9 +133,10 @@ def require_matching_twins(faces: wp.array[wp.int32], twins: wp.array[wp.int32] 
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     twins
-        Candidate [`halfedge_twins`][triwarp.halfedge.halfedge_twins] table, or ``None``.
+        ``(3 * n_faces,)`` candidate [`halfedge_twins`][triwarp.halfedge.halfedge_twins] table, or
+        ``None``.
 
     Raises
     ------
@@ -207,10 +209,10 @@ def vertex_one_rings(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. When ``None`` it
-        is computed here.
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. When
+        ``None`` it is computed here.
     n_vertices
         Total vertex count (the number of CSR rows). When ``None`` it is inferred with
         [`array.index_bound`][triwarp.array.index_bound], which costs a host readback.
@@ -223,11 +225,11 @@ def vertex_one_rings(
     Returns
     -------
     ring_halfedges : wp.array[wp.int32]
-        Length ``3 * n_faces`` outgoing halfedges, grouped and ordered per vertex.
+        ``(3 * n_faces,)`` outgoing halfedges, grouped and ordered per vertex.
     offsets : wp.array[wp.int32]
-        Length ``n_vertices + 1`` CSR row starts; ``offsets[-1] == 3 * n_faces``.
+        ``(n_vertices + 1,)`` CSR row starts; ``offsets[-1] == 3 * n_faces``.
     is_boundary : wp.array[wp.bool]
-        Length ``n_vertices``; ``True`` where the vertex is incident to a boundary edge.
+        ``(n_vertices,)`` flags; ``True`` where the vertex is incident to a boundary edge.
 
     Raises
     ------

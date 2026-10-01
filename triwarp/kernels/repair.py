@@ -11,6 +11,7 @@ from triwarp.kernels.array import (
     scanned_count,
     update_argmin_pair,
 )
+from triwarp.kernels.bounds import packed_box_diagonal
 from triwarp.kernels.halfedge import (
     HALFEDGE_RUN_NON_MANIFOLD,
     HALFEDGE_RUN_SAME_DIRECTION,
@@ -23,6 +24,7 @@ from triwarp.kernels.predicates import triangle_aspect_ratio, triangle_normal
 from triwarp.kernels.triangles import (
     QUALITY_AREA,
     corner_triple,
+    face_signed_volume,
     face_vertices,
     triangle_cross,
     triangle_quality,
@@ -275,6 +277,35 @@ def scatter_face_area_by_group(
     f = wp.int32(wp.tid())
     v0, v1, v2 = face_vertices(vertices, faces, f)
     wp.atomic_add(out_group_area, groups[f], triangle_quality(v0, v1, v2, QUALITY_AREA))
+
+
+@wp.kernel
+def scatter_face_volume_by_group(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    groups: wp.array[wp.int32],
+    out_group_volume: wp.array[wp.float32],
+) -> None:
+    # Each face's signed tetrahedron volume from the origin added into its group's slot:
+    # ``triangles.face_signed_volume``, the value ``triangles.face_signed_volumes`` would have
+    # stored for this face, computed where it is summed. ``scatter_face_area_by_group``'s shape.
+    f = wp.int32(wp.tid())
+    wp.atomic_add(out_group_volume, groups[f], face_signed_volume(vertices, faces, f, wp.vec3()))
+
+
+@wp.kernel
+def group_diameter_flags(
+    corners: wp.array[wp.float32],
+    groups: wp.array[wp.int32],
+    min_diameter: wp.float32,
+    out_keep: wp.array[wp.bool],
+) -> None:
+    # A face is kept when its group's bounding-box diagonal reaches ``min_diameter`` (inclusive):
+    # the group's packed box, accumulated by ``scatter.scatter_group_bounds``, decoded by
+    # ``bounds.packed_box_diagonal`` as the face reads it, so no per-group diagonal table is written
+    # and gathered back.
+    f = wp.int32(wp.tid())
+    out_keep[f] = packed_box_diagonal(corners, groups[f]) >= min_diameter
 
 
 @wp.kernel

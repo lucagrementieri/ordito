@@ -2941,8 +2941,8 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
     Loop approximates where ``subdivide`` interpolates, so it must move the surface and shrink it.
 
     The pair of assertions is what distinguishes the two functions on a convex solid: the midpoint
-    split leaves every original vertex on the surface and the volume grows, while Loop pulls the
-    vertices in and the volume falls. Iterating three times also checks the passes compose --
+    split puts every new vertex on the old flat faces, so the surface and its volume are unchanged
+    (to float32 rounding), while Loop pulls the vertices in and the volume falls. Iterating three times also checks the passes compose --
     each one is a fresh call, which is how ``igl.loop``'s ``number_of_subdivs`` is meant to be
     reproduced.
     """
@@ -2962,9 +2962,12 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
     assert steps[1] < steps[0]
     assert volumes[-1] > 0.5 * volume_before
 
-    # The midpoint split on the same input goes the other way, which is the contrast being drawn.
+    # The midpoint split on the same input keeps the solid, which is the contrast being drawn: an
+    # earlier strict ``>`` here passed only on the rounding of one summation order.
     vertices_mid_wp, faces_mid_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
-    assert tw.measures.volume(vertices_mid_wp, faces_mid_wp) > volume_before
+    volume_mid = tw.measures.volume(vertices_mid_wp, faces_mid_wp)
+    assert np.isclose(volume_mid, volume_before, rtol=1e-6, atol=0.0)
+    assert volumes[0] < volume_before * (1.0 - 1e-3)
 
 
 def test_subdivide_loop_leaves_a_nonmanifold_edge_at_its_midpoint(device: str) -> None:

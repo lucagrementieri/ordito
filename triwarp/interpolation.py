@@ -59,14 +59,14 @@ def average_onto_faces(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     vertex_values
-        Length-``n_vertices`` scalar field defined on vertices.
+        ``(n_vertices,)`` scalar field defined on vertices.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n_faces`` scalar field defined on faces. Empty when ``n_faces == 0``.
+        ``(n_faces,)`` scalar field defined on faces. Empty when ``n_faces == 0``.
 
     Raises
     ------
@@ -104,14 +104,14 @@ def average_onto_vertices(
     n_vertices
         Number of vertices indexed by ``faces`` (output length).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     face_values
-        Length-``n_faces`` scalar field defined on faces.
+        ``(n_faces,)`` scalar field defined on faces.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n_vertices`` scalar field defined on vertices.
+        ``(n_vertices,)`` scalar field defined on vertices.
 
     Raises
     ------
@@ -170,20 +170,20 @@ def average_from_edges_onto_vertices(
     n_vertices
         Number of vertices indexed by ``faces`` (output length).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     edges
-        Shape ``(n_faces, 3)`` mapping from each face half-edge to a unique edge index,
+        ``(n_faces, 3)`` mapping from each face half-edge to a unique edge index,
         as produced by ``igl::orient_halfedges``.
     edges_orientation
-        Shape ``(n_faces, 3)`` half-edge orientation relative to its unique edge
+        ``(n_faces, 3)`` half-edge orientation relative to its unique edge
         (``igl::orient_halfedges``); half-edges with a negative value are skipped.
     edge_values
-        Length-``n_unique_edges`` scalar field defined on unique edges.
+        ``(n_unique_edges,)`` scalar field defined on unique edges.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n_vertices`` scalar field defined on vertices.
+        ``(n_vertices,)`` scalar field defined on vertices.
 
     Raises
     ------
@@ -253,9 +253,9 @@ def transfer_onto_vertices(
     source_vertices
         ``(n_source,)`` source mesh vertex positions.
     source_faces
-        Length-``3 * n_source_faces`` ``wp.int32`` source triangle index buffer.
+        ``(3 * n_source_faces,)`` source triangle index buffer.
     source_values
-        Length-``n_source`` field on the source vertices. ``wp.float32`` for a scalar, ``wp.vec2``
+        ``(n_source,)`` field on the source vertices. ``wp.float32`` for a scalar, ``wp.vec2``
         for a UV pair, ``wp.vec3`` for a normal or a colour; see
         [`DType`][triwarp.interpolation.DType] for why those three and nothing else.
     target_vertices
@@ -270,10 +270,10 @@ def transfer_onto_vertices(
     Returns
     -------
     values : wp.array[DType]
-        Length-``n_target`` transferred field on ``target_vertices.device``. Zero-filled wherever
+        ``(n_target,)`` transferred field on ``target_vertices.device``. Zero-filled wherever
         the closest-point query missed.
     distance : wp.array[wp.float32]
-        Length-``n_target`` distance from each target vertex to the source surface — the transfer's
+        ``(n_target,)`` distance from each target vertex to the source surface — the transfer's
         own confidence measure, and ``inf`` for a miss.
 
     Raises
@@ -350,17 +350,17 @@ def transfer_through_operator(
     Parameters
     ----------
     values
-        Length-``n_source`` field on the input vertices. Any **float32-based** Warp dtype closed
+        ``(n_source,)`` field on the input vertices. Any **float32-based** Warp dtype closed
         under scaling and addition: ``wp.float32`` for a scalar, ``wp.vec2`` for a UV, ``wp.vec3``
         for a normal or a colour. Not ``wp.float64`` -- see Notes.
     operator
-        ``(n_out, n_source)`` ``float32`` interpolation matrix, as returned by
+        ``(n_out, n_source)`` interpolation matrix, as returned by
         ``subdivide_loop(..., return_operator=True)``.
 
     Returns
     -------
     wp.array[DType]
-        Length-``n_out`` transferred field on ``values.device``, of the same dtype as ``values``.
+        ``(n_out,)`` transferred field on ``values.device``, of the same dtype as ``values``.
 
     Raises
     ------
@@ -452,7 +452,7 @@ def interpolate_from_points(
     source_points
         ``(n_source,)`` positions the field is known at.
     source_values
-        Length-``n_source`` field on those points. ``wp.float32`` for a scalar, ``wp.vec2`` for a
+        ``(n_source,)`` field on those points. ``wp.float32`` for a scalar, ``wp.vec2`` for a
         UV pair, ``wp.vec3`` for a vector; see [`DType`][triwarp.interpolation.DType] for why those
         three and nothing else.
     query_points
@@ -476,7 +476,7 @@ def interpolate_from_points(
     Returns
     -------
     wp.array[DType]
-        Length-``n_query`` interpolated field on ``query_points.device``, with ``source_values``'
+        ``(n_query,)`` interpolated field on ``query_points.device``, with ``source_values``'
         dtype.
 
     Raises

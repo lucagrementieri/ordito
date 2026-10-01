@@ -38,6 +38,7 @@ from triwarp._device import read_scalar, read_values, require_nonempty_mesh, req
 from triwarp.constants import TOLERANCE_MOLLIFY, UINT64_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import array as kernel_array
+from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import remesh as kernel_remesh
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.laplacian import mollify_intrinsic
@@ -146,7 +147,7 @@ def isotropic_remesh(
     vertices
         ``(n_vertices,)`` vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer. Whenever a reference
+        ``(3 * n_faces,)`` flat triangle index buffer. Whenever a reference
         ``wp.Mesh`` is needed — under ``reproject``, under ``max_deviation``, or with an array
         ``target_length``, any one of which is enough — it aliases ``vertices`` and ``faces``
         rather than copying them; do not mutate them for the duration of the call.
@@ -187,9 +188,9 @@ def isotropic_remesh(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Remeshed vertex positions on ``vertices.device``.
+        ``(n_out_vertices,)`` remeshed vertex positions on ``vertices.device``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer.
+        ``(3 * n_out_faces,)`` flat triangle index buffer.
 
     Raises
     ------
@@ -1314,7 +1315,7 @@ def cluster_decimate(
     vertices
         ``(n_vertices,)`` vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     voxel_size
         Cell width. Defaults to ``1 %`` of the bounding-box diagonal, matching MeshLab's
         ``threshold`` default of ``1 %``. Larger cells decimate harder.
@@ -1331,9 +1332,10 @@ def cluster_decimate(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        One position per occupied cell that still carries a face, compacted from index zero.
+        ``(n_out_vertices,)`` one position per occupied cell that still carries a face, compacted
+        from index zero.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer, free of collapsed and duplicate faces.
+        ``(3 * n_out_faces,)`` flat triangle index buffer, free of collapsed and duplicate faces.
 
     Raises
     ------
@@ -1383,8 +1385,8 @@ def cluster_decimate(
     )
     inverse_size = wp.float32(1.0 / voxel_size)
     bound = wp.uint64(cell_bound)
-    cell_mask = _cluster_table_mask(n_vertices)
-    face_mask = _cluster_table_mask(n_faces)
+    cell_mask = kernel_grouping.hash_table_mask(n_vertices)
+    face_mask = kernel_grouping.hash_table_mask(n_faces)
     n_cells = cell_mask + 1
     # Three ``-1``-filled tables in one allocation: the cell table (a vertex index per cluster),
     # each cluster's state (unreferenced, kept, then its output vertex) and the face table (the
@@ -1466,11 +1468,6 @@ def cluster_decimate(
         sort_keys,
         kept_cells,
     )
-
-
-def _cluster_table_mask(n: int) -> int:
-    """Slot mask of an open-addressing table for ``n`` keys: at least twice ``n`` slots."""
-    return (1 << max(3, math.ceil(math.log2(max(n, 1))) + 1)) - 1
 
 
 def _cluster_positions(
@@ -1672,7 +1669,7 @@ def quadric_decimate(
     vertices
         ``(n_vertices,)`` vertex positions on the target device. Never mutated.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     target_faces
         Desired face count. Mutually exclusive with ``target_ratio``; exactly one must be given.
         A value at or above the input count collapses nothing, but still returns an independent
@@ -1696,20 +1693,21 @@ def quadric_decimate(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Simplified vertex positions on ``vertices.device``, compacted from index zero.
+        ``(n_out_vertices,)`` simplified vertex positions on ``vertices.device``, compacted from
+        index zero.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer. The count is a best effort at ``target_faces``
-        and is **not** bounded by it: a mesh whose remaining edges all fail the link condition or
-        the normal-flip guard stops above the target — see Notes. Read the returned count rather
-        than assuming it.
+        ``(3 * n_out_faces,)`` flat triangle index buffer. The count is a best effort at
+        ``target_faces`` and is **not** bounded by it: a mesh whose remaining edges all fail the
+        link condition or the normal-flip guard stops above the target — see Notes. Read the
+        returned count rather than assuming it.
     vertex_index : wp.array[wp.int32]
-        Only when ``return_index`` is ``True``: length ``n_input_vertices``, the **output** vertex
-        each input vertex ended up in, or ``-1`` for an input vertex that survives in no output face
-        (one that was already unreferenced). Many-to-one, since that is what a collapse is, so it is
+        ``(n_vertices,)`` **output** vertex each input vertex ended up in, or ``-1`` for an input
+        vertex that survives in no output face (one that was already unreferenced); only when
+        ``return_index`` is ``True``. Many-to-one, since that is what a collapse is, so it is
         the direction a scatter or a segmented reduction wants.
     face_index : wp.array[wp.int32]
-        Only when ``return_index`` is ``True``: length ``n_output_faces``, the **input** face each
-        output face came from -- the same output-to-input direction
+        ``(n_out_faces,)`` **input** face each output face came from, only when ``return_index`` is
+        ``True`` -- the same output-to-input direction
         [`split_edges`][triwarp.remesh.split_edges] uses, so a per-face attribute follows through
         ``tw.array.gather``. A collapse only deletes faces and never creates one, so every output
         face has exactly one source.
@@ -2466,10 +2464,10 @@ def flip_to_delaunay(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     region
-        Optional length-``n_faces`` ``wp.bool`` mask; only edges interior to the ``True`` faces
-        are flippable. ``None`` treats the whole mesh as flippable.
+        ``(n_faces,)`` mask; only edges interior to the ``True`` faces are flippable. ``None``
+        treats the whole mesh as flippable.
     max_angle_change
         Maximum dihedral-angle change (radians) a flip may introduce. ``None`` disables the gate.
     max_deviation
@@ -2483,8 +2481,8 @@ def flip_to_delaunay(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer with the region re-triangulated, on ``faces.device`` (a copy; the
-        input is not modified).
+        ``(3 * n_faces,)`` flat face buffer with the region re-triangulated, on ``faces.device`` (a
+        copy; the input is not modified).
 
     Raises
     ------
@@ -2576,7 +2574,7 @@ def flip_by_objective(
     vertices
         ``(n_vertices,)`` vertex positions. Never modified — only the triangulation changes.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     objective
         Which predicate to flip on:
 
@@ -2598,8 +2596,8 @@ def flip_by_objective(
           [`flip_t_vertices`][triwarp.repair.flip_t_vertices] for the wrapper that says so.
           ``planar_angle`` and ``metric`` are ignored.
     region
-        Optional length-``n_faces`` ``wp.bool`` mask; only edges interior to the ``True`` faces are
-        flippable. ``None`` treats the whole mesh as flippable.
+        ``(n_faces,)`` mask; only edges interior to the ``True`` faces are flippable. ``None``
+        treats the whole mesh as flippable.
     planar_angle
         Planarity tolerance in **degrees** for ``objective="planarity"``: a quad whose dihedral
         exceeds it is left alone. MeshLab's ``pthreshold``, whose default of ``1`` is this one. Must
@@ -2620,8 +2618,8 @@ def flip_by_objective(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer with the region re-triangulated, on ``faces.device`` (a copy; the input is
-        not modified).
+        ``(3 * n_faces,)`` flat face buffer with the region re-triangulated, on ``faces.device`` (a
+        copy; the input is not modified).
 
     Raises
     ------
@@ -2783,7 +2781,7 @@ def intrinsic_delaunay(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Not modified.
+        ``(3 * n_faces,)`` triangle index buffer. Not modified.
     epsilon
         Mollification margin applied before flipping, relative to the mean edge length: a degenerate
         triangle has no well-defined angles to test.
@@ -2793,7 +2791,7 @@ def intrinsic_delaunay(
     Returns
     -------
     intrinsic_faces : wp.array[wp.int32]
-        Length-``3 * n_faces`` connectivity of the intrinsic triangulation, over the same vertices.
+        ``(3 * n_faces,)`` connectivity of the intrinsic triangulation, over the same vertices.
     edge_lengths : twt.Array2dFloat32
         ``(n_faces, 3)`` intrinsic edge lengths for those faces, column ``e`` opposite corner ``e``.
     n_flips : int
@@ -2924,12 +2922,13 @@ def subdivide(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(new_vertices, new_faces)`` on ``vertices.device``.
+        ``(n_vertices + n_edges,)`` ``new_vertices`` and ``(12 * n_faces,)`` ``new_faces`` on
+        ``vertices.device``, ``n_edges`` the unique edge count.
 
     Raises
     ------
@@ -3013,7 +3012,7 @@ def subdivide_loop(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     return_operator
         If ``True``, also return the sparse interpolation operator ``P`` this pass applies, so that
         ``new_vertices == P @ vertices`` and **any** per-vertex attribute can be carried through the
@@ -3023,14 +3022,15 @@ def subdivide_loop(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Positions on ``vertices.device``: the ``n_vertices`` relocated originals first and then one
-        vertex per unique edge, so the leading ``n_vertices`` rows are the input vertex set
-        *displaced* -- unlike ``subdivide``, where that prefix is unchanged.
+        ``(n_vertices + n_edges,)`` positions on ``vertices.device``, ``n_edges`` the unique edge
+        count: the ``n_vertices`` relocated originals first and then one vertex per unique edge, so
+        the leading ``n_vertices`` rows are the input vertex set *displaced* -- unlike
+        ``subdivide``, where that prefix is unchanged.
     new_faces : wp.array[wp.int32]
-        Flat ``3 * 4 * n_faces`` triangle index buffer.
+        ``(12 * n_faces,)`` flat triangle index buffer.
     operator : warp.sparse.BsrMatrix
-        Only when ``return_operator`` is ``True``: the ``(n_vertices + n_edges, n_vertices)``
-        ``float32`` matrix of Loop weights, one row per output vertex in the same layout as
+        ``(n_vertices + n_edges, n_vertices)`` matrix of Loop weights, only when
+        ``return_operator`` is ``True``, one row per output vertex in the same layout as
         ``new_vertices``. Every row sums to 1.
 
     Raises
@@ -3276,7 +3276,7 @@ def subdivide_to_size(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     max_edge
         Maximum length of any edge in the result. A **scalar** gives the uniform target; a
         ``(n_vertices,)`` ``wp.float32`` array is a per-vertex **sizing field**, and an edge's own
@@ -3293,13 +3293,13 @@ def subdivide_to_size(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Refined vertex positions on ``vertices.device`` (original vertices first,
-        then the inserted edge midpoints).
+        ``(n_out_vertices,)`` refined vertex positions on ``vertices.device`` (original vertices
+        first, then the inserted edge midpoints).
     new_faces : wp.array[wp.int32]
-        Flat buffer of the refined faces.
+        ``(3 * n_out_faces,)`` flat buffer of the refined faces.
     index : wp.array[wp.int32]
-        Only returned when ``return_index`` is ``True``: length ``n_out_faces``,
-        the index of the original face each output face was refined from.
+        ``(n_out_faces,)`` index of the original face each output face was refined from; only
+        returned when ``return_index`` is ``True``.
 
     Raises
     ------
@@ -3472,9 +3472,9 @@ def subdivide_region_to_size(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     region
-        Length-``n_faces`` ``wp.bool`` mask; only edges touching a ``True`` face are refined.
+        ``(n_faces,)`` mask; only edges touching a ``True`` face are refined.
     max_edge
         Target maximum edge length inside the region.
     max_iter
@@ -3493,11 +3493,12 @@ def subdivide_region_to_size(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Original vertices followed by the inserted midpoints, on ``vertices.device``.
+        ``(n_out_vertices,)`` original vertices followed by the inserted midpoints, on
+        ``vertices.device``.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the refined faces.
+        ``(3 * n_out_faces,)`` flat buffer of the refined faces.
     new_region : wp.array[wp.bool]
-        Length ``n_out_faces`` region mask; child faces inherit their parent's membership.
+        ``(n_out_faces,)`` region mask; child faces inherit their parent's membership.
 
     Raises
     ------
@@ -3710,9 +3711,9 @@ def refine_region_to_density(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     region
-        Length-``n_faces`` ``wp.bool`` mask; only ``True`` faces are refined. Child faces inherit
+        ``(n_faces,)`` mask; only ``True`` faces are refined. Child faces inherit
         their parent's membership.
     max_iter
         Cap on refinement passes. Unlike ``subdivide_region_to_size`` this does **not** raise when
@@ -3733,12 +3734,13 @@ def refine_region_to_density(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Positions with the centroid vertices appended after the originals, so the caller derives the
-        new-vertex set as the index range ``[len(vertices), len(new_vertices))``.
+        ``(n_out_vertices,)`` positions with the centroid vertices appended after the originals, so
+        the caller derives the new-vertex set as the index range
+        ``[len(vertices), len(new_vertices))``.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the refined faces.
+        ``(3 * n_out_faces,)`` flat buffer of the refined faces.
     new_region : wp.array[wp.bool]
-        Length ``n_out_faces`` region mask.
+        ``(n_out_faces,)`` region mask.
 
     Raises
     ------
@@ -3985,21 +3987,21 @@ def split_edges(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device. Never mutated.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     split_mask
-        ``(n_edges,)`` ``wp.bool`` mask over the **unique undirected edges** in
+        ``(n_edges,)`` mask over the **unique undirected edges** in
         [`edges_unique`][triwarp.edges.edges_unique] order, ``True`` for each edge to split.
     split_positions
-        Where to put each new vertex, as a ``(n_split,)`` ``wp.vec3`` array indexed by the
-        **exclusive scan of** ``split_mask`` — that is, in ascending unique-edge order among the
-        flagged edges, which is where a kernel writing ``out[offsets[e]]`` naturally puts them.
-        ``None`` uses each edge's midpoint.
+        ``(n_split,)`` positions for the new vertices, ``n_split`` the number of ``True`` entries of
+        ``split_mask``, indexed by the **exclusive scan of** ``split_mask`` — that is, in ascending
+        unique-edge order among the flagged edges, which is where a kernel writing
+        ``out[offsets[e]]`` naturally puts them. ``None`` uses each edge's midpoint.
     unique_edges, inverse
-        The [`edges_unique`][triwarp.edges.edges_unique] pair for ``faces``, when the caller has
-        already built it to compute ``split_mask``. Both must be given together; either being
-        ``None`` rebuilds them.
+        ``(n_edges, 2)`` and ``(3 * n_faces,)`` [`edges_unique`][triwarp.edges.edges_unique] pair
+        for ``faces``, when the caller has already built it to compute ``split_mask``. Both must be
+        given together; either being ``None`` rebuilds them.
     index
-        ``(n_faces,)`` ``wp.int32`` per-face values to carry through the split: each output face
+        ``(n_faces,)`` per-face values to carry through the split: each output face
         receives the value of the input face it came from. ``None`` means the identity, so
         ``return_index`` then reports provenance into ``faces``. Passing the *previous* pass's index
         is how an iterated caller composes provenance without a gather per pass.
@@ -4010,12 +4012,13 @@ def split_edges(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Original vertices followed by the ``n_split`` inserted ones, in ascending edge order.
+        ``(n_vertices + n_split,)`` original vertices followed by the ``n_split`` inserted ones, in
+        ascending edge order.
     new_faces : wp.array[wp.int32]
-        Flat ``3 * m`` triangle index buffer for the refined mesh.
+        ``(3 * m,)`` flat triangle index buffer for the refined mesh, ``m`` the output face count.
     index : wp.array[wp.int32]
-        Only when ``return_index`` is ``True``: length ``m``, the index into the **input** ``faces``
-        of the face each output face came from.
+        ``(m,)`` index into the **input** ``faces`` of the face each output face came from; only
+        when ``return_index`` is ``True``.
 
     Raises
     ------

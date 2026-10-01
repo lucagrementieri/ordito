@@ -306,8 +306,7 @@ class Trimesh:
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Triangle indices as ``wp.int32``, either flat (length ``3 * n_faces``) or shape
-        ``(n_faces, 3)`` (flattened on construction).
+        ``(3 * n_faces,)`` or ``(n_faces, 3)`` triangle indices (flattened on construction).
     initial_cache
         Optional pre-populated cache entries, keyed by property name. Used by
         [`from_warp_mesh`][triwarp.mesh.Trimesh.from_warp_mesh] to seed `warp_mesh` without
@@ -386,7 +385,7 @@ class Trimesh:
 
     @property
     def faces(self) -> wp.array[wp.int32]:
-        """Length-``3 * n_faces`` flat ``wp.int32`` triangle index buffer."""
+        """``(3 * n_faces,)`` flat triangle index buffer."""
         return self._faces
 
     @property
@@ -426,7 +425,7 @@ class Trimesh:
     @_CachedProperty
     def face_normals(self) -> wp.array[wp.vec3]:
         """
-        Length-``n_faces`` unit face normals (zero for degenerate faces).
+        ``(n_faces,)`` unit face normals (zero for degenerate faces).
 
         Computed together with [`face_areas`][triwarp.mesh.Trimesh.face_areas]; whichever is
         accessed first also caches the other.
@@ -443,7 +442,7 @@ class Trimesh:
     @_CachedProperty
     def face_areas(self) -> wp.array[wp.float32]:
         """
-        Length-``n_faces`` triangle areas.
+        ``(n_faces,)`` triangle areas.
 
         Computed together with [`face_normals`][triwarp.mesh.Trimesh.face_normals]; whichever
         is accessed first also caches the other.
@@ -479,7 +478,7 @@ class Trimesh:
     @_CachedProperty
     def face_angles(self) -> twt.Array2dFloat32:
         """
-        Shape ``(n_faces, 3)`` interior angles in radians, aligned with each face's corners.
+        ``(n_faces, 3)`` interior angles in radians, aligned with each face's corners.
 
         See Also
         --------
@@ -491,7 +490,7 @@ class Trimesh:
     @_CachedProperty
     def triangles_center(self) -> wp.array[wp.vec3]:
         """
-        Length-``n_faces`` barycentre of each triangle (the mean of its three corners).
+        ``(n_faces,)`` barycentre of each triangle (the mean of its three corners).
 
         Notes
         -----
@@ -674,7 +673,7 @@ class Trimesh:
     @_CachedProperty
     def vertex_normals(self) -> wp.array[wp.vec3]:
         """
-        Length-``n_vertices`` angle-weighted unit vertex normals.
+        ``(n_vertices,)`` angle-weighted unit vertex normals.
 
         Matches `trimesh`'s default vertex-normal weighting (interior-angle weighted).
 
@@ -694,7 +693,7 @@ class Trimesh:
     @_CachedProperty
     def vertex_defects(self) -> wp.array[wp.float32]:
         """
-        Length-``n_vertices`` discrete angle defect (``2π`` minus incident corner angles).
+        ``(n_vertices,)`` discrete angle defect (``2π`` minus incident corner angles).
 
         See Also
         --------
@@ -705,7 +704,7 @@ class Trimesh:
     @_CachedProperty
     def nondegenerate_faces(self) -> wp.array[wp.bool]:
         """
-        Length-``n_faces`` mask; ``True`` where the triangle has non-zero area.
+        ``(n_faces,)`` mask; ``True`` where the triangle has non-zero area.
 
         Named for ``trimesh.Trimesh.nondegenerate_faces`` rather than for the function it calls:
         matching trimesh's property names is this facade's whole job, so the property keeps the
@@ -739,7 +738,7 @@ class Trimesh:
     @_CachedProperty
     def edges(self) -> twt.Array2dInt32:
         """
-        Shape ``(n_faces * 3, 2)`` directed triangle edges, in face-corner order.
+        ``(3 * n_faces, 2)`` directed triangle edges, in face-corner order.
 
         See Also
         --------
@@ -751,7 +750,7 @@ class Trimesh:
     @_CachedProperty
     def edges_sorted(self) -> twt.Array2dInt32:
         """
-        Shape ``(n_faces * 3, 2)`` edges from `edges`, each row sorted (smaller index first).
+        ``(3 * n_faces, 2)`` edges from `edges`, each row sorted (smaller index first).
 
         See Also
         --------
@@ -763,7 +762,7 @@ class Trimesh:
     @_CachedProperty
     def edges_face(self) -> wp.array[wp.int32]:
         """
-        Length-``n_faces * 3`` face index for each row of `edges` / `edges_sorted`.
+        ``(3 * n_faces,)`` face index for each row of `edges` / `edges_sorted`.
 
         See Also
         --------
@@ -775,7 +774,7 @@ class Trimesh:
     @_CachedProperty
     def edges_unique(self) -> twt.Array2dInt32:
         """
-        Shape ``(m, 2)`` unique undirected edges, ``m <= n_faces * 3``.
+        ``(m, 2)`` unique undirected edges, ``m <= 3 * n_faces``.
 
         Also caches [`edges_unique_inverse`][triwarp.mesh.Trimesh.edges_unique_inverse] as a
         by-product.
@@ -792,7 +791,7 @@ class Trimesh:
     @_CachedProperty
     def edges_unique_inverse(self) -> wp.array[wp.int32]:
         """
-        Length-``n_faces * 3`` inverse mapping into `edges_unique` (reconstructs `edges_sorted`).
+        ``(3 * n_faces,)`` inverse mapping into `edges_unique` (reconstructs `edges_sorted`).
 
         See Also
         --------
@@ -808,7 +807,7 @@ class Trimesh:
     @_CachedProperty
     def faces_unique_edges(self) -> twt.Array2dInt32:
         """
-        Shape ``(n_faces, 3)`` index into [`edges_unique`][triwarp.mesh.Trimesh.edges_unique].
+        ``(n_faces, 3)`` index into [`edges_unique`][triwarp.mesh.Trimesh.edges_unique].
 
         Row ``f`` holds the unique-edge slot of each of face ``f``'s three edges, in face-corner
         order, so ``edges_unique[faces_unique_edges[f, k]]`` is that corner's edge.
@@ -829,7 +828,7 @@ class Trimesh:
     @_CachedProperty
     def edges_unique_length(self) -> wp.array[wp.float32]:
         """
-        Length-``m`` Euclidean length of each `edges_unique` row.
+        ``(m,)`` Euclidean length of each `edges_unique` row.
 
         See Also
         --------
@@ -843,7 +842,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency(self) -> twt.Array2dInt32:
         """
-        Shape ``(m, 2)`` face index pairs that share an undirected edge.
+        ``(m, 2)`` face index pairs that share an undirected edge.
 
         Also caches [`face_adjacency_edges`][triwarp.mesh.Trimesh.face_adjacency_edges] as a
         by-product.
@@ -866,7 +865,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency_edges(self) -> twt.Array2dInt32:
         """
-        Shape ``(m, 2)`` shared vertex pair for each `face_adjacency` row.
+        ``(m, 2)`` shared vertex pair for each `face_adjacency` row.
 
         See Also
         --------
@@ -881,7 +880,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency_unshared(self) -> twt.Array2dInt32:
         """
-        Shape ``(m, 2)`` vertex on each adjacent face not on their shared edge.
+        ``(m, 2)`` vertex on each adjacent face not on their shared edge.
 
         See Also
         --------
@@ -897,7 +896,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency_angles(self) -> wp.array[wp.float32]:
         """
-        Length-``m`` unsigned angle in radians between each `face_adjacency` pair.
+        ``(m,)`` unsigned angle in radians between each `face_adjacency` pair.
 
         See Also
         --------
@@ -914,7 +913,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency_projections(self) -> wp.array[wp.float32]:
         """
-        Length-``m`` projection of each adjacent pair's unshared vertices onto the other's plane.
+        ``(m,)`` projection of each adjacent pair's unshared vertices onto the other's plane.
 
         Negative where the pair is convex, which is the sign
         [`face_adjacency_convex`][triwarp.mesh.Trimesh.face_adjacency_convex] thresholds.
@@ -937,7 +936,7 @@ class Trimesh:
     @_CachedProperty
     def face_adjacency_convex(self) -> wp.array[wp.bool]:
         """
-        Length-``m`` mask; ``True`` where an adjacent face pair meets convexly.
+        ``(m,)`` mask; ``True`` where an adjacent face pair meets convexly.
 
         See Also
         --------
@@ -957,7 +956,7 @@ class Trimesh:
     @_CachedProperty
     def face_connected_component_labels(self) -> wp.array[wp.int32]:
         """
-        Length-``n_faces`` connected-component label per face (face-adjacency graph).
+        ``(n_faces,)`` connected-component label per face (face-adjacency graph).
 
         Notes
         -----
@@ -1023,7 +1022,7 @@ class Trimesh:
     @_CachedProperty
     def halfedge_twins(self) -> wp.array[wp.int32]:
         """
-        Length-``3 * n_faces`` opposite halfedge of every halfedge, or ``-1`` on a boundary.
+        ``(3 * n_faces,)`` opposite halfedge of every halfedge, or ``-1`` on a boundary.
 
         Halfedge ``h = 3 * f + k`` runs from ``faces[3f + k]`` to ``faces[3f + (k + 1) % 3]``, so
         ``next`` and ``prev`` are index arithmetic and this array is all a walk needs to cross an
@@ -1077,7 +1076,7 @@ class Trimesh:
     @_CachedProperty
     def boundary_edges(self) -> twt.Array2dInt32:
         """
-        Shape ``(n_boundary, 2)`` undirected boundary edges (each row sorted, min-first).
+        ``(n_boundary, 2)`` undirected boundary edges (each row sorted, min-first).
 
         See Also
         --------
@@ -1088,7 +1087,7 @@ class Trimesh:
     @_CachedProperty
     def oriented_boundary_edges(self) -> twt.Array2dInt32:
         """
-        Shape ``(n_boundary, 2)`` directed boundary edges, preserving face winding.
+        ``(n_boundary, 2)`` directed boundary edges, preserving face winding.
 
         See Also
         --------
@@ -1110,7 +1109,7 @@ class Trimesh:
     @_CachedProperty
     def boundary_vertex_indices(self) -> wp.array[wp.int32]:
         """
-        Sorted unique vertex indices lying on the mesh boundary.
+        ``(n_boundary_vertices,)`` sorted unique vertex indices lying on the mesh boundary.
 
         See Also
         --------
@@ -1292,7 +1291,7 @@ class Trimesh:
     @_CachedProperty
     def cotmatrix_entries(self) -> twt.Array2dFloat32:
         """
-        Shape ``(n_faces, 3)`` per-triangle half-cotangent weights, in igl's edge order.
+        ``(n_faces, 3)`` per-triangle half-cotangent weights, in igl's edge order.
 
         The ``float32`` table, and that costs a ``float64`` consumer nothing: the free function
         computes these weights in ``float32`` -- the vertex precision -- whatever dtype is asked
@@ -1315,7 +1314,7 @@ class Trimesh:
     @_CachedProperty
     def cotmatrix(self) -> twt.BsrMatrix[wp.float32]:
         """
-        Cotangent stiffness matrix: the ``float32`` discrete Laplace-Beltrami operator.
+        ``(n_vertices, n_vertices)`` cotangent stiffness (discrete Laplace-Beltrami) matrix.
 
         Assembled from the cached `cotmatrix_entries`. Diagonal entries are negative and each row
         sums to zero, so ``-L`` is positive semi-definite on a closed mesh.
@@ -1342,7 +1341,7 @@ class Trimesh:
     @_CachedProperty
     def mass_matrix_entries(self) -> wp.array[wp.float32]:
         """
-        Length-``n_vertices`` barycentric lumped mass: a third of each incident triangle's area.
+        ``(n_vertices,)`` barycentric lumped mass: a third of each incident triangle's area.
 
         Built from the cached `face_areas`, so this is a scatter and nothing else.
 
@@ -1365,7 +1364,7 @@ class Trimesh:
     @_CachedProperty
     def laplacian_operator(self) -> twt.BsrMatrix[wp.float32]:
         """
-        Row-normalized 1-ring averaging operator (the uniform / umbrella Laplacian).
+        ``(n_vertices, n_vertices)`` row-normalized 1-ring averaging (uniform / umbrella) Laplacian.
 
         Exactly what every position filter in [`triwarp.smoothing`][triwarp.smoothing] builds for
         itself when its ``laplacian_operator=`` argument is ``None``, so passing this hoists the
@@ -1392,7 +1391,7 @@ class Trimesh:
         self,
     ) -> tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]:
         """
-        Orthonormal tangent frame at every vertex as ``(basis_x, basis_y, normal)``.
+        ``(n_vertices,)`` orthonormal tangent frame per vertex as ``(basis_x, basis_y, normal)``.
 
         The gauge every 2-D tangent quantity on this mesh is measured in. Built from the cached
         `vertex_normals` and `vertex_one_rings`, and its third element **is** `vertex_normals`.
@@ -1487,7 +1486,7 @@ class Trimesh:
         Returns
         -------
         wp.array[wp.bool]
-            Length-``n`` mask; ``True`` where the point is inside.
+            ``(n,)`` mask; ``True`` where the point is inside.
 
         Raises
         ------
@@ -1528,7 +1527,7 @@ class Trimesh:
         points : wp.array[wp.vec3]
             ``(count,)`` sampled positions.
         face_indices : wp.array[wp.int32]
-            Length-``count`` index of the face each sample landed on.
+            ``(count,)`` index of the face each sample landed on.
 
         Notes
         -----
@@ -1854,7 +1853,7 @@ class Trimesh:
         Parameters
         ----------
         new_faces
-            Replacement triangle indices, flat or ``(n_faces, 3)``.
+            ``(3 * n_faces,)`` or ``(n_faces, 3)`` replacement triangle indices.
 
         Returns
         -------
@@ -1870,8 +1869,8 @@ class Trimesh:
         Parameters
         ----------
         faces
-            Either a ``wp.int32`` array of face indices or a length-``n_faces`` ``wp.bool`` mask;
-            the dtype selects which.
+            ``(k,)`` ``wp.int32`` face indices or a ``(n_faces,)`` ``wp.bool`` mask; the dtype
+            selects which.
 
         Returns
         -------

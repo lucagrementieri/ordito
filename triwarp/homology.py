@@ -57,7 +57,7 @@ def homology_generators(
     vertices
         ``(n_vertices,)`` mesh vertex positions. Only the count is used.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be a closed, connected,
+        ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,
         edge-manifold surface: the counting argument this rests on assumes it.
     copy
         Return independent buffers instead of views into one packed allocation.
@@ -65,7 +65,7 @@ def homology_generators(
     Returns
     -------
     list[wp.array[wp.int32]]
-        One ``wp.int32`` array of vertex indices per generator, on ``faces.device``. Empty for a
+        One array of vertex indices per generator, on ``faces.device``. Empty for a
         sphere, and for a mesh with no faces.
 
     Raises
@@ -106,16 +106,17 @@ def homology_generators_with_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions. Only the count is used.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be a closed, connected,
+        ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,
         edge-manifold surface: the counting argument this rests on assumes it.
 
     Returns
     -------
     loops : wp.array[wp.int32]
-        Every generator's vertex-index cycle, loop after loop, on ``faces.device``.
+        ``(m,)`` every generator's vertex-index cycle, loop after loop, ``m == offsets[-1]``, on
+        ``faces.device``.
     offsets : wp.array[wp.int32]
-        ``(2 * g + 1,)`` total-terminated offsets: loop ``i`` is ``loops[offsets[i] :
-        offsets[i + 1]]``, and ``[0]`` for a sphere or a mesh with no faces.
+        ``(2 * g + 1,)`` total-terminated offsets, ``g`` the genus: loop ``i`` is
+        ``loops[offsets[i] : offsets[i + 1]]``, and ``[0]`` for a sphere or a mesh with no faces.
 
     Raises
     ------
@@ -137,7 +138,7 @@ def homology_generators_with_offsets(
     n_vertices = vertices.size
     n_faces = faces.size // 3
     if n_vertices == 0 or n_faces == 0:
-        return _no_loops(device)
+        return _launch.empty_packed(wp.int32, device)
 
     # One grouping of the edge rows answers everything: ``inverse`` maps each face corner to its
     # unique edge, and one scatter over it fills both the per-edge face count and the two incident
@@ -148,7 +149,7 @@ def homology_generators_with_offsets(
     if n_edges == 0:
         # A face carries three edges, so no edges means no faces: vacuously closed, nothing to span
         # and nothing left over.
-        return _no_loops(device)
+        return _launch.empty_packed(wp.int32, device)
     edge_face_count = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     edge_faces = twt.empty_2d((n_edges, 2), wp.int32, device=device)
     _launch.launch(
@@ -352,7 +353,7 @@ def _trace_generator_loops(
     total = read_scalar(counts)
     n_generators, n_packed = int(total[0]), int(total[1])
     if n_generators == 0:
-        return _no_loops(device)
+        return _launch.empty_packed(wp.int32, device)
     offsets = _launch.empty(n_generators + 1, dtype=wp.int32, device=device)
     loops = _launch.empty(n_packed, dtype=wp.int32, device=device)
     _launch.launch(
@@ -362,10 +363,3 @@ def _trace_generator_loops(
         device=device,
     )
     return loops, offsets
-
-
-def _no_loops(device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """Return the empty packed basis: no loop vertices and ``[0]`` offsets."""
-    return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
-        1, dtype=wp.int32, device=device
-    )

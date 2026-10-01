@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from typing import Any, Literal, TypeVar, cast, overload
 
 import warp as wp
@@ -188,7 +187,7 @@ def unique_1d(
     Parameters
     ----------
     data
-        Rank-1 ``wp.array`` with any scalar ``dtype``.
+        ``(n,)`` array with any scalar ``dtype``.
     return_inverse
         If ``True``, include the inverse mapping in the return tuple.
     return_counts
@@ -202,13 +201,14 @@ def unique_1d(
     Returns
     -------
     unique : wp.array
-        Sorted unique values (same ``dtype`` and ``device`` as ``data``).
+        ``(n_unique,)`` sorted unique values (same ``dtype`` and ``device`` as ``data``).
     inverse : wp.array[wp.int32], optional
-        Present if ``return_inverse=True``. ``inverse[i]`` indexes ``unique`` such
+        ``(n,)``, present if ``return_inverse=True``. ``inverse[i]`` indexes ``unique`` such
         that conceptually ``unique[inverse[i]] == data[i]`` (float ``NaN`` matches
         NumPy: all ``NaN`` values share one slot).
     counts : wp.array[wp.int32], optional
-        Present if ``return_counts=True``. Number of occurrences per ``unique`` row.
+        ``(n_unique,)``, present if ``return_counts=True``. Number of occurrences per ``unique``
+        row.
 
     Raises
     ------
@@ -240,7 +240,7 @@ def unique_1d(
     if n > (1 << 30):
         raise ValueError(f"unique_1d requires length <= 2**30, got length {n}")
 
-    mask = _hash_mask(n)
+    mask = wp.int32(kernel_grouping.hash_table_mask(n))
 
     # ``_unique_hash`` only ever *reads* the integer key array, so when the input already is one of
     # the two key dtypes the bit reinterpretation is the identity and the buffer can be shared --
@@ -375,12 +375,12 @@ def hashed_occurrence_counts(keys: wp.array[wp.uint64] | wp.array[wp.int64]) -> 
     Parameters
     ----------
     keys
-        1D ``wp.uint64`` or ``wp.int64`` keys, of length at most ``2**30``.
+        ``(n,)`` ``wp.uint64`` or ``wp.int64`` keys, ``n <= 2**30``.
 
     Returns
     -------
     wp.array[wp.int32]
-        The per-slot counts, somewhat over twice ``len(keys)`` long, on ``keys.device``. Their
+        ``(m,)`` per-slot counts, ``m`` somewhat over ``2 * n``, on ``keys.device``. Their
         nonzero entries are the counts of the distinct keys; which slot holds which key is
         unspecified.
 
@@ -389,12 +389,7 @@ def hashed_occurrence_counts(keys: wp.array[wp.uint64] | wp.array[wp.int64]) -> 
     [`unique_1d`][triwarp.grouping.unique_1d]
     """
     n = keys.size
-    return _hash_insert(keys.view(wp.int64), n, _hash_mask(n))[1]
-
-
-def _hash_mask(n: int) -> wp.int32:
-    """Size an open-addressing table for ``n`` keys, as a slot mask: at least twice ``n`` slots."""
-    return wp.int32((1 << max(3, math.ceil(math.log2(max(n, 1)) + 1))) - 1)
+    return _hash_insert(keys.view(wp.int64), n, wp.int32(kernel_grouping.hash_table_mask(n)))[1]
 
 
 def _hash_insert(
@@ -509,7 +504,7 @@ def unique_rows(
     Parameters
     ----------
     data
-        ``(n, w)`` ``int32`` or ``float32`` array, or length-``n`` ``wp.vec3`` array.
+        ``(n, w)`` ``int32`` or ``float32`` array, or ``(n,)`` ``wp.vec3`` array.
     return_inverse
         If ``True``, include the inverse mapping in the return tuple.
     return_counts
@@ -518,11 +513,11 @@ def unique_rows(
     Returns
     -------
     unique
-        ``(n_unique, w)`` or length-``n_unique`` ``wp.vec3`` array on ``data.device``.
+        ``(n_unique, w)`` or ``(n_unique,)`` ``wp.vec3`` array on ``data.device``.
     inverse : wp.array[wp.int32], optional
-        Present if ``return_inverse=True``. ``inverse[i]`` indexes ``unique``.
+        ``(n,)``, present if ``return_inverse=True``. ``inverse[i]`` indexes ``unique``.
     counts : wp.array[wp.int32], optional
-        Present if ``return_counts=True``. Occurrences per ``unique`` row.
+        ``(n_unique,)``, present if ``return_counts=True``. Occurrences per ``unique`` row.
 
     Raises
     ------
@@ -590,7 +585,7 @@ def unique_faces(
     Parameters
     ----------
     faces
-        Flat ``wp.int32`` triangle index buffer of length ``3 * n_faces`` (common 1D format).
+        ``(3 * n_faces,)`` flat triangle index buffer (common 1D format).
     return_inverse
         If ``True``, also return the inverse mapping from each input face to its slot in the
         unique output.
@@ -604,9 +599,9 @@ def unique_faces(
     Returns
     -------
     unique_faces : wp.array[wp.int32]
-        Flat buffer of the unique faces (length ``3 * n_unique``).
+        ``(3 * n_unique,)`` flat buffer of the ``n_unique`` unique faces.
     inverse : wp.array[wp.int32], optional
-        Present if ``return_inverse=True``. Length ``n_faces``; ``inverse[i]`` is the unique
+        ``(n_faces,)``, present if ``return_inverse=True``; ``inverse[i]`` is the unique
         slot of input face ``i``.
 
     Raises
@@ -699,7 +694,7 @@ def first_occurrence_indices(
     Parameters
     ----------
     inverse
-        Length-``n`` ``wp.int32`` map from each element to its class slot, as returned by
+        ``(n,)`` map from each element to its class slot, as returned by
         [`unique_1d`][triwarp.grouping.unique_1d] or
         [`unique_rows`][triwarp.grouping.unique_rows].
     n_unique
@@ -711,7 +706,7 @@ def first_occurrence_indices(
     Returns
     -------
     wp.array[wp.int32]
-        Length-``n_unique`` array whose entry ``c`` is ``min{i : inverse[i] == c}``. A class with
+        ``(n_unique,)`` array whose entry ``c`` is ``min{i : inverse[i] == c}``. A class with
         no member (only reachable when ``n_unique`` is passed too large) holds the sentinel ``n``.
 
     See Also
@@ -752,12 +747,12 @@ def hash_rows(
     Parameters
     ----------
     data
-        ``(n, w)`` ``int32`` or ``float32`` array, or length-``n`` ``wp.vec3`` array.
+        ``(n, w)`` ``int32`` or ``float32`` array, or ``(n,)`` ``wp.vec3`` array.
 
     Returns
     -------
     wp.array[wp.uint64]
-        Length-``n`` array on ``data.device`` with one packed key per row.
+        ``(n,)`` array on ``data.device`` with one packed key per row.
 
     Raises
     ------
@@ -803,7 +798,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
     Parameters
     ----------
     data
-        ``(n,)`` device array of ``wp.vec3`` values.
+        ``(n,)`` device array of values.
     epsilon
         Uniqueness tolerance. ``0`` uses the relative bit-truncation bucket; positive values snap
         coordinates to ``round(v / epsilon)`` before packing.
@@ -811,7 +806,7 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
     Returns
     -------
     wp.array[wp.uint64]
-        Length-``n`` array on ``data.device`` with one packed key per row.
+        ``(n,)`` array on ``data.device`` with one packed key per row.
 
     Raises
     ------
@@ -887,7 +882,7 @@ def hash_indices_rows(
     Parameters
     ----------
     data
-        ``(n, w)`` device array of ``int32``; every entry must be non-negative. If
+        ``(n, w)`` device array; every entry must be non-negative. If
         ``max_index`` is given, every entry must satisfy ``entry < max_index``.
     max_index
         Optional exclusive upper bound on entries and radix for packing; must be
@@ -920,7 +915,7 @@ def hash_indices_rows(
     Returns
     -------
     wp.array[wp.uint64]
-        Length-``n`` array on ``data.device`` with one packed key per row.
+        ``(n,)`` array on ``data.device`` with one packed key per row.
 
     Raises
     ------
@@ -1008,7 +1003,7 @@ def sorted_undirected_edge_keys(edges: twt.Array2dInt32, n_vertices: int) -> wp.
     Returns
     -------
     wp.array[wp.uint64]
-        Length-``k`` sorted keys on ``edges.device``. Empty when ``edges`` is empty.
+        ``(k,)`` sorted keys on ``edges.device``. Empty when ``edges`` is empty.
     """
     device = edges.device
     n_edges = int(edges.shape[0])

@@ -297,7 +297,7 @@ def min_quad_with_fixed(
     q
         ``(n_dofs, n_dofs)`` symmetric positive-semi-definite operator, ``float64``.
     fixed_mask
-        Length-``n_dofs`` mask: ``True`` marks a pinned degree of freedom.
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
     fixed_values
         ``(n_rhs, n_dofs)`` prescribed values; only the entries where ``fixed_mask`` is ``True`` are
         read.
@@ -320,7 +320,7 @@ def min_quad_with_fixed(
     solution : twt.Array2dFloat
         ``(n_rhs, n_free)`` solved values for the unpinned degrees of freedom.
     free_map : wp.array[wp.int32]
-        Length-``n_dofs`` compact remap of the unpinned degrees of freedom.
+        ``(n_dofs,)`` compact remap of the unpinned degrees of freedom.
     n_free : int
         Number of unpinned degrees of freedom.
 
@@ -376,13 +376,13 @@ def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], i
     Parameters
     ----------
     fixed_mask
-        Length-``n_dofs`` mask: ``True`` marks a pinned degree of freedom.
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
 
     Returns
     -------
     free_map : wp.array[wp.int32]
-        Length-``n_dofs``; ``free_map[i]`` is the reduced-system index of degree of freedom ``i``,
-        meaningful only where ``fixed_mask[i]`` is ``False``.
+        ``(n_dofs,)`` compact remap; ``free_map[i]`` is the reduced-system index of degree of
+        freedom ``i``, meaningful only where ``fixed_mask[i]`` is ``False``.
     n_free : int
         Number of unpinned degrees of freedom.
 
@@ -426,9 +426,9 @@ def assemble_interior_system(
     q
         ``(n_dofs, n_dofs)`` symmetric positive-semi-definite operator, ``float64``.
     fixed_mask
-        Length-``n_dofs`` mask: ``True`` marks a pinned degree of freedom.
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
     free_map
-        Compact remap from [`free_partition`][triwarp.linalg.free_partition].
+        ``(n_dofs,)`` compact remap from [`free_partition`][triwarp.linalg.free_partition].
     fixed_values
         ``(n_rhs, n_dofs)`` prescribed values.
     n_free
@@ -516,11 +516,11 @@ def solve_spd(
     Parameters
     ----------
     matrix
-        Symmetric positive-(semi-)definite operator. Scalar or block dtype.
+        ``(n, n)`` symmetric positive-(semi-)definite operator. Scalar or block dtype.
     rhs
-        Right-hand side, with as many rows as ``matrix``.
+        ``(n,)`` right-hand side, with as many rows as ``matrix``.
     solution
-        Initial guess, overwritten with the result. Same shape and dtype as ``rhs``.
+        ``(n,)`` initial guess, overwritten with the result. Same shape and dtype as ``rhs``.
     tol
         Relative residual tolerance.
     maxiter
@@ -754,12 +754,12 @@ def jacobi_preconditioner(matrix: twt.SparseMatrix) -> wpl.LinearOperator:
     Parameters
     ----------
     matrix
-        Symmetric positive-(semi-)definite operator. Scalar or block dtype.
+        ``(n, n)`` symmetric positive-(semi-)definite operator. Scalar or block dtype.
 
     Returns
     -------
     ``warp.optim.linear.LinearOperator``
-        The inverse-diagonal operator.
+        ``(n, n)`` inverse-diagonal operator.
 
     See Also
     --------
@@ -777,7 +777,7 @@ def jacobi_preconditioner(matrix: twt.SparseMatrix) -> wpl.LinearOperator:
         built[0].matvec(x, y, z, alpha, beta)
 
     operator = wpl.LinearOperator(matrix.shape, matrix.scalar_type, matrix.device, matvec)
-    _tag_preconditioner(operator, matrix, "diag")
+    _PRECONDITIONER_TAGS[operator] = ("diag", weakref.ref(matrix))
     return operator
 
 
@@ -819,7 +819,7 @@ def solve_spd_columns(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-definite operator, ``float64``.
+        ``(n, n)`` symmetric positive-definite operator.
     rhs
         ``(n_rhs, n)`` right-hand sides, one per row. Must be contiguous.
     solution
@@ -965,7 +965,7 @@ def spd_column_solver(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-definite operator, ``float64``. Held by the returned state.
+        ``(n, n)`` symmetric positive-definite operator. Held by the returned state.
     rhs
         ``(n_rhs, n)`` right-hand sides; re-read from this buffer on every call.
     solution
@@ -1071,12 +1071,13 @@ def solve_spd_settled(
     Parameters
     ----------
     matrix
-        Symmetric positive-definite operator, scalar ``float64`` or ``wp.mat22d``-block.
+        ``(n, n)`` symmetric positive-definite operator, scalar ``float64`` or ``wp.mat22d``-block.
     rhs
-        Right-hand side: ``(n,)`` ``float64`` or ``wp.vec2d`` matching ``matrix``, or
+        ``(n,)`` right-hand side, ``float64`` or ``wp.vec2d`` matching ``matrix``, or
         ``(n_columns, n)`` ``float64`` columns against a scalar ``matrix``, solved together.
     solution
-        Initial guess, overwritten with the result. Same shape and dtype as ``rhs``, contiguous.
+        ``(n,)`` or ``(n_columns, n)`` initial guess, overwritten with the result. Same shape and
+        dtype as ``rhs``, contiguous.
     check_rounds
         Rounds between checks.
     change_tolerance
@@ -1093,7 +1094,7 @@ def solve_spd_settled(
     Returns
     -------
     wp.array[wp.int32]
-        One-element device array holding the rounds that took a step. It belongs to the solver
+        ``(1,)`` device array holding the rounds that took a step. It belongs to the solver
         state kept for ``matrix`` and is overwritten by the next solve against it -- or, for an
         operator rebuilt per call, against the next operator of its shape, whose solve takes the
         same state (see [`solve_spd`][triwarp.linalg.solve_spd]).
@@ -2327,7 +2328,18 @@ def _cached_solver(
     key = (*config, id(matrix.offsets), id(matrix.columns), id(matrix.values))
     entries = {} if squared else _SOLVER_CACHE.setdefault(matrix, {})
     state = entries.pop(key, None)
-    if state is None and pooled and _poolable(matrix, preconditioner):
+    # Pooled only where ``_BatchedCg.refresh`` can rebuild everything the state derives from
+    # ``matrix``.
+    if (
+        state is None
+        and pooled
+        and matrix.values.dtype == wp.float64
+        and (
+            isinstance(preconditioner, SquaredLaplacianPreconditioner)
+            or preconditioner in ("diag", "chebyshev")
+        )
+        and int(matrix.nrow) > 0
+    ):
         n = int(matrix.nrow)
         fold = kernel_cg.cg_layout(n, CG_FOLD_MAX_BLOCKS)[2]
         shape = (
@@ -2395,20 +2407,6 @@ _SHAPES_SEEN: set[tuple[object, ...]] = set()
 _SHAPES_SEEN_ENTRIES = 256
 
 
-def _poolable(
-    matrix: twt.SparseMatrix, preconditioner: str | SquaredLaplacianPreconditioner
-) -> bool:
-    """Whether ``_BatchedCg.refresh`` can rebuild everything a state derives from ``matrix``."""
-    return (
-        matrix.values.dtype == wp.float64
-        and (
-            isinstance(preconditioner, SquaredLaplacianPreconditioner)
-            or preconditioner in ("diag", "chebyshev")
-        )
-        and int(matrix.nrow) > 0
-    )
-
-
 def _row_path(matrix: twt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     """
     ``_BatchedCg``'s mat-vec path for ``matrix``: whether it takes ``bsr_mv``, and at what tile.
@@ -2457,11 +2455,6 @@ def _storage_alias(matrix: twt.BsrMatrix[twt.Block]) -> twt.BsrMatrix[twt.Block]
     )
 
 
-def _tag_preconditioner(operator: wpl.LinearOperator, matrix: twt.SparseMatrix, kind: str) -> None:
-    """Mark ``operator`` as this module's ``kind`` preconditioner for ``matrix`` (``solve_spd``)."""
-    _PRECONDITIONER_TAGS[operator] = (kind, weakref.ref(matrix))
-
-
 def bsr_with_values(
     matrix: twt.SparseMatrix, values: wp.array[twt.Block, Any]
 ) -> twt.BsrMatrix[twt.Block]:
@@ -2476,16 +2469,16 @@ def bsr_with_values(
     Parameters
     ----------
     matrix
-        The operator whose pattern the result takes. Rewriting that pattern in place afterwards
-        rewrites the result's too.
+        ``(n_rows, n_cols)`` operator, in blocks, whose pattern the result takes. Rewriting that
+        pattern in place afterwards rewrites the result's too.
     values
-        One block per stored entry of ``matrix``, laid out as ``matrix.values`` is; its dtype is the
-        result's block type.
+        ``(nnz,)`` one block per stored entry of ``matrix``, laid out as ``matrix.values`` is; its
+        dtype is the result's block type.
 
     Returns
     -------
     warp.sparse.BsrMatrix
-        ``matrix.nrow x matrix.ncol`` blocks, with ``matrix``'s stored entry count.
+        ``(n_rows, n_cols)`` blocks, as ``matrix``, with ``matrix``'s stored entry count.
 
     Raises
     ------
@@ -2549,8 +2542,8 @@ def block_diag(matrices: Sequence[twt.SparseMatrix]) -> twt.BsrMatrix[wp.float64
     Returns
     -------
     warp.sparse.BsrMatrix
-        ``float64`` operator whose row count is the sum of the blocks' scalar row counts, in the
-        order given.
+        ``(n, n)`` operator whose row count ``n`` is the sum of the blocks' scalar row counts, in
+        the order given.
 
     Raises
     ------
@@ -2641,7 +2634,7 @@ def replicated_operator(
     Returns
     -------
     ``warp.optim.linear.LinearOperator``
-        Batched operator of shape ``(n_columns * n, n_columns * n)``.
+        ``(n_columns * n, n_columns * n)`` batched operator.
 
     Notes
     -----
@@ -2722,9 +2715,9 @@ def multigrid_preconditioner(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive-(semi-)definite operator, ``float64``. Zero diagonal entries
-        are allowed: such a row is identically zero for a semi-definite operator, and the whole
-        chain -- smoother, coarse solve and all -- leaves those unknowns at zero.
+        ``(n, n)`` symmetric positive-(semi-)definite operator. Zero diagonal entries are allowed:
+        such a row is identically zero for a semi-definite operator, and the whole chain --
+        smoother, coarse solve and all -- leaves those unknowns at zero.
     n_columns
         Number of independent right-hand-side columns the operator will be applied to.
     seed
@@ -2734,8 +2727,8 @@ def multigrid_preconditioner(
     Returns
     -------
     ``warp.optim.linear.LinearOperator``
-        The V-cycle, of shape ``(n_columns * n, n_columns * n)``. A **Jacobi** preconditioner
-        instead when the operator does not coarsen -- see Notes.
+        ``(n_columns * n, n_columns * n)`` V-cycle. A **Jacobi** preconditioner instead when the
+        operator does not coarsen -- see Notes.
 
     Raises
     ------
@@ -2837,8 +2830,8 @@ def chebyshev_preconditioner(
     Parameters
     ----------
     matrix
-        ``(n, n)`` symmetric positive- or negative-(semi-)definite operator, ``float64``, whose
-        diagonal carries its sign -- a cotangent Laplacian in either convention, a mass-plus-
+        ``(n, n)`` symmetric positive- or negative-(semi-)definite operator, whose diagonal
+        carries its sign -- a cotangent Laplacian in either convention, a mass-plus-
         stiffness heat system. An empty row is allowed: the unknown no equation touches stays at
         zero.
     n_columns
@@ -2847,9 +2840,8 @@ def chebyshev_preconditioner(
     Returns
     -------
     ``warp.optim.linear.LinearOperator``
-        The preconditioner, of shape ``(n_columns * n, n_columns * n)`` over ``n_columns``
-        contiguous blocks, as [`replicated_operator`][triwarp.linalg.replicated_operator] lays
-        them out.
+        ``(n_columns * n, n_columns * n)`` preconditioner over ``n_columns`` contiguous blocks, as
+        [`replicated_operator`][triwarp.linalg.replicated_operator] lays them out.
 
     Raises
     ------
@@ -2882,7 +2874,7 @@ def chebyshev_preconditioner(
     total = n_columns * n
     operator = wpl.LinearOperator((total, total), wp.float64, matrix.values.device, matvec)
     if n_columns == 1:
-        _tag_preconditioner(operator, matrix, "chebyshev")
+        _PRECONDITIONER_TAGS[operator] = ("chebyshev", weakref.ref(matrix))
     return operator
 
 
@@ -2915,10 +2907,10 @@ def squared_laplacian_preconditioner(
     Parameters
     ----------
     laplacian
-        ``(n, n)`` symmetric positive-definite ``L``, ``float64``. An empty row is allowed and
+        ``(n, n)`` symmetric positive-definite ``L``. An empty row is allowed and
         is left at zero, as it is in the system: an unknown no equation touches.
     weight_sums
-        Length-``n`` diagonal of ``D``, positive. ``M_ff = D⁻¹ L``; give ``1`` for an empty row.
+        ``(n,)`` diagonal of ``D``, positive. ``M_ff = D⁻¹ L``; give ``1`` for an empty row.
 
     Returns
     -------
@@ -3027,11 +3019,12 @@ class SquaredLaplacianPreconditioner:
         Parameters
         ----------
         factor
-            ``(n, n)`` ``D⁻¹ L``, ``float64``.
+            ``(n, n)`` ``D⁻¹ L``.
         factor_t
-            Its transpose, ``float64``. It may share ``factor``'s pattern, holding explicit zeros.
+            ``(n, n)`` transpose of ``factor``. It may share ``factor``'s pattern, holding explicit
+            zeros.
         ratios
-            Length-``n`` ``sum_j |L_ij| / D_i``, ``0`` for an empty row: what the constructor's
+            ``(n,)`` ``sum_j |L_ij| / D_i``, ``0`` for an empty row: what the constructor's
             ``scaled_row_abs_sums`` writes.
         narrowed
             ``factor``'s and ``factor_t``'s values in ``float32``, when the caller wrote them

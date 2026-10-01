@@ -43,7 +43,7 @@ def is_edge_manifold(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     allow_boundary_edges
         When ``True`` (default) boundary edges (used by a single face) are allowed. When ``False``
         every edge must be shared by exactly two faces.
@@ -143,7 +143,7 @@ def edge_manifold_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     allow_boundary_edges
         When ``True`` (default) boundary edges (used by a single face) count as manifold. When
         ``False`` every edge of a face must be shared by exactly two faces.
@@ -160,7 +160,7 @@ def edge_manifold_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_faces`` on ``faces.device``. Empty for an empty mesh.
+        ``(n_faces,)`` mask on ``faces.device``. Empty for an empty mesh.
 
     Raises
     ------
@@ -232,13 +232,13 @@ def is_vertex_manifold(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_adjacency
-        Optional precomputed ``(m, 2)`` face-adjacency pairs from
+        ``(m, 2)`` precomputed face-adjacency pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. Must be given together with
         ``face_adjacency_edges``.
     face_adjacency_edges
-        Optional ``(m, 2)`` shared-edge vertex pairs aligned with ``face_adjacency``
+        ``(m, 2)`` shared-edge vertex pairs aligned with ``face_adjacency``
         (``return_edges=True``). Must be given together with ``face_adjacency``.
     n_vertices
         Optional length of the vertex buffer ``faces`` indexes, which must be at least
@@ -350,12 +350,12 @@ def vertex_manifold_mask(
         ``(n_vertices,)`` vertex positions. Only the length is used; it sets the output size so that
         trailing unreferenced vertices are reported (``False``).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_vertices`` on ``faces.device``.
+        ``(n_vertices,)`` mask on ``faces.device``.
 
     Raises
     ------
@@ -460,7 +460,7 @@ def face_self_intersecting_mask(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     max_triangle_collisions
         Broad-phase candidate cap per query triangle. Raise this for meshes with many triangles
         packed into overlapping bounding boxes.
@@ -472,7 +472,7 @@ def face_self_intersecting_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_faces`` on ``faces.device``. All-``False`` for meshes with fewer than two faces.
+        ``(n_faces,)`` mask on ``faces.device``. All-``False`` for meshes with fewer than two faces.
 
     Raises
     ------
@@ -565,7 +565,7 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
@@ -612,16 +612,16 @@ def edge_winding_consistent_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     edges
-        Optional precomputed ``(n_faces * 3, 2)`` directed edges in
+        ``(3 * n_faces, 2)`` precomputed directed edges in
         [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. Built from ``faces`` when
         ``None``.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_shared_edges`` on ``faces.device``. Empty when the mesh has no shared edges.
+        ``(n_shared_edges,)`` mask on ``faces.device``. Empty when the mesh has no shared edges.
 
     Raises
     ------
@@ -684,17 +684,16 @@ def face_orientation_bits(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer. ``n_faces`` must be
-        positive.
+        ``(3 * n_faces,)`` flat triangle index buffer. ``n_faces`` must be positive.
 
     Returns
     -------
     orient : wp.array[wp.int32]
-        Length ``n_faces`` flip bits (``0`` or ``1``) on ``faces.device``.
+        ``(n_faces,)`` flip bits (``0`` or ``1``) on ``faces.device``.
     signed_edges : twt.Array2dInt32
         ``(m, 2)`` face-adjacency pairs, one row per face-adjacency edge.
     signs : wp.array[wp.int32]
-        Length ``m`` Z2 sign per adjacency edge.
+        ``(m,)`` Z2 sign per adjacency edge.
     m : int
         Number of face-adjacency rows.
 
@@ -754,7 +753,7 @@ def is_orientable(faces: wp.array[wp.int32]) -> bool:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
@@ -804,12 +803,12 @@ def face_flip_mask(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_faces`` on ``faces.device``. Empty for an empty mesh.
+        ``(n_faces,)`` mask on ``faces.device``. Empty for an empty mesh.
 
     See Also
     --------
@@ -919,7 +918,7 @@ def is_watertight(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, forwarded to the
         self-intersection broad phase so its BVH is not rebuilt -- or a zero-argument callable
@@ -1003,7 +1002,7 @@ def face_watertight_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional vertex count forwarded as the edge-hash base. When ``None``, inferred from
         ``faces`` with a device-host sync.
@@ -1011,7 +1010,7 @@ def face_watertight_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_faces`` on ``faces.device``. Empty for an empty mesh.
+        ``(n_faces,)`` mask on ``faces.device``. Empty for an empty mesh.
 
     Raises
     ------
@@ -1042,9 +1041,9 @@ def is_volume(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     edges
-        Optional precomputed ``(n_faces * 3, 2)`` directed edges in
+        ``(3 * n_faces, 2)`` precomputed directed edges in
         [`faces_to_edges`][triwarp.edges.faces_to_edges] row order. When ``None``, built from
         ``faces``.
 
@@ -1097,7 +1096,7 @@ def is_volume(
     if int(read_scalar(violation)) != 0:
         return False
 
-    return tw.reduce.sum(tw.triangles.face_signed_volumes(vertices, faces)) > 0.0
+    return tw.measures.volume(vertices, faces) > 0.0
 
 
 def face_defective_mask(
@@ -1123,7 +1122,7 @@ def face_defective_mask(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     min_quality
         Flag a face whose ``radius_ratio``
         ([`face_quality`][triwarp.triangles.face_quality]) is below this. ``0`` is fully degenerate
@@ -1143,7 +1142,7 @@ def face_defective_mask(
         MeshLab's ``folded_faces_angle_threshold`` (default ``160``, off by default). Must be in
         ``(0, 180]``. ``None`` disables it.
     face_normals
-        Optional length-``n_faces`` unit face normals from
+        ``(n_faces,)`` unit face normals from
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]; recomputed when
         ``None``. Only the two angle criteria read them, so this is the one geometry pass a caller
         already holding normals can skip.
@@ -1151,7 +1150,7 @@ def face_defective_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_faces`` mask on ``faces.device``; ``True`` marks a defective face. All-``False``
+        ``(n_faces,)`` mask on ``faces.device``; ``True`` marks a defective face. All-``False``
         when every criterion is disabled.
 
     Raises

@@ -116,93 +116,231 @@ def icosphere_vertex_index(
     return index
 
 
-@wp.kernel
-def icosphere_generation(
+@wp.func
+def icosphere_edge_vertex(
     table: wp.array2d[wp.int32],
     n: wp.int32,
-    level: wp.int32,
+    f: wp.int32,
+    corner_a: wp.vec2i,
+    index_a: wp.int32,
+    position_a: wp.vec3,
+    corner_b: wp.vec2i,
+    index_b: wp.int32,
+    position_b: wp.vec3,
     radius: wp.float32,
-    out_vertices: wp.array[wp.vec3],
-) -> None:
-    # One refinement generation of the icosphere, in place: every vertex introduced at this level
-    # is the projected midpoint of an edge of the previous level, and both of that edge's endpoints
-    # are already written. The grid is one thread per (base face, level-local barycentric pair), so
-    # a vertex on a shared base edge is computed twice from the same two parents -- identical
-    # arithmetic, identical result.
-    f, bi, bj = wp.tid()
-    bk = level - bi - bj
-    if bk < 0:
-        return
-    # A vertex is new at this level exactly when its level-local coordinates have two odd entries;
-    # all-even means it already existed one level up.
-    if (bi & 1) + (bj & 1) + (bk & 1) != 2:
-        return
-
-    step = n // level
-    i = bi * step
-    j = bj * step
-    # The two parents are the ends of the previous level's edge this vertex bisects, which is the
-    # pair of coordinates that came out odd.
-    i0 = i
-    j0 = j
-    i1 = i
-    j1 = j
-    if (bi & 1) != 0 and (bj & 1) != 0:
-        i0 = i + step
-        j0 = j - step
-        i1 = i - step
-        j1 = j + step
-    elif (bj & 1) != 0:
-        j0 = j + step
-        j1 = j - step
-    else:
-        i0 = i + step
-        i1 = i - step
-
-    a = icosphere_vertex_index(table, n, f, i0, j0)
-    b = icosphere_vertex_index(table, n, f, i1, j1)
-    # Lerp from the lower index, matching ``remesh.subdivide``'s sorted unique edges, so the
-    # float32 midpoint is the same one the iterated-subdivide implementation produced.
-    lo = wp.min(a, b)
-    hi = wp.max(a, b)
-    midpoint = wp.lerp(out_vertices[lo], out_vertices[hi], wp.float32(0.5))
-    out_vertices[icosphere_vertex_index(table, n, f, i, j)] = project_to_radius(midpoint, radius)
+) -> tuple[wp.vec2i, wp.int32, wp.vec3]:
+    # The vertex the recursive build places on the edge between lattice points ``corner_a`` and
+    # ``corner_b`` (barycentric ``(i, j)`` of base face ``f``, global indices ``index_a`` and
+    # ``index_b``), as its lattice point, global index and position. The midpoint is exact: both
+    # coordinates of a corner are multiples of its triangle's even size. The position is the
+    # projected lerp from the endpoint with the lower global index, matching
+    # ``remesh.subdivide``'s sorted unique edges, so the float32 result is the one the
+    # iterated-subdivide implementation produced.
+    corner = wp.vec2i((corner_a[0] + corner_b[0]) // 2, (corner_a[1] + corner_b[1]) // 2)
+    midpoint = wp.lerp(position_b, position_a, wp.float32(0.5))
+    if index_a < index_b:
+        midpoint = wp.lerp(position_a, position_b, wp.float32(0.5))
+    index = icosphere_vertex_index(table, n, f, corner[0], corner[1])
+    return corner, index, project_to_radius(midpoint, radius)
 
 
 @wp.kernel
-def icosphere_base(
+def icosphere_mesh(
     table: wp.array2d[wp.int32],
     corners: wp.array[wp.vec3],
     n: wp.int32,
+    coarse: wp.int32,
+    stride: wp.int32,
     radius: wp.float32,
     out_vertices: wp.array[wp.vec3],
     out_faces: wp.array[wp.int32],
 ) -> None:
-    # Everything of the icosphere that no refinement level depends on, in the one launch that runs
-    # before them: the whole face buffer, and the 12 base corners scaled to ``radius`` -- level 0
-    # of the vertex buffer, which every ``icosphere_generation`` launch then refines from. The
-    # corners are written by the threads at ``(f, 0, 0)`` for ``f < 12``, one each.
+    # Several refinement levels of the icosphere at once: every vertex on the barycentric lattice
+    # of spacing ``stride`` (``(i, j) = stride * (ti, tj)`` of base face ``f``, ``i + j <= n``),
+    # given every vertex on the coarser lattice of spacing ``coarse`` -- already written, or, at
+    # ``coarse == n``, the 12 base corners, which this launch writes. The launch with
+    # ``stride == 1`` also writes the whole face buffer.
     #
-    # The faces: the ``n ** 2`` sub-triangles of one base face, one per thread over the full
-    # ``n x n`` block. The ``n (n + 1) / 2`` upward triangles are the threads with ``i + j < n``;
-    # the rest of the block is remapped by ``(i, j) -> (n - 1 - i, n - 1 - j)`` onto the
-    # ``n (n - 1) / 2`` downward ones, which is a bijection -- so every thread writes exactly one
-    # triangle and no prefix-sum over rows is needed. The face buffer reads no vertex, which is
-    # what lets it run ahead of the refinement.
-    f, i, j = wp.tid()
-    if i == 0 and j == 0 and f < ICOSAHEDRON_VERTICES:
-        out_vertices[f] = project_to_radius(corners[f], radius)
-    slot = (f * n * n + i * n + j) * 3
-    if i + j < n:
-        out_faces[slot + 0] = icosphere_vertex_index(table, n, f, i + 1, j)
-        out_faces[slot + 1] = icosphere_vertex_index(table, n, f, i, j + 1)
-        out_faces[slot + 2] = icosphere_vertex_index(table, n, f, i, j)
+    # The vertex *geometry* is the recursive one: every vertex is the projected midpoint of an
+    # edge of the previous level, which is not the projection of the barycentric point. So the
+    # thread descends the refinement from the coarse triangle that contains it, keeping the one
+    # child triangle that contains it, until it is a corner: it holds the triangle's three lattice
+    # corners, their global indices and positions -- each one a vertex of the recursive build,
+    # computed from the same two parents -- and its own integer weights ``(w0, w1, w2)`` over the
+    # triangle's size ``s``. A corner child halves the size and keeps the weights
+    # ``(w0 - s / 2, w1, w2)`` (with its corner in the same slot), the centre child takes
+    # ``(s / 2 - w0, s / 2 - w1, s / 2 - w2)``. A point on the edge between two triangles may
+    # descend into either: both reach the same vertices from the same parents. A vertex on a shared
+    # base edge is computed by both of its faces, identically, and the many-to-one
+    # ``icosphere_vertex_index`` lands both on one slot.
+    #
+    # Each launch descends ``log2(coarse / stride)`` levels, so a thread's work grows with that
+    # span where one launch per level does O(1) work per vertex; the wrapper picks the span. Against
+    # one launch per level, a single launch for every level was 1.8-3.0x up to six levels and
+    # 0.30x at nine (the full lattice descending nine levels); six levels in the first launch and
+    # one launch per level after it is 1.5-3.0x through eight levels and 0.97x at nine, where the
+    # call is device-bound. Five or seven levels in the first launch lose at seven to nine.
+    f, ti, tj = wp.tid()
+    i = ti * stride
+    j = tj * stride
+    if stride == 1 and i < n and j < n:
+        # The ``n ** 2`` sub-triangles of one base face, one per thread of the inner ``n x n``
+        # block. The ``n (n + 1) / 2`` upward triangles are the threads with ``i + j < n``; the
+        # rest of the block is remapped by ``(i, j) -> (n - 1 - i, n - 1 - j)`` onto the
+        # ``n (n - 1) / 2`` downward ones, which is a bijection -- so every thread writes exactly
+        # one triangle and no prefix-sum over rows is needed.
+        slot = (f * n * n + i * n + j) * 3
+        if i + j < n:
+            out_faces[slot + 0] = icosphere_vertex_index(table, n, f, i + 1, j)
+            out_faces[slot + 1] = icosphere_vertex_index(table, n, f, i, j + 1)
+            out_faces[slot + 2] = icosphere_vertex_index(table, n, f, i, j)
+        else:
+            di = n - 1 - i
+            dj = n - 1 - j
+            out_faces[slot + 0] = icosphere_vertex_index(table, n, f, di, dj + 1)
+            out_faces[slot + 1] = icosphere_vertex_index(table, n, f, di + 1, dj)
+            out_faces[slot + 2] = icosphere_vertex_index(table, n, f, di + 1, dj + 1)
+    if i + j > n:
+        return
+    # Offsets inside the coarse lattice cell; at ``coarse == n`` the cell is the base face itself
+    # (``i == n`` is its corner ``a``, not the next cell's origin).
+    ri = i
+    rj = j
+    if coarse < n:
+        ri = i % coarse
+        rj = j % coarse
+        if ri == 0 and rj == 0:
+            # Already on the coarse lattice, so already written.
+            return
+
+    # The coarse triangle holding the vertex, corner ``k`` weighted by ``wk``: the upward one with
+    # corners ``(bi + 1, bj)``, ``(bi, bj + 1)``, ``(bi, bj)`` (in units of ``coarse``) when
+    # ``ri + rj <= coarse``, else the downward one ``(bi, bj + 1)``, ``(bi + 1, bj)``,
+    # ``(bi + 1, bj + 1)``. At ``coarse == n`` that is the base face, corners ``a``, ``b``, ``c``.
+    bi = i - ri
+    bj = j - rj
+    corner0 = wp.vec2i(bi + coarse, bj)
+    corner1 = wp.vec2i(bi, bj + coarse)
+    corner2 = wp.vec2i(bi, bj)
+    w0 = ri
+    w1 = rj
+    if ri + rj > coarse:
+        corner0 = wp.vec2i(bi, bj + coarse)
+        corner1 = wp.vec2i(bi + coarse, bj)
+        corner2 = wp.vec2i(bi + coarse, bj + coarse)
+        w0 = coarse - ri
+        w1 = coarse - rj
+    w2 = coarse - w0 - w1
+    s = wp.int32(coarse)
+    index0 = icosphere_vertex_index(table, n, f, corner0[0], corner0[1])
+    index1 = icosphere_vertex_index(table, n, f, corner1[0], corner1[1])
+    index2 = icosphere_vertex_index(table, n, f, corner2[0], corner2[1])
+    position0 = wp.vec3()
+    position1 = wp.vec3()
+    position2 = wp.vec3()
+    if coarse == n:
+        position0 = project_to_radius(corners[index0], radius)
+        position1 = project_to_radius(corners[index1], radius)
+        position2 = project_to_radius(corners[index2], radius)
     else:
-        di = n - 1 - i
-        dj = n - 1 - j
-        out_faces[slot + 0] = icosphere_vertex_index(table, n, f, di, dj + 1)
-        out_faces[slot + 1] = icosphere_vertex_index(table, n, f, di + 1, dj)
-        out_faces[slot + 2] = icosphere_vertex_index(table, n, f, di + 1, dj + 1)
+        position0 = out_vertices[index0]
+        position1 = out_vertices[index1]
+        position2 = out_vertices[index2]
+    while w0 != s and w1 != s and w2 != s:
+        h = s // 2
+        # A vertex that is the midpoint of one of the triangle's sides is that edge's vertex, with
+        # no need for the child's other corners: always the case at the last level.
+        if w2 == 0 and w0 == h:
+            c01, k01, p01 = icosphere_edge_vertex(
+                table, n, f, corner0, index0, position0, corner1, index1, position1, radius
+            )
+            out_vertices[k01] = p01
+            return
+        if w0 == 0 and w1 == h:
+            c12, k12, p12 = icosphere_edge_vertex(
+                table, n, f, corner1, index1, position1, corner2, index2, position2, radius
+            )
+            out_vertices[k12] = p12
+            return
+        if w1 == 0 and w2 == h:
+            c20, k20, p20 = icosphere_edge_vertex(
+                table, n, f, corner2, index2, position2, corner0, index0, position0, radius
+            )
+            out_vertices[k20] = p20
+            return
+        if w0 >= h:
+            c01, k01, p01 = icosphere_edge_vertex(
+                table, n, f, corner0, index0, position0, corner1, index1, position1, radius
+            )
+            c20, k20, p20 = icosphere_edge_vertex(
+                table, n, f, corner2, index2, position2, corner0, index0, position0, radius
+            )
+            corner1 = c01
+            index1 = k01
+            position1 = p01
+            corner2 = c20
+            index2 = k20
+            position2 = p20
+            w0 = w0 - h
+        elif w1 >= h:
+            c01, k01, p01 = icosphere_edge_vertex(
+                table, n, f, corner0, index0, position0, corner1, index1, position1, radius
+            )
+            c12, k12, p12 = icosphere_edge_vertex(
+                table, n, f, corner1, index1, position1, corner2, index2, position2, radius
+            )
+            corner0 = c01
+            index0 = k01
+            position0 = p01
+            corner2 = c12
+            index2 = k12
+            position2 = p12
+            w1 = w1 - h
+        elif w2 >= h:
+            c20, k20, p20 = icosphere_edge_vertex(
+                table, n, f, corner2, index2, position2, corner0, index0, position0, radius
+            )
+            c12, k12, p12 = icosphere_edge_vertex(
+                table, n, f, corner1, index1, position1, corner2, index2, position2, radius
+            )
+            corner0 = c20
+            index0 = k20
+            position0 = p20
+            corner1 = c12
+            index1 = k12
+            position1 = p12
+            w2 = w2 - h
+        else:
+            # The centre child: corner ``k`` becomes the midpoint of the side opposite it.
+            c01, k01, p01 = icosphere_edge_vertex(
+                table, n, f, corner0, index0, position0, corner1, index1, position1, radius
+            )
+            c12, k12, p12 = icosphere_edge_vertex(
+                table, n, f, corner1, index1, position1, corner2, index2, position2, radius
+            )
+            c20, k20, p20 = icosphere_edge_vertex(
+                table, n, f, corner2, index2, position2, corner0, index0, position0, radius
+            )
+            corner0 = c12
+            index0 = k12
+            position0 = p12
+            corner1 = c20
+            index1 = k20
+            position1 = p20
+            corner2 = c01
+            index2 = k01
+            position2 = p01
+            w0 = h - w0
+            w1 = h - w1
+            w2 = h - w2
+        s = h
+    # The corner the descent ended on is the vertex itself, so its index is the thread's slot.
+    if w0 == s:
+        out_vertices[index0] = position0
+    elif w1 == s:
+        out_vertices[index1] = position1
+    else:
+        out_vertices[index2] = position2
 
 
 @wp.func

@@ -76,8 +76,8 @@ class _Distances(NamedTuple):
     ``None`` when nothing has read it.
     """
 
-    forward: wp.array[wp.float32]
-    backward: wp.array[wp.float32] | None
+    forward: twt.ArrayNdFloat32
+    backward: twt.ArrayNdFloat32 | None
     forward_max: float | None
 
 
@@ -132,9 +132,9 @@ def chamfer_points_to_points(
     Parameters
     ----------
     x
-        ``(n,)`` query point cloud as ``wp.vec3``.
+        ``(n,)`` query point cloud.
     y
-        ``(m,)`` target point cloud as ``wp.vec3``.
+        ``(m,)`` target point cloud.
     point_reduction
         How to reduce the per-point squared distances of each direction:
         ``"mean"`` (default), ``"sum"``, ``"max"``, or ``None`` to return the
@@ -227,11 +227,11 @@ def chamfer_points_to_mesh(
     Parameters
     ----------
     points
-        ``(n,)`` query point cloud as ``wp.vec3``.
+        ``(n,)`` query point cloud.
     vertices
-        ``(v,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
     point_reduction
         ``"mean"`` (default), ``"sum"``, ``"max"``, or ``None``. See
         [`chamfer_points_to_points`][triwarp.metrics.chamfer_points_to_points].
@@ -242,7 +242,7 @@ def chamfer_points_to_mesh(
     -------
     float or wp.array[wp.float32] or tuple
         Same layout as [`chamfer_points_to_points`][triwarp.metrics.chamfer_points_to_points].
-        The forward array has length ``n`` and the backward array length ``v``, except when
+        The forward array is ``(n,)`` and the backward array ``(n_vertices,)``, except when
         ``points``, ``vertices`` or ``faces`` is empty -- a mesh with no faces counts as empty here
         even when ``vertices`` is not, since there is no surface for the forward term to measure
         against -- in which case both arrays are length 0, matching
@@ -328,9 +328,9 @@ def chamfer_mesh_to_mesh(
     Parameters
     ----------
     vertices_a, faces_a
-        Vertices ``(va,)`` (``wp.vec3``) and flat faces ``(fa * 3,)`` (``wp.int32``) of mesh ``A``.
+        ``(n_vertices_a,)`` vertices and ``(3 * n_faces_a,)`` flat faces of mesh ``A``.
     vertices_b, faces_b
-        Vertices ``(vb,)`` and flat faces ``(fb * 3,)`` of mesh ``B``.
+        ``(n_vertices_b,)`` vertices and ``(3 * n_faces_b,)`` flat faces of mesh ``B``.
     point_reduction
         ``"mean"`` (default), ``"sum"``, ``"max"``, or ``None``. See
         [`chamfer_points_to_points`][triwarp.metrics.chamfer_points_to_points].
@@ -341,10 +341,10 @@ def chamfer_mesh_to_mesh(
     -------
     float or wp.array[wp.float32] or tuple
         Same layout as [`chamfer_points_to_points`][triwarp.metrics.chamfer_points_to_points].
-        The forward array has length ``va`` and the backward array length ``vb``, except when any
-        of ``vertices_a``, ``faces_a``, ``vertices_b`` or ``faces_b`` is empty -- a mesh with no
-        faces counts as empty here even when its vertices are not -- in which case both arrays are
-        length 0.
+        The forward array is ``(n_vertices_a,)`` and the backward array ``(n_vertices_b,)``, except
+        when any of ``vertices_a``, ``faces_a``, ``vertices_b`` or ``faces_b`` is empty -- a mesh
+        with no faces counts as empty here even when its vertices are not -- in which case both
+        arrays are length 0.
 
     Raises
     ------
@@ -422,9 +422,9 @@ def chamfer_points_to_points_loss(
     Parameters
     ----------
     x
-        ``(n,)`` query point cloud as ``wp.vec3``. Set ``requires_grad=True`` for gradients.
+        ``(n,)`` query point cloud. Set ``requires_grad=True`` for gradients.
     y
-        ``(m,)`` target point cloud as ``wp.vec3``. Set ``requires_grad=True`` for gradients.
+        ``(m,)`` target point cloud. Set ``requires_grad=True`` for gradients.
     tape
         Caller-owned ``wp.Tape`` into which the differentiable kernels are recorded. When
         ``None`` the loss is still computed but no operations are taped (no gradient).
@@ -438,7 +438,7 @@ def chamfer_points_to_points_loss(
     Returns
     -------
     wp.array[wp.float32]
-        Length-1 device array holding the Chamfer loss (``requires_grad=True``). Empty
+        ``(1,)`` device array holding the Chamfer loss (``requires_grad=True``). Empty
         inputs yield a length-1 zero array.
 
     Raises
@@ -468,7 +468,7 @@ def chamfer_points_to_points_loss(
     nearest_xy, distance_xy = _nearest(y, x)
     terms = [lambda: _launch_nn_term(x, y, nearest_xy, _reduction_scale(point_reduction, n), loss)]
     if not single_directional:
-        nearest_yx = _backward_nearest(x, y, _flat(distance_xy), _flat_index(nearest_xy))[0][0]
+        nearest_yx = _backward_nearest(x, y, distance_xy, nearest_xy)[0][0]
         terms.append(
             lambda: _launch_nn_term(y, x, nearest_yx, _reduction_scale(point_reduction, m), loss)
         )
@@ -498,11 +498,11 @@ def chamfer_points_to_mesh_loss(
     Parameters
     ----------
     points
-        ``(n,)`` query point cloud as ``wp.vec3``.
+        ``(n,)`` query point cloud.
     vertices
-        ``(v,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
     tape
         Caller-owned ``wp.Tape`` for the backward pass, or ``None`` to skip taping.
     point_reduction
@@ -513,7 +513,7 @@ def chamfer_points_to_mesh_loss(
     Returns
     -------
     wp.array[wp.float32]
-        Length-1 device array holding the Chamfer loss (``requires_grad=True``).
+        ``(1,)`` device array holding the Chamfer loss (``requires_grad=True``).
 
     Raises
     ------
@@ -580,9 +580,9 @@ def chamfer_mesh_to_mesh_loss(
     Parameters
     ----------
     vertices_a, faces_a
-        Vertices ``(va,)`` (``wp.vec3``) and flat faces ``(fa * 3,)`` (``wp.int32``) of mesh ``A``.
+        ``(n_vertices_a,)`` vertices and ``(3 * n_faces_a,)`` flat faces of mesh ``A``.
     vertices_b, faces_b
-        Vertices ``(vb,)`` and flat faces ``(fb * 3,)`` of mesh ``B``.
+        ``(n_vertices_b,)`` vertices and ``(3 * n_faces_b,)`` flat faces of mesh ``B``.
     tape
         Caller-owned ``wp.Tape`` for the backward pass, or ``None`` to skip taping.
     point_reduction
@@ -593,7 +593,7 @@ def chamfer_mesh_to_mesh_loss(
     Returns
     -------
     wp.array[wp.float32]
-        Length-1 device array holding the Chamfer loss (``requires_grad=True``).
+        ``(1,)`` device array holding the Chamfer loss (``requires_grad=True``).
 
     Raises
     ------
@@ -668,9 +668,9 @@ def hausdorff_points_to_points(
     Parameters
     ----------
     x
-        ``(n,)`` query point cloud as ``wp.vec3``.
+        ``(n,)`` query point cloud.
     y
-        ``(m,)`` target point cloud as ``wp.vec3``.
+        ``(m,)`` target point cloud.
     single_directional
         If ``True``, return only the directed distance ``d(x, y)``.
 
@@ -714,11 +714,11 @@ def hausdorff_points_to_mesh(
     Parameters
     ----------
     points
-        ``(n,)`` query point cloud as ``wp.vec3``.
+        ``(n,)`` query point cloud.
     vertices
-        ``(v,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
     single_directional
         If ``True``, return only the directed ``points -> mesh surface`` distance.
 
@@ -763,9 +763,9 @@ def hausdorff_mesh_to_mesh(
     Parameters
     ----------
     vertices_a, faces_a
-        Vertices ``(va,)`` (``wp.vec3``) and flat faces ``(fa * 3,)`` (``wp.int32``) of mesh ``A``.
+        ``(n_vertices_a,)`` vertices and ``(3 * n_faces_a,)`` flat faces of mesh ``A``.
     vertices_b, faces_b
-        Vertices ``(vb,)`` and flat faces ``(fb * 3,)`` of mesh ``B``.
+        ``(n_vertices_b,)`` vertices and ``(3 * n_faces_b,)`` flat faces of mesh ``B``.
     single_directional
         If ``True``, return only the directed ``A -> surface(B)`` distance.
 
@@ -906,11 +906,11 @@ def _distances_points_to_points(
     if x.size == 0 or y.size == 0:
         return None
     nearest_forward, distance_forward = _nearest(y, x)
-    d_forward = _flat(distance_forward)
+    d_forward = distance_forward
     if single_directional:
         return _Distances(d_forward, None, None)
-    (_, d_backward), forward_max = _backward_nearest(x, y, d_forward, _flat_index(nearest_forward))
-    return _Distances(d_forward, _flat(d_backward), forward_max)
+    (_, d_backward), forward_max = _backward_nearest(x, y, d_forward, nearest_forward)
+    return _Distances(d_forward, d_backward, forward_max)
 
 
 def _distances_points_to_mesh(
@@ -928,12 +928,12 @@ def _distances_points_to_mesh(
     # The forward half is point-to-*surface*, a lower bound on the point-to-vertex answer the
     # backward search wants -- still the right scale to choose it by.
     (_, d_backward), forward_max = _backward_nearest(points, vertices, d_forward, face_id, faces)
-    return _Distances(d_forward, _flat(d_backward), forward_max)
+    return _Distances(d_forward, d_backward, forward_max)
 
 
 def _nearest(
     points: wp.array[wp.vec3], queries: wp.array[wp.vec3]
-) -> tuple[twt.ArrayNd, twt.ArrayNd]:
+) -> tuple[twt.Array1dInt32, twt.Array1dFloat32]:
     """
     Every query's nearest point: the ``k = 1`` search each direction of a cloud pair runs.
 
@@ -953,10 +953,10 @@ def _nearest(
 def _backward_nearest(
     points: wp.array[wp.vec3],
     queries: wp.array[wp.vec3],
-    forward_distances: wp.array[wp.float32],
-    forward_assignment: wp.array[wp.int32],
+    forward_distances: twt.ArrayNdFloat32,
+    forward_assignment: twt.ArrayNdInt32,
     faces: wp.array[wp.int32] | None = None,
-) -> tuple[tuple[twt.ArrayNd, twt.ArrayNd], float | None]:
+) -> tuple[tuple[twt.Array1dInt32, twt.Array1dFloat32], float | None]:
     """
     Run the backward half's ``k = 1`` search, choosing the search from the forward half's answer.
 
@@ -1023,16 +1023,6 @@ def _backward_nearest(
         found = tw.neighbors.query_nearest(points, queries, k=1, initial_radius=seed, bounds=bounds)
         return found, forward_max
     return _nearest(points, queries), forward_max
-
-
-def _flat(distances: twt.ArrayNd) -> wp.array[wp.float32]:
-    """Type a ``k = 1`` search's distances, which ``query_nearest`` returns rank-1."""
-    return cast(wp.array[wp.float32], distances)
-
-
-def _flat_index(indices: twt.ArrayNd) -> wp.array[wp.int32]:
-    """Type a ``k = 1`` search's indices, which ``query_nearest`` returns rank-1."""
-    return cast(wp.array[wp.int32], indices)
 
 
 def _distances_mesh_to_mesh(
@@ -1128,7 +1118,7 @@ def _accumulate_chamfer_terms(tape: wp.Tape | None, terms: list[Callable[[], Non
 def _launch_nn_term(
     x: wp.array[wp.vec3],
     y: wp.array[wp.vec3],
-    nearest: wp.array[wp.int32],
+    nearest: twt.ArrayNdInt32,
     scale: float,
     loss: wp.array[wp.float32],
 ) -> None:

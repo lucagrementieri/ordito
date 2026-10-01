@@ -76,30 +76,33 @@ def trace_from_vertex(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     start_vertices
-        ``(n_rays,)`` ``wp.int32`` start vertex per ray.
+        ``(n_rays,)`` start vertex per ray.
     directions
         ``(n_rays,)`` initial directions; the length of each sets how far its ray is traced.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None`` to compute them from ``faces``.
     rings
-        Optional precomputed [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings], used to find
-        each ray's starting face.
+        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
+        [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings], or ``None``, used to find each
+        ray's starting face.
     frames
-        Optional precomputed [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames].
-        They define each vertex's tangent plane, which sets both the trace length and the starting
-        wedge.
+        ``(n_vertices,)`` triple of precomputed
+        [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames], or ``None``. They
+        define each vertex's tangent plane, which sets both the trace length and the starting wedge.
     max_steps
         Maximum edge crossings per ray.
 
     Returns
     -------
     points : wp.array[wp.vec3]
-        All traced points, packed ray after ray, on ``vertices.device``.
+        ``(n_points,)`` traced points, packed ray after ray, on ``vertices.device``;
+        ``n_points == offsets[-1]``.
     offsets : wp.array[wp.int32]
-        Length ``n_rays + 1``; ray ``r`` owns ``points[offsets[r] : offsets[r + 1]]``, beginning at
-        its start vertex. A ray always contributes at least one point.
+        ``(n_rays + 1,)`` offsets; ray ``r`` owns ``points[offsets[r] : offsets[r + 1]]``,
+        beginning at its start vertex. A ray always contributes at least one point.
 
     Raises
     ------
@@ -187,24 +190,26 @@ def trace_from_face(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     start_faces
-        ``(n_rays,)`` ``wp.int32`` starting face per ray.
+        ``(n_rays,)`` starting face per ray.
     start_barycentric
         ``(n_rays,)`` barycentric coordinates of each start point within its face.
     directions
         ``(n_rays,)`` initial directions; the length of each sets how far its ray is traced.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None`` to compute them from ``faces``.
     max_steps
         Maximum edge crossings per ray.
 
     Returns
     -------
     points : wp.array[wp.vec3]
-        All traced points, packed ray after ray, on ``vertices.device``.
+        ``(n_points,)`` traced points, packed ray after ray, on ``vertices.device``;
+        ``n_points == offsets[-1]``.
     offsets : wp.array[wp.int32]
-        Length ``n_rays + 1`` CSR bounds into ``points``.
+        ``(n_rays + 1,)`` CSR bounds into ``points``.
 
     Raises
     ------
@@ -284,36 +289,38 @@ def descend_field(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     values
-        Length-``n_vertices`` ``wp.float64`` field to descend. ``float64`` because the fields this
+        ``(n_vertices,)`` field to descend. ``float64`` because the fields this
         serves are exponentially decaying -- see
         [`triwarp.laplacian.face_gradients`][triwarp.laplacian.face_gradients], which computes the
         per-face gradient this walks along.
     starts
-        ``(n_paths,)`` ``wp.int32`` vertices to descend from, one path each.
+        ``(n_paths,)`` vertices to descend from, one path each.
     stop_value
         Field value at which a path stops. The default ``0.0`` is what a distance field's source
         sits at.
     twins
-        Optional precomputed [`triwarp.halfedge.halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed
+        [`triwarp.halfedge.halfedge_twins`][triwarp.halfedge.halfedge_twins], or ``None`` to compute
+        them from ``faces``.
     vertex_faces
-        Optional precomputed
+        ``(3 * n_faces,)`` and ``(n_vertices + 1,)`` precomputed
         [`triwarp.adjacency.vertex_face_adjacency`][triwarp.adjacency.vertex_face_adjacency] pair,
-        which case 3 needs. ``(vertex_faces, offsets)``, values first, as that function returns it
-        and as every packed pair in the package is spelled -- passing it the other way round reads
-        offsets as face indices and raises nothing, since both are ``wp.int32``.
+        or ``None``, which case 3 needs. ``(vertex_faces, offsets)``, values first, as that function
+        returns it and as every packed pair in the package is spelled -- passing it the other way
+        round reads offsets as face indices and raises nothing, since both are ``wp.int32``.
     gradients
-        Optional precomputed per-face gradient of ``values``. Pass it when descending the same field
-        from several batches.
+        ``(n_faces,)`` precomputed per-face gradient of ``values``, or ``None``. Pass it when
+        descending the same field from several batches.
     max_steps
         Cap on steps per path. A path that hits it is returned truncated rather than reported.
 
     Returns
     -------
     points, offsets
-        ``points`` holds every path's polyline end to end and ``offsets`` is the
-        length-``n_paths + 1`` CSR bound, the same packing
+        ``(n_points,)`` and ``(n_paths + 1,)``: ``points`` holds every path's polyline end to end
+        and ``offsets`` is the CSR bound, the same packing
         [`trace_from_vertex`][triwarp.geodesic_walk.trace_from_vertex] returns and
         [`split`][triwarp.array.split] slices.
 
@@ -368,10 +375,7 @@ def descend_field(
         )
     n_paths = starts.size
     if n_paths == 0:
-        return (
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        )
+        return _launch.empty_packed(wp.vec3, device)
 
     if twins is None:
         twins = halfedge_twins(faces, n_vertices=n_vertices)
@@ -422,12 +426,12 @@ def geodesic_path(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     source
-        ``(k,)`` ``wp.int32`` source vertices. Several make the paths run to whichever is nearest,
+        ``(k,)`` source vertices. Several make the paths run to whichever is nearest,
         since the field is the distance to the *set*.
     targets
-        ``(n_paths,)`` ``wp.int32`` vertices to trace from.
+        ``(n_paths,)`` vertices to trace from.
     t
         Heat diffusion time, forwarded to
         [`heat_geodesic`][triwarp.heat.heat_geodesic]. ``None`` uses its default.
@@ -440,9 +444,9 @@ def geodesic_path(
     Returns
     -------
     points, offsets
-        Packed polylines and their CSR bounds, each running **from its target to the source**. Slice
-        with [`split`][triwarp.array.split] and measure with
-        [`triwarp.polyline.polyline_length`][triwarp.polyline.polyline_length].
+        ``(n_points,)`` and ``(n_paths + 1,)`` packed polylines and their CSR bounds, each running
+        **from its target to the source**. Slice with [`split`][triwarp.array.split] and measure
+        with [`triwarp.polyline.polyline_length`][triwarp.polyline.polyline_length].
 
     Raises
     ------
@@ -525,9 +529,9 @@ def shorten_loop(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     loops
-        Closed vertex-index cycles, each a ``wp.int32`` array whose consecutive entries share an
+        Closed vertex-index cycles, each a rank-1 array whose consecutive entries share an
         edge, as do its last and first. Loops shorter than three vertices are returned unchanged.
     max_iter
         Cap on the number of sweeps. Two sweeps of opposite parity are needed to give every
@@ -539,11 +543,13 @@ def shorten_loop(
         strict improvement, which is what makes the result independent of the sweep count; raise it
         to stop the last few sweeps chasing float32 noise on a fine mesh.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None`` to compute them from ``faces``.
     rings
-        Optional precomputed [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] as
-        ``(ring_halfedges, offsets, is_boundary)``. Depends on the connectivity alone, so one CSR
-        serves every fan walk over the same mesh --
+        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
+        [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] as
+        ``(ring_halfedges, offsets, is_boundary)``, or ``None``. Depends on the connectivity alone,
+        so one CSR serves every fan walk over the same mesh --
         [`Trimesh.vertex_one_rings`][triwarp.mesh.Trimesh.vertex_one_rings] has it cached, and
         passing it skips the vertex-manifold check and the host readback that check costs.
 
@@ -620,9 +626,10 @@ def shorten_loop_with_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     loops
-        Every loop's vertex-index cycle, loop after loop. It is read and never written.
+        ``(n_positions,)`` every loop's vertex-index cycle, loop after loop,
+        ``n_positions == loop_offsets[-1]``. It is read and never written.
     loop_offsets
         ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is ``loops[loop_offsets[i] :
         loop_offsets[i + 1]]``.
@@ -631,18 +638,20 @@ def shorten_loop_with_offsets(
     tolerance
         Absolute length a replacement must save to be accepted.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None`` to compute them from ``faces``.
     rings
-        Optional precomputed [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] as
-        ``(ring_halfedges, offsets, is_boundary)``.
+        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
+        [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] as
+        ``(ring_halfedges, offsets, is_boundary)``, or ``None``.
 
     Returns
     -------
     loops : wp.array[wp.int32]
-        The shortened cycles, in the input's order, on ``faces.device``. The input itself when no
-        sweep ran.
+        ``(m,)`` shortened cycles, in the input's order, on ``faces.device``, ``m`` the returned
+        ``loop_offsets[-1]``. The input itself when no sweep ran.
     loop_offsets : wp.array[wp.int32]
-        Their ``(n_loops + 1,)`` total-terminated offsets.
+        ``(n_loops + 1,)`` total-terminated offsets of the shortened cycles.
     sweeps : int
         How many sweeps ran; equal to ``max_iter``, the cap bound the result.
 

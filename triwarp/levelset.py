@@ -90,9 +90,9 @@ def marching_cubes(
     Parameters
     ----------
     field
-        ``(nx, ny, nz)`` ``wp.float32`` lattice of scalar values, with ``x`` the slowest axis. The
-        surface is extracted where the field crosses ``iso``; the sign convention is the caller's,
-        and the winding follows it (with triwarp's outside-positive
+        ``(nx, ny, nz)`` lattice of scalar values, with ``x`` the slowest axis. The surface is
+        extracted where the field crosses ``iso``; the sign convention is the caller's, and the
+        winding follows it (with triwarp's outside-positive
         [`signed_distance_on_mesh`][triwarp.proximity.signed_distance_on_mesh] convention the
         normals come out pointing outward).
     iso
@@ -108,9 +108,10 @@ def marching_cubes(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Level-set vertices on ``field.device``. Empty when the field does not cross ``iso``.
+        ``(n_vertices,)`` level-set vertices on ``field.device``. Empty when the field does not
+        cross ``iso``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Raises
     ------
@@ -172,7 +173,7 @@ def offset_mesh(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer. Should describe a closed
+        ``(3 * n_faces,)`` flat triangle index buffer. Should describe a closed
         surface; an open one still offsets, but only ``sign_mode="winding"`` gives it a meaningful
         inside.
     distance
@@ -195,9 +196,10 @@ def offset_mesh(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` of the offset surface on ``vertices.device``. **Empty** when the level
-        set does not exist -- an inward offset larger than the object's own half-thickness has no
-        points at that distance, which is the right answer rather than an error.
+        ``(m,)`` vertices and ``(3 * k,)`` faces of the offset surface, ``m`` and ``k`` its vertex
+        and face counts, on ``vertices.device``. **Empty** when the level set does not exist -- an
+        inward offset larger than the object's own half-thickness has no points at that distance,
+        which is the right answer rather than an error.
 
     Raises
     ------
@@ -299,7 +301,7 @@ def thicken_mesh(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer, consistently wound. The
+        ``(3 * n_faces,)`` flat triangle index buffer, consistently wound. The
         winding is what decides which side is "outside", so an inconsistent input gives a shell
         turned inside out in places -- run
         [`triwarp.repair.make_winding_consistent`][triwarp.repair.make_winding_consistent] first.
@@ -312,9 +314,9 @@ def thicken_mesh(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``vertices.device``: ``2 * n_vertices`` positions -- the outward
-        layer first, then the inward one, so input vertex ``v`` is at ``v`` and at
-        ``v + n_vertices`` -- and ``2 * n_faces + 2 * n_boundary_edges`` triangles.
+        ``(2 * n_vertices,)`` vertices and ``(3 * k,)`` faces on ``vertices.device``,
+        ``k = 2 * n_faces + 2 * n_boundary_edges`` triangles. The vertices hold the outward layer
+        first, then the inward one, so input vertex ``v`` is at ``v`` and at ``v + n_vertices``.
 
     Raises
     ------

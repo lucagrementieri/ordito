@@ -33,8 +33,7 @@ def squared_deviation(value: wp.Float, target: wp.Float) -> wp.Float:
 def reciprocal_scaled_or_zero(value: wp.Float, numerator: wp.Float) -> wp.Float:
     # ``numerator / value``, with the ``reciprocal_or_zero`` convention above for a non-positive
     # denominator: a vertex whose lumped area is zero contributes nothing rather than an infinity.
-    # Reached through ``wp.map`` by ``laplacian_smoothing_loss`` (a float32 array against a float32
-    # scalar) and inlined by ``scaled_angle_defect`` below.
+    # Called by ``laplacian_smoothing_norms`` and by ``scaled_angle_defect`` below.
     if value > type(value)(0.0):
         return numerator / value
     return type(value)(0.0)
@@ -43,9 +42,9 @@ def reciprocal_scaled_or_zero(value: wp.Float, numerator: wp.Float) -> wp.Float:
 @wp.func
 def scaled_angle_defect(angle_sum: wp.float64) -> wp.float64:
     # ``angle_defect / angle_sum``, zeroed for a non-positive angle sum --
-    # igl::cr_vector_curvature_correction's kappa scaling. One map where the defect and its
-    # scaling took two and an intermediate buffer; ``curved_hessian_energy`` zeroes the boundary
-    # afterwards, which gives the same zero the defect-then-scale order did.
+    # igl::cr_vector_curvature_correction's kappa scaling, formed by ``curved_hessian_triplets`` as
+    # it reads each vertex's angle sum. ``curved_hessian_energy`` zeroes the boundary's sums first,
+    # which this maps to the zero kappa the boundary takes.
     return reciprocal_scaled_or_zero(angle_sum, angle_defect(angle_sum))
 
 
@@ -56,73 +55,68 @@ def one_minus_cosine(angle: wp.Float) -> wp.Float:
     return type(angle)(1.0) - wp.cos(angle)
 
 
+# ``laplacian_smoothing_norms``' warp-uniform method selector, one per
+# ``energies.laplacian_smoothing_loss`` method.
+SMOOTHING_UNIFORM = wp.constant(0)
+SMOOTHING_COT = wp.constant(1)
+SMOOTHING_COTCURV = wp.constant(2)
+
+
 @wp.kernel(enable_backward=False)
-def laplacian_residual_norms(
+def laplacian_smoothing_norms(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
     vertices: wp.array[wp.vec3],
-    row_scale: wp.array[wp.float32],
-    self_scale: wp.array[wp.float32],
+    mass: wp.array[wp.float32],
+    method: wp.int32,
     out_norms: wp.array[wp.float32],
 ) -> None:
-    # ``|| row_scale[i] * (L v)_i + self_scale[i] * v_i ||`` for one CSR row.
+    # ``|| row_scale * (L v)_i + self_scale * v_i ||`` for one CSR row, with the two scales of
+    # ``energies.laplacian_smoothing_loss``'s ``method`` formed in the row's own thread:
     #
-    # The affine form is what lets one kernel serve all three of
-    # ``energies.laplacian_smoothing_loss``'s methods: the uniform variant is the umbrella residual
-    # ``(A v)_i - v_i`` (``row_scale = 1``, ``self_scale = -1``), and the two cotangent variants are
-    # a per-vertex rescaling of the stiffness residual with no self term (``self_scale = 0``). The
-    # scales are arrays rather than scalars because the cotangent ones divide by a per-vertex row
-    # sum or lumped area, and because that is where the reference's degenerate-row convention
-    # lives -- see the wrapper.
+    # - ``SMOOTHING_UNIFORM``: the umbrella residual ``(A v)_i - v_i`` (``1`` and ``-1``).
+    # - ``SMOOTHING_COT``: the cotangent-weighted neighbour average ``(L v)_i / s_i``, ``s_i`` the
+    #   off-diagonal row sum. A cotangent Laplacian carries ``-s_i`` on its diagonal, so the scale
+    #   is the negated diagonal, picked up during the same row walk. Where ``s_i`` is not positive
+    #   (an obtuse ring whose weights cancel, or an isolated vertex) the averaging is undefined and
+    #   the residual falls back to ``-v_i``, which is what the reference's ``norm_w = 0`` branch
+    #   amounts to.
+    # - ``SMOOTHING_COTCURV``: the stiffness residual over six times the lumped area ``mass[i]``,
+    #   with ``reciprocal_scaled_or_zero``'s convention that a zero-area vertex contributes nothing.
+    #
+    # ``mass`` is read only by the last; the others pass a null array.
+    #
+    # **The diagonal is read during the row walk deliberately, and this is the fourth spelling of
+    # "get the diagonal" in the tree.** The other three are ``linalg._multigrid_levels`` (through
+    # ``wps.bsr_get_diag``), ``reconstruction.poisson_level_setup`` and
+    # ``algorithms/conjugate_gradient.scaled_diagonal_apply``. Routing this one through
+    # ``wps.bsr_get_diag`` was measured and declined at several times the cost of a separate scale
+    # launch, flat in the system size, and here the walk is the residual's own, so the diagonal
+    # costs one compare per entry. The values agree **exactly**. The walk assumes the diagonal is
+    # *present* in the pattern, and that is not load-bearing: an absent diagonal leaves
+    # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
+    # zero would.
     i = wp.int32(wp.tid())
     accumulator = wp.vec3(0.0, 0.0, 0.0)
-    for slot in range(offsets[i], offsets[i + 1]):
-        accumulator += values[slot] * vertices[columns[slot]]
-    out_norms[i] = wp.length(row_scale[i] * accumulator + self_scale[i] * vertices[i])
-
-
-@wp.kernel(enable_backward=False)
-def cot_row_scales(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float32],
-    out_row_scale: wp.array[wp.float32],
-    out_self_scale: wp.array[wp.float32],
-) -> None:
-    # The ``method="cot"`` scales, read off the assembled stiffness matrix's own diagonal.
-    #
-    # The cotangent-weighted neighbour average is ``(L v)_i / s_i`` with ``s_i`` the off-diagonal
-    # row sum, and a cotangent Laplacian carries ``-s_i`` on its diagonal -- so the scale is one
-    # negated diagonal read and no second pass over the row. Where ``s_i`` is not positive (an
-    # obtuse ring whose weights cancel, or an isolated vertex) the averaging is undefined and the
-    # convention is to fall back to ``-v_i``, which is what the reference's ``norm_w = 0`` branch
-    # amounts to.
-    #
-    # **The row walk is deliberate, and this is the fourth spelling of "get the diagonal" in the
-    # tree.** The other three are ``linalg._multigrid_levels`` (through ``wps.bsr_get_diag``),
-    # ``reconstruction.poisson_level_setup`` and
-    # ``algorithms/conjugate_gradient.scaled_diagonal_apply``. The single-source-of-truth argument
-    # for routing this one through ``wps.bsr_get_diag`` too is real; it was measured and declined,
-    # at several times this launch's cost, flat in the system size -- an allocation and two launches
-    # against one, on a function ``energies.laplacian_smoothing_loss`` calls once. The values agree
-    # **exactly**, which also settles the one substantive worry: the walk assumes the diagonal is
-    # *present* in the pattern, and that is not load-bearing -- an absent diagonal leaves
-    # ``diagonal`` at zero and takes the same undefined-averaging fallback ``bsr_get_diag``'s own
-    # zero would. So the walk costs a handful of cached loads instead of one and buys a launch;
-    # ``bsr_get_diag`` remains the right spelling wherever the diagonal is wanted as an *array*.
-    i = wp.int32(wp.tid())
     diagonal = wp.float32(0.0)
     for slot in range(offsets[i], offsets[i + 1]):
-        if columns[slot] == i:
+        column = columns[slot]
+        accumulator += values[slot] * vertices[column]
+        if column == i:
             diagonal = values[slot]
-    row_sum = -diagonal
-    if row_sum > 0.0:
-        out_row_scale[i] = 1.0 / row_sum
-        out_self_scale[i] = 0.0
-    else:
-        out_row_scale[i] = 0.0
-        out_self_scale[i] = -1.0
+    row_scale = wp.float32(1.0)
+    self_scale = wp.float32(-1.0)
+    if method == SMOOTHING_COT:
+        row_sum = -diagonal
+        row_scale = wp.float32(0.0)
+        if row_sum > 0.0:
+            row_scale = 1.0 / row_sum
+            self_scale = wp.float32(0.0)
+    elif method == SMOOTHING_COTCURV:
+        row_scale = reciprocal_scaled_or_zero(mass[i], wp.float32(1.0 / 6.0))
+        self_scale = wp.float32(0.0)
+    out_norms[i] = wp.length(row_scale * accumulator + self_scale * vertices[i])
 
 
 @wp.kernel
@@ -520,8 +514,8 @@ def curved_hessian_triplets(
     faces: wp.array[wp.int32],
     inverse: wp.array[wp.int32],
     angles: wp.array2d[wp.float64],
-    scaled_kappa: wp.array[wp.float64],
-    inv_mass: wp.array[wp.float64],
+    angle_sums: wp.array[wp.float64],
+    mass: wp.array[wp.float64],
     edge_vertex_slots: wp.array2d[wp.int32],
     par: wp.array2d[wp.float64],
     perp: wp.array2d[wp.float64],
@@ -548,10 +542,12 @@ def curved_hessian_triplets(
             out_vals[base_out + empty] = type(out_vals[0])(0.0)
         return
     # l2_0/l2_1/l2_2: column e opposite corner e (the igl intrinsic convention).
-    # Curvature ingredients per corner c: scaledKappa(F(f,c)) * theta(f,c).
-    kv0 = scaled_kappa[faces[f * 3 + 0]] * angles[f, 0]
-    kv1 = scaled_kappa[faces[f * 3 + 1]] * angles[f, 1]
-    kv2 = scaled_kappa[faces[f * 3 + 2]] * angles[f, 2]
+    # Curvature ingredients per corner c: scaledKappa(F(f,c)) * theta(f,c), the scaled kappa formed
+    # from the vertex's angle sum as it is read (the wrapper zeroes the boundary's sums, which
+    # ``scaled_angle_defect`` maps to the zero kappa a boundary vertex takes).
+    kv0 = scaled_angle_defect(angle_sums[faces[f * 3 + 0]]) * angles[f, 0]
+    kv1 = scaled_angle_defect(angle_sums[faces[f * 3 + 1]]) * angles[f, 1]
+    kv2 = scaled_angle_defect(angle_sums[faces[f * 3 + 2]]) * angles[f, 2]
     # igl edge slot e is triwarp halfedge (e + 1) % 3; o2[e] = oE(f,e) * oE(f,(e+2)%3).
     oh0 = halfedge_orientation(faces, f * 3 + 0)
     oh1 = halfedge_orientation(faces, f * 3 + 1)
@@ -559,15 +555,19 @@ def curved_hessian_triplets(
     eid0 = inverse[f * 3 + 1]
     eid1 = inverse[f * 3 + 2]
     eid2 = inverse[f * 3 + 0]
+    # The three edges' inverse lumped masses, each formed once from the mass diagonal.
+    im0 = reciprocal_or_zero(mass[eid0])
+    im1 = reciprocal_or_zero(mass[eid1])
+    im2 = reciprocal_or_zero(mass[eid2])
     diag0, pp0, pq0 = curved_pair_terms(l2_0, l2_1, l2_2, dbl_area, oh0 * oh1, kv1, kv2, kv0)
     diag1, pp1, pq1 = curved_pair_terms(l2_1, l2_2, l2_0, dbl_area, oh1 * oh2, kv2, kv0, kv1)
     diag2, pp2, pq2 = curved_pair_terms(l2_2, l2_0, l2_1, dbl_area, oh2 * oh0, kv0, kv1, kv2)
     for alpha in range(3):
         edge_a = select3(eid0, eid1, eid2, alpha)
-        mi_a = inv_mass[edge_a]
+        mi_a = select3(im0, im1, im2, alpha)
         for beta in range(3):
             edge_b = select3(eid0, eid1, eid2, beta)
-            mimi = mi_a * inv_mass[edge_b]
+            mimi = mi_a * select3(im0, im1, im2, beta)
             b_pp = zero
             b_pq = zero
             b_qp = zero

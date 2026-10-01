@@ -63,7 +63,7 @@ def arange(
     Returns
     -------
     wp.array[wp.int32]
-        1-D array of ``max(0, ceil((stop - start) / step))`` values on ``device``.
+        ``(n,)`` values on ``device``, ``n = max(0, ceil((stop - start) / step))``.
 
     Raises
     ------
@@ -125,7 +125,7 @@ def arange_repeat(count: int, repeats: int, device: wp.DeviceLike) -> wp.array[w
     Returns
     -------
     wp.array[wp.int32]
-        Length-``count`` array on ``device``.
+        ``(count,)`` array on ``device``.
 
     Raises
     ------
@@ -175,7 +175,7 @@ def sort_pair_indices(n: int, fill_value: int, device: wp.DeviceLike) -> wp.arra
     Returns
     -------
     wp.array[wp.int32]
-        Length-``2 * n`` array on ``device``.
+        ``(2 * n,)`` array on ``device``.
 
     Raises
     ------
@@ -249,11 +249,10 @@ def pack_1d_arrays(
     Returns
     -------
     flat
-        1-D array of length ``sum(a.size for a in arrays)``, same ``dtype`` and ``device`` as
-        the inputs.
+        ``(sum(a.size for a in arrays),)`` array, same ``dtype`` and ``device`` as the inputs.
     offsets
-        Length ``len(arrays) + 1`` total-terminated offsets, ``dtype`` ``wp.int32``, same
-        ``device`` as the inputs: ``offsets[0] == 0`` and ``offsets[-1] == flat.size``.
+        ``(len(arrays) + 1,)`` total-terminated offsets, same ``device`` as the inputs:
+        ``offsets[0] == 0`` and ``offsets[-1] == flat.size``.
 
     Raises
     ------
@@ -288,9 +287,9 @@ def concatenate(arrays: Sequence[wp.array[DType]], *, copy: bool = True) -> wp.a
     Returns
     -------
     wp.array
-        Contiguous 1-D array of length ``sum(a.size for a in arrays)`` on the input
-        device. When ``arrays`` has a single element, that array is returned without
-        copying whatever ``copy`` says, since there is nothing to concatenate it with.
+        ``(sum(a.size for a in arrays),)`` contiguous array on the input device. When ``arrays`` has
+        a single element, that array is returned without copying whatever ``copy`` says, since there
+        is nothing to concatenate it with.
 
     Raises
     ------
@@ -336,9 +335,9 @@ def split(
     Parameters
     ----------
     array
-        Rank-1 array to split, any ``dtype``.
+        ``(row_size * offsets[-1],)`` array to split, any ``dtype``.
     offsets
-        Length-``n_segments + 1`` total-terminated ``wp.int32`` offsets: ``offsets[0] == 0``,
+        ``(n_segments + 1,)`` total-terminated ``wp.int32`` offsets: ``offsets[0] == 0``,
         non-decreasing, and ``offsets[-1]`` equal to ``array``'s row count -- exactly what
         [`pack_1d_arrays`][triwarp.array.pack_1d_arrays] and
         [`counts_to_offsets`][triwarp.array.counts_to_offsets] return. ``[0]`` describes no
@@ -753,10 +752,10 @@ def allclose(
     Parameters
     ----------
     a
-        Length-``n`` array of any float dtype (``float16`` / ``float32`` / ``float64``) or of
+        ``(n,)`` array of any float dtype (``float16`` / ``float32`` / ``float64``) or of
         ``wp.vec3``, on the target device.
     b
-        Array of the same length and dtype as ``a``.
+        ``(n,)`` array of the same dtype as ``a``.
     rtol
         Relative tolerance. Defaults to ``1e-05``. Converted to ``a``'s precision.
     atol
@@ -818,7 +817,7 @@ def sort_and_argsort(
     Parameters
     ----------
     keys
-        Length-``n`` sort keys (any radix-sortable scalar dtype; see
+        ``(n,)`` sort keys (any radix-sortable scalar dtype; see
         [`sortable_dtype`][triwarp.typing.sortable_dtype] for which those are).
     fill_value
         Padding written into the upper half of the payload buffer, where the sort's scratch lives.
@@ -827,9 +826,9 @@ def sort_and_argsort(
     Returns
     -------
     sorted_keys : wp.array
-        Length-``n`` view of the ascending keys.
+        ``(n,)`` view of the ascending keys.
     order : wp.array[wp.int32]
-        Length-``n`` view of the original index of each sorted key.
+        ``(n,)`` view of the original index of each sorted key.
 
     Notes
     -----
@@ -944,9 +943,8 @@ def triplet_buffers(
     Returns
     -------
     rows, cols, values
-        Three length-``n_triplets`` arrays on ``device``. The index buffers are ``wp.int32``;
-        ``values`` takes ``dtype``. All three are **uninitialized** -- the caller's kernel is
-        expected to write every entry.
+        ``(n_triplets,)`` each, on ``device``; ``values`` takes ``dtype``. All three are
+        **uninitialized** -- the caller's kernel is expected to write every entry.
 
     Notes
     -----
@@ -993,7 +991,7 @@ def empty_square_bsr(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_rows, n_rows)`` matrix with zero stored entries, on ``device``.
+        ``(n_rows, n_rows)`` square matrix with zero stored entries, on ``device``.
 
     See Also
     --------
@@ -1030,10 +1028,11 @@ def bsr_from_csr(
     n_rows, n_cols
         Block row and column counts.
     offsets
-        Length ``n_rows + 1``, total-terminated (``offsets[-1]`` is the stored entry count).
+        ``(n_rows + 1,)`` row offsets, total-terminated (``offsets[-1]`` is the stored entry
+        count).
     columns, values
-        One element per stored entry, at least ``offsets[-1]`` long. A longer buffer is a
-        capacity, as ``warp.sparse`` itself allocates.
+        ``(n_capacity,)`` each, one element per stored entry, ``n_capacity >= offsets[-1]``. A
+        longer buffer is a capacity, as ``warp.sparse`` itself allocates.
     nnz
         The stored entry count, when the host knows it. ``None`` records the buffers' length as an
         upper bound and starts the asynchronous copy of ``offsets[-1]`` that
@@ -1043,7 +1042,7 @@ def bsr_from_csr(
     Returns
     -------
     warp.sparse.BsrMatrix
-        An ``(n_rows, n_cols)`` compact matrix holding exactly these arrays.
+        ``(n_rows, n_cols)`` compact matrix holding exactly these arrays.
 
     Raises
     ------
@@ -1097,7 +1096,7 @@ def csr_key_buffers(
     Returns
     -------
     keys, order
-        ``wp.uint64`` and ``wp.int32`` arrays of length ``2 * count``.
+        ``(2 * count,)`` each.
 
     See Also
     --------
@@ -1125,7 +1124,7 @@ def csr_from_keys(
     Parameters
     ----------
     keys, order
-        The ``2 * count`` sort buffers, holding the keys and payloads in their first halves. Both
+        ``(2 * count,)`` sort buffers, holding the keys and payloads in their first halves. Both
         are sorted in place, and ``order``'s upper half is overwritten.
     count
         The number of keys written.
@@ -1135,12 +1134,12 @@ def csr_from_keys(
     Returns
     -------
     offsets
-        ``n_rows + 1`` row bounds, total-terminated.
+        ``(n_rows + 1,)`` row bounds, total-terminated.
     columns
-        Sorted column index of each entry, per row; ``count`` long, of which the first
+        ``(count,)`` sorted column index of each entry, per row, of which the first
         ``offsets[-1]`` are written.
     starts
-        ``count + 1`` long: entry ``e``'s first sorted position is ``starts[e]`` and
+        ``(count + 1,)`` sorted positions: entry ``e``'s first sorted position is ``starts[e]`` and
         ``starts[offsets[-1]]`` closes the last.
 
     See Also
@@ -1207,10 +1206,10 @@ def csr_from_triplets(
     n_rows, n_cols
         Matrix shape in blocks.
     rows, cols
-        ``wp.int32`` block coordinates, one per triplet.
+        ``(n_triplets,)`` ``wp.int32`` block coordinates, one per triplet.
     values
-        One block per triplet; its dtype is the matrix's block type (``wp.float32``,
-        ``wp.float64``, ``wp.int32`` or ``wp.mat22d``).
+        ``(n_triplets,)`` blocks, one per triplet; its dtype is the matrix's block type
+        (``wp.float32``, ``wp.float64``, ``wp.int32`` or ``wp.mat22d``).
     prune_numerical_zeros
         Drop every entry whose *summed* value is exactly zero -- including one whose triplets
         cancel. ``bsr_from_triplets`` instead drops zero-valued triplets before summing and keeps
@@ -1219,7 +1218,7 @@ def csr_from_triplets(
     Returns
     -------
     warp.sparse.BsrMatrix
-        The assembled ``(n_rows, n_cols)`` matrix. Its ``nnz`` is the triplet count as an upper
+        ``(n_rows, n_cols)`` assembled matrix. Its ``nnz`` is the triplet count as an upper
         bound until ``nnz_sync()``, exactly as after ``bsr_from_triplets``.
 
     Raises
@@ -1334,10 +1333,9 @@ def index_sparse(
     n_rows
         Number of matrix rows (e.g. vertex count). Matrix shape is ``(n_rows, len(indices))``.
     indices
-        Integer array of shape ``(m, d)`` — typically ``mesh.faces`` with three vertex indices
-        per face.
+        ``(m, d)`` index rows — typically ``mesh.faces`` with three vertex indices per face.
     data
-        Optional 1-D array of length ``m * d``. If omitted, ``wp.ones`` is used; see ``dtype``.
+        ``(m * d,)`` optional values. If omitted, ``wp.ones`` is used; see ``dtype``.
     dtype
         Scalar type for ``wp.ones`` when ``data`` is ``None`` (defaults to ``wp.float32`` if
         ``dtype`` is ``None``). When ``data`` and ``dtype`` are provided, the values of the
@@ -1348,7 +1346,7 @@ def index_sparse(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Sparse matrix with shape ``(n_rows, len(indices))`` and 1x1 blocks.
+        ``(n_rows, len(indices))`` sparse matrix with 1x1 blocks.
 
     Raises
     ------
@@ -1412,7 +1410,7 @@ def isin(
         so the array is flattened, tested, and the result reshaped back; nothing in the two
         strategies looks at the shape.
     test_elements
-        1D array of values to test membership against, of the same dtype as ``elements``.
+        ``(n_test,)`` values to test membership against, of the same dtype as ``elements``.
     max_index
         Optional exclusive upper bound on the values of **both** arrays, which must then be
         non-negative -- the same escape hatch, and the same shape of it, as
@@ -1425,8 +1423,7 @@ def isin(
     Returns
     -------
     wp.array[wp.bool]
-        Boolean array with the same shape as ``elements``. All ``False`` when either
-        input is empty.
+        ``elements.shape`` membership mask. All ``False`` when either input is empty.
 
     Raises
     ------
@@ -1608,13 +1605,14 @@ def flatnonzero(values: wp.array[wp.bool] | wp.array[wp.Scalar]) -> wp.array[wp.
     Parameters
     ----------
     values
-        Length-``n`` ``wp.bool`` mask, or a ``wp.int32`` / float / other scalar array, on the
-        target device.
+        ``(n,)`` ``wp.bool`` mask, or a ``wp.int32`` / float / other scalar array, on the target
+        device.
 
     Returns
     -------
     wp.array[wp.int32]
-        Selected indices on ``values.device``, ascending. Empty when nothing is non-zero.
+        ``(n_nonzero,)`` selected indices on ``values.device``, ascending, ``n_nonzero`` the
+        number of non-zero entries. Empty when nothing is non-zero.
 
     Raises
     ------
@@ -1686,16 +1684,16 @@ def gather(
     Parameters
     ----------
     src
-        Rank-1 or rank-2 ``wp.array`` on the target device.
+        ``(n,)`` or ``(n, m)`` ``wp.array`` on the target device.
     indices
-        1D ``wp.int32`` array of indices into the first axis of ``src``. **Must be contiguous**;
+        ``(k,)`` indices into the first axis of ``src``. **Must be contiguous**;
         see the warning above.
 
     Returns
     -------
     wp.array
-        Contiguous gathered copy on ``src.device`` with shape
-        ``(len(indices), *src.shape[1:])`` and the same ``dtype`` as ``src``. Empty along the
+        ``(len(indices), *src.shape[1:])`` contiguous gathered copy on ``src.device``, with the
+        same ``dtype`` as ``src``. Empty along the
         first axis when ``indices`` is empty.
 
     Raises
@@ -1731,14 +1729,14 @@ def astype(values: twt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
     Parameters
     ----------
     values
-        Rank-1 or rank-2 Warp array of any scalar dtype ``array_cast`` accepts.
+        ``(n,)`` or ``(n, m)`` Warp array of any scalar dtype ``array_cast`` accepts.
     dtype
         Target scalar dtype.
 
     Returns
     -------
     wp.array
-        A new array of ``values``' shape on ``values``' device, with element type ``dtype``.
+        ``values.shape`` new array on ``values``' device, with element type ``dtype``.
 
     Raises
     ------
@@ -1842,7 +1840,7 @@ def indices_to_mask(
     Parameters
     ----------
     indices
-        1D ``wp.int32`` array of values in ``[0, n)`` to mark. May be empty.
+        ``(k,)`` values in ``[0, n)`` to mark. May be empty.
     n
         Length of the returned mask.
     device
@@ -1851,7 +1849,7 @@ def indices_to_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask, all ``False`` except at positions named by ``indices``.
+        ``(n,)`` mask, all ``False`` except at positions named by ``indices``.
 
     See Also
     --------
@@ -1885,7 +1883,7 @@ def mask_to_compact_ranks(
     Parameters
     ----------
     mask
-        Length-``n`` ``wp.bool`` array.
+        ``(n,)`` mask.
     invert
         When ``True``, map the ``False`` entries instead. Useful for a free/fixed degree-of-freedom
         partition, where the mask marks the *constrained* entries and the compact map is wanted over
@@ -1894,7 +1892,7 @@ def mask_to_compact_ranks(
     Returns
     -------
     compact_ranks : wp.array[wp.int32]
-        Length-``n`` array on ``mask.device``: an exclusive scan of the (optionally inverted) mask,
+        ``(n,)`` ranks on ``mask.device``: an exclusive scan of the (optionally inverted) mask,
         so ``index_map[i]`` is the compact 0-based rank of element ``i`` among the selected
         entries at or before it (meaningful only where element ``i`` is itself selected).
     count : int
@@ -1931,12 +1929,12 @@ def counts_to_offsets(counts: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], i
     Parameters
     ----------
     counts
-        Length-``n`` ``wp.int32`` per-element counts.
+        ``(n,)`` per-element counts.
 
     Returns
     -------
     offsets : wp.array[wp.int32]
-        Length-``n + 1`` total-terminated offsets (the package's one convention, stated at
+        ``(n + 1,)`` total-terminated offsets (the package's one convention, stated at
         [`pack_1d_arrays`][triwarp.array.pack_1d_arrays]): element ``i`` owns
         ``[offsets[i], offsets[i + 1])`` and ``offsets[n] == total``. ``[0]`` when ``counts`` is
         empty.
@@ -1996,15 +1994,15 @@ def remap_indices(indices: wp.array[wp.int32], remap: wp.array[wp.int32]) -> wp.
     Parameters
     ----------
     indices
-        1D ``wp.int32`` array of indices into ``remap`` (e.g. a flat face buffer). Negative
-        entries are passed through unchanged.
+        ``(n,)`` indices into ``remap`` (e.g. a flat face buffer). Negative entries are passed
+        through unchanged.
     remap
-        1D ``wp.int32`` lookup table (e.g. old-to-new vertex index map).
+        ``(n_table,)`` lookup table (e.g. old-to-new vertex index map).
 
     Returns
     -------
     wp.array[wp.int32]
-        Length ``len(indices)`` array on ``indices.device`` with ``out[i] = remap[indices[i]]``
+        ``(n,)`` array on ``indices.device`` with ``out[i] = remap[indices[i]]``
         for non-negative ``indices[i]``, and ``out[i] = indices[i]`` otherwise.
 
     Raises
@@ -2049,7 +2047,7 @@ def trim_to_count(
     Parameters
     ----------
     counter
-        Length-1 ``wp.int32`` array holding the final atomic-append count on the target device.
+        ``(1,)`` array holding the final atomic-append count on the target device.
     *buffers
         Over-allocated output buffers to trim, all indexed along their first axis by the same
         counter. Any rank and ``dtype``; trailing dimensions are preserved.
@@ -2090,7 +2088,7 @@ def bitcast_to_int(
     Parameters
     ----------
     data
-        Rank-1 ``wp.array`` of any scalar dtype.
+        ``(n,)`` ``wp.array`` of any scalar dtype.
     count
         Output length. Defaults to ``data.shape[0]``. When greater than the input length, the
         tail is left uninitialized (over-allocation for in-place radix-sort scratch).
@@ -2098,8 +2096,8 @@ def bitcast_to_int(
     Returns
     -------
     wp.array[wp.int32] | wp.array[wp.int64]
-        Bit-reinterpreted (or, for sub-32-bit floats, upcast-then-reinterpreted) copy of length
-        ``count`` on ``data.device``.
+        ``(count,)`` bit-reinterpreted (or, for sub-32-bit floats, upcast-then-reinterpreted)
+        copy on ``data.device``.
 
     See Also
     --------
@@ -2155,7 +2153,7 @@ def bitcast_from_int(
     Parameters
     ----------
     data
-        Rank-1 ``wp.array[wp.int32]`` or ``wp.array[wp.int64]``, typically the output of
+        ``(n,)`` ``wp.array[wp.int32]`` or ``wp.array[wp.int64]``, typically the output of
         [`bitcast_to_int`][triwarp.array.bitcast_to_int].
     dtype
         Target scalar dtype to reinterpret ``data`` as.
@@ -2166,7 +2164,7 @@ def bitcast_from_int(
     Returns
     -------
     wp.array[wp.Scalar]
-        Array of dtype ``dtype`` and length ``count`` on ``data.device``.
+        ``(count,)`` array of dtype ``dtype`` on ``data.device``.
 
     See Also
     --------

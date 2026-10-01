@@ -43,9 +43,9 @@ def intersects_location(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
     ray_origins
-        ``(n,)`` ray origin positions as ``wp.vec3``.
+        ``(n,)`` ray origin positions.
     ray_directions
-        ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
+        ``(n,)`` ray direction vectors (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
         ``None``, the search is unbounded, which finds the same first hit as any bound at least
@@ -128,9 +128,9 @@ def intersects_first(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
     ray_origins
-        ``(n,)`` ray origin positions as ``wp.vec3``.
+        ``(n,)`` ray origin positions.
     ray_directions
-        ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
+        ``(n,)`` ray direction vectors (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
         ``None``, the search is unbounded, which finds the same first hit as any bound at least
@@ -191,9 +191,9 @@ def intersects_any(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
     ray_origins
-        ``(n,)`` ray origin positions as ``wp.vec3``.
+        ``(n,)`` ray origin positions.
     ray_directions
-        ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
+        ``(n,)`` ray direction vectors (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
         ``None``, the search is unbounded, which finds the same first hit as any bound at least
@@ -254,9 +254,9 @@ def longest_ray(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
     ray_origins
-        ``(n,)`` ray origin positions as ``wp.vec3``.
+        ``(n,)`` ray origin positions.
     ray_directions
-        ``(n,)`` ray direction vectors as ``wp.vec3`` (need not be unit length).
+        ``(n,)`` ray direction vectors (need not be unit length).
     max_t
         Optional maximum parametric distance along each normalized ray. When
         ``None``, the search is unbounded, which finds the same first hit as any bound at least
@@ -347,7 +347,7 @@ def contains_points(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
     points
-        ``(n,)`` query positions as ``wp.vec3``.
+        ``(n,)`` query positions.
     n_sample
         Number of perturbed rays for parity voting (higher is more robust).
     perturbation_scale

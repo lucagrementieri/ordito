@@ -1074,6 +1074,13 @@ def ones(
     return full(shape, 1, dtype=_PY_DTYPES.get(dtype, dtype), device=device)
 
 
+def empty_packed(
+    dtype: type[DType], device: wp.DeviceLike
+) -> tuple[wp.array[DType, Any], wp.array[wp.int32, Any]]:
+    """Return the packed ``(values, offsets)`` pair of no items: no values, offsets ``[0]``."""
+    return empty(0, dtype=dtype, device=device), zeros(1, dtype=wp.int32, device=device)
+
+
 def _like_fast(src: Any, device: Any, kwargs: dict[str, Any]) -> bool:
     """Whether a ``*_like`` / ``clone`` of ``src`` can take the stamped path."""
     return (

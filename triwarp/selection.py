@@ -36,9 +36,9 @@ def region_boundary_edges(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` ``wp.bool`` region mask.
+        ``(n_faces,)`` region mask.
     n_vertices
         Optional exclusive bound on the vertex indices, used as the edge-key radix so the sort
         orders only the bits a key can occupy. It is trusted, not checked. Without it the keys pack
@@ -54,7 +54,8 @@ def region_boundary_edges(
     Returns
     -------
     twt.Array2dInt32
-        ``(k, 2)`` vertex pairs on ``faces.device``, sorted ascending per row unless ``oriented``.
+        ``(k, 2)`` vertex pairs, ``k`` the seam edge count, on ``faces.device``, sorted ascending
+        per row unless ``oriented``.
 
     Raises
     ------
@@ -142,11 +143,11 @@ def faces_left_of_contour(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     contour_edges
-        ``(k, 2)`` ``wp.int32`` **directed** vertex pairs, each an edge of the mesh. Consecutive
-        rows need not be connected: the fill only cares about which edges are blocked and which
-        halfedges seed it, so several disjoint contours can be passed at once. A row that is not a
+        ``(k, 2)`` **directed** vertex pairs, each an edge of the mesh. Consecutive rows need not
+        be connected: the fill only cares about which edges are blocked and which halfedges seed
+        it, so several disjoint contours can be passed at once. A row that is not a
         mesh edge blocks nothing and seeds nothing.
     n_vertices
         Optional total vertex count, forwarded to
@@ -154,13 +155,14 @@ def faces_left_of_contour(
         built here. Never inferred: every key this function packs itself uses
         [`constants.INDEX_RADIX_PAIR`][triwarp.constants.INDEX_RADIX_PAIR], which needs no bound.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. Building it is the
-        single largest cost here, so pass it when several contours are filled on one mesh.
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None``. Building it is the single largest cost here, so pass it when several contours are
+        filled on one mesh.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_faces`` mask, ``True`` for the faces on the left of the contour, on
+        ``(n_faces,)`` mask, ``True`` for the faces on the left of the contour, on
         ``faces.device``. All-``False`` only when no contour row is a mesh edge whose left face
         exists.
 
@@ -275,19 +277,19 @@ def exclude_fully_selected_components(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     mask
-        Length-``n_vertices`` ``wp.bool`` selection.
+        ``(n_vertices,)`` selection.
     n_vertices
         Vertex count (component labels span ``0 .. n_vertices - 1``).
     unique_edges
-        Optional precomputed ``(m, 2)`` edges to label the components over; the faces' own
+        ``(m, 2)`` precomputed edges to label the components over; the faces' own
         edges when ``None``, which give the same components.
 
     Returns
     -------
     wp.array[wp.bool]
-        Selection with fully-selected components removed, on ``mask.device``.
+        ``(n_vertices,)`` selection with fully-selected components removed, on ``mask.device``.
 
     Raises
     ------
@@ -384,12 +386,11 @@ def submesh_from_face_indices(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same layout as
+        ``(3 * n_faces,)`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     face_indices
-        1D ``wp.int32`` array of face indices into the source mesh
-        (``0 .. n_faces - 1``), on the same device as ``vertices``. May repeat a face: each
-        occurrence keeps its own row of ``sub_faces``.
+        ``(k,)`` face indices into the source mesh (``0 .. n_faces - 1``), on the same device as
+        ``vertices``. May repeat a face: each occurrence keeps its own row of ``sub_faces``.
     return_index
         If ``True``, also return the vertex map below -- which the extraction computes anyway, so it
         costs nothing.
@@ -397,12 +398,13 @@ def submesh_from_face_indices(
     Returns
     -------
     sub_vertices : wp.array[wp.vec3]
-        Compact positions on ``vertices.device``, length ``0`` when ``face_indices`` is empty.
+        ``(n_sub_vertices,)`` compact positions on ``vertices.device``, length ``0`` when
+        ``face_indices`` is empty.
     sub_faces : wp.array[wp.int32]
-        Flat triangle index buffer into ``sub_vertices``.
+        ``(3 * k,)`` flat triangle index buffer into ``sub_vertices``.
     vertex_index : wp.array[wp.int32]
-        Only when ``return_index`` is ``True``: length ``n_sub_vertices``, the **input** vertex each
-        output vertex came from, ascending. That direction makes it a gather, so a per-vertex
+        ``(n_sub_vertices,)`` **input** vertex each output vertex came from, ascending; only when
+        ``return_index`` is ``True``. That direction makes it a gather, so a per-vertex
         attribute follows the submesh with ``tw.array.gather(attribute, vertex_index)``.
 
     Raises
@@ -485,26 +487,26 @@ def submeshes_from_face_groups(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     group_face_indices
-        Concatenated face indices of every group, as ``wp.int32``. Indices must be unique within a
-        group (duplicates would produce duplicate output faces).
+        ``(m,)`` concatenated face indices of every group. Indices must be unique within a group
+        (duplicates would produce duplicate output faces).
     group_offsets
-        Length-``k + 1`` total-terminated ``wp.int32`` offsets of the groups in
-        ``group_face_indices`` -- the package's one convention, stated at
+        ``(k + 1,)`` total-terminated offsets of the groups in ``group_face_indices``, ``k`` the
+        number of groups -- the package's one convention, stated at
         [`pack_1d_arrays`][triwarp.array.pack_1d_arrays]. Groups must be non-empty.
 
     Returns
     -------
     vertices_all : wp.array[wp.vec3]
-        Every group's compacted vertices, concatenated.
+        ``(vertex_offsets[-1],)`` every group's compacted vertices, concatenated.
     vertex_offsets : wp.array[wp.int32]
-        Length-``k + 1`` total-terminated offsets; group ``g`` owns
+        ``(k + 1,)`` total-terminated offsets; group ``g`` owns
         ``vertices_all[vertex_offsets[g] : vertex_offsets[g + 1]]``.
     faces_all : wp.array[wp.int32]
-        Every group's reindexed flat faces, concatenated in the same group order. Group ``g`` owns
-        ``faces_all[3 * group_offsets[g] : 3 * group_offsets[g + 1]]`` — the *input* offsets,
-        scaled by three, because a group keeps exactly the faces it was given.
+        ``(3 * m,)`` every group's reindexed flat faces, concatenated in the same group order. Group
+        ``g`` owns ``faces_all[3 * group_offsets[g] : 3 * group_offsets[g + 1]]`` — the *input*
+        offsets, scaled by three, because a group keeps exactly the faces it was given.
 
     Raises
     ------
@@ -615,9 +617,9 @@ def submesh_from_face_mask(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` ``wp.bool`` array on the same device as ``vertices``.
+        ``(n_faces,)`` face selection on the same device as ``vertices``.
     return_index
         If ``True``, also return the output-to-input vertex map, as
         [`submesh_from_face_indices`][triwarp.selection.submesh_from_face_indices] documents.
@@ -625,8 +627,9 @@ def submesh_from_face_mask(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[..., wp.array[wp.int32]]
-        Compact ``(sub_vertices, sub_faces)`` on ``vertices.device``, plus ``vertex_index`` when
-        ``return_index`` is ``True``.
+        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
+        compact submesh on ``vertices.device``, plus ``vertex_index`` when ``return_index`` is
+        ``True``.
 
     Raises
     ------
@@ -675,16 +678,16 @@ def delete_region_keep_boundary(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` ``wp.bool`` array, ``True`` for each face to **delete**.
+        ``(n_faces,)`` mask, ``True`` for each face to **delete**.
 
     Returns
     -------
     kept_vertices : wp.array[wp.vec3]
-        Compact positions of the surviving submesh.
+        ``(n_kept_vertices,)`` compact positions of the surviving submesh.
     kept_faces : wp.array[wp.int32]
-        Flat triangle index buffer into ``kept_vertices``.
+        ``(3 * n_kept_faces,)`` flat triangle index buffer into ``kept_vertices``.
     new_loops : list[wp.array[wp.int32]]
         The boundary loops the deletion opened, as vertex-index cycles **into** ``kept_vertices`` --
         the same form [`triwarp.boundary.boundary_loops`][triwarp.boundary.boundary_loops] returns.
@@ -755,18 +758,19 @@ def delete_region_keep_boundary_with_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` ``wp.bool`` array, ``True`` for each face to **delete**.
+        ``(n_faces,)`` mask, ``True`` for each face to **delete**.
 
     Returns
     -------
     kept_vertices : wp.array[wp.vec3]
-        Compact positions of the surviving submesh.
+        ``(n_kept_vertices,)`` compact positions of the surviving submesh.
     kept_faces : wp.array[wp.int32]
-        Flat triangle index buffer into ``kept_vertices``.
+        ``(3 * n_kept_faces,)`` flat triangle index buffer into ``kept_vertices``.
     loops : wp.array[wp.int32]
-        Every new boundary loop's vertex cycle **into** ``kept_vertices``, loop after loop.
+        ``(loop_offsets[-1],)`` every new boundary loop's vertex cycle **into** ``kept_vertices``,
+        loop after loop.
     loop_offsets : wp.array[wp.int32]
         ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``loops[loop_offsets[i] : loop_offsets[i + 1]]``, and ``[0]`` when the deletion opened no
@@ -844,8 +848,7 @@ def _delete_region_loops(
         return (
             kept_vertices,
             kept_faces,
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
+            *_launch.empty_packed(wp.int32, device),
             [] if host_bounds else None,
         )
 
@@ -1003,9 +1006,9 @@ def submesh_from_vertex_indices(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     vertex_indices
-        1D ``wp.int32`` array of vertex indices on the same device as ``vertices``.
+        ``(k,)`` vertex indices on the same device as ``vertices``.
     face_mode
         ``"all"`` selects faces whose three vertex indices all lie in ``vertex_indices``;
         ``"any"`` selects faces with at least one vertex index in ``vertex_indices``.
@@ -1013,7 +1016,8 @@ def submesh_from_vertex_indices(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        Compact ``(sub_vertices, sub_faces)`` on ``vertices.device``.
+        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
+        compact submesh on ``vertices.device``.
 
     Raises
     ------
@@ -1048,9 +1052,9 @@ def submesh_from_vertex_mask(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     vertex_mask
-        Length-``n_vertices`` ``wp.bool`` array on the same device as ``vertices``.
+        ``(n_vertices,)`` vertex selection on the same device as ``vertices``.
     face_mode
         ``"all"`` selects faces whose three corners are all selected; ``"any"`` selects faces with
         at least one corner selected. Same rule as
@@ -1059,7 +1063,8 @@ def submesh_from_vertex_mask(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        Compact ``(sub_vertices, sub_faces)`` on ``vertices.device``.
+        ``(n_sub_vertices,)`` ``sub_vertices`` and ``(3 * n_sub_faces,)`` ``sub_faces`` of the
+        compact submesh on ``vertices.device``.
 
     Raises
     ------
@@ -1140,16 +1145,16 @@ def expand_vertex_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     mask
-        Length-``n_vertices`` ``wp.bool`` selection to dilate.
+        ``(n_vertices,)`` selection to dilate.
     hops
         Number of one-ring dilation rounds (``0`` returns a copy).
 
     Returns
     -------
     wp.array[wp.bool]
-        Dilated mask on ``mask.device``.
+        ``(n_vertices,)`` dilated mask on ``mask.device``.
 
     Raises
     ------
@@ -1186,16 +1191,16 @@ def shrink_vertex_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     mask
-        Length-``n_vertices`` ``wp.bool`` selection to erode.
+        ``(n_vertices,)`` selection to erode.
     hops
         Number of one-ring erosion rounds.
 
     Returns
     -------
     wp.array[wp.bool]
-        Eroded mask on ``mask.device``.
+        ``(n_vertices,)`` eroded mask on ``mask.device``.
 
     Raises
     ------
@@ -1269,9 +1274,9 @@ def face_indices_from_vertex_indices(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     vertex_indices
-        1D ``wp.int32`` array of vertex indices on the same device as ``faces``.
+        ``(k,)`` vertex indices on the same device as ``faces``.
     face_mode
         ``"all"`` keeps faces whose three vertex indices all lie in ``vertex_indices``;
         ``"any"`` keeps faces with at least one vertex index in ``vertex_indices``.
@@ -1283,8 +1288,8 @@ def face_indices_from_vertex_indices(
     Returns
     -------
     wp.array[wp.int32]
-        Selected face indices on ``faces.device``. Empty when no faces match or
-        ``vertex_indices`` is empty.
+        ``(m,)`` selected face indices on ``faces.device``, ``m <= n_faces``. Empty when no faces
+        match or ``vertex_indices`` is empty.
 
     Raises
     ------

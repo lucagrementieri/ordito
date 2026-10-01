@@ -40,14 +40,14 @@ def faces_to_edges(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` buffer of consecutive vertex-index triples.
+        ``(3 * n_faces,)`` buffer of consecutive vertex-index triples.
     sorted
         If ``True``, each output row has its smaller vertex index first (undirected edges).
 
     Returns
     -------
     twt.Array2dInt32
-        Shape ``(n_faces * 3, 2)``. Empty ``(0, 2)`` array when ``n_faces == 0``.
+        ``(3 * n_faces, 2)`` directed edges. Empty ``(0, 2)`` array when ``n_faces == 0``.
 
     See Also
     --------
@@ -74,12 +74,12 @@ def edges_face(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     wp.array[wp.int32]
-        Length ``n_faces * 3`` face indices on ``faces.device``.
+        ``(3 * n_faces,)`` face indices on ``faces.device``.
 
     See Also
     --------
@@ -105,10 +105,10 @@ def edges_unique(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     edges_sorted
-        Optional precomputed ``(n_faces * 3, 2)`` sorted edges (each row min-first).
-        When ``None``, built from ``faces``.
+        ``(3 * n_faces, 2)`` precomputed sorted edges (each row min-first), or ``None`` to build
+        them from ``faces``.
     n_vertices
         Total number of vertices (used as the hash base, and as the radix the unique rows are
         unpacked with). When ``None`` and ``validate`` is ``True`` it is inferred from the edge
@@ -128,9 +128,9 @@ def edges_unique(
     Returns
     -------
     unique_edges : twt.Array2dInt32
-        Shape ``(m, 2)`` unique undirected vertex pairs, ``m <= n_faces * 3``.
+        ``(m, 2)`` unique undirected vertex pairs, ``m <= 3 * n_faces``.
     inverse : wp.array[wp.int32]
-        Length ``n_faces * 3``. ``unique_edges[inverse[i]] == edges_sorted[i]``.
+        ``(3 * n_faces,)`` inverse indices, ``unique_edges[inverse[i]] == edges_sorted[i]``.
 
     Raises
     ------
@@ -260,16 +260,16 @@ def edges_unique_inverse(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     edges_sorted
-        Optional precomputed sorted edges. When ``None``, built from ``faces``.
+        ``(3 * n_faces, 2)`` precomputed sorted edges, or ``None`` to build them from ``faces``.
     n_vertices
         Total vertex count. When ``None``, inferred from ``edges_sorted`` with a device-host sync.
 
     Returns
     -------
     wp.array[wp.int32]
-        Length ``n_faces * 3`` inverse indices.
+        ``(3 * n_faces,)`` inverse indices.
 
     Raises
     ------
@@ -304,9 +304,9 @@ def edges_unique_length(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     unique_edges
-        Optional precomputed unique edges ``(m, 2)``. When ``None``, computed from ``faces``.
+        ``(m, 2)`` precomputed unique edges, or ``None`` to compute them from ``faces``.
     n_vertices
         Total vertex count passed to [`edges_unique`][triwarp.edges.edges_unique]. Ignored when
         ``unique_edges`` is already provided. When ``None`` it is taken from ``vertices`` rather
@@ -320,7 +320,7 @@ def edges_unique_length(
     Returns
     -------
     wp.array[wp.float32]
-        Length ``m`` edge lengths on ``faces.device``.
+        ``(m,)`` edge lengths on ``faces.device``.
 
     Raises
     ------
@@ -360,15 +360,15 @@ def edges_length(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     edges_in
-        Optional precomputed directed edges ``(n_faces * 3, 2)``. When ``None``, computed
-        from ``faces``.
+        ``(3 * n_faces, 2)`` precomputed directed edges, or ``None`` to compute them from
+        ``faces``.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n_faces * 3`` edge lengths on ``faces.device``.
+        ``(3 * n_faces,)`` edge lengths on ``faces.device``.
 
     Raises
     ------
@@ -438,7 +438,7 @@ def face_edge_lengths(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -497,7 +497,7 @@ def mean_edge_length(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
@@ -543,7 +543,7 @@ def mean_unique_edge_length(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     validate
         Forwarded to [`edges_unique`][triwarp.edges.edges_unique]. Pass ``False`` only where the
         face indices' range is structurally guaranteed; it removes a host readback.

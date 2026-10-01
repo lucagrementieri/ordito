@@ -71,7 +71,6 @@ from triwarp._device import read_scalar, read_values, require_same_device, requi
 from triwarp.constants import INDEX_RADIX_PAIR, TILE_1D
 from triwarp.grouping import hash_vector_rows, unique_1d, unique_faces
 from triwarp.kernels import array as kernel_array
-from triwarp.kernels import bounds as kernel_bounds
 from triwarp.kernels import polyline as kernel_polyline
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import repair as kernel_repair
@@ -152,7 +151,7 @@ def make_solid(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     keep_largest
         Drop every connected component but the one with the most faces, first.
     join_components
@@ -165,9 +164,9 @@ def make_solid(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Positions of the repaired mesh, on ``vertices.device``.
+        ``(n_new_vertices,)`` positions of the repaired mesh, on ``vertices.device``.
     new_faces : wp.array[wp.int32]
-        Flat face buffer of the repaired mesh.
+        ``(3 * n_new_faces,)`` flat face buffer of the repaired mesh.
 
     Raises
     ------
@@ -274,7 +273,7 @@ def remove_unreferenced_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     return_inverse
         If ``True``, also return ``inverse`` with ``new_vertices[inverse]`` sourcing
         ``vertices``.
@@ -282,13 +281,14 @@ def remove_unreferenced_vertices(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Referenced vertices only, compacted from index zero.
+        ``(n_referenced,)`` referenced vertices only, compacted from index zero.
     new_faces : wp.array[wp.int32]
-        Face buffer with indices remapped into ``new_vertices``.
+        ``(3 * n_faces,)`` face buffer with indices remapped into ``new_vertices``.
     remap : wp.array[wp.int32]
-        Length ``n_vertices`` old-to-new map (``-1`` when unreferenced).
+        ``(n_vertices,)`` old-to-new map (``-1`` when unreferenced).
     inverse : wp.array[wp.int32], optional
-        Present when ``return_inverse=True``.
+        ``(n_referenced,)`` source index of each new vertex. Present when
+        ``return_inverse=True``.
 
     Raises
     ------
@@ -345,7 +345,7 @@ def remove_duplicated_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     epsilon
         Uniqueness tolerance. Positive values snap coordinates to ``round(v / epsilon)``, so the
         tolerance is absolute and is the one you chose. ``0`` instead groups by a *relative*
@@ -355,13 +355,13 @@ def remove_duplicated_vertices(
     Returns
     -------
     unique_vertices : wp.array[wp.vec3]
-        Deduplicated vertex positions (first occurrence per equivalence class).
+        ``(n_unique,)`` deduplicated vertex positions (first occurrence per equivalence class).
     unique_indices : wp.array[wp.int32]
-        Length ``n_unique``. Original indices into ``vertices`` for each output row.
+        ``(n_unique,)`` original indices into ``vertices`` for each output row.
     inverse : wp.array[wp.int32]
-        Length ``n_vertices``. Maps each input vertex to its slot in ``unique_vertices``.
+        ``(n_vertices,)`` map from each input vertex to its slot in ``unique_vertices``.
     unique_faces : wp.array[wp.int32]
-        Face buffer with indices remapped into ``unique_vertices``.
+        ``(3 * n_faces,)`` face buffer with indices remapped into ``unique_vertices``.
 
     Raises
     ------
@@ -428,7 +428,7 @@ def duplicate_vertex_inverse(vertices: wp.array[wp.vec3], epsilon: float) -> wp.
     Returns
     -------
     wp.array[wp.int32]
-        Length ``n_vertices``. Maps each input vertex to its slot in the deduplicated set.
+        ``(n_vertices,)`` map from each input vertex to its slot in the deduplicated set.
 
     See Also
     --------
@@ -469,14 +469,14 @@ def resolve_duplicated_faces(
     Parameters
     ----------
     faces
-        Flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     resolved_faces : wp.array[wp.int32]
-        Flat buffer of kept faces.
+        ``(3 * n_kept,)`` flat buffer of kept faces.
     kept_indices : wp.array[wp.int32]
-        Original face indices into the input ``faces`` buffer.
+        ``(n_kept,)`` original face indices into the input ``faces`` buffer.
 
     Raises
     ------
@@ -575,14 +575,16 @@ def remove_degenerate_faces(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices still referenced by a non-degenerate face, compacted from index zero.
+        ``(n_new_vertices,)`` vertices still referenced by a non-degenerate face, compacted from
+        index zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the non-degenerate faces, remapped into ``new_vertices``.
+        ``(3 * n_new_faces,)`` flat buffer of the non-degenerate faces, remapped into
+        ``new_vertices``.
 
     Raises
     ------
@@ -619,16 +621,18 @@ def remove_non_manifold_faces(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     max_iter
         Maximum number of removal passes.
 
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices still referenced after non-manifold faces are dropped, compacted from index zero.
+        ``(n_new_vertices,)`` vertices still referenced after non-manifold faces are dropped,
+        compacted from index zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the surviving (edge-manifold, up to ``max_iter`` passes) faces.
+        ``(3 * n_new_faces,)`` flat buffer of the surviving (edge-manifold, up to ``max_iter``
+        passes) faces.
 
     Raises
     ------
@@ -668,7 +672,7 @@ def remove_degenerate_and_non_manifold_faces(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer, every index in
+        ``(3 * n_faces,)`` flat triangle index buffer, every index in
         ``[0, n_vertices)``.
     max_iter
         Maximum number of non-manifold removal passes.
@@ -676,9 +680,11 @@ def remove_degenerate_and_non_manifold_faces(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices still referenced by a surviving face, compacted from index zero.
+        ``(n_new_vertices,)`` vertices still referenced by a surviving face, compacted from index
+        zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the surviving faces, remapped into ``new_vertices``.
+        ``(3 * n_new_faces,)`` flat buffer of the surviving faces, remapped into
+        ``new_vertices``.
 
     Raises
     ------
@@ -780,7 +786,7 @@ def remove_small_components(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     keep_largest
         Keep only the component with the most faces.
     min_faces
@@ -793,9 +799,9 @@ def remove_small_components(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices of the surviving components, compacted from index zero.
+        ``(n_new_vertices,)`` vertices of the surviving components, compacted from index zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the surviving faces, in their input order.
+        ``(3 * n_new_faces,)`` flat buffer of the surviving faces, in their input order.
 
     Raises
     ------
@@ -856,9 +862,21 @@ def remove_small_components(
         # matching both references.
         _launch.map(kernel_array.greater_equal, statistic[labels], wp.float32(min_area), out=keep)
     elif min_diameter is not None:
-        diagonals = _component_diagonals(vertices, faces, labels)
-        _launch.map(
-            kernel_array.greater_equal, diagonals[labels], wp.float32(min_diameter), out=keep
+        # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner
+        # negated so every update is a ``wp.atomic_min``. Each face then decodes its own
+        # component's box as it reads it.
+        corners = _launch.full(6 * n_faces, value=math.inf, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_scatter.scatter_group_bounds,
+            dim=n_faces,
+            inputs=[vertices, faces, labels, corners],
+            device=device,
+        )
+        _launch.launch(
+            kernel_repair.group_diameter_flags,
+            dim=n_faces,
+            inputs=[corners, labels, wp.float32(min_diameter), keep],
+            device=device,
         )
     else:
         counts = _launch.zeros(n_faces, dtype=wp.int32, device=device)
@@ -885,29 +903,6 @@ def remove_small_components(
             )
 
     return tw.selection.submesh_from_face_mask(vertices, faces, keep)
-
-
-def _component_diagonals(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], labels: wp.array[wp.int32]
-) -> wp.array[wp.float32]:
-    """Bounding-box diagonal per component, indexed by the component's label."""
-    device = vertices.device
-    n_faces = faces.size // 3
-    # ``+inf`` in all six slots seeds both ends at once: the packing stores the upper corner negated
-    # so every update is a ``wp.atomic_min``, and a component no face names stays at the seed, which
-    # ``packed_box_diagonals`` reports as a zero diagonal rather than as ``nan``.
-    corners = _launch.full(6 * n_faces, value=math.inf, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_group_bounds,
-        dim=n_faces,
-        inputs=[vertices, faces, labels, corners],
-        device=device,
-    )
-    diagonals = _launch.empty(n_faces, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_bounds.packed_box_diagonals, dim=n_faces, inputs=[corners, diagonals], device=device
-    )
-    return diagonals
 
 
 def split_non_manifold_vertices(
@@ -938,7 +933,7 @@ def split_non_manifold_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
@@ -946,9 +941,10 @@ def split_non_manifold_vertices(
         ``(n_new,)`` positions with ``n_new >= n_referenced``; each is a copy of the original vertex
         it came from, so the point set is unchanged as a *set*.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the same ``n_faces`` triangles in input order, indexing ``new_vertices``.
+        ``(3 * n_faces,)`` flat buffer of the same ``n_faces`` triangles in input order, indexing
+        ``new_vertices``.
     source : wp.array[wp.int32]
-        Length ``n_new`` map from each new vertex to the original it duplicates, so
+        ``(n_new,)`` map from each new vertex to the original it duplicates, so
         ``new_vertices == vertices[source]`` and a per-vertex attribute transfers with
         [`gather`][triwarp.array.gather]. This is ``igl.split_nonmanifold``'s ``SVI``.
 
@@ -1071,7 +1067,7 @@ def collapse_small_triangles(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     epsilon
         Relative area tolerance. The doubled-area threshold is ``2 * epsilon * bbd ** 2``; larger
         values collapse more (and larger) triangles.
@@ -1079,9 +1075,10 @@ def collapse_small_triangles(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices surviving the collapse, compacted from index zero.
+        ``(n_new_vertices,)`` vertices surviving the collapse, compacted from index zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the surviving faces, remapped into ``new_vertices``.
+        ``(3 * n_new_faces,)`` flat buffer of the surviving faces, remapped into
+        ``new_vertices``.
 
     Raises
     ------
@@ -1220,7 +1217,7 @@ def straighten_boundary(
     vertices
         ``(n_vertices,)`` mesh vertex positions. Read only; nothing moves.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be edge-manifold, since the
+        ``(3 * n_faces,)`` triangle index buffer. Must be edge-manifold, since the
         rim is found through the halfedge twins.
     min_normal_dot
         Minimum cosine between the new triangle's normal and each of the two rim faces it will
@@ -1237,8 +1234,8 @@ def straighten_boundary(
     Returns
     -------
     faces : wp.array[wp.int32]
-        Flat triangle index buffer with the new triangles appended. The vertex buffer is unchanged
-        and is not returned.
+        ``(3 * n_new_faces,)`` flat triangle index buffer with the new triangles appended. The
+        vertex buffer is unchanged and is not returned.
     added : int, optional
         Present when ``return_count=True``. How many triangles were added, summed over the passes.
         Zero means no notch passed both gates, and the buffer is the input's. A diagnostic: the
@@ -1374,7 +1371,7 @@ def remove_degree3_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be edge-manifold, since the
+        ``(3 * n_faces,)`` triangle index buffer. Must be edge-manifold, since the
         fan around a vertex is what this reasons about. A pinched (vertex-non-manifold) vertex is
         accepted and is never a candidate: its faces do not close into one fan of three.
     max_iter
@@ -1386,9 +1383,11 @@ def remove_degree3_vertices(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Positions of the result, with the removed vertices compacted away. No position moves.
+        ``(n_new_vertices,)`` positions of the result, with the removed vertices compacted away. No
+        position moves.
     faces : wp.array[wp.int32]
-        Flat triangle index buffer, three faces shorter per removed vertex plus one longer.
+        ``(3 * n_new_faces,)`` flat triangle index buffer, three faces shorter per removed vertex
+        plus one longer.
     removed : int, optional
         Present when ``return_count=True``. How many vertices were removed. Zero means the input
         had none and the buffers are it. A diagnostic: the pass loop stops itself when a pass finds
@@ -1585,10 +1584,10 @@ def flatten_degree3_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be edge-manifold, since the
+        ``(3 * n_faces,)`` triangle index buffer. Must be edge-manifold, since the
         fan around a vertex is what this reasons about.
     region
-        ``(n_vertices,)`` boolean mask restricting which vertices may be flattened. ``None``
+        ``(n_vertices,)`` mask restricting which vertices may be flattened. ``None``
         flattens every one that qualifies. Masked-out vertices are also excluded from the
         independence rule, since a vertex that cannot move cannot spoil a neighbour's plane.
     max_iter
@@ -1605,8 +1604,8 @@ def flatten_degree3_vertices(
     Returns
     -------
     wp.array[wp.vec3]
-        Positions on ``vertices.device``, with the selected vertices at their neighbours' centroid.
-        Connectivity is untouched, so ``faces`` stays valid.
+        ``(n_vertices,)`` positions on ``vertices.device``, with the selected vertices at their
+        neighbours' centroid. Connectivity is untouched, so ``faces`` stays valid.
 
     Raises
     ------
@@ -1714,12 +1713,12 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     wp.array[wp.int32]
-        New face buffer of the same length. ``faces`` is not modified.
+        ``(3 * n_faces,)`` new face buffer. ``faces`` is not modified.
 
     Notes
     -----
@@ -1779,12 +1778,13 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     wp.array[wp.int32]
-        New flat face buffer with corrected winding, on ``faces.device``. Vertices are unchanged.
+        ``(3 * n_faces,)`` new flat face buffer with corrected winding, on ``faces.device``.
+        Vertices are unchanged.
 
     See Also
     --------
@@ -1835,7 +1835,7 @@ def make_volume(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     multibody
         When ``True`` correct each connected component independently rather than the mesh as a
         whole.
@@ -1843,8 +1843,8 @@ def make_volume(
     Returns
     -------
     wp.array[wp.int32]
-        New flat face buffer with outward-oriented normals, on ``faces.device``. Vertices are
-        unchanged.
+        ``(3 * n_faces,)`` new flat face buffer with outward-oriented normals, on
+        ``faces.device``. Vertices are unchanged.
 
     Raises
     ------
@@ -1878,13 +1878,12 @@ def make_volume(
 
     if multibody:
         out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-        signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
         labels = tw.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
         accum = _launch.zeros(n_faces, dtype=wp.float32, device=device)
         _launch.launch(
-            kernel_scatter.SCATTER_ADD[signed_volumes.dtype],
+            kernel_repair.scatter_face_volume_by_group,
             dim=n_faces,
-            inputs=[signed_volumes, labels, accum],
+            inputs=[vertices, faces, labels, accum],
             device=device,
         )
         # One launch: each face reads its own component's signed volume through its label, where
@@ -1906,8 +1905,7 @@ def make_volume(
     ):
         return _launch.clone(faces)
 
-    signed_volumes = tw.triangles.face_signed_volumes(vertices, faces)
-    if tw.reduce.sum(signed_volumes) >= 0.0:
+    if tw.measures.volume(vertices, faces) >= 0.0:
         return _launch.clone(faces)
 
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
@@ -1934,7 +1932,7 @@ def make_normals_outward(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     multibody
         Forwarded to [`make_volume`][triwarp.repair.make_volume]: correct each connected component
         independently.
@@ -1942,8 +1940,8 @@ def make_normals_outward(
     Returns
     -------
     wp.array[wp.int32]
-        New flat face buffer with consistent winding and outward normals, on ``faces.device``.
-        Vertices are unchanged.
+        ``(3 * n_faces,)`` new flat face buffer with consistent winding and outward normals, on
+        ``faces.device``. Vertices are unchanged.
 
     Raises
     ------
@@ -1977,7 +1975,7 @@ def remove_folded_faces(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     angle
         Dihedral threshold in **degrees**; a face with a neighbour above it is dropped. MeshLab's
         ``folded_faces_angle_threshold``, whose default of ``160`` is this one. Must be in
@@ -1986,9 +1984,9 @@ def remove_folded_faces(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Vertices still referenced by a kept face, compacted from index zero.
+        ``(n_new_vertices,)`` vertices still referenced by a kept face, compacted from index zero.
     new_faces : wp.array[wp.int32]
-        Flat buffer of the kept faces, remapped into ``new_vertices``.
+        ``(3 * n_new_faces,)`` flat buffer of the kept faces, remapped into ``new_vertices``.
 
     Raises
     ------
@@ -2054,7 +2052,7 @@ def fix_self_intersections(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     method
         ``"local"`` (default) to cut and refill, ``"voxel"`` to rebuild through a distance field.
     max_expand
@@ -2070,7 +2068,8 @@ def fix_self_intersections(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``vertices.device``. A clean input is returned as a copy.
+        ``(n_new_vertices,)`` vertices and ``(3 * n_new_faces,)`` faces, as ``(vertices, faces)``
+        on ``vertices.device``. A clean input is returned as a copy.
 
     Raises
     ------
@@ -2283,7 +2282,7 @@ def remove_tunnels(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer. Must be a closed, connected,
+        ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,
         edge-manifold surface, which is what the homology basis needs.
     max_length
         Loops at or under this length are removed. It is an absolute length in the mesh's own
@@ -2300,11 +2299,11 @@ def remove_tunnels(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Positions of the result. Longer than the input's wherever the cut split a vertex; the
-        existing positions are unchanged and no new position is invented, since the rims are filled
-        over their own vertices.
+        ``(n_new_vertices,)`` positions of the result. Longer than the input's wherever the cut
+        split a vertex; the existing positions are unchanged and no new position is invented, since
+        the rims are filled over their own vertices.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer, the cut mesh plus the fill triangles.
+        ``(3 * n_new_faces,)`` flat triangle index buffer, the cut mesh plus the fill triangles.
     removed : int
         How many loops were cut. Zero means nothing was short enough, and the buffers are the
         input's.
@@ -2446,7 +2445,10 @@ def _cut_face_labels(
     """
     device = faces.device
     adjacency, shared = tw.adjacency.face_adjacency(faces, return_edges=True)
-    cut_edges = np.concatenate([_cycle_edges(loop) for loop in loops]).astype(np.uint64)
+    # Each cycle's edges as ascending rows, which is what a cut keys on.
+    cut_edges = np.concatenate(
+        [np.sort(np.stack([loop, np.roll(loop, -1)], axis=1), axis=1) for loop in loops]
+    ).astype(np.uint64)
     barrier_keys = _launch.array(
         np.sort(cut_edges[:, 0] + cut_edges[:, 1] * np.uint64(INDEX_RADIX_PAIR)),
         dtype=wp.uint64,
@@ -2516,8 +2518,13 @@ def _cut_along_loops(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], loops: list[np.ndarray]
 ) -> tuple[wp.array[wp.vec3] | wp.array[wp.vec3d], wp.array[wp.int32]]:
     """Cut the mesh along the edges of a family of closed vertex-index cycles."""
+    # Each cycle's edges as ascending rows, which is what a cut keys on.
     cut_edges = _launch.array(
-        np.concatenate([_cycle_edges(loop) for loop in loops]), dtype=wp.int32, device=faces.device
+        np.concatenate(
+            [np.sort(np.stack([loop, np.roll(loop, -1)], axis=1), axis=1) for loop in loops]
+        ),
+        dtype=wp.int32,
+        device=faces.device,
     )
     return tw.seams.cut_along_edges(vertices, faces, twt.as_array2d(cut_edges, wp.int32))
 
@@ -2527,11 +2534,6 @@ def _cycle_length(vertices: wp.array[wp.vec3], loop: wp.array[wp.int32]) -> floa
     points = _launch.empty(loop.size, dtype=wp.vec3, device=vertices.device)
     _launch.copy(points, vertices[loop])
     return tw.polyline.polyline_length(points, closed=True)
-
-
-def _cycle_edges(loop: np.ndarray) -> np.ndarray:
-    """Pack a closed cycle's edges as ascending ``(k, 2)`` rows, which is what a cut keys on."""
-    return np.sort(np.stack([loop, np.roll(loop, -1)], axis=1), axis=1).astype(np.int32)
 
 
 def flip_t_vertices(
@@ -2558,7 +2560,7 @@ def flip_t_vertices(
     vertices
         ``(n_vertices,)`` mesh vertex positions. Never modified.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     threshold
         Aspect ratio above which a triangle counts as a T-vertex sliver, in the
         ``aspect_ratio`` sense of [`face_quality`][triwarp.triangles.face_quality] (``1`` is
@@ -2571,8 +2573,8 @@ def flip_t_vertices(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer with the slivers re-triangulated, on ``faces.device`` (a copy; the input is
-        not modified).
+        ``(3 * n_faces,)`` flat face buffer with the slivers re-triangulated, on ``faces.device``
+        (a copy; the input is not modified).
 
     Raises
     ------

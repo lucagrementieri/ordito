@@ -86,11 +86,11 @@ def face_gradients(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     values
-        ``(n_vertices,)`` ``wp.float64`` scalar field.
+        ``(n_vertices,)`` scalar field.
     face_normals, face_areas
-        Optional precomputed per-face unit normals and areas, as returned by
+        ``(n_faces,)`` precomputed per-face unit normals and areas, as returned by
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]. Recomputed when
         either is ``None``.
 
@@ -165,7 +165,7 @@ def cotmatrix_entries(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar type of the returned weights: ``wp.float32`` (default) or ``wp.float64``. The weights
         are computed in float32 (the vertex precision) and cast to ``dtype`` on write; request
@@ -174,7 +174,7 @@ def cotmatrix_entries(
     Returns
     -------
     twt.Array2dFloat
-        Shape ``(n_faces, 3)`` on ``faces.device``. Empty ``(0, 3)`` when ``n_faces == 0``.
+        ``(n_faces, 3)`` weights on ``faces.device``. Empty ``(0, 3)`` when ``n_faces == 0``.
 
     Raises
     ------
@@ -228,14 +228,14 @@ def cotmatrix_entries_intrinsic(
     Parameters
     ----------
     edge_lengths
-        ``(n_faces, 3)`` ``float32`` edge lengths on the target device.
+        ``(n_faces, 3)`` edge lengths on the target device.
     dtype
         Scalar type of the returned weights: ``wp.float32`` (default) or ``wp.float64``.
 
     Returns
     -------
     twt.Array2dFloat
-        Shape ``(n_faces, 3)`` on ``edge_lengths.device``. Empty ``(0, 3)`` when ``n_faces == 0``.
+        ``(n_faces, 3)`` weights on ``edge_lengths.device``. Empty ``(0, 3)`` when ``n_faces == 0``.
 
     Raises
     ------
@@ -310,9 +310,9 @@ def cotmatrix(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     cot_entries
-        Optional precomputed ``(n_faces, 3)`` weights from
+        ``(n_faces, 3)`` precomputed weights from
         [`cotmatrix_entries`][triwarp.laplacian.cotmatrix_entries]. When ``None``, entries are
         computed from ``vertices`` and ``faces`` in ``dtype``. May be ``float32`` or ``float64``
         regardless of ``dtype``: the assembly kernel casts them to the matrix precision. Must have
@@ -330,7 +330,7 @@ def cotmatrix(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` cotangent matrix in 1x1-block BSR form on
+        ``(n_vertices, n_vertices)`` square cotangent matrix in 1x1-block BSR form on
         ``vertices.device``.
 
     Raises
@@ -427,7 +427,7 @@ def robust_laplacian(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     epsilon
         Triangle-inequality margin, relative to the mean edge length. The default ``1e-5`` is
         Sharp & Crane's.
@@ -484,7 +484,7 @@ def mollify_intrinsic(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     epsilon
         Required margin, relative to the mean edge length.
 
@@ -562,13 +562,13 @@ def connection_laplacian(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     cot_entries
-        Optional precomputed ``(n_faces, 3)`` half-cotangent weights from
+        ``(n_faces, 3)`` precomputed half-cotangent weights from
         [`cotmatrix_entries`][triwarp.laplacian.cotmatrix_entries]. Must have
         ``shape[0] == n_faces``.
     transport_angles
-        Optional precomputed per-halfedge
+        ``(3 * n_faces,)`` precomputed per-halfedge
         [`halfedge_transport_angles`][triwarp.tangent_space.halfedge_transport_angles]. Must have
         length ``3 * n_faces``.
 
@@ -713,7 +713,7 @@ def mesh_operator_pattern(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     n_vertices
         Vertex count; the operator is ``(n_vertices, n_vertices)``.
     operator
@@ -936,7 +936,7 @@ def laplacian_entries(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     equal_weight
         If ``True`` every edge weight is ``1`` (uniform umbrella weights). If ``False`` the
         weight is inverse edge length ``1 / (‖vi - vj‖ + 1e-12)``.
@@ -951,7 +951,7 @@ def laplacian_entries(
         assembly kernel casts the float32 edge weights to ``dtype`` so the matrix built from these
         triplets is native float32/float64.
     edges
-        Optional precomputed ``(m, 2)`` unique undirected edges from
+        ``(m, 2)`` precomputed unique undirected edges from
         [`edges_unique`][triwarp.edges.edges_unique], used only by the ``symmetric`` branch --
         which is the ``equal_weight=False`` default, so this is the keyword that matters for the
         geometry-weighted operator. When ``None`` the edge set is derived here.
@@ -978,8 +978,8 @@ def laplacian_entries(
     Returns
     -------
     tuple of wp.array
-        ``(rows, cols, vals)`` on ``faces.device``. Length ``3 * n_faces`` for the directed case,
-        ``2 * n_unique_edges`` for the symmetric case.
+        ``(m,)`` triplets ``(rows, cols, vals)`` on ``faces.device``, ``m == 3 * n_faces`` for the
+        directed case and ``m == 2 * n_unique_edges`` for the symmetric case.
 
     Raises
     ------
@@ -1061,7 +1061,7 @@ def laplacian(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     equal_weight
         If ``True`` all neighbors are weighted equally (``1 / degree``). If ``False`` neighbors
         are weighted by inverse edge length before normalization.
@@ -1077,7 +1077,7 @@ def laplacian(
         ``wp.float64`` when the operator feeds a linear-system solve; the matrix is built and
         row-normalized natively in the requested precision, in one build.
     edges
-        Optional precomputed ``(m, 2)`` unique undirected edges, forwarded to
+        ``(m, 2)`` precomputed unique undirected edges, forwarded to
         [`laplacian_entries`][triwarp.laplacian.laplacian_entries], which assembles the operator
         from them as triplets. Ignored when the adjacency is directed. Without ``edges`` the
         operator's pattern is built straight from ``faces``, which is usually cheaper.
@@ -1096,7 +1096,7 @@ def laplacian(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` row-stochastic matrix in 1x1-block BSR form on
+        ``(n_vertices, n_vertices)`` square row-stochastic matrix in 1x1-block BSR form on
         ``vertices.device``. Isolated vertices (empty rows) map to themselves under
         [`filter_laplacian`][triwarp.smoothing.filter_laplacian] et al.
 
@@ -1198,7 +1198,7 @@ def graph_laplacian(
         ``(n_vertices,)`` mesh vertex positions. Only the count and device are used; positions do
         not affect the uniform weights.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``. Use
         ``wp.float64`` for the higher-power Tutte operator in
@@ -1207,7 +1207,7 @@ def graph_laplacian(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` combinatorial Laplacian in 1x1-block BSR form on
+        ``(n_vertices, n_vertices)`` square combinatorial Laplacian in 1x1-block BSR form on
         ``vertices.device``.
 
     Raises
@@ -1279,22 +1279,23 @@ def mass_matrix_entries(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar type of the returned diagonal: ``wp.float32`` (default) or ``wp.float64``. Request
         ``wp.float64`` to feed a float64 solve (e.g. geodesic heat method, implicit fairing)
         without a downstream recast.
     face_areas
-        Optional length-``n_faces`` triangle areas
-        ([`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]). The lumping reads
-        nothing else off ``vertices``, so passing them is the whole geometry pass this function
-        would otherwise repeat -- [`Trimesh.face_areas`][triwarp.mesh.Trimesh.face_areas] has them
-        cached. May be any float dtype: cast to ``dtype`` when it differs.
+        ``(n_faces,)`` triangle areas
+        ([`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]), or ``None``. The
+        lumping reads nothing else off ``vertices``, so passing them is the whole geometry pass this
+        function would otherwise repeat --
+        [`Trimesh.face_areas`][triwarp.mesh.Trimesh.face_areas] has them cached.
+        ``wp.float32`` or ``wp.float64``, converted to ``dtype`` as it is read.
 
     Returns
     -------
     wp.array[wp.float32] | wp.array[wp.float64]
-        Length-``n_vertices`` diagonal on ``vertices.device``.
+        ``(n_vertices,)`` diagonal on ``vertices.device``.
 
     Raises
     ------
@@ -1322,17 +1323,20 @@ def mass_matrix_entries(
             raise ValueError(
                 f"face_areas must have length n_faces={n_faces}, got {face_areas.size}"
             )
-        areas = face_areas if face_areas is not None else face_normals_and_areas(vertices, faces)[1]
-        if areas.dtype != dtype:
-            # scatter_face_thirds shares one dtype across areas/count/mass; cast whenever the
-            # caller-supplied (or freshly computed float32) areas don't already match ``dtype``.
-            areas = tw.array.astype(areas, dtype)
-        _launch.launch(
-            kernel_scatter.SCATTER_FACE_THIRDS[dtype],
-            dim=n_faces,
-            inputs=[faces, areas, dtype(3.0), mass],
-            device=device,
-        )
+        if face_areas is None:
+            _launch.launch(
+                kernel_scatter.SCATTER_FACE_AREA_THIRDS[dtype],
+                dim=n_faces,
+                inputs=[vertices, faces, dtype(3.0), mass],
+                device=device,
+            )
+        else:
+            _launch.launch(
+                kernel_scatter.SCATTER_FACE_THIRDS[face_areas.dtype, dtype],
+                dim=n_faces,
+                inputs=[faces, face_areas, dtype(3.0), mass],
+                device=device,
+            )
     return mass
 
 
@@ -1351,18 +1355,18 @@ def mass_matrix(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     dtype
         Scalar block type of the assembled matrix: ``wp.float32`` (default) or ``wp.float64``. Use
         ``wp.float64`` when the mass matrix feeds a float64 linear-system solve.
     face_areas
-        Optional precomputed triangle areas, forwarded to
+        ``(n_faces,)`` precomputed triangle areas, or ``None``, forwarded to
         [`mass_matrix_entries`][triwarp.laplacian.mass_matrix_entries].
 
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(n_vertices, n_vertices)`` diagonal matrix in 1x1-block BSR form on
+        ``(n_vertices, n_vertices)`` square diagonal matrix in 1x1-block BSR form on
         ``vertices.device``.
 
     Raises

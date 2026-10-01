@@ -47,14 +47,14 @@ def face_flipped_mask(vertices: wp.array[wp.vec2], faces: wp.array[wp.int32]) ->
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` 2D vertex positions (the parametrization / UV coordinates) as ``wp.vec2``.
+        ``(n_vertices,)`` 2D vertex positions (the parametrization / UV coordinates).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length ``n_faces`` on ``vertices.device``. Empty for an empty mesh.
+        ``(n_faces,)`` flipped-triangle mask on ``vertices.device``. Empty for an empty mesh.
 
     Raises
     ------
@@ -109,14 +109,15 @@ def face_flipped_indices(
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` 2D vertex positions (the parametrization / UV coordinates) as ``wp.vec2``.
+        ``(n_vertices,)`` 2D vertex positions (the parametrization / UV coordinates).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     wp.array[wp.int32]
-        Ascending face indices of the flipped triangles on ``vertices.device``. Empty when no
+        ``(m,)`` ascending face indices of the ``m`` flipped triangles on ``vertices.device``.
+        Empty when no
         triangle is flipped.
 
     Raises
@@ -151,7 +152,7 @@ def map_vertices_to_circle(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     boundary
-        Ordered boundary-loop vertex indices, e.g. from
+        ``(n_boundary,)`` ordered boundary-loop vertex indices, e.g. from
         [`longest_boundary_loop`][triwarp.boundary.longest_boundary_loop].
 
     Returns
@@ -220,9 +221,9 @@ def harmonic(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     boundary_indices
-        ``wp.int32`` indices of the fixed (constrained) vertices.
+        ``(n_boundary,)`` indices of the fixed (constrained) vertices.
     boundary_uv
         ``(n_boundary,)`` target UV positions for ``boundary_indices``, in the same order (e.g. from
         [`map_vertices_to_circle`][triwarp.parametrization.map_vertices_to_circle]).
@@ -304,9 +305,9 @@ def tutte(
         ``(n_vertices,)`` mesh vertex positions (used for the count/device; the uniform weights
         ignore geometry).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     boundary_indices
-        ``wp.int32`` indices of the fixed (constrained) vertices.
+        ``(n_boundary,)`` indices of the fixed (constrained) vertices.
     boundary_uv
         ``(n_boundary,)`` target UV positions for ``boundary_indices``, in the same order (e.g. a
         convex loop from
@@ -516,10 +517,10 @@ def arap(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     fixed_indices
-        ``wp.int32`` indices of the pinned (constrained) vertices — libigl's ``b``. At least one is
-        required whenever the mesh has interior vertices (the ARAP global system is otherwise a
+        ``(n_fixed,)`` indices of the pinned (constrained) vertices — libigl's ``b``. At least one
+        is required whenever the mesh has interior vertices (the ARAP global system is otherwise a
         singular, translation-invariant Poisson problem). Pinning the whole boundary loop reproduces
         the classic fixed-boundary ARAP disk parametrization.
     fixed_uv
@@ -778,9 +779,9 @@ def lscm(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     pinned_indices
-        ``wp.int32`` indices of the pinned (constrained) vertices — igl's ``b``. At least two are
+        ``(n_pinned,)`` indices of the pinned (constrained) vertices — igl's ``b``. At least two are
         required (unless the mesh has fewer than two vertices) to remove the conformal map's
         similarity-transform null space.
     pinned_uv

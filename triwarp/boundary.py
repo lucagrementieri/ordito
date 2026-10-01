@@ -52,13 +52,13 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> tw
     vertices
         ``(n_vertices,)`` vertex positions; only the device is read.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     twt.Array2dInt32
-        Shape ``(n_boundary, 2)`` sorted boundary edges on ``faces.device``. Empty ``(0, 2)``
-        when the mesh has no boundary.
+        ``(n_boundary, 2)`` sorted boundary edges on ``faces.device``. Empty ``(0, 2)`` when the
+        mesh has no boundary.
 
     Raises
     ------
@@ -83,12 +83,12 @@ def oriented_boundary_edges(
     vertices
         ``(n_vertices,)`` vertex positions; only the device is read.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     twt.Array2dInt32
-        Shape ``(n_boundary, 2)`` directed boundary edges on ``faces.device``. Empty
+        ``(n_boundary, 2)`` directed boundary edges on ``faces.device``. Empty
         ``(0, 2)`` when the mesh has no boundary.
 
     Raises
@@ -137,7 +137,7 @@ def boundary_loops(
         ``(n_vertices,)`` vertex positions; only the count is used, as the successor-array
         size and the edge-key radix, so every face index must be below it.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
     copy
         Return independent buffers instead of views into the packed result.
 
@@ -202,14 +202,15 @@ def boundary_loops_with_offsets(
         ``(n_vertices,)`` vertex positions; only the count is used, as the successor-array
         size and the edge-key radix, so every face index must be below it.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     flat_loops
-        Concatenated ordered vertex indices of every loop, on ``faces.device``.
+        ``(n_loop_vertices,)`` concatenated ordered vertex indices of every loop, on
+        ``faces.device``.
     offsets
-        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` occupies
+        ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` occupies
         ``flat_loops[offsets[i] : offsets[i + 1]]``, and ``offsets == [0]`` when the mesh has no
         boundary.
 
@@ -229,7 +230,7 @@ def boundary_loops_with_offsets(
     n_faces = faces.size // 3
     device = faces.device
     if n_faces == 0:
-        return _no_loops(device)
+        return _launch.empty_packed(wp.int32, device)
 
     n_vertices = vertices.size
     # One boundary detection for every edge view below; ``boundary_edges`` /
@@ -237,7 +238,7 @@ def boundary_loops_with_offsets(
     boundary = _BoundaryHalfedges(faces, n_vertices)
     has_seam, has_pinch = _boundary_defects(boundary, n_vertices)
     if boundary.count() == 0:
-        return _no_loops(device)
+        return _launch.empty_packed(wp.int32, device)
     if has_pinch:
         return _pinched_boundary_cycles(boundary)
     if has_seam:
@@ -247,13 +248,6 @@ def boundary_loops_with_offsets(
     # edge-manifold, chains running into a vertex with no edge out, which the ranking drops.
     tails, next_node = boundary.successors(n_vertices)
     return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_NODES)
-
-
-def _no_loops(device: wp.DeviceLike) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """Return the packed answer of a mesh with no boundary: no loop vertices, offsets ``[0]``."""
-    return _launch.empty(0, dtype=wp.int32, device=device), _launch.zeros(
-        1, dtype=wp.int32, device=device
-    )
 
 
 def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bool, bool]:
@@ -499,7 +493,7 @@ def loop_perimeters(
     Returns
     -------
     wp.array[wp.float32]
-        One perimeter per loop, in the order given, on ``vertices.device``.
+        ``(n_loops,)`` one perimeter per loop, in the order given, on ``vertices.device``.
 
     Raises
     ------
@@ -550,12 +544,12 @@ def loop_perimeters_from_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     flat_loops
-        Concatenated ordered vertex indices of every loop.
+        ``(n_loop_vertices,)`` concatenated ordered vertex indices of every loop.
     offsets
-        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` is
+        ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
-        Optional precomputed length-``flat_loops`` label saying which loop each packed position
+        ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
         belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
         doubling the call**, since the measure itself is one launch. Pass it when the caller
         already holds it, as [`triwarp.holes`][triwarp.holes] does.
@@ -569,7 +563,7 @@ def loop_perimeters_from_offsets(
     Returns
     -------
     wp.array[wp.float32]
-        One perimeter per loop, in the packed order, on ``vertices.device``.
+        ``(n_loops,)`` one perimeter per loop, in the packed order, on ``vertices.device``.
 
     Raises
     ------
@@ -624,7 +618,7 @@ def loop_directed_areas(
     Returns
     -------
     wp.array[wp.vec3]
-        One directed area per loop, in the order given, on ``vertices.device``.
+        ``(n_loops,)`` one directed area per loop, in the order given, on ``vertices.device``.
 
     Raises
     ------
@@ -672,12 +666,12 @@ def loop_directed_areas_from_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     flat_loops
-        Concatenated ordered vertex indices of every loop.
+        ``(n_loop_vertices,)`` concatenated ordered vertex indices of every loop.
     offsets
-        Length-``n_loops + 1`` total-terminated offsets: loop ``i`` is
+        ``(n_loops + 1,)`` total-terminated offsets: loop ``i`` is
         ``flat_loops[offsets[i] : offsets[i + 1]]``.
     loop_id
-        Optional precomputed length-``flat_loops`` label saying which loop each packed position
+        ``(n_loop_vertices,)`` optional precomputed label saying which loop each packed position
         belongs to. Built here when ``None``, which costs an allocation and a launch -- **roughly
         doubling the call**, since the measure itself is one launch. Pass it when the caller
         already holds it, as [`triwarp.holes`][triwarp.holes] does.
@@ -690,7 +684,7 @@ def loop_directed_areas_from_offsets(
     Returns
     -------
     wp.array[wp.vec3]
-        One directed area per loop, in the packed order, on ``vertices.device``.
+        ``(n_loops,)`` one directed area per loop, in the packed order, on ``vertices.device``.
 
     Raises
     ------
@@ -848,9 +842,9 @@ def longest_boundary_loop(
     Returns
     -------
     wp.array[wp.int32]
-        Ordered vertex indices around the longest boundary loop, on ``faces.device``. An
-        independent buffer, not a view into the packed result. Empty when the mesh has no
-        boundary.
+        ``(m,)`` ordered vertex indices around the longest boundary loop, ``m`` its length, on
+        ``faces.device``. An independent buffer, not a view into the packed result. Empty when the
+        mesh has no boundary.
 
     Raises
     ------
@@ -902,13 +896,13 @@ def boundary_vertex_indices(
         ``(n_vertices,)`` vertex positions; only the count is used (every boundary vertex index is
         below it).
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     wp.array[wp.int32]
-        Sorted unique boundary vertex indices on ``faces.device``. Empty when the mesh has
-        no boundary.
+        ``(n_boundary_vertices,)`` sorted unique boundary vertex indices on ``faces.device``.
+        Empty when the mesh has no boundary.
 
     Raises
     ------
@@ -933,12 +927,12 @@ def boundary_vertices(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) ->
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Shape ``(n_boundary_vertices,)`` boundary vertex positions on ``vertices.device``,
+        ``(n_boundary_vertices,)`` boundary vertex positions on ``vertices.device``,
         ordered by ascending vertex index. Empty when the mesh has no boundary.
 
     Raises
@@ -969,14 +963,16 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` face index buffer.
+        ``(3 * n_faces,)`` face index buffer.
 
     Returns
     -------
     ear : wp.array[wp.int32]
-        Face indices of ear triangles on ``faces.device``, ascending. Empty when no ears exist.
+        ``(n_ears,)`` face indices of ear triangles on ``faces.device``, ascending. Empty when no
+        ears exist.
     ear_opp : wp.array[wp.int32]
-        Local edge index of the interior edge for each ear face, same length as ``ear``.
+        ``(n_ears,)`` local edge index of the interior edge for each ear face, same length as
+        ``ear``.
 
     See Also
     --------

@@ -82,6 +82,16 @@ VEC3_PACK_SHIFT = wp.constant(wp.uint32(11))
 # ---------------------------------------------------------------------------
 
 
+def hash_table_mask(n: int) -> int:
+    """
+    Return the slot mask of an open-addressing table for ``n`` keys, at least 8 slots.
+
+    At least twice ``n`` slots, a power of two, so a table of distinct keys is at most half full.
+    Host-side sizing shared by every table the hash functions below address.
+    """
+    return (1 << max(3, (n - 1).bit_length() + 1)) - 1
+
+
 @wp.func
 def hash_slot(key: wp.Int, mask: wp.int32) -> wp.int32:
     """Fibonacci hash; mask = capacity-1, capacity must be power-of-2."""

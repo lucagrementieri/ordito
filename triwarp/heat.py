@@ -139,7 +139,7 @@ def heat_operators(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     t
         Diffusion time. When ``None``, defaults to the squared mean edge length (the
         ``igl::heat_geodesics`` default).
@@ -159,23 +159,23 @@ def heat_operators(
         [`robust_laplacian`][triwarp.laplacian.robust_laplacian] directly where only the operator
         matters (smoothing, parametrization, spectral work).
     cot_entries
-        Optional precomputed [`cotmatrix_entries`][triwarp.laplacian.cotmatrix_entries], shape
-        ``(n_faces, 3)``. Depends on the mesh alone, so a caller assembling these operators at
-        several diffusion times reuses one table -- and
+        ``(n_faces, 3)`` optional precomputed
+        [`cotmatrix_entries`][triwarp.laplacian.cotmatrix_entries]. Depends on the mesh alone, so a
+        caller assembling these operators at several diffusion times reuses one table -- and
         [`Trimesh.cotmatrix_entries`][triwarp.mesh.Trimesh.cotmatrix_entries] has it cached. Both
         precisions are accepted: the assembly casts to the matrix dtype in a single build.
 
     Returns
     -------
     heat_system : warp.sparse.BsrMatrix
-        ``M - t * L`` in ``float64``, the heat-diffusion system.
+        ``(n_vertices, n_vertices)`` ``M - t * L`` in ``float64``, the heat-diffusion system.
     heat_preconditioner : ``warp.optim.linear.LinearOperator``
         Jacobi preconditioner for ``heat_system``.
     laplacian : warp.sparse.BsrMatrix
-        The ``float64`` cotangent stiffness matrix ``L`` (igl sign convention, so ``-L`` is positive
-        semi-definite).
+        ``(n_vertices, n_vertices)`` ``float64`` cotangent stiffness matrix ``L`` (igl sign
+        convention, so ``-L`` is positive semi-definite).
     poisson_system : warp.sparse.BsrMatrix
-        ``-L``, the positive-semi-definite Poisson operator.
+        ``(n_vertices, n_vertices)`` ``-L``, the positive-semi-definite Poisson operator.
     poisson_preconditioner : ``warp.optim.linear.LinearOperator``
         Jacobi-Chebyshev polynomial preconditioner for ``poisson_system``
         ([`chebyshev_preconditioner`][triwarp.linalg.chebyshev_preconditioner]), built on its first
@@ -184,9 +184,9 @@ def heat_operators(
         ``(n_faces, 3)`` per-face half-cotangent weights, reused by the divergence. Always
         ``float32`` regardless of the ``cot_entries`` precision passed in or built internally.
     face_normals : wp.array[wp.vec3]
-        One unit normal per face.
+        ``(n_faces,)`` unit normals, one per face.
     face_areas : wp.array[wp.float32]
-        One area per face.
+        ``(n_faces,)`` areas, one per face.
 
     Notes
     -----
@@ -262,9 +262,9 @@ def heat_geodesic(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     sources
-        ``(n_sources,)`` ``wp.int32`` source vertex indices. The returned distance is measured to
+        ``(n_sources,)`` source vertex indices. The returned distance is measured to
         the nearest source and is zero at the source set.
     t
         Diffusion time. When ``None``, defaults to the squared mean edge length (the
@@ -371,13 +371,13 @@ def heat_signed_distance(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     curve_vertices
-        Vertex indices along the curves, packed one curve after another. Consecutive entries should
-        be adjacent on the mesh; nothing breaks if they are not, but the source is then splatted
-        along a chord rather than along the surface.
+        ``(n_curve_vertices,)`` vertex indices along the curves, packed one curve after another.
+        Consecutive entries should be adjacent on the mesh; nothing breaks if they are not, but the
+        source is then splatted along a chord rather than along the surface.
     curve_offsets
-        Length ``n_curves + 1`` CSR bounds into ``curve_vertices``. When ``None`` the whole buffer
+        ``(n_curves + 1,)`` CSR bounds into ``curve_vertices``. When ``None`` the whole buffer
         is treated as a single curve.
     t
         Diffusion time; defaults to the squared mean edge length. Larger values smooth the field.
@@ -644,7 +644,7 @@ def vector_heat_operators(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     t
         Diffusion time for both the vector and the scalar systems. When ``None``, defaults to the
         squared mean edge length.
@@ -655,7 +655,8 @@ def vector_heat_operators(
         Notes below describe. [`Trimesh.heat_operators`][triwarp.mesh.Trimesh.heat_operators]
         caches one at this function's own default.
     frames
-        Optional prebuilt [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames] as
+        ``(n_vertices,)`` each, optional prebuilt
+        [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames] as
         ``(basis_x, basis_y, normal)`` -- the gauge, which depends on the mesh alone and not on
         ``t``. [`Trimesh.vertex_tangent_frames`][triwarp.mesh.Trimesh.vertex_tangent_frames] caches
         it.
@@ -663,11 +664,12 @@ def vector_heat_operators(
     Returns
     -------
     vector_system : warp.sparse.BsrMatrix
-        ``M + t * L_connection`` in ``float64`` with ``wp.mat22d`` blocks.
+        ``(n_vertices, n_vertices)`` ``M + t * L_connection`` in ``float64`` with ``wp.mat22d``
+        blocks.
     scalar : tuple
         The [`heat_operators`][triwarp.heat.heat_operators] bundle for the same ``t``.
     frames : tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]
-        ``(basis_x, basis_y, normal)`` per vertex.
+        ``(n_vertices,)`` each, ``(basis_x, basis_y, normal)`` per vertex.
     preconditioner : ``warp.optim.linear.LinearOperator``
         Jacobi preconditioner for ``vector_system``.
 
@@ -881,11 +883,11 @@ def extend_scalar(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     sources
-        ``(n_sources,)`` ``wp.int32`` source vertex indices.
+        ``(n_sources,)`` source vertex indices.
     values
-        ``(n_sources,)`` ``wp.float64`` value carried by each source.
+        ``(n_sources,)`` value carried by each source.
     t
         Diffusion time; defaults to the squared mean edge length.
     operators
@@ -1000,9 +1002,9 @@ def transport_tangent_vectors(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     sources
-        ``(n_sources,)`` ``wp.int32`` source vertex indices.
+        ``(n_sources,)`` source vertex indices.
     vectors
         ``(n_sources,)`` tangent vectors, each in *its own source vertex's* frame.
     t
@@ -1141,7 +1143,7 @@ def log_map(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     source
         Index of the vertex the map is centred on.
     t
@@ -1326,7 +1328,7 @@ def tangent_to_world(
     tangent
         ``(n_vertices,)`` tangent vectors in each vertex's frame.
     basis_x, basis_y
-        The frames those components refer to, from
+        ``(n_vertices,)`` frames those components refer to, from
         [`vertex_tangent_frames`][triwarp.tangent_space.vertex_tangent_frames].
 
     Returns
@@ -1369,10 +1371,10 @@ def diffuse_tangent_field(
     Parameters
     ----------
     system
-        The vector heat system from
+        ``(n_vertices, n_vertices)`` vector heat system from
         [`vector_heat_operators`][triwarp.heat.vector_heat_operators].
     source
-        ``(n_vertices,)`` ``wp.vec2d`` right-hand side, in each vertex's own tangent frame.
+        ``(n_vertices,)`` right-hand side, in each vertex's own tangent frame.
     preconditioner
         ``None``, or the Jacobi preconditioner for ``system`` -- the fourth field of
         [`vector_heat_operators`][triwarp.heat.vector_heat_operators]'s return. The solve is

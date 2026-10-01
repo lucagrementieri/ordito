@@ -85,6 +85,8 @@ follows is the one-line claim each check makes, so a failure message reads in co
 28. **Every public module is shelved in ``docs/SUMMARY.md`` exactly once.** Zensical's
     ``api-autonav`` builds a page for each module, but the nav is authored by hand, and a module
     missing from it is built and unreachable with ``zensical build --strict`` still green.
+29. **An array's entry opens with its shape as a code span** (section 6): ``(3 * n_faces,)`` flat
+    triangle index buffer, not ``Length-``, ``Shape ``(``, ``Flat `` or ``Rank-1 `` first.
 
 Why a static scan rather than importing ``triwarp``
 ---------------------------------------------------
@@ -2369,4 +2371,93 @@ def docs_nav_problems() -> list[str]:
         f"docs/SUMMARY.md: triwarp.{name} is listed {listed.count(name)} times -- once only"
         for name in sorted({name for name in listed if listed.count(name) > 1})
     ]
+    return problems
+
+
+# --- check 29 -----------------------------------------------------------------------------------
+
+# The spellings a shape-first entry replaced. Each opens an entry's description (or a property's
+# summary) with words before the shape, which is what the rule exists to stop: four ways of saying
+# one thing made a reader parse each entry anew, and the shape is the part read first.
+_SHAPE_LATE_OPENINGS = re.compile(r"^(?:Length[- ]``|Shape ``\(|Flat\b|Rank-[1-4] ``\()")
+_SHAPE_ITEM_SECTIONS = frozenset(
+    {"Parameters", "Other Parameters", "Returns", "Yields", "Attributes"}
+)
+
+
+def _item_openings(docstring: str) -> list[tuple[int, str, str, str]]:
+    """``(line index, section, item, first description line)`` of every numpydoc item entry."""
+    lines = docstring.splitlines()
+    openings: list[tuple[int, str, str, str]] = []
+    section: str | None = None
+    section_indent = 0
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        stripped = line.strip()
+        if _SECTION_RULE.fullmatch(stripped) and index:
+            section = lines[index - 1].strip()
+            section_indent = len(lines[index - 1]) - len(lines[index - 1].lstrip())
+            index += 1
+            continue
+        indent = len(line) - len(line.lstrip())
+        if section in _SHAPE_ITEM_SECTIONS and stripped and indent == section_indent:
+            following = index + 1
+            while following < len(lines) and not lines[following].strip():
+                following += 1
+            if following < len(lines):
+                description = lines[following]
+                if len(description) - len(description.lstrip()) > section_indent:
+                    openings.append((following, section, stripped, description.strip()))
+        index += 1
+    return openings
+
+
+def shape_spelling_problems() -> list[str]:
+    """
+    Check 29: an array entry whose description does not open with its shape.
+
+    Every public ``Parameters`` / ``Returns`` / ``Yields`` / ``Attributes`` entry of an array
+    writes the shape first, as a code span, and then what the array means: ``(3 * n_faces,)`` flat
+    triangle index buffer. Before the rule the package spelled one idea four ways (a leading
+    shape span, ``Length-``, ``Shape ``(``, ``Flat ...``) across some 650 entries, so a reader
+    re-parsed every entry and a shape was sometimes buried mid-sentence. The scan reads the first
+    description line of each entry, and the one-line summary of every property (the ``Trimesh``
+    accessors render as attributes, whose summary is their whole entry).
+
+    What it cannot see is the rest of the rule: a shape buried *later* in a sentence that opens
+    with something else (``Smoothed ``(n_vertices,)`` positions``), a redundant dtype, an
+    abbreviated size name. Telling an array's own shape from a shape the prose merely mentions
+    ("the cell ``(0, 0, 0)``") is a reading, so those stay with review; the openings it bans are
+    the spellings that decayed, and each is unambiguous.
+    """
+    problems: list[str] = []
+    for path in sorted(_PACKAGE_DIR.glob("*.py")):
+        if path.stem.startswith("_"):
+            continue
+        site = path.relative_to(_REPO_ROOT)
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef | ast.FunctionDef) or node.name.startswith("_"):
+                continue
+            docstring = ast.get_docstring(node, clean=False)
+            if docstring is None:
+                continue
+            first_line = node.body[0].lineno
+            if isinstance(node, ast.FunctionDef) and any(
+                "property" in ast.unparse(decorator).lower() for decorator in node.decorator_list
+            ):
+                summary = docstring.strip().splitlines()[0]
+                if _SHAPE_LATE_OPENINGS.match(summary):
+                    problems.append(
+                        f"{site}:{first_line}: property {node.name}'s summary opens with "
+                        f"{summary.split()[0]!r} -- write its shape first, as a code span"
+                    )
+            for index, section, item, description in _item_openings(docstring):
+                if _SHAPE_LATE_OPENINGS.match(description):
+                    problems.append(
+                        f"{site}:{first_line + index}: {node.name}'s {section} entry {item!r} "
+                        f"opens with {description.split()[0]!r} -- write its shape first, as a "
+                        "code span, e.g. ``(3 * n_faces,)`` flat triangle index buffer"
+                    )
     return problems

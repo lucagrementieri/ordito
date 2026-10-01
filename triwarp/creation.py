@@ -173,6 +173,11 @@ def _icosphere_face_table() -> np.ndarray:
 # Built once: the icosahedron's topology is a constant, so the only per-call cost is the upload.
 _ICOSPHERE_FACE_TABLE = _icosphere_face_table()
 
+# Refinement levels the first icosphere launch descends at once. A thread's work grows with the
+# depth it descends while a launch costs a fixed host overhead, so the coarse levels, whose
+# lattices are small, share one launch and every finer level gets its own, one level deep.
+_ICOSPHERE_LEVELS_PER_LAUNCH = 6
+
 # Deliberately NOT cached per device. ``box``, ``tetrahedron``, ``octahedron``, ``icosahedron``
 # and ``dodecahedron`` *return* the buffer they upload (``_apply_transform`` may rewrite its
 # winding in place), so a cached table would have to be ``wp.clone``-d on read, which gives the
@@ -309,7 +314,7 @@ def box(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with 8 vertices and 36 flat face indices.
+        ``(8,)`` and ``(36,)`` arrays ``(vertices, faces)``: 8 vertices and 36 flat face indices.
 
     Raises
     ------
@@ -382,7 +387,8 @@ def grid(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``, wound so the normals point along ``+Z``.
+        ``(nx * ny,)`` and ``(6 * (nx - 1) * (ny - 1),)`` arrays ``(vertices, faces)`` on
+        ``device``, wound so the normals point along ``+Z``.
 
     Raises
     ------
@@ -441,7 +447,7 @@ def icosahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with 12 vertices and 20 triangles.
+        ``(12,)`` and ``(60,)`` arrays ``(vertices, faces)``: 12 vertices and 20 triangles.
 
     See Also
     --------
@@ -470,7 +476,7 @@ def tetrahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arr
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with 4 vertices and 4 triangles.
+        ``(4,)`` and ``(12,)`` arrays ``(vertices, faces)``: 4 vertices and 4 triangles.
 
     See Also
     --------
@@ -499,7 +505,7 @@ def octahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.arra
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with 6 vertices and 8 triangles.
+        ``(6,)`` and ``(24,)`` arrays ``(vertices, faces)``: 6 vertices and 8 triangles.
 
     See Also
     --------
@@ -533,7 +539,7 @@ def dodecahedron(device: wp.DeviceLike = None) -> tuple[wp.array[wp.vec3], wp.ar
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with 20 vertices and 36 triangles.
+        ``(20,)`` and ``(108,)`` arrays ``(vertices, faces)``: 20 vertices and 36 triangles.
 
     See Also
     --------
@@ -571,20 +577,23 @@ def icosphere(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     Notes
     -----
     The connectivity is generated in closed form rather than by iterating
     [`subdivide`][triwarp.remesh.subdivide]: every vertex of the refined mesh is addressed directly
     by its barycentric coordinates within one of the 20 base faces (see
-    ``kernels.creation.icosphere_vertex_index``), so the whole face buffer is written by **one**
-    kernel and the vertices by one launch per refinement level, with no host synchronization.
+    ``kernels.creation.icosphere_vertex_index``), so the face buffer is written in closed form and
+    the whole mesh by one kernel, with no host synchronization: one launch up to six levels, then
+    one more per level.
 
-    The *geometry* is still the recursive one, level by level, because that is what the reference
-    produces: a vertex is the projected midpoint of two vertices of the previous level, which is
-    not the same point as the projection of the corresponding barycentric point of the base face
-    (the two differ by a few percent of the edge length). Vertex *order* differs from trimesh —
+    The *geometry* is still the recursive one, because that is what the reference produces: a
+    vertex is the projected midpoint of two vertices of the previous level, which is not the same
+    point as the projection of the corresponding barycentric point of the base face (the two
+    differ by a few percent of the edge length). Each vertex is computed on its own by descending
+    the refinement from its base face, keeping at every level the child triangle that contains it,
+    which reproduces the recursive build bit for bit. Vertex *order* differs from trimesh —
     vertices come out as the 12 base corners, then the interior points of each base edge, then the
     interior points of each base face.
 
@@ -602,21 +611,21 @@ def icosphere(
     table, corners = _icosphere_tables(wp.get_device(device).alias)
     vertices = _launch.empty(10 * 4**levels + 2, dtype=wp.vec3, device=corners.device)
     faces = _launch.empty(20 * n * n * 3, dtype=wp.int32, device=vertices.device)
-    # The face buffer and level 0 -- the 12 base corners, which occupy the first block of the
-    # numbering, scaled to `radius` -- in one launch; each level after that refines the last.
-    _launch.launch(
-        kernel_creation.icosphere_base,
-        dim=(20, n, n),
-        inputs=[table, corners, wp.int32(n), radius_f, vertices, faces],
-        device=vertices.device,
-    )
-    for level in range(1, levels + 1):
+    # One launch for the first ``_ICOSPHERE_LEVELS_PER_LAUNCH`` levels, then one per level; the
+    # last one writes the faces too.
+    coarse = n
+    stride = n >> min(levels, _ICOSPHERE_LEVELS_PER_LAUNCH)
+    while True:
         _launch.launch(
-            kernel_creation.icosphere_generation,
-            dim=(20, (1 << level) + 1, (1 << level) + 1),
-            inputs=[table, wp.int32(n), wp.int32(1 << level), radius_f, vertices],
+            kernel_creation.icosphere_mesh,
+            dim=(20, n // stride + 1, n // stride + 1),
+            inputs=[table, corners, n, coarse, stride, radius_f, vertices, faces],
             device=vertices.device,
         )
+        if stride == 1:
+            break
+        coarse = stride
+        stride = coarse >> 1
     return vertices, faces
 
 
@@ -659,7 +668,7 @@ def uv_sphere(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     Raises
     ------
@@ -742,9 +751,9 @@ def sphere_cap(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``, wound so the normals point away from the sphere
-        center. Vertex 0 is the apex at ``(0, 0, radius)`` and the last ``6 * n`` vertices are the
-        rim, in azimuthal order.
+        ``(1 + 3 * n * (n + 1),)`` and ``(18 * n ** 2,)`` arrays ``(vertices, faces)`` on
+        ``device``, wound so the normals point away from the sphere center. Vertex 0 is the apex at
+        ``(0, 0, radius)`` and the last ``6 * n`` vertices are the rim, in azimuthal order.
 
     Raises
     ------
@@ -815,7 +824,7 @@ def capsule(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     Raises
     ------
@@ -910,7 +919,7 @@ def cylinder(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     Raises
     ------
@@ -977,7 +986,7 @@ def cone(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     See Also
     --------
@@ -1039,7 +1048,7 @@ def annulus(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``.
 
     Raises
     ------
@@ -1102,6 +1111,7 @@ def torus(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(n_vertices,)`` and ``(6 * major_sections * minor_sections,)`` arrays
         ``(vertices, faces)`` with ``2 * major_sections * minor_sections`` triangles.
 
     Notes
@@ -1168,7 +1178,8 @@ def revolve(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``linestring.device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on
+        ``linestring.device``.
 
     Raises
     ------
@@ -1388,7 +1399,7 @@ def extrude_triangulation(
     vertices
         ``(n,)`` 2D vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer into ``vertices``.
+        ``(3 * n_faces,)`` flat triangle index buffer into ``vertices``.
     height
         Distance to extrude along Z. May be negative; the triangulation is re-wound to agree with
         its sign so the result always has positive volume.
@@ -1399,7 +1410,8 @@ def extrude_triangulation(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with ``2 * n`` vertices, on ``vertices.device``.
+        ``(2 * n,)`` and ``(3 * n_out_faces,)`` arrays ``(vertices, faces)``, ``n_out_faces`` the
+        output triangle count: ``2 * n`` vertices, on ``vertices.device``.
 
     Raises
     ------
@@ -1458,7 +1470,8 @@ def extrude_polygon(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``polygon.device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on
+        ``polygon.device``.
 
     See Also
     --------
@@ -1577,7 +1590,8 @@ def sweep_polygon(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``polygon.device``.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on
+        ``polygon.device``.
 
     Raises
     ------
@@ -1673,7 +1687,7 @@ def truncated_prisms(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     origin
         Point on the truncation plane. ``None`` truncates against the ``z = 0`` plane.
     normal
@@ -1682,8 +1696,8 @@ def truncated_prisms(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with ``6 * n_faces`` vertices and ``8 * n_faces`` triangles, on
-        ``vertices.device``.
+        ``(6 * n_faces,)`` and ``(24 * n_faces,)`` arrays ``(vertices, faces)``: ``6 * n_faces``
+        vertices and ``8 * n_faces`` triangles, on ``vertices.device``.
 
     Raises
     ------
@@ -1773,8 +1787,8 @@ def axis(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``, with the ball and the three cylinders concatenated in
-        X, Y, Z order after the ball.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``, with
+        the ball and the three cylinders concatenated in X, Y, Z order after the ball.
 
     Notes
     -----
@@ -1880,7 +1894,8 @@ def parametric_surface(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``. The vertex count is below
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``. The
+        vertex count is below
         ``u_resolution * v_resolution`` wherever the surface glues, and the face count is
         ``2 * (u_resolution - 1) * (v_resolution - 1)`` less one triangle per pole-adjacent cell.
 
@@ -1960,8 +1975,8 @@ def super_ellipsoid(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``, closed and watertight: the u direction wraps and both
-        v extremes are poles.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``, closed
+        and watertight: the u direction wraps and both v extremes are poles.
 
     Raises
     ------
@@ -2022,8 +2037,8 @@ def super_toroid(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device``, closed and watertight with Euler characteristic 0:
-        both parameter directions wrap.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` arrays ``(vertices, faces)`` on ``device``, closed
+        and watertight with Euler characteristic 0: both parameter directions wrap.
 
     Raises
     ------
@@ -2082,8 +2097,9 @@ def random_hills(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` on ``device`` with ``u_resolution * v_resolution`` vertices — nothing
-        is identified — and ``2 * (u_resolution - 1) * (v_resolution - 1)`` triangles.
+        ``(u_resolution * v_resolution,)`` and ``(6 * (u_resolution - 1) * (v_resolution - 1),)``
+        arrays ``(vertices, faces)`` on ``device`` with ``u_resolution * v_resolution`` vertices —
+        nothing is identified — and ``2 * (u_resolution - 1) * (v_resolution - 1)`` triangles.
 
     Raises
     ------
@@ -2152,7 +2168,8 @@ def random_soup(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(vertices, faces)`` with ``3 * face_count`` vertices in ``[-0.5, 0.5] ** 3`` and
+        ``(3 * face_count,)`` and ``(3 * face_count,)`` arrays ``(vertices, faces)`` with
+        ``3 * face_count`` vertices in ``[-0.5, 0.5] ** 3`` and
         ``faces == arange(3 * face_count)``.
 
     Notes

@@ -70,7 +70,7 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
     Returns
     -------
     wp.array[wp.int32]
-        Flat length-``3 * n_faces`` buffer of CCW triangles over the input point indices, on
+        ``(3 * n_faces,)`` flat buffer of CCW triangles over the input point indices, on
         ``points.device``. Empty when the points are collinear.
 
     Raises
@@ -225,7 +225,7 @@ def triangulate_point_cloud(
     points
         ``(n,)`` point positions on the target device.
     normals
-        Optional ``(n,)`` oriented unit normals. When ``None``, normals are estimated.
+        ``(n,)`` oriented unit normals. When ``None``, normals are estimated.
     num_neighbours
         Number of nearest neighbours used per point when ``radius <= 0``. Defaults to
         ``max_neighbours`` when neither ``num_neighbours`` nor ``radius`` is set.
@@ -246,10 +246,10 @@ def triangulate_point_cloud(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        The referenced input points, compacted from index zero (unreferenced points dropped),
-        on ``points.device``.
+        ``(m,)`` referenced input points, compacted from index zero (unreferenced points dropped),
+        on ``points.device``, ``m <= n``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer into ``vertices``.
+        ``(3 * n_faces,)`` flat triangle index buffer into ``vertices``.
 
     Raises
     ------
@@ -481,9 +481,9 @@ def screened_poisson(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Iso-surface vertices on ``points.device``.
+        ``(n_vertices,)`` iso-surface vertices on ``points.device``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer, free of zero-area triangles
+        ``(3 * n_faces,)`` flat triangle index buffer, free of zero-area triangles
         ([`remove_degenerate_faces`][triwarp.repair.remove_degenerate_faces]) and oriented outward
         ([`make_normals_outward`][triwarp.repair.make_normals_outward]).
 
@@ -591,7 +591,11 @@ def screened_poisson(
             device=device,
         )
         iso = _poisson_iso_value(sampled, normals, confidence)
-        vertices, faces = _extract_poisson_surface(solution, res, iso, cube_lower, cube_upper)
+        vertices, faces = tw.levelset.marching_cubes(
+            twt.as_array3d(solution.reshape((res, res, res)), wp.float32),
+            iso,
+            bounds=(cube_lower, cube_upper),
+        )
 
     # Drop zero-area triangles before orienting. Marching cubes emits one wherever the level set
     # grazes a lattice node, and such a face has no normal for ``make_normals_outward`` to orient
@@ -640,27 +644,6 @@ def _poisson_iso_value(
     if total_weight <= 0.0:
         return 0.0
     return tw.reduce.weighted_sum(sampled, lengths) / total_weight
-
-
-def _extract_poisson_surface(
-    field: wp.array[wp.float32], res: int, iso: float, cube_lower: wp.vec3, cube_upper: wp.vec3
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Marching-cubes the ``res**3`` scalar lattice ``field`` at ``iso`` over the cube.
-
-    The shared extraction tail of both backends: the dense grid feeds its solution buffer straight
-    in, the adaptive backend first samples its finite-element field onto a dense lattice
-    ([`_extract_poisson_surface_fem`][triwarp.reconstruction._extract_poisson_surface_fem]). The
-    result is un-oriented; [`screened_poisson`][triwarp.reconstruction.screened_poisson] orients it.
-
-    All this adds over [`marching_cubes`][triwarp.levelset.marching_cubes] is the reshape:
-    the solvers carry their lattice flat, because that is the shape the linear solve wants.
-    """
-    return tw.levelset.marching_cubes(
-        twt.as_array3d(field.reshape((res, res, res)), wp.float32),
-        iso,
-        bounds=(cube_lower, cube_upper),
-    )
 
 
 def _poisson_dense_solve(
@@ -1181,7 +1164,14 @@ def _screened_poisson_adaptive(
         # effective octree depth at ~two cells per mean nearest-neighbour distance (never below
         # full_depth, never above the requested depth). ``depth`` beyond this only refines the
         # extraction lattice, which merely samples the already-smooth field more densely.
-        mean_spacing = _mean_positive_finite(tw.neighbors.nearest_neighbor_distance(points))
+        # The whole ``k = 2`` self-query table, as ``ball_pivoting`` reduces its own: slot 0 is the
+        # self-match at exactly zero, which the positive-finite filter drops, so the mean is the
+        # nearest-neighbour spacing with no copy of column 1 first.
+        mean_spacing = (
+            _mean_positive_finite(tw.neighbors.query_nearest(points, points, k=2)[1].flatten())
+            if n >= 2
+            else None
+        )
         spacing = mean_spacing if mean_spacing is not None else cube_size / float(res_fine)
         grid_depth = int(np.floor(np.log2(max(2.0 * cube_size / spacing, 1.0))))
         grid_depth = max(full_depth, min(depth, grid_depth))
@@ -1332,7 +1322,11 @@ def _extract_poisson_surface_fem(
         fields={"u": field},
         values={"positions": positions, "out_values": values},
     )
-    return _extract_poisson_surface(values, res, iso, cube_lower, cube_upper)
+    return tw.levelset.marching_cubes(
+        twt.as_array3d(values.reshape((res, res, res)), wp.float32),
+        iso,
+        bounds=(cube_lower, cube_upper),
+    )
 
 
 def resample_uniform(
@@ -1362,7 +1356,7 @@ def resample_uniform(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     voxel_size
         Grid spacing. Defaults to ``1 %`` of the bounding-box diagonal, which is a ~100-cell grid
         across the mesh. **Cost is cubic in the reciprocal**, so halving it is eight times the field
@@ -1379,9 +1373,9 @@ def resample_uniform(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Resampled vertex positions on ``vertices.device``.
+        ``(n_out_vertices,)`` resampled vertex positions on ``vertices.device``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer.
+        ``(3 * n_out_faces,)`` flat triangle index buffer over the ``n_out_faces`` output triangles.
 
     Raises
     ------
@@ -1500,7 +1494,7 @@ def ball_pivoting(
     points
         ``(n,)`` point positions on the target device (``n >= 3``).
     normals
-        Optional ``(n,)`` oriented unit normals. When ``None``, they are estimated by PCA oriented
+        ``(n,)`` oriented unit normals. When ``None``, they are estimated by PCA oriented
         outward from the centroid ([`estimate_normals`][triwarp.points.estimate_normals]; valid for
         star-shaped clouds only).
     radius
@@ -1523,9 +1517,10 @@ def ball_pivoting(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        The referenced input points, compacted from index zero, on ``points.device``.
+        ``(m,)`` referenced input points, compacted from index zero, on ``points.device``,
+        ``m <= n``.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer, oriented outward.
+        ``(3 * n_faces,)`` flat triangle index buffer, oriented outward.
 
     Raises
     ------

@@ -64,7 +64,7 @@ def crease_edges(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     angle
         Dihedral threshold in **degrees**. An edge is a crease when its two faces meet at *strictly*
         more than this, so ``0`` selects every interior edge whose faces are not exactly coplanar
@@ -189,7 +189,7 @@ def cut_along_edges(
         ``(n_vertices,)`` mesh vertex positions, ``wp.vec3`` or ``wp.vec3d``. The output dtype
         follows.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer. Must be **edge-manifold**:
+        ``(3 * n_faces,)`` flat triangle index buffer. Must be **edge-manifold**:
         the cut is defined through halfedge twins, and an edge with three faces has no well-defined
         "other side" (see [`halfedge_twins`][triwarp.halfedge.halfedge_twins]).
     edges
@@ -197,22 +197,22 @@ def cut_along_edges(
         edges are ignored, and boundary edges are already cuts so marking them changes nothing.
         Get a crease set from [`crease_edges`][triwarp.seams.crease_edges].
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], length
-        ``3 * n_faces``. Depends on the connectivity alone, so a caller running several passes over
-        one topology builds it once -- and
-        [`Trimesh.halfedge_twins`][triwarp.mesh.Trimesh.halfedge_twins] has it cached. Passing it
-        also skips the edge-manifold check and the host readback that check costs.
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. Depends
+        on the connectivity alone, so a caller running several passes over one topology builds it
+        once -- and [`Trimesh.halfedge_twins`][triwarp.mesh.Trimesh.halfedge_twins] has it cached.
+        Passing it also skips the edge-manifold check and the host readback that check costs.
 
     Returns
     -------
     vertices : wp.array[wp.vec3] | wp.array[wp.vec3d]
-        Positions of the cut mesh, one per surviving corner component, in ``vertices``' own dtype.
+        ``(m,)`` positions of the cut mesh, one per surviving corner component (``m`` of them), in
+        ``vertices``' own dtype.
         Longer than the input's wherever a vertex was split, and **shorter** when the input had
         unreferenced vertices — only corners produce output vertices, so an unused vertex
         disappears.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer over the new vertices. Same length, same winding
-        and same face order as the input; only the indices change.
+        ``(3 * n_faces,)`` flat triangle index buffer over the new vertices. Same length, same
+        winding and same face order as the input; only the indices change.
 
     Raises
     ------
@@ -315,15 +315,15 @@ def uv_seam_edges(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer. Must be **edge-manifold**
+        ``(3 * n_faces,)`` flat triangle index buffer. Must be **edge-manifold**
         (see [`halfedge_twins`][triwarp.halfedge.halfedge_twins]).
     texcoords
-        UV coordinates. With ``face_texcoords`` this is igl's ``TC``, an arbitrary-length pool the
-        corners index into; without it, this is the per-corner (*wedge*) buffer of length
-        ``3 * n_faces``, which is how MeshLab and the OBJ format store an atlas.
+        ``(m,)`` UV coordinates. With ``face_texcoords`` this is igl's ``TC``, a pool of arbitrary
+        length ``m`` the corners index into; without it, this is the per-corner (*wedge*) buffer,
+        ``m == 3 * n_faces``, which is how MeshLab and the OBJ format store an atlas.
     face_texcoords
-        igl's ``FTC``: a length-``3 * n_faces`` ``wp.int32`` buffer giving each corner's index into
-        ``texcoords``. ``None`` means ``texcoords`` is already per-corner.
+        ``(3 * n_faces,)`` igl's ``FTC``, giving each corner's index into ``texcoords``. ``None``
+        means ``texcoords`` is already per-corner.
     match
         How two corners are judged to carry the same texcoord. ``"index"`` compares indices into
         ``texcoords`` (igl); ``"uv"`` compares the coordinates themselves (MeshLab). Defaults to
@@ -337,9 +337,9 @@ def uv_seam_edges(
         Total vertex count, used as the edge-pairing radix. When ``None`` it is inferred with
         [`array.index_bound`][triwarp.array.index_bound], which costs a host readback.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], length
-        ``3 * n_faces``. Depends on the connectivity alone, so one table serves this call and every
-        other halfedge walk over the same mesh --
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. Depends
+        on the connectivity alone, so one table serves this call and every other halfedge walk over
+        the same mesh --
         [`Trimesh.halfedge_twins`][triwarp.mesh.Trimesh.halfedge_twins] has it cached.
 
     Returns
@@ -460,10 +460,10 @@ def seam_edge_vertices(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer, the same one the rows came
+        ``(3 * n_faces,)`` flat triangle index buffer, the same one the rows came
         from.
     face_corners
-        ``(n, 2)`` or ``(n, 4)`` ``int32`` array of ``(face, corner, ...)`` rows.
+        ``(n, 2)`` or ``(n, 4)`` array of ``(face, corner, ...)`` rows.
 
     Returns
     -------
@@ -525,12 +525,12 @@ def uv_seam_vertex_mask(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     texcoords
-        UV coordinates, per-corner or pooled; see
+        ``(m,)`` UV coordinates, per-corner or pooled; see
         [`uv_seam_edges`][triwarp.seams.uv_seam_edges].
     face_texcoords
-        Optional length-``3 * n_faces`` corner-to-texcoord index buffer.
+        ``(3 * n_faces,)`` corner-to-texcoord index buffer, or ``None``.
     include_boundary
         Whether an edge with a single incident triangle counts as a seam. ``True`` reproduces
         MeshLab; ``False`` restricts the mask to interior texcoord mismatches.
@@ -545,7 +545,7 @@ def uv_seam_vertex_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_vertices`` mask on ``faces.device``. Unreferenced vertices are always ``False``.
+        ``(n_vertices,)`` mask on ``faces.device``. Unreferenced vertices are always ``False``.
 
     Raises
     ------

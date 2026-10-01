@@ -203,13 +203,13 @@ def sample_surface(
     Parameters
     ----------
     vertices
-        Vertex positions.
+        ``(n_vertices,)`` vertex positions.
     faces
-        Flat triangle indices ``(i0, i1, i2)`` per face.
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
     count
         Number of samples.
     face_weight
-        Optional per-face weights (length = number of triangles). If ``None``,
+        ``(n_faces,)`` per-face weights. If ``None``,
         triangle areas from ``face_normals_and_areas`` are used.
     seed
         RNG seed for ``wp.rand_init``. If ``None``, a random seed is chosen.
@@ -295,16 +295,16 @@ def sample_surface_poisson_disk(
     Parameters
     ----------
     vertices
-        Vertex positions.
+        ``(n_vertices,)`` vertex positions.
     faces
-        Flat triangle indices ``(i0, i1, i2)`` per face.
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
     count
         Number of output samples.
     init_factor
         Over-sampling factor; initial pool has ``init_factor * count`` points.
         Must satisfy ``init_factor >= 1``.
     face_weight
-        Optional per-face weights passed to the initial uniform sampling.
+        ``(n_faces,)`` per-face weights passed to the initial uniform sampling, or ``None``.
     seed
         RNG seed for the initial uniform sampling. If ``None``, a random seed
         is chosen.
@@ -445,17 +445,17 @@ def _top_maxima_by_weight(
     Parameters
     ----------
     candidates
-        Length-``init_count`` ``0``/``1`` flags marking the points this round may delete -- its
+        ``(init_count,)`` ``0``/``1`` flags marking the points this round may delete -- its
         local weight maxima, or the whole alive set when there are none.
     weights
-        Length-``init_count`` crowding weights.
+        ``(init_count,)`` crowding weights.
     excess
         How many of the flagged points to delete.
 
     Returns
     -------
     wp.array[wp.int32]
-        Length-``init_count`` ``0``/``1`` deletion flags with exactly ``excess`` ones.
+        ``(init_count,)`` ``0``/``1`` deletion flags with exactly ``excess`` ones.
     """
     n_pool = candidates.size
     flagged = flatnonzero(candidates)
@@ -488,9 +488,9 @@ def sample_surface_blue_noise(
     Parameters
     ----------
     vertices
-        Vertex positions.
+        ``(n_vertices,)`` vertex positions.
     faces
-        Flat triangle indices ``(i0, i1, i2)`` per face.
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
     radius
         Minimum Poisson disk radius (Euclidean distance in 3D). Enforced exactly: the closest pair
         in the output is never below it.
@@ -783,9 +783,9 @@ def sample_volume(
     Parameters
     ----------
     vertices
-        Vertex positions.
+        ``(n_vertices,)`` vertex positions.
     faces
-        Flat triangle indices ``(i0, i1, i2)`` per face.
+        ``(3 * n_faces,)`` flat triangle indices, ``(i0, i1, i2)`` per face.
     count
         Number of samples.
     seed

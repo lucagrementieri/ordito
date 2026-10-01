@@ -71,8 +71,8 @@ def face_adjacency(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` buffer of triangle vertex indices, the
-        same flat layout as [`triwarp.triangles`][triwarp.triangles] and
+        ``(3 * n_faces,)`` buffer of triangle vertex indices, the same flat layout as
+        [`triwarp.triangles`][triwarp.triangles] and
         [`faces_to_edges`][triwarp.edges.faces_to_edges].
     return_edges
         If ``True``, also return the shared vertex indices for each adjacency row.
@@ -95,12 +95,12 @@ def face_adjacency(
     Returns
     -------
     twt.Array2dInt32 or tuple of two such arrays
-        **adjacency** — shape ``(m, 2)`` on ``faces.device``. Row ``k`` gives face
-        indices ``(f0, f1)`` with ``f0 <= f1`` (rows sorted in-place). Faces
-        ``faces[3*f0:3*f0+3]`` and ``faces[3*f1:3*f1+3]`` share an edge.
+        ``(m, 2)`` **adjacency**, ``m`` the number of face pairs sharing an edge, on
+        ``faces.device``. Row ``k`` gives face indices ``(f0, f1)`` with ``f0 <= f1`` (rows sorted
+        in-place). Faces ``faces[3*f0:3*f0+3]`` and ``faces[3*f1:3*f1+3]`` share an edge.
 
-        When ``return_edges`` is ``True``, also returns **adjacency_edges** —
-        shape ``(m, 2)`` with the sorted vertex pair for that shared edge (one row
+        When ``return_edges`` is ``True``, also returns ``(m, 2)`` **adjacency_edges**
+        with the sorted vertex pair for that shared edge (one row
         per adjacency pair, taken from the first matching edge row).
 
     Raises
@@ -182,9 +182,9 @@ def require_paired_adjacency(
     Parameters
     ----------
     face_adjacency
-        Candidate ``(m, 2)`` face pairs, or ``None``.
+        ``(m, 2)`` candidate face pairs, or ``None``.
     face_adjacency_edges
-        Candidate ``(m, 2)`` shared-edge endpoints, or ``None``.
+        ``(m, 2)`` candidate shared-edge endpoints, or ``None``.
 
     Raises
     ------
@@ -275,7 +275,7 @@ def vertex_face_adjacency(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Number of vertices, i.e. the number of CSR rows. When ``None`` it is inferred from
         ``faces`` with [`array.index_bound`][triwarp.array.index_bound], which costs one host
@@ -285,9 +285,9 @@ def vertex_face_adjacency(
     Returns
     -------
     vertex_faces : wp.array[wp.int32]
-        Length ``3 * n_faces`` face indices, grouped by vertex, arbitrary order within a row.
+        ``(3 * n_faces,)`` face indices, grouped by vertex, arbitrary order within a row.
     offsets : wp.array[wp.int32]
-        Length ``n_vertices + 1`` row offsets on ``faces.device``.
+        ``(n_vertices + 1,)`` row offsets on ``faces.device``.
 
     See Also
     --------
@@ -354,18 +354,17 @@ def face_adjacency_unshared(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` buffer of triangle vertex indices, the
-        same flat layout as [`face_adjacency`][triwarp.adjacency.face_adjacency].
+        ``(3 * n_faces,)`` buffer of triangle vertex indices, the same flat layout as
+        [`face_adjacency`][triwarp.adjacency.face_adjacency].
     face_adjacency
-        Optional ``(m, 2)`` face index pairs from
+        ``(m, 2)`` face index pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. When
         ``None``, adjacency and shared edges are derived from ``faces`` directly and neither table
         is materialized.
     face_adjacency_edges
-        Optional ``(m, 2)`` sorted shared vertex pairs (as from
-        [`face_adjacency`][triwarp.adjacency.face_adjacency] with ``return_edges=True``).
-        Must be supplied
-        together with ``face_adjacency`` or omitted with it.
+        ``(m, 2)`` sorted shared vertex pairs (as from
+        [`face_adjacency`][triwarp.adjacency.face_adjacency] with ``return_edges=True``), or
+        ``None``. Must be supplied together with ``face_adjacency`` or omitted with it.
     n_vertices
         Optional vertex count used as the row-hashing radix, forwarded to
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. Ignored when the adjacency tables are
@@ -374,7 +373,8 @@ def face_adjacency_unshared(
     Returns
     -------
     twt.Array2dInt32
-        Shape ``(m, 2)`` on ``faces.device``. Row ``k`` gives vertex indices into
+        ``(m, 2)`` unshared vertex indices per face pair, on ``faces.device``. Row ``k`` gives
+        vertex indices into
         ``faces`` for the corners not on ``face_adjacency_edges[k]``, or ``-1``
         when degenerate. Rows are in the same order
         [`face_adjacency`][triwarp.adjacency.face_adjacency] returns for the same ``faces``, so the
@@ -451,21 +451,21 @@ def face_adjacency_angles(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same layout as
+        ``(3 * n_faces,)`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     face_adjacency
-        Optional ``(m, 2)`` face index pairs from
+        ``(m, 2)`` face index pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. When
         ``None``, adjacency is computed from ``faces``.
     face_normals
-        Optional length-``n_faces`` unit face normals. When ``None``, normals
+        ``(n_faces,)`` unit face normals. When ``None``, normals
         are computed from ``vertices`` and ``faces`` via
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas].
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``m`` unsigned angles in radians on ``faces.device``, one per
+        ``(m,)`` unsigned angles in radians on ``faces.device``, one per
         ``face_adjacency`` row. Empty when there are no faces or no adjacency pairs.
 
     Raises
@@ -529,29 +529,29 @@ def face_adjacency_projections(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same layout as
+        ``(3 * n_faces,)`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     face_adjacency
-        Optional ``(m, 2)`` face index pairs from
+        ``(m, 2)`` face index pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. When ``None``, adjacency and
         shared edges are computed from ``faces``.
     face_adjacency_edges
-        Optional ``(m, 2)`` sorted shared vertex pairs (as from
-        [`face_adjacency`][triwarp.adjacency.face_adjacency] with ``return_edges=True``).
-        Must be supplied together with ``face_adjacency`` or omitted with it.
+        ``(m, 2)`` sorted shared vertex pairs (as from
+        [`face_adjacency`][triwarp.adjacency.face_adjacency] with ``return_edges=True``), or
+        ``None``. Must be supplied together with ``face_adjacency`` or omitted with it.
     face_adjacency_unshared
-        Optional ``(m, 2)`` unshared vertex indices per face pair from
+        ``(m, 2)`` unshared vertex indices per face pair from
         [`face_adjacency_unshared`][triwarp.adjacency.face_adjacency_unshared]. When ``None``,
         computed from ``faces`` and the adjacency data.
     face_normals
-        Optional length-``n_faces`` unit face normals. When ``None``, normals
+        ``(n_faces,)`` unit face normals. When ``None``, normals
         are computed from ``vertices`` and ``faces`` via
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas].
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``m`` projections on ``faces.device``, one per ``face_adjacency``
+        ``(m,)`` projections on ``faces.device``, one per ``face_adjacency``
         row. Empty when there are no faces or no adjacency pairs. A row whose second face is
         degenerate (its
         [`face_adjacency_unshared`][triwarp.adjacency.face_adjacency_unshared] entry is ``-1``)
@@ -614,26 +614,25 @@ def face_adjacency_convex(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same layout as
+        ``(3 * n_faces,)`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     face_adjacency
-        Optional ``(m, 2)`` face index pairs from
+        ``(m, 2)`` face index pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. When ``None``, adjacency and
         shared edges are computed from ``faces``.
     face_adjacency_edges
-        Optional ``(m, 2)`` sorted shared vertex pairs. Must be supplied
-        together with ``face_adjacency`` or omitted with it.
+        ``(m, 2)`` sorted shared vertex pairs, or ``None``. Must be supplied together with
+        ``face_adjacency`` or omitted with it.
     face_adjacency_unshared
-        Optional ``(m, 2)`` unshared vertex indices per face pair.
+        ``(m, 2)`` unshared vertex indices per face pair, or ``None``.
     face_normals
-        Optional length-``n_faces`` unit face normals.
+        ``(n_faces,)`` unit face normals, or ``None``.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length ``m`` boolean mask on ``faces.device``, one per
-        ``face_adjacency`` row. Empty when there are no faces or no adjacency
-        pairs.
+        ``(m,)`` mask on ``faces.device``, one per ``face_adjacency`` row. Empty when there are
+        no faces or no adjacency pairs.
 
     Raises
     ------
@@ -743,7 +742,7 @@ def face_connected_component_labels(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same as
+        ``(3 * n_faces,)`` flat triangle index buffer (same as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
@@ -754,7 +753,7 @@ def face_connected_component_labels(
     Returns
     -------
     wp.array[wp.int32]
-        Length ``n_faces`` on ``faces.device``.
+        ``(n_faces,)`` component labels on ``faces.device``.
 
     See Also
     --------
@@ -805,7 +804,7 @@ def sorted_face_edge_keys(
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional exclusive bound on the vertex indices, used as the packing radix. It lets the sort
         order only the low bits the keys can occupy, which is cheaper; without it the keys pack
@@ -815,9 +814,9 @@ def sorted_face_edge_keys(
     Returns
     -------
     sorted_keys : wp.array[wp.uint64]
-        Length ``3 * n_faces`` ascending keys.
+        ``(3 * n_faces,)`` ascending keys.
     order : wp.array[wp.int32]
-        Length ``3 * n_faces`` halfedge index of each sorted key.
+        ``(3 * n_faces,)`` halfedge index of each sorted key.
 
     Raises
     ------

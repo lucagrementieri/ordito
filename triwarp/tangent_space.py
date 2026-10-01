@@ -62,19 +62,20 @@ def vertex_tangent_frames(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     normals
-        Optional precomputed ``(n_vertices,)`` unit vertex normals. When ``None``, the
+        ``(n_vertices,)`` precomputed unit vertex normals. When ``None``, the
         angle-weighted normals are computed here.
     rings
-        Optional precomputed ``(ring_halfedges, offsets, is_boundary)`` from
+        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
+        ``(ring_halfedges, offsets, is_boundary)`` from
         [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings]. When ``None``, they are computed
         here.
 
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]
-        ``(basis_x, basis_y, normal)``, each ``(n_vertices,)`` on ``vertices.device``.
+        ``(n_vertices,)`` arrays ``(basis_x, basis_y, normal)`` on ``vertices.device``.
 
     Raises
     ------
@@ -131,16 +132,16 @@ def face_tangent_frames(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     normals
-        Optional precomputed ``(n_faces,)`` unit face normals, as returned by
+        ``(n_faces,)`` precomputed unit face normals, as returned by
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]. Computed here when
         ``None``.
 
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]]
-        ``(basis_x, basis_y, normal)``, each ``(n_faces,)`` on ``vertices.device``.
+        ``(n_faces,)`` arrays ``(basis_x, basis_y, normal)`` on ``vertices.device``.
 
     Raises
     ------
@@ -206,18 +207,19 @@ def halfedge_tangent_angles(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     face_angles
-        Optional precomputed ``(n_faces, 3)`` corner angles from
+        ``(n_faces, 3)`` precomputed corner angles from
         [`face_angles`][triwarp.triangles.face_angles]. When ``None``, computed here.
     rings
-        Optional precomputed ``(ring_halfedges, offsets, is_boundary)`` from
+        ``(3 * n_faces,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` precomputed
+        ``(ring_halfedges, offsets, is_boundary)`` from
         [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings]. When ``None``, computed here.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``3 * n_faces`` angles in radians on ``vertices.device``, indexed by halfedge.
+        ``(3 * n_faces,)`` angles in radians on ``vertices.device``, indexed by halfedge.
 
     Raises
     ------
@@ -282,19 +284,19 @@ def halfedge_transport_angles(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. When ``None``,
-        computed here.
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins]. When
+        ``None``, computed here.
     tangent_angles
-        Optional precomputed
+        ``(3 * n_faces,)`` precomputed
         [`halfedge_tangent_angles`][triwarp.tangent_space.halfedge_tangent_angles]. When ``None``,
         computed here.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``3 * n_faces`` rotations in radians on ``vertices.device``, indexed by halfedge.
+        ``(3 * n_faces,)`` rotations in radians on ``vertices.device``, indexed by halfedge.
 
     Raises
     ------

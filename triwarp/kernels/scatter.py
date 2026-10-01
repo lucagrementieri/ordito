@@ -5,7 +5,6 @@ import warp as wp
 from triwarp.kernels.array import (
     OverloadTable,
     atomic_min_packed_box,
-    binary_search_index,
     mark_at,
     scanned_count,
     sorted_run_start,
@@ -14,6 +13,7 @@ from triwarp.kernels.array import (
     trilinear_weight,
     unpack_edge_key,
 )
+from triwarp.kernels.triangles import face_normals_and_area
 
 
 @wp.func
@@ -136,20 +136,6 @@ def scatter_weighted_sum_vec(
         atomic_add_vec3(out_sum, index[j], value * weights[tid, j])
 
 
-@wp.kernel
-def scatter_offset_sum(
-    values: wp.array[wp.Scalar],
-    flat_indices: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    out_sum: wp.array[wp.Scalar],
-) -> None:
-    tid = wp.int32(wp.tid())
-    in_index = flat_indices[tid]
-    value = values[in_index]
-    out_index = binary_search_index(offsets, tid) - 1
-    wp.atomic_add(out_sum, out_index, value)
-
-
 @wp.func
 def add_corner_triple(
     out_sum: wp.array[Any], indices: wp.array[wp.int32], row: wp.int32, a: Any, b: Any, c: Any
@@ -161,16 +147,29 @@ def add_corner_triple(
 
 @wp.kernel
 def scatter_face_thirds(
+    faces: wp.array[wp.int32], areas: wp.array[Any], count: wp.Float, out_mass: wp.array[wp.Float]
+) -> None:
+    # Barycentric (lumped) mass: each face donates ``areas[f] / count`` to each incident vertex,
+    # the area converted to the accumulator's dtype as it is read (exact for float32 into float64),
+    # so a caller's areas of the other precision need no cast pass first.
+    f = wp.int32(wp.tid())
+    third = type(count)(areas[f]) / count
+    add_corner_triple(out_mass, faces, f, third, third, third)
+
+
+@wp.kernel
+def scatter_face_area_thirds(
+    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    areas: wp.array[wp.Float],
     count: wp.Float,
     out_mass: wp.array[wp.Float],
 ) -> None:
-    # Barycentric (lumped) mass: each face donates ``areas[f] / count`` to each incident vertex.
-    # ``areas``, ``count`` and ``out_mass`` share one float dtype so the kernel specialises to
-    # float32 (Laplacian) or float64 (geodesic heat method) at launch time.
+    # ``scatter_face_thirds`` with each face's area formed in the thread rather than read from a
+    # table: ``face_normals_and_area``, the body of ``triangles.face_normals_and_areas``, so the
+    # area is that table's entry bit for bit, and no area pass or buffer precedes the scatter.
     f = wp.int32(wp.tid())
-    third = areas[f] / count
+    _normal, area = face_normals_and_area(vertices, faces, f)
+    third = type(count)(area) / count
     add_corner_triple(out_mass, faces, f, third, third, third)
 
 
@@ -396,7 +395,7 @@ def scatter_group_bounds(
     # over ``n_faces`` with ``out_corners`` sized ``6 * n_groups``; ``groups[f]`` is the group index
     # of face ``f``, which for a connected-component label is a representative face index and so
     # needs ``n_groups == n_faces``. A group no face names keeps its ``inf`` seed, which
-    # [`packed_box_diagonals`][triwarp.kernels.bounds.packed_box_diagonals] reads as empty.
+    # [`packed_box_diagonal`][triwarp.kernels.bounds.packed_box_diagonal] reads as empty.
     f = wp.int32(wp.tid())
     group = groups[f]
     for c in range(3):
@@ -517,7 +516,7 @@ DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
 SCATTER_ADD: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
-SCATTER_OFFSET_SUM: OverloadTable
+SCATTER_FACE_AREA_THIRDS: OverloadTable
 SCATTER_SUM_SCALAR: OverloadTable
 SCATTER_SUM_VEC: OverloadTable
 SCATTER_WEIGHTED_SUM_VEC: OverloadTable
@@ -526,7 +525,7 @@ SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR, SCATTER_ADD
-    global SCATTER_FACE_THIRDS, SCATTER_OFFSET_SUM, SCATTER_SUM_SCALAR
+    global SCATTER_FACE_AREA_THIRDS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC
     DIVIDE_BY_DENSITY = OverloadTable(
         divide_by_density,
@@ -550,16 +549,18 @@ def _register_overloads() -> None:
         scatter_add,
         {d: [wp.array[d], wp.array[wp.int32], wp.array[d]] for d in _SCATTER_ADD_DTYPES},
     )
+    # Keyed ``(areas dtype, mass dtype)``, the cross product: a caller's areas may be either.
     SCATTER_FACE_THIRDS = OverloadTable(
         scatter_face_thirds,
-        {d: [wp.array[wp.int32], wp.array[d], d, wp.array[d]] for d in _VALUE_DTYPES},
-    )
-    SCATTER_OFFSET_SUM = OverloadTable(
-        scatter_offset_sum,
         {
-            d: [wp.array[d], wp.array[wp.int32], wp.array[wp.int32], wp.array[d]]
+            (a, d): [wp.array[wp.int32], wp.array[a], d, wp.array[d]]
+            for a in _VALUE_DTYPES
             for d in _VALUE_DTYPES
         },
+    )
+    SCATTER_FACE_AREA_THIRDS = OverloadTable(
+        scatter_face_area_thirds,
+        {d: [wp.array[wp.vec3], wp.array[wp.int32], d, wp.array[d]] for d in _VALUE_DTYPES},
     )
     SCATTER_SUM_SCALAR = OverloadTable(
         scatter_sum_scalar,

@@ -249,9 +249,9 @@ def test_discrete_gaussian_curvature_ignores_the_current_device(
     """
     Class A: ``discrete_gaussian_curvature`` answers on its inputs' device, not Warp's current one.
 
-    Companion to ``test_vertices.py``'s scatter-wrapper case: this function's ``scatter_offset_sum``
-    launch forwarded no ``device=``, which the ordinary tests cannot see because they run with the
-    arrays' device already current.
+    Companion to ``test_vertices.py``'s scatter-wrapper case: a launch of this function that
+    forwarded no ``device=`` once went unseen, because the ordinary tests run with the arrays'
+    device already current.
     """
     mesh_tm, mesh_wp = hemisphere
     radius = 0.5

@@ -82,7 +82,7 @@ def is_closed(polyline: wp.array[wp.vec3]) -> bool:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
 
     Returns
     -------
@@ -129,13 +129,13 @@ def polyline_open(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
 
     Returns
     -------
     wp.array[wp.vec3]
-        The input unchanged when it has fewer than two points or is already open;
-        otherwise a length ``n - 1`` view without the duplicated closing point.
+        ``(n,)`` or ``(n - 1,)`` polyline: the input unchanged when it has fewer than two points or
+        is already open; otherwise a view without the duplicated closing point.
 
     See Also
     --------
@@ -154,13 +154,13 @@ def polyline_close(polyline: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
 
     Returns
     -------
     wp.array[wp.vec3]
-        The input unchanged when it has fewer than two points or is already closed;
-        otherwise a length ``n + 1`` array with the first point appended.
+        ``(n,)`` or ``(n + 1,)`` polyline: the input unchanged when it has fewer than two points or
+        is already closed; otherwise an array with the first point appended.
 
     See Also
     --------
@@ -193,7 +193,7 @@ def polyline_length(polyline: wp.array[wp.vec3], *, closed: bool = False) -> flo
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][triwarp.polyline.polyline_close]), so the closing
@@ -242,7 +242,7 @@ def polyline_centroid(polyline: wp.array[wp.vec3], *, closed: bool = False) -> w
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][triwarp.polyline.polyline_close]), so the closing
@@ -292,7 +292,7 @@ def polyline_normal(polyline: wp.array[wp.vec3]) -> wp.vec3:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``. The closing edge is added if absent.
+        ``(n,)`` polyline vertices. The closing edge is added if absent.
 
     Returns
     -------
@@ -336,9 +336,9 @@ def polyline_point_distance(
     Parameters
     ----------
     points
-        ``(n,)`` query points as ``wp.vec3``.
+        ``(n,)`` query points.
     polyline
-        ``(m,)`` polyline vertices as ``wp.vec3``.
+        ``(m,)`` polyline vertices.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][triwarp.polyline.polyline_close]), so the closing
@@ -347,7 +347,7 @@ def polyline_point_distance(
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n`` minimum distances on ``points.device``. Every entry is ``inf`` when
+        ``(n,)`` minimum distances on ``points.device``. Every entry is ``inf`` when
         ``polyline`` is empty, there being no segment to measure against -- the same
         ``inf``-on-miss convention
         [`closest_point_on_mesh`][triwarp.proximity.closest_point_on_mesh] uses.
@@ -418,7 +418,7 @@ def polyline_upsample(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     step_size
         Target spacing between consecutive output points.
     closed
@@ -429,7 +429,8 @@ def polyline_upsample(
     Returns
     -------
     wp.array[wp.vec3]
-        The upsampled polyline. The input is returned unchanged for fewer than two points.
+        ``(m,)`` upsampled polyline of ``m`` points. The input is returned unchanged for fewer than
+        two points.
 
     See Also
     --------
@@ -461,7 +462,7 @@ def polyline_smooth_upsample(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     step_size
         Target spacing between consecutive output points.
     closed
@@ -473,8 +474,8 @@ def polyline_smooth_upsample(
     Returns
     -------
     wp.array[wp.vec3]
-        The curvature-aware upsampled polyline. The input is returned unchanged for fewer than
-        two points.
+        ``(m,)`` curvature-aware upsampled polyline of ``m`` points. The input is returned unchanged
+        for fewer than two points.
 
     See Also
     --------
@@ -543,13 +544,13 @@ def cumulative_arc_length(polyline: wp.array[wp.vec3]) -> wp.array[wp.float32]:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n`` array on ``polyline.device``. Entry ``0`` is ``0.0``; entry ``i`` is the
-        summed length of segments ``0..i-1``.
+        ``(n,)`` cumulative arc lengths on ``polyline.device``. Entry ``0`` is ``0.0``; entry ``i``
+        is the summed length of segments ``0..i-1``.
 
     See Also
     --------
@@ -576,7 +577,7 @@ def polyline_downsample(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     step_size
         Minimum arc-length distance between kept points.
     closed
@@ -587,7 +588,8 @@ def polyline_downsample(
     Returns
     -------
     wp.array[wp.vec3]
-        The downsampled polyline. The input is returned unchanged for fewer than two points.
+        ``(m,)`` downsampled polyline of ``m`` points. The input is returned unchanged for fewer
+        than two points.
 
     See Also
     --------
@@ -680,7 +682,7 @@ def polyline_simplify(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     tol
         Maximum Euclidean distance allowed between a dropped vertex and the retained chord.
     closed
@@ -692,10 +694,10 @@ def polyline_simplify(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        ``(simplified, indices)`` on ``polyline.device``: the ``(m,)`` retained vertices and the
-        ``(m,)`` sorted indices into the input such that ``polyline[indices] == simplified``. An
-        empty input yields two empty arrays; a single point is returned unchanged with
-        ``indices == [0]``.
+        ``(m,)`` and ``(m,)`` arrays ``(simplified, indices)`` on ``polyline.device``: the retained
+        vertices and the sorted indices into the input such that
+        ``polyline[indices] == simplified``. An empty input yields two empty arrays; a single point
+        is returned unchanged with ``indices == [0]``.
 
     Notes
     -----
@@ -840,7 +842,7 @@ def polyline_resample(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     num_points
         Number of output points.
     closed
@@ -851,7 +853,7 @@ def polyline_resample(
     Returns
     -------
     wp.array[wp.vec3]
-        Length ``num_points`` resampled polyline. An empty input is returned unchanged; a single
+        ``(num_points,)`` resampled polyline. An empty input is returned unchanged; a single
         point is repeated ``num_points`` times.
 
     See Also
@@ -936,7 +938,7 @@ def polyline_radius(
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     reduction
         Reduction over the per-segment radial distances: ``"min"``, ``"max"``, ``"mean"``, or
         ``"median"``. Defaults to ``"min"``.
@@ -1093,7 +1095,7 @@ def polyline_angles(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``.
+        ``(n,)`` polyline vertices.
     closed
         When ``True``, treat the polyline as a loop: the closing edge back to the first point is
         added if absent (see [`polyline_close`][triwarp.polyline.polyline_close]). The result
@@ -1102,7 +1104,7 @@ def polyline_angles(polyline: wp.array[wp.vec3], *, closed: bool = False) -> wp.
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n`` angles in radians on ``polyline.device``. All zeros for fewer than two points.
+        ``(n,)`` angles in radians on ``polyline.device``. All zeros for fewer than two points.
 
     See Also
     --------
@@ -1155,7 +1157,7 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> twt.Array2dInt32:
     Parameters
     ----------
     polyline
-        ``(n,)`` polyline vertices as ``wp.vec3``. A duplicated closing point is dropped, with the
+        ``(n,)`` polyline vertices. A duplicated closing point is dropped, with the
         predicate [`polyline_open`][triwarp.polyline.polyline_open] applies.
 
     Returns
@@ -1223,9 +1225,10 @@ def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], 
     Returns
     -------
     ring : wp.array[wp.vec2]
-        The input ring with any repeated closing point removed; the vertices ``faces`` indexes.
+        ``(n,)`` or ``(n - 1,)`` input ring with any repeated closing point removed; the vertices
+        ``faces`` indexes.
     faces : wp.array[wp.int32]
-        Length-``3 * (n - 2)`` flat triangle index buffer into ``ring``.
+        ``(3 * (n - 2),)`` flat triangle index buffer into ``ring``.
 
     Notes
     -----

@@ -1,8 +1,35 @@
+from typing import Any
+
 import warp as wp
 
 from triwarp.constants import TILE_1D
-from triwarp.kernels.reduce import commit_block_sum, tile_chunk
-from triwarp.kernels.triangles import face_area_weighted_centroid, face_vertices_vec3d
+from triwarp.kernels.array import OverloadTable
+from triwarp.kernels.reduce import block_chunk_1d, block_sum, commit_block_sum, tile_chunk
+from triwarp.kernels.triangles import (
+    face_area_weighted_centroid,
+    face_signed_volume,
+    face_vertices_vec3d,
+)
+
+
+@wp.kernel
+def mesh_signed_volume(
+    vertices: wp.array[Any], faces: wp.array[wp.int32], out_volume: wp.array[wp.Float]
+) -> None:
+    # The whole mesh's signed volume from the origin, folded as it is formed: each block owns the
+    # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it, its lanes stride them by
+    # ``wp.block_dim()`` (so the one CPU lane walks them all, CLAUDE.md section 2.2), and lane 0
+    # commits one atomic per block. ``triangles.face_signed_volume`` per face, the volume
+    # ``triangles.face_signed_volumes`` would have stored for a ``reduce.sum`` pass to read back.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(faces.shape[0] // 3, block)
+    total = out_volume.dtype(0.0)
+    origin = vertices.dtype()
+    for k in range(lane, count, wp.block_dim()):
+        total += face_signed_volume(vertices, faces, offset + k, origin)
+    total = block_sum(total)
+    if lane == 0:
+        wp.atomic_add(out_volume, 0, total)
 
 
 @wp.kernel
@@ -179,3 +206,23 @@ def moment_integrals(
         local[4 + j] = squares[j]
         local[7 + j] = products[j]
     commit_block_sum(lane, local, out_totals, 0)
+
+
+# Keyed by the vertex dtype; the volume is accumulated in its scalar type, as
+# ``triangles.face_signed_volumes`` stores it.
+MESH_SIGNED_VOLUME: OverloadTable
+
+
+def _register_overloads() -> None:
+    """Instantiate every concrete overload of this module's generic kernels."""
+    global MESH_SIGNED_VOLUME
+    MESH_SIGNED_VOLUME = OverloadTable(
+        mesh_signed_volume,
+        {
+            vector: [wp.array[vector], wp.array[wp.int32], wp.array[scalar]]
+            for vector, scalar in ((wp.vec3, wp.float32), (wp.vec3d, wp.float64))
+        },
+    )
+
+
+_register_overloads()

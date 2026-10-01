@@ -694,7 +694,7 @@ def empty_1d(
     Returns
     -------
     wp.array
-        Uninitialized length-``n`` array of element type ``dtype`` on ``device``.
+        ``(n,)`` uninitialized array of element type ``dtype`` on ``device``.
 
     See Also
     --------
@@ -726,7 +726,7 @@ def empty_2d(
     Returns
     -------
     wp.array
-        Uninitialized ``(rows, cols)`` array of element type ``dtype`` on ``device``.
+        ``(rows, cols)`` uninitialized array of element type ``dtype`` on ``device``.
 
     Raises
     ------
@@ -762,7 +762,7 @@ def empty_3d(
     Returns
     -------
     wp.array
-        Uninitialized ``(nx, ny, nz)`` array of element type ``dtype`` on ``device``.
+        ``(nx, ny, nz)`` uninitialized array of element type ``dtype`` on ``device``.
 
     Raises
     ------

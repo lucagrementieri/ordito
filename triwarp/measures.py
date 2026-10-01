@@ -31,9 +31,10 @@ import warp as wp
 
 import triwarp as tw
 from triwarp import _launch
-from triwarp._device import prefers_tiled_reduction, require_same_device, slice_count
+from triwarp._device import prefers_tiled_reduction, read_scalar, require_same_device, slice_count
 from triwarp.constants import TILE_1D
 from triwarp.kernels import measures as kernel_measures
+from triwarp.kernels import reduce as kernel_reduce
 
 
 def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.int32]) -> float:
@@ -53,7 +54,7 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
         follows: pass ``vec3d`` where the sum's low digits matter, as
         [`filter_laplacian`][triwarp.smoothing.filter_laplacian]'s volume constraint does.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -80,9 +81,24 @@ def volume(vertices: wp.array[wp.vec3] | wp.array[wp.vec3d], faces: wp.array[wp.
     [`trimesh.Trimesh.volume`][]
     """
     require_same_device(vertices=vertices, faces=faces)
-    if faces.size == 0:
+    n_faces = faces.size // 3
+    if n_faces == 0:
         return 0.0
-    return tw.reduce.sum(tw.triangles.face_signed_volumes(vertices, faces))
+    device = vertices.device
+    # Each face's tetrahedron is formed where it is summed: no per-face volume table.
+    total = (
+        _launch.zeros(1, dtype=wp.float64, device=device)
+        if vertices.dtype is wp.vec3d
+        else _launch.zeros(1, dtype=wp.float32, device=device)
+    )
+    _launch.launch_tiled(
+        kernel_measures.MESH_SIGNED_VOLUME[vertices.dtype],
+        dim=[kernel_reduce.blocks_1d(n_faces)],
+        inputs=[vertices, faces, total],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    return float(read_scalar(total))
 
 
 def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp.vec3:
@@ -99,7 +115,7 @@ def surface_centroid(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> 
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -184,7 +200,7 @@ def moments(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -303,7 +319,7 @@ def euler_characteristic(faces: wp.array[wp.int32]) -> int:
     Parameters
     ----------
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------

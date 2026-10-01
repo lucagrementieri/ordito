@@ -483,7 +483,7 @@ def max_tangent_sphere(
     mesh
         Warp mesh (BVH built by caller).
     points
-        ``(m,)`` surface points as ``wp.vec3``.
+        ``(m,)`` surface points.
     inwards
         If ``True``, sphere grows inward (into the mesh interior). If ``False``,
         grows outward.
@@ -501,10 +501,9 @@ def max_tangent_sphere(
     Returns
     -------
     centers
-        ``(m,)`` sphere center positions as ``wp.vec3``.
+        ``(m,)`` sphere center positions.
     radii
-        ``(m,)`` sphere radii as ``float32``. ``inf`` when the sphere is
-        unbounded.
+        ``(m,)`` sphere radii. ``inf`` when the sphere is unbounded.
 
     Raises
     ------

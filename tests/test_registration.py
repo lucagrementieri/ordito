@@ -1421,6 +1421,50 @@ def test_robust_scale_matches_the_host_mad(device: str, n_valid: int) -> None:
     assert scale == expected
 
 
+def test_robust_scale_falls_back_to_the_standard_deviation(device: str) -> None:
+    """
+    Not a library comparison: a zero MAD falls back to the in-range residuals' standard deviation.
+
+    Over half the in-range residuals are one value, so both medians land on it and the MAD is
+    zero; the scale is then ``1.345`` times the population standard deviation of the in-range
+    residuals, checked against NumPy's in ``float64``. A third of the correspondences are out of
+    range by distance or by a missing match and must not enter it: counting them moves the answer
+    by orders of magnitude more than the tolerance.
+    """
+    rng = np.random.default_rng(41)
+    n_valid = 201
+    n = n_valid + 100
+    closest_np = np.zeros((n, 3), dtype=np.float32)
+    closest_np[:, :2] = rng.standard_normal((n, 2))
+    residual_np = rng.standard_normal(n).astype(np.float32)
+    order = rng.permutation(n)
+    residual_np[order[:151]] = 0.25
+    current_np = closest_np.copy()
+    current_np[:, 2] = residual_np
+    normals_np = np.tile(np.array([0.0, 0.0, 1.0], dtype=np.float32), (n, 1))
+    valid = np.zeros(n, dtype=bool)
+    valid[order[:n_valid]] = True
+    distance_np = np.where(valid, 0.5, 2.0).astype(np.float32)
+    index_np = np.arange(n, dtype=np.int32)
+    index_np[order[n_valid : n_valid + 50]] = -1
+    distance_np[order[n_valid : n_valid + 50]] = 0.5
+
+    scale = tw.registration._robust_scale_from_residuals(  # pyright: ignore[reportPrivateUsage]
+        points_to_warp(current_np, device),
+        points_to_warp(closest_np, device),
+        points_to_warp(normals_np, device),
+        wp.array(distance_np, dtype=wp.float32, device=device),
+        wp.array(index_np, dtype=wp.int32, device=device),
+        1.0,
+        1,
+    )
+    kept = residual_np[valid].astype(np.float64)
+    assert np.median(np.abs(kept - np.median(kept))) == 0.0
+    expected = 1.345 * float(np.std(kept))
+    assert expected > 0.0
+    assert np.isclose(scale, expected, rtol=1e-6, atol=0.0)
+
+
 def test_robust_scale_ignores_the_length_of_the_target_normals(device: str) -> None:
     """
     Not a library comparison: the MAD scale reads the target normals as unit, as the fit does.

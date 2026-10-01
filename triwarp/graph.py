@@ -28,9 +28,9 @@ def edges_to_csr(
     node_count
         Number of vertices ``0 .. node_count - 1``.
     edges
-        ``(m, 2)`` ``wp.int32`` edge rows on the target device.
+        ``(m, 2)`` edge rows on the target device.
     weights
-        Length-``m`` edge weights, one per undirected edge, written into both of its directed
+        ``(m,)`` edge weights, one per undirected edge, written into both of its directed
         entries. Defaults to unit weights, which is what the unweighted traversals want; the
         weighted relaxation in
         [`shortest_path_envelope`][triwarp.graph.shortest_path_envelope] measures paths in whatever
@@ -40,7 +40,7 @@ def edges_to_csr(
     Returns
     -------
     warp.sparse.BsrMatrix
-        Square ``(node_count, node_count)`` adjacency. Duplicate directed pairs from repeated input
+        ``(node_count, node_count)`` square adjacency. Duplicate directed pairs from repeated input
         edges are merged (values **summed**), so a repeated weighted edge doubles its weight —
         deduplicate with [`edges_unique`][triwarp.edges.edges_unique] first when that matters.
 
@@ -103,7 +103,7 @@ def edges_to_neighbor_lists(
     node_count
         Number of nodes ``0 .. node_count - 1``, i.e. the number of CSR rows.
     edges
-        ``(m, 2)`` ``wp.int32`` edge rows on the target device. Each row ``(a, b)`` contributes
+        ``(m, 2)`` edge rows on the target device. Each row ``(a, b)`` contributes
         ``b`` to ``a``'s list and ``a`` to ``b``'s; a repeated row appears twice in both, so
         deduplicate with [`edges_unique`][triwarp.edges.edges_unique] first when that matters.
     validate
@@ -121,11 +121,11 @@ def edges_to_neighbor_lists(
     Returns
     -------
     neighbors : wp.array[wp.int32]
-        Length ``2 * m`` node indices grouped by node. Ascending within a row when ``sort_rows``
+        ``(2 * m,)`` node indices grouped by node. Ascending within a row when ``sort_rows``
         is ``True``; otherwise the order is **not specified and not reproducible** — see the
         warning below.
     offsets : wp.array[wp.int32]
-        Length ``node_count + 1`` row offsets on ``edges.device``.
+        ``(node_count + 1,)`` row offsets on ``edges.device``.
 
     Raises
     ------
@@ -228,14 +228,14 @@ def connected_component_labels(adjacency: twt.BsrMatrix[wp.Scalar]) -> wp.array[
     Parameters
     ----------
     adjacency
-        Square undirected adjacency in 1x1-block ``warp.sparse.BsrMatrix`` form.
-        Each nonzero ``(i, j)`` denotes an edge between nodes ``i`` and ``j``; for
+        ``(n, n)`` square undirected adjacency in 1x1-block ``warp.sparse.BsrMatrix`` form, ``n``
+        the node count. Each nonzero ``(i, j)`` denotes an edge between nodes ``i`` and ``j``; for
         undirected graphs both ``(i, j)`` and ``(j, i)`` should be present.
 
     Returns
     -------
     wp.array[wp.int32]
-        Length ``adjacency.nrow`` on ``adjacency.device``. Isolated nodes (empty rows)
+        ``(adjacency.nrow,)`` component labels on ``adjacency.device``. Isolated nodes (empty rows)
         receive distinct labels. When ``nnz == 0``, ``labels[i] == i``.
 
     Raises
@@ -295,7 +295,7 @@ def connected_component_labels_from_edges(
     Parameters
     ----------
     edges
-        ``(m, 2)`` ``wp.int32`` edge list. Each row ``(a, b)`` connects nodes ``a``
+        ``(m, 2)`` edge list. Each row ``(a, b)`` connects nodes ``a``
         and ``b`` (undirected; order does not matter).
     node_count
         Number of nodes ``0 .. node_count - 1``. When ``None``, inferred as
@@ -308,7 +308,7 @@ def connected_component_labels_from_edges(
     Returns
     -------
     wp.array[wp.int32]
-        Length ``node_count`` on ``edges.device``.
+        ``(node_count,)`` component labels on ``edges.device``.
 
     Raises
     ------
@@ -389,10 +389,10 @@ def connected_component_parity_from_edges(
     Parameters
     ----------
     edges
-        ``(m, 2)`` ``wp.int32`` undirected edge list; each row ``(a, b)`` constrains ``a`` and
+        ``(m, 2)`` undirected edge list; each row ``(a, b)`` constrains ``a`` and
         ``b``. Endpoints must lie in ``[0, node_count)``. Self-loops are ignored.
     signs
-        Length-``m`` ``wp.int32`` parity constraint per edge, ``0`` (equal) or ``1`` (opposite).
+        ``(m,)`` parity constraint per edge, ``0`` (equal) or ``1`` (opposite).
         Any other value is rejected under ``validate``.
     node_count
         Number of nodes ``0 .. node_count - 1``.
@@ -405,11 +405,11 @@ def connected_component_parity_from_edges(
     Returns
     -------
     labels : wp.array[wp.int32]
-        Length ``node_count``; the smallest node id in each component, as in
+        ``(node_count,)`` labels, the smallest node id in each component, as in
         [`connected_component_labels`][triwarp.graph.connected_component_labels]. Isolated nodes
         label themselves.
     parity : wp.array[wp.int32]
-        Length ``node_count`` of ``0`` / ``1`` bits, ``0`` at every component representative.
+        ``(node_count,)`` ``0`` / ``1`` bits, ``0`` at every component representative.
 
     Raises
     ------
@@ -515,7 +515,7 @@ def successor_cycles(
     Parameters
     ----------
     edges
-        ``(m, 2)`` ``wp.int32`` directed edges; row ``(a, b)`` makes ``b`` the successor of
+        ``(m, 2)`` directed edges; row ``(a, b)`` makes ``b`` the successor of
         ``a``. At most one out-edge per node. Nodes appearing in no edge belong to no cycle and
         do not appear in the result.
     node_count
@@ -528,10 +528,11 @@ def successor_cycles(
     Returns
     -------
     flat_cycles : wp.array[wp.int32]
-        Concatenated ordered node indices of every cycle, on ``edges.device``. Each cycle starts
-        at its smallest node index and follows the edge direction.
+        ``(n_cycle_nodes,)`` concatenated ordered node indices of every cycle, on
+        ``edges.device``, ``n_cycle_nodes`` the total cycle length. Each cycle starts at its
+        smallest node index and follows the edge direction.
     offsets : wp.array[wp.int32]
-        Length-``n_cycles + 1`` total-terminated offsets: cycle ``i`` occupies
+        ``(n_cycles + 1,)`` total-terminated offsets: cycle ``i`` occupies
         ``flat_cycles[offsets[i] : offsets[i + 1]]``; ``[0]`` when there is no cycle.
 
     Raises
@@ -709,12 +710,12 @@ def shortest_path_envelope(
     Parameters
     ----------
     adjacency
-        Square undirected adjacency in 1x1-block ``warp.sparse.BsrMatrix`` form whose **values are
-        the edge weights**, as [`edges_to_csr`][triwarp.graph.edges_to_csr] builds with its
-        ``weights`` argument. Negative weights are not admissible: the iteration would not
-        terminate at the envelope.
+        ``(node_count, node_count)`` square undirected adjacency in 1x1-block
+        ``warp.sparse.BsrMatrix`` form whose **values are the edge weights**, as
+        [`edges_to_csr`][triwarp.graph.edges_to_csr] builds with its ``weights`` argument.
+        Negative weights are not admissible: the iteration would not terminate at the envelope.
     values
-        Length-``node_count`` ``wp.float32`` initial labels. Not modified.
+        ``(node_count,)`` initial labels. Not modified.
     max_iterations
         Cap on relaxation passes. Each pass propagates one edge further, so the number needed is the
         graph diameter of the region that violates the bound. ``0`` (the default) means
@@ -723,7 +724,7 @@ def shortest_path_envelope(
     Returns
     -------
     wp.array[wp.float32]
-        Length-``node_count`` envelope on ``values.device``.
+        ``(node_count,)`` envelope on ``values.device``.
 
     Raises
     ------

@@ -46,7 +46,7 @@ def min(
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` scalar Warp array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar array. Must be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
@@ -54,8 +54,8 @@ def min(
     Returns
     -------
     float | int | wp.array
-        Global scalar when ``axis=None``; 1D array of length ``n`` (``axis=1``) or
-        ``m`` (``axis=0``) otherwise.
+        Global scalar when ``axis=None``; ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) array
+        otherwise.
 
     Raises
     ------
@@ -88,7 +88,7 @@ def max(
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` scalar Warp array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar array. Must be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
@@ -96,8 +96,8 @@ def max(
     Returns
     -------
     float | int | wp.array
-        Global scalar when ``axis=None``; 1D array of length ``n`` (``axis=1``) or
-        ``m`` (``axis=0``) otherwise.
+        Global scalar when ``axis=None``; ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) array
+        otherwise.
 
     Raises
     ------
@@ -147,8 +147,7 @@ def minmax(
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` scalar Warp array, or a rank-1 ``wp.vec3``
-        array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar array, or a ``(n,)`` ``wp.vec3`` array. Must be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for per-axis 1D
         results (rank-2 scalar input only).
@@ -157,8 +156,8 @@ def minmax(
     -------
     tuple[float, float] | tuple[int, int] | tuple[wp.vec3, wp.vec3] | tuple[wp.array, wp.array]
         ``(min, max)`` as Python scalars — or ``wp.vec3`` corners for a ``wp.vec3`` input —
-        when ``axis=None``; pair of 1D arrays of length ``n`` (``axis=1``) or ``m``
-        (``axis=0``) otherwise.
+        when ``axis=None``; pair of ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) arrays
+        otherwise.
 
     Raises
     ------
@@ -198,7 +197,7 @@ def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` ``wp.bool`` array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` array. Must be non-empty.
     axis
         ``0``, ``1``, or ``None``. For rank-2 input, ``None`` reduces all elements
         to a single scalar. Ignored for rank-1 input.
@@ -207,7 +206,7 @@ def any(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     -------
     bool | wp.array[wp.bool]
         Python ``bool`` for rank-1 input or rank-2 with ``axis=None``.
-        Length ``array.shape[1]`` when ``axis=0``, else ``array.shape[0]``,
+        ``(array.shape[1],)`` when ``axis=0``, else ``(array.shape[0],)``,
         for rank-2 input with an explicit axis.
 
     Raises
@@ -252,8 +251,7 @@ def sum(
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` scalar or ``wp.bool`` Warp array.
-        Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar or ``wp.bool`` array. Must be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
@@ -261,8 +259,8 @@ def sum(
     Returns
     -------
     float | int | wp.array
-        Global scalar when ``axis=None``; 1D array of length ``n`` (``axis=1``) or
-        ``m`` (``axis=0``) otherwise.
+        Global scalar when ``axis=None``; ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) array
+        otherwise.
 
     Raises
     ------
@@ -334,8 +332,8 @@ def mean(
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` scalar or ``wp.bool`` Warp array, or
-        a rank-1 ``(n,)`` ``wp.vec3`` array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` scalar or ``wp.bool`` array, or a ``(n,)`` ``wp.vec3`` array. Must
+        be non-empty.
     axis
         ``None`` for a global scalar result. ``0`` or ``1`` for a per-axis 1D
         result (rank-2 input only).
@@ -344,8 +342,8 @@ def mean(
     -------
     float | wp.vec3 | wp.array
         Global ``float`` (scalar/``wp.bool`` input) or ``wp.vec3`` (``wp.vec3``
-        input) when ``axis=None``; 1D ``wp.float32`` array of length ``n``
-        (``axis=1``) or ``m`` (``axis=0``) otherwise.
+        input) when ``axis=None``; ``(n,)`` (``axis=1``) or ``(m,)`` (``axis=0``) ``wp.float32``
+        array otherwise.
 
     Raises
     ------
@@ -384,9 +382,9 @@ def weighted_sum(
     Parameters
     ----------
     values
-        Rank-1 ``(n,)`` ``wp.float32`` or ``wp.vec3`` array. Must be non-empty.
+        ``(n,)`` ``wp.float32`` or ``wp.vec3`` array. Must be non-empty.
     weights
-        Rank-1 ``(n,)`` ``wp.float32`` array of the same length as ``values``.
+        ``(n,)`` weights, the same length as ``values``.
 
     Returns
     -------
@@ -443,7 +441,7 @@ def all(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` or rank-2 ``(n, m)`` ``wp.bool`` array. Must be non-empty.
+        ``(n,)`` or ``(n, m)`` array. Must be non-empty.
     axis
         ``0``, ``1``, or ``None``. For rank-2 input, ``None`` reduces all elements
         to a single scalar. Ignored for rank-1 input.
@@ -452,7 +450,7 @@ def all(array: wp.array[wp.bool], *, axis: Literal[0, 1] | None = None) -> wp.ar
     -------
     bool | wp.array[wp.bool]
         Python ``bool`` for rank-1 input or rank-2 with ``axis=None``.
-        Length ``array.shape[1]`` when ``axis=0``, else ``array.shape[0]``,
+        ``(array.shape[1],)`` when ``axis=0``, else ``(array.shape[0],)``,
         for rank-2 input with an explicit axis.
 
     Raises
@@ -475,7 +473,7 @@ def median(array: twt.ArrayNdScalar) -> float:
     Parameters
     ----------
     array
-        Rank-1 ``(n,)`` Warp array of any 32- or 64-bit scalar dtype accepted by
+        ``(n,)`` array of any 32- or 64-bit scalar dtype accepted by
         ``warp.utils.radix_sort_pairs`` (``wp.int32``, ``wp.uint32``, ``wp.float32``,
         ``wp.int64``, ``wp.uint64``, ``wp.float64``). Must be non-empty.
 

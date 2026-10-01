@@ -49,21 +49,21 @@ def rasterize_attribute(
     Parameters
     ----------
     uv
-        ``(n_vertices,)`` per-vertex UV coordinates as ``wp.vec2`` in ``[0, 1]``. Non-finite
-        rows (e.g. unreferenced vertices left ``NaN`` by a disk parameterization) are ignored;
-        by construction no face indexes them.
+        ``(n_vertices,)`` per-vertex UV coordinates in ``[0, 1]``. Non-finite rows (e.g.
+        unreferenced vertices left ``NaN`` by a disk parameterization) are ignored; by
+        construction no face indexes them.
     faces
-        Flat length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     attribute
-        ``(n_vertices, n_channels)`` ``float32`` per-vertex attribute to interpolate.
+        ``(n_vertices, n_channels)`` per-vertex attribute to interpolate.
     resolution
         Output image size in pixels (square).
 
     Returns
     -------
     Array3dFloat32
-        ``(resolution, resolution, n_channels)`` ``float32`` image on ``uv.device``. Row ``0``
-        corresponds to ``v = 1`` (vertical flip), matching the sampling convention of
+        ``(resolution, resolution, n_channels)`` image on ``uv.device``. Row ``0`` corresponds to
+        ``v = 1`` (vertical flip), matching the sampling convention of
         [`remap_attribute_from_uv`][triwarp.texture.remap_attribute_from_uv].
 
     Raises
@@ -114,20 +114,20 @@ def rasterize_discrete_attribute(
     Parameters
     ----------
     uv
-        ``(n_vertices,)`` per-vertex UV coordinates as ``wp.vec2`` in ``[0, 1]``. Non-finite
-        rows are ignored.
+        ``(n_vertices,)`` per-vertex UV coordinates in ``[0, 1]``. Non-finite rows are
+        ignored.
     faces
-        Flat length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     attribute
-        ``(n_vertices,)`` ``int32`` per-vertex labels, all ``>= 0``.
+        ``(n_vertices,)`` per-vertex labels, all ``>= 0``.
     resolution
         Output image size in pixels (square).
 
     Returns
     -------
     Array2dInt32
-        ``(resolution, resolution)`` ``int32`` class image with values in ``[-1, n_classes - 1]``
-        (``-1`` marks uncovered pixels), on ``uv.device``.
+        ``(resolution, resolution)`` class image with values in ``[-1, n_classes - 1]`` (``-1``
+        marks uncovered pixels), on ``uv.device``.
 
     Raises
     ------
@@ -270,18 +270,18 @@ def remap_attribute_from_uv(
     Parameters
     ----------
     uv
-        ``(n_vertices,)`` per-vertex UV coordinates as ``wp.vec2`` in ``[0, 1]``. Non-finite
-        rows yield ``NaN`` output rows.
+        ``(n_vertices,)`` per-vertex UV coordinates in ``[0, 1]``. Non-finite rows yield
+        ``NaN`` output rows.
     image
-        UV-space texture to sample, ``(H, W)`` or ``(H, W, C)`` ``float32``.
+        ``(H, W)`` or ``(H, W, C)`` ``float32`` UV-space texture to sample.
     order
         Interpolation order: ``1`` for bilinear (default), ``0`` for nearest-neighbor.
 
     Returns
     -------
     Array2dFloat32
-        ``(n_vertices, C)`` ``float32`` per-vertex values on ``uv.device`` (``C == 1`` for a
-        2D input image). Non-finite-UV rows are ``NaN``.
+        ``(n_vertices, C)`` per-vertex values on ``uv.device`` (``C == 1`` for a 2D input
+        image). Non-finite-UV rows are ``NaN``.
 
     Raises
     ------
@@ -342,15 +342,15 @@ def remap_discrete_attribute_from_uv(
     Parameters
     ----------
     uv
-        ``(n_vertices,)`` per-vertex UV coordinates as ``wp.vec2`` in ``[0, 1]``. Non-finite
-        rows yield ``-1``.
+        ``(n_vertices,)`` per-vertex UV coordinates in ``[0, 1]``. Non-finite rows yield
+        ``-1``.
     class_image
-        ``(H, W)`` ``int32`` class image (values e.g. in ``[-1, n_classes - 1]``).
+        ``(H, W)`` class image (values e.g. in ``[-1, n_classes - 1]``).
 
     Returns
     -------
     Array1dInt32
-        ``(n_vertices,)`` ``int32`` per-vertex labels on ``uv.device``. Non-finite-UV rows
+        ``(n_vertices,)`` per-vertex labels on ``uv.device``. Non-finite-UV rows
         are ``-1``.
 
     Raises

@@ -61,7 +61,7 @@ def aabb(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     Parameters
     ----------
     points
-        ``(n, 3)`` positions as ``wp.vec3``.
+        ``(n,)`` positions.
 
     Returns
     -------
@@ -133,9 +133,9 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     Parameters
     ----------
     points
-        ``(n,)`` positions as ``wp.vec3``, typically a mesh's vertices.
+        ``(n,)`` positions, typically a mesh's vertices.
     other
-        Optional second ``(m,)`` set, typically the query points. ``None`` or empty measures
+        ``(m,)`` second point set, typically the query points. ``None`` or empty measures
         ``points`` alone.
 
     Returns
@@ -197,7 +197,7 @@ def points_in_aabb(
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     min_bound, max_bound
         Opposite corners of the box, as [`aabb`][triwarp.bounds.aabb] returns them. An empty box
         (any ``min_bound[i] > max_bound[i]``) selects nothing.
@@ -205,7 +205,8 @@ def points_in_aabb(
     Returns
     -------
     wp.array[wp.int32]
-        Ascending indices into ``points`` on ``points.device``. Empty when nothing is inside.
+        ``(m,)`` ascending indices into ``points`` on ``points.device``, ``m`` the number inside.
+        Empty when nothing is inside.
 
     Examples
     --------
@@ -246,14 +247,14 @@ def points_in_aabb_mask(
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     min_bound, max_bound
         Opposite corners of the box, as [`aabb`][triwarp.bounds.aabb] returns them.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``. ``True`` marks a point to **keep**, the same sense
+        ``(n,)`` mask on ``points.device``. ``True`` marks a point to **keep**, the same sense
         as [`triwarp.points.half_space_mask`][triwarp.points.half_space_mask].
 
     See Also
@@ -283,7 +284,7 @@ def points_in_obb(
     Parameters
     ----------
     points
-        ``(n,)`` positions in world space as ``wp.vec3``.
+        ``(n,)`` positions in world space.
     rotation
         World-to-box frame as ``wp.mat33``, i.e. its **rows** are the box axes in world
         coordinates. A point's box coordinates are ``rotation * p``.
@@ -293,7 +294,8 @@ def points_in_obb(
     Returns
     -------
     wp.array[wp.int32]
-        Ascending indices into ``points`` on ``points.device``. Empty when nothing is inside.
+        ``(m,)`` ascending indices into ``points`` on ``points.device``, ``m`` the number inside.
+        Empty when nothing is inside.
 
     Examples
     --------
@@ -336,7 +338,7 @@ def points_in_obb_mask(
     Parameters
     ----------
     points
-        ``(n,)`` positions in world space as ``wp.vec3``.
+        ``(n,)`` positions in world space.
     rotation
         World-to-box frame as ``wp.mat33``, rows being the box axes
         ([`points_in_obb`][triwarp.bounds.points_in_obb] documents the convention).
@@ -346,7 +348,7 @@ def points_in_obb_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``. ``True`` marks a point to **keep**.
+        ``(n,)`` mask on ``points.device``. ``True`` marks a point to **keep**.
 
     See Also
     --------
@@ -375,7 +377,7 @@ def crop_points(
     Parameters
     ----------
     points
-        ``(n,)`` positions in world space as ``wp.vec3``.
+        ``(n,)`` positions in world space.
     min_bound, max_bound
         Opposite corners of the box: in world coordinates when ``rotation`` is ``None``, in box
         coordinates otherwise.
@@ -389,11 +391,11 @@ def crop_points(
     Returns
     -------
     kept : wp.array[wp.vec3]
-        The points inside the box, in ascending index order, on ``points.device``.
+        ``(m,)`` points inside the box, in ascending index order, on ``points.device``.
     indices : wp.array[wp.int32]
-        Their indices in ``points``, so a caller can crop a parallel per-point attribute with
-        [`triwarp.array.gather`][triwarp.array.gather] instead of re-running the test. This is the
-        second return rather than an option because the compaction has already computed it.
+        ``(m,)`` their indices in ``points``, so a caller can crop a parallel per-point attribute
+        with [`triwarp.array.gather`][triwarp.array.gather] instead of re-running the test. This is
+        the second return rather than an option because the compaction has already computed it.
 
     Examples
     --------
@@ -439,7 +441,7 @@ def crop_mesh(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     min_bound, max_bound
         Opposite corners of the box: in world coordinates when ``rotation`` is ``None``, in box
         coordinates otherwise.
@@ -451,8 +453,8 @@ def crop_mesh(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        Compact ``(sub_vertices, sub_faces)`` on ``vertices.device``, carrying only the vertices
-        the kept faces reference.
+        ``(n_sub_vertices,)`` and ``(3 * n_sub_faces,)`` compact ``(sub_vertices, sub_faces)`` on
+        ``vertices.device``, carrying only the vertices the kept faces reference.
 
     Raises
     ------
@@ -583,7 +585,7 @@ def oriented_bounding_box(
     Parameters
     ----------
     points
-        ``(n, 3)`` positions as ``wp.vec3``.
+        ``(n,)`` positions.
     rotations
         Number of global candidates to score, ``>= 1``. The refinement default makes raising this
         past a few thousand pointless: the global phase only needs to land *inside* the optimum's
@@ -681,7 +683,16 @@ def oriented_bounding_box(
     )
 
     n_slices = max(1, (n + ITEMS_PER_CANDIDATE_SLICE - 1) // ITEMS_PER_CANDIDATE_SLICE)
-    _score_extents_into(points, axes, n_slices, corners)
+    # The extent of the cloud in every candidate frame, six packed slots each. The kernel only
+    # ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``: both axes kernels seed a
+    # candidate's slots as they write its frame, which is what lets the refinement reuse one
+    # buffer across its rounds.
+    _launch.launch(
+        kernel_bounds.oriented_box_extents,
+        dim=(int(axes.shape[0]), n_slices),
+        inputs=[points, axes, n_slices, corners],
+        device=points.device,
+    )
 
     loss = _launch.empty(rotations, dtype=wp.float32, device=device)
     _launch.launch(
@@ -810,7 +821,12 @@ def _refine_box(
             ],
             device=device,
         )
-        _score_extents_into(points, axes, n_slices, corners)
+        _launch.launch(
+            kernel_bounds.oriented_box_extents,
+            dim=(int(axes.shape[0]), n_slices),
+            inputs=[points, axes, n_slices, corners],
+            device=points.device,
+        )
         _launch.launch(
             kernel_bounds.oriented_box_select_chains,
             dim=n_chains,
@@ -828,21 +844,6 @@ def _refine_box(
         # the final angular resolution, and the 127-frame ball resolves ~sigma/5 per round, so
         # shrinking by 0.4 never outruns what a round can see.
         sigma *= 0.4
-
-
-def _score_extents_into(
-    points: wp.array[wp.vec3], axes: twt.ArrayNd, n_slices: int, corners: wp.array[wp.float32]
-) -> None:
-    """Fill ``corners`` with the cloud's extent in every candidate frame, six packed slots each."""
-    # The kernel only ever ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``:
-    # both axes kernels seed a candidate's slots as they write its frame, which is what lets the
-    # refinement reuse one buffer across its rounds.
-    _launch.launch(
-        kernel_bounds.oriented_box_extents,
-        dim=(int(axes.shape[0]), n_slices),
-        inputs=[points, axes, n_slices, corners],
-        device=points.device,
-    )
 
 
 def _best_chain(chain_state: twt.Array2dFloat32) -> tuple[wp.mat33, wp.vec3, wp.vec3]:

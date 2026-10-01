@@ -36,15 +36,14 @@ def face_normals_and_areas(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     normals : wp.array[wp.vec3]
-        Length-``n_faces`` unit face normals on ``vertices.device``. Zero when a face is
-        degenerate.
+        ``(n_faces,)`` unit face normals on ``vertices.device``. Zero when a face is degenerate.
     areas : wp.array[wp.float32]
-        Length-``n_faces`` triangle areas on ``vertices.device``.
+        ``(n_faces,)`` triangle areas on ``vertices.device``.
 
     Raises
     ------
@@ -78,13 +77,13 @@ def face_angles(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> twt.A
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     twt.Array2dFloat32
-        Shape ``(n_faces, 3)`` interior angles on ``vertices.device``, aligned with the
-        corners ``(i0, i1, i2)`` of each face.
+        ``(n_faces, 3)`` interior angles on ``vertices.device``, aligned with the corners
+        ``(i0, i1, i2)`` of each face.
 
     Raises
     ------
@@ -150,9 +149,9 @@ def corner_normals(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     crease_edges
-        ``(k, 2)`` ``wp.int32`` vertex pairs to treat as hard edges, in either order per row --
+        ``(k, 2)`` vertex pairs to treat as hard edges, in either order per row --
         typically [`crease_edges`][triwarp.seams.crease_edges]. ``None`` means no creases, which is
         the fully smooth case above and costs one comparison per rotation step rather than a branch.
     weighting
@@ -162,19 +161,20 @@ def corner_normals(
         its three corners. Both are offered because the two reference implementations disagree --
         the one that computes per-corner normals directly is the **area** one.
     twins
-        Optional precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins].
+        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][triwarp.halfedge.halfedge_twins], or
+        ``None`` to compute them from ``faces``.
     n_vertices
         Total vertex count. When ``None`` it is taken from ``vertices``, which is an upper bound on
         what [`array.index_bound`][triwarp.array.index_bound] would report and serves the same
         purpose here -- it is only the radix the halfedge keys are packed against -- without the
         host readback that inferring it costs.
     face_normals
-        Optional length-``n_faces`` unit face normals and matching areas from
+        ``(n_faces,)`` unit face normals and matching areas from
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]; recomputed together
         when either is ``None``. [`Trimesh.face_normals`][triwarp.mesh.Trimesh.face_normals] and
         [`Trimesh.face_areas`][triwarp.mesh.Trimesh.face_areas] cache the pair.
     face_areas
-        See ``face_normals``.
+        ``(n_faces,)`` face areas; see ``face_normals``.
 
     Returns
     -------
@@ -299,7 +299,7 @@ def face_quality(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     metric
         Which measure to compute. All but ``"area"`` are invariant to a uniform scaling of the
         mesh, and all but ``"aspect_ratio"`` are *larger is better*:
@@ -320,7 +320,7 @@ def face_quality(
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n_faces`` quality values on ``vertices.device``.
+        ``(n_faces,)`` quality values on ``vertices.device``.
 
     Raises
     ------
@@ -362,7 +362,7 @@ def face_centroids(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> wp
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
@@ -416,7 +416,7 @@ def face_signed_volumes(
         ``vec3d`` where the sum's low digits matter, as
         [`filter_laplacian`][triwarp.smoothing.filter_laplacian]'s volume constraint does.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     apex
         Common apex of every tetrahedron, in ``vertices``' dtype. ``None`` (the default) means the
         world origin, which is what every whole-mesh volume wants.
@@ -472,13 +472,12 @@ def face_nondegenerate_mask(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_faces`` mask on ``vertices.device``; ``True`` where the triangle area is
-        non-zero.
+        ``(n_faces,)`` mask on ``vertices.device``; ``True`` where the triangle area is non-zero.
 
     Raises
     ------
@@ -516,15 +515,15 @@ def barycentric_to_points(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     barycentric
-        Length-``n_faces`` barycentric coordinates ``(u, v, w)`` as ``wp.vec3``, aligned
-        one-to-one with the triangles in ``faces``.
+        ``(n_faces,)`` barycentric coordinates ``(u, v, w)``, aligned one-to-one with the
+        triangles in ``faces``.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_faces`` Cartesian points on ``vertices.device``.
+        ``(n_faces,)`` Cartesian points on ``vertices.device``.
 
     Raises
     ------
@@ -564,16 +563,15 @@ def points_to_barycentric(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     points
-        Length-``n_faces`` query positions as ``wp.vec3``, aligned one-to-one with the
-        triangles in ``faces``.
+        ``(n_faces,)`` query positions, aligned one-to-one with the triangles in ``faces``.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_faces`` barycentric coordinates ``(u, v, w)`` on ``vertices.device``. A triangle
-        with exactly zero area has no barycentric frame; it is answered along the triangle's longest
+        ``(n_faces,)`` barycentric coordinates ``(u, v, w)`` on ``vertices.device``. A triangle with
+        exactly zero area has no barycentric frame; it is answered along the triangle's longest
         edge, which is what such a "triangle" actually is.
 
     Raises
@@ -625,15 +623,14 @@ def closest_point(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     points
-        Length-``n_faces`` query positions as ``wp.vec3``, aligned one-to-one with the
-        triangles in ``faces``.
+        ``(n_faces,)`` query positions, aligned one-to-one with the triangles in ``faces``.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_faces`` closest points on ``vertices.device``.
+        ``(n_faces,)`` closest points on ``vertices.device``.
 
     Raises
     ------

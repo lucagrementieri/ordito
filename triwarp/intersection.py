@@ -150,7 +150,7 @@ def mesh_with_plane(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     plane_normal
         Normal vector of the plane.
     plane_origin
@@ -161,10 +161,9 @@ def mesh_with_plane(
     Returns
     -------
     lines
-        ``(m, 2)`` ``wp.vec3`` array of segment endpoints (logical shape ``(m, 2, 3)``).
+        ``(m, 2)`` segment endpoints, one row per segment (logical shape ``(m, 2, 3)``).
     face_index
-        Returned only when ``return_faces=True``; ``(m,)`` ``wp.int32`` source
-        face indices into the mesh.
+        ``(m,)`` source face indices into the mesh. Returned only when ``return_faces=True``.
 
     Raises
     ------
@@ -230,7 +229,7 @@ def marching_triangles(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     values
         ``(n_vertices,)`` scalar field, ``wp.float32`` or ``wp.float64``. A ``float64`` field (what
         [`heat_geodesic`][triwarp.heat.heat_geodesic] returns) is interpolated in
@@ -309,7 +308,7 @@ def marching_triangles_with_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     values
         ``(n_vertices,)`` scalar field, ``wp.float32`` or ``wp.float64``. A ``float64`` field (what
         [`heat_geodesic`][triwarp.heat.heat_geodesic] returns) is interpolated in
@@ -324,7 +323,8 @@ def marching_triangles_with_offsets(
     Returns
     -------
     points : wp.array[wp.vec3]
-        Every curve's points in order along the curve, curve after curve, on ``vertices.device``.
+        ``(n_curve_points,)`` every curve's points in order along the curve, curve after curve, on
+        ``vertices.device``.
         Closed curves do not repeat their first point.
     offsets : wp.array[wp.int32]
         ``(n_curves + 1,)`` total-terminated offsets: curve ``c`` is
@@ -354,8 +354,7 @@ def marching_triangles_with_offsets(
     linked = _marching_curves(vertices, faces, values, isovalue, n_vertices)
     if linked is None:
         return (
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
+            *_launch.empty_packed(wp.vec3, device),
             _launch.empty(0, dtype=wp.bool, device=device),
         )
     return _upload_curves(*linked, device)
@@ -492,7 +491,11 @@ def _link_curves(
 
 
 def _links_on_device(device: wp.Device, n_segments: int) -> bool:
-    """Whether ``_link_curves`` chains ``n_segments`` segments on the device, not the host."""
+    """
+    Whether ``_link_curves`` chains ``n_segments`` segments on the device, not the host.
+
+    A function rather than an inline test so the tests can force either link on either device.
+    """
     return device.is_cuda and n_segments >= _LINK_ON_DEVICE_FROM
 
 
@@ -738,16 +741,16 @@ def mesh_with_mesh(
     Parameters
     ----------
     vertices_a, faces_a
-        First indexed triangle mesh.
+        ``(n_vertices_a,)`` and ``(3 * n_faces_a,)`` first indexed triangle mesh.
     vertices_b, faces_b
-        Second indexed triangle mesh.
+        ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second indexed triangle mesh.
     max_triangle_collisions
         Maximum broad-phase candidate pairs recorded per query triangle.
 
     Returns
     -------
     lines
-        ``(m, 2)`` ``wp.vec3`` segment endpoints (logical shape ``(m, 2, 3)``).
+        ``(m, 2)`` segment endpoints, one row per segment (logical shape ``(m, 2, 3)``).
 
     Raises
     ------
@@ -792,9 +795,9 @@ def mesh_collision_pairs(
     Parameters
     ----------
     vertices_a, faces_a
-        First mesh: ``(n_vertices_a,)`` positions and a length-``3 * n_faces_a`` index buffer.
+        ``(n_vertices_a,)`` positions and ``(3 * n_faces_a,)`` index buffer of the first mesh.
     vertices_b, faces_b
-        Second mesh, in the same form.
+        ``(n_vertices_b,)`` and ``(3 * n_faces_b,)`` second mesh, in the same form.
     max_triangle_collisions
         Broad-phase candidate cap per query triangle. A pair beyond the cap is **dropped**, so raise
         it on meshes whose triangles pile into overlapping boxes; the answer is a subset, never a
@@ -948,8 +951,8 @@ def collision_masks(
     Returns
     -------
     tuple[wp.array[wp.bool], wp.array[wp.bool]]
-        Length-``n_faces_a`` and length-``n_faces_b`` masks on ``vertices_a.device``, ``True`` for a
-        face that crosses some face of the other mesh.
+        ``(n_faces_a,)`` and ``(n_faces_b,)`` masks on ``vertices_a.device``, ``True`` for a face
+        that crosses some face of the other mesh.
 
     Raises
     ------
@@ -1113,7 +1116,7 @@ def slice_mesh_with_plane(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     plane_normal
         Normal vector of the plane.
     plane_origin
@@ -1122,9 +1125,9 @@ def slice_mesh_with_plane(
     Returns
     -------
     new_vertices
-        Vertices of the sliced mesh.
+        ``(n_new_vertices,)`` vertices of the sliced mesh.
     new_faces
-        Length-``3 * m`` flat triangle index buffer for the sliced mesh.
+        ``(3 * m,)`` flat triangle index buffer for the sliced mesh, ``m`` its face count.
 
     Raises
     ------
@@ -1202,7 +1205,7 @@ def split_mesh_with_plane(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     plane_normal
         Normal vector of the plane. Need not be unit length, but ``tolerance`` is a band on
         ``dot(v - plane_origin, plane_normal)``, so a non-unit normal scales it.
@@ -1218,9 +1221,11 @@ def split_mesh_with_plane(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Original vertices followed by one crossing point per crossed edge.
+        ``(n_vertices + n_crossed,)`` original vertices followed by one crossing point per crossed
+        edge.
     new_faces : wp.array[wp.int32]
-        Length-``3 * m`` flat triangle index buffer for the refined mesh, both sides included.
+        ``(3 * m,)`` flat triangle index buffer for the refined mesh, both sides included, ``m``
+        its face count.
     above : wp.array[wp.bool]
         ``(m,)`` per-face mask: ``True`` where the face is on the ``plane_normal`` side. This is the
         side [`slice_mesh_with_plane`][triwarp.intersection.slice_mesh_with_plane] returns,
@@ -1351,7 +1356,7 @@ def clip_mesh_with_field(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     values
         ``(n_vertices,)`` scalar field, ``wp.float32`` or ``wp.float64``. A ``float64`` field is
         shifted in ``float64`` and then compared in ``float32``, which is the vertex buffer's
@@ -1370,9 +1375,9 @@ def clip_mesh_with_field(
     Returns
     -------
     new_vertices
-        Vertices of the clipped region, with the crossing points appended.
+        ``(n_new_vertices,)`` vertices of the clipped region, with the crossing points appended.
     new_faces
-        Length-``3 * m`` flat triangle index buffer for the clipped region.
+        ``(3 * m,)`` flat triangle index buffer for the clipped region, ``m`` its face count.
 
     Raises
     ------
@@ -1471,7 +1476,7 @@ def split_faces_along_field(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     values
         ``(n_vertices,)`` scalar field, ``wp.float32`` or ``wp.float64``. A ``float64`` field is
         shifted in ``float64`` and then compared in ``float32``, which is the vertex buffer's
@@ -1484,12 +1489,14 @@ def split_faces_along_field(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        The input vertices, unchanged and in order, with the crossing points appended.
+        ``(n_vertices + n_crossed,)`` input vertices, unchanged and in order, with the crossing
+        points appended.
     new_faces : wp.array[wp.int32]
-        Length-``3 * m`` flat triangle index buffer. Uncut faces keep their winding and their
-        vertex indices; cut faces are replaced by the two or three triangles they split into.
+        ``(3 * m,)`` flat triangle index buffer, ``m`` the output face count. Uncut faces keep
+        their winding and their vertex indices; cut faces are replaced by the two or three
+        triangles they split into.
     positive : wp.array[wp.bool]
-        Length-``m`` mask, ``True`` for the faces on the ``values >= isovalue`` side.
+        ``(m,)`` mask, ``True`` for the faces on the ``values >= isovalue`` side.
 
     Raises
     ------

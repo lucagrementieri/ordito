@@ -927,6 +927,29 @@ def test_icosphere_is_crack_free(device: str, subdivisions: int) -> None:
     assert vertices_wp.size == len(np.unique(vertices_wp.numpy(), axis=0))
 
 
+@pytest.mark.parametrize("levels_per_launch", [1, 3])
+def test_icosphere_launch_schedule_is_value_neutral(
+    monkeypatch: pytest.MonkeyPatch, device: str, levels_per_launch: int
+) -> None:
+    """
+    Triwarp against triwarp: every launch schedule builds the same mesh, bit for bit.
+
+    ``test_icosphere`` carries the trimesh oracle; this pins the schedules to each other. At five
+    levels the shipped schedule is one launch descending every level per vertex; one level per
+    launch refines exactly as the recursive build does, and three levels then one per launch mixes
+    a multi-level launch reading the vertices an earlier one wrote.
+    """
+    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=5, radius=1.7, device=device)
+    monkeypatch.setattr(tw.creation, "_ICOSPHERE_LEVELS_PER_LAUNCH", levels_per_launch)
+    other_vertices_wp, other_faces_wp = tw.creation.icosphere(
+        subdivisions=5, radius=1.7, device=device
+    )
+    assert np.array_equal(
+        vertices_wp.numpy().view(np.uint32), other_vertices_wp.numpy().view(np.uint32)
+    )
+    assert np.array_equal(faces_wp.numpy(), other_faces_wp.numpy())
+
+
 def test_icosphere_radius(device: str) -> None:
     vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=3, radius=2.5, device=device)
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 2.5, rtol=1e-5, atol=1e-5)

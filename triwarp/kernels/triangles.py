@@ -184,15 +184,23 @@ def face_vertices_vec3d(
     return to_vec3d(v0), to_vec3d(v1), to_vec3d(v2)
 
 
+@wp.func
+def face_signed_volume(
+    vertices: wp.array[Any], faces: wp.array[wp.int32], face_index: wp.int32, center: Any
+):
+    """Signed volume of the tetrahedron ``(center, v0, v1, v2)`` of face ``face_index``."""
+    # The sum over faces is the mesh volume, in the vertices' scalar type.
+    p0, p1, p2 = face_vertices(vertices, faces, face_index)
+    d = wp.dot(p0 - center, wp.cross(p1 - center, p2 - center))
+    return d / type(d)(6.0)
+
+
 @wp.kernel
 def face_signed_volumes(
     vertices: wp.array[Any], faces: wp.array[wp.int32], center: Any, out_volumes: wp.array[wp.Float]
 ) -> None:
-    # Signed volume of the tetrahedron (center, v0, v1, v2); the sum over faces is the mesh volume.
     fi = wp.int32(wp.tid())
-    p0, p1, p2 = face_vertices(vertices, faces, fi)
-    d = wp.dot(p0 - center, wp.cross(p1 - center, p2 - center))
-    out_volumes[fi] = d / type(d)(6.0)
+    out_volumes[fi] = face_signed_volume(vertices, faces, fi, center)
 
 
 @wp.func

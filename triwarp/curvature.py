@@ -25,7 +25,6 @@ from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.kernels import curvature as kernel_curvature
 from triwarp.kernels import scatter as kernel_scatter
-from triwarp.vertices import vertex_defects
 from triwarp.vertices import vertex_normals as _vertex_normals
 
 
@@ -54,9 +53,9 @@ def principal_curvature(
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     radius
         Neighborhood size multiplier applied to the average edge length. Larger values
         collect more neighbors and produce smoother curvature estimates.
@@ -68,19 +67,20 @@ def principal_curvature(
         ``igl.principal_curvature`` exactly. The two agree closely on well-sampled smooth
         surfaces; they differ only in the off-diagonal of the shape operator.
     face_normals
-        Optional length-``n_faces`` unit face normals and matching areas from
+        ``(n_faces,)`` unit face normals and matching areas from
         [`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]; recomputed together
         when either is ``None``. [`Trimesh.face_normals`][triwarp.mesh.Trimesh.face_normals] and
         [`Trimesh.face_areas`][triwarp.mesh.Trimesh.face_areas] cache the pair.
     face_areas
-        See ``face_normals``.
+        ``(n_faces,)`` face areas; see ``face_normals``.
 
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.float32], wp.array[wp.float32]]
-        ``(PD1, PD2, PV1, PV2)`` where ``PV1 >= PV2`` at every vertex. Vertices for which
-        the quadric fit failed (a neighbourhood holding fewer than 5 vertices besides the centre,
-        or a degenerate system) have zero directions and zero curvature values.
+        ``(n_vertices,)`` arrays ``(PD1, PD2, PV1, PV2)`` where ``PV1 >= PV2`` at every vertex.
+        Vertices for which the quadric fit failed (a neighbourhood holding fewer than 5 vertices
+        besides the centre, or a degenerate system) have zero directions and zero curvature
+        values.
 
     Raises
     ------
@@ -174,11 +174,11 @@ def discrete_gaussian_curvature(
     Parameters
     ----------
     points
-        ``(n,)`` query positions in space as ``wp.vec3``.
+        ``(n,)`` query positions in space.
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_angles
         ``(n_faces, 3)`` interior angles per face (from
         [`face_angles`][triwarp.triangles.face_angles]).
@@ -188,10 +188,12 @@ def discrete_gaussian_curvature(
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n`` discrete Gaussian curvature measure on ``points.device``.
+        ``(n,)`` discrete Gaussian curvature measure on ``points.device``.
 
     Raises
     ------
+    ValueError
+        If ``face_angles`` does not have one row per triangle in ``faces``.
     RuntimeError
         If ``points``, ``vertices``, ``faces`` and ``face_angles`` are not all on one device.
 
@@ -205,16 +207,30 @@ def discrete_gaussian_curvature(
         The mean-curvature measure over the same ball.
     """
     require_same_device(points=points, vertices=vertices, faces=faces, face_angles=face_angles)
-    nearest_indices, _, nearest_offsets = tw.neighbors.query_ball_with_offsets(
-        vertices, points, radius
-    )
-    defects = vertex_defects(vertices.size, faces, face_angles)
-    gauss_curvature = _launch.zeros(points.size, dtype=wp.float32, device=points.device)
+    device = points.device
+    n_faces = faces.size // 3
+    if face_angles.shape[0] != n_faces:
+        raise ValueError(
+            f"face_angles must have one row per triangle, got {face_angles.shape[0]} rows for "
+            f"{n_faces} faces"
+        )
+    if points.size == 0 or vertices.size == 0:
+        return _launch.zeros(points.size, dtype=wp.float32, device=device)
+    # Each vertex's incident-angle sum; the ball walk forms its defect as it reads it.
+    angle_sum = _launch.zeros(vertices.size, dtype=wp.float32, device=device)
     _launch.launch(
-        kernel_scatter.SCATTER_OFFSET_SUM[defects.dtype],
-        dim=nearest_indices.size,
-        inputs=[defects, nearest_indices, nearest_offsets, gauss_curvature],
-        device=points.device,
+        kernel_scatter.SCATTER_SUM_SCALAR[face_angles.dtype],
+        dim=n_faces,
+        inputs=[face_angles, faces.reshape((-1, 3)), angle_sum],
+        device=device,
+    )
+    grid = tw.neighbors.hashgrid_from_points(vertices, float(radius))
+    gauss_curvature = _launch.empty(points.size, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_curvature.ball_angle_defect_sum,
+        dim=points.size,
+        inputs=[vertices, angle_sum, points, grid.id, wp.float32(radius), gauss_curvature],
+        device=device,
     )
     return gauss_curvature
 
@@ -237,25 +253,25 @@ def discrete_mean_curvature(
     Parameters
     ----------
     points
-        ``(n,)`` query positions in space as ``wp.vec3``.
+        ``(n,)`` query positions in space.
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     radius
         Sphere radius which should typically be greater than zero.
     face_adjacency
-        Optional ``(m, 2)`` face index pairs from
+        ``(m, 2)`` face index pairs from
         [`face_adjacency`][triwarp.adjacency.face_adjacency]. When ``None``, adjacency and
         shared edges are computed from ``faces``.
     face_adjacency_edges
-        Optional ``(m, 2)`` sorted shared vertex pairs. Must be supplied
+        ``(m, 2)`` sorted shared vertex pairs, or ``None``. Must be supplied
         together with ``face_adjacency`` or omitted with it.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n`` discrete mean curvature measure on ``points.device``.
+        ``(n,)`` discrete mean curvature measure on ``points.device``.
 
     Raises
     ------
@@ -325,25 +341,19 @@ def discrete_mean_curvature(
     # ``wp.bvh_query_sphere``'s traversal is cheaper than ``wp.bvh_query_aabb``'s on the identical
     # BVH, and the cube would also admit candidates outside the ball that the narrow phase would
     # then have to reject.
-    candidate_edges, offsets = tw.neighbors.query_bvh_ball(bvh, points, radius)
-
-    mean_curvature = _launch.zeros(n_points, dtype=wp.float32, device=device)
-    n_candidates = candidate_edges.size
-    if n_candidates > 0:
-        _launch.launch(
-            kernel_curvature.accumulate_mean_curvature,
-            dim=n_candidates,
-            inputs=[
-                points,
-                vertices,
-                face_adjacency_edges,
-                signed_angles,
-                candidate_edges,
-                offsets,
-                wp.float32(radius),
-                mean_curvature,
-            ],
-            device=device,
-        )
-
+    mean_curvature = _launch.empty(n_points, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_curvature.ball_mean_curvature,
+        dim=n_points,
+        inputs=[
+            points,
+            vertices,
+            face_adjacency_edges,
+            signed_angles,
+            bvh.id,
+            wp.float32(radius),
+            mean_curvature,
+        ],
+        device=device,
+    )
     return mean_curvature

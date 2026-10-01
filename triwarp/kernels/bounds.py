@@ -396,23 +396,20 @@ def oriented_box_select_chains(
     write_chain_state(chain_state, chain, best_loss, corners, best_row, frame)
 
 
-@wp.kernel
-def packed_box_diagonals(corners: wp.array[wp.float32], out_diagonal: wp.array[wp.float32]) -> None:
-    # Decode one axis-aligned box per six ``[min_x, min_y, min_z, -max_x, -max_y, -max_z]`` slots
-    # into its diagonal length. The shared reader for that packing, which
+@wp.func
+def packed_box_diagonal(corners: wp.array[wp.float32], box: wp.int32) -> wp.float32:
+    """Diagonal length of box ``box`` of a six-slot ``[min, -max]`` packing; zero when empty."""
+    # The shared reader for the packing
     # [`oriented_box_extents`][triwarp.kernels.bounds.oriented_box_extents] and
-    # [`scatter_group_bounds`][triwarp.kernels.scatter.scatter_group_bounds] both write; launch over
-    # the box count.
+    # [`scatter_group_bounds`][triwarp.kernels.scatter.scatter_group_bounds] both write.
     #
     # A box nothing accumulated into still holds the ``+inf`` seed in both halves, so its extent
     # comes out negative. That reads as **zero** rather than as ``nan``, which is what lets a caller
-    # threshold the whole array uniformly instead of masking the empty slots first.
-    box = wp.int32(wp.tid())
+    # threshold every box uniformly instead of masking the empty slots first.
     extent = packed_box_sides(corners, box)
     if extent[0] < wp.float32(0.0):
-        out_diagonal[box] = wp.float32(0.0)
-    else:
-        out_diagonal[box] = wp.length(extent)
+        return wp.float32(0.0)
+    return wp.length(extent)
 
 
 @wp.kernel

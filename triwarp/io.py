@@ -63,7 +63,7 @@ def load_mesh_data(path: str | Path, *, device: wp.DeviceLike = None) -> MeshDat
         Mapping with these possible keys:
 
         - ``vertices`` : ``wp.array[wp.vec3]`` of ``float32`` vertex positions (always present).
-        - ``faces`` : flat ``wp.array[wp.int32]`` of length ``3 * n_faces`` (triangle cells only).
+        - ``faces`` : ``(3 * n_faces,)`` flat ``wp.array[wp.int32]`` (triangle cells only).
         - ``vertex_normals`` : ``wp.array[wp.vec3]`` from ``nx, ny, nz`` per-vertex data.
         - ``uv`` : ``wp.array[wp.vec2]`` from ``u, v`` (or ``s, t`` / ``texture_u, texture_v``).
         - ``colors`` : ``wp.array[wp.vec3]`` or ``wp.array[wp.vec4]`` from ``red, green, blue``
@@ -218,7 +218,7 @@ def mesh_from_numpy(
     vertices
         ``(n_vertices, 3)`` vertex positions, any NumPy float dtype.
     faces
-        ``(n_faces, 3)`` (or already-flat length-``3 * n_faces``) triangle vertex indices,
+        ``(n_faces, 3)`` (or already-flat ``(3 * n_faces,)``) triangle vertex indices,
         any NumPy integer dtype.
     device
         Warp device for the returned mesh. Defaults to the current Warp device.

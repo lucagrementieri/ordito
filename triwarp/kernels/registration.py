@@ -5,7 +5,13 @@ from triwarp.kernels.array import LOOP_CONDITION, LOOP_ROUND, binary_search_inde
 from triwarp.kernels.neighbors import mesh_nearest_point
 from triwarp.kernels.predicates import normalize_or_zero
 from triwarp.kernels.proximity import closest_point_query
-from triwarp.kernels.reduce import ITEMS_PER_BLOCK_1D, block_chunk_1d, block_sum, commit_block_sum
+from triwarp.kernels.reduce import (
+    ITEMS_PER_BLOCK_1D,
+    block_chunk_1d,
+    block_sum,
+    commit_block_sum,
+    commit_sum_and_count,
+)
 from triwarp.kernels.transform import transform_point_mat44
 
 # ---------------------------------------------------------------------------
@@ -548,6 +554,29 @@ def sorted_prefix_median(values: wp.array[wp.float32], count: wp.int32) -> wp.fl
     return (wp.float64(values[count // 2 - 1]) + upper) / wp.float64(2.0)
 
 
+@wp.func
+def in_range_residual(
+    current: wp.array[wp.vec3],
+    closest: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    triangle_id: wp.array[wp.int32],
+    distance: wp.array[wp.float32],
+    max_distance: wp.float32,
+    i: wp.int32,
+) -> wp.float32:
+    """Correspondence ``i``'s point-to-plane residual where it is in range, ``+inf`` where not."""
+    # ``normals`` is the target's normal table, read at the correspondence's index through
+    # ``target_unit_normal`` exactly as ``point_to_plane_tile`` reads it -- behind the range test,
+    # which is what keeps a miss's ``-1`` from indexing it (a ``wp.where`` evaluates both arms).
+    residual = wp.float32(FLOAT32_INF_CONSTANT)
+    index = triangle_id[i]
+    if residual_valid(index, distance[i], max_distance):
+        residual = point_to_plane_residual(
+            current[i], closest[i], target_unit_normal(normals, index)
+        )
+    return residual
+
+
 @wp.kernel
 def robust_residual_keys(
     current: wp.array[wp.vec3],
@@ -558,16 +587,50 @@ def robust_residual_keys(
     max_distance: wp.float32,
     out_keys: wp.array[wp.float32],
 ) -> None:
-    # Each correspondence's point-to-plane residual where it is in range, ``+inf`` where it is not.
-    # ``normals`` is the target's normal table, read at the correspondence's index through
-    # ``target_unit_normal`` exactly as ``point_to_plane_tile`` reads it -- behind the range test,
-    # which is what keeps a miss's ``-1`` from indexing it (a ``wp.where`` evaluates both arms).
+    # The medians' sort keys: ``in_range_residual``, whose ``+inf`` sorts last.
     i = wp.int32(wp.tid())
-    key = wp.float32(FLOAT32_INF_CONSTANT)
-    index = triangle_id[i]
-    if residual_valid(index, distance[i], max_distance):
-        key = point_to_plane_residual(current[i], closest[i], target_unit_normal(normals, index))
-    out_keys[i] = key
+    out_keys[i] = in_range_residual(
+        current, closest, normals, triangle_id, distance, max_distance, i
+    )
+
+
+@wp.kernel
+def residual_moment(
+    current: wp.array[wp.vec3],
+    closest: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    triangle_id: wp.array[wp.int32],
+    distance: wp.array[wp.float32],
+    max_distance: wp.float32,
+    centered: wp.int32,
+    out_sums: wp.array[wp.float64],
+) -> None:
+    # One pass of the in-range residuals' two-pass standard deviation, folded as the residuals are
+    # formed (``in_range_residual``; the out-of-range ``+inf`` is skipped). With ``centered == 0``
+    # it commits their sum and count into ``out_sums[0:2]``; with ``centered == 1`` the sum of
+    # squared deviations from that mean, ``out_sums[0] / out_sums[1]``, into ``out_sums[2]``. The
+    # mean is read on the device, so the two passes need no readback between them.
+    block, lane = wp.tid()
+    offset, count = block_chunk_1d(current.shape[0], block)
+    mean = wp.float64(0.0)
+    if centered != 0:
+        mean = out_sums[0] / out_sums[1]
+    total = wp.float64(0.0)
+    kept = wp.float64(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        r = in_range_residual(
+            current, closest, normals, triangle_id, distance, max_distance, offset + k
+        )
+        if r < wp.float32(FLOAT32_INF_CONSTANT):
+            d = wp.float64(r) - mean
+            total += wp.where(centered != 0, d * d, d)
+            kept += wp.float64(1.0)
+    if centered != 0:
+        squares = block_sum(total)
+        if lane == 0:
+            wp.atomic_add(out_sums, 2, squares)
+    else:
+        commit_sum_and_count(lane, total, kept, out_sums)
 
 
 @wp.kernel

@@ -94,7 +94,7 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     Parameters
     ----------
     points
-        ``(n, 3)`` positions as ``wp.vec3``.
+        ``(n,)`` positions.
     leaf_size
         Maximum primitives per leaf; forwarded to ``warp.Bvh``.
 
@@ -126,8 +126,8 @@ def mesh_from_points(points: wp.array[wp.vec3]) -> wp.Mesh:
     Parameters
     ----------
     points
-        ``(n, 3)`` positions as ``wp.vec3``, ``n >= 1``. The mesh aliases them rather than copying,
-        so do not mutate them while it is in use.
+        ``(n,)`` positions, ``n >= 1``. The mesh aliases them rather than copying, so do not
+        mutate them while it is in use.
 
     Returns
     -------
@@ -166,7 +166,7 @@ def hashgrid_from_points(
     Parameters
     ----------
     points
-        ``(n, 3)`` positions as ``wp.vec3``.
+        ``(n,)`` positions.
     radius
         Cell size passed to ``warp.HashGrid.build`` and used by
         the ``query_ball*`` and ``query_nearest`` kernels under ``backend="hashgrid"``.
@@ -217,9 +217,9 @@ def bvh_from_bounds(
     Parameters
     ----------
     lower
-        ``(n,)`` minimum corner of each bound as ``wp.vec3``.
+        ``(n,)`` minimum corner of each bound.
     upper
-        ``(n,)`` maximum corner of each bound as ``wp.vec3``.
+        ``(n,)`` maximum corner of each bound.
     leaf_size
         Maximum primitives per leaf; forwarded to ``warp.Bvh``.
 
@@ -256,16 +256,16 @@ def query_bvh_ball(
         Pre-built BVH from [`bvh_from_bounds`][triwarp.neighbors.bvh_from_bounds]
         or [`bvh_from_points`][triwarp.neighbors.bvh_from_points].
     queries
-        ``(m, 3)`` query centers stored as ``wp.vec3``.
+        ``(m,)`` query centers.
     radius
         Ball radius about each query center.
 
     Returns
     -------
     candidate_indices_flat, offsets
-        Exactly the packing
+        ``(n_hits,)`` candidate indices and ``(m + 1,)`` offsets, exactly the packing
         [`query_bvh_box`][triwarp.neighbors.query_bvh_box] returns: ``offsets`` is the
-        length-``m + 1`` total-terminated prefix sum of per-query hit counts, and query ``k`` owns
+        total-terminated prefix sum of per-query hit counts, and query ``k`` owns
         ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``.
 
     Raises
@@ -295,10 +295,7 @@ def query_bvh_ball(
     m = queries.size
 
     if m == 0:
-        return (
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        )
+        return _launch.empty_packed(wp.int32, device)
 
     # The counts land behind the leading zero of the ``m + 1`` offsets buffer and are scanned there
     # in place, so no separate count buffer is allocated.
@@ -350,13 +347,14 @@ def query_bvh_box(
     bvh
         Pre-built BVH over points or bounds.
     query_lower, query_upper
-        ``(m,)`` ``wp.vec3`` corners of the query boxes, one pair per query.
+        ``(m,)`` corners of the query boxes, one pair per query.
 
     Returns
     -------
     candidate_indices_flat, offsets
-        Query ``k`` owns ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``, with ``offsets``
-        the length-``m + 1`` total-terminated prefix sum of per-query hit counts.
+        ``(n_hits,)`` candidate indices and ``(m + 1,)`` offsets: query ``k`` owns
+        ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``, with ``offsets`` the
+        total-terminated prefix sum of per-query hit counts.
 
     Raises
     ------
@@ -395,10 +393,7 @@ def query_bvh_box(
         raise ValueError("query_lower and query_upper must have the same length")
 
     if m == 0:
-        return (
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        )
+        return _launch.empty_packed(wp.int32, device)
 
     offsets = _launch.zeros(m + 1, dtype=wp.int32, device=device)
     hit_counts = twt.as_dense(offsets[1:])
@@ -499,10 +494,10 @@ def query_ball(
     Parameters
     ----------
     points
-        ``(n, 3)`` data points stored as ``wp.vec3``.
+        ``(n,)`` data points.
     queries
-        Either ``(m, 3)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3``
-        (treated as one query).
+        ``(m,)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3`` (treated as one
+        query).
     r
         Inclusion radius; cast to ``float32`` in kernels (non-negative).
     accelerator
@@ -534,7 +529,8 @@ def query_ball(
         ``list[wp.array[wp.float32]]``, each of length ``m``. Element ``k`` lists neighbors
         of ``queries[k]`` (indices into ``points`` and distances ``‖points[i] - q‖₂``).
 
-        If ``queries`` is a single ``wp.vec3``: two rank-1 arrays (possibly length 0), not lists.
+        If ``queries`` is a single ``wp.vec3``: two ``(n_neighbors,)`` arrays (possibly empty), not
+        lists.
 
         Empty ``points`` yields empty neighbor arrays and per-query empty slices; duplicate
         neighbors are not produced.
@@ -611,9 +607,9 @@ def query_ball_count(
     Parameters
     ----------
     points
-        ``(n, 3)`` data points stored as ``wp.vec3``.
+        ``(n,)`` data points.
     queries
-        ``(m, 3)`` query centers stored as ``wp.vec3``.
+        ``(m,)`` query centers.
     r
         Inclusion radius; cast to ``float32`` in kernels (non-negative).
     accelerator, backend, grid_bins, leaf_size
@@ -622,7 +618,7 @@ def query_ball_count(
     Returns
     -------
     wp.array[wp.int32]
-        Length-``m`` device array whose ``k``-th element is the neighbor count for
+        ``(m,)`` device array whose ``k``-th element is the neighbor count for
         ``queries[k]``. If ``n == 0``, returns zeros.
 
     Raises
@@ -691,10 +687,10 @@ def query_ball_with_offsets(
     Parameters
     ----------
     points
-        ``(n, 3)`` data points stored as ``wp.vec3``.
+        ``(n,)`` data points.
     queries
-        Either ``(m, 3)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3``
-        (treated as one query).
+        ``(m,)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3`` (treated as one
+        query).
     r
         Inclusion radius; cast to ``float32`` in kernels (non-negative).
     accelerator, backend, grid_bins, leaf_size
@@ -705,9 +701,10 @@ def query_ball_with_offsets(
     Returns
     -------
     neighbor_indices_flat, neighbor_distances_flat, offsets
-        Three rank-1 arrays. Let ``m = queries.shape[0]`` after any ``wp.vec3`` wrap.
+        ``(n_total,)``, ``(n_total,)`` and ``(m + 1,)`` arrays, with ``m = queries.shape[0]`` after
+        any ``wp.vec3`` wrap and ``n_total`` the total neighbor count.
 
-        ``offsets`` has length ``m + 1`` and is the total-terminated prefix sum of per-query
+        ``offsets`` is the total-terminated prefix sum of per-query
         neighbor counts: query ``k`` owns ``neighbor_indices_flat[offsets[k] : offsets[k + 1]]``,
         and ``offsets[m]`` is ``neighbor_indices_flat.shape[0]`` (the total neighbor count).
 
@@ -869,7 +866,7 @@ def knn_initial_radius(
     Parameters
     ----------
     points
-        ``(n,)`` data points as ``wp.vec3``.
+        ``(n,)`` data points.
     k
         Number of neighbors the search will ask for; must be ``>= 1``.
     bounds
@@ -1006,9 +1003,9 @@ def query_nearest(
     Parameters
     ----------
     points
-        ``(n, 3)`` data points stored as ``wp.vec3``.
+        ``(n,)`` data points.
     queries
-        Either ``(m, 3)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3``.
+        ``(m,)`` query centers as ``wp.array[wp.vec3]``, or a single ``wp.vec3``.
     k
         Number of neighbours per query, ``>= 1``.
     accelerator
@@ -1046,13 +1043,13 @@ def query_nearest(
     Returns
     -------
     neighbor_indices, neighbor_distances
-        ``(m, k)`` ``wp.int32`` indices into ``points`` and ``(m, k)`` ``wp.float32`` distances,
-        each row sorted by increasing distance. A slot no neighbour was found for holds ``-1`` and
+        ``(m, k)`` indices into ``points`` and ``(m, k)`` distances, each row sorted by increasing
+        distance. A slot no neighbour was found for holds ``-1`` and
         ``inf``.
 
         The trailing axis collapses when there is only one of it, as
-        [`scipy.spatial.KDTree.query`][] does: at ``k == 1`` the two are rank-1 of length ``m``, and
-        for a single ``wp.vec3`` query they are rank-1 of length ``k``. The rank depends only on
+        [`scipy.spatial.KDTree.query`][] does: at ``k == 1`` the two are ``(m,)``, and for a single
+        ``wp.vec3`` query they are ``(k,)``. The rank depends only on
         ``k`` and the form of ``queries``, never on whether an answer was found — an empty
         ``points`` or an empty ``queries`` returns the same rank a populated one would.
 
@@ -1425,12 +1422,12 @@ def query_weighted_nearest(
     Parameters
     ----------
     points
-        ``(n,)`` site positions as ``wp.vec3``.
+        ``(n,)`` site positions.
     weights
         ``(n,)`` per-site weights, subtracted from the distance. Larger wins ties of distance; may
         be negative, which pushes a site away.
     queries
-        ``(m,)`` query positions as ``wp.vec3``.
+        ``(m,)`` query positions.
     max_weight
         An **upper bound** on ``weights``, which is what makes the search prunable. ``None`` reduces
         ``weights`` on the device and reads the maximum back (one readback), so pass it when the
@@ -1541,12 +1538,12 @@ def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``.
+        ``(n,)`` point positions.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n`` distances on ``points.device``. Zero where two points coincide exactly.
+        ``(n,)`` distances on ``points.device``. Zero where two points coincide exactly.
 
     Notes
     -----
@@ -1592,7 +1589,7 @@ def closest_pair(points: wp.array[wp.vec3]) -> tuple[int, int, float]:
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``, ``n >= 2``.
+        ``(n,)`` point positions, ``n >= 2``.
 
     Returns
     -------
@@ -1690,9 +1687,9 @@ def geodesic_ball(
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     radius
         Geodesic-ball radius in world units.
     min_count
@@ -1701,10 +1698,11 @@ def geodesic_ball(
     Returns
     -------
     tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32]]
-        ``(neighbor_indices, offsets, reference_neighbors)``. ``offsets`` is the
-        length-``n_vertices + 1`` exclusive prefix sum of per-vertex neighbor counts (CSR row
-        bounds); vertex ``i`` owns ``neighbor_indices[offsets[i] : offsets[i + 1]]`` and
-        ``offsets[n_vertices]`` is the total. ``reference_neighbors`` has length ``n_vertices``.
+        ``(n_total,)``, ``(n_vertices + 1,)`` and ``(n_vertices,)`` arrays
+        ``(neighbor_indices, offsets, reference_neighbors)``. ``offsets`` is the exclusive prefix
+        sum of per-vertex neighbor counts (CSR row bounds); vertex ``i`` owns
+        ``neighbor_indices[offsets[i] : offsets[i + 1]]`` and ``offsets[n_vertices]`` is the total
+        ``n_total``.
 
     Raises
     ------
@@ -1717,8 +1715,7 @@ def geodesic_ball(
     if n == 0:
         # A single zero rather than an empty buffer: the CSR row-bounds form is ``n + 1`` long.
         return (
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
+            *_launch.empty_packed(wp.int32, device),
             _launch.empty(0, dtype=wp.int32, device=device),
         )
 

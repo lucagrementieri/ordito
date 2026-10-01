@@ -32,6 +32,7 @@ import warp as wp
 
 import triwarp as tw
 from tests.api_conventions import (
+    _SHAPE_LATE_OPENINGS,
     _UNCITABLE_REFERENCES,
     DocstringExample,
     _annotation_nodes,
@@ -40,6 +41,7 @@ from tests.api_conventions import (
     _int_typed_names,
     _is_int_expression,
     _is_tid_call,
+    _item_openings,
     _kernel_scope_functions,
     admonition_placement_problems,
     allocation_device_problems,
@@ -65,6 +67,7 @@ from tests.api_conventions import (
     mask_return_problems,
     private_import_problems,
     scan_package,
+    shape_spelling_problems,
     triplet_build_problems,
     uncitable_reference_problems,
     undocumented_raise_problems,
@@ -948,3 +951,52 @@ def test_every_public_module_is_in_the_docs_nav() -> None:
     shows it bites: deleting the ``voxels`` line from the nav reports one problem.
     """
     _fail("docs nav out of sync with triwarp/:", docs_nav_problems())
+
+
+def test_array_entries_open_with_their_shape() -> None:
+    """
+    Every public array entry's description opens with its shape as a code span.
+
+    Not a library comparison: this is a property of triwarp's own docstrings. Check 29. The probe
+    that shows it bites: writing ``faces``' entry in ``adjacency.face_adjacency`` back as
+    ``Length-``3 * n_faces`` flat triangle index buffer`` reports one problem.
+    """
+    _fail("array docstring entries not opening with their shape:", shape_spelling_problems())
+
+
+def test_shape_spelling_scan_reads_entries_and_not_free_prose() -> None:
+    """
+    Check 29 reads entry descriptions and property summaries, and nothing else.
+
+    Not a library comparison: pins the scanner itself. An entry opening with ``Length-`` is a hit
+    in each item section; the same words in a ``Notes`` paragraph, or a shape opening, are not.
+    """
+    docstring = textwrap.dedent(
+        """
+        Summary.
+
+        Parameters
+        ----------
+        faces
+            Length-``3 * n_faces`` flat triangle index buffer.
+        vertices
+            ``(n_vertices,)`` mesh vertex positions.
+
+        Returns
+        -------
+        wp.array[wp.int32]
+            Shape ``(m, 2)`` pairs.
+
+        Notes
+        -----
+        Length-``n`` arrays are fine in prose.
+        """
+    )
+    openings = _item_openings(docstring)
+    assert [(section, item) for _, section, item, _ in openings] == [
+        ("Parameters", "faces"),
+        ("Parameters", "vertices"),
+        ("Returns", "wp.array[wp.int32]"),
+    ]
+    flagged = [item for _, _, item, text in openings if _SHAPE_LATE_OPENINGS.match(text)]
+    assert flagged == ["faces", "wp.array[wp.int32]"]

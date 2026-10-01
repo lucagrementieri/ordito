@@ -1,10 +1,10 @@
 import warp as wp
 
 from triwarp.constants import TOLERANCE_MERGE_CONSTANT, TOLERANCE_ZERO_CONSTANT
-from triwarp.kernels import array as kernel_array
 from triwarp.kernels.adjacency import unshared_projection, unshared_vertex
 from triwarp.kernels.linalg import solve_normal_equations
-from triwarp.kernels.predicates import segment_aabb, unit_tangent, vector_angle
+from triwarp.kernels.neighbors import in_ball
+from triwarp.kernels.predicates import angle_defect, segment_aabb, unit_tangent, vector_angle
 from triwarp.kernels.tangent_space import any_perpendicular
 from triwarp.kernels.triangles import face_normals_and_area
 
@@ -329,6 +329,33 @@ def fit_principal_curvature(
         out_pv2[i] = k0
 
 
+@wp.kernel
+def ball_angle_defect_sum(
+    vertices: wp.array[wp.vec3],
+    angle_sum: wp.array[wp.float32],
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    out_curvature: wp.array[wp.float32],
+) -> None:
+    # The Cohen-Steiner/Morvan Gaussian measure of the ball around one query: the angle defect of
+    # every vertex inside it, formed from its incident-angle sum as it is read and summed during the
+    # hash-grid walk. The walk and predicate are ``kernels.neighbors.ball_collect``'s hash-grid
+    # branch, so a query folds exactly the vertices a ball-query CSR would list, in its order --
+    # with no defect pass, count pass, scan, readback or neighbour-sized buffers in between, and one
+    # sequential sum per query where a scatter over that CSR added the same terms by atomics. The
+    # defect is ``predicates.angle_defect``, the rule ``vertices.vertex_defects`` applies.
+    q = wp.int32(wp.tid())
+    p = points[q]
+    total = wp.float32(0.0)
+    v = wp.int32(0)
+    query = wp.hash_grid_query(grid_id, p, radius)
+    while wp.hash_grid_query_next(query, v):
+        if in_ball(vertices[v] - p, radius):
+            total = total + angle_defect(angle_sum[v])
+    out_curvature[q] = total
+
+
 @wp.func
 def line_ball_intersection_segment(
     start_point: wp.vec3, end_point: wp.vec3, center: wp.vec3, radius: wp.float32
@@ -374,7 +401,7 @@ def face_pair_dihedrals(
     # ``unshared_projection`` against ``TOLERANCE_MERGE`` (``adjacency.face_adjacency_convex``);
     # the bounds are ``segment_aabb`` (``edges.edge_aabb_bounds``).
     #
-    # Folding the sign in is exact: ``accumulate_mean_curvature`` multiplies ``length * angle *
+    # Folding the sign in is exact: ``ball_mean_curvature`` multiplies ``length * angle *
     # sign``, and scaling by ``-1`` commutes with rounding, so the product is bit-identical.
     #
     # The two face normals are derived here rather than read from a ``(n_faces,)`` table: with
@@ -399,28 +426,28 @@ def face_pair_dihedrals(
 
 
 @wp.kernel
-def accumulate_mean_curvature(
+def ball_mean_curvature(
     queries: wp.array[wp.vec3],
     vertices: wp.array[wp.vec3],
     face_adjacency_edges: wp.array2d[wp.int32],
     signed_angles: wp.array[wp.float32],
-    candidate_edge_indices: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+    bvh_id: wp.uint64,
     radius: wp.float32,
     out_mean_curvature: wp.array[wp.float32],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    edge_idx = candidate_edge_indices[tid]
-    query_idx = kernel_array.binary_search_index(offsets, tid) - wp.int32(1)
-
-    e0 = face_adjacency_edges[edge_idx, 0]
-    e1 = face_adjacency_edges[edge_idx, 1]
-    start_point = vertices[e0]
-    end_point = vertices[e1]
-    center = queries[query_idx]
-
-    length = line_ball_intersection_segment(start_point, end_point, center, radius)
-    # Positive across a convex edge, negative across a concave one; see ``face_pair_dihedrals``.
-    signed_angle = signed_angles[edge_idx]
-
-    wp.atomic_add(out_mean_curvature, query_idx, length * signed_angle * wp.float32(0.5))
+    # The Cohen-Steiner/Morvan mean-curvature measure of the ball around one query: half the signed
+    # dihedral angle of every adjacent face pair, weighted by the length of their shared edge inside
+    # the ball, summed during the BVH walk over the edges' bounds. One sequential sum per query,
+    # with no candidate list, count pass, scan, readback or per-candidate binary search and atomic.
+    q = wp.int32(wp.tid())
+    center = queries[q]
+    total = wp.float32(0.0)
+    k = wp.int32(0)
+    query = wp.bvh_query_sphere(bvh_id, center, radius)
+    while wp.bvh_query_next(query, k):
+        start_point = vertices[face_adjacency_edges[k, 0]]
+        end_point = vertices[face_adjacency_edges[k, 1]]
+        length = line_ball_intersection_segment(start_point, end_point, center, radius)
+        # Positive across a convex edge, negative across a concave one; see ``face_pair_dihedrals``.
+        total = total + length * signed_angles[k] * wp.float32(0.5)
+    out_mean_curvature[q] = total

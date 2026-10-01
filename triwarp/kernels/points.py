@@ -1,6 +1,6 @@
 import warp as wp
 
-from triwarp.constants import FLOAT32_INF_CONSTANT
+from triwarp.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from triwarp.kernels.array import (
     declare_map_signatures,
     map_probe,
@@ -10,6 +10,7 @@ from triwarp.kernels.array import (
     unpack_ranked_index,
 )
 from triwarp.kernels.grouping import hash_slot_words3, next_slot
+from triwarp.kernels.neighbors import ACCEL_HASHGRID, ball_count_in_radius
 from triwarp.kernels.predicates import point_plane_dot, triangle_normal
 from triwarp.kernels.reduce import (
     block_chunk_1d,
@@ -309,15 +310,14 @@ def neighbor_distance_moments(
         commit_sum_and_count(lane, counted, distance_total, out_totals)
 
 
-@wp.kernel
+@wp.func
 def local_outlier_factor(
-    standard_distance: wp.array[wp.float32],
-    neighbor_idx: wp.array2d[wp.int32],
-    out_plof: wp.array[wp.float32],
-) -> None:
-    # LoOP's probabilistic local outlier factor: how far this point's standard distance sits above
-    # the mean standard distance of its own neighbourhood. Zero when the neighbourhood is empty or
-    # collapsed, so such a point never reads as an outlier on this term alone.
+    standard_distance: wp.array[wp.float32], neighbor_idx: wp.array2d[wp.int32], i: wp.int32
+) -> wp.float32:
+    """LoOP's probabilistic local outlier factor of point ``i``."""
+    # How far this point's standard distance sits above the mean standard distance of its own
+    # neighbourhood. Zero when the neighbourhood is empty or collapsed, so such a point never reads
+    # as an outlier on this term alone.
     #
     # The LoOP normalization factor lambda cancels here (it scales numerator and denominator
     # alike); it only enters through the cloud-wide nplof the caller divides by.
@@ -327,7 +327,6 @@ def local_outlier_factor(
     # one in-repo caller (``points.outlier_probability``) only ever builds this table from a
     # self-query, so this stays a documented, unguarded assumption rather than a demonstrated bug —
     # see the longer note there for why a guard is not added speculatively.
-    i = wp.int32(wp.tid())
     k = neighbor_idx.shape[1]
     total = wp.float32(0.0)
     count = wp.int32(0)
@@ -336,10 +335,33 @@ def local_outlier_factor(
         if j >= 0:
             total += standard_distance[j]
             count += 1
-    if count == 0 or total <= 0.0:
-        out_plof[i] = 0.0
-        return
-    out_plof[i] = standard_distance[i] * wp.float32(count) / total - 1.0
+    plof = wp.float32(0.0)
+    if count > 0 and total > 0.0:
+        plof = standard_distance[i] * wp.float32(count) / total - 1.0
+    return plof
+
+
+@wp.kernel
+def local_outlier_factors(
+    standard_distance: wp.array[wp.float32],
+    neighbor_idx: wp.array2d[wp.int32],
+    out_plof: wp.array[wp.float32],
+    out_sum_squares: wp.array[wp.float32],
+) -> None:
+    # Every point's ``local_outlier_factor``, and the cloud-wide sum of their squares the LoOP
+    # normalizer needs, folded as they are written. One tile of points per block (the grid keeps
+    # its per-point width, since every point is written), lanes striding it by ``wp.block_dim()``
+    # so the one CPU lane walks it all, and one atomic per block.
+    block, lane = wp.tid()
+    offset, remaining = tile_chunk(neighbor_idx.shape[0], block, TILE_1D)
+    squares = wp.float32(0.0)
+    for k in range(lane, wp.min(remaining, TILE_1D), wp.block_dim()):
+        plof = local_outlier_factor(standard_distance, neighbor_idx, offset + k)
+        out_plof[offset + k] = plof
+        squares += plof * plof
+    squares = block_sum(squares)
+    if lane == 0:
+        wp.atomic_add(out_sum_squares, 0, squares)
 
 
 @wp.func
@@ -456,6 +478,21 @@ def statistical_outlier_from_totals(
         cloud_std = wp.sqrt(totals[2] / (totals[0] - wp.float64(1.0)))
         threshold = wp.float32(counted_cloud_mean(totals) + std_ratio * cloud_std)
     out_mask[i] = is_statistical_outlier(mean_distance[i], count[i], threshold)
+
+
+@wp.kernel
+def radius_outlier_flags(
+    points: wp.array[wp.vec3],
+    grid_id: wp.uint64,
+    radius: wp.float32,
+    min_neighbors: wp.int32,
+    out_mask: wp.array[wp.bool],
+) -> None:
+    # A point is a radius outlier when its ball holds at most ``min_neighbors`` points, itself
+    # included: ``neighbors.query_ball_count``'s count, compared in the launch that forms it.
+    i = wp.int32(wp.tid())
+    count = ball_count_in_radius(points, ACCEL_HASHGRID, grid_id, points[i], radius)
+    out_mask[i] = count <= min_neighbors
 
 
 @wp.func

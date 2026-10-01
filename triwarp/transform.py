@@ -127,12 +127,12 @@ def transform_points(
         array form keeps a fitted transform on the device, so an
         [`icp`][triwarp.registration.icp] result can be applied without a host readback.
     out
-        Destination, allocated when ``None``. Pass ``out=points`` to transform in place.
+        ``(n,)`` destination, allocated when ``None``. Pass ``out=points`` to transform in place.
 
     Returns
     -------
     wp.array[wp.vec3]
-        ``out``, or a freshly allocated ``(n,)`` buffer on ``points.device``.
+        ``(n,)`` transformed positions: ``out``, or a freshly allocated buffer on ``points.device``.
 
     Raises
     ------
@@ -202,12 +202,13 @@ def transform_vectors(
         there is no on-device kernel for this map, so the array form still costs one host readback
         (see [`as_mat44`][triwarp.transform.as_mat44]).
     out
-        Destination, allocated when ``None``. Pass ``out=vectors`` to transform in place.
+        ``(n,)`` destination, allocated when ``None``. Pass ``out=vectors`` to transform in place.
 
     Returns
     -------
     wp.array[wp.vec3]
-        ``out``, or a freshly allocated ``(n,)`` buffer on ``vectors.device``.
+        ``(n,)`` transformed directions: ``out``, or a freshly allocated buffer on
+        ``vectors.device``.
 
     Raises
     ------
@@ -252,12 +253,12 @@ def transform_normals(
         the host-side inverse this needs (see [`normal_matrix`][triwarp.transform.normal_matrix])
         is computed once and reused, regardless of ``normals``' length.
     out
-        Destination, allocated when ``None``. Pass ``out=normals`` to transform in place.
+        ``(n,)`` destination, allocated when ``None``. Pass ``out=normals`` to transform in place.
 
     Returns
     -------
     wp.array[wp.vec3]
-        ``out``, or a freshly allocated ``(n,)`` buffer of unit (or zero) normals on
+        ``(n,)`` unit (or zero) normals: ``out``, or a freshly allocated buffer on
         ``normals.device``.
 
     Raises
@@ -312,18 +313,20 @@ def transform_mesh(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` flat ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     matrix
         ``4x4`` transform, scalar or ``(1,)`` device array.
     out_vertices, out_faces
-        Destinations, allocated when ``None``. Pass the inputs to transform in place.
+        ``(n_vertices,)`` and ``(3 * n_faces,)`` destinations, allocated when ``None``. Pass the
+        inputs to transform in place.
 
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Transformed positions.
+        ``(n_vertices,)`` transformed positions.
     faces : wp.array[wp.int32]
-        Face buffer, corner-reversed if ``matrix`` mirrors and otherwise a copy of the input.
+        ``(3 * n_faces,)`` face buffer, corner-reversed if ``matrix`` mirrors and otherwise a copy
+        of the input.
 
     Raises
     ------

@@ -60,7 +60,7 @@ import triwarp.typing as twt
 from triwarp import _launch
 from triwarp._device import require_same_device, slice_count
 from triwarp.constants import TILE_1D, TOLERANCE_ZERO
-from triwarp.kernels import array as kernel_array
+from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import points as kernel_points
 from triwarp.kernels import predicates as kernel_predicates
 from triwarp.kernels import reduce as kernel_reduce
@@ -95,7 +95,7 @@ def point_plane_distance(
     Parameters
     ----------
     points
-        ``(n,)`` query positions in space as ``wp.vec3``.
+        ``(n,)`` query positions in space.
     plane_normal
         Plane normal vector as ``wp.vec3``; need not be unit length, as the
         distance is normalized by its magnitude.
@@ -106,8 +106,7 @@ def point_plane_distance(
     Returns
     -------
     wp.array[wp.float32]
-        Length ``n`` signed distances from each point to the plane on
-        ``points.device``.
+        ``(n,)`` signed distances from each point to the plane on ``points.device``.
     """
     if plane_origin is None:
         plane_origin = wp.vec3(0.0, 0.0, 0.0)
@@ -133,7 +132,7 @@ def half_space_mask(
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     plane_normal
         Plane normal as ``wp.vec3``, pointing into the selected half. Need not be unit length: only
         the sign of the projection is read.
@@ -143,8 +142,8 @@ def half_space_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``. ``True`` marks a point to **keep**, the same sense
-        as [`point_finite_mask`][triwarp.points.point_finite_mask].
+        ``(n,)`` mask on ``points.device``. ``True`` marks a point to **keep**, the same sense as
+        [`point_finite_mask`][triwarp.points.point_finite_mask].
 
     Examples
     --------
@@ -186,12 +185,12 @@ def centroid(points: wp.array[wp.vec3]) -> wp.array[wp.vec3]:
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Shape ``(1,)`` device array holding the centroid on ``points.device``.
+        ``(1,)`` device array holding the centroid on ``points.device``.
         All-zeros when ``points`` is empty.
     """
     n = points.size
@@ -209,13 +208,13 @@ def gram_matrix(points: wp.array[wp.vec3]) -> wp.array[wp.mat33]:
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
 
     Returns
     -------
     wp.array[wp.mat33]
-        Shape ``(1,)`` device array holding the ``3x3`` Gram matrix on
-        ``points.device``. All-zeros when ``points`` is empty.
+        ``(1,)`` device array holding the ``3x3`` Gram matrix on ``points.device``. All-zeros when
+        ``points`` is empty.
     """
     # The uncentred Gram matrix is the scatter matrix around a zero center, which the kernel
     # reads off a null center array.
@@ -236,7 +235,7 @@ def fit_line(points: wp.array[wp.vec3]) -> wp.vec3:
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
 
     Returns
     -------
@@ -287,16 +286,16 @@ def centered_covariance(
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     center
-        Optional precomputed centroid as a ``(1,)`` ``wp.vec3`` device array.
-        When ``None`` it is computed on-device as ``sum(points) / n``.
+        ``(1,)`` precomputed centroid device array. When ``None`` it is computed on-device as
+        ``sum(points) / n``.
 
     Returns
     -------
     wp.array[wp.mat33]
-        Shape ``(1,)`` device array holding the centered ``3x3`` scatter matrix
-        on ``points.device``. All-zeros when ``points`` is empty.
+        ``(1,)`` device array holding the centered ``3x3`` scatter matrix on
+        ``points.device``. All-zeros when ``points`` is empty.
 
     Raises
     ------
@@ -320,7 +319,7 @@ def fit_plane(points: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
 
     Returns
     -------
@@ -412,15 +411,14 @@ def covariance(points: wp.array[wp.vec3], ddof: int = 1) -> wp.array[wp.mat33]:
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     ddof
         Delta degrees of freedom; the divisor is ``n - ddof``. Defaults to ``1``.
 
     Returns
     -------
     wp.array[wp.mat33]
-        Shape ``(1,)`` device array holding the ``3x3`` covariance matrix on
-        ``points.device``.
+        ``(1,)`` device array holding the ``3x3`` covariance matrix on ``points.device``.
 
     Raises
     ------
@@ -448,7 +446,7 @@ def principal_axes(points: wp.array[wp.vec3]) -> tuple[wp.mat33, wp.vec3, wp.vec
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
 
     Returns
     -------
@@ -527,7 +525,7 @@ def estimate_normals(
     points
         ``(n,)`` point positions on the target device.
     neighbor_idx
-        ``(n, k)`` int32 table of neighbour indices per point, as returned by
+        ``(n, k)`` table of neighbour indices per point, as returned by
         [`query_nearest`][triwarp.neighbors.query_nearest] (unused slots
         marked ``-1``). A self-query table includes each point itself once, which
         is counted normally.
@@ -545,7 +543,7 @@ def estimate_normals(
     Returns
     -------
     wp.array[wp.vec3]
-        Length ``n`` unit normals on ``points.device``. When neither orientation
+        ``(n,)`` unit normals on ``points.device``. When neither orientation
         argument is given, normals are oriented outward from the whole-cloud
         centroid — a best-effort global orientation valid for star-shaped clouds
         (Open3D leaves the sign arbitrary instead). Points with fewer than two
@@ -681,12 +679,12 @@ def outlier_probability(
     Parameters
     ----------
     neighbor_idx
-        ``(n, k)`` int32 neighbour table, as returned by
+        ``(n, k)`` neighbour table, as returned by
         [`query_nearest`][triwarp.neighbors.query_nearest] (unused slots marked ``-1``).
         A self-query table includes each point itself, which is counted normally — the same
         convention MeshLab's k-d tree query uses.
     neighbor_distance
-        ``(n, k)`` float32 distances aligned with ``neighbor_idx``; unused slots are ``inf``.
+        ``(n, k)`` distances aligned with ``neighbor_idx``; unused slots are ``inf``.
     scale
         The LoOP normalization factor ``lambda``. Larger values make the score more conservative
         (fewer points near ``1``). MeshLab fixes it at ``3``, which is the default here.
@@ -694,7 +692,7 @@ def outlier_probability(
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n`` probabilities on ``neighbor_idx.device``. A point whose neighbour row is empty
+        ``(n,)`` probabilities on ``neighbor_idx.device``. A point whose neighbour row is empty
         scores ``0``. All-zeros when the cloud has no spread at all.
 
     Raises
@@ -729,18 +727,19 @@ def outlier_probability(
     _mean, standard_distance, _count = _neighbor_distance_moments(
         neighbor_distance, mean_and_count=False, rms=True
     )
+    # nplof = scale * sqrt(E[plof^2]) over the whole cloud: the sum of squares is folded by the
+    # pass that writes the factors and left on the device -- the probability kernel reads it and
+    # forms the normalizer itself.
     plof = _launch.empty(n, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_points.local_outlier_factor,
-        dim=n,
-        inputs=[standard_distance, neighbor_idx, plof],
+    plof_sum_squares = _launch.zeros(1, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_points.local_outlier_factors,
+        dim=[(n + TILE_1D - 1) // TILE_1D],
+        inputs=[standard_distance, neighbor_idx],
+        outputs=[plof, plof_sum_squares],
+        block_dim=TILE_1D,
         device=device,
     )
-
-    # nplof = scale * sqrt(E[plof^2]) over the whole cloud: one fused sum-of-squares reduction,
-    # left on the device -- the probability kernel reads it and forms the normalizer itself.
-    plof_sum_squares = _launch.empty(1, dtype=wp.float32, device=device)
-    wp.utils.array_inner(plof, plof, out=plof_sum_squares)
     out_probability = _launch.empty(n, dtype=wp.float32, device=device)
     _launch.launch(
         kernel_points.outlier_probabilities,
@@ -767,7 +766,7 @@ def statistical_outlier_mask(
     Parameters
     ----------
     neighbor_distance
-        ``(n, k)`` float32 distances from
+        ``(n, k)`` distances from
         [`query_nearest`][triwarp.neighbors.query_nearest]; unused slots are ``inf`` and
         are excluded from the per-point mean. A self-query table contributes one zero distance per
         row, exactly as Open3D's ``SearchKNN`` does, so pass the same ``k`` Open3D gets as
@@ -779,7 +778,7 @@ def statistical_outlier_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``neighbor_distance.device``; ``True`` marks an **outlier** (the
+        ``(n,)`` mask on ``neighbor_distance.device``; ``True`` marks an **outlier** (the
         complement of Open3D's *keep* mask). A point with an empty or fully coincident
         neighbourhood is marked as an outlier, matching Open3D's ``avg > 0`` guard.
 
@@ -874,7 +873,7 @@ def radius_outlier_mask(
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``.
+        ``(n,)`` point positions.
     radius
         Search radius, inclusive at exactly ``radius``. Must be ``> 0``.
     min_neighbors
@@ -889,7 +888,7 @@ def radius_outlier_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``; ``True`` marks an **outlier** (the complement of
+        ``(n,)`` mask on ``points.device``; ``True`` marks an **outlier** (the complement of
         Open3D's *keep* mask), matching
         [`statistical_outlier_mask`][triwarp.points.statistical_outlier_mask].
 
@@ -930,14 +929,20 @@ def radius_outlier_mask(
 
     device = points.device
     n = points.size
-    out_mask = _launch.zeros(n, dtype=wp.bool, device=device)
     if n == 0:
-        return out_mask
+        return _launch.zeros(0, dtype=wp.bool, device=device)
 
+    if grid is None:
+        grid = tw.neighbors.hashgrid_from_points(points, radius)
     # A self-query counts the point itself once, at distance 0 -- which is what makes
     # ``min_neighbors`` comparable with Open3D's ``nb_points`` without an off-by-one correction.
-    counts = tw.neighbors.query_ball_count(points, points, radius, accelerator=grid)
-    _launch.map(kernel_array.less_equal, counts, wp.int32(min_neighbors), out=out_mask)
+    out_mask = _launch.empty(n, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_points.radius_outlier_flags,
+        dim=n,
+        inputs=[points, grid.id, wp.float32(radius), wp.int32(min_neighbors), out_mask],
+        device=device,
+    )
     return out_mask
 
 
@@ -952,12 +957,12 @@ def point_finite_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``.
+        ``(n,)`` point positions.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``. ``True`` marks a point to **keep**, which is the
+        ``(n,)`` mask on ``points.device``. ``True`` marks a point to **keep**, which is the
         opposite sense from the outlier and duplicate masks in this module — the name is the tell:
         this one is named for what it selects.
 
@@ -1002,12 +1007,12 @@ def point_duplicate_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``.
+        ``(n,)`` point positions.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n`` mask on ``points.device``; ``True`` marks a **duplicate**, i.e. every
+        ``(n,)`` mask on ``points.device``; ``True`` marks a **duplicate**, i.e. every
         occurrence but the first of each distinct position. Gathering by the complement keeps one
         representative of each in first-occurrence order, as Open3D does.
 
@@ -1043,7 +1048,7 @@ def point_duplicate_mask(points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
 
     # One open-addressing table of point indices, at least twice ``n`` slots, a power of two;
     # the first pass leaves each class slot holding its smallest index and each point its slot.
-    slot_mask = (1 << max(3, (n - 1).bit_length() + 1)) - 1
+    slot_mask = kernel_grouping.hash_table_mask(n)
     first = _launch.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
     slot = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
@@ -1080,7 +1085,7 @@ def farthest_point_sample(
     Parameters
     ----------
     points
-        ``(n,)`` point positions as ``wp.array[wp.vec3]``.
+        ``(n,)`` point positions.
     count
         Number of points to select; must satisfy ``0 <= count <= n``. Zero returns an empty array,
         as Open3D's ``num_samples=0`` does.
@@ -1091,7 +1096,7 @@ def farthest_point_sample(
     Returns
     -------
     wp.array[wp.int32]
-        Length-``count`` indices into ``points``, on ``points.device``, in **selection order**:
+        ``(count,)`` indices into ``points``, on ``points.device``, in **selection order**:
         entry 0 is ``start`` and each later entry is the point farthest from every earlier one.
         Open3D returns the selected *points* instead, and its ``SelectByIndex`` emits them in
         ascending index order, so the sequence here is strictly more information than the reference
@@ -1204,8 +1209,8 @@ def convex_subset_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_points`` mask on ``points.device``; ``True`` for points selected
-        as approximate hull vertices. Empty when there are no points.
+        ``(n_points,)`` mask on ``points.device``; ``True`` for points selected as approximate hull
+        vertices. Empty when there are no points.
 
     Notes
     -----
@@ -1279,7 +1284,7 @@ def convex_subset(
     Returns
     -------
     wp.array[wp.vec3]
-        The subset of ``points`` selected as approximate hull vertices, on
+        ``(m,)`` subset of ``points`` selected as approximate hull vertices, ``m <= n_points``, on
         ``points.device``. Empty when there are no points.
 
     See Also
@@ -1334,7 +1339,7 @@ def convex_superset_mask(
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_points`` mask on ``points.device``; ``True`` for points that may be hull
+        ``(n_points,)`` mask on ``points.device``; ``True`` for points that may be hull
         vertices, which includes every actual hull vertex. Empty when there are no points.
 
     Notes
@@ -1458,14 +1463,14 @@ def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.floa
     Parameters
     ----------
     a
-        Length-``n`` vectors on the target device.
+        ``(n,)`` vectors on the target device.
     b
-        Length-``n`` vectors on the same device as ``a``.
+        ``(n,)`` vectors on the same device as ``a``.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n`` unsigned angles in radians on ``a.device``. Empty when ``n == 0``.
+        ``(n,)`` unsigned angles in radians on ``a.device``. Empty when ``n == 0``.
 
     Raises
     ------
@@ -1505,7 +1510,7 @@ def radial_sort(
     Parameters
     ----------
     points
-        ``(n,)`` positions in space as ``wp.vec3``.
+        ``(n,)`` positions in space.
     origin
         Point to sort around as ``wp.vec3``.
     normal
@@ -1518,8 +1523,8 @@ def radial_sort(
     Returns
     -------
     wp.array[wp.vec3]
-        Length ``n`` array of the input points reordered by descending angle, on
-        ``points.device``. Empty when ``points`` is empty.
+        ``(n,)`` input points reordered by descending angle, on ``points.device``. Empty when
+        ``points`` is empty.
 
     Raises
     ------

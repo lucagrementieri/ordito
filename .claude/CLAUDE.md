@@ -30,7 +30,7 @@ Part I with a cross-reference.
 1. [Kernel syntax and semantics](#1-kernel-syntax-and-semantics)
 2. [Kernel architecture and launches](#2-kernel-architecture-and-launches)
 3. [Python-scope wrappers](#3-python-scope-wrappers)
-4. [Evolving the public API](#4-evolving-the-public-api) (naming, signatures, the 28 checks)
+4. [Evolving the public API](#4-evolving-the-public-api) (naming, signatures, the 29 checks)
 5. [Function ordering within a module](#5-function-ordering-within-a-module)
 6. [Documentation](#6-documentation-zensical--mkdocstrings)
 7. [Testing](#7-testing) (parity gate, the nine reference libraries)
@@ -996,7 +996,7 @@ done until the whole suite has run.
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-**Twenty-eight checks**; they fail the default `pytest` run. Each carries a written allowlist —
+**Twenty-nine checks**; they fail the default `pytest` run. Each carries a written allowlist —
 read the reason before adding an entry, and prefer fixing the code. The gate does not replace
 review: it cannot tell whether a *new* name is a good one.
 
@@ -1071,6 +1071,10 @@ review: it cannot tell whether a *new* name is a good one.
     Empty allowlist; tests may call it to build an independent input.
 28. A public module missing from `docs/SUMMARY.md`, listed twice, or listed after removal (§6).
     Abstains when `docs/` is absent.
+29. An array entry (`Parameters` / `Returns` / `Yields` / `Attributes`, or a property's summary)
+    whose description opens with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` instead of its
+    shape (§6). Empty allowlist. Reads the opening only: a shape buried later, a redundant dtype
+    or an abbreviated size name is review's.
 
 Checks 16, 17, 18, 20, 22 and 26 are one family (§1.5): legal spellings with identical codegen,
 held only by a scan.
@@ -1185,6 +1189,23 @@ quietly:
 **The one-line summary says what the function returns, never which C++ call it wraps**:
 mkdocstrings renders it as the function's index entry. Attribution stays, one line down in `Notes`
 or `See Also`. Enforced by checks 1 and 3.
+
+**An array's entry opens with its shape as a code span, then says what it means**:
+``` ``(3 * n_faces,)`` flat triangle index buffer. ```, ``` ``(m, 2)`` unique undirected vertex
+pairs, ``m <= 3 * n_faces``. ```, ``` ``(n_faces,)`` component labels on ``faces.device``. ```
+Every `Parameters` / `Returns` / `Yields` / `Attributes` entry of an array, sparse matrix or array
+pair, and a `Trimesh` property's summary. mkdocstrings' table puts the description beside the
+rendered annotation, so the shape is the one fact the annotation lacks and is read first.
+
+- **One spelling**: a rank-1 length is a 1-tuple (``` ``(n_vertices + 1,)`` ```), never
+  `Length-``X```, `Shape ``(…)```, `Flat …`, `Rank-1 ``(n,)```, nor a shape buried mid-sentence
+  (`Smoothed ``(n,)`` positions`). A shape that is not the item's own (`cell ``(0, 0, 0)```) stays.
+- **Dtype only where the annotation does not fix it** (rank-free or union annotations, a bare
+  `wp.array`, "any float dtype"): the rendered annotation already says `wp.int32`.
+- **Size names in full** (`n_faces`, `n_vertices`, `3 * n_faces`), never `f` or `V`; a free size
+  (`m`, `k`, `n_unique`) is defined on first use, by the entry it sizes or a short clause.
+
+Check 29 bans the four late openings; the rest is review.
 
 **No measured timing belongs in a public function's docstring** — no millisecond figure, speedup
 ratio, launch or byte count: they are facts about one box, Warp version and mesh. Keep the
@@ -3360,6 +3381,22 @@ wrapper lines between.
 - **Two launches of the *same* kernel merge into one wider launch: the biggest win available**
   (a cap kernel run twice per solid becomes one `dim=(2, n_cap)` launch, 3.4x). Grep for a kernel
   launched twice in a row with different scalar arguments.
+- **A neighbour list consumed only by a per-query reduction is a fusion too: walk and reduce in
+  one thread per query.** `query_ball_with_offsets` / `query_bvh_ball` is a count launch, a scan,
+  a readback and a fill launch; a consumer that only sums, counts or thresholds over each query's
+  list folds it during the walk instead (`interpolation.interpolate_from_points_in_ball` was the
+  model). `discrete_gaussian_curvature` 1.85-4.81x, `discrete_mean_curvature` 1.00-1.71x (the
+  per-candidate form's parallelism did not matter), `radius_outlier_mask` 1.10-2.04x, at 2 and 4
+  mean edge lengths from `bunny_decimated` to `dragon` (§16.6). A list reused across launches or
+  loop rounds (`sample_surface_poisson_disk`, `relax_approx`) is not this shape.
+- **A scatter, then an elementwise map, then a consumer reading the map's output by index: the
+  consumer applies the map as it reads.** The map is usually a reciprocal, a defect or a cast
+  (`energies.curved_hessian_energy`'s kappa and inverse mass, `laplacian_smoothing_loss`'s scales,
+  `mass_matrix_entries`' area table and float64 cast: 1.46-2.79x). A *zero-on-boundary* step
+  survives the move when it zeroes the map's *input* to a value the map sends to zero. A map of a
+  per-face quantity into a whole-mesh total is one lane-strided fold (`measures.volume`
+  1.72-2.00x). A map whose result is returned to the caller (`vertex_defects`,
+  `average_onto_vertices`) has no consumer to move into.
 - **Declined:** launches in different branches (not sequential); pairs inside a captured loop
   (a replayed launch is ~1.17 µs, §14.3).
 
@@ -3975,6 +4012,14 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   statically derivable.
 - **`extrude_polygon` / `sweep_polygon` wall a full `n - 2` triangulation from the ring edges**
   (the derived boundary is the fallback and still raises the non-simple-ring `ValueError`).
+- **`creation.icosphere` computes each vertex by descending the refinement** from its base face
+  (integer barycentric weights `(w0, w1, w2)` over the triangle size `s`; a corner child keeps
+  `w_k - s/2`, the centre child takes `s/2 - w_k`; midpoints lerp from the lower global index),
+  bit-identical to the per-level build on both devices. One launch for every level is O(N L): 1.8-3.0x
+  up to six levels and **0.30x at nine**. Shipped: six levels in the first launch, one launch per
+  level after (`_ICOSPHERE_LEVELS_PER_LAUNCH = 6`): 1.8-3.0x through six levels, 1.53x at eight,
+  0.97x at nine (10 M faces, device-bound). Five or seven in the first launch lose at seven to nine.
+  A thread whose target is a side's midpoint computes only that edge vertex (0.94x -> 0.97x at nine).
 - **`creation.sphere_cap`'s ring inverse**: a thread recovers its ring from its vertex index by
   solving `3 r^2 - 3 r + 1 <= v`; ring starts are `1 + 3 r (r - 1)` **except ring 0**, the lone
   apex at slot 0. Getting it wrong wound every apex triangle around its neighbour and only a
@@ -4355,7 +4400,11 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 - **REFUTED with it: symmetric Jacobi scaling of those normal equations** (free, measures a hair
   worse): the ill-conditioning is genuine near-rank-deficiency of the neighbourhood in the tangent
   plane, not column scaling (the fit already divides local coordinates by the ring radius).
-- `curvature.discrete_mean_curvature` uses `wp.bvh_query_sphere` as a broad phase (§12.8).
+- `curvature.discrete_mean_curvature` uses `wp.bvh_query_sphere` as a broad phase (§12.8), now
+  walked and summed by one thread per query (`ball_mean_curvature`); `discrete_gaussian_curvature`
+  walks the hash grid the same way and forms each vertex's defect from its angle sum as it reads it
+  (§14.10). Both sum per query in walk order where the scatter added by atomics, so values move by
+  float32 rounding (≤ 1.2e-6 relative of the field's range).
 
 ### 16.7 `sample`
 

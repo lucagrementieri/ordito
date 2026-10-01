@@ -86,9 +86,9 @@ def procrustes(
     Parameters
     ----------
     a, b:
-        Corresponding point clouds, shape ``(n,)``, dtype ``wp.vec3``.
+        ``(n,)`` corresponding point clouds.
     weights:
-        Per-point weights, shape ``(n,)``, dtype ``wp.float32``.
+        ``(n,)`` per-point weights.
         Uniform weights are assumed when ``None``.
     reflection:
         Allow reflections in the rotation component.
@@ -102,9 +102,9 @@ def procrustes(
     Returns
     -------
     matrix:
-        ``wp.array[wp.mat44]`` of shape ``(1,)`` encoding the transform.
+        ``(1,)`` array encoding the transform.
     transformed:
-        ``wp.array[wp.vec3]`` of shape ``(n,)`` — image of *a* under the transform.
+        ``(n,)`` image of *a* under the transform.
         Only returned when ``return_cost=True``.
     cost:
         Weighted sum of squared distances between *transformed* and *b*.
@@ -145,7 +145,14 @@ def procrustes(
             return matrix
         return matrix, _launch.clone(a), 0.0
 
-    workspace = _procrustes_workspace(n, device, return_cost=return_cost)
+    workspace: _ProcrustesWorkspace = {
+        "acc": _launch.zeros(
+            kernel_registration.PROCRUSTES_ACC_SIZE, dtype=wp.float32, device=device
+        ),
+        "matrix": _launch.empty(1, dtype=wp.mat44, device=device),
+        "transformed": _launch.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
+        "uniform_weights": _zero_length(wp.float32, device),
+    }
     weighted = weights is not None and weights.size == n
     result = _procrustes_into(
         a, b, weights, reflection, translation, scale, return_cost, workspace, weighted
@@ -177,20 +184,6 @@ class _ProcrustesWorkspace(TypedDict):
     matrix: wp.array[wp.mat44]
     transformed: wp.array[wp.vec3] | None
     uniform_weights: wp.array[wp.float32]
-
-
-def _procrustes_workspace(
-    n: int, device: wp.DeviceLike, *, return_cost: bool
-) -> _ProcrustesWorkspace:
-    """Allocate the buffers one Procrustes fit needs."""
-    return {
-        "acc": _launch.zeros(
-            kernel_registration.PROCRUSTES_ACC_SIZE, dtype=wp.float32, device=device
-        ),
-        "matrix": _launch.empty(1, dtype=wp.mat44, device=device),
-        "transformed": _launch.empty(n, dtype=wp.vec3, device=device) if return_cost else None,
-        "uniform_weights": _zero_length(wp.float32, device),
-    }
 
 
 def _procrustes_into(
@@ -303,19 +296,19 @@ def icp(
     Parameters
     ----------
     a
-        Source point cloud, shape ``(n,)``, dtype ``wp.vec3``.
+        ``(n,)`` source point cloud.
     target_vertices
-        Target vertex positions, shape ``(m,)``, dtype ``wp.vec3``. Used as the
+        ``(m,)`` target vertex positions. Used as the
         target point cloud when ``target_faces`` is ``None``.
     target_faces
-        Flat ``(f * 3,)`` triangle index buffer. When given, the internally built ``wp.Mesh``
-        aliases ``target_vertices`` and ``target_faces`` rather than copying them; do not mutate
-        them for the duration of the call. When given (and non-empty),
+        ``(3 * n_faces,)`` flat triangle index buffer of the target. When given, the internally
+        built ``wp.Mesh`` aliases ``target_vertices`` and ``target_faces`` rather than copying them;
+        do not mutate them for the duration of the call. When given (and non-empty),
         correspondences are the closest points on the triangle surface; otherwise
         the target is the point cloud ``target_vertices``.
     initial
-        Initial transform seeding the first correspondence search, as a ``(1,)``
-        ``wp.mat44`` array or a scalar ``wp.mat44``. Identity when ``None``.
+        ``(1,)`` ``wp.mat44`` array or a scalar ``wp.mat44``: the initial transform seeding the
+        first correspondence search. Identity when ``None``.
     max_iterations
         Maximum number of ICP iterations.
     threshold
@@ -331,9 +324,9 @@ def icp(
     Returns
     -------
     matrix
-        ``(1,)`` ``wp.mat44`` transform mapping *a* onto the target.
+        ``(1,)`` transform mapping *a* onto the target.
     transformed
-        ``(n,)`` ``wp.vec3`` image of *a* under *matrix*.
+        ``(n,)`` image of *a* under *matrix*.
     cost
         Weighted mean squared correspondence distance at the final iteration.
 
@@ -506,23 +499,23 @@ def icp_point_to_plane(
     Parameters
     ----------
     a
-        Source point cloud, shape ``(n,)``, dtype ``wp.vec3``.
+        ``(n,)`` source point cloud.
     target_vertices
-        Target vertex positions, shape ``(m,)``, dtype ``wp.vec3``.
+        ``(m,)`` target vertex positions.
     target_faces
-        Flat ``(f * 3,)`` triangle index buffer. When given, target normals are
+        ``(3 * n_faces,)`` flat triangle index buffer of the target. When given, target normals are
         the closest triangles' face normals; otherwise the target is the point
         cloud ``target_vertices`` and ``target_normals`` is required. When given, the internally
         built ``wp.Mesh`` aliases ``target_vertices`` and ``target_faces`` rather than copying
         them; do not mutate them for the duration of the call.
     target_normals
-        Per-vertex normals for a point-cloud target, shape ``(m,)``. They need not be unit
+        ``(m,)`` per-vertex normals for a point-cloud target. They need not be unit
         length: each is normalized where it is read, by the fit and by the robust scale alike (a
         zero normal contributes nothing). Required (and only used) when ``target_faces`` is
         ``None``. Estimate them with
         [`estimate_normals`][triwarp.points.estimate_normals] if absent.
     initial
-        Initial transform, as a ``(1,)`` ``wp.mat44`` array or scalar ``wp.mat44``.
+        ``(1,)`` ``wp.mat44`` array or scalar ``wp.mat44``: the initial transform.
         Identity when ``None``.
     max_iterations
         Maximum number of ICP iterations.
@@ -546,9 +539,9 @@ def icp_point_to_plane(
     Returns
     -------
     matrix
-        ``(1,)`` ``wp.mat44`` rigid transform mapping *a* onto the target.
+        ``(1,)`` rigid transform mapping *a* onto the target.
     transformed
-        ``(n,)`` ``wp.vec3`` image of *a* under *matrix*.
+        ``(n,)`` image of *a* under *matrix*.
     cost
         The robust objective summed over the final iteration's in-range correspondences, with
         ``r`` the point-to-plane residual: ``sum r^2`` for ``"none"``; ``sum w(r) r^2`` for
@@ -853,32 +846,28 @@ def _residual_standard_deviation(
     ``normals`` is the target's normal table, read at each correspondence's index.
     """
     device = current.device
-    n = current.size
-    # The residuals ``robust_residual_keys`` keys the medians' sort by, before any sort: the
-    # in-range ones are the residuals this averages, and the ``+inf`` of the rest is never kept.
-    residual = _launch.empty(n, dtype=wp.float32, device=device)
-    _launch.launch(
-        kernel_registration.robust_residual_keys,
-        dim=n,
-        inputs=[current, closest, normals, triangle_id, distance, wp.float32(max_distance)],
-        outputs=[residual],
-        device=device,
-    )
-    valid = _launch.empty(n, dtype=wp.bool, device=device)
-    _launch.map(
-        kernel_registration.residual_valid,
-        triangle_id,
-        distance,
-        wp.float32(max_distance),
-        out=valid,
-    )
-    kept = tw.array.gather(residual, tw.array.flatnonzero(valid))
-    k = kept.size
-    mean = float(tw.reduce.mean(cast(twt.Array1dFloat32, kept)))
-    deviation = _launch.empty(k, dtype=wp.float32, device=device)
-    _launch.map(kernel_registration.abs_deviation, kept, wp.float32(mean), out=deviation)
-    _launch.map(kernel_array.square_scalar, deviation, out=deviation)
-    return float(tw.reduce.mean(cast(twt.Array1dFloat32, deviation))) ** 0.5
+    # ``(sum, count, squared deviation)`` of the in-range residuals, in two folds that form the
+    # residuals where they are summed: no residual table, compaction or intermediate readback.
+    sums = _launch.zeros(3, dtype=wp.float64, device=device)
+    for centered in (0, 1):
+        _launch.launch_tiled(
+            kernel_registration.residual_moment,
+            dim=[kernel_reduce.blocks_1d(current.size)],
+            inputs=[
+                current,
+                closest,
+                normals,
+                triangle_id,
+                distance,
+                wp.float32(max_distance),
+                centered,
+            ],
+            outputs=[sums],
+            block_dim=TILE_1D,
+            device=device,
+        )
+    _, count, squares = sums.numpy()
+    return math.sqrt(squares / count)
 
 
 # The identity as host data a ``(1,)`` ``wp.mat44`` upload takes as it is.

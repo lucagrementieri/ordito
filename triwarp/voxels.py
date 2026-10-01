@@ -66,6 +66,7 @@ import triwarp as tw
 import triwarp.typing as twt
 from triwarp import _launch
 from triwarp._device import read_scalar, require_same_device
+from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import interpolation as kernel_interpolation
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.kernels import voxels as kernel_voxels
@@ -121,7 +122,7 @@ def voxelize_mesh(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     voxel_size
         Cell width. Defaults to ``1 %`` of the bounding-box diagonal, a ~100-cell grid across the
         mesh. **Cost is cubic in the reciprocal.**
@@ -336,7 +337,8 @@ def voxel_down_sample(
         ``(n_voxels,)`` pooled positions, in the grid's own cell order (see
         [`cells`][triwarp.voxels.cells]).
     inverse : wp.array[wp.int32], optional
-        Present when ``return_inverse=True``. ``inverse[i]`` is the output row of input point ``i``.
+        ``(n_points,)`` inverse map, present when ``return_inverse=True``. ``inverse[i]`` is the
+        output row of input point ``i``.
 
     Raises
     ------
@@ -438,9 +440,8 @@ class _VoxelTable:
         device = points.device
         n_points = points.size
         inverse_size = wp.float32(1.0 / voxel_size)
-        # At least twice ``n_points`` slots, a power of two: a cloud with no repeated cell fills it
-        # at most half full.
-        self.mask = (1 << max(3, (n_points - 1).bit_length() + 1)) - 1
+        # A cloud with no repeated cell fills the table at most half full.
+        self.mask = kernel_grouping.hash_table_mask(n_points)
         # One slot past the table is the append cursor, so the ``-1`` fill seeds it too and it
         # counts from ``-1``; the hash never reaches it (``mask`` addresses the table alone).
         self.table = _launch.full(self.mask + 2, -1, dtype=wp.int32, device=device)
@@ -727,7 +728,7 @@ def from_cells(cells: twt.Array2dInt32, voxel_size: float, origin: wp.vec3) -> w
     Parameters
     ----------
     cells
-        ``(n_cells, 3)`` ``wp.int32`` cell coordinates. Negative coordinates are fine.
+        ``(n_cells, 3)`` cell coordinates. Negative coordinates are fine.
     voxel_size
         Cell width.
     origin
@@ -1047,7 +1048,7 @@ def occupancy_at_points(grid: wp.Volume, points: wp.array[wp.vec3]) -> wp.array[
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_points`` mask on ``points.device``.
+        ``(n_points,)`` mask on ``points.device``.
 
     Raises
     ------
@@ -1089,12 +1090,12 @@ def occupancy_at_cells(grid: wp.Volume, cells: twt.Array2dInt32) -> wp.array[wp.
     grid
         Index grid to test against.
     cells
-        ``(n_cells, 3)`` ``wp.int32`` cell coordinates.
+        ``(n_cells, 3)`` cell coordinates.
 
     Returns
     -------
     wp.array[wp.bool]
-        Length-``n_cells`` mask on ``cells.device``.
+        ``(n_cells,)`` mask on ``cells.device``.
 
     Raises
     ------
@@ -1159,7 +1160,7 @@ def splat_onto_grid(
     points
         ``(n_points,)`` positions.
     values
-        Length-``n_points`` field on those points, ``wp.float32`` or ``wp.vec3``.
+        ``(n_points,)`` field on those points, ``wp.float32`` or ``wp.vec3``.
     shape
         ``(nx, ny, nz)`` lattice size, each at least 1.
     bounds
@@ -1285,7 +1286,7 @@ def sample_grid_trilinear(
     Returns
     -------
     wp.array[DType]
-        Length-``n_points`` sampled field on ``points.device``, with ``field``'s dtype.
+        ``(n_points,)`` sampled field on ``points.device``, with ``field``'s dtype.
 
     Raises
     ------
@@ -1394,7 +1395,7 @@ def grid_points(
     Returns
     -------
     wp.array[wp.vec3]
-        ``nx * ny * nz`` positions, ``z`` fastest.
+        ``(nx * ny * nz,)`` positions, ``z`` fastest.
 
     Raises
     ------
@@ -2193,7 +2194,7 @@ def from_dense(
     Parameters
     ----------
     occupancy
-        ``(nx, ny, nz)`` ``wp.bool`` lattice; ``True`` marks an occupied cell.
+        ``(nx, ny, nz)`` lattice; ``True`` marks an occupied cell.
     voxel_size
         Cell width.
     origin
@@ -2326,9 +2327,10 @@ def to_boxes(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        Corner positions on ``grid``'s device, every one of them referenced by a face.
+        ``(n_corners,)`` corner positions on ``grid``'s device, every one of them referenced by a
+        face.
     faces : wp.array[wp.int32]
-        Flat ``3 * n_faces`` triangle index buffer, wound so that normals point away from the
+        ``(3 * n_faces,)`` flat triangle index buffer, wound so that normals point away from the
         voxel they belong to.
 
     Raises

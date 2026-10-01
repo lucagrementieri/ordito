@@ -148,13 +148,13 @@ def closest_point_on_mesh(
     Parameters
     ----------
     vertices
-        ``(n,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
         The internally built ``wp.Mesh`` aliases these buffers rather than copying them;
         do not mutate them for the duration of the call.
     points
-        ``(m,)`` query positions in space as ``wp.vec3``.
+        ``(m,)`` query positions in space.
     max_dist
         Maximum search radius per query. Faces farther than this are ignored.
         When ``None``, the search is
@@ -171,7 +171,7 @@ def closest_point_on_mesh(
     Returns
     -------
     closest
-        ``(m, 3)`` closest point on the mesh surface for each query.
+        ``(m,)`` closest point on the mesh surface for each query.
     distance
         ``(m,)`` unsigned distance from each query to its closest surface point.
     triangle_id
@@ -240,12 +240,12 @@ def closest_point_on_edges(
     Parameters
     ----------
     vertices
-        ``(n,)`` positions the edges index, as ``wp.vec3``.
+        ``(n,)`` positions the edges index.
     edges
-        ``(n_edges, 2)`` ``wp.int32`` vertex-index pairs. Order within a pair is irrelevant, and
+        ``(n_edges, 2)`` vertex-index pairs. Order within a pair is irrelevant, and
         edges may share vertices or repeat.
     queries
-        ``(m,)`` query positions in space as ``wp.vec3``.
+        ``(m,)`` query positions in space.
     max_dist
         Maximum search distance per query; an edge farther than this is ignored and the query
         reports a miss. When ``None``, derived from the box enclosing ``vertices`` and ``queries``,
@@ -260,7 +260,7 @@ def closest_point_on_edges(
     Returns
     -------
     closest
-        ``(m,)`` closest point on the edge set for each query, as ``wp.vec3``.
+        ``(m,)`` closest point on the edge set for each query.
     distance
         ``(m,)`` unsigned distance from each query to that point.
     edge_id
@@ -393,9 +393,9 @@ def mesh_to_mesh_distance(
     Parameters
     ----------
     vertices_a, faces_a
-        First mesh: ``(n_vertices,)`` positions and a length-``3 * n_faces`` index buffer.
+        ``(n_vertices_a,)`` positions and ``(3 * n_faces_a,)`` index buffer of the first mesh.
     vertices_b, faces_b
-        Second mesh, same layout.
+        ``(n_vertices_b,)`` positions and ``(3 * n_faces_b,)`` index buffer of the second mesh.
     upper_bound
         A distance known to be at least the answer, which prunes the broad phase. Supply one when
         you have it -- from a previous frame, or from a bounding-volume gap -- and the sampled query
@@ -624,13 +624,13 @@ def normals_at_closest_faces(
     mesh
         Warp mesh (BVH built by caller).
     points
-        ``(m,)`` query positions as ``wp.vec3``.
+        ``(m,)`` query positions.
     max_dist
         Maximum search radius per query. When ``None``, the search is
         unbounded, which finds the same closest point as any radius at least as long as the
         diagonal of the box enclosing the mesh and the query points.
     face_normals
-        Optional length-``n_faces`` unit face normals of ``mesh``
+        ``(n_faces,)`` unit face normals of ``mesh``
         ([`face_normals_and_areas`][triwarp.triangles.face_normals_and_areas]); when ``None``,
         each query's hit face normal is computed from its corners instead, to the same value.
         [`Trimesh.face_normals`][triwarp.mesh.Trimesh.face_normals] has them cached.
@@ -746,13 +746,13 @@ def signed_distance_on_mesh(
     Parameters
     ----------
     vertices
-        ``(n,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
         The internally built ``wp.Mesh`` aliases these buffers rather than copying them;
         do not mutate them for the duration of the call.
     points
-        ``(m,)`` query positions in space as ``wp.vec3``.
+        ``(m,)`` query positions in space.
     max_dist
         Maximum search radius per query. When ``None``, the search is
         unbounded, which finds the same closest point as any radius at least as long as the
@@ -780,7 +780,7 @@ def signed_distance_on_mesh(
     Returns
     -------
     wp.array[wp.float32]
-        ``(m,)`` signed distances in ``float32``.
+        ``(m,)`` signed distances.
 
     Raises
     ------
@@ -887,7 +887,7 @@ def signed_distance_grid(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     voxel_size
         Lattice spacing, isotropic. ``None`` takes
         [`triwarp.voxels.resolve_voxel_grid`][triwarp.voxels.resolve_voxel_grid]'s default of 1 % of
@@ -1003,11 +1003,11 @@ def winding_number(
     Parameters
     ----------
     vertices
-        ``(n,)`` mesh vertex positions as ``wp.vec3``.
+        ``(n_vertices,)`` mesh vertex positions.
     faces
-        ``(f * 3,)`` flat triangle index array as ``wp.int32``.
+        ``(3 * n_faces,)`` flat triangle index array.
     points
-        ``(m,)`` query positions in space as ``wp.vec3``.
+        ``(m,)`` query positions in space.
     tiled
         When ``True`` (default), sum solid angles with the face list partitioned across
         threads: one thread per ``(query, face slice)`` walks a strided slice of
@@ -1020,7 +1020,7 @@ def winding_number(
     Returns
     -------
     wp.array[wp.float32]
-        ``(m,)`` winding numbers in ``float32``.
+        ``(m,)`` winding numbers.
 
     Raises
     ------
@@ -1088,9 +1088,9 @@ def query_mesh_aabb_with_offsets(
     mesh
         Target ``warp.Mesh`` built with the default BVH backend.
     query_lower
-        Length-``m`` lower corners of the query boxes, on the target device.
+        ``(m,)`` lower corners of the query boxes, on the target device.
     query_upper
-        Length-``m`` upper corners of the query boxes.
+        ``(m,)`` upper corners of the query boxes.
     max_hits
         Maximum candidate faces recorded per query. Hits past this cap are dropped, so the
         result is a bounded sample rather than the full candidate set when a query straddles
@@ -1099,9 +1099,10 @@ def query_mesh_aabb_with_offsets(
     Returns
     -------
     candidate_indices_flat, offsets
-        ``offsets`` is the length-``m + 1`` total-terminated prefix sum of per-query hit counts:
-        query ``k`` owns ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``. When ``m == 0``
-        the candidates are empty and ``offsets == [0]``.
+        ``(n_hits,)`` candidate face indices and their ``(m + 1,)`` total-terminated ``offsets``,
+        the prefix sum of per-query hit counts, ``n_hits == offsets[-1]``: query ``k`` owns
+        ``candidate_indices_flat[offsets[k] : offsets[k + 1]]``. When ``m == 0`` the candidates are
+        empty and ``offsets == [0]``.
 
     Raises
     ------
@@ -1178,16 +1179,16 @@ def containing_faces_2d(
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` planar vertex positions as ``wp.vec2``.
+        ``(n_vertices,)`` planar vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     points
-        ``(m,)`` planar query positions as ``wp.vec2``.
+        ``(m,)`` planar query positions.
 
     Returns
     -------
     wp.array[wp.int32]
-        Length ``m`` on ``vertices.device``: the containing triangle's index, or ``-1`` where the
+        ``(m,)`` containing-triangle index per query on ``vertices.device``, or ``-1`` where the
         query lies outside the triangulation. A query exactly on a shared edge is inside *both* its
         triangles and which one is returned is not specified.
 

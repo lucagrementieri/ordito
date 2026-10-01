@@ -43,7 +43,8 @@ def concatenate(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
-        Combined vertices and reindexed faces on the shared device. An empty sequence carries no
+        ``(n_vertices,)`` combined vertices and ``(3 * n_faces,)`` reindexed faces, ``n_vertices``
+        and ``n_faces`` summed over the inputs, on the shared device. An empty sequence carries no
         device to share, so the empty result is allocated on Warp's **current** device.
 
     Raises
@@ -115,7 +116,7 @@ def split(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer (same layout as
+        ``(3 * n_faces,)`` flat triangle index buffer (same layout as
         [`face_adjacency`][triwarp.adjacency.face_adjacency]).
     copy
         Return independent buffers instead of views into the batched result. One allocation per
@@ -171,19 +172,19 @@ def split_with_offsets(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
 
     Returns
     -------
     vertices_all : wp.array[wp.vec3]
-        Every component's compacted vertices, concatenated.
+        ``(m,)`` every component's compacted vertices, concatenated, ``m <= n_vertices``.
     vertex_offsets : wp.array[wp.int32]
-        Length-``k + 1`` total-terminated offsets: component ``g`` owns
+        ``(k + 1,)`` total-terminated offsets over the ``k`` components: component ``g`` owns
         ``vertices_all[vertex_offsets[g] : vertex_offsets[g + 1]]``.
     faces_all : wp.array[wp.int32]
-        Every component's reindexed flat faces, concatenated.
+        ``(3 * n_faces,)`` every component's reindexed flat faces, concatenated.
     face_offsets : wp.array[wp.int32]
-        Length-``k + 1`` total-terminated offsets **in faces, not indices**: component ``g`` owns
+        ``(k + 1,)`` total-terminated offsets **in faces, not indices**: component ``g`` owns
         ``faces_all[3 * face_offsets[g] : 3 * face_offsets[g + 1]]``.
 
     When ``n_faces == 0`` the buffers are empty, ``k == 0`` and both offsets are ``[0]``.
@@ -203,12 +204,7 @@ def split_with_offsets(
     device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
-        return (
-            _launch.empty(0, dtype=wp.vec3, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-            _launch.empty(0, dtype=wp.int32, device=device),
-            _launch.zeros(1, dtype=wp.int32, device=device),
-        )
+        return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
 
     face_labels = tw.adjacency.face_connected_component_labels(faces)
 

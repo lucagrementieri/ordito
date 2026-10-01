@@ -59,16 +59,16 @@ def mean_vertex_normals(
     n_vertices
         Number of vertices indexed by ``faces`` (output length).
     faces
-        Triangle indices as ``wp.int32``; interpreted as ``(f, 3)`` via ``reshape((-1, 3))``
-        (row-major ``[i0, i1, i2, …]`` flat layout is fine).
+        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via
+        ``reshape((-1, 3))`` (row-major ``[i0, i1, i2, …]`` flat layout is fine).
     face_normals
-        One unit (or unnormalized) normal per triangle, length ``f`` as ``wp.vec3``, aligned
-        with the rows of ``faces``.
+        ``(n_faces,)`` unit (or unnormalized) normals, one per triangle, aligned with the rows of
+        ``faces``.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_vertices`` device array of unit normals where the accumulated vector was
+        ``(n_vertices,)`` device array of unit normals where the accumulated vector was
         non-zero; otherwise the corresponding entry is zero.
 
     Raises
@@ -110,17 +110,17 @@ def weighted_vertex_normals(
     n_vertices
         Number of vertices indexed by ``faces`` (output length).
     faces
-        Triangle indices as ``wp.int32``; interpreted as ``(f, 3)`` via ``reshape((-1, 3))``.
+        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via
+        ``reshape((-1, 3))``.
     face_normals
-        One normal per triangle, length ``f`` as ``wp.vec3``, aligned with ``faces``.
+        ``(n_faces,)`` normals, one per triangle, aligned with ``faces``.
     face_weights
-        Per-corner weights, shape ``(f, 3)`` as ``twt.Array2dFloat32`` with rows matching
-        ``faces`` / ``face_normals``.
+        ``(n_faces, 3)`` per-corner weights, with rows matching ``faces`` / ``face_normals``.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_vertices`` device array of unit normals where the accumulated vector was
+        ``(n_vertices,)`` device array of unit normals where the accumulated vector was
         non-zero; otherwise the corresponding entry is zero.
 
     Raises
@@ -240,7 +240,7 @@ def vertex_normals(
     vertices
         ``(n_vertices,)`` mesh vertex positions. The output length is ``vertices.shape[0]``.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     weighting
         Which average to take.
 
@@ -256,19 +256,20 @@ def vertex_normals(
           Weighted by Sine and Edge Length Reciprocals, optimized for smooth surface reconstruction
           (Jin et al., 2005).
     face_normals
-        Precomputed ``(n_faces,)`` face normals, to skip deriving them. Under ``"mwselr"``, passing
+        ``(n_faces,)`` precomputed face normals, to skip deriving them. Under ``"mwselr"``, passing
         them asserts they are *unit* length; omitting them lets the unnormalized cross product be
         used instead, which is cheaper and gives the same answer after normalization.
     face_weights
-        Precomputed weights, to skip deriving them. The expected shape follows ``weighting``:
-        ``(n_faces,)`` per-face areas for ``"area"``, and ``(n_faces, 3)`` per-corner angles for
-        ``"angle"``. Not accepted under ``"mwselr"``, whose weights are a joint function of the
-        corner positions rather than a table a caller would hold.
+        ``(n_faces,)`` or ``(n_faces, 3)`` precomputed weights, to skip deriving them. The
+        expected shape follows ``weighting``: ``(n_faces,)`` per-face areas for ``"area"``, and
+        ``(n_faces, 3)`` per-corner angles for ``"angle"``. Not accepted under ``"mwselr"``, whose
+        weights are a joint function of the corner positions rather than a table a caller would
+        hold.
 
     Returns
     -------
     wp.array[wp.vec3]
-        Length-``n_vertices`` unit normals on ``vertices.device``, zero wherever the accumulated
+        ``(n_vertices,)`` unit normals on ``vertices.device``, zero wherever the accumulated
         vector was zero (an unreferenced vertex, or a cancelling fan).
 
     Raises
@@ -376,16 +377,16 @@ def vertex_defects(
     n_vertices
         Number of vertices indexed by ``faces`` (output length).
     faces
-        Triangle indices as ``wp.int32``; interpreted as ``(f, 3)`` via ``reshape((-1, 3))``
-        (row-major flat layout is fine).
+        ``(3 * n_faces,)`` triangle indices, interpreted as ``(n_faces, 3)`` via
+        ``reshape((-1, 3))`` (row-major flat layout is fine).
     face_angles
-        Interior angles at the three corners of each triangle, shape ``(f, 3)`` as
-        ``twt.Array2dFloat32``, with rows aligned with ``faces``.
+        ``(n_faces, 3)`` interior angles at the three corners of each triangle, with rows aligned
+        with ``faces``.
 
     Returns
     -------
     wp.array[wp.float32]
-        Length-``n_vertices`` device array ``2π - Σ angles`` at each vertex. Vertices not
+        ``(n_vertices,)`` device array ``2π - Σ angles`` at each vertex. Vertices not
         referenced by any face have defect ``2π`` (empty angle sum).
 
     Raises

@@ -177,7 +177,7 @@ def fill_fan(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     preserve_largest_hole
         When ``True``, leave the single largest boundary loop (greatest perimeter) open and fill
         only the rest. This turns a mesh with a known disk-like topology into a single-boundary
@@ -186,9 +186,10 @@ def fill_fan(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer of the original faces followed by the new fill triangles, on
-        ``faces.device``. A watertight or empty mesh — or, with ``preserve_largest_hole``, a mesh
-        whose only hole is the largest — is returned unchanged (a copy).
+        ``(3 * n_out_faces,)`` flat face buffer of the original faces followed by the new fill
+        triangles, on ``faces.device``. A watertight or empty mesh — or, with
+        ``preserve_largest_hole``, a mesh whose only hole is the largest — is returned unchanged (a
+        copy).
 
     Raises
     ------
@@ -245,7 +246,7 @@ def fill_cone(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     preserve_largest_hole
         When ``True``, leave the single largest boundary loop (greatest perimeter) open and fill
         only the rest. This turns a mesh with a known disk-like topology into a single-boundary
@@ -254,9 +255,11 @@ def fill_cone(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Original vertices followed by one centroid per filled hole, on ``vertices.device``.
+        ``(n_out_vertices,)`` original vertices followed by one centroid per filled hole, on
+        ``vertices.device``.
     new_faces : wp.array[wp.int32]
-        Original faces followed by the new cone triangles, on ``faces.device``. A watertight or
+        ``(3 * n_out_faces,)`` original faces followed by the new cone triangles, on
+        ``faces.device``. A watertight or
         empty mesh — or, with ``preserve_largest_hole``, a mesh whose only hole is the largest —
         is returned unchanged (copies).
 
@@ -442,7 +445,7 @@ def fill_min_weight(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     metric
         Which fill metric to minimize:
 
@@ -483,9 +486,10 @@ def fill_min_weight(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer of the original faces followed by the fill triangles, on ``faces.device``.
-        A watertight or empty mesh — or, with ``preserve_largest_hole``, a mesh whose only hole is
-        the largest — is returned unchanged (a copy).
+        ``(3 * n_out_faces,)`` flat face buffer of the original faces followed by the fill
+        triangles, on ``faces.device``. A watertight or empty mesh — or, with
+        ``preserve_largest_hole``, a mesh whose only hole is the largest — is returned unchanged (a
+        copy).
 
     Raises
     ------
@@ -543,7 +547,7 @@ def fill_loops_min_weight(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     loops
         Boundary loops to fill, as ordered vertex-index arrays (``>= 3`` vertices each), e.g. from
         [`boundary_loops`][triwarp.boundary.boundary_loops].
@@ -557,8 +561,8 @@ def fill_loops_min_weight(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer of ``faces`` followed by the fill triangles for ``loops``, on
-        ``faces.device``. Unchanged (a copy) when ``loops`` is empty.
+        ``(3 * n_out_faces,)`` flat face buffer of ``faces`` followed by the fill triangles for
+        ``loops``, on ``faces.device``. Unchanged (a copy) when ``loops`` is empty.
 
     Raises
     ------
@@ -967,7 +971,7 @@ def fill_small(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     max_perimeter
         Only boundary loops with perimeter at most this value are filled. Positional for backward
         compatibility. Mutually exclusive with ``max_edges``.
@@ -980,8 +984,9 @@ def fill_small(
     Returns
     -------
     wp.array[wp.int32]
-        Flat face buffer of ``faces`` followed by the fill triangles for the small loops, on
-        ``faces.device``. A copy of ``faces`` when no boundary loop meets the threshold.
+        ``(3 * n_out_faces,)`` flat face buffer of ``faces`` followed by the fill triangles for the
+        small loops, on ``faces.device``. A copy of ``faces`` when no boundary loop meets the
+        threshold.
 
     Raises
     ------
@@ -1102,7 +1107,7 @@ def fill_smooth(
     vertices
         ``(n_vertices,)`` vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     metric
         Minimum-weight fill metric; see
         [`fill_min_weight`][triwarp.holes.fill_min_weight].
@@ -1145,11 +1150,13 @@ def fill_smooth(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Original vertices followed by the inserted patch vertices, on ``vertices.device``.
+        ``(n_out_vertices,)`` original vertices followed by the inserted patch vertices, on
+        ``vertices.device``.
     new_faces : wp.array[wp.int32]
-        Original faces followed by the patch faces.
+        ``(3 * n_out_faces,)`` original faces followed by the patch faces.
     patch_mask : wp.array[wp.bool]
-        Only when ``return_patch`` is ``True``: mask of the patch faces in ``new_faces``.
+        ``(n_out_faces,)`` mask of the patch faces in ``new_faces``; only when ``return_patch`` is
+        ``True``.
 
     Raises
     ------
@@ -1275,9 +1282,9 @@ def refill_region(
     vertices
         ``(n_vertices,)`` mesh vertex positions on the target device.
     faces
-        Length-``3 * n_faces`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     face_mask
-        Length-``n_faces`` ``wp.bool`` array, ``True`` for each face to **replace**.
+        ``(n_faces,)`` mask, ``True`` for each face to **replace**.
     metric
         Minimum-weight fill metric, as in [`fill_min_weight`][triwarp.holes.fill_min_weight].
     triangulate_only
@@ -1299,9 +1306,10 @@ def refill_region(
     Returns
     -------
     tuple[wp.array[wp.vec3], wp.array[wp.int32]] | tuple[..., wp.array[wp.bool]]
-        ``(vertices, faces)`` of the rebuilt mesh, plus the patch mask when ``return_patch`` is
-        ``True``. When the mask selects nothing, or selects faces whose removal opens no new rim,
-        the surviving mesh is returned with an all-``False`` patch.
+        ``(n_out_vertices,)`` vertices and ``(3 * n_out_faces,)`` faces of the rebuilt mesh, plus
+        the ``(n_out_faces,)`` patch mask when ``return_patch`` is ``True``. When the mask selects
+        nothing, or selects faces whose removal opens no new rim, the surviving mesh is returned
+        with an all-``False`` patch.
 
     Raises
     ------
@@ -1392,7 +1400,7 @@ def extend_hole(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     plane_normal
         The plane's normal. Need not be unit length in principle, but **is assumed to be** -- the
         projection scales with it otherwise. Normalize it.
@@ -1405,10 +1413,10 @@ def extend_hole(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        The input positions, unchanged and in order, with one projected vertex appended per rim
-        vertex.
+        ``(n_out_vertices,)`` input positions, unchanged and in order, with one projected vertex
+        appended per rim vertex.
     faces : wp.array[wp.int32]
-        The input faces with the bridge triangles appended -- two per rim edge.
+        ``(3 * n_out_faces,)`` input faces with the bridge triangles appended -- two per rim edge.
 
     Raises
     ------
@@ -1470,7 +1478,7 @@ def build_bottom(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     direction
         The "up" direction the base is placed against: the plane's normal, and the rim is extended
         towards ``-direction``. Assumed unit length -- ``hole_extension`` is measured in its units
@@ -1485,10 +1493,10 @@ def build_bottom(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        The input positions, unchanged and in order, with one projected vertex appended per rim
-        vertex.
+        ``(n_out_vertices,)`` input positions, unchanged and in order, with one projected vertex
+        appended per rim vertex.
     faces : wp.array[wp.int32]
-        The input faces with the bridge triangles appended -- two per rim edge.
+        ``(3 * n_out_faces,)`` input faces with the bridge triangles appended -- two per rim edge.
 
     Raises
     ------
@@ -1637,7 +1645,7 @@ def fillable_loop_mask(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     loops
         The boundary loops to test. When ``None`` they are computed with
         [`boundary_loops`][triwarp.boundary.boundary_loops]; pass them when you already have them,
@@ -1648,9 +1656,9 @@ def fillable_loop_mask(
     Returns
     -------
     wp.array[wp.bool]
-        One entry per loop, ``True`` where the loop is simple, shares no vertex with another loop,
-        and is chord-free, on ``faces.device``. ``True`` is a guarantee; ``False`` is a warning,
-        per the note above.
+        ``(n_loops,)`` one entry per loop, ``True`` where the loop is simple, shares no vertex with
+        another loop, and is chord-free, on ``faces.device``. ``True`` is a guarantee; ``False`` is
+        a warning, per the note above.
 
     Raises
     ------
@@ -1734,14 +1742,16 @@ def stitch(
     vertices_a, vertices_b
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffers of each mesh.
+        ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
 
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Concatenated vertices (larger-boundary mesh first), on ``faces_a.device``.
+        ``(n_out_vertices,)`` concatenated vertices (larger-boundary mesh first), on
+        ``faces_a.device``.
     new_faces : wp.array[wp.int32]
-        Concatenated, reindexed faces followed by the bridge triangles, on ``faces_a.device``.
+        ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the bridge triangles, on
+        ``faces_a.device``.
 
     Raises
     ------
@@ -1785,7 +1795,7 @@ def stitch_min_weight(
     vertices_a, vertices_b
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffers of each mesh.
+        ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
     metric
         Stitch metric; see
         [`stitch_loops_min_weight`][triwarp.holes.stitch_loops_min_weight].
@@ -1795,9 +1805,9 @@ def stitch_min_weight(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Concatenated vertices, on ``faces_a.device``.
+        ``(n_out_vertices,)`` concatenated vertices, on ``faces_a.device``.
     new_faces : wp.array[wp.int32]
-        Concatenated, reindexed faces followed by the band triangles.
+        ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band triangles.
 
     Raises
     ------
@@ -1900,7 +1910,7 @@ def stitch_smooth(
     vertices_a, vertices_b
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffers of each mesh.
+        ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
     metric
         Stitch metric; see
         [`stitch_loops_min_weight`][triwarp.holes.stitch_loops_min_weight].
@@ -1928,11 +1938,12 @@ def stitch_smooth(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Concatenated vertices followed by any inserted band vertices, on ``faces_a.device``.
+        ``(n_out_vertices,)`` concatenated vertices followed by any inserted band vertices, on
+        ``faces_a.device``.
     new_faces : wp.array[wp.int32]
-        Concatenated, reindexed faces followed by the band faces.
+        ``(3 * n_out_faces,)`` concatenated, reindexed faces followed by the band faces.
     patch_mask : wp.array[wp.bool]
-        Only when ``return_patch`` is ``True``: mask of the band faces.
+        ``(n_out_faces,)`` mask of the band faces; only when ``return_patch`` is ``True``.
 
     Raises
     ------
@@ -2118,19 +2129,20 @@ def stitch_loops(
     vertices_a, vertices_b
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffers of each mesh.
+        ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
     loop_a, loop_b
-        Ordered vertex-index loops (``>= 3`` vertices each) around the boundary to join on each
-        mesh, indexing ``vertices_a`` / ``vertices_b`` respectively.
+        ``(k_a,)`` and ``(k_b,)`` ordered vertex-index loops (``>= 3`` vertices each) around the
+        boundary to join on each mesh, indexing ``vertices_a`` / ``vertices_b`` respectively.
 
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Concatenation of ``vertices_a`` then ``vertices_b`` (larger loop first), on the device of
-        the **larger** loop's mesh — which is the caller's ``faces_a`` unless the swap above fired.
+        ``(n_out_vertices,)`` concatenation of ``vertices_a`` then ``vertices_b`` (larger loop
+        first), on the device of the **larger** loop's mesh — which is the caller's ``faces_a``
+        unless the swap above fired.
     new_faces : wp.array[wp.int32]
-        Original faces (B reindexed by ``len(vertices_a)``) followed by the bridge triangles, on
-        that same device.
+        ``(3 * n_out_faces,)`` original faces (B reindexed by ``len(vertices_a)``) followed by the
+        bridge triangles, on that same device.
 
     Raises
     ------
@@ -2398,9 +2410,10 @@ def stitch_loops_min_weight(
     vertices_a, vertices_b
         ``(n_vertices,)`` vertex positions of each mesh.
     faces_a, faces_b
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffers of each mesh.
+        ``(3 * n_faces,)`` flat triangle index buffers of each mesh.
     loop_a, loop_b
-        Ordered vertex-index loops (``>= 3`` vertices each) around the boundary to join on each.
+        ``(k_a,)`` and ``(k_b,)`` ordered vertex-index loops (``>= 3`` vertices each) around the
+        boundary to join on each.
     metric
         Stitch metric to minimize:
 
@@ -2415,9 +2428,11 @@ def stitch_loops_min_weight(
     Returns
     -------
     new_vertices : wp.array[wp.vec3]
-        Concatenation of ``vertices_a`` then ``vertices_b``, on ``faces_a.device``.
+        ``(n_out_vertices,)`` concatenation of ``vertices_a`` then ``vertices_b``, on
+        ``faces_a.device``.
     new_faces : wp.array[wp.int32]
-        Original faces (B reindexed by ``len(vertices_a)``) followed by the band triangles.
+        ``(3 * n_out_faces,)`` original faces (B reindexed by ``len(vertices_a)``) followed by the
+        band triangles.
 
     Raises
     ------
@@ -2651,7 +2666,7 @@ def bridge_edges(
         ``(n_vertices,)`` mesh vertex positions. Only read to validate the two edges; the patch
         itself is purely topological, and nothing moves.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     edge_a
         A boundary edge as ``(v0, v1)``, **directed the way its face winds it** -- a row of
         [`oriented_boundary_edges`][triwarp.boundary.oriented_boundary_edges].
@@ -2667,9 +2682,9 @@ def bridge_edges(
     Returns
     -------
     wp.array[wp.int32]
-        The input faces with the patch appended, on ``faces.device``. The appended block is the
-        tail -- ``3`` entries longer than the input for the shared-vertex case, ``6`` otherwise --
-        so its size is what says which case was taken.
+        ``(3 * n_faces + 3,)`` or ``(3 * n_faces + 6,)`` input faces with the patch appended, on
+        ``faces.device``. The appended block is the tail -- ``3`` entries longer than the input for
+        the shared-vertex case, ``6`` otherwise -- so its size is what says which case was taken.
 
     Raises
     ------
@@ -2768,7 +2783,7 @@ def bridge_edges_smooth(
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` triangle index buffer.
+        ``(3 * n_faces,)`` triangle index buffer.
     edge_a
         A boundary edge as ``(v0, v1)``, directed the way its face winds it.
     edge_b
@@ -2785,9 +2800,10 @@ def bridge_edges_smooth(
     Returns
     -------
     vertices : wp.array[wp.vec3]
-        The input positions, unchanged and in order, with the strip's interior vertices appended.
+        ``(n_out_vertices,)`` input positions, unchanged and in order, with the strip's interior
+        vertices appended.
     faces : wp.array[wp.int32]
-        The input faces with the strip's triangles appended.
+        ``(3 * n_out_faces,)`` input faces with the strip's triangles appended.
 
     Raises
     ------
@@ -3020,7 +3036,7 @@ def join_closest_components(
         ``(n_vertices,)`` mesh vertex positions. Nothing moves and nothing is added, so this is only
         read.
     faces
-        Length-``3 * n_faces`` ``wp.int32`` flat triangle index buffer.
+        ``(3 * n_faces,)`` flat triangle index buffer.
     max_distance
         Refuse a join whose two boundary vertices are further apart than this. ``None`` (default)
         joins unconditionally, which is what the reference implementations do -- and which on a mesh
@@ -3033,9 +3049,9 @@ def join_closest_components(
     Returns
     -------
     wp.array[wp.int32]
-        The input face buffer with the bridge triangles appended, on ``faces.device``. A copy of
-        ``faces`` when there is nothing to join -- fewer than two components, or no component with a
-        boundary.
+        ``(3 * n_out_faces,)`` input face buffer with the bridge triangles appended, on
+        ``faces.device``. A copy of ``faces`` when there is nothing to join -- fewer than two
+        components, or no component with a boundary.
 
     Raises
     ------
