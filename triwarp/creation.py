@@ -156,15 +156,18 @@ def _icosphere_face_table() -> np.ndarray:
     two faces holding that edge walks them in whichever direction its own winding needs.
     """
     faces_np = _ICOSAHEDRON_FACES.reshape(-1, 3)
-    edge_ids: dict[tuple[int, int], int] = {}
-    table_np = np.empty((faces_np.shape[0], 9), dtype=np.int32)
-    for f, (a, b, c) in enumerate(faces_np.tolist()):
-        table_np[f, :3] = (a, b, c)
-        for side, (u, v) in enumerate(((a, b), (b, c), (c, a))):
-            key = (min(u, v), max(u, v))
-            table_np[f, 3 + side] = edge_ids.setdefault(key, len(edge_ids))
-            table_np[f, 6 + side] = u > v
-    return table_np
+    # Sides ``a-b``, ``b-c``, ``c-a`` of every face, row-major, so the flat order is the order the
+    # sides are first met in.
+    starts_np = faces_np
+    ends_np = np.roll(faces_np, -1, axis=1)
+    radix = _ICOSAHEDRON_VERTICES.shape[0]
+    keys_np = (np.minimum(starts_np, ends_np) * radix + np.maximum(starts_np, ends_np)).ravel()
+    _, first_np, inverse_np = np.unique(keys_np, return_index=True, return_inverse=True)
+    # ``np.unique`` numbers the keys in sorted order; renumber them by first appearance.
+    rank_np = np.empty_like(first_np)
+    rank_np[np.argsort(first_np)] = np.arange(first_np.size)
+    edge_ids_np = rank_np[inverse_np].reshape(faces_np.shape)
+    return np.hstack((faces_np, edge_ids_np, starts_np > ends_np)).astype(np.int32)
 
 
 # Built once: the icosahedron's topology is a constant, so the only per-call cost is the upload.
@@ -283,7 +286,7 @@ _DODECAHEDRON_FACES = np.array(
 
 def box(
     extents: tuple[float, float, float] | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     bounds: Sequence[Sequence[float]] | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -295,9 +298,8 @@ def box(
     extents
         ``(3,)`` edge lengths. The box is centered on the origin. Defaults to a unit cube.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``. Face winding is reversed when the transform has negative determinant, so
-        normals keep pointing outward.
+        Transform applied after construction, as a ``wp.mat44``. Face winding is reversed when the
+        transform has negative determinant, so normals keep pointing outward.
     bounds
         ``(2, 3)`` axis-aligned corners. Overrides ``extents`` and ``transform``, and yields a
         box spanning exactly those corners rather than one centered on the origin.
@@ -349,7 +351,7 @@ def grid(
     count: tuple[int, int] = (10, 10),
     extents: tuple[float, float] = (1.0, 1.0),
     center: bool = True,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -372,8 +374,8 @@ def grid(
         When ``True`` (the default) the patch spans ``[-extents / 2, extents / 2]``; when
         ``False`` its lower corner sits at the origin, matching MeshLab's ``create_grid``.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``. Face winding is reversed when the transform has negative determinant.
+        Transform applied after construction, as a ``wp.mat44``. Face winding is reversed when the
+        transform has negative determinant.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -633,7 +635,7 @@ def _icosphere_tables(device: str) -> tuple[wp.array[wp.int32], wp.array[wp.vec3
 def uv_sphere(
     radius: float = 1.0,
     count: tuple[int, int] | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -647,10 +649,10 @@ def uv_sphere(
     radius
         Sphere radius.
     count
-        ``(2,)`` number of latitude and longitude lines. Defaults to ``(32, 64)``.
+        ``(2,)`` number of latitude lines (profile points, poles included) and longitude sections.
+        Defaults to ``(32, 64)``. Both entries are rounded up to even.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -666,9 +668,10 @@ def uv_sphere(
 
     Notes
     -----
-    The longitude count is doubled when ``count`` is given explicitly but not when it is left at
-    the default, so ``count=(32, 64)`` yields 128 longitude sections while ``count=None`` yields
-    64. This asymmetry is inherited from [`trimesh.creation.uv_sphere`][] and kept for parity.
+    ``count[1]`` is the longitude section count itself, whether given or defaulted.
+    [`trimesh.creation.uv_sphere`][] doubles an explicit ``count[1]`` (and only an explicit one),
+    so for an even ``b``, ``trimesh.creation.uv_sphere(count=[a, b])`` is
+    ``uv_sphere(count=(a, 2 * b))`` here.
 
     The two pole points are snapped to exactly ``(0, -radius)`` and ``(0, radius)`` in the 2D
     profile. ``sin(pi)`` is ``1.2e-16`` rather than zero, and without the snap the pole vertices
@@ -683,14 +686,11 @@ def uv_sphere(
     [`revolve`][triwarp.creation.revolve]
     [`trimesh.creation.uv_sphere`][]
     """
-    if count is None:
-        latitude, longitude = 32, 64
-    else:
-        counts = np.asanyarray(count, dtype=np.int64)
-        if counts.shape != (2,):
-            raise ValueError(f"count must be (2,) int, got {counts.shape}")
-        counts = counts + counts % 2
-        latitude, longitude = int(counts[0]), int(counts[1]) * 2
+    counts = np.array([32, 64], dtype=np.int64) if count is None else np.asanyarray(count, np.int64)
+    if counts.shape != (2,):
+        raise ValueError(f"count must be (2,) int, got {counts.shape}")
+    counts = counts + counts % 2
+    latitude, longitude = int(counts[0]), int(counts[1])
 
     radius_f = abs(float(radius))
     theta = np.linspace(0.0, math.pi, num=latitude)
@@ -787,7 +787,7 @@ def capsule(
     height: float = 1.0,
     radius: float = 1.0,
     count: tuple[int, int] | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -808,8 +808,7 @@ def capsule(
         entries are rounded up to even, which is what gives the two quarter-circle profiles below
         the equator the same point count.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -825,7 +824,6 @@ def capsule(
 
     Notes
     -----
-    Unlike [`uv_sphere`][triwarp.creation.uv_sphere], the longitude count is *not* doubled here.
     [`trimesh.creation.capsule`][]'s docstring describes the geometry as having one hemisphere at
     the origin and the other at ``height``; the implementation (and this port) centers it
     instead.
@@ -887,7 +885,7 @@ def cylinder(
     height: float | None = None,
     sections: int | None = None,
     segment: Sequence[Sequence[float]] | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -905,8 +903,7 @@ def cylinder(
         ``(2, 3)`` axis endpoints. Overrides both ``height`` and ``transform``, placing the
         cylinder along the segment.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -958,7 +955,7 @@ def cone(
     radius: float,
     height: float,
     sections: int | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -973,8 +970,7 @@ def cone(
     sections
         Number of pie wedges around the revolution. Defaults to 32.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -1015,7 +1011,7 @@ def annulus(
     r_max: float,
     height: float | None = None,
     sections: int | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     segment: Sequence[Sequence[float]] | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -1034,8 +1030,7 @@ def annulus(
     sections
         Number of pie wedges around the revolution. Defaults to 32.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     segment
         ``(2, 3)`` axis endpoints. Overrides both ``height`` and ``transform``.
     device
@@ -1083,7 +1078,7 @@ def torus(
     minor_radius: float,
     major_sections: int = 32,
     minor_sections: int = 32,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     device: wp.DeviceLike = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -1100,8 +1095,7 @@ def torus(
     minor_sections
         Number of sections around the minor radius.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     device
         Warp device for the result. Defaults to the current device.
 
@@ -1143,7 +1137,7 @@ def revolve(
     angle: float | None = None,
     cap: bool = False,
     sections: int | None = None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Revolve a 2D profile around the 2D Y axis, which becomes the 3D Z axis.
@@ -1168,8 +1162,8 @@ def revolve(
         Number of pie wedges around the revolution. Defaults to 32 per full revolution, scaled by
         ``angle``.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``. Face winding is reversed when its determinant is negative.
+        Transform applied after construction, as a ``wp.mat44``. Face winding is reversed when its
+        determinant is negative.
 
     Returns
     -------
@@ -1181,8 +1175,6 @@ def revolve(
     ValueError
         If ``linestring`` is not a rank-1 ``wp.vec2`` array with at least 2 points, or
         ``sections`` resolves to less than 1.
-    RuntimeError
-        If ``linestring`` and ``transform`` are not all on one device.
 
     Notes
     -----
@@ -1215,7 +1207,6 @@ def revolve(
     [`extrude_triangulation`][triwarp.creation.extrude_triangulation]
     [`trimesh.creation.revolve`][]
     """
-    require_same_device(linestring=linestring, transform=transform)
     twt.ensure_ndim(linestring, 1, dtype=wp.vec2)
     device = linestring.device
     per = linestring.size
@@ -1383,7 +1374,7 @@ def extrude_triangulation(
     vertices: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
     height: float,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extrude a 2D triangulation along Z into a watertight mesh.
@@ -1402,8 +1393,8 @@ def extrude_triangulation(
         Distance to extrude along Z. May be negative; the triangulation is re-wound to agree with
         its sign so the result always has positive volume.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``. Face winding is reversed when its determinant is negative.
+        Transform applied after construction, as a ``wp.mat44``. Face winding is reversed when its
+        determinant is negative.
 
     Returns
     -------
@@ -1416,7 +1407,7 @@ def extrude_triangulation(
         If ``vertices`` is not a rank-1 ``wp.vec2`` array, ``faces`` is not a flat multiple of 3,
         or ``abs(height)`` is at most ``1e-8``.
     RuntimeError
-        If ``vertices``, ``faces`` and ``transform`` are not all on one device.
+        If ``vertices`` and ``faces`` are not on one device.
 
     Notes
     -----
@@ -1436,14 +1427,14 @@ def extrude_triangulation(
     [`revolve`][triwarp.creation.revolve]
     [`trimesh.creation.extrude_triangulation`][]
     """
-    require_same_device(vertices=vertices, faces=faces, transform=transform)
+    require_same_device(vertices=vertices, faces=faces)
     return _extrude(vertices, faces, height, transform, ring_walls=False)
 
 
 def extrude_polygon(
     polygon: wp.array[wp.vec2],
     height: float,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     mid_plane: bool = False,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -1460,8 +1451,7 @@ def extrude_polygon(
     height
         Distance to extrude along Z.
     transform
-        Transform applied after construction, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied after construction, as a ``wp.mat44``.
     mid_plane
         Center the extrusion on ``z = 0`` instead of starting it there.
 
@@ -1470,11 +1460,6 @@ def extrude_polygon(
     tuple[wp.array[wp.vec3], wp.array[wp.int32]]
         ``(vertices, faces)`` on ``polygon.device``.
 
-    Raises
-    ------
-    RuntimeError
-        If ``polygon`` and ``transform`` are not all on one device.
-
     See Also
     --------
     [`triangulate_polygon`][triwarp.polyline.triangulate_polygon]
@@ -1482,7 +1467,6 @@ def extrude_polygon(
     [`sweep_polygon`][triwarp.creation.sweep_polygon]
     [`trimesh.creation.extrude_polygon`][]
     """
-    require_same_device(polygon=polygon, transform=transform)
     ring, faces = tw.polyline.triangulate_polygon(polygon)
     if mid_plane:
         translation = np.eye(4)
@@ -1502,7 +1486,7 @@ def _extrude(
     vertices: wp.array[wp.vec2],
     faces: wp.array[wp.int32],
     height: float,
-    transform: wp.mat44 | wp.array[wp.mat44] | None,
+    transform: wp.mat44 | None,
     *,
     ring_walls: bool,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
@@ -1765,7 +1749,7 @@ def _plane_transform(origin: np.ndarray, normal: np.ndarray) -> np.ndarray:
 
 def axis(
     origin_size: float = 0.04,
-    transform: wp.mat44 | wp.array[wp.mat44] | None = None,
+    transform: wp.mat44 | None = None,
     axis_radius: float | None = None,
     axis_length: float | None = None,
     device: wp.DeviceLike = None,
@@ -1778,8 +1762,7 @@ def axis(
     origin_size
         Radius of the ball marking the origin. The other defaults are derived from it.
     transform
-        Transform applied to the whole marker, as a ``(1,)`` ``wp.mat44`` array or a scalar
-        ``wp.mat44``.
+        Transform applied to the whole marker, as a ``wp.mat44``.
     axis_radius
         Radius of the three axis cylinders. Defaults to ``origin_size / 5``.
     axis_length
@@ -2602,10 +2585,8 @@ def _parametric_lattice_device(
 
 
 def _resolve_cylinder_axis(
-    height: float | None,
-    segment: Sequence[Sequence[float]] | None,
-    transform: wp.mat44 | wp.array[wp.mat44] | None,
-) -> tuple[wp.mat44 | wp.array[wp.mat44] | None, float]:
+    height: float | None, segment: Sequence[Sequence[float]] | None, transform: wp.mat44 | None
+) -> tuple[wp.mat44 | None, float]:
     """
     Resolve a cylinder-like body's axis to ``(transform, half_height)``.
 
@@ -2647,10 +2628,7 @@ def _resolve_sections(sections: int | None) -> int:
 
 
 def _revolve_regular(
-    profile_np: np.ndarray,
-    sections: int,
-    transform: wp.mat44 | wp.array[wp.mat44] | None,
-    device: wp.DeviceLike,
+    profile_np: np.ndarray, sections: int, transform: wp.mat44 | None, device: wp.DeviceLike
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]] | None:
     """
     Build a solid of revolution in one launch, or return ``None`` when the layout is not regular.
@@ -2768,9 +2746,7 @@ def _align_vectors(a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 
 def _apply_transform(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    transform: wp.mat44 | wp.array[wp.mat44] | None,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], transform: wp.mat44 | None
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Transform ``vertices`` in place, reversing face winding when the transform is a mirror.

@@ -229,7 +229,6 @@ def pack_1d_arrays(
         [`vertex_one_rings`][triwarp.halfedge.vertex_one_rings] and the
         [`triwarp.geodesic_walk`][triwarp.geodesic_walk] tracers among them -- and every function
         that *takes* one ([`split`][triwarp.array.split],
-        [`trace_polylines`][triwarp.geodesic_walk.trace_polylines],
         [`submeshes_from_face_groups`][triwarp.selection.submeshes_from_face_groups]) uses the same
         order and form. Both halves are ``wp.int32`` in the common case, so a transposed unpack
         type-checks, runs, and indexes garbage; there is nothing but the convention to lean on.

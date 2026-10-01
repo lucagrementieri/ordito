@@ -317,11 +317,10 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     Class B (a named parameter mapping), and then the *same mesh* -- vertex for vertex.
 
     ``makeUVSphere``'s ``verticalResolution`` counts interior latitude **rings** where
-    ``uv_sphere``'s ``count[0]`` counts profile points, poles included, and its
-    ``horisontalResolution`` is the section count where ``count[1]`` is *half* of it (the doubling
-    ``uv_sphere`` inherits from trimesh). So the mapping is
-    ``makeUVSphere(r, h, v) == uv_sphere(radius=r, count=(v + 2, h // 2))``, which the row here
-    inverts to hold ``sections`` fixed.
+    ``uv_sphere``'s ``count[0]`` counts profile points, poles included, while its
+    ``horisontalResolution`` is the section count, exactly as ``count[1]`` is. So the mapping is
+    ``makeUVSphere(r, h, v) == uv_sphere(radius=r, count=(v + 2, h))``, which the row here inverts
+    to hold ``sections`` fixed.
 
     At that pairing the two agree far past a count check: measured at 16 / 32 / 64 sections, the
     vertex and face counts are equal, the areas and volumes agree to **1.5e-08 relative**, and a
@@ -330,13 +329,13 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     are matched through a KD-tree rather than sorted, because the two emit their rings in different
     orders and a ``lexsort`` on float coordinates is not reliable at ties (section 6).
 
-    Contrast the open3d pairing above, which needs a *different* mapping (``2 * r`` and ``r // 2``)
+    Contrast the open3d pairing below, which needs a *different* mapping (``2 * r`` and ``r``)
     and is only equal in the counts -- its latitude rings sit elsewhere, so its volume differs by up
     to 1.22%. Two references, two mappings, and only one of them is the same mesh; that is worth
     pinning in both directions so neither mapping drifts onto the other.
     """
     vertices_wp, faces_wp = tw.creation.uv_sphere(
-        radius=1.0, count=(2 * sections, sections // 2), device=device
+        radius=1.0, count=(2 * sections, sections), device=device
     )
     mesh_ref = meshlib_to_trimesh(mm.makeUVSphere(1.0, sections, 2 * sections - 2))
 
@@ -393,7 +392,7 @@ def test_uv_sphere_matches_open3d(device: str, sections: int) -> None:
     Class B (a named index mapping): the two UV spheres tessellate differently than expected.
 
     ``create_sphere(resolution=r)`` is neither ``count=(r, r)`` nor ``count=(32, r)``: measured
-    exactly at r = 16, 32, 64, 128 and 256, it equals ``uv_sphere(count=(2 * r, r // 2))`` in both
+    exactly at r = 16, 32, 64, 128 and 256, it equals ``uv_sphere(count=(2 * r, r))`` in both
     vertex and face count. ``benchmarks/test_creation.py`` paired it with ``count=(32, r)`` and so
     timed a linear sweep against a quadratic one -- 15 360 faces against 65 024 at ``sections=256``.
     Pinning the count mapping, so that fix cannot drift back, is the substance of this test.
@@ -407,7 +406,7 @@ def test_uv_sphere_matches_open3d(device: str, sections: int) -> None:
     ring placement would hold a constant offset instead.
     """
     vertices_wp, faces_wp = tw.creation.uv_sphere(
-        radius=1.0, count=(2 * sections, sections // 2), device=device
+        radius=1.0, count=(2 * sections, sections), device=device
     )
     mesh_ref = open3d_to_trimesh(o3d.geometry.TriangleMesh.create_sphere(1.0, resolution=sections))
 
@@ -952,11 +951,21 @@ def test_uv_sphere(device: str) -> None:
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 3.0, rtol=1e-5, atol=1e-5)
 
 
-def test_uv_sphere_explicit_count_doubles_longitude(device: str) -> None:
-    # trimesh doubles count[1] only when count is passed explicitly; the port keeps that asymmetry.
-    vertices_wp, faces_wp = tw.creation.uv_sphere(count=(16, 16), device=device)
+@pytest.mark.parity("uv_sphere", "trimesh")
+def test_uv_sphere_explicit_count(device: str) -> None:
+    """
+    Class B (a named parameter mapping): ``count[1]`` is the section count, given or defaulted.
+
+    trimesh doubles an explicit ``count[1]`` and not its default, so its ``count=[16, 16]`` is
+    this module's ``count=(16, 32)``. The second half pins that the default is not special: an
+    explicit ``(32, 64)`` is the default mesh.
+    """
+    vertices_wp, faces_wp = tw.creation.uv_sphere(count=(16, 32), device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.uv_sphere(count=[16, 16]))
     assert vertices_wp.size == 14 * 32 + 2
+    default_wp, _ = tw.creation.uv_sphere(device=device)
+    explicit_wp, _ = tw.creation.uv_sphere(count=(32, 64), device=device)
+    assert np.array_equal(default_wp.numpy(), explicit_wp.numpy())
 
 
 def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
@@ -1004,8 +1013,8 @@ def test_capsule(device: str) -> None:
             {"major_radius": 1.0, "minor_radius": 0.3, "major_sections": 2, "minor_sections": 5},
             True,
         ),
-        ("uv_sphere", {"radius": 1.0, "count": (8, 6)}, True),
-        ("uv_sphere", {"radius": 1e-5, "count": (8, 8)}, False),
+        ("uv_sphere", {"radius": 1.0, "count": (8, 12)}, True),
+        ("uv_sphere", {"radius": 1e-5, "count": (8, 16)}, False),
         ("capsule", {"radius": 0.5, "height": 2.0, "count": (8, 6)}, True),
         ("cone", {"radius": 1.0, "height": 2.0, "sections": 16}, True),
         ("cone", {"radius": 1.0, "height": 2.0, "sections": 2}, True),
@@ -1266,8 +1275,8 @@ def test_revolve_absolute_tolerance_is_scale_dependent(device: str) -> None:
     # Documented limitation: the degenerate-triangle filter compares an absolute area against
     # 1e-8, so a large enough sphere keeps its (near-)zero-area polar triangles. Recorded here so
     # the threshold in revolve's Notes stays honest rather than asserted as desirable.
-    small_v, small_f = tw.creation.uv_sphere(radius=1.0, count=(8, 8), device=device)
-    large_v, large_f = tw.creation.uv_sphere(radius=1.0e5, count=(8, 8), device=device)
+    small_v, small_f = tw.creation.uv_sphere(radius=1.0, count=(8, 16), device=device)
+    large_v, large_f = tw.creation.uv_sphere(radius=1.0e5, count=(8, 16), device=device)
     _assert_closed(small_v, small_f)
     assert large_f.size >= small_f.size
     assert np.allclose(np.linalg.norm(large_v.numpy(), axis=1), 1.0e5, rtol=1e-5, atol=1.0)

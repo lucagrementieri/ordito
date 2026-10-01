@@ -922,13 +922,18 @@ def lscm_hessian(
         # [`vector_area_matrix`][triwarp.energies.vector_area_matrix] but writes into a slice
         # of the combined buffer: assembling ``A`` as its own matrix and adding it would need a
         # second build plus a ``bsr_axpy``, where this one pass over exact-size buffers does.
-        _vector_area_triplets(
-            boundary,
-            n,
-            -2.0,
-            twt.as_dense(rows[2 * n_entries :]),
-            twt.as_dense(cols[2 * n_entries :]),
-            twt.as_dense(vals[2 * n_entries :]),
+        _launch.launch(
+            kernel_energies.vector_area_triplets,
+            dim=n_be,
+            inputs=[
+                boundary,
+                wp.int32(n),
+                wp.float64(-2.0),
+                twt.as_dense(rows[2 * n_entries :]),
+                twt.as_dense(cols[2 * n_entries :]),
+                twt.as_dense(vals[2 * n_entries :]),
+            ],
+            device=device,
         )
     return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
@@ -982,39 +987,14 @@ def vector_area_matrix(
         return tw.array.empty_square_bsr(2 * n, wp.float64, device)
 
     rows, cols, vals = tw.array.triplet_buffers(4 * n_be, wp.float64, device)
-    _vector_area_triplets(boundary, n, 1.0, rows, cols, vals)
-    return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
-
-
-def _vector_area_triplets(
-    boundary_edges: twt.Array2dInt32,
-    n_vertices: int,
-    scale: float,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.float64],
-) -> None:
-    """
-    Emit the four cross-quadrant vector-area triplets per oriented boundary edge.
-
-    Writes ``4 * n_boundary_edges`` triplets from slot zero of the given buffers, which may be
-    slices of a larger triplet array. ``scale = 1`` builds ``A`` itself
-    ([`vector_area_matrix`][triwarp.energies.vector_area_matrix]); ``scale = -2`` builds the
-    ``-2 A`` term of the LSCM Hessian ([`lscm_hessian`][triwarp.energies.lscm_hessian]).
-    """
+    # The four cross-quadrant triplets of every oriented boundary edge, at scale 1: ``A`` itself.
     _launch.launch(
         kernel_energies.vector_area_triplets,
-        dim=int(boundary_edges.shape[0]),
-        inputs=[
-            boundary_edges,
-            wp.int32(n_vertices),
-            wp.float64(scale),
-            out_rows,
-            out_cols,
-            out_vals,
-        ],
-        device=out_rows.device,
+        dim=n_be,
+        inputs=[boundary, wp.int32(n), wp.float64(1.0), rows, cols, vals],
+        device=device,
     )
+    return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
 
 def _edge_numbering(

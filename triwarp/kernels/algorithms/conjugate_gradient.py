@@ -959,8 +959,8 @@ def cg_settle_change(
     # of those entries, into ``out_settle``'s first two slots (zeroed by the previous
     # ``cg_settle_decide``); ``previous`` is advanced to ``x`` for the next check. A residual cannot
     # say this for the heat method's diffusions, whose far field sits hundreds of orders of
-    # magnitude below the source (``heat._diffuse``). Both halves commit one atomic per block, the
-    # ``reduce`` block fold.
+    # magnitude below the source (the settle rule at ``heat._HEAT_CHECK_ROUNDS``). Both halves
+    # commit one atomic per block, the ``reduce`` block fold.
     i, t = wp.tid()
     base, remaining = block_chunk_1d(solution.shape[0], i)
     if remaining <= 0:

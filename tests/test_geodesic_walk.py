@@ -80,7 +80,7 @@ def test_trace_from_vertex_walks_the_requested_distance(
     is_boundary = tw.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))[
         2
     ].numpy()
-    curves = tw.geodesic_walk.trace_polylines(points_wp, offsets_wp)
+    curves = tw.array.split(points_wp, offsets_wp)
     for ray, (start, direction) in enumerate(zip(start_np, directions_np, strict=True)):
         points = curves[ray].numpy()
         requested = _tangential_length(direction.astype(np.float64), normals[start])
@@ -151,7 +151,7 @@ def test_trace_from_vertex_matches_potpourri3d(
         wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
         points_to_warp(directions_np, mesh_wp.device),
     )
-    curves = tw.geodesic_walk.trace_polylines(points_wp, offsets_wp)
+    curves = tw.array.split(points_wp, offsets_wp)
 
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
     edge_length = float(
@@ -251,7 +251,7 @@ def test_trace_from_face_matches_potpourri3d(
         points_to_warp(barycentric, mesh_wp.device),
         points_to_warp(directions, mesh_wp.device),
     )
-    curves = tw.geodesic_walk.trace_polylines(points_wp, offsets_wp)
+    curves = tw.array.split(points_wp, offsets_wp)
 
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
     for ray in range(n_rays):
@@ -308,7 +308,7 @@ def _paths_to_source(mesh_wp: wp.Mesh, targets_np: np.ndarray) -> list[wp.array[
     points_wp, offsets_wp = tw.geodesic_walk.geodesic_path(
         mesh_wp.points, mesh_wp.indices, source_wp, wp.array(targets_np, wp.int32, device=device)
     )
-    return tw.geodesic_walk.trace_polylines(points_wp, offsets_wp)
+    return tw.array.split(points_wp, offsets_wp)
 
 
 @pytest.mark.parametrize("mesh_name", _PATH_MESHES)
@@ -594,7 +594,7 @@ def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
     )
     assert points_wp.shape == (0,)
     assert offsets_wp.shape == (1,)
-    assert tw.geodesic_walk.trace_polylines(points_wp, offsets_wp) == []
+    assert tw.array.split(points_wp, offsets_wp) == []
 
 
 def _cycle_length(vertices_np: np.ndarray, loop_np: np.ndarray) -> float:

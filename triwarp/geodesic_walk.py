@@ -110,7 +110,7 @@ def trace_from_vertex(
     See Also
     --------
     [`trace_from_face`][triwarp.geodesic_walk.trace_from_face]
-    [`trace_polylines`][triwarp.geodesic_walk.trace_polylines]
+    [`split`][triwarp.array.split]
     [`heat_geodesic`][triwarp.heat.heat_geodesic]
     """
     require_same_device(
@@ -315,7 +315,7 @@ def descend_field(
         ``points`` holds every path's polyline end to end and ``offsets`` is the
         length-``n_paths + 1`` CSR bound, the same packing
         [`trace_from_vertex`][triwarp.geodesic_walk.trace_from_vertex] returns and
-        [`trace_polylines`][triwarp.geodesic_walk.trace_polylines] slices.
+        [`split`][triwarp.array.split] slices.
 
     Raises
     ------
@@ -441,7 +441,7 @@ def geodesic_path(
     -------
     points, offsets
         Packed polylines and their CSR bounds, each running **from its target to the source**. Slice
-        with [`trace_polylines`][triwarp.geodesic_walk.trace_polylines] and measure with
+        with [`split`][triwarp.array.split] and measure with
         [`triwarp.polyline.polyline_length`][triwarp.polyline.polyline_length].
 
     Raises
@@ -808,7 +808,10 @@ def _rewrite_loops(
         ],
         device=device,
     )
-    return twt.as_dense(rewritten[:total]), _offsets_through(positions, loop_offsets)
+    # Each loop's old offset mapped through the position remap: a Python-scope gather.
+    offsets = _launch.empty(loop_offsets.size, dtype=wp.int32, device=device)
+    _launch.copy(offsets, positions[loop_offsets])
+    return twt.as_dense(rewritten[:total]), offsets
 
 
 def _compact_repeats(
@@ -819,8 +822,8 @@ def _compact_repeats(
 
     Shares its resize-then-scatter-then-remap tail with
     [`_rewrite_loops`][triwarp.geodesic_walk._rewrite_loops] (both scan counts in place behind a
-    zeroed head, then allocate/launch/slice, then ``_offsets_through``), and the two are kept
-    separate rather than merged: this function has a legitimate optimization
+    zeroed head, then allocate/launch/slice, then gather the loop offsets through the remap), and
+    the two are kept separate rather than merged: this function has a legitimate optimization
     ``_rewrite_loops`` does not need -- when ``total == n_positions`` (nothing was dropped) it
     returns the original buffers unchanged instead of allocating and launching a no-op scatter. A
     shared helper would either drop that optimization or need an early-exit signal threaded back
@@ -861,59 +864,9 @@ def _compact_repeats(
         inputs=[packed, positions, kept],
         device=device,
     )
-    return twt.as_dense(kept[:total]), _offsets_through(positions, loop_offsets)
-
-
-def _offsets_through(
-    positions: wp.array[wp.int32], loop_offsets: wp.array[wp.int32]
-) -> wp.array[wp.int32]:
-    """Map old per-loop offsets through a position remap -- a Python-scope gather."""
-    mapped = _launch.empty(loop_offsets.size, dtype=wp.int32, device=positions.device)
-    _launch.copy(mapped, positions[loop_offsets])
-    return mapped
-
-
-def trace_polylines(
-    points: wp.array[wp.vec3], offsets: wp.array[wp.int32], *, copy: bool = False
-) -> list[wp.array[wp.vec3]]:
-    """
-    Slice a packed trace result into one polyline per ray.
-
-    !!! note "The returned arrays are views"
-        Each polyline slices the packed buffer, so holding one keeps them all alive and writing into
-        one writes into the shared allocation. Pass ``copy=True`` for independent buffers.
-
-    Parameters
-    ----------
-    points
-        Packed traced points from
-        [`trace_from_vertex`][triwarp.geodesic_walk.trace_from_vertex] or
-        [`trace_from_face`][triwarp.geodesic_walk.trace_from_face].
-    offsets
-        The matching length-``n_rays + 1`` CSR bounds.
-    copy
-        Return independent buffers instead of views.
-
-    Returns
-    -------
-    list[wp.array[wp.vec3]]
-        One open polyline per ray, in ray order.
-
-    Raises
-    ------
-    ValueError
-        If ``offsets`` is not total-terminated over ``points`` (see
-        [`array.split`][triwarp.array.split]).
-    RuntimeError
-        If ``points`` and ``offsets`` are not all on one device.
-
-    See Also
-    --------
-    [`polyline_length`][triwarp.polyline.polyline_length]
-    [`boundary_loops`][triwarp.boundary.boundary_loops]
-    """
-    require_same_device(points=points, offsets=offsets)
-    return tw.array.split(points, offsets, copy=copy)
+    offsets = _launch.empty(loop_offsets.size, dtype=wp.int32, device=device)
+    _launch.copy(offsets, positions[loop_offsets])
+    return twt.as_dense(kept[:total]), offsets
 
 
 def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:

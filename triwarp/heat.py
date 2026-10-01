@@ -66,9 +66,30 @@ from triwarp.triangles import face_normals_and_areas
 # spelled three times when these were three modules.
 _CG_TOLERANCE = 1e-8
 
-# The heat solves' settle rule (``linalg.solve_spd_settled``, see ``_diffuse``): a check every
-# ``_HEAT_CHECK_ROUNDS`` rounds, the per-vertex relative change below which a check counts as
+# The heat solves' settle rule. Every diffusion here (``heat_geodesic``'s heat solve,
+# ``extend_scalar``, the stacked solves of ``transport_tangent_vectors`` and ``log_map``, and
+# ``diffuse_tangent_field``) calls ``linalg.solve_spd_settled`` with these three constants: a check
+# every ``_HEAT_CHECK_ROUNDS`` rounds, the per-vertex relative change below which a check counts as
 # settled, and the rounds past the last newly reached vertex after which the solve stops anyway.
+#
+# Why a settle test and not a residual tolerance: the diffused sources fall by a near-constant
+# factor per ring of vertices, so the far field is hundreds of orders of magnitude below the peak.
+# ``float64`` holds it, but a conjugate-gradient iterate after ``k`` rounds is a degree-``k``
+# polynomial in the operator applied to the sources -- exactly zero more than ``k`` rings away --
+# and the residual converges long before ``k`` reaches the far side of the mesh. So each solve runs
+# at a zero tolerance until every entry has settled relative to itself: one continuous iteration
+# checked on the device, stopping once no entry is newly reached and none moved by
+# ``_HEAT_CHANGE_TOLERANCE``, or ``_HEAT_SETTLE_ROUNDS`` rounds after the last vertex was reached
+# for an entry that never settles because it cancels toward zero (a transported vector on the cut
+# locus). No readback.
+#
+# **One iteration, not warm-restarted chunks**: restarting conjugate gradient breaks conjugacy,
+# and the vector solves then never pass the settle test. **Jacobi, never the Jacobi-Chebyshev
+# polynomial**, although a polynomial round reaches a dozen rings where a Jacobi round reaches one:
+# obtuse triangles make the heat system's off-diagonal entries positive, and the polynomial's
+# interval does not cover the far field's decay (wrong on ``bunny``: the distance 0.9 of its range
+# off igl's, the scalar extension divergent).
+#
 # Probed on continuous Jacobi-CG against the converged field (1 024 rounds), on the scalar and
 # vector systems of spheres from 2.5 k to 164 k vertices, both bunnies and the uniform and graded
 # saddles: a 16-round check fires at or after the first round within ``1e-6`` of the converged
@@ -290,70 +311,29 @@ def heat_geodesic(
     heat_system, heat_preconditioner = operators[0], operators[1]
 
     # Heat solve: (M - t L) u = u0, with u0 the source indicator, run until every vertex's heat has
-    # converged relative to its own size (``_diffuse``) -- not to a residual tolerance, which the
-    # far field sits hundreds of orders of magnitude below. Neumann on a boundary, as
-    # geometry-central (``potpourri3d``) and MeshLab take it. ``igl::heat_geodesics_solve``
-    # averages it with the solution pinned to zero on the boundary instead, and against exact
-    # polyhedral geodesics (``igl.exact_geodesic``) that average is the less accurate of the two:
-    # equal on a hemisphere, and 1.15 % against 0.93 % mean error (4.9 % against 3.1 % worst) of
-    # the distance range on a half torus.
+    # converged relative to its own size (the settle rule at ``_HEAT_CHECK_ROUNDS``) -- not to a
+    # residual tolerance, which the far field sits hundreds of orders of magnitude below. Neumann on
+    # a boundary, as geometry-central (``potpourri3d``) and MeshLab take it.
+    # ``igl::heat_geodesics_solve`` averages it with the solution pinned to zero on the boundary
+    # instead, and against exact polyhedral geodesics (``igl.exact_geodesic``) that average is the
+    # less accurate of the two: equal on a hemisphere, and 1.15 % against 0.93 % mean error (4.9 %
+    # against 3.1 % worst) of the distance range on a half torus.
     u0 = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_heat.seed_source_indicator, dim=sources.size, inputs=[sources, u0], device=device
     )
 
     heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    _diffuse(heat_system, u0, heat, heat_preconditioner)
-    return _distance_from_heat(vertices, faces, sources, operators, heat)
-
-
-def _diffuse(
-    system: twt.SparseMatrix,
-    rhs: twt.ArrayNd,
-    solution: twt.ArrayNd,
-    preconditioner: wpl.LinearOperator | None,
-) -> None:
-    """
-    Solve a heat system until every vertex's value has converged relative to its own size.
-
-    The heat method's diffused sources fall by a near-constant factor per ring of vertices, so the
-    far field is hundreds of orders of magnitude below the peak -- ``float64`` holds it, and igl's
-    direct factorization resolves it -- and a conjugate gradient stopped on its residual leaves it
-    as noise: an iterate after ``k`` rounds is a degree-``k`` polynomial in the operator applied to
-    the sources, so it is exactly zero more than ``k`` rings away, and the residual converges long
-    before ``k`` reaches the far side of the mesh. Measured on a unit ``icosphere(5)``, the old
-    residual-stopped solve left 92 % of the vertices without heat and put ``heat_geodesic`` up to
-    2.3 off the great-circle distance.
-
-    So the solve runs at a zero tolerance until every entry has settled relative to itself
-    ([`solve_spd_settled`][triwarp.linalg.solve_spd_settled]): one continuous iteration, checked on
-    the device every ``_HEAT_CHECK_ROUNDS`` rounds, stopping once no entry is newly reached and none
-    moved by ``_HEAT_CHANGE_TOLERANCE`` -- or, for an entry that never settles because it cancels
-    toward zero (a transported vector on the cut locus, whose value is round-off relative to
-    itself), ``_HEAT_SETTLE_ROUNDS`` rounds after the last vertex was reached. No readback.
-
-    **One iteration, not warm-restarted chunks.** Restarting conjugate gradient every 64 rounds
-    breaks conjugacy, and the vector solves then never passed the settle test at all -- every one
-    ended on the post-reach bound with the field still moving by O(1) relative in the entries that
-    cancel -- where the continuous iteration settles, exactly, well before it.
-
-    Jacobi rather than the Jacobi-Chebyshev polynomial, although a polynomial round reaches a dozen
-    rings where a Jacobi round reaches one: measured 1.3-1.8x faster on the sphere and **wrong** on
-    ``bunny`` -- the distance 0.9 of its range off igl's and the scalar extension divergent -- where
-    obtuse triangles make the heat system's off-diagonal entries positive.
-
-    ``system`` is a scalar operator with ``float64`` right-hand sides, a ``wp.mat22d`` one with
-    ``wp.vec2d`` ones, or a scalar one with ``(n_columns, n)`` ones.
-    """
     twl.solve_spd_settled(
-        system,
-        rhs,
-        solution,
+        heat_system,
+        u0,
+        heat,
         check_rounds=_HEAT_CHECK_ROUNDS,
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
-        preconditioner=preconditioner,
+        preconditioner=heat_preconditioner,
     )
+    return _distance_from_heat(vertices, faces, sources, operators, heat)
 
 
 # --------------------------------------------------------------------------------------
@@ -486,8 +466,8 @@ def heat_signed_distance(
         vector_system, source, preconditioner=vector_preconditioner
     )
     # The divergence kernel normalizes each corner without underflow, zero only where the field is
-    # exactly zero: it is converged per vertex (``_diffuse``), so its far field is a direction
-    # however small.
+    # exactly zero: it is converged per vertex (the settle rule at ``_HEAT_CHECK_ROUNDS``), so its
+    # far field is a direction however small.
 
     # Stage 3: integrate the unit field back into a scalar with a Poisson solve. The cotangent
     # weights and face normals come from the same bundle, so the Poisson stage and the diffusion
@@ -972,7 +952,14 @@ def _extend(
     diffused = twt.as_array2d(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
-    _diffuse(heat_system, rhs, diffused, None)
+    twl.solve_spd_settled(
+        heat_system,
+        rhs,
+        diffused,
+        check_rounds=_HEAT_CHECK_ROUNDS,
+        change_tolerance=_HEAT_CHANGE_TOLERANCE,
+        settle_rounds=_HEAT_SETTLE_ROUNDS,
+    )
     return twt.as_dense(diffused[0]), twt.as_dense(diffused[1])
 
 
@@ -1095,7 +1082,14 @@ def transport_tangent_vectors(
         device=device,
     )
     direction, diffused = _stacked_fields(n_vertices, 2, device)
-    _diffuse(stack, rhs, diffused, None)
+    twl.solve_spd_settled(
+        stack,
+        rhs,
+        diffused,
+        check_rounds=_HEAT_CHECK_ROUNDS,
+        change_tolerance=_HEAT_CHANGE_TOLERANCE,
+        settle_rounds=_HEAT_SETTLE_ROUNDS,
+    )
     diffused_indicator = diffused[2 * n_vertices : 3 * n_vertices]
     diffused_magnitudes = diffused[3 * n_vertices :]
 
@@ -1204,7 +1198,14 @@ def log_map(
         device=device,
     )
     transported_raw, diffused = _stacked_fields(n_vertices, 1, device)
-    _diffuse(stack, rhs, diffused, None)
+    twl.solve_spd_settled(
+        stack,
+        rhs,
+        diffused,
+        check_rounds=_HEAT_CHECK_ROUNDS,
+        change_tolerance=_HEAT_CHANGE_TOLERANCE,
+        settle_rounds=_HEAT_SETTLE_ROUNDS,
+    )
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
@@ -1397,5 +1398,13 @@ def diffuse_tangent_field(
     diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
     if n_vertices == 0:
         return diffused
-    _diffuse(system, source, diffused, preconditioner)
+    twl.solve_spd_settled(
+        system,
+        source,
+        diffused,
+        check_rounds=_HEAT_CHECK_ROUNDS,
+        change_tolerance=_HEAT_CHANGE_TOLERANCE,
+        settle_rounds=_HEAT_SETTLE_ROUNDS,
+        preconditioner=preconditioner,
+    )
     return diffused

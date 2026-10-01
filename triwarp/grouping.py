@@ -16,11 +16,10 @@ from triwarp.constants import INDEX_RADIX_PAIR
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import grouping as kernel_grouping
 
-# Unbounded on purpose: ``wp.Scalar`` is itself a ``typing.TypeVar`` rather than a class or a
-# union, so ``bound=wp.Scalar`` bounds a type variable by a type variable -- invalid, and it
-# never constrained anything. The admissible dtypes are the ones ``unique_1d``'s docstring
-# names and its overloads spell out.
-Scalar = TypeVar("Scalar")
+# The element dtype of ``unique_1d``'s input, so the checker gives its unique values the same
+# one: ``wp.array[wp.float32]`` in, ``wp.array[wp.float32]`` out. A static name only; which
+# dtypes the call accepts at runtime is in its docstring.
+DType = TypeVar("DType")
 
 
 def group(values: wp.array[wp.Int], length: int) -> twt.Array2dInt32:
@@ -135,46 +134,46 @@ def group_int_rows(
 
 @overload
 def unique_1d(
-    data: wp.array[Scalar],
+    data: wp.array[DType],
     *,
     return_inverse: Literal[False] = False,
     return_counts: Literal[False] = False,
     max_value: int | None = None,
-) -> wp.array[Scalar]: ...
+) -> wp.array[DType]: ...
 @overload
 def unique_1d(
-    data: wp.array[Scalar],
+    data: wp.array[DType],
     *,
     return_inverse: Literal[True],
     return_counts: Literal[False] = False,
     max_value: int | None = None,
-) -> tuple[wp.array[Scalar], wp.array[wp.int32]]: ...
+) -> tuple[wp.array[DType], wp.array[wp.int32]]: ...
 @overload
 def unique_1d(
-    data: wp.array[Scalar],
+    data: wp.array[DType],
     *,
     return_inverse: Literal[False] = False,
     return_counts: Literal[True],
     max_value: int | None = None,
-) -> tuple[wp.array[Scalar], wp.array[wp.int32]]: ...
+) -> tuple[wp.array[DType], wp.array[wp.int32]]: ...
 @overload
 def unique_1d(
-    data: wp.array[Scalar],
+    data: wp.array[DType],
     *,
     return_inverse: Literal[True],
     return_counts: Literal[True],
     max_value: int | None = None,
-) -> tuple[wp.array[Scalar], wp.array[wp.int32], wp.array[wp.int32]]: ...
+) -> tuple[wp.array[DType], wp.array[wp.int32], wp.array[wp.int32]]: ...
 def unique_1d(
-    data: wp.array[Scalar],
+    data: wp.array[DType],
     *,
     return_inverse: bool = False,
     return_counts: bool = False,
     max_value: int | None = None,
 ) -> (
-    wp.array[Scalar]
-    | tuple[wp.array[Scalar], wp.array[wp.int32]]
-    | tuple[wp.array[Scalar], wp.array[wp.int32], wp.array[wp.int32]]
+    wp.array[DType]
+    | tuple[wp.array[DType], wp.array[wp.int32]]
+    | tuple[wp.array[DType], wp.array[wp.int32], wp.array[wp.int32]]
 ):
     """
     Find sorted unique elements of a 1D Warp array (``numpy.unique`` subset).
@@ -298,12 +297,14 @@ def _unique_hash(
     # written here in the first place.
     sort_dtype = cast("type[Any]", twt.sortable_dtype(original_dtype))
     keys_compact = _launch.empty(2 * n_unique, dtype=key_dtype, device=device)
-    cnts_compact = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    counts_compact = (
+        _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    )
     perm_buf = _launch.empty(2 * n_unique, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_grouping.COMPACT_FROM_TABLE[key_dtype],
         dim=cap,
-        inputs=[slot_key, slot_counts, occupied, keys_compact, cnts_compact, perm_buf],
+        inputs=[slot_key, slot_counts, occupied, keys_compact, counts_compact, perm_buf],
         device=device,
     )
 
@@ -331,10 +332,10 @@ def _unique_hash(
         )
 
     unique_counts = None
-    if cnts_compact is not None:
+    if counts_compact is not None:
         # A contiguous prefix slice, not a gather-unsafe strided view (CLAUDE.md §3.4) -- no copy
         # needed before handing it to ``gather`` as the index array.
-        unique_counts = gather(cnts_compact, twt.as_dense(perm_buf[:n_unique]))
+        unique_counts = gather(counts_compact, twt.as_dense(perm_buf[:n_unique]))
 
     unique_inverse = None
     if return_inverse:

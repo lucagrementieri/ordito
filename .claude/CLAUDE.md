@@ -907,9 +907,10 @@ Root-cause detail and the bisection techniques: §12.1.
 - **Every function returning a list of variable-length items has a packed sibling
   `<name>_with_offsets`** (device arrays: values, offsets, then any per-item array); the list form
   is that plus `array.split`, so the two cannot drift. A function that *takes* the packed form is
-  `<name>_from_offsets`; one whose input is already packed and output a list
-  (`geodesic_walk.trace_polylines`) needs no sibling. `_batched` is not a suffix in this package.
-  `array.split` also accepts host-sequence offsets.
+  `<name>_from_offsets`. A function that only slices an already-packed result into a list *is*
+  `array.split`; call it rather than wrapping it (`geodesic_walk`'s tracers return the packed
+  form only). `_batched` is not a suffix in this package. `array.split` also accepts host-sequence
+  offsets.
 - **No public signature or return type may name `np.ndarray`**, outside `triwarp/io.py` (§3.8).
 - **A guard must encode a real limitation.** Where the implementation is rank- or dtype-agnostic,
   drop the `ensure_ndim` cap and widen the annotation.
@@ -1843,7 +1844,7 @@ would make rows incomparable).
   (not a half sphere; halves a sky-view answer); `InSphereSearchSettings.maxRadius` defaults to
   **1** whatever the scale (pass half the smallest bbox side); `makeUVSphere`'s
   `verticalResolution` counts interior latitude **rings**, pairing with
-  `creation.uv_sphere(count=(v + 2, h // 2))` (then identical vertex for vertex);
+  `creation.uv_sphere(count=(v + 2, h))` (then identical vertex for vertex);
   `leftCotan(e)` is the **plain** cotangent by directed edge's left face (vs
   `laplacian.cotmatrix_entries`' *half* cotangent by `(face, corner)`; `cotan(ue)` sums both);
   `MarchingCubesParams.origin` addresses the voxel **centre** (march with
@@ -4556,7 +4557,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   degree-`k` polynomial in the operator applied to the source indicator, **exactly zero more than
   `k` rings away**, and the well-conditioned heat solve met its tolerance at ~30 rounds whatever
   the mesh, so 91.6 % of vertices got no heat. **The fix is a stopping rule, not a tolerance**
-  (`heat._diffuse`, now one continuous settle solve, §16.16): stop once the reached count stops
+  (`linalg.solve_spd_settled` at `heat._HEAT_*`, one continuous settle solve, §16.16): stop once the reached count stops
   growing *and* the change is under `1e-6`, or three chunks past full reach; the far field needs
   80-150 rounds past reach to settle and entries near `1e-300` never settle relative to
   themselves. `extend_scalar`, `transport_tangent_vectors`, `log_map`, `heat_signed_distance` and
@@ -4574,7 +4575,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   only, on the measurement** (vs `igl.exact_geodesic` on `half_torus`: Neumann 0.93 % mean / 3.1 %
   max, igl's average 1.15 % / 4.9 %; tied on `hemisphere`; potpourri3d and pymeshlab are Neumann
   too and the averaged field read *below* the Euclidean distance).
-- **REFUTED: the Jacobi-Chebyshev polynomial in `_diffuse`**: 1.3-1.8x faster on spheres and
+- **REFUTED: the Jacobi-Chebyshev polynomial in the heat diffusions**: 1.3-1.8x faster on spheres and
   **wrong on `bunny`** at every chunk and settle setting (distance 0.68-0.90 of range off igl's,
   scalar extension divergent to 1e5): obtuse triangles give the heat system positive off-diagonal
   entries and the polynomial's interval does not cover the far field's decay.

@@ -367,8 +367,8 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
     UV sphere at matched tessellation -- open3d's ``resolution`` is neither axis on its own.
 
     Exactly, at every point on this axis: ``create_sphere(resolution=r)`` produces the same vertex
-    and face counts as ``uv_sphere(count=(2 * r, r // 2))``, so ``resolution`` is *half* the
-    longitude count and *twice* the latitude count. Pairing it with a fixed longitude count instead
+    and face counts as ``uv_sphere(count=(2 * r, r))``, so ``resolution`` is the longitude count
+    and *half* the latitude count. Pairing it with a fixed longitude count instead
     compares meshes of different sizes, and the mismatch widens along the axis because open3d's face
     count is quadratic in ``resolution`` -- a size ratio reported as a speed ratio.
 
@@ -390,7 +390,7 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
     the level. So expect its column to grow with the level where triwarp's is flat -- that contrast
     is the point of the row.
     """
-    count = (2 * sections, sections // 2)
+    count = (2 * sections, sections)
     if bench_lib.kind == "meshlib":
         mesh_ml = bench_lib.run(lambda: mm.makeUVSphere(1.0, sections, 2 * sections - 2))
         assert mesh_ml.topology.numValidFaces() == 2 * sections * (2 * sections - 2)
@@ -400,7 +400,8 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
         _, faces_wp = bench_lib.run(lambda: tw.creation.uv_sphere(count=count, device=device))
         assert faces_wp.size > 0
     elif bench_lib.kind == "trimesh":
-        mesh_tm = bench_lib.run(lambda: tm.creation.uv_sphere(count=list(count)))
+        # trimesh doubles an explicit longitude count.
+        mesh_tm = bench_lib.run(lambda: tm.creation.uv_sphere(count=[2 * sections, sections // 2]))
         assert len(mesh_tm.faces) > 0
     else:
         mesh_class = _o3d_mesh(bench_lib)

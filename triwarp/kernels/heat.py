@@ -438,9 +438,10 @@ def seed_log_map_source(
 def divide_nonzero(numerator: wp.float64, denominator: wp.float64) -> wp.float64:
     # ``extend_scalar``'s ratio of the diffused values to the diffused indicator, zero only where
     # the indicator is exactly zero -- a component no source reaches. Both fields are converged per
-    # vertex (``heat._diffuse``), so a small indicator is a real one; and it can be *negative*, as
-    # the heat system is not an M-matrix where obtuse triangles give positive off-diagonal entries,
-    # where the ratio is still the extension (geometry-central divides the same way).
+    # vertex (the settle rule at ``heat._HEAT_CHECK_ROUNDS``), so a small indicator is a real one;
+    # and it can be *negative*, as the heat system is not an M-matrix where obtuse triangles give
+    # positive off-diagonal entries, where the ratio is still the extension (geometry-central
+    # divides the same way).
     #
     # Not ``array.divide_if_positive``: that one's fallback is the unchanged numerator.
     if denominator == wp.float64(0.0):
@@ -454,9 +455,9 @@ def scale_to_magnitude(direction: wp.vec2d, magnitude: wp.float64) -> wp.vec2d:
     # diffusion) and a magnitude (from a scalar extension): short-time vector diffusion smears
     # magnitudes but preserves directions well. The direction is normalized without underflow
     # (``stable_normalize``) and is zero only where the diffused field is exactly zero: it is
-    # converged per vertex (``heat._diffuse``), so its far field is a direction however small --
-    # ``1e-100`` of the maximum a few hundred rings out -- and a floor relative to the field's
-    # maximum, as this once took, discarded exactly that.
+    # converged per vertex (the settle rule at ``heat._HEAT_CHECK_ROUNDS``), so its far field is a
+    # direction however small -- ``1e-100`` of the maximum a few hundred rings out -- and a floor
+    # relative to the field's maximum, as this once took, discarded exactly that.
     return magnitude * stable_normalize(direction)
 
 
