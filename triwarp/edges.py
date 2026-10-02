@@ -20,11 +20,12 @@ import warp as wp
 import triwarp as tw
 import triwarp.typing as twt
 from triwarp import _launch
-from triwarp._device import require_same_device
+from triwarp._device import read_scalar, require_same_device
 from triwarp.array import arange_repeat
 from triwarp.constants import INDEX_RADIX_PAIR
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import edges as kernel_edges
+from triwarp.kernels import grouping as kernel_grouping
 
 
 def faces_to_edges(
@@ -164,8 +165,8 @@ def edges_unique(
         # pair exactly as ``hash_indices_rows`` packs the corresponding ``faces_to_edges`` row, so
         # the ``(3 * n_faces, 2)`` table is never written or read back, and any range check reduces
         # the ``3 * n_faces`` face buffer -- the same values, half the entries.
-        keys, radix = _face_edge_keys(faces, n_faces, n_vertices, validate)
-        return _unique_edges_from_keys(keys, radix, device)
+        radix = _face_edge_radix(faces, n_faces, n_vertices, validate)
+        return _unique_edges_from_faces(faces, n_faces, radix)
 
     if n_vertices is None:
         if validate:
@@ -185,11 +186,11 @@ def edges_unique(
     return _unique_edges_from_keys(keys, n_vertices, device)
 
 
-def _face_edge_keys(
+def _face_edge_radix(
     faces: wp.array[wp.int32], n_faces: int, n_vertices: int | None, validate: bool
-) -> tuple[wp.array[wp.uint64], int]:
+) -> int:
     """
-    Packed sorted-pair key of every corner edge, plus the radix they were packed against.
+    Return the radix every corner edge's sorted-pair key packs against.
 
     The ``edges_sorted is None`` half of [`edges_unique`][triwarp.edges.edges_unique], resolving
     ``n_vertices`` and ``validate`` exactly as the composed ``faces_to_edges`` +
@@ -213,14 +214,56 @@ def _face_edge_keys(
             )
     elif n_vertices is None:
         n_vertices = INDEX_RADIX_PAIR
-    keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)
+    return n_vertices
+
+
+def _unique_edges_from_faces(
+    faces: wp.array[wp.int32], n_faces: int, radix: int
+) -> tuple[twt.Array2dInt32, wp.array[wp.int32]]:
+    """
+    ``(unique_edges, inverse)`` from one radix sort of every corner's packed edge key.
+
+    The unique edges are the runs of the sorted keys, so a run-start mark, an inclusive scan and
+    one emit give exactly what ``grouping.unique_1d`` over the same keys returns -- ascending-key
+    rows and the corner map into them -- without its open-addressing table, whose ~``2 * 3 *
+    n_faces`` slots take random atomics where the sort streams. The keys and the identity payload
+    are written straight into the sort's double-width buffers (the launch
+    ``adjacency.sorted_face_edge_keys`` makes), and the run marks and their scan live in the
+    payload's upper half, which is free scratch once the sort has run; the emit re-derives each
+    run start from the sorted keys.
+    """
+    device = faces.device
+    n = 3 * n_faces
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_adjacency.face_edge_keys,
+        kernel_adjacency.face_edge_keys_and_order,
         dim=n_faces,
-        inputs=[faces, wp.uint64(n_vertices), keys],
-        device=faces.device,
+        inputs=[faces, wp.uint64(radix), keys, order],
+        device=device,
     )
-    return keys, n_vertices
+    _launch.radix_sort_pairs(
+        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
+    )
+    ranks = twt.as_dense(order[n:])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
+        dim=n,
+        inputs=[keys, ranks],
+        device=device,
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The edge count sizes the returned table.
+    n_edges = int(read_scalar(ranks, n - 1))
+    unique_edges = twt.empty_2d((n_edges, 2), wp.int32, device=device)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_edges.emit_sorted_unique_edges,
+        dim=n,
+        inputs=[faces, keys, order, ranks, unique_edges, inverse],
+        device=device,
+    )
+    return unique_edges, inverse
 
 
 def _unique_edges_from_keys(

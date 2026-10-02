@@ -775,8 +775,22 @@ def face_connected_component_labels(
     sorted_keys = twt.as_dense(keys[:n])
     parents = twt.as_dense(order[n : n + n_faces])
     _launch.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
-    for kernel in (kernel_adjacency.sorted_pair_prehook, kernel_adjacency.sorted_pair_hook):
-        _launch.launch(kernel, dim=n, inputs=[sorted_keys, order, parents], device=device)
+    _launch.launch(
+        kernel_adjacency.sorted_pair_prehook,
+        dim=n,
+        inputs=[sorted_keys, order, parents],
+        device=device,
+    )
+    if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
+        _launch.launch(
+            kernel_connected_components.ecl_compress, dim=n_faces, inputs=[parents], device=device
+        )
+    _launch.launch(
+        kernel_adjacency.sorted_pair_hook,
+        dim=n,
+        inputs=[sorted_keys, order, parents],
+        device=device,
+    )
     labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_connected_components.ecl_flatten,

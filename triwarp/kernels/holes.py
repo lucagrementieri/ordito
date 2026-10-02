@@ -20,7 +20,7 @@ from triwarp.kernels.predicates import (
     triangle_aspect_ratio,
     triangle_double_area,
 )
-from triwarp.kernels.reduce import block_argmin, block_barrier
+from triwarp.kernels.reduce import block_argmin, block_barrier, block_min
 from triwarp.kernels.triangles import corner_triple
 
 # Big-but-finite penalty for a triangulation the metric rejects: lets the DP keep a bad
@@ -285,7 +285,8 @@ def init_dp_base(
     row = base + i * b
     for j in range(b):
         out_prev[row + j] = -1
-        if j == i + 1:
+        # ``j == i - 1`` is the mirror of rim edge ``(i - 1, i)``: see ``store_dp``.
+        if j == i + 1 or j == i - 1:
             out_dp[row + j] = 0.0
         else:
             out_dp[row + j] = BAD_METRIC
@@ -453,6 +454,33 @@ class HoleFillTables:
 
 
 @wp.func
+def store_dp(
+    tables: HoleFillTables, base: wp.int32, b: wp.int32, i: wp.int32, j: wp.int32, value: wp.float32
+):
+    # Write interval (i, j)'s cost, ``i < j``, at ``(i, j)`` and mirrored at ``(j, i)``. A loop's
+    # ``B x B`` block uses only its upper triangle, so the mirror costs no memory, and it is what
+    # lets ``apex_children`` read child ``(k, j)`` -- the *column* of the apex loop -- contiguously
+    # in ``k``. ``init_dp_base`` seeds the mirrored rim edges.
+    tables.dp[base + i * b + j] = value
+    tables.dp[base + j * b + i] = value
+
+
+@wp.func
+def apex_children(
+    tables: HoleFillTables, b: wp.int32, base: wp.int32, i: wp.int32, j: wp.int32, k: wp.int32
+) -> wp.float32:
+    # The two sub-intervals' combined cost for apex ``k`` of the interval (i, j): the first term
+    # of ``apex_cost``, and a lower bound on all of it. Every term ``apex_cost`` combines in after
+    # it is non-negative (areas, lengths, diameters, aspect ratios, ``exp``, ``abs`` and a fourth
+    # power; ``BAD_METRIC`` and infinity are positive) and both combines are monotone -- a float
+    # sum with a non-negative addend never rounds below its first operand, and a max never falls
+    # -- so the bound holds exactly in ``float32``, not just in exact arithmetic.
+    return combine_metric(
+        tables.dp[base + i * b + k], tables.dp[base + j * b + k], tables.combine_id
+    )
+
+
+@wp.func
 def apex_cost(
     tables: HoleFillTables,
     o: wp.int32,
@@ -466,27 +494,24 @@ def apex_cost(
     c_pos: wp.vec3,
     plane_normal: wp.vec3,
     char_area: wp.float32,
+    children: wp.float32,
 ) -> wp.float32:
-    # Metric of triangulating the interval (i, j) with apex ``k``: the two sub-intervals' costs,
-    # this triangle's term, and the per-edge (dihedral) terms for the interior chords (i, k) /
-    # (k, j) taken at the neighbouring sub-interval's apex — or, for a rim edge, at the existing
-    # face's opposite vertex when ``tables.smooth_bd`` is set.
+    # Metric of triangulating the interval (i, j) with apex ``k``: the two sub-intervals' costs
+    # (``children``, from ``apex_children``), this triangle's term, and the per-edge (dihedral)
+    # terms for the interior chords (i, k) / (k, j) taken at the neighbouring sub-interval's apex --
+    # or, for a rim edge, at the existing face's opposite vertex when ``tables.smooth_bd`` is set.
     k_pos = tables.loop_pos[o + k]
     tri = triangle_fill_metric(a_pos, k_pos, c_pos, plane_normal, char_area, tables.metric_id)
-    # The apex loop varies ``k``, which sits in the *column* of child ``(i, k)`` and in the *row*
-    # of child ``(k, j)``, so with the lanes of ``fill_dp_span_tiled`` striding ``k`` one of the
-    # two reads is strided by the table's row length -- a transaction per lane. **Mirroring the
-    # tables transposed so that both reads are contiguous was built, verified byte-identical, and
-    # measured as a net loss.** Two reasons it cannot pay here: the DP tables sit in L2, so the
-    # "one transaction per lane" is an L2 hit rather than a DRAM fetch; and the coalescing it buys
-    # was hidden under the sweep's launch cost, while the mirror's two extra per-interval stores
-    # are not. Recording the sweep (``HOLE_DP_GRAPH_SPANS``) removes the first half of that and
-    # leaves the second, so it does not reopen the question. Do not re-propose it without a rim
-    # whose tables exceed L2.
+    # The children were read by ``apex_children``, child ``(k, j)`` from its mirror in the free
+    # lower triangle (``store_dp``) so that, with the lanes of ``fill_dp_span_tiled`` striding
+    # ``k``, neither read is strided by the table's row length. A *separate* transposed table was
+    # once a net loss -- its extra stores were not hidden while the triangle metric dominated the
+    # apex -- but the branch and bound in ``apex_children`` removes most metric evaluations, after
+    # which the strided column read was the bulk of a long rim's sweep: on a 2 765-vertex rim the
+    # in-table mirror took the fill from 1.22x to 1.57x the exhaustive loop, at no extra memory.
     left = base + i * b + k
     right = base + k * b + j
-    val = combine_metric(tables.dp[left], tables.dp[right], tables.combine_id)
-    val = combine_metric(val, tri, tables.combine_id)
+    val = combine_metric(children, tri, tables.combine_id)
 
     # Each ``prev`` entry is bound once: a global load repeated across a branch is not something
     # the compiler is obliged to common up.
@@ -561,7 +586,7 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
         # BAD_METRIC total happened to be smaller and emit its own triangle anyway — reusing the
         # very chord that made the child infeasible. Only genuine infinity propagates through
         # ``combine_metric``'s sum/max without being mistaken for "bad but legal".
-        tables.dp[base + i * b + j] = FLOAT32_INF_CONSTANT
+        store_dp(tables, base, b, i, j, FLOAT32_INF_CONSTANT)
         tables.prev[base + i * b + j] = -1
         return
     o = tables.loop_offsets[ell]
@@ -573,9 +598,17 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     best_val = FLOAT32_INF_CONSTANT
     best_k = wp.int32(-1)
     for k in range(i + 1, j):
-        val = apex_cost(tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area)
-        update_argmin(best_val, best_k, val, k)
-    tables.dp[base + i * b + j] = best_val
+        # Branch and bound: an apex whose children alone reach the best cost so far cannot win the
+        # strict-``<`` argmin (``apex_children``'s bound is exact, and an equal cost keeps the
+        # earlier ``k``), so its triangle and edge terms are never evaluated. The answer, ties
+        # included, is the exhaustive loop's.
+        children = apex_children(tables, b, base, i, j, k)
+        if children < best_val:
+            val = apex_cost(
+                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
+            )
+            update_argmin(best_val, best_k, val, k)
+    store_dp(tables, base, b, i, j, best_val)
     # Every apex left available required at least one forbidden sub-chord (a genuinely infinite
     # child cost propagates here through the sum/max in ``apex_cost``, never a finite BAD_METRIC),
     # so there is no legal triangulation of this span at all — not merely a bad-looking one.
@@ -628,7 +661,7 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     if tables.forbidden[base + i * b + j] != 0:
         # True infinity, not ``BAD_METRIC`` — see the identical branch in ``fill_dp_span``.
         if t == 0:
-            tables.dp[base + i * b + j] = FLOAT32_INF_CONSTANT
+            store_dp(tables, base, b, i, j, FLOAT32_INF_CONSTANT)
             tables.prev[base + i * b + j] = -1
         return
     o = tables.loop_offsets[ell]
@@ -639,12 +672,38 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     is_top = i == 0 and j == b - 1
     best_val = FLOAT32_INF_CONSTANT
     best_k = wp.int32(-1)
-    for k in range(i + 1 + t, j, wp.block_dim()):
-        val = apex_cost(tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area)
-        update_argmin(best_val, best_k, val, k)
+    # The serial kernel's branch and bound, in two rounds. Each lane's first apex is evaluated
+    # outright; once the apexes outnumber the lanes, one block minimum then hands every lane the
+    # best cost any lane has seen, and every later apex is skipped when its children alone reach
+    # the lane's own best *or exceed* the block's. The second test is strict because an apex tied
+    # with the block's best could still win on its smaller ``k``; an apex strictly above it can
+    # never be the block's minimum, and a lane whose recorded best it would have been then cannot
+    # hold the minimum either -- so the two-stage reduction below reads the exhaustive loop's pair.
+    stride = wp.block_dim()
+    k = i + 1 + t
+    if k < j:
+        children = apex_children(tables, b, base, i, j, k)
+        if children < best_val:
+            val = apex_cost(
+                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
+            )
+            update_argmin(best_val, best_k, val, k)
+        k += stride
+    shared = FLOAT32_INF_CONSTANT
+    if j - i - 1 > stride:
+        # Block-uniform: ``i``, ``j`` and the stride are the block's, so every lane reaches it.
+        shared = block_min(best_val)
+    while k < j:
+        children = apex_children(tables, b, base, i, j, k)
+        if children < best_val and children <= shared:
+            val = apex_cost(
+                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
+            )
+            update_argmin(best_val, best_k, val, k)
+        k += stride
     block_val, block_k = block_argmin(best_val, best_k)
     if t == 0:
-        tables.dp[base + i * b + j] = block_val
+        store_dp(tables, base, b, i, j, block_val)
         # Every remaining apex required a forbidden sub-chord — see ``fill_dp_span``.
         if block_val >= FLOAT32_INF_CONSTANT:
             block_k = wp.int32(-1)

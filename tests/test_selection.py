@@ -351,6 +351,32 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
         )
 
 
+def test_faces_left_of_contour_compressed_forest(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Triwarp against triwarp: compressing the dual-graph forest changes no face.
+
+    The fill compresses its pre-hooked forest only from ``connected_components.ECL_COMPRESS_FROM``
+    faces, which no fixture reaches, so the threshold is lowered to force it; meshlib is the oracle
+    above. The contour cuts the sphere in two, so the answer is neither empty nor the whole mesh.
+    """
+    from triwarp.kernels.algorithms import connected_components as kernel_cc
+
+    _, mesh_wp = icosphere
+    faces_wp = mesh_wp.indices
+    centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
+    region_wp = wp.array(
+        centroids_np[:, 2] > centroids_np[:, 2].mean(), dtype=wp.bool, device=faces_wp.device
+    )
+    contour_wp = tw.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    plain = tw.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed = tw.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
+    assert 0 < int(plain.sum()) < plain.size
+    assert np.array_equal(compressed, plain)
+
+
 @pytest.mark.parity(
     "exclude_fully_selected_components",
     "scipy",
@@ -449,6 +475,54 @@ def test_exclude_fully_selected_components(device: str):
     # The fully-selected icosahedron component is dropped; the partial hemisphere subset stays.
     assert not result[:n_ico].any()
     assert np.array_equal(result[n_ico : n_ico + 3], np.ones(3, dtype=bool))
+
+
+def test_exclude_fully_selected_components_compressed_forest(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Triwarp against triwarp: compressing the vertex forest changes no component.
+
+    Both union-finds (from the faces, and from a supplied edge table) compress their pre-hooked
+    forest only from ``connected_components.ECL_COMPRESS_FROM`` vertices, which no test mesh
+    reaches, so the threshold is lowered to force it; scipy is the oracle above.
+    """
+    from triwarp.kernels.algorithms import connected_components as kernel_cc
+
+    ico = tm.creation.icosahedron()
+    sphere = tm.creation.icosphere(subdivisions=1)
+    verts, faces = tw.combine.concatenate(
+        [
+            (
+                points_to_warp(ico.vertices, device),
+                wp.array(ico.faces.reshape(-1), dtype=wp.int32, device=device),
+            ),
+            (
+                points_to_warp(sphere.vertices + np.array([5.0, 0.0, 0.0]), device),
+                wp.array(sphere.faces.reshape(-1), dtype=wp.int32, device=device),
+            ),
+        ]
+    )
+    n = verts.size
+    mask_np = np.zeros(n, dtype=bool)
+    mask_np[: len(ico.vertices)] = True
+    mask_np[len(ico.vertices) : len(ico.vertices) + 3] = True
+    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
+    edges, _inverse = tw.edges.edges_unique(faces)
+
+    def answers() -> tuple[np.ndarray, np.ndarray]:
+        from_faces = tw.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
+        from_edges = tw.selection.exclude_fully_selected_components(
+            faces, mask_wp, n, unique_edges=edges
+        ).numpy()
+        return from_faces, from_edges
+
+    plain = answers()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed = answers()
+    assert plain[0].any()
+    assert np.array_equal(compressed[0], plain[0])
+    assert np.array_equal(compressed[1], plain[1])
 
 
 def test_exclude_fully_selected_components_rejects_mismatched_mask(device: str) -> None:

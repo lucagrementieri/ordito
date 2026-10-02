@@ -675,40 +675,77 @@ def winding_number(
     out_winding[q] = w
 
 
-@wp.kernel
-def winding_number_tiled(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    n_faces: wp.int32,
-    n_slices: wp.int32,
-    query_points: wp.array[wp.vec3],
-    out_winding: wp.array[wp.float32],
-) -> None:
-    # One thread per (query, face slice): each walks a strided slice of the face list and commits
-    # one atomic.
-    #
-    # Lane-free because the threads partition the **outer** work -- the face list -- rather than a
-    # sequence one block owns, so there is no `wp.block_dim()` to stride by; on the CPU device,
-    # where `wp.launch_tiled` runs one lane per block through Warp 1.17, that lane would cover
-    # `1/block_dim` of the slice. See `.claude/CLAUDE.md` section 2.2, and
-    # `face_to_mesh_distance_tiled` above for the other side of the rule.
-    #
-    # **The block-per-query rewrite was measured here and declined.** It looked like the strongest
-    # candidate in the tree -- the query dimension is already the outer one and the walk covers
-    # every face -- and the gain evaporates as the grid fills: a real win on a small mesh with few
-    # queries, and nothing at all once the query count is large. A gain that shrinks with the input
-    # is a decline (CLAUDE.md section 9), and the reason is that this grid is
-    # `n_queries x n_face_slices` and already wide; see `kernels/points.py::hull_support_extremes`
-    # for the same trade measured to an outright loss.
-    #
-    # Note this is *not* why `winding_number` above exists -- that is the public `tiled=False`
-    # exact-sum reference, with its own benchmark group, and no conversion here would retire it.
-    q, j = wp.tid()
-    p = query_points[q]
-    total = wp.float32(0.0)
-    for face_idx in range(j, n_faces, n_slices):
-        total = total + solid_angle_at_face(vertices, faces, face_idx, p)
-    wp.atomic_add(out_winding, q, total)
+# Queries one ``winding_number_tiled`` thread may sum together -- the widest that still leaves
+# ``WINDING_MIN_THREADS`` threads (``winding_width``), as in
+# ``kernels/points.hull_support_extremes``.
+WINDING_WIDTHS = (4, 2, 1)
+WINDING_MIN_THREADS = 1 << 17
+
+
+def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
+    """Build ``winding_number_tiled`` over ``width`` queries per thread."""
+    points_t = wp.types.matrix(shape=(width, 3), dtype=wp.float32)
+    totals_t = wp.types.vector(length=width, dtype=wp.float32)
+
+    def winding_number_tiled(
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        n_faces: wp.int32,
+        n_slices: wp.int32,
+        query_points: wp.array[wp.vec3],
+        out_winding: wp.array[wp.float32],
+    ) -> None:
+        # One thread per (query block, face slice): each walks a strided slice of the face list for
+        # ``width`` queries at once and commits one atomic per query. A face's three vertices are
+        # gathered once for the whole block, which is what the walk is bound by; each query keeps
+        # its own running sum in the same face order, so the per-thread totals are the one-query
+        # form's bit for bit.
+        #
+        # Lane-free because the threads partition the **outer** work -- the face list -- rather than
+        # a sequence one block owns, so there is no `wp.block_dim()` to stride by; on the CPU
+        # device, where `wp.launch_tiled` runs one lane per block through Warp 1.17, that lane would
+        # cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section 2.2, and
+        # `face_to_mesh_distance_tiled` above for the other side of the rule.
+        #
+        # **The block-per-query rewrite was measured here and declined.** It looked like the
+        # strongest candidate in the tree -- the query dimension is already the outer one and the
+        # walk covers every face -- and the gain evaporates as the grid fills: a real win on a small
+        # mesh with few queries, and nothing at all once the query count is large. A gain that
+        # shrinks with the input is a decline (CLAUDE.md section 9), and the reason is that this
+        # grid is `n_queries x n_face_slices` and already wide; see
+        # `kernels/points.py::hull_support_extremes` for the same trade measured to an outright
+        # loss.
+        #
+        # Note this is *not* why `winding_number` above exists -- that is the public `tiled=False`
+        # exact-sum reference, with its own benchmark group, and no conversion here would retire it.
+        b, j = wp.tid()
+        n_queries = query_points.shape[0]
+        q0 = b * width
+        # A slot past the last query repeats it; only the commit below skips it.
+        p = points_t()
+        for d in range(width):
+            p[d] = query_points[wp.min(q0 + d, n_queries - 1)]
+        total = totals_t()
+        for face_idx in range(j, n_faces, n_slices):
+            v0, v1, v2 = kernel_triangles.face_vertices(vertices, faces, face_idx)
+            for d in range(width):
+                total[d] = total[d] + solid_angle(v0, v1, v2, p[d])
+        for d in range(width):
+            if q0 + d < n_queries:
+                wp.atomic_add(out_winding, q0 + d, total[d])
+
+    return wp.kernel(winding_number_tiled, name=f"winding_number_tiled_{width}")
+
+
+WINDING_NUMBER_TILED = {w: _winding_number_tiled_kernel(w) for w in WINDING_WIDTHS}
+
+
+def winding_width(n_queries: int, n_slices: int) -> int:
+    """Return the widest ``WINDING_WIDTHS`` entry keeping ``WINDING_MIN_THREADS``."""
+    for width in WINDING_WIDTHS:
+        if -(-n_queries // width) * n_slices >= WINDING_MIN_THREADS:
+            return width
+    return 1
 
 
 @wp.func

@@ -74,6 +74,12 @@ from triwarp.kernels import reduce as kernel_reduce
 # not exposed.
 SUPPORT_TIE_SLACK = wp.constant(wp.float32(1e-6))
 
+# Point count from which the support sweeps after ``hull_support_extremes`` walk only the slices
+# whose extremes reach a threshold (``_support_extremes``), instead of testing every point. Below
+# it the slice tables and the per-thread walk cost more than the one-thread-per-point grid:
+# 0.70-0.91x at 36 k points, 1.1-1.9x at 0.44-0.54 M and 2.4-3.0x at 14 M.
+SUPPORT_SLICE_FILTER_FROM = 1 << 17
+
 # Minimum normalized determinant (against the edge-length product) for a shell tetrahedron to be
 # used. Rejection is free -- neighbouring, well-shaped tetrahedra cover the same region -- while a
 # sliver's face normals are ill-conditioned cross products of nearly parallel edges, and that error
@@ -1246,13 +1252,24 @@ def convex_subset_mask(
 
     n_dir = int(n_directions)
     directions = tw.sample.sample_fibonacci_hemisphere(n_dir, device=device)
-    best_max, best_min = _support_extremes(points, directions)
+    best_max, best_min, slices = _support_extremes(points, directions)
 
     out_mask = _launch.zeros(n_points, dtype=wp.bool, device=device)
+    stride = n_points if slices is None else slices[0].shape[1]
     _launch.launch(
         kernel_points.mark_hull_support,
-        dim=(n_dir, n_points),
-        inputs=[points, directions, best_max, best_min, wp.float32(tolerance), out_mask],
+        dim=(n_dir, stride),
+        inputs=[
+            points,
+            directions,
+            best_max,
+            best_min,
+            wp.float32(tolerance),
+            stride,
+            None if slices is None else slices[0],
+            None if slices is None else slices[1],
+            out_mask,
+        ],
         device=device,
     )
     return out_mask
@@ -1380,15 +1397,25 @@ def convex_superset_mask(
     directions, shell_faces = tw.creation.icosphere(subdivisions=int(subdivisions), device=device)
     n_dir = directions.size
     n_tetra = shell_faces.size // 3
-    best_max, best_min = _support_extremes(points, directions)
+    best_max, best_min, slices = _support_extremes(points, directions)
 
     # Seeded with the last index rather than a sentinel: a direction that somehow marks nothing
     # then yields a real point, which keeps the gather in range and the tetrahedra valid.
     support = _launch.full(n_dir, value=n_points - 1, dtype=wp.int32, device=device)
+    stride = n_points if slices is None else slices[0].shape[1]
     _launch.launch(
         kernel_points.support_indices,
-        dim=(n_dir, n_points),
-        inputs=[points, directions, best_max, best_min, SUPPORT_TIE_SLACK, support],
+        dim=(n_dir, stride),
+        inputs=[
+            points,
+            directions,
+            best_max,
+            best_min,
+            SUPPORT_TIE_SLACK,
+            stride,
+            None if slices is None else slices[0],
+            support,
+        ],
         device=device,
     )
 
@@ -1423,11 +1450,18 @@ def convex_superset_mask(
 
 def _support_extremes(
     points: wp.array[wp.vec3], directions: wp.array[wp.vec3]
-) -> tuple[wp.array[wp.float32], wp.array[wp.float32]]:
+) -> tuple[
+    wp.array[wp.float32], wp.array[wp.float32], tuple[twt.Array2dFloat32, twt.Array2dFloat32] | None
+]:
     """
-    Per-direction maximum and minimum of the support function over ``points``.
+    Per-direction maximum and minimum of the support function over ``points``, and per slice.
 
-    Each thread reduces a strided slice of the cloud, so the launch is sized by
+    Returns ``(best_max, best_min, slices)``. From ``SUPPORT_SLICE_FILTER_FROM`` points
+    ``slices`` is ``(slice_max, slice_min)``, each ``(n_directions, n_slices)``: bounds on every
+    slice's own extremes, which let the threshold sweeps after this one walk only the slices that
+    can hold a point at a threshold. Below it, ``None``: the sweeps test every point in parallel,
+    which a cloud that small does not leave enough slices to beat. Each thread reduces a strided
+    slice of the cloud, so the launch is sized by
     [`items_per_slice`][triwarp._device.items_per_slice] points per thread rather than by the point
     count -- enough parallelism to fill the device while keeping the number of atomics into the
     ``n_directions`` accumulator slots low. The same per-device slice length also backs three other
@@ -1441,13 +1475,28 @@ def _support_extremes(
 
     best_max = _launch.full(n_dir, value=-float("inf"), dtype=wp.float32, device=device)
     best_min = _launch.full(n_dir, value=float("inf"), dtype=wp.float32, device=device)
+    slices = None
+    if n_points >= SUPPORT_SLICE_FILTER_FROM:
+        slices = (
+            twt.empty_2d((n_dir, n_slices), wp.float32, device=device),
+            twt.empty_2d((n_dir, n_slices), wp.float32, device=device),
+        )
+    width = kernel_points.support_width(n_dir, n_slices)
     _launch.launch(
-        kernel_points.hull_support_extremes,
-        dim=(n_dir, n_slices),
-        inputs=[points, directions, n_slices, best_max, best_min],
+        kernel_points.HULL_SUPPORT_EXTREMES[width],
+        dim=((n_dir + width - 1) // width, n_slices),
+        inputs=[
+            points,
+            directions,
+            n_slices,
+            best_max,
+            best_min,
+            None if slices is None else slices[0],
+            None if slices is None else slices[1],
+        ],
         device=device,
     )
-    return best_max, best_min
+    return best_max, best_min, slices
 
 
 def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.float32]:

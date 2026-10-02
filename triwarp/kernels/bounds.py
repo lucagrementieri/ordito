@@ -146,42 +146,77 @@ def oriented_box_refine_axes(
     out_axes[i] = delta * base
 
 
-@wp.kernel
-def oriented_box_extents(
-    points: wp.array[wp.vec3],
-    axes: wp.array[wp.mat33],
-    n_slices: wp.int32,
-    out_corners: wp.array[wp.float32],
-) -> None:
-    # Extent of the cloud in every candidate frame: six slots per candidate, packed
-    # ``[min_x, min_y, min_z, -max_x, -max_y, -max_z]`` exactly as ``kernels/reduce.py``'s
-    # ``minmax_vec3_chunked`` packs its one box, so a single ``+inf`` seed covers both ends and
-    # every update is an ``atomic_min``. The seed is written by the kernel that produced ``axes``
-    # (``seed_packed_box``).
-    #
-    # Strided slice rather than a contiguous chunk, and lane-free, for the same two reasons as
-    # ``kernels/points.py::hull_support_extremes``: consecutive threads read consecutive points so
-    # the loads coalesce, and the threads partition the **outer** work -- the cloud -- rather than a
-    # sequence one block owns, so there is no ``wp.block_dim()`` to stride by and a
-    # ``wp.tile(...)`` reduction cannot be reached without changing the launch. See
-    # ``.claude/CLAUDE.md`` section 2.2 for the rule and ``kernels/visibility.py::obscurance`` for a
-    # lane-parallel kernel on the other side of it. Converting this one is declined on the
-    # measurement ``hull_support_extremes`` carries: the slice dimension is what fills the device,
-    # so one block per candidate frame loses badly on a large cloud.
-    k, j = wp.tid()
-    n_points = points.shape[0]
-    frame = axes[k]
+# Candidate frames one ``oriented_box_extents`` thread may project into together -- the widest
+# that still leaves ``BOX_EXTENT_MIN_THREADS`` threads (``box_extent_width``), as in
+# ``kernels/points.hull_support_extremes``.
+BOX_EXTENT_WIDTHS = (4, 2, 1)
+BOX_EXTENT_MIN_THREADS = 1 << 17
 
-    lower = wp.vec3(FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT)
-    upper = wp.vec3(-FLOAT32_INF_CONSTANT, -FLOAT32_INF_CONSTANT, -FLOAT32_INF_CONSTANT)
-    for i in range(j, n_points, n_slices):
-        local = frame * points[i]
-        lower = wp.min(lower, local)  # wp.min / wp.max on a vector are component-wise
-        upper = wp.max(upper, local)
 
-    # A slice past the end of the cloud contributes nothing.
-    if upper[0] > -FLOAT32_INF_CONSTANT:
-        atomic_min_packed_box(out_corners, k, lower, upper)
+def _oriented_box_extents_kernel(width: int) -> wp.Kernel:
+    """Build ``oriented_box_extents`` over ``width`` candidate frames per thread."""
+    corners_t = wp.types.matrix(shape=(width, 3), dtype=wp.float32)
+
+    def oriented_box_extents(
+        points: wp.array[wp.vec3],
+        axes: wp.array[wp.mat33],
+        n_slices: wp.int32,
+        out_corners: wp.array[wp.float32],
+    ) -> None:
+        # Extent of the cloud in every candidate frame: six slots per candidate, packed ``[min_x,
+        # min_y, min_z, -max_x, -max_y, -max_z]`` exactly as ``kernels/reduce.py``'s
+        # ``minmax_vec3_chunked`` packs its one box, so a single ``+inf`` seed covers both ends and
+        # every update is an ``atomic_min``. The seed is written by the kernel that produced
+        # ``axes`` (``seed_packed_box``).
+        #
+        # Strided slice rather than a contiguous chunk, and lane-free, for the same two reasons as
+        # ``kernels/points.py::hull_support_extremes``: consecutive threads read consecutive points
+        # so the loads coalesce, and the threads partition the **outer** work -- the cloud -- rather
+        # than a sequence one block owns, so there is no ``wp.block_dim()`` to stride by and a
+        # ``wp.tile(...)`` reduction cannot be reached without changing the launch. See
+        # ``.claude/CLAUDE.md`` section 2.2 for the rule and ``kernels/visibility.py::obscurance``
+        # for a lane-parallel kernel on the other side of it. Converting this one is declined on the
+        # measurement ``hull_support_extremes`` carries: the slice dimension is what fills the
+        # device, so one block per candidate frame loses badly on a large cloud.
+        #
+        # Thread ``(b, j)`` takes frames ``b * width ..`` over slice ``j``: each point it loads is
+        # projected into every one of them from registers, so the cloud is streamed once per
+        # ``width`` frames, which is what bounds the kernel. Component-wise min and max are exact,
+        # so the grouping changes no corner.
+        b, j = wp.tid()
+        n_points = points.shape[0]
+        n_frames = axes.shape[0]
+        k0 = b * width
+        lower = corners_t()
+        upper = corners_t()
+        for d in range(width):
+            lower[d] = wp.vec3(FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT)
+            upper[d] = -lower[d]
+        for i in range(j, n_points, n_slices):
+            point = points[i]
+            for d in range(width):
+                # A slot past the last frame re-projects into it; only the commit skips it.
+                local = axes[wp.min(k0 + d, n_frames - 1)] * point
+                lower[d] = wp.min(lower[d], local)  # component-wise on a vector
+                upper[d] = wp.max(upper[d], local)
+
+        for d in range(width):
+            # A slice past the end of the cloud contributes nothing.
+            if k0 + d < n_frames and upper[d, 0] > -FLOAT32_INF_CONSTANT:
+                atomic_min_packed_box(out_corners, k0 + d, lower[d], upper[d])
+
+    return wp.kernel(oriented_box_extents, name=f"oriented_box_extents_{width}")
+
+
+OBB_EXTENTS = {w: _oriented_box_extents_kernel(w) for w in BOX_EXTENT_WIDTHS}
+
+
+def box_extent_width(n_frames: int, n_slices: int) -> int:
+    """Return the widest ``BOX_EXTENT_WIDTHS`` entry keeping ``BOX_EXTENT_MIN_THREADS``."""
+    for width in BOX_EXTENT_WIDTHS:
+        if -(-n_frames // width) * n_slices >= BOX_EXTENT_MIN_THREADS:
+            return width
+    return 1
 
 
 BOX_OBJECTIVE_VOLUME = wp.constant(wp.int32(0))

@@ -38,6 +38,7 @@ from triwarp._device import read_scalar, read_values, require_nonempty_mesh, req
 from triwarp.constants import INT32_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import array as kernel_array
+from triwarp.kernels import edges as kernel_edges
 from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import remesh as kernel_remesh
 from triwarp.kernels import scatter as kernel_scatter
@@ -1241,7 +1242,7 @@ class _FlipTopology:
             self._sort()
         n = self._n_corners
         _launch.launch(
-            kernel_remesh.mark_sorted_run_starts,
+            kernel_grouping.MARK_SORTED_RUN_STARTS[wp.uint64],
             dim=n,
             inputs=[self._keys, self._starts],
             device=self._device,
@@ -1252,9 +1253,9 @@ class _FlipTopology:
         unique_edges = twt.empty_2d((n_edges, 2), wp.int32, device=self._device)
         inverse = _launch.empty(n, dtype=wp.int32, device=self._device)
         _launch.launch(
-            kernel_remesh.emit_sorted_unique_edges,
+            kernel_edges.emit_sorted_unique_edges,
             dim=n,
-            inputs=[self._faces, self._order, self._starts, self._ranks, unique_edges, inverse],
+            inputs=[self._faces, self._keys, self._order, self._ranks, unique_edges, inverse],
             device=self._device,
         )
         return unique_edges, inverse

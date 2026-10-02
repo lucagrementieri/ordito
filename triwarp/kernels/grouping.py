@@ -280,6 +280,65 @@ def compact_from_table(
         out_perm[pos] = pos
 
 
+@wp.kernel
+def keys_and_identity(
+    data: wp.array[wp.Int], out_keys: wp.array[wp.Int], out_order: wp.array[wp.int32]
+) -> None:
+    # The leading halves of a radix sort's double-width key and payload buffers: the keys as given
+    # and the identity permutation the sort carries. The upper halves are sort scratch.
+    i = wp.int32(wp.tid())
+    out_keys[i] = data[i]
+    out_order[i] = i
+
+
+@wp.kernel
+def mark_sorted_run_starts(sorted_keys: wp.array[wp.Int], out_starts: wp.array[wp.int32]) -> None:
+    # ``1`` at the first sorted position of every run of equal keys, ``0`` elsewhere: the input of
+    # the inclusive scan ``emit_sorted_unique`` and ``edges.emit_sorted_unique_edges`` read.
+    # ``int32`` for the scan.
+    i = wp.int32(wp.tid())
+    out_starts[i] = wp.where(sorted_run_start(sorted_keys, i), wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def emit_sorted_unique(
+    sorted_keys: wp.array[wp.Int],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_unique: wp.array[wp.Int],
+    out_inverse: wp.array[wp.int32],
+    out_starts: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # ``unique_1d``'s returns from one sort of every value: ``ranks`` is the inclusive scan of
+    # ``mark_sorted_run_starts``, so ``ranks[i] - 1`` is the ascending unique index of sorted
+    # position ``i``. A run's first position writes the value, where the run starts (for the
+    # counts) and the input index sorted there -- the class's *first* occurrence, because the sort
+    # is stable, which is what ``first_occurrence_indices`` computes. The start is re-derived from
+    # the keys, so the marks may be scanned in place. ``out_inverse``, ``out_starts`` and
+    # ``out_first`` may be null descriptors (``None`` at the launch).
+    i = wp.int32(wp.tid())
+    r = ranks[i] - 1
+    if out_inverse.shape[0] > 0:
+        out_inverse[order[i]] = r
+    if sorted_run_start(sorted_keys, i):
+        out_unique[r] = sorted_keys[i]
+        if out_starts.shape[0] > 0:
+            out_starts[r] = i
+        if out_first.shape[0] > 0:
+            out_first[r] = order[i]
+
+
+@wp.kernel
+def run_lengths(starts: wp.array[wp.int32], n: wp.int32, out_counts: wp.array[wp.int32]) -> None:
+    # Each run's length from its start and the next one's (``n`` past the last run).
+    r = wp.int32(wp.tid())
+    end = n
+    if r + 1 < starts.shape[0]:
+        end = starts[r + 1]
+    out_counts[r] = end - starts[r]
+
+
 @wp.func
 def bucket_float32(value: wp.float32) -> wp.uint32:
     # Bit-cast float32 to uint32 and drop the low 11 mantissa bits, so each key names a bucket
@@ -408,11 +467,15 @@ _TABLE_DTYPES = (wp.int32, wp.int64)
 MARK_GROUP_STARTS: OverloadTable
 HASH_INSERT: OverloadTable
 COMPACT_FROM_TABLE: OverloadTable
+KEYS_AND_IDENTITY: OverloadTable
+MARK_SORTED_RUN_STARTS: OverloadTable
+EMIT_SORTED_UNIQUE: OverloadTable
 
 
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global MARK_GROUP_STARTS, HASH_INSERT, COMPACT_FROM_TABLE
+    global KEYS_AND_IDENTITY, MARK_SORTED_RUN_STARTS, EMIT_SORTED_UNIQUE
     MARK_GROUP_STARTS = OverloadTable(
         mark_group_starts,
         {d: [wp.array[d], wp.int32, wp.int32, wp.array[wp.int32]] for d in _KEY_DTYPES},
@@ -437,6 +500,28 @@ def _register_overloads() -> None:
                 wp.array[wp.int32],
             ]
             for d in _TABLE_DTYPES
+        },
+    )
+    # The sorted ``unique_1d``: every integer dtype Warp's radix sort orders directly.
+    KEYS_AND_IDENTITY = OverloadTable(
+        keys_and_identity, {d: [wp.array[d], wp.array[d], wp.array[wp.int32]] for d in _KEY_DTYPES}
+    )
+    MARK_SORTED_RUN_STARTS = OverloadTable(
+        mark_sorted_run_starts, {d: [wp.array[d], wp.array[wp.int32]] for d in _KEY_DTYPES}
+    )
+    EMIT_SORTED_UNIQUE = OverloadTable(
+        emit_sorted_unique,
+        {
+            d: [
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[d],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+            ]
+            for d in _KEY_DTYPES
         },
     )
 

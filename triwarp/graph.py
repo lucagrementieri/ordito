@@ -354,6 +354,13 @@ def connected_component_labels_from_edges(
         inputs=[edges, parents],
         device=device,
     )
+    if node_count >= kernel_connected_components.ECL_COMPRESS_FROM:
+        _launch.launch(
+            kernel_connected_components.ecl_compress,
+            dim=node_count,
+            inputs=[parents],
+            device=device,
+        )
     _launch.launch(
         kernel_connected_components.ecl_hook_edges,
         dim=int(edges.shape[0]),

@@ -323,6 +323,40 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
     assert np.all(labels_np <= np.arange(node_count))
 
 
+@pytest.mark.parametrize("shape", ["random", "path", "star"])
+def test_connected_component_labels_compressed_forest(
+    device: str, monkeypatch: pytest.MonkeyPatch, shape: str
+) -> None:
+    """
+    Triwarp against triwarp: compressing the pre-hooked forest changes no label.
+
+    ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
+    ``ECL_COMPRESS_FROM`` nodes, which no test graph reaches, so the threshold is lowered to force
+    it; the uncompressed path carries the oracles (scipy and igl, above). The path is the shape the
+    compression exists for: a long descending chain after the pre-hook.
+    """
+    from triwarp.kernels.algorithms import connected_components as kernel_cc
+
+    rng = np.random.default_rng(13)
+    node_count = 512
+    if shape == "random":
+        edges_np = rng.integers(0, node_count, size=(300, 2), dtype=np.int32)
+    elif shape == "path":
+        order = rng.permutation(node_count).astype(np.int32)
+        edges_np = np.stack([order[:-1], order[1:]], axis=1)
+    else:
+        leaves = np.arange(node_count - 1, dtype=np.int32)
+        edges_np = np.stack([np.full_like(leaves, node_count - 1), leaves], axis=1)
+    edges_wp = twt.as_array2d(
+        wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
+    )
+    plain = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count).numpy()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    assert np.unique(plain).size > 1 or shape != "random"
+    assert np.array_equal(compressed.numpy(), plain)
+
+
 @pytest.mark.parametrize("face_ratio", [0.0, 0.1, 0.5])
 @pytest.mark.parity("connected_component_labels", "pymeshlab")
 def test_connected_component_labels_matches_pymeshlab(

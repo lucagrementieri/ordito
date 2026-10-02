@@ -151,8 +151,15 @@ def per_source_bfs_collect(
     q_tail = wp.int32(1)
     ext_n = wp.int32(0)
     collected = wp.int32(0)
+    # Once an in-ball neighbour finds the queue full, nothing more can be enqueued: the remaining
+    # dequeues would only count further drops, and -- with ``min_count`` within the capacity -- the
+    # nearest fallback can no longer engage, since every queued vertex counts as collected. So the
+    # traversal stops there with the identical queue; ``out_overflow`` then counts sources whose
+    # ball was clipped rather than every neighbour dropped. On a radius several times the cap's
+    # reach that tail was nearly all of the walk.
+    full = wp.bool(False)
 
-    while q_head < q_tail:
+    while q_head < q_tail and not full:
         current = queue[q_head]
         q_head += wp.int32(1)
         collected += wp.int32(1)
@@ -173,8 +180,14 @@ def per_source_bfs_collect(
                     q_tail += wp.int32(1)
                 else:
                     wp.atomic_add(out_overflow, 0, 1)
+                    if min_count <= queue_cap:
+                        full = wp.bool(True)
+                        break
             elif collected < min_count:
                 ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
+    if full:
+        # What the skipped dequeues would have counted.
+        collected = q_tail
 
     # Drained candidates are appended to the queue (not re-expanded from it) so the queue prefix
     # stays the complete collected set. The main loop exits with collected == q_tail, so with the

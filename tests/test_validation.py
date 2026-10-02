@@ -472,6 +472,41 @@ def test_is_vertex_manifold_bowtie(device: str) -> None:
     assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
 
 
+def test_vertex_manifold_compressed_forest(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Triwarp against triwarp: compressing the corner forest changes no verdict.
+
+    Both corner union-finds (from the sorted keys, and from a precomputed adjacency) compress their
+    pre-hooked forest only from ``connected_components.ECL_COMPRESS_FROM`` corners, which no
+    fixture reaches, so the threshold is lowered to force it. A bowtie next to a closed
+    icosahedron, so the mask holds both answers; the oracles are igl's, in the tests above.
+    """
+    from triwarp.kernels.algorithms import connected_components as kernel_cc
+
+    ico = tm.creation.icosahedron()
+    bowtie_np = np.array([[0, 1, 2], [0, 3, 4]]) + len(ico.vertices)
+    vertices_np = np.concatenate([ico.vertices, np.zeros((5, 3))])
+    faces_np = np.concatenate([ico.faces, bowtie_np])
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    adjacency, adjacency_edges = tw.adjacency.face_adjacency(faces_wp, return_edges=True)
+
+    def answers() -> tuple[np.ndarray, bool]:
+        mask = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp).numpy()
+        tabled = tw.validation.is_vertex_manifold(
+            faces_wp, face_adjacency=adjacency, face_adjacency_edges=adjacency_edges
+        )
+        return mask, tabled
+
+    plain_mask, plain_tabled = answers()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed_mask, compressed_tabled = answers()
+    assert plain_mask.any()
+    assert not plain_mask.all()
+    assert plain_tabled is False
+    assert np.array_equal(compressed_mask, plain_mask)
+    assert compressed_tabled == plain_tabled
+
+
 @pytest.mark.parametrize(("spare", "expected"), [(None, True), ("interior", False)])
 @pytest.mark.parity("is_vertex_manifold", "igl")
 def test_is_vertex_manifold_unreferenced_vertices(

@@ -1,6 +1,7 @@
 import warp as wp
 
-from triwarp.kernels.array import unpack_edge_key
+from triwarp.kernels.adjacency import write_edge_row
+from triwarp.kernels.array import sorted_run_start, unpack_edge_key
 from triwarp.kernels.halfedge import halfedge_endpoints
 from triwarp.kernels.predicates import segment_aabb, side_lengths
 
@@ -46,6 +47,33 @@ def edges_from_keys(
     lo, hi = unpack_edge_key(keys[i], base)
     out_edges[i, 0] = lo
     out_edges[i, 1] = hi
+
+
+@wp.kernel
+def emit_sorted_unique_edges(
+    faces: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    ranks: wp.array[wp.int32],
+    out_unique_edges: wp.array2d[wp.int32],
+    out_inverse: wp.array[wp.int32],
+) -> None:
+    # ``edges.edges_unique``'s two returns from a sort of every corner's edge key: ``ranks`` is the
+    # inclusive scan of ``grouping.mark_sorted_run_starts``, so ``ranks[i] - 1`` is the
+    # ascending-key unique index ``grouping.unique_1d`` assigns the key at sorted position ``i``,
+    # and a run's first position writes its row from the corner that sorted there. The run start
+    # is re-derived from the keys rather than read from the marks, so the marks may be scanned in
+    # place.
+    # ``remesh._FlipTopology.edges_unique`` launches it over the flip loop's own sort;
+    # ``kernels/remesh.emit_pass_edges`` is the decimation pass's form: live corners and a capacity
+    # bound, a chunked exclusive scan in place of the inclusive one, and the incidence and
+    # adjacency slots in the same launch.
+    i = wp.int32(wp.tid())
+    corner = order[i]
+    e = ranks[i] - 1
+    out_inverse[corner] = e
+    if sorted_run_start(sorted_keys, i):
+        write_edge_row(faces, corner, e, out_unique_edges)
 
 
 @wp.kernel

@@ -56,16 +56,40 @@ ArrayT = TypeVar("ArrayT", bound="wp.array[Any, Any]")
 class _Entry:
     """One kernel's launch state on one CUDA context and block size."""
 
-    __slots__ = ("exec_", "hashers", "hooks", "kernel_dim", "packers", "pool", "tid_limit")
+    __slots__ = (
+        "exec_",
+        "hashers",
+        "hooks",
+        "kernel_dim",
+        "key",
+        "module",
+        "n_args",
+        "packers",
+        "pool",
+        "tid_limit",
+    )
 
-    def __init__(self, kernel: Any, exec_: Any, hashers: dict[Any, Any], hooks: Any) -> None:
+    def __init__(
+        self,
+        kernel: Any,
+        exec_: Any,
+        hashers: dict[Any, Any],
+        hooks: Any,
+        context: Any,
+        block_dim: int,
+    ) -> None:
         self.exec_ = exec_
         self.hashers = hashers
         self.hooks = hooks
+        self.module = kernel.module
+        self.key = (context, block_dim)
+        self.n_args = len(kernel.adj.args)
         self.kernel_dim = kernel.adj.kernel_dim
         self.tid_limit = kernel.adj.scalar_tid_extent_limit_candidate
         self.packers = tuple(_packer(kernel, arg) for arg in kernel.adj.args)
         block = _Block.build(kernel, self.kernel_dim)
+        if block is not None:
+            block.compile(kernel, hooks, context, block_dim)
         # A list, so a launch takes the block with an atomic ``pop``: a second thread launching the
         # same kernel while the first is inside the native call (ctypes releases the GIL) finds the
         # pool empty and marshals per argument instead of overwriting a block being read.
@@ -102,7 +126,7 @@ _KIND_ARRAY, _KIND_SCALAR, _KIND_VALUE = 0, 1, 2
 class _Block:
     """A kernel's parameters as one buffer, filled per launch by one ``struct.pack_into``."""
 
-    __slots__ = ("buffer", "kinds", "pack_into", "params")
+    __slots__ = ("buffer", "kinds", "pack_into", "params", "run")
 
     def __init__(self, layout: struct.Struct, kinds: tuple[Any, ...], offsets: list[int]) -> None:
         self.pack_into = layout.pack_into
@@ -151,67 +175,99 @@ class _Block:
             return None
         return _Block(layout, tuple(kinds), offsets)
 
-    def fill(
-        self,
-        extent: tuple[Any, ...],
-        inputs: Sequence[Any],
-        outputs: Sequence[Any],
-        device: Any,
-        strict: bool,
-    ) -> bool:
-        """Pack ``extent`` and the arguments; ``False`` if an argument has no packed form."""
-        shape, size, coord_mult = extent
-        values = [*shape, size, coord_mult]
-        append = values.append
-        extend = values.extend
-        kinds = self.kinds
-        i = 0
-        for group in (inputs, outputs):
-            for value in group:
-                kind, ndim, accepted, target = kinds[i]
-                i += 1
-                if kind == _KIND_ARRAY:
-                    if value is None:
-                        extend(_ARRAY_NULL)
-                        continue
-                    if type(value) is not _ARRAY or value.ndim != ndim or value._grad is not None:
-                        return False
-                    dtype = value.dtype
-                    if dtype not in accepted and not _accept(accepted, dtype, target):
-                        return False
-                    if strict and value.device is not device:
-                        return False
-                    ptr = value.ptr or 0
-                    sh = value.shape
-                    st = value.strides
-                    if ndim == 1:
-                        extend((ptr, 0, sh[0], 0, 0, 0, st[0], 0, 0, 0, 1, 0))
-                    elif ndim == 2:
-                        extend((ptr, 0, sh[0], sh[1], 0, 0, st[0], st[1], 0, 0, 2, 0))
-                    elif ndim == 3:
-                        extend((ptr, 0, *sh, 0, *st, 0, 3, 0))
-                    else:
-                        extend((ptr, 0, *sh, *st, 4, 0))
-                elif kind == _KIND_SCALAR:
-                    value_type = type(value)
-                    if value_type in _SCALAR_PY:
-                        append(value)
-                    elif value_type is target:
-                        append(value.value)
-                    else:
-                        return False
-                else:
-                    value_type = type(value)
-                    if value_type not in accepted and not _accept(accepted, value_type, target):
-                        return False
-                    append(bytes(value))
-        try:
-            self.pack_into(self.buffer, 0, *values)
-        except struct.error:
-            # A value outside its C type's range (ctypes would wrap it) or of the wrong kind: the
-            # per-argument path marshals it exactly as Warp does.
-            return False
-        return True
+    def compile(self, kernel: Any, hooks: Any, context: Any, block_dim: int) -> None:
+        """
+        Generate ``run``: pack the arguments and launch, specialised to this kernel's parameters.
+
+        The generated function is straight-line code -- one type test per argument, the values
+        handed to ``pack_into`` as locals -- closing over everything fixed for the entry (the
+        native launch, context, function handle, shared memory and block size), so a launch is one
+        Python call, one ``pack_into`` and the native call. It returns ``False`` without launching
+        when an argument has no packed form: not exactly the parameter's array class and rank, a
+        gradient-carrying array, a dtype or value type that is not Warp-equal to the parameter's,
+        an array on another device under a strict access mode, or a value outside its C type.
+        """
+        kernel_dim = kernel.adj.kernel_dim
+        env: dict[str, Any] = {
+            "_ARRAY": _ARRAY,
+            "_SCALAR_PY": _SCALAR_PY,
+            "_accept": _accept,
+            "_error": struct.error,
+            "pack_into": self.pack_into,
+            "buffer": self.buffer,
+            "params": self.params,
+            "launch_native": _ctx.runtime.core.wp_cuda_launch_kernel,
+            "raise_error": _ctx._raise_cuda_launch_error,
+            "kernel": kernel,
+            "hooks": hooks,
+            "context": context,
+            "forward": hooks.forward,
+            "smem": hooks.forward_smem_bytes,
+        }
+        extents = [f"e{d}" for d in range(kernel_dim)]
+        body = [
+            "def run(extent, inputs, outputs, device, strict, max_blocks, stream):",
+            "    shape, size, cm = extent",
+            f"    {', '.join(extents)}, = shape",
+            "    args = (*inputs, *outputs) if outputs else inputs",
+        ]
+        values = [*extents, "size", "cm"]
+        for j, (kind, ndim, accepted, target) in enumerate(self.kinds):
+            env[f"A{j}"] = accepted
+            env[f"D{j}"] = target
+            body.append(f"    v = args[{j}]")
+            if kind == _KIND_ARRAY:
+                shape_names = [f"h{j}_{d}" for d in range(ndim)]
+                stride_names = [f"t{j}_{d}" for d in range(ndim)]
+                zeros = " = ".join([f"p{j}", f"n{j}", *shape_names, *stride_names])
+                body += [
+                    "    if v is None:",
+                    f"        {zeros} = 0",
+                    "    else:",
+                    f"        if type(v) is not _ARRAY or v.ndim != {ndim} or v._grad is not None:",
+                    "            return False",
+                    "        d = v.dtype",
+                    f"        if d not in A{j} and not _accept(A{j}, d, D{j}):",
+                    "            return False",
+                    "        if strict and v.device is not device:",
+                    "            return False",
+                    f"        p{j} = v.ptr or 0",
+                    f"        {', '.join(shape_names)}, = v.shape",
+                    f"        {', '.join(stride_names)}, = v.strides",
+                    f"        n{j} = {ndim}",
+                ]
+                pad = ["0"] * (4 - ndim)
+                values += [f"p{j}", "0", *shape_names, *pad, *stride_names, *pad, f"n{j}", "0"]
+            elif kind == _KIND_SCALAR:
+                body += [
+                    "    t = type(v)",
+                    "    if t is not int and t is not float and t is not bool:",
+                    f"        if t is not D{j}:",
+                    "            return False",
+                    "        v = v.value",
+                    f"    x{j} = v",
+                ]
+                values.append(f"x{j}")
+            else:
+                body += [
+                    "    t = type(v)",
+                    f"    if t not in A{j} and not _accept(A{j}, t, D{j}):",
+                    "        return False",
+                    f"    x{j} = bytes(v)",
+                ]
+                values.append(f"x{j}")
+        body += [
+            "    try:",
+            f"        pack_into(buffer, 0, {', '.join(values)})",
+            "    except _error:",
+            "        return False",
+            "    if launch_native(context, forward, size, max_blocks, "
+            f"{block_dim}, 1, 1, smem, params, stream, None):",
+            "        raise_error(kernel, device, hooks, False)",
+            "    return True",
+        ]
+        exec("\n".join(body), env)
+        self.run = env["run"]
 
 
 def _packer(kernel: Any, arg: Any) -> Any:
@@ -326,7 +382,7 @@ def _remember(kernel: Any, device: Any, block_dim: int) -> None:
     ):
         cache[key] = False
         return
-    cache[key] = _Entry(kernel, exec_, module.hashers, hooks)
+    cache[key] = _Entry(kernel, exec_, module.hashers, hooks, device.context, block_dim)
 
 
 def launch(
@@ -345,8 +401,64 @@ def launch(
     block_dim: int = 256,
 ) -> Any:
     """Launch ``kernel`` exactly as ``wp.launch`` would, with its resolution cached."""
-    runtime = _ctx.runtime
     kernel_any: Any = kernel
+    # The hot path: the same kernel launched again on the device and block size of its last cached
+    # launch, outside any capture or tape -- most launches in a wrapper's loop. Every condition the
+    # general path tests below is tested here, cheapest first; any miss falls through to it.
+    hot = kernel_any.__dict__.get("_tw_hot")
+    if (
+        hot is not None
+        and hot[0] is device
+        and hot[1] == block_dim
+        and stream is None
+        and not adjoint
+        and not record_cmd
+        and not adj_inputs
+        and not adj_outputs
+    ):
+        entry = hot[2]
+        runtime = _ctx.runtime
+        module = entry.module
+        config = wp.config
+        if type(dim) is int:
+            extent = (
+                ((dim,), dim, 1) if 0 < dim <= entry.tid_limit and entry.kernel_dim == 1 else None
+            )
+        else:
+            extent = _extent(dim, entry)
+        if (
+            extent is not None
+            and len(inputs) + len(outputs) == entry.n_args
+            and runtime.tape is None
+            and runtime._apic_capture is None
+            and not runtime.captures
+            and not config.verify_cuda
+            and not config.print_launches
+            and module.hashers is entry.hashers
+            and module.execs.get(entry.key) is entry.exec_
+            and not module.has_unresolved_static_expressions
+        ):
+            pool = entry.pool
+            if pool:
+                try:
+                    block = pool.pop()
+                except IndexError:
+                    block = None
+                if block is not None:
+                    try:
+                        if block.run(
+                            extent,
+                            inputs,
+                            outputs,
+                            device,
+                            config.launch_array_access_mode is not _RELAXED,
+                            max_blocks,
+                            device._stream.cuda_stream,
+                        ):
+                            return None
+                    finally:
+                        pool.append(block)
+    runtime = _ctx.runtime
     if type(device) is not _Device:
         # ``_ctx.runtime`` is ``None`` until ``wp.init()``; Warp annotates it as always set.
         device = None if runtime is None else runtime.get_device(device)  # pyright: ignore[reportUnnecessaryComparison]
@@ -384,6 +496,7 @@ def launch(
     entry = _entry(kernel, device, block_dim)
     if not entry:
         return _slow(kernel, dim, inputs, outputs, device, max_blocks, block_dim, entry)
+    kernel_any.__dict__["_tw_hot"] = (device, block_dim, entry)
 
     extent = _extent(dim, entry)
     if extent is None:
@@ -420,21 +533,9 @@ def launch(
             block = None
         if block is not None:
             try:
-                if block.fill(extent, inputs, outputs, device, strict):
-                    if runtime.core.wp_cuda_launch_kernel(
-                        device.context,
-                        hooks.forward,
-                        extent[1],
-                        max_blocks,
-                        block_dim,
-                        1,
-                        1,
-                        hooks.forward_smem_bytes,
-                        block.params,
-                        current.cuda_stream,
-                        None,
-                    ):
-                        _ctx._raise_cuda_launch_error(kernel_any, device, hooks, False)
+                if block.run(
+                    extent, inputs, outputs, device, strict, max_blocks, current.cuda_stream
+                ):
                     return None
             finally:
                 pool.append(block)

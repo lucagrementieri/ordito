@@ -1107,6 +1107,10 @@ ASTYPE = KernelTable(
         (wp.int32, wp.bool): _astype_kernel("astype_int32_bool", wp.int32, wp.bool),
         (wp.int32, wp.float32): _astype_kernel("astype_int32_float32", wp.int32, wp.float32),
         (wp.float32, wp.float64): _astype_kernel("astype_float32_float64", wp.float32, wp.float64),
+        # The widening and narrowing seams around every ``float64`` smoothing solve
+        # (``smoothing._as_vec3d`` / ``_as_vec3``), each called once or twice per smoothing call.
+        (wp.vec3, wp.vec3d): _astype_kernel("astype_vec3_vec3d", wp.vec3, wp.vec3d),
+        (wp.vec3d, wp.vec3): _astype_kernel("astype_vec3d_vec3", wp.vec3d, wp.vec3),
     },
 )
 

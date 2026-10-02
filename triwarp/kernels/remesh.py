@@ -1013,41 +1013,6 @@ def refresh_flip_rows(
     )
 
 
-@wp.kernel
-def mark_sorted_run_starts(
-    sorted_keys: wp.array[wp.uint64], out_starts: wp.array[wp.int32]
-) -> None:
-    # The first position of every run of equal keys: ``mark_unique_edge_starts`` below over a
-    # buffer with no padded tail, for ``_FlipTopology.edges_unique``. ``int32`` for the scan.
-    i = wp.int32(wp.tid())
-    start = wp.int32(0)
-    if sorted_run_start(sorted_keys, i):
-        start = wp.int32(1)
-    out_starts[i] = start
-
-
-@wp.kernel
-def emit_sorted_unique_edges(
-    faces: wp.array[wp.int32],
-    order: wp.array[wp.int32],
-    starts: wp.array[wp.int32],
-    ranks: wp.array[wp.int32],
-    out_unique_edges: wp.array2d[wp.int32],
-    out_inverse: wp.array[wp.int32],
-) -> None:
-    # ``edges.edges_unique``'s two returns from a sort of every corner's edge key: ``ranks`` is the
-    # inclusive scan of ``mark_sorted_run_starts``, so ``ranks[i] - 1`` is the ascending-key unique
-    # index ``grouping.unique_1d`` assigns the key at sorted position ``i``. ``emit_pass_edges``
-    # below is the decimation pass's form: live corners and a capacity bound, a chunked exclusive
-    # scan in place of the inclusive one, and the incidence and adjacency slots in the same launch.
-    i = wp.int32(wp.tid())
-    corner = order[i]
-    e = ranks[i] - 1
-    out_inverse[corner] = e
-    if starts[i] != 0:
-        write_edge_row(faces, corner, e, out_unique_edges)
-
-
 @wp.func
 def _resolve_flip_quad(
     faces: wp.array[wp.int32], f0: wp.int32, u: wp.int32, v: wp.int32, d0: wp.int32, d1: wp.int32

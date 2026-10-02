@@ -62,6 +62,7 @@ from triwarp import _launch, laplacian
 from triwarp._device import read_scalar, require_same_device
 from triwarp.constants import TILE_1D
 from triwarp.kernels import array as kernel_array
+from triwarp.kernels import linalg as kernel_linalg
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.kernels import selection as kernel_selection
@@ -1599,8 +1600,28 @@ def filter_implicit_fairing(
 
         mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)
 
-        # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the diagonal).
-        system = twt.bsr_axpy(x=stiffness, y=twt.bsr_diag(diag=mass), alpha=-float(lamb), beta=1.0)
+        # A = M - lamb L (SPD: L has a negative diagonal, so subtracting it adds to the diagonal),
+        # written over L's own pattern: every referenced vertex's row stores its diagonal, and an
+        # unreferenced one has no mass, so the pattern merge ``bsr_axpy`` against a ``bsr_diag``
+        # performs would only add stored zeros.
+        system_values = _launch.empty_like(stiffness.values)
+        _launch.launch(
+            kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
+            dim=n,
+            inputs=[
+                stiffness.offsets,
+                stiffness.columns,
+                stiffness.values,
+                mass,
+                wp.float64(-float(lamb)),
+                None,
+                wp.int32(0),
+                wp.int32(0),
+            ],
+            outputs=[system_values, None],
+            device=device,
+        )
+        system = twl.bsr_with_values(stiffness, system_values)
 
         if dirichlet is None:
             # Right-hand side b = M V and the CG seed in one pass. The seed is the current
@@ -3093,13 +3114,9 @@ def _resolved_operator(
 
 def _as_vec3d(vertices: wp.array[wp.vec3]) -> wp.array[wp.vec3d]:
     """Widen a ``wp.vec3`` array to ``wp.vec3d``: the seam where the float64 solves start."""
-    out = _launch.empty(vertices.size, dtype=wp.vec3d, device=vertices.device)
-    wp.utils.array_cast(vertices, out)
-    return out
+    return tw.array.astype(vertices, wp.vec3d)
 
 
 def _as_vec3(positions: wp.array[wp.vec3d]) -> wp.array[wp.vec3]:
     """Narrow a ``wp.vec3d`` array back to ``wp.vec3``: the seam where the float64 solves end."""
-    out = _launch.empty(positions.size, dtype=wp.vec3, device=positions.device)
-    wp.utils.array_cast(positions, out)
-    return out
+    return tw.array.astype(positions, wp.vec3)

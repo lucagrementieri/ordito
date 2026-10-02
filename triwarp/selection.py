@@ -236,6 +236,10 @@ def faces_left_of_contour(
         inputs=[faces, twins, contour_keys, base, parents, seeds],
         device=device,
     )
+    if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
+        _launch.launch(
+            kernel_connected_components.ecl_compress, dim=n_faces, inputs=[parents], device=device
+        )
     _launch.launch(
         kernel_selection.hook_dual,
         dim=n_halfedges,
@@ -314,19 +318,45 @@ def exclude_fully_selected_components(
     if unique_edges is None:
         n_faces = faces.size // 3
         if n_faces > 0:
-            for kernel in (kernel_selection.prehook_face_edges, kernel_selection.hook_face_edges):
-                _launch.launch(kernel, dim=n_faces, inputs=[faces, parents], device=device)
-    elif int(unique_edges.shape[0]) > 0:
-        for kernel in (
-            kernel_connected_components.ecl_init_parent_edges,
-            kernel_connected_components.ecl_hook_edges,
-        ):
             _launch.launch(
-                kernel,
-                dim=int(unique_edges.shape[0]),
-                inputs=[unique_edges, parents],
+                kernel_selection.prehook_face_edges,
+                dim=n_faces,
+                inputs=[faces, parents],
                 device=device,
             )
+            if n_vertices >= kernel_connected_components.ECL_COMPRESS_FROM:
+                _launch.launch(
+                    kernel_connected_components.ecl_compress,
+                    dim=n_vertices,
+                    inputs=[parents],
+                    device=device,
+                )
+            _launch.launch(
+                kernel_selection.hook_face_edges,
+                dim=n_faces,
+                inputs=[faces, parents],
+                device=device,
+            )
+    elif int(unique_edges.shape[0]) > 0:
+        _launch.launch(
+            kernel_connected_components.ecl_init_parent_edges,
+            dim=int(unique_edges.shape[0]),
+            inputs=[unique_edges, parents],
+            device=device,
+        )
+        if n_vertices >= kernel_connected_components.ECL_COMPRESS_FROM:
+            _launch.launch(
+                kernel_connected_components.ecl_compress,
+                dim=n_vertices,
+                inputs=[parents],
+                device=device,
+            )
+        _launch.launch(
+            kernel_connected_components.ecl_hook_edges,
+            dim=int(unique_edges.shape[0]),
+            inputs=[unique_edges, parents],
+            device=device,
+        )
     # One flatten that also flags each component holding an unselected vertex -- one that is not
     # fully selected, and so keeps its selection.
     labels = _launch.empty(n_vertices, dtype=wp.int32, device=device)

@@ -322,6 +322,15 @@ def _corner_parents_from_adjacency(
         kernel_validation.adjacency_corner_prehook,
         kernel_validation.adjacency_corner_hook,
     ):
+        if kernel is kernel_validation.adjacency_corner_hook:
+            n_corners = parents.size
+            if n_corners >= kernel_connected_components.ECL_COMPRESS_FROM:
+                _launch.launch(
+                    kernel_connected_components.ecl_compress,
+                    dim=n_corners,
+                    inputs=[parents],
+                    device=device,
+                )
         _launch.launch(
             kernel,
             dim=m,
@@ -1278,6 +1287,10 @@ def _corner_parents_from_keys(
         inputs=[faces, keys, order, require_pairs, parents, violation],
         device=faces.device,
     )
+    if n >= kernel_connected_components.ECL_COMPRESS_FROM:
+        _launch.launch(
+            kernel_connected_components.ecl_compress, dim=n, inputs=[parents], device=faces.device
+        )
     _launch.launch(
         kernel_validation.sorted_corner_hook,
         dim=n,

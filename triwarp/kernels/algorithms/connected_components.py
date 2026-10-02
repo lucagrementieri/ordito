@@ -121,6 +121,24 @@ def ecl_init_parent_edges(edges: wp.array2d[wp.int32], parents: wp.array[wp.int3
     ecl_prehook_pair(parents, edges[e, 0], edges[e, 1])
 
 
+# Node count from which a pre-hooked forest is compressed before the hook (``ecl_compress``).
+# Python-scope only: callers compare a node count against it to decide whether to launch.
+ECL_COMPRESS_FROM = 1 << 21
+
+
+@wp.kernel
+def ecl_compress(parents: wp.array[wp.int32]) -> None:
+    # Between the pre-hook and the hook: point every node at its current root. The pre-hook leaves
+    # each node at its smallest smaller neighbour, which on a large mesh whose numbering wanders
+    # strings the forest into long descending chains, and every hook's two finds then walk them --
+    # on a 28 M-face scan the hook alone was 5.5x the whole compressed sequence. A root is an
+    # ancestor, so lowering a parent to it with ``atomic_min`` keeps the forest valid for the
+    # concurrent path halving the finds do, and changes no root: the labels are the same. Below
+    # ``ECL_COMPRESS_FROM`` nodes the chains stay short and the extra launch is all it costs.
+    v = wp.int32(wp.tid())
+    wp.atomic_min(parents, v, find_representative(parents, v))
+
+
 @wp.kernel
 def ecl_hook_edges(edges: wp.array2d[wp.int32], parents: wp.array[wp.int32]) -> None:
     # Edge-parallel hook over an ``(m, 2)`` edge list, from an identity ``parents``: the plain

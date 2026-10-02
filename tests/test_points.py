@@ -1651,6 +1651,37 @@ def test_convex_subset_points(device: str) -> None:
     assert np.allclose(subset_wp.numpy(), expected_points, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("kind", ["gaussian", "ball", "cube"])
+def test_convex_masks_slice_filter_matches_exhaustive(
+    device: str, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """
+    Triwarp against triwarp: the slice-filtered sweeps mark exactly what the exhaustive ones do.
+
+    From ``SUPPORT_SLICE_FILTER_FROM`` points the support sweeps walk only the slices whose
+    extremes reach a threshold; no fixture here is that large, so the threshold is moved both ways
+    on one cloud. The exhaustive path carries the oracles (the qhull backends and scipy, around
+    this test). The cloud is offset far from the origin so the dot products carry real rounding --
+    the case the slice bounds' margin exists for.
+    """
+    points_np = _cloud(kind, 20_000, seed=21) + np.array([300.0, -200.0, 100.0])
+    points_wp = points_to_warp(points_np, device)
+
+    def masks() -> list[np.ndarray]:
+        return [
+            tw.convex_subset_mask(points_wp, n_directions=256).numpy(),
+            tw.convex_superset_mask(points_wp, subdivisions=2).numpy(),
+        ]
+
+    monkeypatch.setattr(tw, "SUPPORT_SLICE_FILTER_FROM", 1 << 30)
+    exhaustive = masks()
+    monkeypatch.setattr(tw, "SUPPORT_SLICE_FILTER_FROM", 0)
+    filtered = masks()
+    assert all(0 < int(mask.sum()) < mask.size for mask in exhaustive)
+    for exhaustive_mask, filtered_mask in zip(exhaustive, filtered, strict=True):
+        assert np.array_equal(filtered_mask, exhaustive_mask)
+
+
 def test_convex_subset_mask_empty(device: str) -> None:
     points_wp = warp_empty(0, wp.vec3, device)
     mask_wp = tw.convex_subset_mask(points_wp)

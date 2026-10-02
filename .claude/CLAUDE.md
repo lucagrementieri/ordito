@@ -2899,6 +2899,7 @@ from `dragon` (0.87 M faces) up (`face_adjacency`, `edges_unique`, `cotmatrix`, 
 | primitive (correct regime) | cost |
 |---|---|
 | `wp.launch` / `wp.launch_tiled` | **11.8 / 12.2 µs**, independent of `dim` |
+| `_launch.launch`, hot path (generated per-kernel packer) | **4.5-4.9 µs** at 2-5 arguments, 6.1-6.3 at 12; the native `wp_cuda_launch_kernel` call alone is **2.1-2.3 µs** whatever its ctypes prototype |
 | `wp.empty` | 6.1 µs, flat in size (`wp.empty(0)` 2.0) |
 | `wp.zeros` / `wp.full` | 9.3 µs |
 | `arr.fill_` / `arr.zero_` | 3.2 / 2.5 µs |
@@ -3155,7 +3156,8 @@ what it removes is two replayed kernels of launch latency per dependent round.
 
 **Four kernels keep the arg-strided form deliberately**, each annotated with its number: they
 already carry a *slice* dimension (`points.hull_support_extremes` is 2.3x at 5 000 points and a
-**2-8x loss** at 200 000).
+**2-8x loss** at 200 000). What those kernels did take is the opposite move: several outer items
+per thread from registers (§14.12).
 
 ### 14.2 Cooperative BVH walks
 
@@ -3500,6 +3502,32 @@ anti-diagonal of O(1)-work cells was under-occupied before tiling. Where levels 
 record the launches instead (§14.3).
 
 ---
+
+### 14.12 Register-block the outer items of a strided slice reduction
+
+**A `(item, slice)` kernel that streams the whole cloud once per outer item is bound by that
+traffic, not its arithmetic: give each thread `W` items and dot every point it loads against all
+of them from registers** (a `wp.types.matrix(shape=(W, 3))` of directions / queries, a
+`wp.types.vector(length=W)` per accumulator, the inner `for d in range(W)` unrolled from a factory
+closure). Max, min and an argmax with a strict `>` over ascending indices are exact, and a per-item
+running sum keeps its face order, so the outputs are the one-item kernel's (byte-identical on both
+devices for the extremes and argmax; per-thread sums identical, so CPU is exact and CUDA moves only
+by the float-atomic commit order). Measured (2026-10-02):
+
+| kernel | W | gain |
+|---|---|---|
+| `points.hull_support_extremes` (642 directions) | 8 | 2.5-3.2x at 0.4-0.5 M points, 4.6-10.8x at 14 M (with §16.13's slice filter); 16 is slower than 8 |
+| `bounds.oriented_box_extents` (candidate frames) | 4 | `oriented_bounding_box` 1.2x at 0.4-0.5 M, 4.26x at 14 M |
+| `proximity.winding_number_tiled` (queries) | 4 | 1.7-2.0x at 16 k faces, 4.2x at 69 k, 1.9x at 0.87 M |
+| `visibility.support_argmax_sliced` (deferred queries) | 4 | `max_tangent_sphere(inwards=False)` 1.30x at 0.87 M faces |
+
+- **Grouping divides the grid, so `W` is chosen per launch**: the widest of `(8|4, 2, 1)` whose
+  `ceil(n_items / W) * n_slices` still reaches `1 << 17` threads (`support_width`,
+  `box_extent_width`, `winding_width`, `support_argmax_width`). A fixed `W = 8` cost a 36 k-point
+  cloud 0.82x.
+- **A matrix row held from a global load inside the loop** (`axes[k] * point`) was left to the
+  compiler's loop-invariant motion and measured as fast as an explicit register copy; check the
+  device time if a new site does the same.
 
 ## 15. Benchmark and measurement traps
 
@@ -4164,6 +4192,12 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   sum `reduce.sum` performs below `TILE_1D` (the more accurate arm, but it breaks a test asserting
   bit-identity with a sequential reference: check for an exact comparison before fusing). A scan
   keyed on line proximity over-counts (mutually exclusive branches).
+- **`edges_unique` from faces is one radix sort of the corner keys** (2026-10-02): the keys and
+  the identity payload written into the sort's buffers (`adjacency.face_edge_keys_and_order`), a
+  run-start mark scanned in the payload's upper half, and `kernels/edges.emit_sorted_unique_edges`
+  (shared with `remesh._FlipTopology.edges_unique`) writing rows and the corner map -- the
+  identical ascending-key output. 1.3-1.5x at 16-69 k faces, 2.0x at 0.87 M, 2.85x at 28 M (59 ->
+  21 ms; the ~2n-slot hash table was gigabytes of random atomics there).
 - **`edges_unique` is a host-bound substrate under ~57 call sites.** Deduplicated rows are
   recoverable from packed keys (`array.unpack_edge_key`); `validate` defaults `True` with every
   internal caller passing `False`; `array.index_bound` takes both ends from one `reduce.minmax`
@@ -4218,9 +4252,19 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
       `searchsorted` ends): slower at every size (two sort-class passes vs one; `searchsorted`
       of `n` into `n` is `n log n` dependent cache-missing probes). Dense labels make the join
       O(1) per element.
-- **`unique_1d` returns its values as a prefix view of the sort scratch**, so a returned array
-  keeps a buffer twice its length alive (deliberate memory-for-copy trade); `read_scalar` copies
-  with `src_offset=` from a contiguous rank-1 source (safe: the destination is pageable, §12.1).
+- **`unique_1d` deduplicates every integer dtype by one radix sort, not its hash table**
+  (2026-10-02, `grouping._unique_sorted`): keys and the identity payload straight into the sort's
+  double-width buffers, run starts marked into the payload's free upper half and scanned in place,
+  one emit writing the values, the inverse, the run starts (counts) and each run's first
+  occurrence -- the stable sort's `order` at the run start, so `unique_rows` / `unique_faces` need
+  no `first_occurrence_indices` scatter. Against the hash path, every regime measured wins: 1.1-1.5x
+  at 1 k-30 k values, 2.0-2.6x at 1 M, and at 30 M 1.5x with eight distinct values (a hot slot
+  serializes the hash probes), 3.1-5.8x with `n / 3` distinct, 2.8x on random 64-bit keys;
+  `unique_faces` 1.15x at 69 k faces, 1.45x at 0.87 M, 3.3x at 28 M. The values are a fresh
+  `n_unique` buffer, no longer a prefix view of the sort scratch. Floats (`NaN` grouping) and the
+  sub-32-bit dtypes keep the hash table, as does `hashed_occurrence_counts`.
+- `read_scalar` copies with `src_offset=` from a contiguous rank-1 source (safe: the destination
+  is pageable, §12.1).
 - **`intersection._link_segments` is vectorized NumPy pointer doubling** (Wyllie, extended to
   open chains). The device port was declined (most remaining cost is one non-portable sort; it
   would regress the common single-contour case). **In NumPy, multi-hop chasing loses** (`h - 1`
@@ -4316,6 +4360,18 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 ### 16.6 `proximity`, `metrics`, `neighbors`
 
 #### k-NN and ball queries
+
+- **`geodesic_ball`'s per-source BFS stops once an in-ball neighbour finds the queue full**
+  (2026-10-02, `kernels/algorithms/bfs.per_source_bfs_collect`, when `min_count` fits the
+  capacity): the remaining dequeues could only count drops, so the returned rows are identical
+  (CPU byte-identical over 18 radius / `min_count` cases) and the warning's number now counts
+  clipped *sources*. `relax_approx` (3 % of the diagonal, 48 M drops a call at `dragon`)
+  1.21-1.24x at 0.4-0.5 M vertices; `geodesic_ball` at 5 mean edges is flat (it rarely clips).
+- **OPEN DEFECT: `geodesic_ball` is not reproducible on CUDA when balls clip**, at baseline
+  `f60f952` too: `bunny` at 0.03 / 0.012 of the diagonal, several calls in one process, returns a
+  few entries more or fewer in 4 of 8 processes (a fresh process with one call is stable, and the
+  CPU device is always). Not the scratch helpers (in bounds) and not the launcher (reproduces with
+  the hot path off and on the baseline). Untraced.
 
 - **`query_hashgrid_nearest`'s cost is *cubic* in how far `initial_radius` under-estimates the
   answer distance**, because that one scalar sets both the cell width and the seed. The default
@@ -4755,6 +4811,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 
 ### 16.11 `validation`, `adjacency`, `halfedge`, connected components
 
+- **A pre-hooked forest is compressed before the hook from `ECL_COMPRESS_FROM = 1 << 21` nodes**
+  (`connected_components.ecl_compress`: every node lowered by `atomic_min` to its current root, an
+  ancestor, so no root moves). The pre-hook strings a large mesh's wandering numbering into long
+  descending chains that every hook's finds walk: `face_connected_component_labels[lucy]` 43 -> 23
+  ms (the union-find alone 28 -> 5.1), flat at 0.87 M faces. All six pre-hook / hook sites take it
+  (`adjacency`, `graph`, `validation` x2, `selection` x2); each is pinned by a forced-threshold
+  test.
 - **An edge-parallel union-find replaces a CSR build whenever the answer is "smallest id per
   component".** `ecl_hook_edges` hooks the larger root under the smaller, so every label is the
   component's minimum node id whatever order the unions ran in, equal to the CSR path's labels.
@@ -4895,6 +4958,17 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       of its flops recur in *different* basic blocks, but nvcc already eliminates them (hand-fusing
       changes three `sub.f32` of ~1 100): a PTX op-count diff costs no GPU time (§12.6).
     - **The persistent one-block-per-loop DP is refuted** (§14.9).
+- **The fill DP's apex loop is a branch and bound, and its column read is a mirror**
+  (2026-10-02). Every term `apex_cost` adds after the children is non-negative and both combines
+  are monotone, so `combine(dp[i,k], dp[k,j])` is an exact `float32` lower bound: an apex whose
+  children reach the lane's best is skipped, and after each lane's first apex one `block_min`
+  shares the block's best, skipped with a strict `>` (a tie could still win on its smaller `k`).
+  With the metric mostly gone the strided column read `dp[k, j]` was the sweep's cost, so every
+  store also writes the free lower triangle at `(j, i)` (`store_dp`; `init_dp_base` seeds the
+  mirrored rim edges) and the child is read there, contiguous in `k`. Byte-identical on 81 CUDA /
+  54 CPU fills across all nine metrics; `refill_region(dp_only)` 1.15x at 0.87 M faces, 1.37x at
+  1.1 M, 1.57x at 28 M (a 2 765-vertex rim), flat on short rims (launch-bound). The earlier
+  "a transposed mirror is a net loss" was a *separate* table while the metric dominated.
 - **The stitch band DP is a blocked wavefront** (§14.11): `stitch_dp_tile` gives one **block** a
   `32 x 32` square and launches one tile-diagonal at a time (2 049 launches -> 65 at two 1 024-
   vertex rims). DP sweep 11.0-13.3x on CUDA, 2.4-7.8x on CPU; `stitch_loops_min_weight` 1.76x at
@@ -4945,6 +5019,16 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   (`contraction="closest"`, same winner and lowest-index tie). **Compact then `unique_faces`, not
   deduplicate every face** (§16.0's 0.19x at `lucy`). On CUDA `average` moves with its float
   atomics.
+- **The convex masks' threshold sweeps walk only the slices that can reach a threshold**
+  (2026-10-02). `hull_support_extremes` also stores each `(direction, slice)` extreme, widened by
+  `1e-6 * max sum |d_i p_i|` over the slice because the sweeps recompute the dot in other code and
+  FMA contraction can move it a ULP (`SUPPORT_TIE_SLACK`'s reason), and `support_indices` /
+  `mark_hull_support` launch per `(direction, slice)` and return unless the slice's bound reaches
+  the threshold. From `SUPPORT_SLICE_FILTER_FROM = 1 << 17` points; below it the one-thread-per-point
+  grid is kept (0.70-0.91x at 36 k). With §14.12's direction blocking: `convex_superset_mask`
+  2.6-2.7x at 0.4-0.5 M points and 7.6x at 14 M (subdivision 3), `convex_subset_mask` 2.5-3.2x and
+  10.8x (256 directions), byte-identical on both devices. Pinned by
+  `test_convex_masks_slice_filter_matches_exhaustive` on an off-origin cloud.
 - **`statistical_outlier_mask`** reads back one value (a `float64` device threshold; can move an
   ulp; identical on 30 masks). **`outlier_probability` forms its normalizer on the device, and
   `wp.utils.array_inner(a, a)` returns an `np.float32`**, so the host's `value / n` was a `float32`

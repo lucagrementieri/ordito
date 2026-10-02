@@ -48,6 +48,7 @@ from triwarp import _launch
 from triwarp._device import require_same_device
 from triwarp.constants import TILE_1D
 from triwarp.kernels import heat as kernel_heat
+from triwarp.kernels import linalg as kernel_linalg
 from triwarp.kernels import reduce as kernel_reduce
 from triwarp.laplacian import (
     MeshOperatorPattern,
@@ -720,7 +721,7 @@ def vector_heat_operators(
     # from the scalar mass as it reads it.
     vector_values = _launch.empty_like(connection.values)
     _launch.launch(
-        kernel_heat.SHIFTED_SYSTEM_VALUES[wp.mat22d],
+        kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.mat22d],
         dim=int(connection.nrow),
         inputs=[
             connection.offsets,
@@ -797,12 +798,12 @@ def _heat_operators(
 
     # Heat system (M - t L) and Poisson operator ``-L``, both over the Laplacian's own pattern
     # (which stores every referenced vertex's diagonal) and written in one pass
-    # (``kernels/heat.shifted_system_values``), so all three operators share one pattern. The two
+    # (``kernels/linalg.shifted_system_values``), so all three operators share one pattern. The two
     # preconditioners are mesh-only, so they belong here rather than in every solve. See Notes.
     heat_values = _launch.empty_like(laplacian.values)
     poisson_values = _launch.empty_like(laplacian.values)
     _launch.launch(
-        kernel_heat.SHIFTED_SYSTEM_VALUES[wp.float64],
+        kernel_linalg.SHIFTED_SYSTEM_VALUES[wp.float64],
         dim=int(laplacian.nrow),
         inputs=[
             laplacian.offsets,
@@ -843,8 +844,8 @@ def _edge_length_sums(
     default timestep costs one launch over an operator that already exists, where
     [`mean_unique_edge_length`][triwarp.edges.mean_unique_edge_length] would re-sort every edge of
     the mesh to recover the same set. The two sums stay on the device, where
-    ``kernels/heat.shifted_system_values`` squares their mean -- ``0`` for a mesh with no edges, as
-    that function returns.
+    ``kernels/linalg.shifted_system_values`` squares their mean -- ``0`` for a mesh with no edges,
+    as that function returns.
     """
     device = vertices.device
     n_rows = int(operator.nrow)

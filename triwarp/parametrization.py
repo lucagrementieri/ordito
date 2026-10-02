@@ -452,7 +452,7 @@ def _solve_biharmonic(
     sol = twt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
     if n_free > 0:
         q_uu, rhs = twl.assemble_interior_system(q, fixed_mask, free_map, fixed_values_2d, n_free)
-        neg_l = twt.bsr_axpy(x=laplacian, alpha=-1.0)
+        neg_l = _negated(laplacian)
         no_values = twt.as_array2d(
             _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
         )
@@ -647,7 +647,7 @@ def arap(
     # ``future work``: libigl also supports rotation groups ``G`` (shared rotations across grouped
     # faces, replacing the per-face fit with a group-summed covariance) and ``with_dynamics`` (a
     # mass-matrix + timestep term added to Q and the right-hand side); both are out of scope here.
-    neg_l = twt.bsr_axpy(x=laplacian, alpha=-1.0)
+    neg_l = _negated(laplacian)
     q_uu, rhs_const = twl.assemble_interior_system(
         neg_l, fixed_mask, interior_map, fixed_values_2d, n_interior
     )
@@ -710,6 +710,19 @@ def arap(
             device=device,
         )
     return out_uv
+
+
+def _negated(laplacian: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]:
+    """
+    ``-laplacian`` over the Laplacian's own sparsity pattern, which the result shares.
+
+    One elementwise launch where ``warp.sparse.bsr_axpy(x=laplacian, alpha=-1.0)`` copies the
+    pattern and scales through several launches and allocations; safe because both callers only
+    read the result, once, to extract a free block.
+    """
+    values = _launch.empty_like(laplacian.values)
+    _launch.map(wp.neg, laplacian.values, out=values)
+    return twl.bsr_with_values(laplacian, values)
 
 
 def _scatter_constraints(

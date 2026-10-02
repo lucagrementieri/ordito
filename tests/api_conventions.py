@@ -508,6 +508,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # the prolongation smoother's ``-w D^-1 (A P0)`` is a row scaling of a product that has just
     # been built and is not needed unscaled.
     ("algorithms.multigrid", "scale_rows"): frozenset({"values"}),
+    # ``ecl_compress`` lowers each node of the union-find forest to its root in place, between the
+    # pre-hook and the hook: ``parents`` is the forest itself, read and written by every launch on
+    # it, and ``out_`` would read as write-only.
+    ("algorithms.connected_components", "ecl_compress"): frozenset({"parents"}),
     # ``state`` is the ``wp.capture_while`` loop's own [rounds run, condition] pair, read and
     # incremented across launches -- the ``rdp_begin_round`` / ``rdp_split_spans`` case below,
     # under the same name.

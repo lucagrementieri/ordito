@@ -240,6 +240,11 @@ def unique_1d(
     if n > (1 << 30):
         raise ValueError(f"unique_1d requires length <= 2**30, got length {n}")
 
+    if data.dtype in _SORTED_UNIQUE_DTYPES:
+        unique, inverse, counts, _first = _unique_sorted(
+            data, n, return_inverse, return_counts, end_bit
+        )
+        return _pack_unique_result(unique, inverse=inverse, counts=counts)
     mask = wp.int32(kernel_grouping.hash_table_mask(n))
 
     # ``_unique_hash`` only ever *reads* the integer key array, so when the input already is one of
@@ -256,6 +261,70 @@ def unique_1d(
     else:
         data_int = bitcast_to_int(cast("wp.array[Any]", data), n)
     return _unique_hash(data, data_int, data.dtype, n, mask, return_inverse, return_counts, end_bit)
+
+
+# The dtypes ``unique_1d`` deduplicates by one radix sort of the values: every integer type Warp's
+# sort orders directly. Equal values are one run of the sort, so marking each run's first position,
+# scanning the marks and one emit give the sorted unique values, the inverse and the counts. The
+# hash table the other dtypes take has ``~2 n`` slots updated by random atomics where the sort
+# streams, and its probes serialize on a hot slot when few values repeat many times.
+_SORTED_UNIQUE_DTYPES = (wp.int32, wp.int64, wp.uint32, wp.uint64)
+
+
+def _unique_sorted(
+    data: wp.array[Any],
+    n: int,
+    return_inverse: bool,
+    return_counts: bool,
+    end_bit: int | None,
+    return_first: bool = False,
+) -> tuple[
+    wp.array[Any], wp.array[wp.int32] | None, wp.array[wp.int32] | None, wp.array[wp.int32] | None
+]:
+    """
+    [`unique_1d`][triwarp.grouping.unique_1d] by one radix sort of an integer ``data``.
+
+    Returns ``(unique, inverse, counts, first)``, each optional one ``None`` unless asked for;
+    ``first`` is [`first_occurrence_indices`][triwarp.grouping.first_occurrence_indices] of the
+    inverse, read off the stable sort. The keys and the identity payload are written into the
+    leading halves of the sort's double-width buffers; the run marks and their scan live in the
+    payload's upper half, which is free scratch once the sort has run. ``n > 0``.
+    """
+    device = data.device
+    dtype = data.dtype
+    keys = _launch.empty(2 * n, dtype=dtype, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_grouping.KEYS_AND_IDENTITY[dtype], dim=n, inputs=[data, keys, order], device=device
+    )
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
+    ranks = twt.as_dense(order[n:])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[dtype], dim=n, inputs=[keys, ranks], device=device
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The distinct count sizes the outputs.
+    n_unique = int(read_scalar(order, 2 * n - 1))
+    unique_values = _launch.empty(n_unique, dtype=dtype, device=device)
+    inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
+    starts = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
+    first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
+    _launch.launch(
+        kernel_grouping.EMIT_SORTED_UNIQUE[dtype],
+        dim=n,
+        inputs=[keys, order, ranks, unique_values, inverse, starts, first],
+        device=device,
+    )
+    counts = None
+    if starts is not None:
+        counts = _launch.empty(n_unique, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_grouping.run_lengths,
+            dim=n_unique,
+            inputs=[starts, wp.int32(n), counts],
+            device=device,
+        )
+    return unique_values, inverse, counts, first
 
 
 def _unique_hash(
@@ -660,22 +729,14 @@ def _unique_keys_core(
     each representative's original vertex order. Requires ``row_keys.shape[0] > 0``. ``max_value``
     is ``unique_1d``'s key bound, for a caller that packed against a known radix.
     """
-    # Call under a literal in each branch rather than unpacking one union-typed result: the
-    # ``return_counts`` overloads of ``unique_1d`` cannot discriminate a runtime bool, so the
-    # single-call form hands back a union nothing can narrow.
-    if return_counts:
-        unique_keys, inverse, counts = unique_1d(
-            row_keys, return_inverse=True, return_counts=True, max_value=max_value
-        )
-    else:
-        unique_keys, inverse = unique_1d(
-            row_keys, return_inverse=True, return_counts=False, max_value=max_value
-        )
-        counts = None
-    # The class count is the length of the unique-key array ``unique_1d`` just returned; recovering
-    # it as ``reduce.max(inverse) + 1`` would be a whole reduction launch and a host sync for a
-    # number already in hand.
-    first_idx = first_occurrence_indices(inverse, unique_keys.size)
+    # ``unique_1d``'s sorted path, which reads each class's first occurrence off its stable sort
+    # in the launch that writes the inverse -- no ``first_occurrence_indices`` scatter after it.
+    end_bit = None if max_value is None else max(1, int(max_value).bit_length())
+    _unique, inverse, counts, first_idx = _unique_sorted(
+        row_keys, row_keys.size, True, return_counts, end_bit, return_first=True
+    )
+    assert inverse is not None
+    assert first_idx is not None
     return inverse, first_idx, counts
 
 

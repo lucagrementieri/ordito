@@ -240,47 +240,85 @@ def pack_support_candidate(projection: wp.float32, index: wp.int32) -> wp.uint64
     return (wp.uint64(key) << wp.uint64(32)) | wp.uint64(~wp.uint32(index))
 
 
-@wp.kernel
-def support_argmax_sliced(
-    mesh_vertices: wp.array[wp.vec3],
-    n_vertices: wp.int32,
-    n_slices: wp.int32,
-    normals: wp.array[wp.vec3],
-    support_indices: wp.array[wp.int32],
-    out_packed: wp.array[wp.uint64],
-) -> None:
-    # Support point of the vertex cloud per deferred query: argmax of dot(v, n). One thread per
-    # (query, vertex slice) strides over the vertices, reduces its own running best into a packed
-    # (projection, index) key, and commits one atomic; the packed key's ordering makes atomic_max
-    # the global argmax with the lowest index as tie-break.
-    #
-    # `_sliced`, not `_tiled`, and the name is the contract: this is launched with a plain
-    # `wp.launch` and must stay lane-free, because the threads partition the **outer** work -- the
-    # vertex cloud -- rather than a sequence one block owns, so there is no `wp.block_dim()` to
-    # stride by. On the CPU device, where `wp.launch_tiled` runs one lane per block through
-    # Warp 1.17, that lane would cover `1/block_dim` of the slice. See `.claude/CLAUDE.md`
-    # section 2.2, and `obscurance` above for the other side of the rule -- one block per point,
-    # striding by `wp.block_dim()`, `wp.tile_sum` on both devices.
-    #
-    # Converting this to one block per deferred query is the same trade
-    # `kernels/points.py::hull_support_extremes` records and it is **declined for the same measured
-    # reason**: the slice dimension is what fills the device here, so the block form leaves one
-    # block per query and loses badly once the cloud is large. `obscurance` above qualified because
-    # it had no slice dimension at all.
-    q, j = wp.tid()
-    normal = normals[support_indices[q]]
-    best = wp.float32(-wp.inf)
-    best_index = wp.int32(0)
-    # A strict `>` already resolves a tie to the lowest index, because `idx` ascends: the first
-    # occurrence of a repeated projection is the one that takes `best`, and every later equal one
-    # fails the test. An explicit `idx < best_index` arm would be unreachable.
-    for idx in range(j, n_vertices, n_slices):
-        projection = wp.dot(mesh_vertices[idx], normal)
-        if projection > best:
-            best = projection
-            best_index = idx
-    if not wp.isinf(best):
-        wp.atomic_max(out_packed, q, pack_support_candidate(best, best_index))
+# Deferred queries one ``support_argmax_sliced`` thread may reduce together -- the widest that
+# still leaves ``SUPPORT_ARGMAX_MIN_THREADS`` threads (``support_argmax_width``), as in
+# ``kernels/points.hull_support_extremes``.
+SUPPORT_ARGMAX_WIDTHS = (4, 2, 1)
+SUPPORT_ARGMAX_MIN_THREADS = 1 << 17
+
+
+def _support_argmax_sliced_kernel(width: int) -> wp.Kernel:
+    """Build ``support_argmax_sliced`` over ``width`` deferred queries per thread."""
+    normals_t = wp.types.matrix(shape=(width, 3), dtype=wp.float32)
+    best_t = wp.types.vector(length=width, dtype=wp.float32)
+    index_t = wp.types.vector(length=width, dtype=wp.int32)
+
+    def support_argmax_sliced(
+        mesh_vertices: wp.array[wp.vec3],
+        n_vertices: wp.int32,
+        n_slices: wp.int32,
+        normals: wp.array[wp.vec3],
+        support_indices: wp.array[wp.int32],
+        out_packed: wp.array[wp.uint64],
+    ) -> None:
+        # Support point of the vertex cloud per deferred query: argmax of dot(v, n). One thread per
+        # (query, vertex slice) strides over the vertices, reduces its own running best into a
+        # packed (projection, index) key, and commits one atomic; the packed key's ordering makes
+        # atomic_max the global argmax with the lowest index as tie-break.
+        #
+        # `_sliced`, not `_tiled`, and the name is the contract: this is launched with a plain
+        # `wp.launch` and must stay lane-free, because the threads partition the **outer** work --
+        # the vertex cloud -- rather than a sequence one block owns, so there is no `wp.block_dim()`
+        # to stride by. On the CPU device, where `wp.launch_tiled` runs one lane per block through
+        # Warp 1.17, that lane would cover `1/block_dim` of the slice. See `.claude/CLAUDE.md`
+        # section 2.2, and `obscurance` above for the other side of the rule -- one block per point,
+        # striding by `wp.block_dim()`, `wp.tile_sum` on both devices.
+        #
+        # Converting this to one block per deferred query is the same trade
+        # `kernels/points.py::hull_support_extremes` records and it is **declined for the same
+        # measured reason**: the slice dimension is what fills the device here, so the block form
+        # leaves one block per query and loses badly once the cloud is large. `obscurance` above
+        # qualified because it had no slice dimension at all.
+        #
+        # Thread ``(b, j)`` takes queries ``b * width ..`` over vertex slice ``j``: each vertex it
+        # loads is projected onto every one of their normals from registers, so the cloud is
+        # streamed once per ``width`` queries. Each query keeps its own running best in the same
+        # vertex order, so the keys it commits are the one-query form's.
+        b, j = wp.tid()
+        n_queries = support_indices.shape[0]
+        q0 = b * width
+        # A slot past the last query repeats it; only the commit below skips it.
+        query_normals = normals_t()
+        for d in range(width):
+            query_normals[d] = normals[support_indices[wp.min(q0 + d, n_queries - 1)]]
+        best = best_t(-wp.inf)
+        best_index = index_t()
+        # A strict `>` already resolves a tie to the lowest index, because `idx` ascends: the first
+        # occurrence of a repeated projection is the one that takes `best`, and every later equal
+        # one fails the test. An explicit `idx < best_index` arm would be unreachable.
+        for idx in range(j, n_vertices, n_slices):
+            vertex = mesh_vertices[idx]
+            for d in range(width):
+                projection = wp.dot(vertex, query_normals[d])
+                if projection > best[d]:
+                    best[d] = projection
+                    best_index[d] = idx
+        for d in range(width):
+            if q0 + d < n_queries and not wp.isinf(best[d]):
+                wp.atomic_max(out_packed, q0 + d, pack_support_candidate(best[d], best_index[d]))
+
+    return wp.kernel(support_argmax_sliced, name=f"support_argmax_sliced_{width}")
+
+
+SUPPORT_ARGMAX_SLICED = {w: _support_argmax_sliced_kernel(w) for w in SUPPORT_ARGMAX_WIDTHS}
+
+
+def support_argmax_width(n_queries: int, n_slices: int) -> int:
+    """Return the widest ``SUPPORT_ARGMAX_WIDTHS`` entry keeping ``SUPPORT_ARGMAX_MIN_THREADS``."""
+    for width in SUPPORT_ARGMAX_WIDTHS:
+        if -(-n_queries // width) * n_slices >= SUPPORT_ARGMAX_MIN_THREADS:
+            return width
+    return 1
 
 
 @wp.kernel

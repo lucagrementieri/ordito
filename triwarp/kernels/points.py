@@ -645,47 +645,111 @@ def farthest_point_sample_block(
             out_selected[step] = chosen_index
 
 
-@wp.kernel
-def hull_support_extremes(
-    points: wp.array[wp.vec3],
-    directions: wp.array[wp.vec3],
-    n_slices: wp.int32,
-    out_best_max: wp.array[wp.float32],
-    out_best_min: wp.array[wp.float32],
-) -> None:
-    k, j = wp.tid()
-    n_p = points.shape[0]
-    direction = directions[k]
-    # Strided slice, NOT a contiguous chunk: consecutive threads read consecutive points, so the
-    # loads coalesce, and each thread contributes one atomic instead of one per point.
-    #
-    # Lane-free because the threads partition the **outer** work -- the cloud this reduction is
-    # over -- rather than a sequence one block owns, so there is no `wp.block_dim()` for them to
-    # stride by and a `wp.tile_max(wp.tile(...))` cannot be reached from here without changing the
-    # launch. `wp.launch_tiled` runs one lane per block on the CPU device through Warp 1.17, and
-    # that lane would then cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section 2.2;
-    # `farthest_point_sample_block` below is the other side of the rule, and reduces with
-    # `wp.tile_max` on both devices because its stride *is* `wp.block_dim()`.
-    #
-    # **Converting this to one block per direction was measured and refuted**, which is worth
-    # recording because the analogous rewrite of `kernels/visibility.py::obscurance` was a large win
-    # and the shapes look alike. They are not: `obscurance` launched `dim = n_points` with no second
-    # dimension, so the outer dimension alone was starving the device, while this kernel's *slice*
-    # dimension is what fills it. Collapsing that into `block_dim` lanes leaves one block per
-    # direction: measured with answers bit-identical, that is a win on a small cloud -- where the
-    # call is already microseconds -- and a several-fold **loss** on a large one, which is section
-    # 13's decline shape exactly. Do not re-propose it from the comment above.
-    local_max = wp.float32(-FLOAT32_INF_CONSTANT)
-    local_min = wp.float32(FLOAT32_INF_CONSTANT)
-    for i in range(j, n_p, n_slices):
-        distance = wp.dot(direction, points[i])
-        local_max = wp.max(local_max, distance)
-        local_min = wp.min(local_min, distance)
+# Directions one ``hull_support_extremes`` thread may reduce together: the point it loads is dotted
+# with each of them from registers, so the cloud is streamed ``n_directions / width`` times rather
+# than ``n_directions`` times -- the kernel is bound by that traffic, not by its arithmetic. Each
+# launch takes the widest that still leaves ``SUPPORT_MIN_THREADS`` threads (``support_width``),
+# since grouping directions divides the grid: 8 directions a thread is 2.7-3.1x on a 0.5 M-point
+# cloud and 4.5-11x on 14 M against one, 16 is slower than 8, and a 36 k-point cloud has too few
+# slices to group at all.
+SUPPORT_DIRECTION_WIDTHS = (8, 4, 2, 1)
+SUPPORT_MIN_THREADS = 1 << 17
 
-    # A slice past the end of the cloud contributes nothing.
-    if local_max > -FLOAT32_INF_CONSTANT:
-        wp.atomic_max(out_best_max, k, local_max)
-        wp.atomic_min(out_best_min, k, local_min)
+
+def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
+    """Build ``hull_support_extremes`` over ``width`` directions per thread."""
+    extremes_t = wp.types.vector(length=width, dtype=wp.float32)
+    directions_t = wp.types.matrix(shape=(width, 3), dtype=wp.float32)
+
+    def hull_support_extremes(
+        points: wp.array[wp.vec3],
+        directions: wp.array[wp.vec3],
+        n_slices: wp.int32,
+        out_best_max: wp.array[wp.float32],
+        out_best_min: wp.array[wp.float32],
+        out_slice_max: wp.array2d[wp.float32],
+        out_slice_min: wp.array2d[wp.float32],
+    ) -> None:
+        # Thread ``(b, j)`` reduces directions ``b * width ..`` over slice ``j``. Max and min are
+        # exact, so the grouping changes no extreme.
+        #
+        # ``out_slice_max`` / ``out_slice_min`` keep a bound on each ``(direction, slice)`` extreme
+        # for the filtered sweeps after this one (``support_indices``, ``mark_hull_support``): a
+        # slice whose bound does not reach a direction's threshold holds no point that does, so
+        # only the few that do are walked again. Both may be null descriptors (``None``).
+        b, j = wp.tid()
+        n_p = points.shape[0]
+        n_dir = directions.shape[0]
+        k0 = b * width
+        # Strided slice, NOT a contiguous chunk: consecutive threads read consecutive points, so the
+        # loads coalesce, and each thread contributes one atomic instead of one per point.
+        #
+        # Lane-free because the threads partition the **outer** work -- the cloud this reduction is
+        # over -- rather than a sequence one block owns, so there is no `wp.block_dim()` for them to
+        # stride by and a `wp.tile_max(wp.tile(...))` cannot be reached from here without changing
+        # the launch. `wp.launch_tiled` runs one lane per block on the CPU device through Warp 1.17,
+        # and that lane would then cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section
+        # 2.2; `farthest_point_sample_block` below is the other side of the rule, and reduces with
+        # `wp.tile_max` on both devices because its stride *is* `wp.block_dim()`.
+        #
+        # **Converting this to one block per direction was measured and refuted**, which is worth
+        # recording because the analogous rewrite of `kernels/visibility.py::obscurance` was a large
+        # win and the shapes look alike. They are not: `obscurance` launched `dim = n_points` with
+        # no second dimension, so the outer dimension alone was starving the device, while this
+        # kernel's *slice* dimension is what fills it. Collapsing that into `block_dim` lanes leaves
+        # one block per direction: measured with answers bit-identical, that is a win on a small
+        # cloud -- where the call is already microseconds -- and a several-fold **loss** on a large
+        # one, which is section 13's decline shape exactly. Do not re-propose it from the comment
+        # above.
+        dirs = directions_t()
+        for d in range(width):
+            if k0 + d < n_dir:
+                dirs[d] = directions[k0 + d]
+        local_max = extremes_t(-FLOAT32_INF_CONSTANT)
+        local_min = extremes_t(FLOAT32_INF_CONSTANT)
+        local_scale = extremes_t(0.0)
+        tables = out_slice_max.shape[0] > 0
+        for i in range(j, n_p, n_slices):
+            point = points[i]
+            for d in range(width):
+                distance = wp.dot(dirs[d], point)
+                local_max[d] = wp.max(local_max[d], distance)
+                local_min[d] = wp.min(local_min[d], distance)
+            if tables:
+                magnitude = wp.abs(point)
+                for d in range(width):
+                    local_scale[d] = wp.max(local_scale[d], wp.dot(wp.abs(dirs[d]), magnitude))
+
+        for d in range(width):
+            k = k0 + d
+            if k < n_dir:
+                if tables:
+                    # The sweeps that read these recompute each dot product in other code, where
+                    # FMA contraction may round it differently (see ``SUPPORT_TIE_SLACK``), so a
+                    # bare extreme could sit a ULP inside a point's recomputed value and skip it.
+                    # Widened by a bound on that rounding difference -- a few units in the last
+                    # place of ``sum |d_i p_i|``, the magnitude every term of the dot carries --
+                    # the filter is conservative, never exact-only.
+                    margin = wp.float32(1e-6) * local_scale[d]
+                    out_slice_max[k, j] = local_max[d] + margin
+                    out_slice_min[k, j] = local_min[d] - margin
+                # A slice past the end of the cloud contributes nothing.
+                if local_max[d] > -FLOAT32_INF_CONSTANT:
+                    wp.atomic_max(out_best_max, k, local_max[d])
+                    wp.atomic_min(out_best_min, k, local_min[d])
+
+    return wp.kernel(hull_support_extremes, name=f"hull_support_extremes_{width}")
+
+
+HULL_SUPPORT_EXTREMES = {w: _hull_support_extremes_kernel(w) for w in SUPPORT_DIRECTION_WIDTHS}
+
+
+def support_width(n_directions: int, n_slices: int) -> int:
+    """Return the widest ``SUPPORT_DIRECTION_WIDTHS`` entry keeping ``SUPPORT_MIN_THREADS``."""
+    for width in SUPPORT_DIRECTION_WIDTHS:
+        if -(-n_directions // width) * n_slices >= SUPPORT_MIN_THREADS:
+            return width
+    return 1
 
 
 @wp.func
@@ -704,15 +768,31 @@ def mark_hull_support(
     best_max: wp.array[wp.float32],
     best_min: wp.array[wp.float32],
     tolerance: wp.float32,
+    stride: wp.int32,
+    slice_max: wp.array2d[wp.float32],
+    slice_min: wp.array2d[wp.float32],
     out_mask: wp.array[wp.bool],
 ) -> None:
-    k, i = wp.tid()
+    # Thread ``(k, j)`` tests points ``j, j + stride, ...`` against direction ``k``. Two launch
+    # shapes, one rule: one thread per point (``stride`` the point count, the slice tables
+    # ``None``), or one per ``(direction, slice)`` of ``hull_support_extremes``' launch with its
+    # slice tables, walking a slice only if the slice's own extreme reaches one of the direction's
+    # two thresholds -- every point the exhaustive test would mark lies in such a slice, since its
+    # support value is the same ``wp.dot`` the slice extreme was folded from.
+    k, j = wp.tid()
     # A hemisphere direction n covers both +n (max, supports the vertex farthest
     # along n) and -n (min, supports the vertex farthest along -n).
-    distance = wp.dot(directions[k], points[i])
+    direction = directions[k]
     slack = support_slack(best_max[k], best_min[k], tolerance)
-    if distance >= best_max[k] - slack or distance <= best_min[k] + slack:
-        out_mask[i] = True
+    upper = best_max[k] - slack
+    lower = best_min[k] + slack
+    if slice_max.shape[0] > 0:
+        if slice_max[k, j] < upper and slice_min[k, j] > lower:
+            return
+    for i in range(j, points.shape[0], stride):
+        distance = wp.dot(direction, points[i])
+        if distance >= upper or distance <= lower:
+            out_mask[i] = True
 
 
 @wp.kernel
@@ -722,14 +802,24 @@ def support_indices(
     best_max: wp.array[wp.float32],
     best_min: wp.array[wp.float32],
     tolerance: wp.float32,
+    stride: wp.int32,
+    slice_max: wp.array2d[wp.float32],
     out_support: wp.array[wp.int32],
 ) -> None:
-    k, i = wp.tid()
-    slack = support_slack(best_max[k], best_min[k], tolerance)
-    if wp.dot(directions[k], points[i]) >= best_max[k] - slack:
-        # Lowest attaining index wins, so the shell is identical across launches even when
-        # several points tie for the support along a direction.
-        wp.atomic_min(out_support, k, i)
+    # ``mark_hull_support``'s two launch shapes, for the upper threshold alone, stopping at a
+    # thread's first attaining point -- its points ascend, so that is its lowest.
+    k, j = wp.tid()
+    upper = best_max[k] - support_slack(best_max[k], best_min[k], tolerance)
+    if slice_max.shape[0] > 0:
+        if slice_max[k, j] < upper:
+            return
+    direction = directions[k]
+    for i in range(j, points.shape[0], stride):
+        if wp.dot(direction, points[i]) >= upper:
+            # Lowest attaining index wins, so the shell is identical across launches even when
+            # several points tie for the support along a direction.
+            wp.atomic_min(out_support, k, i)
+            break
 
 
 @wp.kernel

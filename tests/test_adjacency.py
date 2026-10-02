@@ -996,6 +996,34 @@ def test_face_connected_component_labels_matches_meshlib(
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+def test_face_connected_component_labels_compressed_forest(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
+) -> None:
+    """
+    Triwarp against triwarp: compressing the pre-hooked forest changes no label.
+
+    ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
+    ``ECL_COMPRESS_FROM`` faces, which no fixture reaches, so the threshold is lowered to force it;
+    the uncompressed path carries the oracles (igl, scipy and meshlib, above). Two disjoint copies,
+    so the labels name more than one component.
+    """
+    from triwarp.kernels.algorithms import connected_components as kernel_cc
+
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = mesh_wp.indices.numpy()
+    doubled_wp = wp.array(
+        np.concatenate([faces_np, faces_np + faces_np.max() + 1]),
+        dtype=wp.int32,
+        device=mesh_wp.indices.device,
+    )
+    plain = tw.adjacency.face_connected_component_labels(doubled_wp).numpy()
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed = tw.adjacency.face_connected_component_labels(doubled_wp).numpy()
+    assert np.unique(plain).size >= 2
+    assert np.array_equal(compressed, plain)
+
+
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 @pytest.mark.parity("face_connected_component_labels", "pyvista")
 def test_face_connected_component_labels_matches_pyvista(
     request: pytest.FixtureRequest, mesh_name: str
