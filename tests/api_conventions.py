@@ -2,7 +2,7 @@
 Static scan of the public API's shape: names, summaries, file layout and module boundaries.
 
 Each check is a defect class that was actually found rather than an aesthetic preference. They run
-as an ``ast`` scan of ``triwarp/`` (excluding ``kernels/``, ``__init__.py`` and private ``_*.py``
+as an ``ast`` scan of ``ordito/`` (excluding ``kernels/``, ``__init__.py`` and private ``_*.py``
 modules) plus a listing of ``tests/`` and ``benchmarks/``, and
 [`tests/test_api_conventions.py`](test_api_conventions.py) fails the default test run on any
 violation. The authoritative list with its reasoning is ``.claude/CLAUDE.md`` section 4.5; what
@@ -66,7 +66,7 @@ follows is the one-line claim each check makes, so a failure message reads in co
     unpack is not a hit, and leaves ``_np`` out because it marks inputs as often as oracles. It
     checks that a label is *present*, never that it is the right one.
 20. **A conditional value in kernel scope is ``wp.where``, not a Python ternary** (section 1.5).
-21. **Nothing under ``triwarp/`` names MeshLib or promesh** -- a licensing guard (section 7.6).
+21. **Nothing under ``ordito/`` names MeshLib or promesh** -- a licensing guard (section 7.6).
 22. **A single-index ``wp.tid()`` is cast** (section 1.3).
 23. **A ``@wp.func`` reached by ``wp.map`` from several call sites has a declaration table**
     (section 3.5).
@@ -79,7 +79,7 @@ follows is the one-line claim each check makes, so a failure message reads in co
     renders as an exception type.
 26. **A Warp-typed module constant is not used as a Python-scope arithmetic operand or slice
     bound** (section 4.5). Its operators route through Warp's builtin dispatch.
-27. **No ``warp.sparse`` triplet build under ``triwarp/``** (section 3.7). An operator's matrix
+27. **No ``warp.sparse`` triplet build under ``ordito/``** (section 3.7). An operator's matrix
     is assembled from sorted keys (``array.csr_from_keys``) or, for genuinely unordered input,
     ``array.csr_from_triplets``.
 28. **Every public module is shelved in ``docs/SUMMARY.md`` exactly once.** Zensical's
@@ -88,7 +88,7 @@ follows is the one-line claim each check makes, so a failure message reads in co
 29. **An array's entry opens with its shape as a code span** (section 6): ``(3 * n_faces,)`` flat
     triangle index buffer, not ``Length-``, ``Shape ``(``, ``Flat `` or ``Rank-1 `` first.
 
-Why a static scan rather than importing ``triwarp``
+Why a static scan rather than importing ``ordito``
 ---------------------------------------------------
 Importing would make the verdict depend on Warp's module cache and on which optional dependencies
 resolve, and would say nothing about files (checks 4 and 7) at all. A scan reads the tree as
@@ -112,7 +112,7 @@ from pathlib import Path
 
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
-_PACKAGE_DIR = _REPO_ROOT / "triwarp"
+_PACKAGE_DIR = _REPO_ROOT / "ordito"
 _KERNELS_DIR = _PACKAGE_DIR / "kernels"
 _BENCHMARKS_DIR = _REPO_ROOT / "benchmarks"
 
@@ -143,7 +143,7 @@ _EXTRA_TEST_FILES = frozenset(
         "map_uniform_probe",  # a Warp-behaviour probe, not a module's coverage
         "array_indexing_probe",  # ditto: Python-scope gather semantics, section 3.4
         "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
-        "launch",  # covers triwarp._launch, the private launcher every wrapper module calls
+        "launch",  # covers ordito._launch, the private launcher every wrapper module calls
     }
 )
 _EXTRA_BENCHMARK_FILES = frozenset({"meshes"})  # mesh-fixture invariants, nothing timed
@@ -238,7 +238,7 @@ _WARP_VERSION_CLAIM = re.compile(r"\bWarp\s+1\.(\d+)(?:\.(\d+))?\b")
 # Version claims that deliberately record history rather than describe the installed Warp. Keyed by
 # ``(module, "1.x")``; the value is the reason, and it is where the re-verification goes -- so the
 # next upgrade reads a list of claims to re-run instead of a grep to invent. Modules under
-# ``triwarp/`` are keyed by their dotted name, everything else by its path
+# ``ordito/`` are keyed by their dotted name, everything else by its path
 # (``tests.api_conventions``, ``benchmarks.test_creation``).
 _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
     # ---------------------------------------------------------------------------------------
@@ -276,7 +276,7 @@ _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
     ),
 }
 
-# Directories check 9 scans, and the prefix each one's allowlist key carries. ``triwarp/`` keeps the
+# Directories check 9 scans, and the prefix each one's allowlist key carries. ``ordito/`` keeps the
 # bare dotted module name it has always used; the two suites are prefixed so a key stays unambiguous
 # when a test file and a package module share a stem.
 _WARP_VERSION_SCAN_ROOTS: tuple[tuple[Path, str], ...] = (
@@ -292,7 +292,7 @@ _WARP_VERSION_SCAN_ROOTS: tuple[tuple[Path, str], ...] = (
 _ALLOCATORS = frozenset({"array", "empty", "full", "ones", "zeros"})
 
 # The call prefixes check 10 and check 15 read: Warp's own allocators and launchers, and
-# ``triwarp._launch``'s cached versions of them, which the wrapper layer calls instead and which
+# ``ordito._launch``'s cached versions of them, which the wrapper layer calls instead and which
 # take the same ``device`` keyword. Without the second, rewriting a call site onto the cached path
 # would take it out of both checks' view with nothing going red.
 _DEVICE_CALL_OWNERS = frozenset({("wp",), ("_launch",)})
@@ -559,7 +559,7 @@ class PublicFunction:
     @property
     def site(self) -> str:
         """Render as ``path:lineno`` so editors and terminals can jump to it."""
-        return f"triwarp/{self.module.replace('.', '/')}.py:{self.lineno}"
+        return f"ordito/{self.module.replace('.', '/')}.py:{self.lineno}"
 
 
 @dataclass(frozen=True)
@@ -580,7 +580,7 @@ class PublicModule:
 
 @dataclass
 class PackageScan:
-    """Everything the checks below read, gathered in one pass over ``triwarp/``."""
+    """Everything the checks below read, gathered in one pass over ``ordito/``."""
 
     modules: dict[str, PublicModule] = field(default_factory=dict)
     errors: list[str] = field(default_factory=list)
@@ -662,14 +662,14 @@ def _private_imports(tree: ast.Module, module: str) -> list[tuple[str, int]]:
     """
     Every private name this module reaches for across a module boundary.
 
-    Two spellings reach one: ``from triwarp.x import _y`` (which ``ray.py`` used to alias straight
-    back to a public-looking name) and the attribute form ``tw.x._y``. Both are collected as
+    Two spellings reach one: ``from ordito.x import _y`` (which ``ray.py`` used to alias straight
+    back to a public-looking name) and the attribute form ``od.x._y``. Both are collected as
     ``"x._y"`` so the allowlist is keyed the same way regardless of which was used.
     """
     found: dict[tuple[str, int], None] = {}
     for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("triwarp"):
-            owner = node.module.removeprefix("triwarp").lstrip(".")
+        if isinstance(node, ast.ImportFrom) and node.module and node.module.startswith("ordito"):
+            owner = node.module.removeprefix("ordito").lstrip(".")
             if owner in ("", module) or owner.startswith("kernels"):
                 continue
             for alias in node.names:
@@ -677,7 +677,7 @@ def _private_imports(tree: ast.Module, module: str) -> list[tuple[str, int]]:
                     found[(f"{owner}.{alias.name}", node.lineno)] = None
         elif isinstance(node, ast.Attribute) and node.attr.startswith("_"):
             parts = _dotted(node)
-            if len(parts) == 3 and parts[0] == "tw" and parts[1] != module:
+            if len(parts) == 3 and parts[0] == "od" and parts[1] != module:
                 found[(f"{parts[1]}.{parts[2]}", node.lineno)] = None
     return sorted(found)
 
@@ -716,7 +716,7 @@ def _early_helpers(tree: ast.Module) -> list[tuple[str, int, int]]:
 
 @functools.cache
 def scan_package() -> PackageScan:
-    """Read every public wrapper module under ``triwarp/``, skipping ``kernels/`` and ``_*.py``."""
+    """Read every public wrapper module under ``ordito/``, skipping ``kernels/`` and ``_*.py``."""
     scan = PackageScan()
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         relative = path.relative_to(_PACKAGE_DIR)
@@ -728,7 +728,7 @@ def scan_package() -> PackageScan:
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except SyntaxError as error:
-            scan.errors.append(f"triwarp/{relative.as_posix()}:{error.lineno or 0}: {error.msg}")
+            scan.errors.append(f"ordito/{relative.as_posix()}:{error.lineno or 0}: {error.msg}")
             continue
 
         functions = tuple(
@@ -750,7 +750,7 @@ def scan_package() -> PackageScan:
         )
         scan.modules[module] = PublicModule(
             name=module,
-            path=f"triwarp/{relative.as_posix()}",
+            path=f"ordito/{relative.as_posix()}",
             summary=_summary(tree),
             functions=functions,
             private_imports=tuple(_private_imports(tree, module)),
@@ -824,7 +824,7 @@ def coverage_location_problems() -> list[str]:
             )
         for module in sorted(modules - stems - exempt):
             problems.append(
-                f"triwarp/{module}.py: no {suite}/test_{module}.py -- coverage is per module"
+                f"ordito/{module}.py: no {suite}/test_{module}.py -- coverage is per module"
             )
     return problems
 
@@ -862,12 +862,12 @@ def kernel_module_problems() -> list[str]:
     public -= {stem for stem in public if stem.startswith("_")}
     kernels = {path.stem for path in _KERNELS_DIR.glob("*.py") if path.stem != "__init__"}
     problems = [
-        f"triwarp/kernels/{stem}.py: no triwarp/{stem}.py -- a top-level kernel module is named "
+        f"ordito/kernels/{stem}.py: no ordito/{stem}.py -- a top-level kernel module is named "
         "for the public module it backs"
         for stem in sorted(kernels - public - _SHARED_KERNEL_MODULES)
     ]
     problems += [
-        f"triwarp/{stem}.py: no triwarp/kernels/{stem}.py -- a moved wrapper takes its kernels "
+        f"ordito/{stem}.py: no ordito/kernels/{stem}.py -- a moved wrapper takes its kernels "
         "with it"
         for stem in sorted(public - kernels - _MODULES_WITHOUT_KERNELS)
     ]
@@ -1004,12 +1004,12 @@ def allocation_device_problems() -> list[str]:
                 seen.add(key)
                 continue
             problems.append(
-                f"triwarp/{relative.as_posix()}:{lineno}: {call} has no device= -- it lands on "
+                f"ordito/{relative.as_posix()}:{lineno}: {call} has no device= -- it lands on "
                 "Warp's *current* device, which is the input's only by accident under the test "
                 "suite; forward the device of the arrays it will be used with"
             )
     problems.extend(
-        f"_ALLOCATION_DEVICE_ALLOWLIST entry {key!r} matches nothing in triwarp/ -- drop it"
+        f"_ALLOCATION_DEVICE_ALLOWLIST entry {key!r} matches nothing in ordito/ -- drop it"
         for key in sorted(_ALLOCATION_DEVICE_ALLOWLIST)
         if key not in seen
     )
@@ -1068,7 +1068,7 @@ class DocstringExample:
 
 def docstring_examples() -> list[DocstringExample]:
     """
-    Every fenced ``python`` block in ``triwarp/``, dedented to column zero.
+    Every fenced ``python`` block in ``ordito/``, dedented to column zero.
 
     Read off the raw source rather than off docstring nodes: a block's *line number* is what makes
     a failure reportable, and ``ast`` gives the docstring's line, not the fence's. ``kernels/`` is
@@ -1091,7 +1091,7 @@ def docstring_examples() -> list[DocstringExample]:
                 body.append(line.removeprefix(indent))
             examples.append(
                 DocstringExample(
-                    site=f"triwarp/{relative.as_posix()}:{fence + 1}", code="\n".join(body) + "\n"
+                    site=f"ordito/{relative.as_posix()}:{fence + 1}", code="\n".join(body) + "\n"
                 )
             )
     return examples
@@ -1208,7 +1208,7 @@ def kernel_output_naming_problems() -> list[str]:
     """
     Check 13: a kernel output argument without the ``out_`` prefix, or not at the signature's end.
 
-    ``.claude/CLAUDE.md`` section 2.1's naming rule for ``triwarp/kernels/``, with its two written
+    ``.claude/CLAUDE.md`` section 2.1's naming rule for ``ordito/kernels/``, with its two written
     exemptions (in-place arguments and scratch / persistent-state buffers) carried by
     ``_KERNEL_OUTPUT_ALLOWLIST``. Both directions are checked: a *written* argument must wear the
     prefix, and nothing without the prefix may follow the first argument that wears it.
@@ -1354,14 +1354,14 @@ def launch_device_problems() -> list[str]:
                 seen.add(key)
                 continue
             problems.append(
-                f"triwarp/{relative.as_posix()}:{node.lineno}: wp.{node.func.attr}({kernel}, ...) "
+                f"ordito/{relative.as_posix()}:{node.lineno}: wp.{node.func.attr}({kernel}, ...) "
                 "has no device= -- it launches on Warp's *current* device, so with CPU arrays it "
                 "runs the kernel on cuda:0 over host pointers, returns the right answer, and "
                 "corrupts the host heap when those arrays are freed mid-kernel; forward the device "
                 "of the input arrays"
             )
     problems.extend(
-        f"_LAUNCH_DEVICE_ALLOWLIST entry {key!r} matches nothing in triwarp/ -- drop it"
+        f"_LAUNCH_DEVICE_ALLOWLIST entry {key!r} matches nothing in ordito/ -- drop it"
         for key in sorted(_LAUNCH_DEVICE_ALLOWLIST)
         if key not in seen
     )
@@ -1673,10 +1673,10 @@ _REFERENCE_SUFFIXES = ("_tm", "_igl", "_pp", "_pml", "_o3d", "_pv", "_ml", "_pmf
 
 # The four phrases the suite uses to label a comparison, all four in good standing. ``Class [ABCD]``
 # and ``Not a library comparison`` are section 6's named labels; ``Not a parity assert`` and
-# ``Triwarp against triwarp`` are its triwarp-against-triwarp family. A gate accepting only the
+# ``Ordito against ordito`` are its ordito-against-ordito family. A gate accepting only the
 # first two would fail 14 correct tests and the author's fix would be to reword good docstrings.
 _COMPARISON_LABELS = re.compile(
-    r"Class [ABCD]\b|Not a library comparison|Not a parity assert|[Tt]riwarp against triwarp"
+    r"Class [ABCD]\b|Not a library comparison|Not a parity assert|[Oo]rdito against ordito"
 )
 
 
@@ -1702,7 +1702,7 @@ def comparison_label_problems() -> list[str]:
     must not try: a ``_tm`` name inside an ``assert`` is not proof of an oracle.
     ``test_split_single_component`` compares ``split``'s output against ``mesh_tm.vertices``, the
     *input* mesh, which is a round trip; and in
-    ``test_split_faces_along_field_positive_side_is_the_clip`` the ``_tm`` names are triwarp results
+    ``test_split_faces_along_field_positive_side_is_the_clip`` the ``_tm`` names are ordito results
     run through ``warp_to_trimesh``. Both are correctly labelled and neither is a library
     comparison.
 
@@ -1785,9 +1785,9 @@ def kernel_scope_ternary_problems() -> list[str]:
 # both: say what the code computes, or name the algorithm in the literature's vocabulary. Their
 # *reasons* differ and are worth keeping apart -- MeshLib first, then promesh below.
 #
-# MeshLib's licence restricts *use*, not merely distribution of derivatives, and triwarp ships
+# MeshLib's licence restricts *use*, not merely distribution of derivatives, and ordito ships
 # ``MIT OR Apache-2.0`` -- so ``.claude/CLAUDE.md``'s MeshLib block requires that nothing under
-# ``triwarp/`` name the library at all: not the library, not one of its C++ functions, not one of
+# ``ordito/`` name the library at all: not the library, not one of its C++ functions, not one of
 # its source files. This is the pattern that sentence's grep asks for, widened in two ways the
 # eighth kernels pass measured as necessary. The ``MR`` prefix covers a source-file or class name
 # generically (the block's own list of four symbols matched *none* of the three file-name comments
@@ -1822,13 +1822,13 @@ _UNCITABLE_REFERENCES = re.compile(
 
 def uncitable_reference_problems() -> list[str]:
     """
-    Check 21: a name anywhere under ``triwarp/`` that the shipped package may not cite.
+    Check 21: a name anywhere under ``ordito/`` that the shipped package may not cite.
 
     Two libraries qualify, for opposite reasons, and the check is one scan because the *fix* is
     identical either way.
 
-    **MeshLib** -- ``.claude/CLAUDE.md``'s MeshLib block: *"Nothing under ``triwarp/`` may name
-    MeshLib at all"*, because its licence restricts use rather than distribution and triwarp ships
+    **MeshLib** -- ``.claude/CLAUDE.md``'s MeshLib block: *"Nothing under ``ordito/`` may name
+    MeshLib at all"*, because its licence restricts use rather than distribution and ordito ships
     ``MIT OR Apache-2.0``, so an attribution comment collectively reads as a claim that a
     permissively licensed package is derived from a proprietary one. 89 such references were
     removed in one pass across 19 files; five had come back by the eighth kernels pass, two of them
@@ -1971,7 +1971,7 @@ def map_declaration_problems() -> list[str]:
     for (module, op), count in sorted(sites.items()):
         if count >= 2 and module not in declared and module not in _MAP_DECLARATION_ALLOWLIST:
             problems.append(
-                f"triwarp/kernels/{module}.py maps '{op}' from {count} call sites and has no "
+                f"ordito/kernels/{module}.py maps '{op}' from {count} call sites and has no "
                 f"_declare_map_kernels() -- see kernels/array.py::declare_map_signatures"
             )
     return problems
@@ -2119,7 +2119,7 @@ def admonition_placement_problems() -> list[str]:
     meaning and no reordering of anything a caller reads first. An allowlist here would only ever
     hold a site nobody had moved yet.
 
-    Scans every module under ``triwarp/``, ``kernels/`` included. Nothing in ``kernels/`` renders,
+    Scans every module under ``ordito/``, ``kernels/`` included. Nothing in ``kernels/`` renders,
     so a hit there is cosmetic rather than a broken page -- but the convention is the same one, the
     scan is the same scan, and a rule that holds in one half of the tree and not the other is a
     rule the next reader has to look up.
@@ -2240,7 +2240,7 @@ def warp_host_arithmetic_problems() -> list[str]:
     raise ``TypeError``, and ``wp.zeros(wp.int32(n))`` raises too -- so arithmetic and slicing are
     the whole of the hazard.
 
-    **Scope is deliberately narrow.** Uses are read in the wrapper layer (``triwarp/*.py``, which
+    **Scope is deliberately narrow.** Uses are read in the wrapper layer (``ordito/*.py``, which
     holds no kernel bodies at all) and at *module scope* in ``kernels/``; a kernel or ``@wp.func``
     body is where these constants are supposed to be used and is never read. The check also stops
     at constants: extending it to ``wp.length`` / ``wp.cross`` calls would flag mostly legitimate
@@ -2309,7 +2309,7 @@ _TRIPLET_BUILDERS = frozenset({"bsr_from_triplets", "bsr_set_from_triplets"})
 
 def triplet_build_problems() -> list[str]:
     """
-    Check 27: a call to ``warp.sparse``'s triplet builders anywhere under ``triwarp/``.
+    Check 27: a call to ``warp.sparse``'s triplet builders anywhere under ``ordito/``.
 
     ``bsr_from_triplets`` sorts every triplet on a full-width key and allocates scratch several
     times the matrix; on a 28 M-face mesh ``cotmatrix`` spent 9.4 GB a call there for a matrix
@@ -2345,7 +2345,7 @@ def triplet_build_problems() -> list[str]:
 # --- check 28 -----------------------------------------------------------------------------------
 
 _DOCS_NAV = _REPO_ROOT / "docs" / "SUMMARY.md"
-_DOCS_API_LINK = re.compile(r"\(api/triwarp/(\w+)\.md\)")
+_DOCS_API_LINK = re.compile(r"\(api/ordito/(\w+)\.md\)")
 
 
 def docs_nav_problems() -> list[str]:
@@ -2361,15 +2361,15 @@ def docs_nav_problems() -> list[str]:
     listed = _DOCS_API_LINK.findall(_DOCS_NAV.read_text(encoding="utf-8"))
     public = {path.stem for path in _PACKAGE_DIR.glob("*.py") if not path.stem.startswith("_")}
     problems = [
-        f"docs/SUMMARY.md: triwarp.{name} is not in the nav -- shelve it in an API section"
+        f"docs/SUMMARY.md: ordito.{name} is not in the nav -- shelve it in an API section"
         for name in sorted(public - set(listed))
     ]
     problems += [
-        f"docs/SUMMARY.md: triwarp.{name} is listed but the module does not exist"
+        f"docs/SUMMARY.md: ordito.{name} is listed but the module does not exist"
         for name in sorted(set(listed) - public)
     ]
     problems += [
-        f"docs/SUMMARY.md: triwarp.{name} is listed {listed.count(name)} times -- once only"
+        f"docs/SUMMARY.md: ordito.{name} is listed {listed.count(name)} times -- once only"
         for name in sorted({name for name in listed if listed.count(name) > 1})
     ]
     return problems

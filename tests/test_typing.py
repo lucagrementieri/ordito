@@ -7,20 +7,20 @@ import numpy as np
 import pytest
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conversions import warp_empty
 
 
 def test_ensure_ndim_rejects_1d(device: str) -> None:
     arr = wp.array([1, 2, 3], dtype=wp.int32, device=device)
     with pytest.raises(TypeError, match="expected 2D array"):
-        twt.ensure_ndim(arr, 2)
+        odt.ensure_ndim(arr, 2)
 
 
 def test_as_array2d_accepts_2d(device: str) -> None:
     arr = warp_empty((2, 3), wp.int32, device)
-    out = twt.as_array2d(arr, wp.int32)
+    out = odt.as_array2d(arr, wp.int32)
     assert out.ndim == 2
     assert out.dtype == wp.int32
 
@@ -42,17 +42,17 @@ _FLOAT_DTYPES: tuple[type, ...] = (wp.float16, wp.float32, wp.float64)
 def test_dtype_max() -> None:
     for wp_dt, np_ic in _INT_WP_TO_NUMPY:
         np_dtype = np.dtype(np_ic)
-        assert twt.dtype_max(wp_dt) == np.iinfo(np_dtype).max
+        assert odt.dtype_max(wp_dt) == np.iinfo(np_dtype).max
     for wp_dt in _FLOAT_DTYPES:
-        assert np.isposinf(twt.dtype_max(wp_dt))
+        assert np.isposinf(odt.dtype_max(wp_dt))
 
 
 def test_dtype_min() -> None:
     for wp_dt, np_ic in _INT_WP_TO_NUMPY:
         np_dtype = np.dtype(np_ic)
-        assert twt.dtype_min(wp_dt) == np.iinfo(np_dtype).min
+        assert odt.dtype_min(wp_dt) == np.iinfo(np_dtype).min
     for wp_dt in _FLOAT_DTYPES:
-        assert np.isneginf(twt.dtype_min(wp_dt))
+        assert np.isneginf(odt.dtype_min(wp_dt))
 
 
 _ALLOCATOR_DTYPES = [wp.int32, wp.float32, wp.float64, wp.bool, wp.vec3, wp.mat33]
@@ -74,9 +74,9 @@ def test_the_empty_family_is_one_allocator_at_three_ranks(
     uninitialized.
     """
     allocators: dict[int, Callable[..., wp.array[object, Any]]] = {
-        1: twt.empty_1d,
-        2: twt.empty_2d,
-        3: twt.empty_3d,
+        1: odt.empty_1d,
+        2: odt.empty_2d,
+        3: odt.empty_3d,
     }
     allocate = allocators[len(shape)]
     arr = allocate(shape[0] if len(shape) == 1 else shape, dtype_wp, device=device)
@@ -89,20 +89,20 @@ def test_the_empty_family_is_one_allocator_at_three_ranks(
 def test_the_empty_family_rejects_a_shape_of_the_wrong_rank(device: str) -> None:
     """The rank each entry point fixes is checked against ``shape``, not merely annotated."""
     with pytest.raises(ValueError, match="2D shape must have length 2"):
-        twt.empty_2d((2, 3, 4), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
+        odt.empty_2d((2, 3, 4), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
     with pytest.raises(ValueError, match="3D shape must have length 3"):
-        twt.empty_3d((2, 3), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
+        odt.empty_3d((2, 3), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
 
 
 def test_dtype_zero_splits_int_and_float_like_python() -> None:
     """Integer types give a Python ``int`` and float ones a ``float``, not merely ``== 0``."""
     for dtype_wp, _np_dtype in _INT_WP_TO_NUMPY:
-        zero = twt.dtype_zero(dtype_wp)
+        zero = odt.dtype_zero(dtype_wp)
         assert zero == 0
         assert isinstance(zero, int)
         assert not isinstance(zero, bool)
     for dtype_wp in _FLOAT_DTYPES:
-        zero = twt.dtype_zero(dtype_wp)
+        zero = odt.dtype_zero(dtype_wp)
         assert zero == 0.0
         assert isinstance(zero, float)
 
@@ -110,7 +110,7 @@ def test_dtype_zero_splits_int_and_float_like_python() -> None:
 @pytest.mark.parametrize("dtype_wp", [wp.float32, wp.bool])
 def test_empty_3d_shape(device: str, dtype_wp: type) -> None:
     """The rank-3 allocator over both dtypes its overloads admit, on the caller's device."""
-    arr = twt.empty_3d((2, 3, 4), dtype_wp, device=device)
+    arr = odt.empty_3d((2, 3, 4), dtype_wp, device=device)
     assert arr.shape == (2, 3, 4)
     assert arr.ndim == 3
     assert arr.dtype == dtype_wp
@@ -160,7 +160,7 @@ def test_sortable_dtype_is_exactly_what_warp_can_radix_sort(device: str) -> None
     assert accepted == {wp.int32, wp.uint32, wp.int64, wp.uint64, wp.float32, wp.float64}
 
     for dtype in _SCALAR_DTYPES:
-        target = twt.sortable_dtype(dtype)
+        target = odt.sortable_dtype(dtype)
         assert target in accepted, f"{dtype.__name__} widened to an unsortable {target.__name__}"
         # A fixed point exactly on the accepted set: nothing sortable is widened, nothing else is
         # left alone.
@@ -187,7 +187,7 @@ def test_sortable_dtype_preserves_the_order_of_the_original_values(
     already-sortable dtype and says so, and this mirrors what ``grouping.group`` and
     ``grouping.unique_1d`` do with the answer.
     """
-    sort_dtype = twt.sortable_dtype(dtype_wp)
+    sort_dtype = odt.sortable_dtype(dtype_wp)
     if dtype_wp is wp.uint64:
         values_np = np.array([2**63 + 5, 1, 2**64 - 1, 0, 2**63], dtype=np.uint64)
     elif dtype_wp is wp.float16:
@@ -205,7 +205,7 @@ def test_sortable_dtype_preserves_the_order_of_the_original_values(
         wp.utils.array_cast(values_wp, widened_wp)
 
     # One array of a union dtype, where the sort takes a union of arrays: dtype is invariant.
-    sorted_wp, order_wp = tw.array.sort_and_argsort(cast("twt.ArrayNdScalar", widened_wp))
+    sorted_wp, order_wp = od.array.sort_and_argsort(cast("odt.ArrayNdScalar", widened_wp))
 
     # Compare against the *original* dtype's numpy order: the widening must not have changed it.
     assert np.array_equal(order_wp.numpy(), np.argsort(values_np, kind="stable"))

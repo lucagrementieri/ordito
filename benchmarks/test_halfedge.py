@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.halfedge``: edge twins and counter-clockwise vertex one-rings.
+Benchmarks for ``ordito.halfedge``: edge twins and counter-clockwise vertex one-rings.
 
 Two axes, and they measure different things:
 
@@ -39,7 +39,7 @@ rotational order -- the property that makes the one-ring useful for tangent spac
 
 **libigl** has ``igl.triangle_triangle_adjacency``, whose ``(F, 3)`` ``TT``/``TTi`` pair carries the
 same information as ``twins`` in a different layout. It is the one reference that could be lined up
-here; it is left out because the closest triwarp function is ``adjacency.face_adjacency``, where it
+here; it is left out because the closest ordito function is ``adjacency.face_adjacency``, where it
 is now a row ([`test_adjacency.py`](test_adjacency.py)), and adding a second row for a reshaped copy
 of the same computation would double-count it.
 
@@ -59,28 +59,28 @@ from __future__ import annotations
 
 import pytest
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 
 @pytest.mark.benchmark(group="halfedge_twins")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_halfedge_twins(bench_case: BenchCase) -> None:
     """Hash, radix sort and pair up: the ``N``-driven half of this module."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
-    twins = bench_case.run(lambda: tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices))
+    twins = bench_case.run(lambda: od.halfedge.halfedge_twins(faces, n_vertices=n_vertices))
     assert twins.shape == (faces.size,)
 
 
 @pytest.mark.benchmark(group="vertex_one_rings")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_vertex_one_rings(bench_case: BenchCase) -> None:
     """One serial rotation per vertex: on the valence axis, where the widest ring dominates."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     ring, offsets, _ = bench_case.run(
-        lambda: tw.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
+        lambda: od.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
     )
     assert offsets.shape == (n_vertices + 1,)
     assert ring.shape == (faces.size,)
@@ -88,12 +88,12 @@ def test_vertex_one_rings(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vertex_one_rings_scale")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_vertex_one_rings_scale(bench_case: BenchCase) -> None:
     """The same walk over uniform valence-6 meshes, for the ``N`` slope without the hub."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
-    twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+    twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
     _, offsets, _ = bench_case.run(
-        lambda: tw.halfedge.vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
+        lambda: od.halfedge.vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
     )
     assert offsets.shape == (n_vertices + 1,)

@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.selection``: submesh extraction and vertex-selection morphology.
+Benchmarks for ``ordito.selection``: submesh extraction and vertex-selection morphology.
 
 Two axes, and neither is the face count:
 
@@ -15,7 +15,7 @@ Two axes, and neither is the face count:
 References
 ----------
 **trimesh**'s ``Trimesh.submesh`` is the reference for the extraction group; it takes a sequence of
-face-index groups and returns a list of meshes, so it is given a single group to match triwarp's
+face-index groups and returns a list of meshes, so it is given a single group to match ordito's
 single submesh.
 
 Neither trimesh nor open3d nor libigl has selection *morphology* -- growing or shrinking a mask
@@ -27,7 +27,7 @@ Two differences to read the rows against, neither of them correctable:
 - **It is face morphology, not vertex morphology.** MeshLab dilates the selected *face* set (via
   VCGlib's loose vertex-from-face / face-from-vertex pair), so seeding it needs
   ``compute_selection_by_condition_per_face`` and a vertex selection handed to it is simply cleared.
-  triwarp grows a vertex mask through the faces' corners. Same operation class, same asymptotic work
+  ordito grows a vertex mask through the faces' corners. Same operation class, same asymptotic work
   -- one full pass over the elements per hop -- on a different element type.
 - **One filter call is one hop**, so the reference is a host loop of ``hops`` calls, which is
   structurally what ``expand_vertex_mask``'s own per-hop launch loop does.
@@ -38,7 +38,7 @@ depend on how much is selected (measured flat over 120 consecutive dilatations c
 ``sphere_med`` from a fraction of a percent to most of the faces selected). Rebuilding instead would
 put a MeshSet build an order of magnitude dearer than the filter on top of it and flatten the slope
 this group exists to measure. Both reference slopes are linear in the hop count, confirming
-independently that a hop is constant work; triwarp is an order of magnitude ahead throughout.
+independently that a hop is constant work; ordito is an order of magnitude ahead throughout.
 
 trimesh's ``graph.connected_component_labels`` could reproduce
 ``exclude_fully_selected_components`` in several steps, but not as one call, so that group remains a
@@ -58,8 +58,8 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase
 
 if TYPE_CHECKING:
@@ -77,7 +77,7 @@ _SEED_FRACTION = 0.01
 _SUBMESH_FRACTION = 0.5
 
 _mask_cache: dict[tuple[str, str], wp.array[wp.bool]] = {}
-_edges_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
+_edges_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
 _indices_cache: dict[tuple[str, str], tuple[wp.array[wp.int32], np.ndarray]] = {}
 
 
@@ -102,11 +102,11 @@ def _seed_mask_np(bench_case: BenchCase) -> np.ndarray:
     return mask_np
 
 
-def _unique_edges(bench_case: BenchCase) -> twt.Array2dInt32:
+def _unique_edges(bench_case: BenchCase) -> odt.Array2dInt32:
     """Build the unique edge table once: an *input*, so morphology never re-times the sort."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _edges_cache:
-        _edges_cache[key] = tw.edges.edges_unique(
+        _edges_cache[key] = od.edges.edges_unique(
             bench_case.faces_wp, n_vertices=bench_case.n_vertices
         )[0]
     return _edges_cache[key]
@@ -128,7 +128,7 @@ def _seeded_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 @pytest.mark.benchmark(group="expand_vertex_mask")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("hops", _HOPS)
 def test_expand_vertex_mask(bench_case: BenchCase, hops: int) -> None:
     """
@@ -151,9 +151,9 @@ def test_expand_vertex_mask(bench_case: BenchCase, hops: int) -> None:
 
         assert bench_case.run(expand_ml) > 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces, mask = bench_case.faces_wp, _seed_mask(bench_case)
-        grown = bench_case.run(lambda: tw.selection.expand_vertex_mask(faces, mask, hops))
+        grown = bench_case.run(lambda: od.selection.expand_vertex_mask(faces, mask, hops))
         assert grown.shape == mask.shape
     else:  # one Dilate Selection call per hop, on the face set
         meshset_pml = _seeded_meshset_pml(bench_case)
@@ -178,16 +178,16 @@ def test_expand_vertex_mask(bench_case: BenchCase, hops: int) -> None:
 )
 @pytest.mark.benchmark(group="shrink_vertex_mask")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("hops", _HOPS)
 def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
     """
     The erosion counterpart, on the same input: should match ``expand`` row for row.
 
     meshlib is the reference the exemption above says this group lacked: ``shrink`` erodes a
-    ``VertBitSet`` by one-ring layers, which is triwarp's operation and not MeshLab's face-based
+    ``VertBitSet`` by one-ring layers, which is ordito's operation and not MeshLab's face-based
     one, and the two agree element for element at every hop count. The mask is pre-grown outside
-    the timed callable on both sides, as the triwarp row does, so the rounds erode the same set.
+    the timed callable on both sides, as the ordito row does, so the rounds erode the same set.
     """
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
@@ -203,11 +203,11 @@ def test_shrink_vertex_mask(bench_case: BenchCase, hops: int) -> None:
 
         assert bench_case.run(shrink_ml) >= 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
         # Grow first so there is something left to erode after 8 hops.
-        mask = tw.selection.expand_vertex_mask(faces, _seed_mask(bench_case), max(_HOPS))
-        shrunk = bench_case.run(lambda: tw.selection.shrink_vertex_mask(faces, mask, hops))
+        mask = od.selection.expand_vertex_mask(faces, _seed_mask(bench_case), max(_HOPS))
+        shrunk = bench_case.run(lambda: od.selection.shrink_vertex_mask(faces, mask, hops))
         assert shrunk.shape == mask.shape
     else:  # dilate well past the erosion depth first, so there is something left to erode
         meshset_pml = _seeded_meshset_pml(bench_case)
@@ -236,16 +236,16 @@ def _face_indices(bench_case: BenchCase) -> tuple[wp.array[wp.int32], np.ndarray
 
 @pytest.mark.benchmark(group="submesh_from_face_indices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista")
 def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
     """
     Face gather plus a vertex remap.
 
-    Three references, and all three do the same two things triwarp does -- gather the faces and
+    Three references, and all three do the same two things ordito does -- gather the faces and
     **compact** the vertex buffer. So the rows are like-for-like on the work; what differs is
     the interface, in two ways that both cost something. open3d takes a *mask* rather than an index
-    list, so building one is part of its row -- an ``O(n_faces)`` scatter against triwarp's
-    ``O(len(indices))`` gather. And open3d returns **no vertex map**, where triwarp's
+    list, so building one is part of its row -- an ``O(n_faces)`` scatter against ordito's
+    ``O(len(indices))`` gather. And open3d returns **no vertex map**, where ordito's
     ``return_index`` and pyvista's ``vtkOriginalPointIds`` both do, which is why the correctness
     comparison has to match its positions instead (``tests/test_selection.py``).
 
@@ -280,11 +280,11 @@ def test_submesh_from_face_indices(bench_case: BenchCase) -> None:
         extracted_pv = bench_case.run(lambda: mesh_pv.extract_cells(indices_np))
         assert extracted_pv.n_cells == indices_np.shape[0]
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         indices_wp, _indices_np = _face_indices(bench_case)
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         _sub_vertices, sub_faces = bench_case.run(
-            lambda: tw.selection.submesh_from_face_indices(vertices, faces, indices_wp)
+            lambda: od.selection.submesh_from_face_indices(vertices, faces, indices_wp)
         )
         assert sub_faces.size == 3 * indices_wp.size
     else:
@@ -332,7 +332,7 @@ def _face_mask_ml(mask_np: np.ndarray) -> mm.FaceBitSet:
 
 @pytest.mark.benchmark(group="delete_region_keep_boundary")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
     """
     Delete a contiguous face region and trace the rims it opened.
@@ -367,7 +367,7 @@ def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
     mask_wp, _mask_np = _cap_region(bench_case)
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _kept_vertices, kept_faces, loops = bench_case.run(
-        lambda: tw.selection.delete_region_keep_boundary(vertices, faces, mask_wp)
+        lambda: od.selection.delete_region_keep_boundary(vertices, faces, mask_wp)
     )
     assert kept_faces.size > 0
     assert len(loops) >= 1
@@ -375,18 +375,18 @@ def test_delete_region_keep_boundary(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="delete_region_keep_boundary_with_offsets")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_delete_region_keep_boundary_with_offsets(bench_case: BenchCase) -> None:
     """
     The packed form of ``delete_region_keep_boundary``, over the same cap region.
 
-    Read against that group's triwarp row: the difference is the per-loop views, which the packed
+    Read against that group's ordito row: the difference is the per-loop views, which the packed
     form replaces with a device compaction of the kept loops.
     """
     mask_wp, _mask_np = _cap_region(bench_case)
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _kept_vertices, kept_faces, loops, offsets = bench_case.run(
-        lambda: tw.selection.delete_region_keep_boundary_with_offsets(vertices, faces, mask_wp)
+        lambda: od.selection.delete_region_keep_boundary_with_offsets(vertices, faces, mask_wp)
     )
     assert kept_faces.size > 0
     assert offsets.size >= 2
@@ -395,14 +395,14 @@ def test_delete_region_keep_boundary_with_offsets(bench_case: BenchCase) -> None
 
 @pytest.mark.benchmark(group="exclude_fully_selected_components")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_exclude_fully_selected_components(bench_case: BenchCase) -> None:
     """A components pass plus an all-selected reduce per component: inherits ``split``'s axis."""
     faces, n_vertices = bench_case.faces_wp, bench_case.n_vertices
     edges = _unique_edges(bench_case)
     mask = _seed_mask(bench_case)
     kept = bench_case.run(
-        lambda: tw.selection.exclude_fully_selected_components(
+        lambda: od.selection.exclude_fully_selected_components(
             faces, mask, n_vertices, unique_edges=edges
         )
     )
@@ -421,12 +421,12 @@ def _seed_face_region(bench_case: BenchCase) -> np.ndarray:
 
 @pytest.mark.benchmark(group="region_boundary_edges")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 def test_region_boundary_edges(bench_case: BenchCase) -> None:
     """
     The interior seam around a face region: one edge pass, independent of the region's size.
 
-    meshlib's ``findRegionBoundaryUndirectedEdgesInsideMesh`` is the function triwarp's is named
+    meshlib's ``findRegionBoundaryUndirectedEdgesInsideMesh`` is the function ordito's is named
     after and the only reference that has it -- pinned edge-for-edge in
     tests/test_selection.py::test_region_boundary_edges. Its answer is an ``UndirectedEdgeBitSet``
     rather than an ``(k, 2)`` array, so this row times the seam pass on both sides but not the
@@ -468,14 +468,14 @@ def test_region_boundary_edges(bench_case: BenchCase) -> None:
     region_wp = wp.array(region_np, dtype=wp.bool, device=bench_case.device)
     n_vertices = bench_case.n_vertices
     edges = bench_case.run(
-        lambda: tw.selection.region_boundary_edges(faces, region_wp, n_vertices=n_vertices)
+        lambda: od.selection.region_boundary_edges(faces, region_wp, n_vertices=n_vertices)
     )
     assert int(edges.shape[0]) > 0
 
 
 @pytest.mark.benchmark(group="faces_left_of_contour")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_faces_left_of_contour(bench_case: BenchCase) -> None:
     """
     The reverse of the group above: a seam back into the region it bounds.
@@ -493,7 +493,7 @@ def test_faces_left_of_contour(bench_case: BenchCase) -> None:
     An order of magnitude behind meshlib on a mesh with a short contour. Two things about that.
 
     It is **not** a like-for-like: meshlib is handed a ``MeshTopology`` built outside its row and
-    floods from the seeds with a serial BFS, while triwarp builds the halfedge structure inside its
+    floods from the seeds with a serial BFS, while ordito builds the halfedge structure inside its
     row and labels *every* component before gathering. ``connected_component_labels_from_edges`` is
     most of the call once ``twins`` is supplied: the labelling is the algorithm, and the way to beat
     it would be a device-side frontier BFS, which this package has measured as a loss.
@@ -516,14 +516,14 @@ def test_faces_left_of_contour(bench_case: BenchCase) -> None:
         return
     faces = bench_case.faces_wp
     n_vertices = bench_case.n_vertices
-    contour = tw.selection.region_boundary_edges(
+    contour = od.selection.region_boundary_edges(
         faces,
         wp.array(region_np, dtype=wp.bool, device=bench_case.device),
         n_vertices=n_vertices,
         oriented=True,
     )
     left = bench_case.run(
-        lambda: tw.selection.faces_left_of_contour(faces, contour, n_vertices=n_vertices)
+        lambda: od.selection.faces_left_of_contour(faces, contour, n_vertices=n_vertices)
     )
     assert 0 < int(left.numpy().sum()) < n_faces
 
@@ -531,7 +531,7 @@ def test_faces_left_of_contour(bench_case: BenchCase) -> None:
 def _oriented_seam_np(bench_case: BenchCase, region_np: np.ndarray) -> np.ndarray:
     """Return the region's oriented seam as host rows, for a reference wanting vertex pairs."""
     faces = _faces_for_reference(bench_case)
-    return tw.selection.region_boundary_edges(
+    return od.selection.region_boundary_edges(
         faces,
         wp.array(region_np, dtype=wp.bool, device=faces.device),
         n_vertices=bench_case.n_vertices,

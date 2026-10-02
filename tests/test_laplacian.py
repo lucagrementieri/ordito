@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.laplacian`` against igl (CPU reference)."""
+"""Regression tests for ``ordito.laplacian`` against igl (CPU reference)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ import trimesh.smoothing as tms
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito.constants import TOLERANCE_MOLLIFY
 from tests.comparisons import assert_nonconstant
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -27,7 +28,6 @@ from tests.conversions import (
     trimesh_to_pytorch3d,
     trimesh_to_pyvista,
 )
-from triwarp.constants import TOLERANCE_MOLLIFY
 
 # Not ``conftest.MESHES``: this predates that constant and has never carried ``cave_cube``.
 _LAPLACIAN_MESHES = ["icosahedron", "half_torus", "hemisphere"]
@@ -43,14 +43,14 @@ def test_face_gradients_matches_igl(request: pytest.FixtureRequest, mesh_name: s
     """
     Class B (matrix form applied): ``igl.grad`` is the same operator as a sparse ``(3F, V)`` map.
 
-    igl returns the operator; triwarp returns its product with the field. The named transform is
+    igl returns the operator; ordito returns its product with the field. The named transform is
     therefore to *apply* igl's matrix and unstack the result, which comes back as
     ``[all x; all y; all z]`` rather than interleaved -- getting that wrong yields a permutation of
     the right numbers, so the test also checks the defining property below, which no permutation
     satisfies.
 
     The tolerance is the package's standard ``1e-5`` rather than something tighter, and the reason
-    is structural rather than a fudge: triwarp accumulates in ``float64`` but takes its normals and
+    is structural rather than a fudge: ordito accumulates in ``float64`` but takes its normals and
     areas from ``face_normals_and_areas``, which is ``float32``, so the geometry enters at single
     precision where igl's is double throughout. Measured worst deviation across these fixtures is
     **1.4e-6 relative** (on ``half_torus``, whose faces are the smallest), so the bound has a 7x
@@ -73,7 +73,7 @@ def test_face_gradients_matches_igl(request: pytest.FixtureRequest, mesh_name: s
     )
 
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
-    gradients_wp = tw.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp)
+    gradients_wp = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp)
 
     assert np.allclose(gradients_wp.numpy(), gradients_igl, rtol=1e-5, atol=1e-5)
 
@@ -93,7 +93,7 @@ def test_face_gradients_matches_pyvista(request: pytest.FixtureRequest, mesh_nam
 
     ``compute_derivative`` returns a per-**point** gradient for a point-data field, and
     ``preference='cell'`` does not move it (measured: the array stays ``(n_vertices, 3)``), so the
-    named transform is triwarp's answer averaged onto vertices with
+    named transform is ordito's answer averaged onto vertices with
     ``interpolation.average_onto_vertices`` -- which turns out to be exactly what VTK computes,
     element-wise to 1.8e-07 on ``icosphere(3)``.
 
@@ -113,10 +113,10 @@ def test_face_gradients_matches_pyvista(request: pytest.FixtureRequest, mesh_nam
     )
 
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
-    gradients_np = tw.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp).numpy()
+    gradients_np = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp).numpy()
     averaged_np = np.stack(
         [
-            tw.interpolation.average_onto_vertices(
+            od.interpolation.average_onto_vertices(
                 n_vertices,
                 mesh_wp.indices,
                 wp.array(
@@ -162,7 +162,7 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     igl gives this operator as a sparse ``(3F, V)`` matrix and pyvista as a smoothed point field,
     so both need a named transform before they can be compared (see the two tests above).
     ``gradientInTri`` is the third form -- one triangle's three corners and three values in, one
-    vector out -- and needs none: it is the same quantity triwarp returns, in the same units, per
+    vector out -- and needs none: it is the same quantity ordito returns, in the same units, per
     face.
 
     Measured on a non-uniformly scaled ``icosphere(2)``: **4.09e-06** absolute, **2.49e-07**
@@ -180,7 +180,7 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     field_np = rng.standard_normal(len(mesh_tm.vertices))
 
     field_wp = wp.array(field_np, dtype=wp.float64, device=mesh_wp.device)
-    gradients_wp = tw.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, field_wp)
+    gradients_wp = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, field_wp)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     assert mesh_ml.topology.numValidFaces() == len(faces_np) > 0  # non-vacuity
@@ -214,7 +214,7 @@ def test_face_gradients_of_a_constant_field_is_zero(
     constant_wp = wp.array(
         np.full(n_vertices, 3.25, dtype=np.float64), dtype=wp.float64, device=mesh_wp.device
     )
-    gradients_wp = tw.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, constant_wp)
+    gradients_wp = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, constant_wp)
     assert np.allclose(gradients_wp.numpy(), 0.0, atol=1e-9)
 
 
@@ -226,10 +226,10 @@ def test_face_gradients_precomputed_face_data(half_torus: tuple[tm.Trimesh, wp.M
         dtype=wp.float64,
         device=mesh_wp.device,
     )
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
-    derived = tw.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp)
-    supplied = tw.laplacian.face_gradients(
+    derived = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp)
+    supplied = od.laplacian.face_gradients(
         mesh_wp.points, mesh_wp.indices, values_wp, face_normals=normals_wp, face_areas=areas_wp
     )
     assert np.array_equal(derived.numpy(), supplied.numpy())
@@ -239,7 +239,7 @@ def test_face_gradients_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     values_wp = wp.array(np.array([], dtype=np.float64), dtype=wp.float64, device=device)
-    assert tw.laplacian.face_gradients(vertices_wp, faces_wp, values_wp).shape == (0,)
+    assert od.laplacian.face_gradients(vertices_wp, faces_wp, values_wp).shape == (0,)
 
 
 # -----------------------------------------------------------------------------------------
@@ -262,7 +262,7 @@ def test_cotmatrix_entries(request: pytest.FixtureRequest, mesh_name: str) -> No
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
     cot_entries_igl = igl.cotmatrix_entries(vertices_np, faces_np)
-    cot_entries_wp = tw.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices)
+    cot_entries_wp = od.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
 
@@ -284,7 +284,7 @@ def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_
     Two named transforms, both of which the loop below performs rather than assumes. MeshLib keys
     the weight by the *directed edge* whose left face owns it, so the ``(face, corner)`` slot is
     recovered from the edge's endpoints -- the corner is the face vertex that is neither
-    ``org(e)`` nor ``dest(e)``. And ``leftCotan`` is the plain cotangent where triwarp's table
+    ``org(e)`` nor ``dest(e)``. And ``leftCotan`` is the plain cotangent where ordito's table
     holds **half** of it (igl's convention), so the comparison carries the factor 2.
 
     Measured on the three fixtures: **2.38e-07** absolute, 1.35e-07 relative. The loop also asserts
@@ -298,7 +298,7 @@ def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = np.asarray(mesh_tm.faces)
-    entries_wp = tw.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices).numpy()
+    entries_wp = od.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices).numpy()
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     topology_ml, points_ml = mesh_ml.topology, mesh_ml.points
@@ -337,8 +337,8 @@ def test_cotmatrix_entries_intrinsic(request: pytest.FixtureRequest, mesh_name: 
     """
     Class A: the length-only overload, fed igl's own ``edge_lengths`` so only the formula differs.
 
-    Passing the reference's lengths in rather than triwarp's isolates the cotangent formula
-    from [`triwarp.edges`], which has its own oracle. igl overloads the same name on the
+    Passing the reference's lengths in rather than ordito's isolates the cotangent formula
+    from [`ordito.edges`], which has its own oracle. igl overloads the same name on the
     argument shape.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -347,11 +347,11 @@ def test_cotmatrix_entries_intrinsic(request: pytest.FixtureRequest, mesh_name: 
 
     edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
     cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
-    edge_lengths_wp = twt.as_array2d(
+    edge_lengths_wp = odt.as_array2d(
         wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
         wp.float32,
     )
-    cot_entries_wp = tw.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp)
+    cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp)
 
     assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
 
@@ -369,11 +369,11 @@ def test_cotmatrix_entries_intrinsic_float64(icosahedron: tuple[tm.Trimesh, wp.M
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
     edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
-    edge_lengths_wp = twt.as_array2d(
+    edge_lengths_wp = odt.as_array2d(
         wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
         wp.float32,
     )
-    cot_entries_wp = tw.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=wp.float64)
+    cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=wp.float64)
 
     assert cot_entries_wp.dtype == wp.float64
     cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
@@ -400,7 +400,7 @@ def test_cotmatrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
-    laplacian_wp = bsr_to_csr(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
+    laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
 
     assert laplacian_wp.shape == laplacian_igl.shape
     assert np.allclose(laplacian_wp.toarray(), laplacian_igl.toarray(), rtol=1e-5, atol=1e-5)
@@ -423,7 +423,7 @@ def test_cotmatrix_and_mass_match_potpourri3d(
     barycentric lumped mass diagonal ``mass_matrix_entries`` returns.
 
     ``cotan_laplacian`` is Class B, and the transform is a **sign flip**. geometry-central builds
-    the positive-semidefinite Laplacian while libigl -- and triwarp with it -- builds the negative
+    the positive-semidefinite Laplacian while libigl -- and ordito with it -- builds the negative
     one: measured on ``icosahedron``, ``pp3d.cotan_laplacian`` is ``-igl.cotmatrix`` to 1e-9 entry
     for entry, with a ``+2.887`` diagonal against igl's ``-2.887``. Neither is wrong, but handing
     one to a solver expecting the other flips the sign of every diffusion step, so the negation
@@ -438,12 +438,12 @@ def test_cotmatrix_and_mass_match_potpourri3d(
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
 
     cotmatrix_pp = pp3d.cotan_laplacian(vertices_np, faces_np).tocsr()
-    cotmatrix_wp = bsr_to_csr(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
+    cotmatrix_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
     assert cotmatrix_wp.shape == cotmatrix_pp.shape
     assert np.allclose(cotmatrix_wp.toarray(), -cotmatrix_pp.toarray(), rtol=1e-5, atol=1e-5)
 
     mass_pp = pp3d.vertex_areas(vertices_np, faces_np)
-    mass_wp = tw.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
+    mass_wp = od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(mass_wp.numpy(), mass_pp, rtol=1e-5, atol=1e-5)
 
 
@@ -451,19 +451,19 @@ def test_cotmatrix_and_mass_match_potpourri3d(
 @pytest.mark.parity("mass_matrix", "pytorch3d")
 def test_cotmatrix_and_mass_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B: ``cot_laplacian`` returns **twice** triwarp's off-diagonal and a **zero** diagonal.
+    Class B: ``cot_laplacian`` returns **twice** ordito's off-diagonal and a **zero** diagonal.
 
     Two conventions in one call and neither is guessable from the name. The off-diagonal ratio is
-    measured at exactly ``0.5`` -- triwarp keeps the *half*-cotangent table that
+    measured at exactly ``0.5`` -- ordito keeps the *half*-cotangent table that
     ``cotmatrix_entries`` produces, pytorch3d assembles the sum -- and pytorch3d never writes the
-    row sum onto the diagonal at all (``max|diag|`` is ``0.0``, not merely small), where triwarp's
+    row sum onto the diagonal at all (``max|diag|`` is ``0.0``, not merely small), where ordito's
     ``cotmatrix`` assembles it. So the comparison is off-diagonals only, and the zero diagonal is
     asserted rather than sidestepped, because it is what a caller assembling from
     ``cot_laplacian`` has to know: section 4's ``laplacian_smoothing_loss`` variants need that
     matrix and not this one.
 
     Its second return value is the mass matrix in the reciprocal: ``1 / inv_areas`` is **three
-    times** triwarp's ``mass_matrix`` diagonal, because the barycentric lumped mass is a third of
+    times** ordito's ``mass_matrix`` diagonal, because the barycentric lumped mass is a third of
     the incident area sum. Measured 5.96e-08 absolute / 2.45e-07 relative.
     """
     mesh_tm, mesh_wp = icosphere
@@ -476,8 +476,8 @@ def test_cotmatrix_and_mass_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh
     cotangent_p3d = cotangent_p3d.to_dense().numpy()
     inv_areas_p3d = inv_areas_p3d.numpy().reshape(-1)
 
-    cotangent_np = bsr_to_dense(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices), n_vertices)
-    mass_np = bsr_to_dense(tw.laplacian.mass_matrix(mesh_wp.points, mesh_wp.indices), n_vertices)
+    cotangent_np = bsr_to_dense(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices), n_vertices)
+    mass_np = bsr_to_dense(od.laplacian.mass_matrix(mesh_wp.points, mesh_wp.indices), n_vertices)
 
     off_diagonal = ~np.eye(n_vertices, dtype=bool)
     assert float(np.abs(np.diag(cotangent_p3d)).max()) == 0.0
@@ -492,14 +492,14 @@ def test_cotmatrix_and_mass_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh
 @pytest.mark.parity("laplacian_inverse_distance", "pytorch3d")
 def test_laplacian_operators_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B: the two ``ops`` graph Laplacians are triwarp's two ``equal_weight`` branches.
+    Class B: the two ``ops`` graph Laplacians are ordito's two ``equal_weight`` branches.
 
     Both transforms were recovered by measurement rather than read off the docstrings. For the
-    uniform operator, pytorch3d writes **-1** on the diagonal where triwarp writes 0, so
-    ``L_p3d == L_tw - I``; the off-diagonals are bit-identical (**0.0**), which is what makes the
+    uniform operator, pytorch3d writes **-1** on the diagonal where ordito writes 0, so
+    ``L_p3d == L_od - I``; the off-diagonals are bit-identical (**0.0**), which is what makes the
     diagonal claim a claim about the convention and not a tolerance. For the inverse-distance one,
     pytorch3d leaves the rows *unnormalized* -- it is ``1 / (||vi - vj|| + 1e-12)`` raw, the same
-    formula and the same literal ``eps`` triwarp's docstring quotes -- so dividing by the row sum
+    formula and the same literal ``eps`` ordito's docstring quotes -- so dividing by the row sum
     is the transform, and the two then agree to 1.49e-08 including the diagonal, which is 0 on
     both sides.
 
@@ -519,10 +519,10 @@ def test_laplacian_operators_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mes
     normalized_p3d = inverse_p3d / np.where(row_sums_p3d == 0.0, 1.0, row_sums_p3d)
 
     uniform_np = bsr_to_dense(
-        tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True), n_vertices
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True), n_vertices
     )
     inverse_np = bsr_to_dense(
-        tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False), n_vertices
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False), n_vertices
     )
 
     assert np.array_equal(np.diag(uniform_p3d), np.full(n_vertices, -1.0, dtype=np.float32))
@@ -536,7 +536,7 @@ def test_cotmatrix_null_space(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     Not a library comparison: the constant vector must be in the operator's null space.
 
     Both sides are checked against the *property* rather than against each other -- igl at
-    1e-10 in float64 and triwarp at 1e-4 in float32 -- which is what makes the differing
+    1e-10 in float64 and ordito at 1e-4 in float32 -- which is what makes the differing
     thresholds honest rather than a hidden tolerance. Catches a row that does not sum to zero,
     which a matrix comparison at 1e-5 can miss on a large-valued row.
     """
@@ -548,7 +548,7 @@ def test_cotmatrix_null_space(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     ones = np.ones(vertices_np.shape[0], dtype=np.float64)
     assert np.linalg.norm(cast("np.ndarray", laplacian_igl @ ones)) < 1e-10
 
-    laplacian_wp = bsr_to_csr(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
+    laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
     ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
     assert np.linalg.norm(laplacian_wp @ ones_wp) < 1e-4
 
@@ -557,7 +557,7 @@ def test_cotmatrix_empty_mesh(device: str) -> None:
     """
     Class A on the degenerate case: three vertices and no faces give an empty operator, sized 3x3.
 
-    The *shape* is the claim, not the values: igl sizes by ``len(V)`` and so must triwarp,
+    The *shape* is the claim, not the values: igl sizes by ``len(V)`` and so must ordito,
     rather than returning a 0x0 matrix that would break a caller's dimensions.
     """
     vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float64)
@@ -566,7 +566,7 @@ def test_cotmatrix_empty_mesh(device: str) -> None:
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
-    laplacian_wp = bsr_to_csr(tw.laplacian.cotmatrix(vertices_wp, faces_wp))
+    laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(vertices_wp, faces_wp))
 
     assert laplacian_wp.shape == laplacian_igl.shape == (3, 3)
     assert laplacian_wp.nnz == 0
@@ -587,7 +587,7 @@ def test_mesh_operator_pattern_builds_agree(
     operator: str, monkeypatch: pytest.MonkeyPatch, device: str
 ) -> None:
     """
-    Triwarp against triwarp: the directed and undirected pattern builds give the same matrix.
+    Ordito against ordito: the directed and undirected pattern builds give the same matrix.
 
     ``_mesh_operator_pattern`` switches builds at ``_UNDIRECTED_PATTERN_FROM_FACES`` and every
     fixture here sits below it, so the threshold is forced each way. ``test_cotmatrix`` carries the
@@ -603,13 +603,13 @@ def test_mesh_operator_pattern_builds_agree(
         faces_np = np.vstack([faces_np, [[0, 0, 1]]])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     builds = {
-        "laplacian_uniform": lambda v, f: tw.laplacian.laplacian(v, f, symmetric=True),
-        "laplacian_inverse": lambda v, f: tw.laplacian.laplacian(v, f, equal_weight=False),
+        "laplacian_uniform": lambda v, f: od.laplacian.laplacian(v, f, symmetric=True),
+        "laplacian_inverse": lambda v, f: od.laplacian.laplacian(v, f, equal_weight=False),
     }
-    build = builds.get(operator) or getattr(tw.laplacian, operator)
+    build = builds.get(operator) or getattr(od.laplacian, operator)
     arrays = []
     for threshold in (10**12, 0):
-        monkeypatch.setattr(tw.laplacian, "_UNDIRECTED_PATTERN_FROM_FACES", threshold)
+        monkeypatch.setattr(od.laplacian, "_UNDIRECTED_PATTERN_FROM_FACES", threshold)
         matrix = build(vertices_wp, faces_wp)
         n_entries = matrix.nnz_sync()
         arrays.append(
@@ -635,7 +635,7 @@ def test_mesh_operator_pattern_reused_matches_a_fresh_build(
     device: str,
 ) -> None:
     """
-    Triwarp against triwarp: an operator over a reused pattern equals one that builds its own.
+    Ordito against ordito: an operator over a reused pattern equals one that builds its own.
 
     The pattern is built once on the faces and handed over with *moved* vertices, the use it
     exists for (a smoothing flow re-linearising on the moving surface). ``test_cotmatrix`` and the
@@ -648,15 +648,15 @@ def test_mesh_operator_pattern_reused_matches_a_fresh_build(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, sphere.faces, device)
     kind = "cotmatrix" if operator == "connection_laplacian" else operator
     builds = {
-        "cotmatrix": tw.laplacian.cotmatrix,
-        "connection_laplacian": tw.laplacian.connection_laplacian,
-        "laplacian_symmetric": lambda v, f, **kw: tw.laplacian.laplacian(
+        "cotmatrix": od.laplacian.cotmatrix,
+        "connection_laplacian": od.laplacian.connection_laplacian,
+        "laplacian_symmetric": lambda v, f, **kw: od.laplacian.laplacian(
             v, f, equal_weight=False, **kw
         ),
-        "laplacian_directed": lambda v, f, **kw: tw.laplacian.laplacian(v, f, **kw),
+        "laplacian_directed": lambda v, f, **kw: od.laplacian.laplacian(v, f, **kw),
     }
     build = builds[operator]
-    pattern = tw.laplacian.mesh_operator_pattern(faces_wp, len(vertices_np), operator=kind)
+    pattern = od.laplacian.mesh_operator_pattern(faces_wp, len(vertices_np), operator=kind)
     reused = build(vertices_wp, faces_wp, pattern=pattern)
     fresh = build(vertices_wp, faces_wp)
     n_entries = fresh.nnz_sync()
@@ -678,25 +678,25 @@ def test_mesh_operator_pattern_rejects_a_mismatch(icosahedron: tuple[tm.Trimesh,
     mesh_tm, mesh_wp = icosahedron
     vertices, faces = mesh_wp.points, mesh_wp.indices
     n = len(mesh_tm.vertices)
-    directed = tw.laplacian.mesh_operator_pattern(faces, n, operator="laplacian_directed")
-    cot = tw.laplacian.mesh_operator_pattern(faces, n)
+    directed = od.laplacian.mesh_operator_pattern(faces, n, operator="laplacian_directed")
+    cot = od.laplacian.mesh_operator_pattern(faces, n)
     with pytest.raises(ValueError, match="operator='laplacian_directed'"):
-        tw.laplacian.cotmatrix(vertices, faces, pattern=directed)
+        od.laplacian.cotmatrix(vertices, faces, pattern=directed)
     with pytest.raises(ValueError, match="operator='laplacian_directed'"):
-        tw.laplacian.connection_laplacian(vertices, faces, pattern=directed)
+        od.laplacian.connection_laplacian(vertices, faces, pattern=directed)
     with pytest.raises(ValueError, match="operator='cotmatrix'"):
-        tw.laplacian.laplacian(vertices, faces, equal_weight=False, pattern=cot)
+        od.laplacian.laplacian(vertices, faces, equal_weight=False, pattern=cot)
     with pytest.raises(ValueError, match="operator='laplacian_directed'"):
-        tw.laplacian.laplacian(vertices, faces, symmetric=True, pattern=directed)
-    tw.laplacian.laplacian(vertices, faces, pattern=directed)  # the matching adjacency is accepted
-    larger = tw.laplacian.mesh_operator_pattern(faces, n + 1)
+        od.laplacian.laplacian(vertices, faces, symmetric=True, pattern=directed)
+    od.laplacian.laplacian(vertices, faces, pattern=directed)  # the matching adjacency is accepted
+    larger = od.laplacian.mesh_operator_pattern(faces, n + 1)
     with pytest.raises(ValueError, match=f"over {n + 1} vertices"):
-        tw.laplacian.cotmatrix(vertices, faces, pattern=larger)
-    edges, _ = tw.edges.edges_unique(faces, n_vertices=n)
+        od.laplacian.cotmatrix(vertices, faces, pattern=larger)
+    edges, _ = od.edges.edges_unique(faces, n_vertices=n)
     with pytest.raises(ValueError, match="edges or pattern"):
-        tw.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges, pattern=cot)
+        od.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges, pattern=cot)
     with pytest.raises(ValueError, match="operator must be one of"):
-        tw.laplacian.mesh_operator_pattern(
+        od.laplacian.mesh_operator_pattern(
             faces,
             n,
             operator="graph",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
@@ -718,10 +718,10 @@ def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    robust = tw.laplacian.robust_laplacian(
+    robust = od.laplacian.robust_laplacian(
         mesh_wp.points, mesh_wp.indices, use_intrinsic_delaunay=False
     )
-    plain = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
+    plain = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
 
     # Mollification adds nothing when every triangle is already non-degenerate, so with the flips
     # turned off the operator must be the ordinary one up to the intrinsic route's rounding.
@@ -745,9 +745,9 @@ def test_robust_laplacian_keeps_couplings_the_plain_one_drops(
     """
     vertices_np, _, vertices_wp, faces_wp = sliver_patch
     n_vertices = len(vertices_np)
-    plain = bsr_to_dense(tw.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
+    plain = bsr_to_dense(od.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
     robust = bsr_to_dense(
-        tw.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
+        od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
         n_vertices,
     )
 
@@ -765,7 +765,7 @@ def test_robust_laplacian_barely_perturbs_the_rows_it_did_not_need_to(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
-    Triwarp against triwarp: the price mollification charges the *undegenerate* part of the mesh.
+    Ordito against ordito: the price mollification charges the *undegenerate* part of the mesh.
 
     ``cotmatrix`` carries the oracle here -- it is what
     ``test_cotmatrix`` pins against ``igl.cotmatrix`` -- and this bounds how far
@@ -793,13 +793,13 @@ def test_robust_laplacian_barely_perturbs_the_rows_it_did_not_need_to(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.reshape(-1), device)
     n_vertices = len(vertices_np)
 
-    _lengths, delta = tw.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
+    _lengths, delta = od.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
     # Non-vacuity: if the collapse did not actually break the inequality there is nothing to price.
     assert delta > 0.0
 
-    plain = bsr_to_dense(tw.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
+    plain = bsr_to_dense(od.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
     robust = bsr_to_dense(
-        tw.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
+        od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
         n_vertices,
     )
     clean = np.setdiff1d(np.arange(n_vertices), np.unique(faces_np[0]))
@@ -827,9 +827,9 @@ def test_cotmatrix_entries_are_zero_for_a_zero_area_face(device: str) -> None:
     )
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
 
-    entries_wp = tw.laplacian.cotmatrix_entries(collinear_wp, faces_wp)
+    entries_wp = od.laplacian.cotmatrix_entries(collinear_wp, faces_wp)
     assert np.array_equal(entries_wp.numpy(), np.zeros((1, 3), dtype=np.float32))
-    assert np.isfinite(bsr_to_dense(tw.laplacian.cotmatrix(collinear_wp, faces_wp), 3)).all()
+    assert np.isfinite(bsr_to_dense(od.laplacian.cotmatrix(collinear_wp, faces_wp), 3)).all()
 
 
 @pytest.mark.parity(
@@ -853,7 +853,7 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
     table and any difference is in how the entries are placed.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    lengths_wp, delta = tw.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
+    lengths_wp, delta = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
     assert delta == 0.0  # these fixtures are clean, so the comparison is against the plain lengths
 
     # igl takes the same (n_faces, 3) opposite-edge-length table, which pins the column order.
@@ -861,8 +861,8 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
         np.ascontiguousarray(lengths_wp.numpy(), dtype=np.float64),
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
     )
-    entries_wp = tw.laplacian.cotmatrix_entries_intrinsic(lengths_wp)
-    laplacian_wp = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, cot_entries=entries_wp)
+    entries_wp = od.laplacian.cotmatrix_entries_intrinsic(lengths_wp)
+    laplacian_wp = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, cot_entries=entries_wp)
 
     dense_igl = np.asarray(laplacian_igl.todense())
     assert np.allclose(
@@ -893,7 +893,7 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
     )
-    laplacian_wp = tw.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices)
+    laplacian_wp = od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(
         bsr_to_dense(laplacian_wp, n_vertices),
         np.asarray(laplacian_igl.todense()),
@@ -909,8 +909,8 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
 
 def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(icosahedron: tuple[object, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    original = tw.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices)
-    mollified, delta = tw.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
+    original = od.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices)
+    mollified, delta = od.laplacian.mollify_intrinsic(mesh_wp.points, mesh_wp.indices)
 
     assert delta == 0.0
     assert np.array_equal(mollified.numpy(), original.numpy())
@@ -920,8 +920,8 @@ def test_mollify_intrinsic_restores_the_triangle_inequality(
     sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]],
 ) -> None:
     _, _, vertices_wp, faces_wp = sliver_patch
-    original = tw.edges.face_edge_lengths(vertices_wp, faces_wp).numpy()
-    mollified, delta = tw.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
+    original = od.edges.face_edge_lengths(vertices_wp, faces_wp).numpy()
+    mollified, delta = od.laplacian.mollify_intrinsic(vertices_wp, faces_wp)
 
     assert delta > 0.0
 
@@ -958,7 +958,7 @@ def test_mollify_intrinsic_restores_the_triangle_inequality(
 # --- connection_laplacian / laplacian_entries -------------------------------------------
 
 
-def _dense_blocks_2x2(matrix: twt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
+def _dense_blocks_2x2(matrix: odt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
     """
     Densify a ``(n, n)`` matrix of ``mat22d`` blocks into a plain ``(2n, 2n)`` array.
 
@@ -977,7 +977,7 @@ def _dense_blocks_2x2(matrix: twt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.n
     return dense
 
 
-def _connection_complex(matrix: twt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
+def _connection_complex(matrix: odt.BsrMatrix[wp.mat22d], n_vertices: int) -> np.ndarray:
     """
     Fold the ``2 x 2`` real blocks into one complex matrix, the form potpourri3d returns.
 
@@ -1015,7 +1015,7 @@ def test_connection_laplacian_matches_potpourri3d(
     """
     Class B (block fold, then gauge invariants): the same operator, up to the tangent-frame gauge.
 
-    Two named transforms. The first is representational -- triwarp stores real ``2 x 2``
+    Two named transforms. The first is representational -- ordito stores real ``2 x 2``
     rotation-scale blocks where potpourri3d stores complex scalars, and ``_connection_complex``
     folds one into the other (asserted exactly: ``v01 == -v10`` and ``v00 == v11`` to ``0.0``).
 
@@ -1028,7 +1028,7 @@ def test_connection_laplacian_matches_potpourri3d(
 
     That makes this stronger than a correlation bound, which is why it is Class B rather than the
     Class C the plan projected: measured max abs difference 3.7e-07 on the magnitudes and 2.7e-07 on
-    the eigenvalues (5.1e-08 relative) on ``icosphere_coarse``, i.e. at triwarp's float32 vertex
+    the eigenvalues (5.1e-08 relative) on ``icosphere_coarse``, i.e. at ordito's float32 vertex
     floor. The bug class it excludes is a wrong weight, a wrong sparsity pattern, a non-Hermitian
     assembly, and any phase error large enough to move the spectrum -- a *global* gauge shift is the
     one thing it cannot see, and that is because a global gauge shift is not an error.
@@ -1036,7 +1036,7 @@ def test_connection_laplacian_matches_potpourri3d(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
 
-    matrix = tw.laplacian.connection_laplacian(mesh_wp.points, mesh_wp.indices)
+    matrix = od.laplacian.connection_laplacian(mesh_wp.points, mesh_wp.indices)
     blocks = matrix.values.numpy()[: matrix.nnz_sync()]
     # The fold below is only valid for a rotation-scale block; pin that rather than trusting it.
     assert np.array_equal(blocks[:, 0, 1], -blocks[:, 1, 0])
@@ -1073,7 +1073,7 @@ def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
     Class A: with every transport angle zeroed, each ``2 x 2`` block collapses to ``-w * I``.
 
     The rotations are the *only* thing separating this operator from
-    [`cotmatrix`][triwarp.laplacian.cotmatrix] -- same weights, same sparsity -- so feeding it a
+    [`cotmatrix`][ordito.laplacian.cotmatrix] -- same weights, same sparsity -- so feeding it a
     zero angle per halfedge has to reproduce that matrix exactly, in both diagonal components and
     with nothing off-diagonal inside a block. Measured on ``icosphere_coarse``: the intra-block
     off-diagonals are identically ``0.0``, the two diagonal components agree bit-for-bit, and each
@@ -1085,12 +1085,12 @@ def test_connection_laplacian_with_zero_transport_is_the_cotangent_laplacian(
     zero_angles_wp = wp.zeros(mesh_wp.indices.size, dtype=wp.float32, device=mesh_wp.points.device)
 
     connection_np = _dense_blocks_2x2(
-        tw.laplacian.connection_laplacian(
+        od.laplacian.connection_laplacian(
             mesh_wp.points, mesh_wp.indices, transport_angles=zero_angles_wp
         ),
         n_vertices,
     )
-    cotmatrix_np = bsr_to_dense(tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices), n_vertices)
+    cotmatrix_np = bsr_to_dense(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices), n_vertices)
 
     assert np.array_equal(connection_np[0::2, 1::2], np.zeros((n_vertices, n_vertices)))
     assert np.array_equal(connection_np[1::2, 0::2], np.zeros((n_vertices, n_vertices)))
@@ -1122,8 +1122,8 @@ def test_connection_laplacian_is_symmetric_psd_and_a_rotation_per_block(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
-    connection = tw.laplacian.connection_laplacian(mesh_wp.points, mesh_wp.indices)
-    cotmatrix = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
+    connection = od.laplacian.connection_laplacian(mesh_wp.points, mesh_wp.indices)
+    cotmatrix = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
 
     # Same sparsity as the scalar operator: it is the same stencil with a rotation per entry.
     assert np.array_equal(connection.offsets.numpy(), cotmatrix.offsets.numpy())
@@ -1167,7 +1167,7 @@ def test_laplacian_entries_assemble_into_the_laplacian(
     """
     mesh_tm, mesh_wp = half_torus
     n_vertices = int(mesh_tm.vertices.shape[0])
-    rows_wp, cols_wp, vals_wp = tw.laplacian.laplacian_entries(
+    rows_wp, cols_wp, vals_wp = od.laplacian.laplacian_entries(
         mesh_wp.points, mesh_wp.indices, equal_weight=equal_weight, symmetric=symmetric
     )
     rows_np, cols_np, vals_np = rows_wp.numpy(), cols_wp.numpy(), vals_wp.numpy()
@@ -1184,7 +1184,7 @@ def test_laplacian_entries_assemble_into_the_laplacian(
     assert np.count_nonzero(expected_np) == rows_np.size
 
     assembled_np = bsr_to_dense(
-        tw.laplacian.laplacian(
+        od.laplacian.laplacian(
             mesh_wp.points, mesh_wp.indices, equal_weight=equal_weight, symmetric=symmetric
         ),
         n_vertices,
@@ -1218,7 +1218,7 @@ def test_laplacian_operator(
     assert operator_coo_tm is not None
     operator_tm = operator_coo_tm.tocsr()
     operator_wp = bsr_to_csr(
-        tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=equal_weight)
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=equal_weight)
     )
 
     assert operator_wp.shape == operator_tm.shape
@@ -1231,10 +1231,10 @@ def test_laplacian_symmetric_flag(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> Non
     # symmetric while uniform+directed matches trimesh's (asymmetric) ``edges_to_coo``.
     _, mesh_wp = half_torus
     directed = bsr_to_csr(
-        tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=False)
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=False)
     )
     symmetric = bsr_to_csr(
-        tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=True)
+        od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=True, symmetric=True)
     )
 
     directed_dense = directed.toarray()
@@ -1259,7 +1259,7 @@ def test_mass_matrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: ``mass_matrix_entries`` against the *diagonal* of ``igl.massmatrix``.
 
-    The named transform is taking igl's diagonal -- triwarp returns the lumped vector, not a
+    The named transform is taking igl's diagonal -- ordito returns the lumped vector, not a
     matrix. Despite the name this tests the entries; the assembled form is
     [`test_mass_matrix_assembled_matches_igl`].
     """
@@ -1268,7 +1268,7 @@ def test_mass_matrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
     mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()
-    mass_wp = tw.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
+    mass_wp = od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(mass_wp.numpy(), mass_igl, rtol=1e-5, atol=1e-5)
 
@@ -1295,7 +1295,7 @@ def test_mass_matrix_assembled_matches_igl(request: pytest.FixtureRequest, mesh_
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
 
     mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).tocsr()
-    mass_wp = bsr_to_csr(tw.laplacian.mass_matrix(mesh_wp.points, mesh_wp.indices))
+    mass_wp = bsr_to_csr(od.laplacian.mass_matrix(mesh_wp.points, mesh_wp.indices))
 
     assert mass_wp.shape == mass_igl.shape
     assert np.allclose(mass_wp.toarray(), mass_igl.toarray(), rtol=1e-5, atol=1e-5)
@@ -1316,21 +1316,21 @@ def test_operators_float64_match_float32(request: pytest.FixtureRequest, mesh_na
     _, mesh_wp = request.getfixturevalue(mesh_name)
     points, indices = mesh_wp.points, mesh_wp.indices
 
-    cot_entries_f32 = tw.laplacian.cotmatrix_entries(points, indices)
-    cot_entries_f64 = tw.laplacian.cotmatrix_entries(points, indices, dtype=wp.float64)
+    cot_entries_f32 = od.laplacian.cotmatrix_entries(points, indices)
+    cot_entries_f64 = od.laplacian.cotmatrix_entries(points, indices, dtype=wp.float64)
     assert cot_entries_f64.dtype == wp.float64
     assert np.allclose(cot_entries_f64.numpy(), cot_entries_f32.numpy(), rtol=1e-5, atol=1e-5)
 
-    mass_f32 = tw.laplacian.mass_matrix_entries(points, indices)
-    mass_f64 = tw.laplacian.mass_matrix_entries(points, indices, dtype=wp.float64)
+    mass_f32 = od.laplacian.mass_matrix_entries(points, indices)
+    mass_f64 = od.laplacian.mass_matrix_entries(points, indices, dtype=wp.float64)
     assert mass_f64.dtype == wp.float64
     assert np.allclose(mass_f64.numpy(), mass_f32.numpy(), rtol=1e-5, atol=1e-5)
 
     builders = [
-        tw.laplacian.cotmatrix,
-        tw.laplacian.laplacian,
-        tw.laplacian.graph_laplacian,
-        tw.laplacian.mass_matrix,
+        od.laplacian.cotmatrix,
+        od.laplacian.laplacian,
+        od.laplacian.graph_laplacian,
+        od.laplacian.mass_matrix,
     ]
     for builder in builders:
         matrix_f32 = builder(points, indices)

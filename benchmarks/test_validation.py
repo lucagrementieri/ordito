@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.validation``: the topological predicates.
+Benchmarks for ``ordito.validation``: the topological predicates.
 
 Three axes, one per predicate family, because these functions fail to scale for three unrelated
 reasons and a face-count sweep separates none of them.
@@ -17,7 +17,7 @@ reasons and a face-count sweep separates none of them.
 
 References
 ----------
-**open3d** is the exact definitional equivalent for ``is_watertight`` — triwarp's docstring defines
+**open3d** is the exact definitional equivalent for ``is_watertight`` — ordito's docstring defines
 itself against ``TriangleMesh.is_watertight`` (edge-manifold without boundary, plus vertex-manifold
 and no self-intersection). It is also **seconds** per call, three to four orders of magnitude
 behind, and *faster on the harder mesh*, because its self-intersection test is a brute-force scan
@@ -29,10 +29,10 @@ group is a large share of the suite's wall clock and is the reason for the cap.
 on ``fan_hub`` — unlike ``igl.principal_curvature``, which takes minutes on the same mesh (see
 [`test_curvature.py`](test_curvature.py)).
 
-open3d also covers both manifoldness groups: ``is_edge_manifold`` shares triwarp's
+open3d also covers both manifoldness groups: ``is_edge_manifold`` shares ordito's
 ``allow_boundary_edges`` switch with identical semantics on both settings, and
 ``is_vertex_manifold`` agrees everywhere except vertices sitting *on* a non-manifold edge — open3d
-tests whether the incident faces are edge-connected at all, triwarp and igl whether they form a
+tests whether the incident faces are edge-connected at all, ordito and igl whether they form a
 manifold fan, so three faces sharing one edge pass open3d and fail the other two.
 
 **trimesh** rebuilds its mesh inside the timed callable because it caches derived properties; note
@@ -49,7 +49,7 @@ and the non-manifold edge and vertex counts — **one call for every predicate t
 plus the genus and the Euler characteristic** — so its row is simultaneously the reference for
 ``is_watertight`` and ``is_volume``, an *upper* bound for each alone.
 
-It does *not* include the self-intersection test, which is half of triwarp's and open3d's
+It does *not* include the self-intersection test, which is half of ordito's and open3d's
 definition, so the honest composition is both calls together: ``get_topological_measures`` plus
 ``compute_selection_by_self_intersections_per_face``, timed as one callable. That is the useful
 number, because open3d computes the *same* composition two orders of magnitude slower — so nearly
@@ -59,7 +59,7 @@ everything else**, if anything *faster* on the self-intersecting mesh, which is 
 independent confirmation that collision density is not what drives this predicate.
 
 For the valence group, ``compute_selection_by_non_manifold_per_vertex`` is the direct equivalent of
-``is_vertex_manifold`` and is flat across the valence axis, like triwarp and libigl, so all three
+``is_vertex_manifold`` and is flat across the valence axis, like ordito and libigl, so all three
 agree the valence distribution is not a hot spot. Both selection filters touch only the selected
 bit, so they share the MeshSet; ``get_topological_measures`` is read-only.
 
@@ -76,7 +76,7 @@ import pytest
 import trimesh as tm
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 # open3d's is_watertight runs into seconds (see the module docstring); one round is enough to
@@ -86,27 +86,27 @@ _O3D_ROUNDS = 1
 
 @pytest.mark.benchmark(group="is_vertex_manifold")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab")
 def test_is_vertex_manifold(bench_case: BenchCase) -> None:
     """
     A connected-components problem per one-ring: driven by the valence distribution.
 
-    Note the two sides return different shapes -- triwarp reduces to a single ``bool`` while
-    ``igl.is_vertex_manifold`` hands back the per-vertex mask (triwarp's ``vertex_manifold_mask``
+    Note the two sides return different shapes -- ordito reduces to a single ``bool`` while
+    ``igl.is_vertex_manifold`` hands back the per-vertex mask (ordito's ``vertex_manifold_mask``
     is the equivalent of that). The work is the same either way; only the final reduction differs.
 
     ``open3d.is_vertex_manifold`` tests *connectivity* of the incident faces rather than a manifold
-    fan, so a vertex sitting on a non-manifold edge still passes it where triwarp and igl say no --
+    fan, so a vertex sitting on a non-manifold edge still passes it where ordito and igl say no --
     the answers agree exactly on edge-manifold input (the parity test pins that class down).
     """
-    if bench_case.kind == "triwarp":
-        assert bench_case.run(lambda: tw.validation.is_vertex_manifold(bench_case.faces_wp)) in (
+    if bench_case.kind == "ordito":
+        assert bench_case.run(lambda: od.validation.is_vertex_manifold(bench_case.faces_wp)) in (
             True,
             False,
         )
     elif bench_case.kind == "open3d":
         assert bench_case.run(bench_case.mesh_o3d.is_vertex_manifold) in (True, False)
-    elif bench_case.kind == "pymeshlab":  # writes a per-vertex bool selection: triwarp's shape
+    elif bench_case.kind == "pymeshlab":  # writes a per-vertex bool selection: ordito's shape
         meshset_pml = bench_case.meshset_pml
         bench_case.run(meshset_pml.compute_selection_by_non_manifold_per_vertex)
         assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
@@ -118,7 +118,7 @@ def test_is_vertex_manifold(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_edge_manifold")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pyvista")
 def test_is_edge_manifold(bench_case: BenchCase) -> None:
     """
     The cheaper manifoldness predicate: an edge sort and a per-edge count, no one-ring components.
@@ -129,14 +129,14 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
     vertex-manifold (two cones joined at a tip), which is why both exist.
 
     ``igl.is_edge_manifold`` returns ``(verdict, per_corner_mask, ...)`` -- the reduced ``bool``
-    first, matching triwarp's return, with the per-corner detail behind it. It has no
-    ``allow_boundary_edges`` switch (it always allows them), so only triwarp's default is timed.
-    ``open3d.is_edge_manifold`` has the same switch with the same two semantics as triwarp's and is
+    first, matching ordito's return, with the per-corner detail behind it. It has no
+    ``allow_boundary_edges`` switch (it always allows them), so only ordito's default is timed.
+    ``open3d.is_edge_manifold`` has the same switch with the same two semantics as ordito's and is
     timed at the shared default.
 
     **pyvista has no switch and answers the other setting**: ``PolyData.is_manifold`` is
     ``n_open_edges == 0``, i.e. ``vtkFeatureEdges`` with boundary *and* non-manifold edges on, which
-    is triwarp's ``allow_boundary_edges=False``. It therefore does strictly more work than the row
+    is ordito's ``allow_boundary_edges=False``. It therefore does strictly more work than the row
     above -- a full feature-edge extraction rather than a count -- and it is timed at the setting it
     actually implements, which is the one asserted in ``tests/test_validation.py``.
     """
@@ -144,9 +144,9 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
         mesh_pv = bench_case.mesh_pv
         assert bench_case.run(lambda: bool(mesh_pv.is_manifold)) in (True, False)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        assert bench_case.run(lambda: tw.validation.is_edge_manifold(faces)) in (True, False)
+        assert bench_case.run(lambda: od.validation.is_edge_manifold(faces)) in (True, False)
         return
     if bench_case.kind == "open3d":
         mesh_o3d = bench_case.mesh_o3d
@@ -161,26 +161,26 @@ def test_is_edge_manifold(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_orientation_bits")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_face_orientation_bits(bench_case: BenchCase) -> None:
     """
     Z2 orientation bits as a parity union-find: three launches, so depth costs nothing.
 
     ``igl.bfs_orient`` is the reference that does the same work by a different route -- a serial
     breadth-first walk of the face-adjacency graph. Being a traversal, it is the row where this
-    group's ``diameter`` axis should show something on the reference side and nothing on triwarp's;
+    group's ``diameter`` axis should show something on the reference side and nothing on ordito's;
     that contrast is the point of putting it here.
 
     **Its second return is the per-face component id, not the flip mask.** ``bfs_orient`` returns
     ``(FF, C)``: the reoriented face table and ``C``, which is all zeros on a connected mesh. The
     flips are recoverable only by comparing ``FF`` against ``F`` row by row, which is what the
-    parity test does; reading ``C`` as the mask would silently compare triwarp's bits against a
+    parity test does; reading ``C`` as the mask would silently compare ordito's bits against a
     constant.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
         _bits, _edges, _seeds, n_components = bench_case.run(
-            lambda: tw.validation.face_orientation_bits(faces)
+            lambda: od.validation.face_orientation_bits(faces)
         )
         assert n_components >= 1
     elif bench_case.kind == "igl":
@@ -204,7 +204,7 @@ def _run_topology_pml(bench_case: BenchCase) -> None:
     Time MeshLab's whole topology report plus its self-intersection pass.
 
     ``get_topological_measures`` alone answers edge-manifoldness, boundary-edge count, component
-    count and genus, but triwarp's and open3d's watertightness definition also requires "no self
+    count and genus, but ordito's and open3d's watertightness definition also requires "no self
     intersection" -- so both calls are timed together rather than quoting the cheaper half. Its
     manifoldness verdict is asserted on, which is what makes this a check and not just a stopwatch.
     """
@@ -220,7 +220,7 @@ def _run_topology_pml(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_watertight")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 def test_is_watertight(bench_case: BenchCase) -> None:
     """
     Edge counts plus a self-intersection pass: driven by collision density, not size.
@@ -238,13 +238,13 @@ def test_is_watertight(bench_case: BenchCase) -> None:
     if bench_case.kind == "pymeshlab":
         _run_topology_pml(bench_case)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: tw.validation.is_watertight(vertices, faces))
+        result = bench_case.run(lambda: od.validation.is_watertight(vertices, faces))
     elif bench_case.kind == "trimesh":
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(lambda: tm.Trimesh(vertices, faces, process=False).is_watertight)
-    else:  # open3d: same definition as triwarp's, and it does not cache the answer
+    else:  # open3d: same definition as ordito's, and it does not cache the answer
         mesh_o3d = bench_case.mesh_o3d
         result = bench_case.run(mesh_o3d.is_watertight, rounds=_O3D_ROUNDS)
     assert result in (True, False)
@@ -252,15 +252,15 @@ def test_is_watertight(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_volume")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 def test_is_volume(bench_case: BenchCase) -> None:
     """``is_watertight`` plus winding plus a signed-volume sign: the priciest predicate."""
     if bench_case.kind == "pymeshlab":  # the same one call: genus and manifoldness come together
         _run_topology_pml(bench_case)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: tw.validation.is_volume(vertices, faces))
+        result = bench_case.run(lambda: od.validation.is_volume(vertices, faces))
     else:
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
         result = bench_case.run(lambda: tm.Trimesh(vertices, faces, process=False).is_volume)
@@ -269,19 +269,19 @@ def test_is_volume(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_self_intersecting_mask")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pymeshfix", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "meshlib", "pymeshfix", "open3d", "pymeshlab")
 def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
     """
     The per-face self-intersection flags, which ``is_watertight`` reduces to a single bool.
 
     Timed separately from ``is_watertight`` because the two libraries compose the predicate
-    differently: triwarp's ``is_watertight`` runs the manifold checks *first* and this pass only if
+    differently: ordito's ``is_watertight`` runs the manifold checks *first* and this pass only if
     they hold, and MeshLib's ``isClosed`` never runs it at all. So the composite group prices three
     clauses on one side and one on the other, and only this group prices the clause they share.
 
     meshlib's ``findSelfCollidingTrianglesBS`` returns the same per-face set from an AABB tree over
-    the faces, multi-threaded -- read it against ``triwarp-cuda``. ``touchIsIntersection=False`` is
-    the setting that matches triwarp and is passed explicitly; the tree is built lazily on first
+    the faces, multi-threaded -- read it against ``ordito-cuda``. ``touchIsIntersection=False`` is
+    the setting that matches ordito and is passed explicitly; the tree is built lazily on first
     use, so the mesh is constructed outside the timed callable and the row prices the query.
 
     pymeshfix's ``select_intersecting_triangles`` returns the same set exactly, from a uniform grid
@@ -297,7 +297,7 @@ def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
     post-condition ``fix_self_intersections`` is verified by. Both agree on the face *set*, reached
     from open3d's colliding **pairs** and from MeshLab's per-face bool selection. Two shape
     differences to read the rows through: open3d returns pairs, so its output is larger than a mask
-    and ``np.unique`` is the reduction (outside the timed callable, as triwarp's mask needs none);
+    and ``np.unique`` is the reduction (outside the timed callable, as ordito's mask needs none);
     and MeshLab mutates ``current_mesh()``, so its MeshSet is rebuilt per round.
     """
     if bench_case.kind == "open3d":
@@ -325,13 +325,13 @@ def test_face_self_intersecting_mask(bench_case: BenchCase) -> None:
         assert colliding_ml.size() <= bench_case.n_faces
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    mask = bench_case.run(lambda: tw.validation.face_self_intersecting_mask(vertices, faces))
+    mask = bench_case.run(lambda: od.validation.face_self_intersecting_mask(vertices, faces))
     assert mask.size == bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="face_defective_mask")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 def test_face_defective_mask(bench_case: BenchCase) -> None:
     """
     All three defect criteria at once: face quality, adjacency scatter, per-face gate.
@@ -370,7 +370,7 @@ def test_face_defective_mask(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     bad = bench_case.run(
-        lambda: tw.validation.face_defective_mask(
+        lambda: od.validation.face_defective_mask(
             vertices, faces, min_quality=0.02, max_normal_angle=60.0, max_fold_angle=160.0
         )
     )

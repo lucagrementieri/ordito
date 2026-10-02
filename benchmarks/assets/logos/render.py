@@ -11,7 +11,7 @@ Run once (or after touching a source, ``raster/``, or ``SIZE``):
 Most vendored marks are SVG (a project's own icon-only mark, read from ``svg/``), but not every
 project publishes one -- MeshLab's own site links only a PNG, so ``raster/`` holds pre-rasterized
 sources for those, loaded directly with Pillow rather than through cairosvg. Both paths converge on
-the same `_fit_and_chip`: every source mark is either exactly square already or, for triwarp's own
+the same `_fit_and_chip`: every source mark is either exactly square already or, for ordito's own
 lockup, wider than it is tall, and rather than distort the wide ones to fit a square, this scales
 each to fit inside ``SIZE x SIZE`` at its native aspect ratio and centers it -- so every PNG this
 writes is ``SIZE x SIZE`` regardless of the source's own proportions or format, which is the

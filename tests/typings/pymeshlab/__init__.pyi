@@ -1,7 +1,7 @@
 # pymeshlab's public names come from ``from .pmeshlab import *`` over a compiled extension, which no
 # checker can read, and every ``MeshSet`` filter is bound at import from a runtime table
 # (``bind_function``). This stub declares the four classes the test suite names; their members stay
-# dynamic, as they are at runtime. Test-only: nothing under ``triwarp/`` imports pymeshlab.
+# dynamic, as they are at runtime. Test-only: nothing under ``ordito/`` imports pymeshlab.
 from typing import Any
 
 class Mesh:

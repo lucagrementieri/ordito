@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.creation`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.creation`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
-import triwarp as tw
+import ordito as od
+from ordito.creation import ParametricSurfaceKind
 from tests.comparisons import (
     assert_unordered_rows_equal,
     euler_characteristic,
@@ -34,7 +35,6 @@ from tests.conversions import (
     warp_empty,
     warp_to_trimesh,
 )
-from triwarp.creation import ParametricSurfaceKind
 
 # Every surface ``_build_parametric`` builds: the lattice kinds and the two superquadric builders.
 _Surface: TypeAlias = ParametricSurfaceKind | Literal["super_ellipsoid", "super_toroid"]
@@ -44,11 +44,11 @@ def _assert_same_faces(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], mesh_tm: tm.Trimesh
 ) -> None:
     """
-    Assert the triwarp result is the same mesh as ``mesh_tm`` up to vertex and face order.
+    Assert the ordito result is the same mesh as ``mesh_tm`` up to vertex and face order.
 
-    Vertex order genuinely differs — triwarp compacts its buffers rather than reproducing trimesh's
+    Vertex order genuinely differs — ordito compacts its buffers rather than reproducing trimesh's
     merge order — so the comparison matches face *centroid* sets and requires the match to be a
-    bijection. A plain lexsort is too brittle here: triwarp works in ``float32`` and trimesh in
+    bijection. A plain lexsort is too brittle here: ordito works in ``float32`` and trimesh in
     ``float64``, so near-tied coordinates sort differently on the two sides.
     """
     vertices_np = vertices_wp.numpy().astype(np.float64)
@@ -72,9 +72,9 @@ def _assert_same_solid(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], mesh_tm: tm.Trimesh
 ) -> None:
     """
-    Assert the triwarp result is the same solid as ``mesh_tm`` without pinning its triangulation.
+    Assert the ordito result is the same solid as ``mesh_tm`` without pinning its triangulation.
 
-    Used wherever the result contains an ear-clipped cap: triwarp's clipper and trimesh's earcut
+    Used wherever the result contains an ear-clipped cap: ordito's clipper and trimesh's earcut
     pick different (equally valid) diagonals, so the face *count* and the enclosed volume agree
     while individual cap triangles do not.
     """
@@ -90,20 +90,20 @@ def _assert_closed(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32])
     """
     Assert the mesh bounds a volume with no cracks: trimesh's ``is_watertight`` semantics.
 
-    Deliberately not [`triwarp.validation.is_watertight`][], which follows Open3D and also
+    Deliberately not [`ordito.validation.is_watertight`][], which follows Open3D and also
     requires the mesh not to self-intersect. That extra check reports the coplanar edge-adjacent
     triangles of a flat cap as intersecting — it says ``True`` for the output of
     ``trimesh.creation.annulus`` too — so it cannot tell a correct cap from a broken one here.
     """
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
-    assert tw.validation.is_winding_consistent(faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_winding_consistent(faces_wp)
     assert warp_to_trimesh(vertices_wp, faces_wp).volume > 0.0
 
 
 def _assert_same_vertices_and_faces(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], mesh_tm: tm.Trimesh
 ) -> None:
-    """Assert an exact face-set match after remapping triwarp's vertices onto trimesh's."""
+    """Assert an exact face-set match after remapping ordito's vertices onto trimesh's."""
     faces_np = faces_wp.numpy().reshape(-1, 3)
     distance_np, remap_np = cKDTree(mesh_tm.vertices).query(vertices_wp.numpy().astype(np.float64))
     assert np.max(distance_np) < 1e-5, f"vertices differ by up to {np.max(distance_np):.3e}"
@@ -130,14 +130,14 @@ def _build_parametric(
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """Build one surface at ``resolution`` in both directions, whichever builder owns it."""
     if surface == "super_ellipsoid":
-        return tw.creation.super_ellipsoid(
+        return od.creation.super_ellipsoid(
             u_resolution=resolution, v_resolution=resolution, device=device
         )
     if surface == "super_toroid":
-        return tw.creation.super_toroid(
+        return od.creation.super_toroid(
             u_resolution=resolution, v_resolution=resolution, device=device
         )
-    return tw.creation.parametric_surface(surface, resolution, resolution, device=device)
+    return od.creation.parametric_surface(surface, resolution, resolution, device=device)
 
 
 class _Topology(NamedTuple):
@@ -212,22 +212,22 @@ def test_primitives_match_open3d(device: str) -> None:
     for name, (vertices_wp, faces_wp), mesh_o3d in (
         (
             "box",
-            tw.creation.box(extents=(1.0, 2.0, 3.0), device=device),
+            od.creation.box(extents=(1.0, 2.0, 3.0), device=device),
             o3d.geometry.TriangleMesh.create_box(1.0, 2.0, 3.0),
         ),
         (
             "cylinder",
-            tw.creation.cylinder(radius=1.0, height=2.0, sections=32, device=device),
+            od.creation.cylinder(radius=1.0, height=2.0, sections=32, device=device),
             o3d.geometry.TriangleMesh.create_cylinder(1.0, 2.0, resolution=32, split=1),
         ),
         (
             "cone",
-            tw.creation.cone(radius=1.0, height=2.0, sections=32, device=device),
+            od.creation.cone(radius=1.0, height=2.0, sections=32, device=device),
             o3d.geometry.TriangleMesh.create_cone(1.0, 2.0, resolution=32, split=1),
         ),
         (
             "torus",
-            tw.creation.torus(1.0, 0.25, major_sections=32, minor_sections=32, device=device),
+            od.creation.torus(1.0, 0.25, major_sections=32, minor_sections=32, device=device),
             o3d.geometry.TriangleMesh.create_torus(
                 1.0, 0.25, radial_resolution=32, tubular_resolution=32
             ),
@@ -255,7 +255,7 @@ def test_primitives_match_meshlib(device: str) -> None:
     and area are both invariant under a rotation and would not notice a differently oriented cone.
 
     Where the two do differ is *where the origin sits*, and only for one of the four: MeshLib's
-    ``makeCylinder`` is **base-anchored** (z from 0 to the length) where triwarp's is centred on
+    ``makeCylinder`` is **base-anchored** (z from 0 to the length) where ordito's is centred on
     z = 0, while ``makeCone`` is base-anchored on **both** sides and the box and torus are centred
     on both. That is a convention rather than a disagreement, so it is pinned per primitive below
     rather than absorbed into a tolerance.
@@ -275,22 +275,22 @@ def test_primitives_match_meshlib(device: str) -> None:
     for name, (vertices_wp, faces_wp), mesh_ml in (
         (
             "box",
-            tw.creation.box(extents=(1.0, 2.0, 3.0), device=device),
+            od.creation.box(extents=(1.0, 2.0, 3.0), device=device),
             mm.makeCube(mm.Vector3f(1.0, 2.0, 3.0), mm.Vector3f(-0.5, -1.0, -1.5)),
         ),
         (
             "cylinder",
-            tw.creation.cylinder(radius=0.5, height=2.0, sections=16, device=device),
+            od.creation.cylinder(radius=0.5, height=2.0, sections=16, device=device),
             mm.makeCylinder(0.5, 2.0, 16),
         ),
         (
             "cone",
-            tw.creation.cone(radius=0.5, height=2.0, sections=32, device=device),
+            od.creation.cone(radius=0.5, height=2.0, sections=32, device=device),
             mm.makeCone(0.5, 2.0, 32),
         ),
         (
             "torus",
-            tw.creation.torus(1.0, 0.3, major_sections=16, minor_sections=16, device=device),
+            od.creation.torus(1.0, 0.3, major_sections=16, minor_sections=16, device=device),
             mm.makeTorus(1.0, 0.3, 16, 16),
         ),
     ):
@@ -334,7 +334,7 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     to 1.22%. Two references, two mappings, and only one of them is the same mesh; that is worth
     pinning in both directions so neither mapping drifts onto the other.
     """
-    vertices_wp, faces_wp = tw.creation.uv_sphere(
+    vertices_wp, faces_wp = od.creation.uv_sphere(
         radius=1.0, count=(2 * sections, sections), device=device
     )
     mesh_ref = meshlib_to_trimesh(mm.makeUVSphere(1.0, sections, 2 * sections - 2))
@@ -370,7 +370,7 @@ def test_revolve_matches_meshlib(device: str) -> None:
     """
     profile_np = np.array([[0.5, 0.0], [0.5, 1.0], [0.3, 1.5], [0.0, 2.0]])
     profile_wp = points_to_warp_uv(profile_np, device)
-    vertices_wp, faces_wp = tw.creation.revolve(profile_wp, sections=16)
+    vertices_wp, faces_wp = od.creation.revolve(profile_wp, sections=16)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
     profile_ml = mm.std_vector_Vector2_float()
@@ -405,7 +405,7 @@ def test_uv_sphere_matches_open3d(device: str, sections: int) -> None:
     tessellation refines, and both must converge on ``4 pi / 3``. A sphere generator with a wrong
     ring placement would hold a constant offset instead.
     """
-    vertices_wp, faces_wp = tw.creation.uv_sphere(
+    vertices_wp, faces_wp = od.creation.uv_sphere(
         radius=1.0, count=(2 * sections, sections), device=device
     )
     mesh_ref = open3d_to_trimesh(o3d.geometry.TriangleMesh.create_sphere(1.0, resolution=sections))
@@ -465,11 +465,11 @@ def test_primitives_match_pymeshlab(device: str) -> None:
     ``create_*`` **pushes a new mesh onto the MeshSet** rather than returning it, so every call gets
     a fresh set and the answer is read off ``current_mesh()``.
 
-    Two of the four are the *same mesh*: ``create_cube`` and ``create_torus`` match triwarp's vertex
+    Two of the four are the *same mesh*: ``create_cube`` and ``create_torus`` match ordito's vertex
     set as a bijection (to 0 and 4.4e-07). The other two are the same mesh under a rotation about
     the axis -- MeshLab seats the icosahedron base and the cone seam at a different angle, so the
     vertex positions differ by up to 0.163 and 1.43 while every measure agrees -- and
-    ``create_cone`` is additionally *centred* on the origin where triwarp's cone stands on ``z =
+    ``create_cone`` is additionally *centred* on the origin where ordito's cone stands on ``z =
     0``, hence the ``h / 2`` translation. Those two are therefore compared through
     [`_sorted_edge_lengths`][tests.test_creation._sorted_edge_lengths], which is invariant to both,
     matching to 8.0e-08 and 4.0e-07.
@@ -487,23 +487,23 @@ def test_primitives_match_pymeshlab(device: str) -> None:
     torus_pml.create_torus(hradius=1.0, vradius=0.25, hsubdiv=32, vsubdiv=32)
 
     for name, (vertices_wp, faces_wp), mesh_ref, exact_vertices in (
-        ("box", tw.creation.box(extents=(1.0, 1.0, 1.0), device=device), cube_pml, True),
-        ("icosphere", tw.creation.icosphere(subdivisions=2, device=device), sphere_pml, False),
+        ("box", od.creation.box(extents=(1.0, 1.0, 1.0), device=device), cube_pml, True),
+        ("icosphere", od.creation.icosphere(subdivisions=2, device=device), sphere_pml, False),
         (
             "cone",
-            tw.creation.cone(radius=1.0, height=2.0, sections=32, device=device),
+            od.creation.cone(radius=1.0, height=2.0, sections=32, device=device),
             cone_pml,
             False,
         ),
         (
             "torus",
-            tw.creation.torus(1.0, 0.25, major_sections=32, minor_sections=32, device=device),
+            od.creation.torus(1.0, 0.25, major_sections=32, minor_sections=32, device=device),
             torus_pml,
             True,
         ),
     ):
         mesh_pml = _pymeshlab_mesh(mesh_ref)
-        if name == "cone":  # MeshLab centres the cone on the origin; triwarp bases it at z = 0.
+        if name == "cone":  # MeshLab centres the cone on the origin; ordito bases it at z = 0.
             mesh_pml.vertices = mesh_pml.vertices + np.array([0.0, 0.0, 1.0])
         mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
@@ -532,16 +532,16 @@ def test_box(device: str) -> None:
     The default and a non-cube box, because the extent scaling is applied after the unit table
     -- a transposed scale passes the first and fails the second.
     """
-    _assert_same_vertices_and_faces(*tw.creation.box(device=device), tm.creation.box())
+    _assert_same_vertices_and_faces(*od.creation.box(device=device), tm.creation.box())
     _assert_same_vertices_and_faces(
-        *tw.creation.box(extents=(1.0, 2.0, 3.0), device=device),
+        *od.creation.box(extents=(1.0, 2.0, 3.0), device=device),
         tm.creation.box(extents=[1.0, 2.0, 3.0]),
     )
 
 
 def test_box_bounds(device: str) -> None:
     bounds_np = np.array([[-1.0, 0.0, 2.0], [3.0, 1.0, 5.0]])
-    vertices_wp, faces_wp = tw.creation.box(
+    vertices_wp, faces_wp = od.creation.box(
         bounds=cast("Sequence[Sequence[float]]", bounds_np), device=device
     )
     _assert_same_vertices_and_faces(vertices_wp, faces_wp, tm.creation.box(bounds=bounds_np))
@@ -554,7 +554,7 @@ def test_box_transform(device: str) -> None:
     matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(37.0), [1.0, 2.0, 3.0]))
     matrix_np[:3, 3] = np.array([1.0, -2.0, 0.5])
     _assert_same_vertices_and_faces(
-        *tw.creation.box(extents=(1.0, 2.0, 3.0), transform=_mat44(matrix_np), device=device),
+        *od.creation.box(extents=(1.0, 2.0, 3.0), transform=_mat44(matrix_np), device=device),
         tm.creation.box(extents=[1.0, 2.0, 3.0], transform=matrix_np),
     )
 
@@ -562,26 +562,26 @@ def test_box_transform(device: str) -> None:
 def test_box_mirror_transform_keeps_outward_winding(device: str) -> None:
     mirror_np = np.eye(4)
     mirror_np[0, 0] = -1.0
-    vertices_wp, faces_wp = tw.creation.box(
+    vertices_wp, faces_wp = od.creation.box(
         extents=(1.0, 2.0, 3.0), transform=_mat44(mirror_np), device=device
     )
     # A negative-determinant transform reverses winding, so the faces have to be flipped back.
     assert warp_to_trimesh(vertices_wp, faces_wp).volume > 0.0
-    assert tw.validation.is_volume(vertices_wp, faces_wp)
+    assert od.validation.is_volume(vertices_wp, faces_wp)
 
 
 def test_box_invalid(device: str) -> None:
     bounds_np = np.zeros((2, 3))
     with pytest.raises(ValueError, match="bounds overrides"):
-        tw.creation.box(
+        od.creation.box(
             extents=(1.0, 1.0, 1.0),
             bounds=cast("Sequence[Sequence[float]]", bounds_np),
             device=device,
         )
     with pytest.raises(ValueError, match="bounds must be"):
-        tw.creation.box(bounds=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device)
+        od.creation.box(bounds=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device)
     with pytest.raises(ValueError, match="extents must be"):
-        tw.creation.box(extents=np.zeros(4), device=device)  # pyright: ignore[reportArgumentType]
+        od.creation.box(extents=np.zeros(4), device=device)  # pyright: ignore[reportArgumentType]
 
 
 @pytest.mark.parity("platonic_solids", "trimesh", "igl")
@@ -590,7 +590,7 @@ def test_icosahedron(device: str) -> None:
     Class A against trimesh; Class B against igl, whose icosahedron sits in a **rotated frame**.
 
     ``igl.icosahedron`` is libigl's only Platonic generator, and it is the same solid in a different
-    orientation: triwarp and trimesh use the ``(0, ±1, ±φ)`` form (every coordinate ±0.851 or 0)
+    orientation: ordito and trimesh use the ``(0, ±1, ±φ)`` form (every coordinate ±0.851 or 0)
     where igl puts a vertex at the pole (coordinates ±0.894 / ±0.447 / ±1). Positions therefore
     cannot be matched at all, and a comparison that tried would be reporting the frame.
 
@@ -600,7 +600,7 @@ def test_icosahedron(device: str) -> None:
     wrong vertex table -- the bug class this excludes -- moves the edge-length spread off zero or
     the area off its exact value, and both are asserted.
     """
-    vertices_wp, faces_wp = tw.creation.icosahedron(device=device)
+    vertices_wp, faces_wp = od.creation.icosahedron(device=device)
     _assert_same_vertices_and_faces(vertices_wp, faces_wp, tm.creation.icosahedron())
 
     vertices_igl, faces_igl = map(np.asarray, igl.icosahedron())
@@ -641,7 +641,7 @@ def test_platonic_solids_match_pymeshlab(
     [`test_icosahedron`][tests.test_creation.test_icosahedron]), so pymeshlab is the only reference
     for these three.
     """
-    vertices_wp, faces_wp = getattr(tw.creation, builder)(device=device)
+    vertices_wp, faces_wp = getattr(od.creation, builder)(device=device)
     assert vertices_wp.size == n_vertices
     assert faces_wp.size // 3 == n_faces
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
@@ -671,15 +671,15 @@ def test_platonic_solids_match_open3d(device: str, builder: str, creator_name: s
     """
     Class B via rigid-motion invariants, the ``test_icosahedron`` transform against a third table.
 
-    Probed before this test was written: open3d's octahedron matches triwarp's vertex set exactly,
+    Probed before this test was written: open3d's octahedron matches ordito's vertex set exactly,
     but its tetrahedron sits in a rotated frame (nearest-vertex distance 0.92 after scaling) and
     its icosahedron is the raw ``(0, ±1, ±phi)`` table at circumradius 1.902 in yet another
     orientation -- so positions cannot be compared across the family and the invariants are the
     honest common ground: counts, one shared edge length, surface area and enclosed volume, all
-    after scaling open3d's solid to triwarp's unit circumradius. open3d has no dodecahedron, which
+    after scaling open3d's solid to ordito's unit circumradius. open3d has no dodecahedron, which
     is why the parametrization stops at three where the pymeshlab test above has four.
     """
-    vertices_wp, faces_wp = getattr(tw.creation, builder)(device=device)
+    vertices_wp, faces_wp = getattr(od.creation, builder)(device=device)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
     mesh_o3d = getattr(o3d.geometry.TriangleMesh, creator_name)()
@@ -713,7 +713,7 @@ def test_grid(device: str, count: tuple[int, int]) -> None:
     test that pins the *shape* of the answer -- a transposed ``count`` gives the same vertex
     total and a different face total, which only the face formula catches.
     """
-    vertices_wp, faces_wp = tw.creation.grid(count=count, extents=(2.0, 3.0), device=device)
+    vertices_wp, faces_wp = od.creation.grid(count=count, extents=(2.0, 3.0), device=device)
     assert vertices_wp.size == count[0] * count[1]
     assert faces_wp.size // 3 == 2 * (count[0] - 1) * (count[1] - 1)
 
@@ -722,8 +722,8 @@ def test_grid(device: str, count: tuple[int, int]) -> None:
     assert np.isclose(mesh_tm.area, 6.0, rtol=1e-5)
     # Flat, wound outward along +Z, and one boundary loop around the rim.
     assert np.allclose(mesh_tm.face_normals, [0.0, 0.0, 1.0], rtol=1e-5, atol=1e-5)
-    assert tw.validation.is_winding_consistent(faces_wp)
-    assert len(tw.boundary.boundary_loops(vertices_wp, faces_wp)) == 1
+    assert od.validation.is_winding_consistent(faces_wp)
+    assert len(od.boundary.boundary_loops(vertices_wp, faces_wp)) == 1
 
 
 @pytest.mark.parity("grid", "igl")
@@ -732,18 +732,18 @@ def test_grid_matches_igl(device: str) -> None:
     Class B: ``igl.triangulated_grid`` is the same lattice in 2D over the unit square.
 
     Two named transforms, both exact: the reference's ``(n, 2)`` vertices gain a zero third column,
-    and triwarp is asked for the matching patch (``extents=(1, 1)``, ``center=False``) so the two
+    and ordito is asked for the matching patch (``extents=(1, 1)``, ``center=False``) so the two
     cover the same square. The **vertex sets then agree exactly**, which is the assert.
 
     **The two triangulate each cell along the opposite diagonal**, and that is measured rather than
-    assumed: triwarp's first two face centroids are ``(0.222, 0.111)`` and ``(0.111, 0.222)`` where
+    assumed: ordito's first two face centroids are ``(0.222, 0.111)`` and ``(0.111, 0.222)`` where
     igl's are ``(0.111, 0.111)`` and ``(0.222, 0.222)`` on a 4x4 grid. Both are valid grids, so a
     face-centroid comparison is *not* available here -- it fails by the cell size -- and the
     triangulation is instead pinned by the invariants both must satisfy: the same face count, the
     same total area, and every triangle right-angled with legs one cell wide.
     """
     count = 10
-    vertices_wp, faces_wp = tw.creation.grid(
+    vertices_wp, faces_wp = od.creation.grid(
         count=(count, count), extents=(1.0, 1.0), center=False, device=device
     )
     vertices_igl, faces_igl = map(np.asarray, igl.triangulated_grid(count, count))
@@ -777,7 +777,7 @@ def test_grid_matches_igl(device: str) -> None:
 @pytest.mark.parity("grid", "pymeshlab")
 def test_grid_matches_pymeshlab(device: str) -> None:
     """Class B (recentre): MeshLab's ``create_grid`` is the same lattice, uncentered."""
-    vertices_wp, faces_wp = tw.creation.grid(
+    vertices_wp, faces_wp = od.creation.grid(
         count=(10, 8), extents=(0.3, 0.5), center=False, device=device
     )
     meshset_pml = ml.MeshSet()
@@ -797,15 +797,15 @@ def test_grid_matches_pymeshlab(device: str) -> None:
 
 def test_grid_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="count must be at least 2"):
-        tw.creation.grid(count=(1, 4), device=device)
+        od.creation.grid(count=(1, 4), device=device)
     with pytest.raises(ValueError, match="extents must be non-negative"):
-        tw.creation.grid(extents=(-1.0, 1.0), device=device)
+        od.creation.grid(extents=(-1.0, 1.0), device=device)
 
 
 @pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4])
 def test_sphere_cap(device: str, subdivisions: int) -> None:
     angle, radius = np.deg2rad(35.0), 1.5
-    vertices_wp, faces_wp = tw.creation.sphere_cap(
+    vertices_wp, faces_wp = od.creation.sphere_cap(
         angle=angle, subdivisions=subdivisions, radius=radius, device=device
     )
     n_rings = 2**subdivisions
@@ -820,12 +820,12 @@ def test_sphere_cap(device: str, subdivisions: int) -> None:
     assert np.isclose(polar_np.max(), angle, rtol=1e-5, atol=1e-5)
 
     # An open disc: one boundary loop, of exactly the rim's ``6 * n_rings`` vertices.
-    loops = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops) == 1
     assert loops[0].size == 6 * n_rings
-    assert tw.validation.is_winding_consistent(faces_wp)
+    assert od.validation.is_winding_consistent(faces_wp)
     # Wound outward: the area-weighted normal of a cap around +Z points along +Z.
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
     assert (normals_wp.numpy() * areas_wp.numpy()[:, None]).sum(axis=0)[2] > 0.0
 
     # Area of a spherical cap of half-angle ``angle``, approached from below by the inscribed mesh.
@@ -838,7 +838,7 @@ def test_sphere_cap(device: str, subdivisions: int) -> None:
 @pytest.mark.parity("sphere_cap", "pymeshlab")
 def test_sphere_cap_matches_pymeshlab_size(device: str) -> None:
     """Class B (halve the angle): ``create_sphere_cap`` is the same lattice, by aperture."""
-    vertices_wp, faces_wp = tw.creation.sphere_cap(
+    vertices_wp, faces_wp = od.creation.sphere_cap(
         angle=np.deg2rad(30.0), subdivisions=3, device=device
     )
     meshset_pml = ml.MeshSet()
@@ -859,11 +859,11 @@ def test_sphere_cap_matches_pymeshlab_size(device: str) -> None:
 
 def test_sphere_cap_invalid(device: str) -> None:
     with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
-        tw.creation.sphere_cap(angle=0.0, device=device)
+        od.creation.sphere_cap(angle=0.0, device=device)
     with pytest.raises(ValueError, match=r"angle must be in \(0, pi\)"):
-        tw.creation.sphere_cap(angle=np.pi, device=device)
+        od.creation.sphere_cap(angle=np.pi, device=device)
     with pytest.raises(ValueError, match="subdivisions must be non-negative"):
-        tw.creation.sphere_cap(subdivisions=-1, device=device)
+        od.creation.sphere_cap(subdivisions=-1, device=device)
 
 
 @pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4])
@@ -877,7 +877,7 @@ def test_icosphere(device: str, subdivisions: int) -> None:
     0 and 1 there are none or one and an edge walked in the *wrong direction* still lands on the
     same index. From level 2 up, any error in the shared numbering shows as a different face set.
     """
-    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=subdivisions, device=device)
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=subdivisions, device=device)
     _assert_same_vertices_and_faces(
         vertices_wp, faces_wp, tm.creation.icosphere(subdivisions=subdivisions)
     )
@@ -893,7 +893,7 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
     Class B: ``utils.ico_sphere`` is the *same* construction, to its base table's 4 decimal places.
 
     Not the rotated-frame situation section 6 records for open3d's Platonic solids -- pytorch3d
-    starts from the identical ``(+-0.5257, +-0.8507, 0)`` vertex table triwarp uses and subdivides
+    starts from the identical ``(+-0.5257, +-0.8507, 0)`` vertex table ordito uses and subdivides
     the same way, so the positions correspond one-to-one and the residual is pytorch3d's table
     being *written* to four decimals: measured 5.8e-05 at level 0 and 5.2e-05 at level 1 by nearest
     vertex, with the sorted pairwise-distance spectrum agreeing to 9.8e-05.
@@ -904,7 +904,7 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
     """
     sphere_p3d = p3d_utils.ico_sphere(subdivisions)
     vertices_p3d, faces_p3d = pytorch3d_to_numpy(sphere_p3d)
-    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=subdivisions, device=device)
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=subdivisions, device=device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
 
     assert vertices_p3d.shape[0] == 10 * 4**subdivisions + 2
@@ -922,7 +922,7 @@ def test_icosphere_is_crack_free(device: str, subdivisions: int) -> None:
     # The whole point of the closed-form numbering is that a point on a base edge gets the same
     # index from both faces holding it. A seam is exactly what that failing looks like, and it is
     # invisible in a vertex *count* -- the count is closed-form too, so it would still be right.
-    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=subdivisions, device=device)
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=subdivisions, device=device)
     _assert_closed(vertices_wp, faces_wp)
     assert vertices_wp.size == len(np.unique(vertices_wp.numpy(), axis=0))
 
@@ -932,16 +932,16 @@ def test_icosphere_launch_schedule_is_value_neutral(
     monkeypatch: pytest.MonkeyPatch, device: str, levels_per_launch: int
 ) -> None:
     """
-    Triwarp against triwarp: every launch schedule builds the same mesh, bit for bit.
+    Ordito against ordito: every launch schedule builds the same mesh, bit for bit.
 
     ``test_icosphere`` carries the trimesh oracle; this pins the schedules to each other. At five
     levels the shipped schedule is one launch descending every level per vertex; one level per
     launch refines exactly as the recursive build does, and three levels then one per launch mixes
     a multi-level launch reading the vertices an earlier one wrote.
     """
-    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=5, radius=1.7, device=device)
-    monkeypatch.setattr(tw.creation, "_ICOSPHERE_LEVELS_PER_LAUNCH", levels_per_launch)
-    other_vertices_wp, other_faces_wp = tw.creation.icosphere(
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=5, radius=1.7, device=device)
+    monkeypatch.setattr(od.creation, "_ICOSPHERE_LEVELS_PER_LAUNCH", levels_per_launch)
+    other_vertices_wp, other_faces_wp = od.creation.icosphere(
         subdivisions=5, radius=1.7, device=device
     )
     assert np.array_equal(
@@ -951,7 +951,7 @@ def test_icosphere_launch_schedule_is_value_neutral(
 
 
 def test_icosphere_radius(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.icosphere(subdivisions=3, radius=2.5, device=device)
+    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=3, radius=2.5, device=device)
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 2.5, rtol=1e-5, atol=1e-5)
     exact_volume = 4.0 / 3.0 * np.pi * 2.5**3
     assert abs(warp_to_trimesh(vertices_wp, faces_wp).volume - exact_volume) / exact_volume < 0.01
@@ -969,8 +969,8 @@ def test_uv_sphere(device: str) -> None:
     [`test_uv_sphere_matches_open3d`] documents that the two libraries tessellate differently;
     the radius assert is what pins the positions here.
     """
-    _assert_same_faces(*tw.creation.uv_sphere(device=device), tm.creation.uv_sphere())
-    vertices_wp, _ = tw.creation.uv_sphere(radius=3.0, device=device)
+    _assert_same_faces(*od.creation.uv_sphere(device=device), tm.creation.uv_sphere())
+    vertices_wp, _ = od.creation.uv_sphere(radius=3.0, device=device)
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 3.0, rtol=1e-5, atol=1e-5)
 
 
@@ -983,17 +983,17 @@ def test_uv_sphere_explicit_count(device: str) -> None:
     this module's ``count=(16, 32)``. The second half pins that the default is not special: an
     explicit ``(32, 64)`` is the default mesh.
     """
-    vertices_wp, faces_wp = tw.creation.uv_sphere(count=(16, 32), device=device)
+    vertices_wp, faces_wp = od.creation.uv_sphere(count=(16, 32), device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.uv_sphere(count=[16, 16]))
     assert vertices_wp.size == 14 * 32 + 2
-    default_wp, _ = tw.creation.uv_sphere(device=device)
-    explicit_wp, _ = tw.creation.uv_sphere(count=(32, 64), device=device)
+    default_wp, _ = od.creation.uv_sphere(device=device)
+    explicit_wp, _ = od.creation.uv_sphere(count=(32, 64), device=device)
     assert np.array_equal(default_wp.numpy(), explicit_wp.numpy())
 
 
 def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
     """
-    Triwarp against triwarp: the odd-to-even rounding must not write through the caller's array.
+    Ordito against ordito: the odd-to-even rounding must not write through the caller's array.
 
     ``np.asanyarray`` does not copy an ``int64`` ndarray, so an in-place ``counts += counts % 2``
     reaches back into the caller's own buffer. The sibling ``capsule`` never had the defect, and
@@ -1002,16 +1002,16 @@ def test_uv_sphere_does_not_mutate_the_caller_s_count(device: str) -> None:
     """
     count_np = np.array([31, 63], dtype=np.int64)
     # An array rather than the annotated tuple, deliberately: it is the input that could be written.
-    tw.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
+    od.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
     assert np.array_equal(count_np, [31, 63])
     # A tuple cannot be written through, so it is the control: both spellings must round the same.
-    from_tuple_wp, _ = tw.creation.uv_sphere(count=(31, 63), device=device)
-    from_array_wp, _ = tw.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
+    from_tuple_wp, _ = od.creation.uv_sphere(count=(31, 63), device=device)
+    from_array_wp, _ = od.creation.uv_sphere(count=count_np, device=device)  # pyright: ignore[reportArgumentType]
     assert from_tuple_wp.size == from_array_wp.size
 
 
 def test_capsule(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.capsule(height=2.0, radius=0.5, device=device)
+    vertices_wp, faces_wp = od.creation.capsule(height=2.0, radius=0.5, device=device)
     mesh_tm = tm.creation.capsule(height=2.0, radius=0.5)
     _assert_same_faces(vertices_wp, faces_wp, mesh_tm)
     # Centered on the origin, spanning +-(height / 2 + radius) along Z.
@@ -1053,7 +1053,7 @@ def test_solids_of_revolution_agree_with_the_general_engine(
     expect_faces: bool,
 ) -> None:
     """
-    Triwarp against triwarp: the closed-form path against ``revolve``, which carries the oracle.
+    Ordito against ordito: the closed-form path against ``revolve``, which carries the oracle.
 
     Every solid here has two implementations — a single closed-form launch, and the general
     profile-revolving engine the reference comparisons elsewhere in this file are written against.
@@ -1069,12 +1069,12 @@ def test_solids_of_revolution_agree_with_the_general_engine(
     ``expect_faces`` says which of those degenerate cases legitimately produce *no* faces, so the
     comparison cannot pass by both sides being empty without that being the stated intent.
     """
-    builder = getattr(tw.creation, name)
+    builder = getattr(od.creation, name)
     fast_vertices, fast_faces = builder(device=device, **kwargs)
 
     # Force the general engine for the same call, so both answers come from one process and one
     # device rather than from a remembered table.
-    monkeypatch.setattr(tw.creation, "_revolve_regular", lambda *a, **k: None)
+    monkeypatch.setattr(od.creation, "_revolve_regular", lambda *a, **k: None)
     slow_vertices, slow_faces = builder(device=device, **kwargs)
 
     assert (fast_faces.size > 0) == expect_faces
@@ -1092,7 +1092,7 @@ def test_cylinder(device: str) -> None:
     the exact answer is the inscribed prism's and a test against the smooth formula would need
     a loose tolerance that hides real error.
     """
-    vertices_wp, faces_wp = tw.creation.cylinder(radius=1.0, height=2.0, device=device)
+    vertices_wp, faces_wp = od.creation.cylinder(radius=1.0, height=2.0, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.cylinder(radius=1.0, height=2.0))
     # 32 sections truncate the circle, so the volume is the inscribed prism's, not pi * r^2 * h.
     inscribed = 0.5 * 32 * np.sin(2.0 * np.pi / 32) * 2.0
@@ -1107,7 +1107,7 @@ def test_cylinder_segment(device: str) -> None:
     bounds comparison is what catches a rotation applied in the wrong order.
     """
     segment_np = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
-    vertices_wp, faces_wp = tw.creation.cylinder(
+    vertices_wp, faces_wp = od.creation.cylinder(
         radius=0.5, segment=cast("Sequence[Sequence[float]]", segment_np), device=device
     )
     mesh_tm = tm.creation.cylinder(radius=0.5, segment=segment_np)
@@ -1119,9 +1119,9 @@ def test_cylinder_segment(device: str) -> None:
 
 def test_cylinder_requires_height_or_segment(device: str) -> None:
     with pytest.raises(ValueError, match="height or segment"):
-        tw.creation.cylinder(radius=1.0, device=device)
+        od.creation.cylinder(radius=1.0, device=device)
     with pytest.raises(ValueError, match="segment must be"):
-        tw.creation.cylinder(
+        od.creation.cylinder(
             radius=1.0, segment=cast("Sequence[Sequence[float]]", np.zeros((3, 3))), device=device
         )
 
@@ -1135,7 +1135,7 @@ def test_cone(device: str) -> None:
     two fans each carry their own copy of the rim and the mesh is not closed, which the closure
     assert then catches independently.
     """
-    vertices_wp, faces_wp = tw.creation.cone(radius=1.0, height=2.0, device=device)
+    vertices_wp, faces_wp = od.creation.cone(radius=1.0, height=2.0, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.cone(radius=1.0, height=2.0))
     # 32 rim vertices plus the apex and the base center; the two fans need the vertex collapse.
     assert vertices_wp.size == 34
@@ -1151,23 +1151,23 @@ def test_annulus(device: str) -> None:
     0`` is what detects that: a mesh with the seam open is still watertight-looking by face
     count.
     """
-    vertices_wp, faces_wp = tw.creation.annulus(0.5, 1.0, height=2.0, device=device)
+    vertices_wp, faces_wp = od.creation.annulus(0.5, 1.0, height=2.0, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.annulus(0.5, 1.0, height=2.0))
     # The closing point of the annulus profile has to collapse, or the inner-wall seam stays open.
     _assert_closed(vertices_wp, faces_wp)
-    assert tw.measures.euler_characteristic(faces_wp) == 0
+    assert od.measures.euler_characteristic(faces_wp) == 0
 
 
 def test_annulus_zero_inner_radius_is_a_cylinder(device: str) -> None:
     _assert_same_faces(
-        *tw.creation.annulus(0.0, 1.0, height=2.0, device=device),
+        *od.creation.annulus(0.0, 1.0, height=2.0, device=device),
         tm.creation.cylinder(radius=1.0, height=2.0),
     )
 
 
 def test_annulus_requires_height_or_segment(device: str) -> None:
     with pytest.raises(ValueError, match="height or segment"):
-        tw.creation.annulus(0.5, 1.0, device=device)
+        od.creation.annulus(0.5, 1.0, device=device)
 
 
 @pytest.mark.parity("torus", "trimesh")
@@ -1179,7 +1179,7 @@ def test_torus(device: str) -> None:
     genuinely encloses less than the smooth one, and the face-count assert pins the resolution
     the band assumes.
     """
-    vertices_wp, faces_wp = tw.creation.torus(1.0, 0.25, device=device)
+    vertices_wp, faces_wp = od.creation.torus(1.0, 0.25, device=device)
     _assert_same_faces(vertices_wp, faces_wp, tm.creation.torus(1.0, 0.25))
     assert faces_wp.size // 3 == 2 * 32 * 32
     exact_volume = 2.0 * np.pi**2 * 1.0 * 0.25**2
@@ -1187,25 +1187,25 @@ def test_torus(device: str) -> None:
 
 
 _CLOSED_BUILDERS = {
-    "uv_sphere": lambda device: tw.creation.uv_sphere(device=device),
-    "capsule": lambda device: tw.creation.capsule(device=device),
-    "cylinder": lambda device: tw.creation.cylinder(radius=1.0, height=2.0, device=device),
-    "cone": lambda device: tw.creation.cone(radius=1.0, height=2.0, device=device),
-    "annulus": lambda device: tw.creation.annulus(0.5, 1.0, height=2.0, device=device),
-    "torus": lambda device: tw.creation.torus(1.0, 0.25, device=device),
-    "icosphere": lambda device: tw.creation.icosphere(subdivisions=2, device=device),
-    "box": lambda device: tw.creation.box(device=device),
+    "uv_sphere": lambda device: od.creation.uv_sphere(device=device),
+    "capsule": lambda device: od.creation.capsule(device=device),
+    "cylinder": lambda device: od.creation.cylinder(radius=1.0, height=2.0, device=device),
+    "cone": lambda device: od.creation.cone(radius=1.0, height=2.0, device=device),
+    "annulus": lambda device: od.creation.annulus(0.5, 1.0, height=2.0, device=device),
+    "torus": lambda device: od.creation.torus(1.0, 0.25, device=device),
+    "icosphere": lambda device: od.creation.icosphere(subdivisions=2, device=device),
+    "box": lambda device: od.creation.box(device=device),
 }
 
 
 @pytest.mark.parity("torus", "pytorch3d")
 def test_torus_matches_pytorch3d(device: str) -> None:
     """
-    Class B: ``utils.torus(r, R, sides, rings)`` is triwarp's torus under a parameter swap.
+    Class B: ``utils.torus(r, R, sides, rings)`` is ordito's torus under a parameter swap.
 
     Three things have to be lined up and none is a tolerance. pytorch3d takes the **minor** radius
-    first and triwarp the major; its ``sides`` is the minor loop's section count and its ``rings``
-    the major loop's, which is the reverse order of triwarp's ``(major_sections,
+    first and ordito the major; its ``sides`` is the minor loop's section count and its ``rings``
+    the major loop's, which is the reverse order of ordito's ``(major_sections,
     minor_sections)``. At the matching mapping both build 96 vertices and 192 faces.
 
     The comparison is then the surface rather than the buffers -- pytorch3d walks its own Python
@@ -1216,7 +1216,7 @@ def test_torus_matches_pytorch3d(device: str) -> None:
     major, minor, major_sections, minor_sections = 1.0, 0.3, 12, 8
     torus_p3d = p3d_utils.torus(minor, major, minor_sections, major_sections)
     vertices_p3d, faces_p3d = pytorch3d_to_numpy(torus_p3d)
-    vertices_wp, faces_wp = tw.creation.torus(
+    vertices_wp, faces_wp = od.creation.torus(
         major, minor, major_sections, minor_sections, device=device
     )
     vertices_np = vertices_wp.numpy().astype(np.float64)
@@ -1243,7 +1243,7 @@ def test_closed_primitives_are_volumes(device: str, name: str) -> None:
     # closed-profile vertices stay duplicated per slice and nothing here is watertight.
     vertices_wp, faces_wp = _CLOSED_BUILDERS[name](device)
     _assert_closed(vertices_wp, faces_wp)
-    assert tw.validation.is_volume(vertices_wp, faces_wp)
+    assert od.validation.is_volume(vertices_wp, faces_wp)
 
 
 @pytest.mark.parametrize("name", sorted(_CLOSED_BUILDERS))
@@ -1264,7 +1264,7 @@ def test_revolve_matches_trimesh(device: str) -> None:
     """
     profile_np = np.array([[0.25, 0.0], [1.0, 0.0], [1.0, 1.0], [0.25, 1.0], [0.25, 0.0]])
     _assert_same_faces(
-        *tw.creation.revolve(points_to_warp_uv(profile_np, device), sections=24),
+        *od.creation.revolve(points_to_warp_uv(profile_np, device), sections=24),
         tm.creation.revolve(profile_np, sections=24),
     )
 
@@ -1272,34 +1272,34 @@ def test_revolve_matches_trimesh(device: str) -> None:
 @pytest.mark.parametrize("cap", [False, True])
 def test_revolve_partial_revolution(device: str, cap: bool) -> None:
     profile_np = np.array([[0.5, 0.0], [1.0, 0.0], [1.0, 1.0], [0.5, 1.0], [0.5, 0.0]])
-    vertices_wp, faces_wp = tw.creation.revolve(
+    vertices_wp, faces_wp = od.creation.revolve(
         points_to_warp_uv(profile_np, device), angle=np.pi, cap=cap, sections=16
     )
     mesh_tm = tm.creation.revolve(profile_np, angle=np.pi, cap=cap, sections=16)
-    closed = tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    closed = od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
     assert closed is cap
     if cap:
         # The cap winding has to come out facing away from the solid, not into it.
         _assert_same_solid(vertices_wp, faces_wp, mesh_tm)
         _assert_closed(vertices_wp, faces_wp)
-        assert tw.validation.is_volume(vertices_wp, faces_wp)
+        assert od.validation.is_volume(vertices_wp, faces_wp)
     else:
         _assert_same_faces(vertices_wp, faces_wp, mesh_tm)
 
 
 def test_revolve_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="at least 2 points"):
-        tw.creation.revolve(points_to_warp_uv(np.zeros((1, 2)), device))
+        od.creation.revolve(points_to_warp_uv(np.zeros((1, 2)), device))
     with pytest.raises(ValueError, match="sections must be at least 1"):
-        tw.creation.revolve(points_to_warp_uv(_SQUARE_RING, device), sections=0)
+        od.creation.revolve(points_to_warp_uv(_SQUARE_RING, device), sections=0)
 
 
 def test_revolve_absolute_tolerance_is_scale_dependent(device: str) -> None:
     # Documented limitation: the degenerate-triangle filter compares an absolute area against
     # 1e-8, so a large enough sphere keeps its (near-)zero-area polar triangles. Recorded here so
     # the threshold in revolve's Notes stays honest rather than asserted as desirable.
-    small_v, small_f = tw.creation.uv_sphere(radius=1.0, count=(8, 16), device=device)
-    large_v, large_f = tw.creation.uv_sphere(radius=1.0e5, count=(8, 16), device=device)
+    small_v, small_f = od.creation.uv_sphere(radius=1.0, count=(8, 16), device=device)
+    large_v, large_f = od.creation.uv_sphere(radius=1.0e5, count=(8, 16), device=device)
     _assert_closed(small_v, small_f)
     assert large_f.size >= small_f.size
     assert np.allclose(np.linalg.norm(large_v.numpy(), axis=1), 1.0e5, rtol=1e-5, atol=1.0)
@@ -1330,7 +1330,7 @@ def test_extrude_polygon_matches_pyvista_and_open3d(device: str, ring_size: int)
       tensor raises ``Tensor has dtype UInt32, but is expected to have dtype among {Int32, Int64}``,
       although ``RaycastingScene.add_triangles`` accepts one. Two conventions inside one API.
 
-    Both also want 3-D points where triwarp's signature takes ``wp.vec2``, which is the only other
+    Both also want 3-D points where ordito's signature takes ``wp.vec2``, which is the only other
     transform.
 
     **Bug class excluded:** a wall band that skips or doubles a quad, which the face count catches,
@@ -1341,7 +1341,7 @@ def test_extrude_polygon_matches_pyvista_and_open3d(device: str, ring_size: int)
     ring3_np = np.column_stack([ring_np, np.zeros(ring_size)])
     n_expected = 2 * (ring_size - 2) + 2 * ring_size
 
-    vertices_wp, faces_wp = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), 1.0)
+    vertices_wp, faces_wp = od.creation.extrude_polygon(points_to_warp_uv(ring_np, device), 1.0)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
     assert vertices_wp.size == 2 * ring_size
     assert faces_wp.size // 3 == n_expected
@@ -1384,7 +1384,7 @@ def test_extrude_polygon(device: str, ring_name: str, height: float) -> None:
     triangulations, so equality is not available.
     """
     ring_np = _SQUARE_RING if ring_name == "square" else _L_RING
-    vertices_wp, faces_wp = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
+    vertices_wp, faces_wp = od.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
     mesh_tm = tm.creation.extrude_polygon(sg.Polygon(ring_np), height)
     assert vertices_wp.size == 2 * ring_np.shape[0]
     # Both signs of height must give an outward-facing solid of the same volume.
@@ -1393,7 +1393,7 @@ def test_extrude_polygon(device: str, ring_name: str, height: float) -> None:
 
 
 def test_extrude_polygon_mid_plane(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.extrude_polygon(
+    vertices_wp, faces_wp = od.creation.extrude_polygon(
         points_to_warp_uv(_SQUARE_RING, device), 1.0, mid_plane=True
     )
     assert np.allclose(warp_to_trimesh(vertices_wp, faces_wp).bounds[:, 2], [-0.5, 0.5], atol=1e-5)
@@ -1413,7 +1413,7 @@ def test_extrude_polygon_ring_walls_match_the_derived_boundary(
     device: str, ring_name: str, height: float
 ) -> None:
     """
-    Triwarp against triwarp: the ring-edge walls against the derived boundary.
+    Ordito against ordito: the ring-edge walls against the derived boundary.
 
     ``extrude_polygon`` walls a full ``n - 2`` triangulation from its ring edges and never derives
     the boundary; ``extrude_triangulation`` derives it from the same triangulation. The derived path
@@ -1425,10 +1425,10 @@ def test_extrude_polygon_ring_walls_match_the_derived_boundary(
     """
     rings = {"square": _SQUARE_RING, "L": _L_RING}
     ring_np = rings.get(ring_name, _star_ring(12, ring_name == "star_cw"))
-    ring_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     assert faces_wp.size // 3 == ring_np.shape[0] - 2
-    derived_v, derived_f = tw.creation.extrude_triangulation(ring_wp, faces_wp, height)
-    ring_v, ring_f = tw.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
+    derived_v, derived_f = od.creation.extrude_triangulation(ring_wp, faces_wp, height)
+    ring_v, ring_f = od.creation.extrude_polygon(points_to_warp_uv(ring_np, device), height)
     _assert_closed(ring_v, ring_f)
     assert np.array_equal(ring_v.numpy(), derived_v.numpy())
     if device == "cpu":
@@ -1441,19 +1441,19 @@ def test_extrude_triangulation_recovers_subdivided_boundary(device: str) -> None
     # A boundary edge split by an extra collinear vertex still has to become two wall quads, which
     # is why the boundary is recovered from the triangulation rather than taken from the input ring.
     ring_np = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0], [2.0, 1.0], [0.0, 1.0]])
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
-    solid_v, solid_f = tw.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    solid_v, solid_f = od.creation.extrude_triangulation(vertices_wp, faces_wp, 0.5)
     _assert_closed(solid_v, solid_f)
     assert solid_f.size // 3 == 2 * 3 + 2 * 5
     assert np.isclose(warp_to_trimesh(solid_v, solid_f).volume, 1.0, rtol=1e-4)
 
 
 def test_extrude_triangulation_invalid(device: str) -> None:
-    ring_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(_SQUARE_RING, device))
+    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(_SQUARE_RING, device))
     with pytest.raises(ValueError, match="height must be nonzero"):
-        tw.creation.extrude_triangulation(ring_wp, faces_wp, 0.0)
+        od.creation.extrude_triangulation(ring_wp, faces_wp, 0.0)
     with pytest.raises(ValueError, match="multiple of 3"):
-        tw.creation.extrude_triangulation(ring_wp, faces_wp[:2].contiguous(), 1.0)
+        od.creation.extrude_triangulation(ring_wp, faces_wp[:2].contiguous(), 1.0)
 
 
 _SWEEP_PATHS = {
@@ -1487,7 +1487,7 @@ def test_sweep_polygon(device: str, path_name: str) -> None:
     """
     ring_np = np.array([[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]])
     path_np = _SWEEP_PATHS[path_name]
-    vertices_wp, faces_wp = tw.creation.sweep_polygon(
+    vertices_wp, faces_wp = od.creation.sweep_polygon(
         points_to_warp_uv(ring_np, device), points_to_warp(path_np, device)
     )
     mesh_tm = tm.creation.sweep_polygon(sg.Polygon(ring_np), path_np)
@@ -1511,12 +1511,12 @@ def test_sweep_polygon_reversing_path_matches_trimesh_at_the_reversal(device: st
     prism's cross-section about its own axis doesn't change the swept volume, and that test's own
     profile is a square, invariant under a 90 degree rotation in any case. This uses an asymmetric
     rectangle instead, and matches by nearest point (Class B) since trimesh's ear-clipped caps use a
-    different, equally valid diagonal choice than triwarp's — only the *positions* are the shared
+    different, equally valid diagonal choice than ordito's — only the *positions* are the shared
     claim, and this profile has no interior cap point for that choice to add or move.
     """
     ring_np = np.array([[-0.5, -0.1], [0.5, -0.1], [0.5, 0.1], [-0.5, 0.1]])
     path_np = _SWEEP_PATHS["reversing"]
-    vertices_wp, faces_wp = tw.creation.sweep_polygon(
+    vertices_wp, faces_wp = od.creation.sweep_polygon(
         points_to_warp_uv(ring_np, device), points_to_warp(path_np, device), cap=True, connect=False
     )
     mesh_tm = tm.creation.sweep_polygon(sg.Polygon(ring_np), path_np, cap=True, connect=False)
@@ -1534,8 +1534,8 @@ def test_sweep_polygon_angles_roll_the_profile(device: str) -> None:
     path_np = np.column_stack((np.zeros(5), np.zeros(5), np.linspace(0.0, 1.0, 5)))
     path_wp = points_to_warp(path_np, device)
     angles_np = np.linspace(0.0, np.pi / 2.0, 5)
-    straight_v, _ = tw.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp)
-    twisted_v, twisted_f = tw.creation.sweep_polygon(
+    straight_v, _ = od.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp)
+    twisted_v, twisted_f = od.creation.sweep_polygon(
         points_to_warp_uv(ring_np, device),
         path_wp,
         angles=wp.array(angles_np.astype(np.float32), device=device),
@@ -1552,8 +1552,8 @@ def test_sweep_polygon_angles_roll_the_profile(device: str) -> None:
 def test_sweep_polygon_open_path_without_caps(device: str) -> None:
     ring_np = np.array([[-0.25, -0.25], [0.25, -0.25], [0.25, 0.25], [-0.25, 0.25]])
     path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
-    _, faces_wp = tw.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp, cap=False)
-    assert not tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    _, faces_wp = od.creation.sweep_polygon(points_to_warp_uv(ring_np, device), path_wp, cap=False)
+    assert not od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
     assert faces_wp.size // 3 == 2 * 2 * 4
 
 
@@ -1561,10 +1561,10 @@ def test_sweep_polygon_invalid(device: str) -> None:
     ring_wp = points_to_warp_uv(_SQUARE_RING, device)
     single_wp = wp.array(np.zeros((1, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="at least 2 points"):
-        tw.creation.sweep_polygon(ring_wp, single_wp)
+        od.creation.sweep_polygon(ring_wp, single_wp)
     path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
     with pytest.raises(ValueError, match="one entry per path point"):
-        tw.creation.sweep_polygon(
+        od.creation.sweep_polygon(
             ring_wp, path_wp, angles=wp.zeros(2, dtype=wp.float32, device=device)
         )
 
@@ -1577,11 +1577,11 @@ def test_sweep_polygon_rejects_a_non_simple_ring(device: str) -> None:
     triangle for four vertices, which is the branch where the boundary is derived and checked.
     """
     bowtie_np = np.array([[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
-    ring_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(bowtie_np, device))
+    ring_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(bowtie_np, device))
     assert faces_wp.size // 3 < ring_wp.size - 2
     path_wp = points_to_warp(_SWEEP_PATHS["straight"], device)
     with pytest.raises(ValueError, match="simple ring"):
-        tw.creation.sweep_polygon(points_to_warp_uv(bowtie_np, device), path_wp)
+        od.creation.sweep_polygon(points_to_warp_uv(bowtie_np, device), path_wp)
 
 
 # --- composites -------------------------------------------------------------------------
@@ -1606,7 +1606,7 @@ def test_truncated_prisms(device: str) -> None:
     the volume alone would not show.
     """
     triangles_np, vertices_wp, faces_wp = _triangle_soup(device)
-    prism_v, prism_f = tw.creation.truncated_prisms(vertices_wp, faces_wp)
+    prism_v, prism_f = od.creation.truncated_prisms(vertices_wp, faces_wp)
     mesh_tm = tm.creation.truncated_prisms(triangles_np)
     assert prism_v.size == 6 * 5
     assert prism_f.size // 3 == 8 * 5
@@ -1623,7 +1623,7 @@ def test_truncated_prisms_plane(device: str) -> None:
     """
     triangles_np, vertices_wp, faces_wp = _triangle_soup(device)
     origin_np, normal_np = np.array([0.0, 0.0, 0.5]), np.array([0.0, 0.0, 1.0])
-    prism_v, prism_f = tw.creation.truncated_prisms(
+    prism_v, prism_f = od.creation.truncated_prisms(
         vertices_wp,
         faces_wp,
         origin=wp.vec3(*origin_np.tolist()),
@@ -1639,7 +1639,7 @@ def test_truncated_prisms_reversed_winding(device: str) -> None:
     triangles_np, _, faces_wp = _triangle_soup(device)
     flipped_np = np.ascontiguousarray(triangles_np[:, ::-1, :])
     vertices_wp = points_to_warp(flipped_np.reshape(-1, 3), device)
-    prism_v, prism_f = tw.creation.truncated_prisms(vertices_wp, faces_wp)
+    prism_v, prism_f = od.creation.truncated_prisms(vertices_wp, faces_wp)
     assert warp_to_trimesh(prism_v, prism_f).volume > 0.0
     assert np.isclose(
         warp_to_trimesh(prism_v, prism_f).volume,
@@ -1651,13 +1651,13 @@ def test_truncated_prisms_reversed_winding(device: str) -> None:
 def test_truncated_prisms_requires_normal_with_origin(device: str) -> None:
     _, vertices_wp, faces_wp = _triangle_soup(device)
     with pytest.raises(ValueError, match="normal is required"):
-        tw.creation.truncated_prisms(vertices_wp, faces_wp, origin=wp.vec3(0.0, 0.0, 0.0))
+        od.creation.truncated_prisms(vertices_wp, faces_wp, origin=wp.vec3(0.0, 0.0, 0.0))
 
 
 def test_axis(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.axis(device=device)
-    ball_v, ball_f = tw.creation.icosphere(radius=0.04, device=device)
-    shaft_v, shaft_f = tw.creation.cylinder(radius=0.008, height=0.4, device=device)
+    vertices_wp, faces_wp = od.creation.axis(device=device)
+    ball_v, ball_f = od.creation.icosphere(radius=0.04, device=device)
+    shaft_v, shaft_f = od.creation.cylinder(radius=0.008, height=0.4, device=device)
     assert vertices_wp.size == ball_v.size + 3 * shaft_v.size
     assert faces_wp.size == ball_f.size + 3 * shaft_f.size
     # One shaft runs out to axis_length along each of X, Y and Z.
@@ -1670,9 +1670,9 @@ def test_axis(device: str) -> None:
 def test_axis_transform(device: str) -> None:
     matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(90.0), [1.0, 0.0, 0.0]))
     matrix_np[:3, 3] = np.array([1.0, 0.0, 0.0])
-    vertices_wp, faces_wp = tw.creation.axis(transform=_mat44(matrix_np), device=device)
+    vertices_wp, faces_wp = od.creation.axis(transform=_mat44(matrix_np), device=device)
     expected_np = tm.transform_points(
-        tw.creation.axis(device=device)[0].numpy().astype(np.float64), matrix_np
+        od.creation.axis(device=device)[0].numpy().astype(np.float64), matrix_np
     )
     assert np.allclose(vertices_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
     assert faces_wp.size > 0
@@ -1693,7 +1693,7 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
 
     ``clean=True`` is passed explicitly on every surface: pyvista sets it on only 9 of the 21, so at
     its own defaults twelve of these arrive as topological disks and every assertion below would
-    compare triwarp's closed answer against an accidentally open one.
+    compare ordito's closed answer against an accidentally open one.
 
     The face normals are compared as well as the positions, which is what pins the winding: a point
     set alone cannot tell the two orientations of a surface apart.
@@ -1711,7 +1711,7 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
     if surface == "catalan_minimal":
         # The one documented divergence: two sheets of the immersion cross, and VTK's distance weld
         # merges 40 lattice points the parameterization does not identify -- dropping the 2
-        # triangles that thereby became degenerate. triwarp keeps the sheets apart.
+        # triangles that thereby became degenerate. ordito keeps the sheets apart.
         assert (reference_pv.n_points, reference_pv.n_faces) == (1560, 3040)
         assert np.max(cKDTree(vertices_np).query(points_pv)[0]) < 1e-5
     else:
@@ -1737,8 +1737,8 @@ def test_parametric_surface_topology(device: str, surface: _Surface) -> None:
     """
     Each surface has the topology it exists to provide, with open3d reading orientability.
 
-    Class A: ``o3d.geometry.TriangleMesh.is_orientable`` is the oracle triwarp's own
-    [`is_orientable`][triwarp.validation.is_orientable] was written against, and the six
+    Class A: ``o3d.geometry.TriangleMesh.is_orientable`` is the oracle ordito's own
+    [`is_orientable`][ordito.validation.is_orientable] was written against, and the six
     non-orientable surfaces here are the first inputs in the suite for which it answers ``False`` —
     without them the comparison is one-sided and a predicate returning a constant would pass it.
     """
@@ -1752,10 +1752,10 @@ def test_parametric_surface_topology(device: str, surface: _Surface) -> None:
         o3d.utility.Vector3iVector(faces_np.astype(np.int32)),
     )
     assert mesh_o3d.is_orientable() == expected.orientable
-    assert bool(tw.validation.is_orientable(faces_wp)) == expected.orientable
+    assert bool(od.validation.is_orientable(faces_wp)) == expected.orientable
     # The sharpest statement about the index arithmetic: the seam-glued template winds consistently
     # exactly where a consistent winding exists at all, with no repair pass.
-    assert bool(tw.validation.is_winding_consistent(faces_wp)) == expected.orientable
+    assert bool(od.validation.is_winding_consistent(faces_wp)) == expected.orientable
     assert euler_characteristic(faces_np) == expected.chi
     assert open_edge_count(faces_np) == expected.open_edges
     assert mesh_tm.is_watertight == expected.watertight
@@ -1783,7 +1783,7 @@ def test_parametric_surface_topology_is_resolution_independent(
         invariants.add(
             (
                 euler_characteristic(faces_np),
-                bool(tw.validation.is_orientable(faces_wp)),
+                bool(od.validation.is_orientable(faces_wp)),
                 open_edge_count(faces_np) // (resolution - 1),
             )
         )
@@ -1792,11 +1792,11 @@ def test_parametric_surface_topology_is_resolution_independent(
 
 def test_parametric_surface_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="unknown kind"):
-        tw.creation.parametric_surface("klein_bottle", device=device)  # pyright: ignore[reportArgumentType]
+        od.creation.parametric_surface("klein_bottle", device=device)  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="at least 2"):
-        tw.creation.parametric_surface("mobius", 1, 40, device=device)
+        od.creation.parametric_surface("mobius", 1, 40, device=device)
     with pytest.raises(ValueError, match="at least 2"):
-        tw.creation.parametric_surface("mobius", 40, 1, device=device)
+        od.creation.parametric_surface("mobius", 40, 1, device=device)
 
 
 @pytest.mark.parametrize(
@@ -1819,103 +1819,103 @@ def test_parametric_surface_rejects_resolution_2_on_a_wrapped_axis(
     at any resolution, which the topology tests above cover.
     """
     with pytest.raises(ValueError, match="at least 3"):
-        tw.creation.parametric_surface(surface, u_resolution, v_resolution, device=device)
+        od.creation.parametric_surface(surface, u_resolution, v_resolution, device=device)
     # The twisted wrap is the control: a flip keeps the two rows distinct, so 2 stays admissible.
-    _vertices_wp, faces_wp = tw.creation.parametric_surface("mobius", 2, 40, device=device)
+    _vertices_wp, faces_wp = od.creation.parametric_surface("mobius", 2, 40, device=device)
     assert faces_wp.size > 0
 
     with pytest.raises(ValueError, match="at least 3"):
-        tw.creation.super_toroid(u_resolution=2, device=device)
+        od.creation.super_toroid(u_resolution=2, device=device)
     with pytest.raises(ValueError, match="at least 3"):
-        tw.creation.super_ellipsoid(u_resolution=2, device=device)
+        od.creation.super_ellipsoid(u_resolution=2, device=device)
 
 
 def test_super_ellipsoid_unit_exponents_are_a_sphere(device: str) -> None:
     """``n1 = n2 = 1`` is the ellipsoid, which is why no separate ``creation.ellipsoid`` exists."""
-    vertices_wp, faces_wp = tw.creation.super_ellipsoid(device=device)
+    vertices_wp, faces_wp = od.creation.super_ellipsoid(device=device)
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
     _assert_closed(vertices_wp, faces_wp)
 
-    scaled_wp, _ = tw.creation.super_ellipsoid(radii=(2.0, 1.0, 0.5), device=device)
+    scaled_wp, _ = od.creation.super_ellipsoid(radii=(2.0, 1.0, 0.5), device=device)
     axes_np = np.abs(scaled_wp.numpy()).max(axis=0)
     assert np.allclose(axes_np, [2.0, 1.0, 0.5], rtol=1e-2, atol=1e-2)
     # The squareness axis is live: at n1 = n2 = 0.4 the surface bulges out towards its box.
-    boxy_wp, _ = tw.creation.super_ellipsoid(n1=0.4, n2=0.4, device=device)
+    boxy_wp, _ = od.creation.super_ellipsoid(n1=0.4, n2=0.4, device=device)
     assert np.linalg.norm(boxy_wp.numpy(), axis=1).max() > 1.3
 
 
 def test_super_ellipsoid_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="radii must be"):
-        tw.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)  # pyright: ignore[reportArgumentType]
+        od.creation.super_ellipsoid(radii=(1.0, 1.0), device=device)  # pyright: ignore[reportArgumentType]
 
 
 def test_super_toroid_unit_exponents_are_a_torus(device: str) -> None:
     """``n1 = n2 = 1`` is VTK's (1, 0.5) torus, the genus-1 counterpart of the sphere above."""
-    vertices_wp, faces_wp = tw.creation.super_toroid(device=device)
+    vertices_wp, faces_wp = od.creation.super_toroid(device=device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
     ring_np = np.linalg.norm(vertices_np[:, :2], axis=1) - 1.0
     tube_np = np.hypot(ring_np, vertices_np[:, 2])
     assert np.allclose(tube_np, 0.5, rtol=1e-5, atol=1e-5)
     _assert_closed(vertices_wp, faces_wp)
-    assert tw.measures.euler_characteristic(faces_wp) == 0
+    assert od.measures.euler_characteristic(faces_wp) == 0
 
 
 def test_random_hills(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.random_hills(seed=3, device=device)
+    vertices_wp, faces_wp = od.creation.random_hills(seed=3, device=device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
     assert vertices_wp.size == 1_600
     assert faces_wp.size // 3 == 2 * 39 * 39
-    assert tw.measures.euler_characteristic(faces_wp) == 1
+    assert od.measures.euler_characteristic(faces_wp) == 1
     # The lattice is the plain grid over [-10, 10]^2, and only the height is random.
     assert np.allclose(vertices_np[:, :2].min(axis=0), -10.0)
     assert np.allclose(vertices_np[:, :2].max(axis=0), 10.0)
     assert 0.0 < vertices_np[:, 2].max() <= 30 * 2.0
 
     assert np.array_equal(
-        vertices_np, tw.creation.random_hills(seed=3, device=device)[0].numpy().astype(np.float64)
+        vertices_np, od.creation.random_hills(seed=3, device=device)[0].numpy().astype(np.float64)
     )
     assert not np.array_equal(
-        vertices_np, tw.creation.random_hills(seed=4, device=device)[0].numpy().astype(np.float64)
+        vertices_np, od.creation.random_hills(seed=4, device=device)[0].numpy().astype(np.float64)
     )
     # Amplitude scales the height field linearly, and no hills leaves it flat.
-    doubled_np = tw.creation.random_hills(amplitude=4.0, seed=3, device=device)[0].numpy()
+    doubled_np = od.creation.random_hills(amplitude=4.0, seed=3, device=device)[0].numpy()
     assert np.allclose(doubled_np[:, 2], 2.0 * vertices_np[:, 2], rtol=1e-5, atol=1e-5)
-    assert not tw.creation.random_hills(n_hills=0, device=device)[0].numpy()[:, 2].any()
+    assert not od.creation.random_hills(n_hills=0, device=device)[0].numpy()[:, 2].any()
 
 
 def test_random_hills_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="variances must be positive"):
-        tw.creation.random_hills(x_variance=0.0, device=device)
+        od.creation.random_hills(x_variance=0.0, device=device)
     with pytest.raises(ValueError, match="at least 2"):
-        tw.creation.random_hills(u_resolution=1, device=device)
+        od.creation.random_hills(u_resolution=1, device=device)
 
 
 def test_random_soup(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.random_soup(50, seed=3, device=device)
+    vertices_wp, faces_wp = od.creation.random_soup(50, seed=3, device=device)
     assert vertices_wp.size == 150
     assert np.array_equal(faces_wp.numpy(), np.arange(150, dtype=np.int32))
     assert vertices_wp.numpy().min() >= -0.5
     assert vertices_wp.numpy().max() <= 0.5
     assert np.array_equal(
-        vertices_wp.numpy(), tw.creation.random_soup(50, seed=3, device=device)[0].numpy()
+        vertices_wp.numpy(), od.creation.random_soup(50, seed=3, device=device)[0].numpy()
     )
     assert not np.array_equal(
-        vertices_wp.numpy(), tw.creation.random_soup(50, seed=4, device=device)[0].numpy()
+        vertices_wp.numpy(), od.creation.random_soup(50, seed=4, device=device)[0].numpy()
     )
 
 
 def test_empty_results(device: str) -> None:
-    vertices_wp, faces_wp = tw.creation.random_soup(0, seed=1, device=device)
+    vertices_wp, faces_wp = od.creation.random_soup(0, seed=1, device=device)
     assert vertices_wp.size == 0
     assert faces_wp.size == 0
 
     empty_v = warp_empty(0, wp.vec3, device)
     empty_f = warp_empty(0, wp.int32, device)
-    prism_v, prism_f = tw.creation.truncated_prisms(empty_v, empty_f)
+    prism_v, prism_f = od.creation.truncated_prisms(empty_v, empty_f)
     assert prism_v.size == 0
     assert prism_f.size == 0
 
-    solid_v, solid_f = tw.creation.extrude_triangulation(
+    solid_v, solid_f = od.creation.extrude_triangulation(
         warp_empty(0, wp.vec2, device), empty_f, 1.0
     )
     assert solid_v.size == 0
@@ -1932,7 +1932,7 @@ def test_parametric_lattice_paths_agree(
     v_resolution: int,
 ) -> None:
     """
-    Triwarp against triwarp: the device lattice against the numpy one, which carries the oracle.
+    Ordito against ordito: the device lattice against the numpy one, which carries the oracle.
 
     Not a library comparison at this level — the reference comparisons for these surfaces are the
     pyvista tests elsewhere in this file, and they exercise whichever path the size gate selects.
@@ -1948,15 +1948,15 @@ def test_parametric_lattice_paths_agree(
     (``boy``, ``cross_cap``), a wrap in each direction (``klein``), a twist with a boundary
     (``mobius``), a plain open patch (``dini``) and a pole on one end only (``conic_spiral``).
     """
-    forced = tw.creation._PARAMETRIC_LATTICE_DEVICE_FROM  # pyright: ignore[reportPrivateUsage]
-    monkeypatch.setattr(tw.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 1 << 30)
-    host_v, host_f = tw.creation.parametric_surface(
+    forced = od.creation._PARAMETRIC_LATTICE_DEVICE_FROM  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(od.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 1 << 30)
+    host_v, host_f = od.creation.parametric_surface(
         surface, u_resolution, v_resolution, device=device
     )
     host_v_np, host_f_np = host_v.numpy(), host_f.numpy()
 
-    monkeypatch.setattr(tw.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 0)
-    device_v, device_f = tw.creation.parametric_surface(
+    monkeypatch.setattr(od.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 0)
+    device_v, device_f = od.creation.parametric_surface(
         surface, u_resolution, v_resolution, device=device
     )
     assert forced > 0, "the gate must be a positive sample count"

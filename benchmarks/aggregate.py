@@ -1,8 +1,8 @@
 """
 Aggregate per-module ``pytest-benchmark`` JSONs into a loss table (and feed `plot_comparison.py`).
 
-Cell = ``(module, group, mesh_name, every other param except library)``. triwarp-cuda's median
-against the *minimum* median over the non-triwarp libraries in the cell.
+Cell = ``(module, group, mesh_name, every other param except library)``. ordito-cuda's median
+against the *minimum* median over the non-ordito libraries in the cell.
 
 The median is the comparison statistic, but it is not self-certifying: pytest-benchmark's
 ``rounds`` drops to 3 for the slowest groups, and at n=3 the median *is* the middle sample, so a
@@ -11,11 +11,11 @@ One round's only apparent regression was exactly that: the *minimum* had not mov
 of three samples carried a one-off cost. A whole bisect was planned against it.
 
 So ``--suspect`` prints every cell whose median exceeds its own minimum by more than a factor,
-and it should be read *before* the loss table. On the triwarp side it is a cheap guard rather than
-a common problem: over a whole round's triwarp cells only a couple exceed the threshold.
+and it should be read *before* the loss table. On the ordito side it is a cheap guard rather than
+a common problem: over a whole round's ordito cells only a couple exceed the threshold.
 
 It flags *reference* cells too, and those tilt the table the other way -- an inflated reference
-median makes triwarp look better than it is, and the worst offenders are the references whose cost
+median makes ordito look better than it is, and the worst offenders are the references whose cost
 is dominated by Python object churn. Before reading a *win* against one of those as real, check the
 reference's own min.
 
@@ -35,7 +35,7 @@ import os
 import sys
 from typing import NamedTuple
 
-TRIWARP_IDS = frozenset({"triwarp-cpu", "triwarp-cuda"})
+ORDITO_IDS = frozenset({"ordito-cpu", "ordito-cuda"})
 
 # (module, group, mesh_name, rest) -- `rest` is every other parametrize value for this exact case,
 # as a sorted tuple of (name, str(value)) pairs so it hashes and orders consistently.
@@ -138,17 +138,17 @@ def report_suspects(suspects: list[Suspect], factor: float = 1.5) -> None:
 def compare(
     cells: dict[CellKey, dict[str, float]], exclude: tuple[str, ...] = ()
 ) -> list[tuple[CellKey, float, str, float]]:
-    """Yield `(key, triwarp_ms, best_reference_lib, best_reference_ms)` for each comparable cell."""
+    """Yield `(key, ordito_ms, best_reference_lib, best_reference_ms)` for each comparable cell."""
     out = []
     for key, libs in cells.items():
-        triwarp_seconds = libs.get("triwarp-cuda")
-        if triwarp_seconds is None:
+        ordito_seconds = libs.get("ordito-cuda")
+        if ordito_seconds is None:
             continue
-        refs = {k: v for k, v in libs.items() if k not in TRIWARP_IDS and k not in exclude}
+        refs = {k: v for k, v in libs.items() if k not in ORDITO_IDS and k not in exclude}
         if not refs:
             continue
         best_lib = min(refs, key=refs.__getitem__)
-        out.append((key, triwarp_seconds * 1e3, best_lib, refs[best_lib] * 1e3))
+        out.append((key, ordito_seconds * 1e3, best_lib, refs[best_lib] * 1e3))
     return out
 
 
@@ -163,7 +163,7 @@ def report(
     print(f"\n=== {label} ===")
     print(f"comparisons {len(rows)}   wins {wins}   losses {len(losses)}   gap {gap:.1f} ms")
     losses.sort(key=lambda r: r[1] - r[3], reverse=True)
-    print(f"\n{'gap ms':>9} {'ratio':>7} {'triwarp':>10} {'best':>10}  cell")
+    print(f"\n{'gap ms':>9} {'ratio':>7} {'ordito':>10} {'best':>10}  cell")
     for key, t, bl, b in losses[:top]:
         print(f"{t - b:9.2f} {t / b:6.2f}x {t:10.3f} {b:10.3f}  {cell_label(key)} vs {bl}")
     return rows, losses, gap

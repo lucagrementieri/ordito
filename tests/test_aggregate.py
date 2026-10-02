@@ -47,7 +47,7 @@ def test_load_groups_by_module_group_mesh_and_rest(tmp_path: Path) -> None:
     _write_benchmark_json(
         tmp_path / "test_edges.json",
         [
-            _row("faces_to_edges", "triwarp-cuda", 0.001, mesh_name="bunny"),
+            _row("faces_to_edges", "ordito-cuda", 0.001, mesh_name="bunny"),
             _row("faces_to_edges", "trimesh", 0.010, mesh_name="bunny"),
             _row("faces_to_edges", "trimesh", 0.020, mesh_name="dragon"),
         ],
@@ -58,7 +58,7 @@ def test_load_groups_by_module_group_mesh_and_rest(tmp_path: Path) -> None:
     assert modules == {"test_edges": 3}
     bunny_key = ("test_edges", "faces_to_edges", "bunny", ())
     dragon_key = ("test_edges", "faces_to_edges", "dragon", ())
-    assert cells[bunny_key] == {"triwarp-cuda": 0.001, "trimesh": 0.010}
+    assert cells[bunny_key] == {"ordito-cuda": 0.001, "trimesh": 0.010}
     assert cells[dragon_key] == {"trimesh": 0.020}
 
 
@@ -67,8 +67,8 @@ def test_load_keys_distinct_rest_params_into_separate_cells(tmp_path: Path) -> N
     _write_benchmark_json(
         tmp_path / "test_heat.json",
         [
-            _row("heat_geodesic", "triwarp-cuda", 0.005, mesh_name="sphere", setup="full"),
-            _row("heat_geodesic", "triwarp-cuda", 0.001, mesh_name="sphere", setup="amortized"),
+            _row("heat_geodesic", "ordito-cuda", 0.005, mesh_name="sphere", setup="full"),
+            _row("heat_geodesic", "ordito-cuda", 0.001, mesh_name="sphere", setup="amortized"),
         ],
     )
 
@@ -77,13 +77,13 @@ def test_load_keys_distinct_rest_params_into_separate_cells(tmp_path: Path) -> N
     assert len(cells) == 2
     full_key = ("test_heat", "heat_geodesic", "sphere", (("setup", "full"),))
     amortized_key = ("test_heat", "heat_geodesic", "sphere", (("setup", "amortized"),))
-    assert cells[full_key] == {"triwarp-cuda": 0.005}
-    assert cells[amortized_key] == {"triwarp-cuda": 0.001}
+    assert cells[full_key] == {"ordito-cuda": 0.005}
+    assert cells[amortized_key] == {"ordito-cuda": 0.001}
 
 
 def test_load_skips_a_row_with_no_library(tmp_path: Path) -> None:
     """A row with no `library` param (a stray/malformed one) is dropped, not crashed on."""
-    row = _row("faces_to_edges", "triwarp-cuda", 0.001)
+    row = _row("faces_to_edges", "ordito-cuda", 0.001)
     del row["params"]["library"]
     _write_benchmark_json(tmp_path / "test_edges.json", [row])
 
@@ -97,7 +97,7 @@ def test_load_tolerates_an_unreadable_json_file(tmp_path: Path) -> None:
     """A module whose JSON failed to write (a crashed run) is reported and skipped, not fatal."""
     (tmp_path / "test_broken.json").write_text("not json")
     _write_benchmark_json(
-        tmp_path / "test_edges.json", [_row("faces_to_edges", "triwarp-cuda", 0.001)]
+        tmp_path / "test_edges.json", [_row("faces_to_edges", "ordito-cuda", 0.001)]
     )
 
     _cells, modules, _suspects = agg.load(str(tmp_path))
@@ -108,7 +108,7 @@ def test_load_tolerates_an_unreadable_json_file(tmp_path: Path) -> None:
 
 def test_load_flags_a_median_well_above_its_own_minimum_as_suspect(tmp_path: Path) -> None:
     """A row whose median/min ratio is large is reported as a `Suspect`, per `report_suspects`."""
-    row = _row("marching_triangles", "triwarp-cuda", 9.0)
+    row = _row("marching_triangles", "ordito-cuda", 9.0)
     row["stats"]["min"] = 3.0
     _write_benchmark_json(tmp_path / "test_levelset.json", [row])
 
@@ -123,8 +123,8 @@ def test_load_flags_a_median_well_above_its_own_minimum_as_suspect(tmp_path: Pat
 def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() -> None:
     cells: dict[agg.CellKey, dict[str, float]] = {
         ("test_x", "op", "mesh", ()): {
-            "triwarp-cuda": 0.010,
-            "triwarp-cpu": 0.050,
+            "ordito-cuda": 0.010,
+            "ordito-cpu": 0.050,
             "slow_ref": 0.100,
             "fast_ref": 0.020,
         }
@@ -133,9 +133,9 @@ def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() ->
     rows = agg.compare(cells)
 
     assert len(rows) == 1
-    key, triwarp_ms, best_lib, best_ms = rows[0]
+    key, ordito_ms, best_lib, best_ms = rows[0]
     assert key == ("test_x", "op", "mesh", ())
-    assert triwarp_ms == 10.0
+    assert ordito_ms == 10.0
     assert best_lib == "fast_ref"
     assert best_ms == 20.0
 
@@ -143,11 +143,11 @@ def test_compare_picks_the_fastest_reference_and_ignores_excluded_libraries() ->
     assert excluded[0][2] == "slow_ref"
 
 
-def test_compare_skips_a_cell_with_no_triwarp_cuda_row_or_no_reference() -> None:
+def test_compare_skips_a_cell_with_no_ordito_cuda_row_or_no_reference() -> None:
     cells: dict[agg.CellKey, dict[str, float]] = {
-        ("test_x", "op", "a", ()): {"trimesh": 0.010},  # no triwarp-cuda
-        ("test_x", "op", "b", ()): {"triwarp-cuda": 0.010},  # no reference
-        ("test_x", "op", "c", ()): {"triwarp-cuda": 0.010, "trimesh": 0.020},  # comparable
+        ("test_x", "op", "a", ()): {"trimesh": 0.010},  # no ordito-cuda
+        ("test_x", "op", "b", ()): {"ordito-cuda": 0.010},  # no reference
+        ("test_x", "op", "c", ()): {"ordito-cuda": 0.010, "trimesh": 0.020},  # comparable
     }
 
     rows = agg.compare(cells)

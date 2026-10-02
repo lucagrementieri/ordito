@@ -14,7 +14,7 @@ licensing/trademark statement these vendored marks are subject to.
 | `pytorch3d.svg` | `reference/pytorch3d/website/static/img/pytorch3dicon.svg` (PyTorch3D's own repository) | The icon variant, not `pytorch3dlogo(white)?.svg` |
 | `numpy.svg` | <https://numpy.org/images/logo.svg> (NumPy's own site) | Fetched directly; NumPy publishes this for reuse |
 | `scipy.svg` | <https://scipy.org/images/logo.svg> (SciPy's own site) | Fetched directly; SciPy publishes this for reuse |
-| `triwarp.svg` | `docs/assets/logo.svg` (this repository) | triwarp's own mark, for the subject bars |
+| `ordito.svg` | `docs/assets/logo.svg` (this repository) | ordito's own mark, for the subject bars |
 | `raster/meshlab.png` | <https://www.meshlab.net/img/meshlabLogo.png> (MeshLab's own site) | Used for the `pymeshlab` row — MeshLab publishes no SVG, only this PNG; see `registry.py` for why MeshLab's mark (not a separate PyMeshLab one) is the right choice there |
 
 Three benchmarked libraries have no entry here and render as a text-only bar instead — see the

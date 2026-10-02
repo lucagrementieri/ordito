@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.adjacency``: the face-pair table and the two quantities derived from it.
+Benchmarks for ``ordito.adjacency``: the face-pair table and the two quantities derived from it.
 
 ``face_adjacency`` is the package's most reused topological query and the widest composition in it:
 an edge build, a row hash, a radix sort over ``3F`` keys, a scan-and-compact, and a gather. Two of
@@ -18,7 +18,7 @@ builds a fresh mesh; ``benchmarks/test_mesh.py`` covers the warm-cache side unde
 
 **libigl** covers the first two groups with a single call: ``igl.triangle_triangle_adjacency``
 returns ``(TT, TTi)``, the neighbour across each corner's edge and that edge's index in the
-neighbour, which is triwarp's ``face_adjacency`` and ``face_adjacency_unshared`` in one pass and one
+neighbour, which is ordito's ``face_adjacency`` and ``face_adjacency_unshared`` in one pass and one
 layout. Both rows therefore time the *same* igl call -- that is not double-counting, it is the
 honest statement that igl does not separate them, and it makes ``face_adjacency_unshared``'s igl row
 an upper bound rather than a like-for-like. ``face_adjacency_angles`` has no igl equivalent
@@ -41,9 +41,9 @@ comparison pass alone.
 scalar per adjacent face pair in the same layout, and ``Trimesh.face_adjacency_convex`` is that plus
 the threshold. Both are *cached properties*, so the ``Trimesh`` is rebuilt inside the timed callable
 -- otherwise rounds 2..n would return a memoized array and measure nothing. That rebuild also pays
-trimesh's own ``face_adjacency`` construction, which is the honest comparison since the triwarp side
+trimesh's own ``face_adjacency`` construction, which is the honest comparison since the ordito side
 builds its adjacency inside the timed region too. Both rows are capped at ``bunny``; the projection
-reference is two orders of magnitude behind triwarp at the top of the scale axis. **libigl** has no
+reference is two orders of magnitude behind ordito at the top of the scale axis. **libigl** has no
 local-convexity binding, so igl is absent from these two.
 """
 
@@ -55,25 +55,25 @@ import pytest
 import trimesh as tm
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
-_adjacency_cache: dict[tuple[str, str], tuple[twt.Array2dInt32, twt.Array2dInt32]] = {}
+_adjacency_cache: dict[tuple[str, str], tuple[odt.Array2dInt32, odt.Array2dInt32]] = {}
 
 
-def _adjacency(bench_case: BenchCase) -> tuple[twt.Array2dInt32, twt.Array2dInt32]:
+def _adjacency(bench_case: BenchCase) -> tuple[odt.Array2dInt32, odt.Array2dInt32]:
     """Precomputed ``(face_adjacency, face_adjacency_edges)`` for the derived-quantity groups."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _adjacency_cache:
-        _adjacency_cache[key] = tw.adjacency.face_adjacency(
+        _adjacency_cache[key] = od.adjacency.face_adjacency(
             bench_case.faces_wp, return_edges=True, n_vertices=bench_case.n_vertices
         )
     return _adjacency_cache[key]
 
 
 @pytest.mark.benchmark(group="face_adjacency")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 @pytest.mark.parametrize("known_radix", [False, True], ids=["inferred", "known_nv"])
 def test_face_adjacency(bench_case: BenchCase, known_radix: bool) -> None:
     """
@@ -86,18 +86,18 @@ def test_face_adjacency(bench_case: BenchCase, known_radix: bool) -> None:
 
     ``igl.triangle_triangle_adjacency`` answers the same question in a **per-corner** layout: a
     ``(n_faces, 3)`` table whose entry ``[f, i]`` is the face across edge ``i`` of face ``f``, or
-    ``-1``. That is a superset of triwarp's pair list -- every pair appears twice, once from each
+    ``-1``. That is a superset of ordito's pair list -- every pair appears twice, once from each
     side -- so the row is a fair cost comparison and the parity assert carries the pair-extraction
     transform (``tests/test_adjacency.py``). Note the array form is the one to use: the
     ``triangle_triangle_adjacency_lists`` variant is the same computation returning
     ``list[list[int]]`` and costs two orders of magnitude more, i.e. it would price nanobind rather
     than the algorithm.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces_wp = bench_case.faces_wp
         n_vertices = bench_case.n_vertices if known_radix else None
         adjacency = bench_case.run(
-            lambda: tw.adjacency.face_adjacency(faces_wp, n_vertices=n_vertices)
+            lambda: od.adjacency.face_adjacency(faces_wp, n_vertices=n_vertices)
         )
         assert adjacency.shape[1] == 2
         assert adjacency.shape[0] > 0
@@ -118,7 +118,7 @@ def test_face_adjacency(bench_case: BenchCase, known_radix: bool) -> None:
 
 
 @pytest.mark.benchmark(group="face_adjacency_unshared")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 @pytest.mark.parametrize("tabled", [True, False], ids=["tabled", "from_faces"])
 def test_face_adjacency_unshared(bench_case: BenchCase, tabled: bool) -> None:
     """
@@ -131,19 +131,19 @@ def test_face_adjacency_unshared(bench_case: BenchCase, tabled: bool) -> None:
     grouped edge indices. The gap between this id and ``face_adjacency`` + ``tabled`` is what that
     saves.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces_wp = bench_case.faces_wp
         if tabled:
             adjacency, adjacency_edges = _adjacency(bench_case)
             unshared = bench_case.run(
-                lambda: tw.adjacency.face_adjacency_unshared(
+                lambda: od.adjacency.face_adjacency_unshared(
                     faces_wp, face_adjacency=adjacency, face_adjacency_edges=adjacency_edges
                 )
             )
         else:
             n_vertices = bench_case.n_vertices
             unshared = bench_case.run(
-                lambda: tw.adjacency.face_adjacency_unshared(faces_wp, n_vertices=n_vertices)
+                lambda: od.adjacency.face_adjacency_unshared(faces_wp, n_vertices=n_vertices)
             )
         assert unshared.shape[1] == 2
         return
@@ -166,7 +166,7 @@ def test_face_adjacency_unshared(bench_case: BenchCase, tabled: bool) -> None:
 
 
 @pytest.mark.benchmark(group="face_connected_component_labels")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista", "meshlib")
 def test_face_connected_component_labels(bench_case: BenchCase) -> None:
     """
     Per-face component ids over the face-adjacency graph: the edge build plus a label propagation.
@@ -177,7 +177,7 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
     ``igl.facet_components`` walks edge-edge adjacency serially, so its cost is the face count.
 
     ``igl.facet_components`` returns ``(n_components, labels)`` -- the count first, which is easy to
-    unpack wrongly -- and numbers components ``0..k-1`` in its own discovery order where triwarp
+    unpack wrongly -- and numbers components ``0..k-1`` in its own discovery order where ordito
     labels each component by a representative face. The partition is identical; the names are not
     (``tests/test_adjacency.py``).
 
@@ -186,7 +186,7 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
     its row prices the copy as well as the traversal.
     """
     if bench_case.kind == "meshlib":
-        # ``FaceIncidence.PerEdge`` is triwarp's rule and is passed explicitly: the ``PerVertex``
+        # ``FaceIncidence.PerEdge`` is ordito's rule and is passed explicitly: the ``PerVertex``
         # setting is a different operation, not a tuning (2 components against 1 on a bowtie). It
         # returns the components as bitsets rather than a label array, so its cost includes
         # materializing k of them.
@@ -201,9 +201,9 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
         labelled_pv = bench_case.run(lambda: mesh_pv.connectivity("all"))
         assert np.asarray(labelled_pv.cell_data["RegionId"]).shape == (bench_case.n_faces,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces_wp = bench_case.faces_wp
-        labels = bench_case.run(lambda: tw.adjacency.face_connected_component_labels(faces_wp))
+        labels = bench_case.run(lambda: od.adjacency.face_connected_component_labels(faces_wp))
         assert labels.shape == (bench_case.n_faces,)
         return
     faces_np = bench_case.faces_np
@@ -213,14 +213,14 @@ def test_face_connected_component_labels(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="face_adjacency_angles")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_face_adjacency_angles(bench_case: BenchCase) -> None:
     """Dihedral angle per adjacent pair, from a precomputed adjacency table and fresh normals."""
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
         adjacency, _ = _adjacency(bench_case)
         angles = bench_case.run(
-            lambda: tw.adjacency.face_adjacency_angles(
+            lambda: od.adjacency.face_adjacency_angles(
                 vertices_wp, faces_wp, face_adjacency=adjacency
             )
         )
@@ -235,7 +235,7 @@ def test_face_adjacency_angles(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vertex_face_adjacency")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 @pytest.mark.parametrize("known_nv", [False, True], ids=["inferred", "known_nv"])
 def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     """
@@ -268,14 +268,14 @@ def test_vertex_face_adjacency(bench_case: BenchCase, known_nv: bool) -> None:
     faces_wp = bench_case.faces_wp
     supplied = n_vertices if known_nv else None
     vertex_faces, offsets = bench_case.run(
-        lambda: tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=supplied)
+        lambda: od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=supplied)
     )
     assert offsets.size == n_vertices + 1
     assert vertex_faces.size == 3 * bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="face_adjacency_projections")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_face_adjacency_projections(bench_case: BenchCase) -> None:
     """
     Unshared-vertex plane projections per adjacent face pair, adjacency built inside.
@@ -287,12 +287,12 @@ def test_face_adjacency_projections(bench_case: BenchCase) -> None:
     as ``face_adjacency_convex``'s row does, which means both sides pay for the adjacency the
     projection needs; that is the honest comparison here, since the adjacency is what dominates.
     Capped at ``bunny``: the reference is single-core NumPy and is two orders of magnitude behind
-    triwarp at the top of the scale axis.
+    ordito at the top of the scale axis.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         projections = bench_case.run(
-            lambda: tw.adjacency.face_adjacency_projections(vertices, faces)
+            lambda: od.adjacency.face_adjacency_projections(vertices, faces)
         )
         assert projections.shape[0] >= 0
     else:  # a cached Trimesh property: rebuild inside, as face_adjacency_convex's row does
@@ -305,12 +305,12 @@ def test_face_adjacency_projections(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="face_adjacency_convex")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_face_adjacency_convex(bench_case: BenchCase) -> None:
     """Locally-convex adjacent face pairs: the projection plus a tolerance threshold."""
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        convex = bench_case.run(lambda: tw.adjacency.face_adjacency_convex(vertices, faces))
+        convex = bench_case.run(lambda: od.adjacency.face_adjacency_convex(vertices, faces))
         assert convex.shape[0] >= 0
     else:  # rebuild inside: face_adjacency_convex is a cached Trimesh property
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np

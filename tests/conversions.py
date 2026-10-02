@@ -19,7 +19,7 @@ from meshlib import mrmeshpy as mm
 from pymeshfix import _meshfix
 from scipy.spatial import cKDTree
 
-import triwarp.typing as twt
+import ordito.typing as odt
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
@@ -67,12 +67,12 @@ def numpy_to_warp(
     vertices_np: np.ndarray, faces_np: np.ndarray, device: wp.DeviceLike
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Upload a NumPy mesh as triwarp's ``(wp.array[wp.vec3], flat wp.array[wp.int32])`` pair.
+    Upload a NumPy mesh as ordito's ``(wp.array[wp.vec3], flat wp.array[wp.int32])`` pair.
 
     The single most duplicated helper in this suite: six private copies across six modules and 54
     call sites, differing only in where the ``float32`` cast sat. It is separate from
     [`trimesh_to_warp`][tests.conversions.trimesh_to_warp], which returns a ``wp.Mesh`` (a BVH
-    build), because most tests want the raw buffers a triwarp wrapper takes and never touch a
+    build), because most tests want the raw buffers a ordito wrapper takes and never touch a
     ``wp.Mesh``.
 
     Positions land as **float32**: that is what ``wp.vec3`` holds, and it is the reason a comparison
@@ -83,7 +83,7 @@ def numpy_to_warp(
     vertices_np
         ``(n, 3)`` positions, any float dtype.
     faces_np
-        Vertex indices, ``(n_faces, 3)`` or already flat -- reshaped to triwarp's flat buffer
+        Vertex indices, ``(n_faces, 3)`` or already flat -- reshaped to ordito's flat buffer
         either way.
     device
         Warp device for both arrays.
@@ -91,7 +91,7 @@ def numpy_to_warp(
     See Also
     --------
     [`warp_to_trimesh`][tests.conversions.warp_to_trimesh]
-        The inverse, for reading a triwarp result back out.
+        The inverse, for reading a ordito result back out.
     [`numpy_to_warp_uv`][tests.conversions.numpy_to_warp_uv]
         The ``wp.vec2`` form, for the parametrization tests' 2-D vertex buffers.
     """
@@ -138,7 +138,7 @@ def points_to_warp(points_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.
     [`points_to_meshlib`][tests.conversions.points_to_meshlib] -- every reference library had one
     and Warp did not, so the suite hand-rolled it **403** times in four different spellings across
     35 files, plus six one-line private copies carrying another 181 calls. Reach for this wherever
-    a bare cloud goes to a triwarp wrapper: query points, normals, ray origins and directions,
+    a bare cloud goes to a ordito wrapper: query points, normals, ray origins and directions,
     polyline vertices, a sampled surface.
 
     Positions land as **float32**: that is what ``wp.vec3`` holds, and it is the reason a comparison
@@ -208,10 +208,10 @@ def trimesh_to_pymeshlab(mesh: tm.Trimesh, scalars: np.ndarray | None = None) ->
 
 def warp_to_pymeshlab(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> ml.MeshSet:
     """
-    Read triwarp's ``(vertices, flat faces)`` pair back into a ``pymeshlab.MeshSet``.
+    Read ordito's ``(vertices, flat faces)`` pair back into a ``pymeshlab.MeshSet``.
 
-    The face buffer is triwarp's flat one, so it is reshaped to ``(n_faces, 3)`` here; use this when
-    the mesh under test is a triwarp *output* rather than one of the ``tests/conftest.py`` fixtures
+    The face buffer is ordito's flat one, so it is reshaped to ``(n_faces, 3)`` here; use this when
+    the mesh under test is a ordito *output* rather than one of the ``tests/conftest.py`` fixtures
     (which already carry a ``tm.Trimesh`` for ``trimesh_to_pymeshlab``).
 
     !!! note "Deliberately unexercised, and not dead"
@@ -239,7 +239,7 @@ def wedge_uv_to_pymeshlab(
 
     MeshLab stores UVs on face corners rather than on vertices, which is why it has no texcoord
     *index* buffer at all and why its seam predicate compares coordinates. ``w_tex_coords_matrix``
-    takes exactly triwarp's per-corner layout, ``(3 * n_faces, 2)`` in ``3 * f + k`` order, so any
+    takes exactly ordito's per-corner layout, ``(3 * n_faces, 2)`` in ``3 * f + k`` order, so any
     numpy atlas can drive ``compute_selection_by_texture_seams_per_vertex`` without going through a
     file.
     """
@@ -375,7 +375,7 @@ def trimesh_to_pyvista(mesh: tm.Trimesh) -> pv.PolyData:
     pyvista benchmark row.
 
     pyvista round-trips float64 exactly (measured error ``0.0`` on ``[1/3, pi, e]``), so where a
-    comparison against triwarp shows a ~1e-7 residual the float32 floor is *triwarp's* ``wp.vec3``
+    comparison against ordito shows a ~1e-7 residual the float32 floor is *ordito's* ``wp.vec3``
     vertex buffer, not the reference's storage.
     """
     return pv.PolyData.from_regular_faces(
@@ -404,7 +404,7 @@ def polyline_to_pyvista(polyline_np: np.ndarray, *, closed: bool = False) -> pv.
     ``compute_arc_length`` reports **0.0638** for a 200-point helix whose length is 12.7049, and
     ``decimate_polyline`` is a no-op at every reduction. ``find_closest_cell`` on this form is the
     point-to-*segment* distance (measured 2.49e-07 against
-    [`polyline_point_distance`][triwarp.polyline.polyline_point_distance]), where on the
+    [`polyline_point_distance`][ordito.polyline.polyline_point_distance]), where on the
     per-segment form it is the same answer at 199x the cell count.
 
     ``closed=True`` repeats the first index at the end, which is what ``triangulate_contours``
@@ -475,7 +475,7 @@ def numpy_to_meshlib(vertices_np: np.ndarray, faces_np: np.ndarray) -> mm.Mesh:
     [`trimesh_to_meshlib`][tests.conversions.trimesh_to_meshlib]
         The same conversion from a ``tests/conftest.py`` fixture.
     [`warp_to_meshlib`][tests.conversions.warp_to_meshlib]
-        The same conversion from a triwarp output.
+        The same conversion from a ordito output.
     """
     # MeshLib's stubs type these as ``Buffer``, which numpy's stubs implement only from Python 3.12.
     return mn.meshFromFacesVerts(
@@ -496,9 +496,9 @@ def trimesh_to_meshlib(mesh: tm.Trimesh) -> mm.Mesh:
 
 def warp_to_meshlib(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> mm.Mesh:
     """
-    Read triwarp's ``(vertices, flat faces)`` pair into a ``meshlib.mrmeshpy.Mesh``.
+    Read ordito's ``(vertices, flat faces)`` pair into a ``meshlib.mrmeshpy.Mesh``.
 
-    Use this when the mesh under test is a triwarp *output* rather than one of the
+    Use this when the mesh under test is a ordito *output* rather than one of the
     ``tests/conftest.py`` fixtures (which already carry a ``tm.Trimesh`` for
     [`trimesh_to_meshlib`][tests.conversions.trimesh_to_meshlib]). Same freshness rule as
     [`numpy_to_meshlib`][tests.conversions.numpy_to_meshlib], which does the work.
@@ -519,7 +519,7 @@ def points_to_meshlib(points_np: np.ndarray, normals_np: np.ndarray | None = Non
 
     Several oracles read the normals and quietly do something else without them --
     ``makeOrientedNormals``, ``triangulatePointCloud`` and ``findOutliers`` all consult
-    ``cloud.normals`` -- so pass them whenever the triwarp side had them. ``findOutliers`` does
+    ``cloud.normals`` -- so pass them whenever the ordito side had them. ``findOutliers`` does
     worse than quietly: at its default ``mask`` of ``All`` it **segfaults** on a cloud with no
     normals, because that set includes the ``AwayNormal`` criterion.
     """
@@ -637,7 +637,7 @@ def meshlib_bitset_to_numpy(bitset_ml: mm.BitSet, size: int) -> np.ndarray:
     entries (last colliding face 607) and an *empty* array on a clean mesh, where the comparison
     wants 640 and 640.
 
-    Neither shape raises, and both break a ``np.array_equal`` against a triwarp mask by shape
+    Neither shape raises, and both break a ``np.array_equal`` against a ordito mask by shape
     rather than by value, so every bitset in this suite is read through here with the domain size
     stated by the caller. A bitset *longer* than ``size`` is a genuine domain mismatch (the wrong
     element type, or a converter that dropped elements) and raises.
@@ -720,9 +720,9 @@ def warp_to_pymeshfix(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
 ) -> _meshfix.PyTMesh:
     """
-    Read triwarp's ``(vertices, flat faces)`` pair into a fresh ``pymeshfix._meshfix.PyTMesh``.
+    Read ordito's ``(vertices, flat faces)`` pair into a fresh ``pymeshfix._meshfix.PyTMesh``.
 
-    Use this when the mesh under test is a triwarp *output* rather than one of the
+    Use this when the mesh under test is a ordito *output* rather than one of the
     ``tests/conftest.py`` fixtures (which carry a ``tm.Trimesh`` for
     [`trimesh_to_pymeshfix`][tests.conversions.trimesh_to_pymeshfix]). Same renumbering and
     one-call-per-object rules as [`numpy_to_pymeshfix`][tests.conversions.numpy_to_pymeshfix].
@@ -771,7 +771,7 @@ def pymeshfix_intersecting_faces(
 
     Indices address the **returned** face buffer, which is a reordering of the input's
     ([`pymeshfix_to_numpy`][tests.conversions.pymeshfix_to_numpy]), so a comparison against a
-    triwarp per-face mask has to remap through the canonical sorted rows. The result is sorted, so
+    ordito per-face mask has to remap through the canonical sorted rows. The result is sorted, so
     it compares directly against ``np.flatnonzero`` of a mask once remapped.
     """
     out_pmf = tin_pmf.select_intersecting_triangles(
@@ -784,7 +784,7 @@ def pymeshfix_face_remap(tin_pmf: _meshfix.PyTMesh, faces_np: np.ndarray) -> np.
     """
     Map each *returned* face of a ``PyTMesh`` back to its index in ``faces_np``.
 
-    The one sanctioned way to compare a pymeshfix per-face answer against a triwarp mask, and it
+    The one sanctioned way to compare a pymeshfix per-face answer against a ordito mask, and it
     raises rather than guessing when that is not possible. Two things stand between the two index
     spaces: ``load_array`` may add or drop faces and vertices before anything else runs, and even
     when it does not, the buffer that comes back is a *reordering* whose rows also start at
@@ -836,7 +836,7 @@ def points_to_torch(points_np: np.ndarray, device: str = "cpu") -> torch.Tensor:
     reads it as ``(N=P, P1=3, D)`` and cheerfully compares three points, which is why the
     pytorch3d comparisons assert the reference's output *shape* before its values.
 
-    float32 because that is what triwarp's ``wp.vec3`` holds; pytorch3d preserves float64 where it
+    float32 because that is what ordito's ``wp.vec3`` holds; pytorch3d preserves float64 where it
     is handed it, so matching the storage keeps the residual attributable to one side.
 
     Parameters
@@ -872,7 +872,7 @@ def numpy_to_pytorch3d(
 
     Positions land as float32 because that is what ``wp.vec3`` holds. pytorch3d does *not* cast for
     you: a float64 ``Meshes`` keeps float64 through ``verts_packed()``, so an unconverted reference
-    would compare a float64 answer against triwarp's float32 one and read as triwarp being wrong by
+    would compare a float64 answer against ordito's float32 one and read as ordito being wrong by
     ~1e-7. Faces land as int64, which is what ``Meshes`` stores regardless (an int32 face tensor is
     silently widened), so the cast is documentation rather than a requirement.
 
@@ -910,9 +910,9 @@ def warp_to_pytorch3d(
     vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32], device: str | None = None
 ) -> p3d_structures.Meshes:
     """
-    Wrap a triwarp ``(vertices, flat faces)`` pair in a ``Meshes``, on the buffers' own device.
+    Wrap a ordito ``(vertices, flat faces)`` pair in a ``Meshes``, on the buffers' own device.
 
-    ``device`` overrides that, which is what the CPU-reference comparisons want: a triwarp answer
+    ``device`` overrides that, which is what the CPU-reference comparisons want: a ordito answer
     computed on ``cuda:0`` is still compared against a pytorch3d one built on the host, since
     pytorch3d has separate CPU and CUDA kernels and only the CPU pass is a stable oracle. Pass the
     warp device explicitly to exercise the CUDA kernels instead.
@@ -966,7 +966,7 @@ def pytorch3d_to_numpy(meshes_p3d: p3d_structures.Meshes) -> tuple[np.ndarray, n
 
 def warp_to_trimesh(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> tm.Trimesh:
     """
-    Read a triwarp ``(vertices, flat faces)`` pair back into a ``tm.Trimesh``.
+    Read a ordito ``(vertices, flat faces)`` pair back into a ``tm.Trimesh``.
 
     ``process=False`` is not optional: trimesh's default processing merges coincident vertices, and
     the meshes that most need this conversion are the ones whose *identification* is the thing under
@@ -980,7 +980,7 @@ def warp_to_trimesh(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
     )
 
 
-def bsr_to_dense(matrix: twt.SparseMatrix, n_vertices: int) -> np.ndarray:
+def bsr_to_dense(matrix: odt.SparseMatrix, n_vertices: int) -> np.ndarray:
     """
     Densify a ``BsrMatrix``, reading only the entries its offsets actually address.
 
@@ -999,7 +999,7 @@ def bsr_to_dense(matrix: twt.SparseMatrix, n_vertices: int) -> np.ndarray:
     return dense
 
 
-def bsr_to_csr(matrix: twt.SparseMatrix) -> sp.csr_matrix:
+def bsr_to_csr(matrix: odt.SparseMatrix) -> sp.csr_matrix:
     """
     Convert a ``BsrMatrix`` to a scipy CSR, at its own declared shape.
 

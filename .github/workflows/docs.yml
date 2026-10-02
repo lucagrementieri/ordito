@@ -44,7 +44,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --group docs
 
-      # `--strict` is the gate: it exits 1 on a dangling `[`name`][triwarp.old.path]`
+      # `--strict` is the gate: it exits 1 on a dangling `[`name`][ordito.old.path]`
       # cross-reference, which is the mechanical backstop for the five artifacts a moved or
       # renamed public function has to take with it (.claude/CLAUDE.md §4.4).
       - name: Build docs

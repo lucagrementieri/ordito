@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.transform``: applying an affine matrix to a point buffer and to a mesh.
+Benchmarks for ``ordito.transform``: applying an affine matrix to a point buffer and to a mesh.
 
 Axis: the **scan sweep**, and nothing else. An affine map is one fused-multiply-add chain per
 element with no topology, no parameters and no data-dependent branching, so vertex count is the
@@ -7,13 +7,13 @@ whole story -- this is the purest bandwidth row in the suite and the one to read
 complicated row is suspected of being memory-bound.
 
 The rows exist for a second reason, which is that they are the **floor** every cached-mesh
-workflow is measured against. [`Trimesh.transform`][triwarp.mesh.Trimesh.transform] carries most
+workflow is measured against. [`Trimesh.transform`][ordito.mesh.Trimesh.transform] carries most
 of its cache through a rigid motion, so what it costs is this row plus a BVH rebuild; a claim that
 the cache is worth having is a claim about the *difference* between that and reassembling the
 operators, and neither half means anything without this one.
 
 No group here sweeps the transform *class*. Classification is a handful of host float comparisons
-on a 4x4 -- [`classify_transform`][triwarp.transform.classify_transform] does no device work at
+on a 4x4 -- [`classify_transform`][ordito.transform.classify_transform] does no device work at
 all -- so a rigid matrix and a shear cost the same to apply, and a row per class would measure the
 same kernel five times. The class decides what is *recomputed afterwards*, which belongs to the
 caller's workflow rather than to this call.
@@ -22,14 +22,14 @@ References
 ----------
 **trimesh**'s ``transformations.transform_points`` is the closest match in the suite: a pure
 function, arrays in and arrays out, with no mesh object involved. It is also ``float64`` against
-triwarp's ``float32``, so it moves twice the bytes -- on a bandwidth row that is most of any gap
+ordito's ``float32``, so it moves twice the bytes -- on a bandwidth row that is most of any gap
 and the ratio should be read against it.
 
 **pyvista**'s ``DataSet.transform(matrix, inplace=False)`` is VTK's ``vtkTransformFilter``. It
-returns a new dataset and therefore also *copies the topology*, which triwarp's row does not, so
+returns a new dataset and therefore also *copies the topology*, which ordito's row does not, so
 read it as an upper bound. Its default ``transform_all_input_vectors=False`` is left alone: with it
 on, VTK would additionally push every normal and vector array through the inverse transpose, which
-is [`transform_normals`][triwarp.transform.transform_normals]'s job and not this group's.
+is [`transform_normals`][ordito.transform.transform_normals]'s job and not this group's.
 
 **open3d**'s ``PointCloud.transform`` **mutates**, so the cloud is rebuilt inside the timed
 callable and the row prices that construction along with the transform -- the same rule its
@@ -51,7 +51,7 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 # The matrix every row applies: a rotation about an off-origin centre, so no component of the
@@ -62,12 +62,12 @@ _MATRIX_WP = wp.mat44(*_MATRIX_NP.flatten().tolist())
 
 
 @pytest.mark.benchmark(group="transform_points")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pyvista")
 def test_transform_points(bench_case: BenchCase) -> None:
     """
     One 4x4 applied to every vertex: the suite's purest bandwidth row.
 
-    triwarp's side is a single ``wp.map`` over a ``@wp.func``, so the row is the launch floor at
+    ordito's side is a single ``wp.map`` over a ``@wp.func``, so the row is the launch floor at
     the small end and pure device bandwidth at the large end, with nothing in between to attribute
     a regression to. The three references each do strictly more work than the multiply -- see the
     module docstring for what each adds -- so all three are upper bounds.
@@ -95,33 +95,33 @@ def test_transform_points(bench_case: BenchCase) -> None:
         assert len(moved_o3d.points) == bench_case.n_vertices
         return
     vertices_wp = bench_case.vertices_wp
-    moved_wp = bench_case.run(lambda: tw.transform.transform_points(vertices_wp, _MATRIX_WP))
+    moved_wp = bench_case.run(lambda: od.transform.transform_points(vertices_wp, _MATRIX_WP))
     assert moved_wp.shape == vertices_wp.shape
     assert np.isfinite(moved_wp.numpy()).all()
 
 
 @pytest.mark.benchmark(group="transform_points_inplace")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_transform_points_inplace(bench_case: BenchCase) -> None:
     """
     The same map with ``out=points``, which is what the allocation is worth.
 
-    triwarp-only on purpose: this is not a different algorithm from ``transform_points`` and no
+    ordito-only on purpose: this is not a different algorithm from ``transform_points`` and no
     reference exposes the choice, so it is not a comparison -- it is the measurement behind the
-    advice that [`Trimesh.transform`][triwarp.mesh.Trimesh.transform] offers no in-place mode. The
+    advice that [`Trimesh.transform`][ordito.mesh.Trimesh.transform] offers no in-place mode. The
     difference between the two rows is one buffer allocation, and it is what an in-place transform
     on the cached class could save while costing the whole cache.
     """
     scratch = wp.clone(bench_case.vertices_wp)
     moved_wp = bench_case.run(
-        lambda: tw.transform.transform_points(scratch, _MATRIX_WP, out=scratch)
+        lambda: od.transform.transform_points(scratch, _MATRIX_WP, out=scratch)
     )
     assert moved_wp is scratch
     assert np.isfinite(scratch.numpy()).all()
 
 
 @pytest.mark.benchmark(group="transform_mesh")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_transform_mesh(bench_case: BenchCase) -> None:
     """
     Vertices plus the winding flip a mirroring transform needs.
@@ -143,14 +143,14 @@ def test_transform_mesh(bench_case: BenchCase) -> None:
     vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
     mirror_wp = wp.mat44(*mirror_np.flatten().tolist())
     moved_v, moved_f = bench_case.run(
-        lambda: tw.transform.transform_mesh(vertices_wp, faces_wp, mirror_wp)
+        lambda: od.transform.transform_mesh(vertices_wp, faces_wp, mirror_wp)
     )
     assert moved_v.shape == vertices_wp.shape
     assert moved_f.shape == faces_wp.shape
 
 
 @pytest.mark.benchmark(group="transform_normals")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 def test_transform_normals(bench_case: BenchCase) -> None:
     """
     The inverse-transpose map, which is a different quantity from the point map and not a variant.
@@ -168,8 +168,8 @@ def test_transform_normals(bench_case: BenchCase) -> None:
         )
         assert moved_pv.n_points == bench_case.n_vertices
         return
-    normals_wp = tw.vertices.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp)
-    moved_wp = bench_case.run(lambda: tw.transform.transform_normals(normals_wp, _MATRIX_WP))
+    normals_wp = od.vertices.vertex_normals(bench_case.vertices_wp, bench_case.faces_wp)
+    moved_wp = bench_case.run(lambda: od.transform.transform_normals(normals_wp, _MATRIX_WP))
     assert moved_wp.shape == normals_wp.shape
     # Unit *or* zero: the scan meshes carry unreferenced vertices whose normal is zero, and the
     # map preserves zero by design rather than producing a direction out of nothing.

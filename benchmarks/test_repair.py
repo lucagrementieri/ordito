@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.repair``.
+Benchmarks for ``ordito.repair``.
 
 Axis: **defect count** for three of the four groups, **diameter** for the fourth. Repair functions
 are the clearest case in the package of cost a face count cannot predict — they all "find the broken
@@ -33,9 +33,9 @@ defects are not injectable: ``flip_t_vertices`` looks for thin and folded triang
 References
 ----------
 **open3d**'s ``remove_duplicated_triangles`` solves the same "deduplicate a face array" problem with
-a hash set over index triples against triwarp's sort-based grouping. It compares dedup *machinery*,
+a hash set over index triples against ordito's sort-based grouping. It compares dedup *machinery*,
 not results — the semantics differ twice over: open3d keeps one representative of each duplicate
-group where triwarp applies a signed-count rule that drops cancelling ``(+1, -1)`` pairs outright,
+group where ordito applies a signed-count rule that drops cancelling ``(+1, -1)`` pairs outright,
 and open3d's hash is **orientation-sensitive**, so on this deliberately-flipped input it removes
 nothing and returns the face count unchanged. The hash pass over all ``n`` triples still runs, which
 is the cost being compared; the assertion below only checks the count did not grow. Open3D mutates
@@ -49,13 +49,13 @@ at all:
 
 * ``meshing_repair_non_manifold_edges(method='Remove Faces')`` is the same idea, greedier: for each
   non-manifold edge MeshLab iteratively deletes the *smallest-area* incident face until the edge is
-  2-manifold, where triwarp drops every face on an over-incident edge and re-tests.
+  2-manifold, where ordito drops every face on an over-incident edge and re-tests.
 * ``meshing_remove_duplicate_faces`` is orientation-*insensitive*, so unlike open3d's hash it does
   see the flipped copies — but it keeps one representative rather than cancelling pairs.
 * ``meshing_remove_duplicate_vertices`` and ``meshing_merge_close_vertices(threshold=...)`` are
-  exactly triwarp's two code paths, so this is the one group where the ``epsilon`` sweep maps across
+  exactly ordito's two code paths, so this is the one group where the ``epsilon`` sweep maps across
   libraries one-for-one.
-* ``meshing_re_orient_faces_coherently`` is a serial face-to-face visit against triwarp's parity
+* ``meshing_re_orient_faces_coherently`` is a serial face-to-face visit against ordito's parity
   union-find, precisely the contrast the ``diameter`` axis exposes.
 
 Every one rewrites the topology, so the MeshSet is built inside the timed callable from the
@@ -77,7 +77,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, mesh_ml_from_numpy, skip_larger_than
 
 _DUP_SEED = 7
@@ -155,7 +155,7 @@ def _faces_with_duplicates_wp(bench_case: BenchCase, fraction: float) -> wp.arra
 
 @pytest.mark.noparity(
     "open3d",
-    reason="D2 three different dedup rules: triwarp applies a signed-count rule that cancels "
+    reason="D2 three different dedup rules: ordito applies a signed-count rule that cancels "
     "(+1, -1) pairs outright, while open3d hashes orientation-*sensitively* and keeps one "
     "representative of each duplicate group -- on this deliberately-flipped input it therefore "
     "removes nothing and returns the face count unchanged. The rows compare dedup machinery, not "
@@ -165,12 +165,12 @@ def _faces_with_duplicates_wp(bench_case: BenchCase, fraction: float) -> wp.arra
     "pymeshlab",
     reason="D2 as above but the other way round: MeshLab's hash is orientation-*insensitive*, so "
     "it does see the flipped copies, yet it still keeps one representative per group where "
-    "triwarp cancels a (+1, -1) pair to nothing. Same input, three different survivor sets by "
+    "ordito cancels a (+1, -1) pair to nothing. Same input, three different survivor sets by "
     "design; the numpy oracle in tests/test_repair.py covers the signed-count rule itself.",
 )
 @pytest.mark.benchmark(group="resolve_duplicated_faces")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 @pytest.mark.parametrize("fraction", _DUPLICATE_FRACTIONS, ids=["clean", "dup10pct"])
 def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> None:
     """Sort-based grouping with a signed-count rule: nothing to do, against a tenth of the mesh."""
@@ -182,9 +182,9 @@ def test_resolve_duplicated_faces(bench_case: BenchCase, fraction: float) -> Non
             lambda: _new_meshset_pml(vertices_np, faces_dup_np).meshing_remove_duplicate_faces()
         )
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces_dup = _faces_with_duplicates_wp(bench_case, fraction)
-        resolved, kept = bench_case.run(lambda: tw.repair.resolve_duplicated_faces(faces_dup))
+        resolved, kept = bench_case.run(lambda: od.repair.resolve_duplicated_faces(faces_dup))
         assert resolved.size == kept.size * 3
         assert kept.size > 0
     else:
@@ -228,7 +228,7 @@ def _faces_with_non_manifold_wp(bench_case: BenchCase, extra: int) -> wp.array[w
 
 @pytest.mark.benchmark(group="make_solid")
 @pytest.mark.benchmeshes("bunny_decimated", "bunny")
-@pytest.mark.benchlibs("triwarp", "pymeshfix")
+@pytest.mark.benchlibs("ordito", "pymeshfix")
 def test_make_solid(bench_case: BenchCase) -> None:
     """
     The whole pipeline: broken scan in, single watertight solid out.
@@ -245,10 +245,10 @@ def test_make_solid(bench_case: BenchCase) -> None:
     the round on both meshes. The load still cannot leave the timed callable -- a ``PyTMesh`` takes
     exactly one ``load_array`` -- so read the row as pipeline-plus-load and subtract accordingly.
 
-    triwarp wins the group by an order of magnitude and the gap widens with the mesh, because the
+    ordito wins the group by an order of magnitude and the gap widens with the mesh, because the
     composite's per-stage cost is a fixed chain of wrapper calls plus device passes where the
     reference is sequential C++ throughout. Read it knowing what
-    dominates triwarp's side, which is **not** kernel time: a dozen wrapper chains inside a
+    dominates ordito's side, which is **not** kernel time: a dozen wrapper chains inside a
     convergence loop, each a handful of launches. Anything spent optimizing this belongs in the
     refill chain and the self-intersection loop, exactly as the ``fix_self_intersections`` group's
     own note says; a faster kernel would not move it.
@@ -271,14 +271,14 @@ def test_make_solid(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     solid_vertices, solid_faces = bench_case.run(
-        lambda: tw.repair.make_solid(vertices, faces), rounds=3
+        lambda: od.repair.make_solid(vertices, faces), rounds=3
     )
-    assert tw.validation.is_watertight(solid_vertices, solid_faces)
+    assert od.validation.is_watertight(solid_vertices, solid_faces)
 
 
 @pytest.mark.benchmark(group="remove_small_components")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "open3d")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "open3d")
 def test_remove_small_components(bench_case: BenchCase) -> None:
     """
     Label the components, threshold them, re-extract: the first step of every repair pipeline.
@@ -342,7 +342,7 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _kept_vertices, kept_faces = bench_case.run(
-        lambda: tw.repair.remove_small_components(vertices, faces, min_faces=min_faces)
+        lambda: od.repair.remove_small_components(vertices, faces, min_faces=min_faces)
     )
     assert kept_faces.size // 3 == bench_case.n_faces
 
@@ -350,15 +350,15 @@ def test_remove_small_components(bench_case: BenchCase) -> None:
 @pytest.mark.noparity(
     "pymeshlab",
     reason="D2 the same idea, greedier: for each non-manifold edge MeshLab iteratively deletes the "
-    "smallest-area incident face until that edge is 2-manifold, where triwarp drops every face on "
+    "smallest-area incident face until that edge is 2-manifold, where ordito drops every face on "
     "an over-incident edge and re-tests. Both leave an edge-manifold mesh but they delete "
     "different faces and different numbers of them, so only the post-condition is shared -- and "
     "tests/test_repair.py now asserts that post-condition through igl and open3d rather than "
-    "through triwarp's own detector, which is the half that was missing.",
+    "through ordito's own detector, which is the half that was missing.",
 )
 @pytest.mark.benchmark(group="remove_non_manifold_faces")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
 def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     """
@@ -366,16 +366,16 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
 
     **open3d's ``remove_non_manifold_edges`` is deliberately not a second row.** It uses the same
     greedier rule MeshLab does -- on a mesh carrying one extra face on an existing edge it deletes
-    that **one** face where triwarp drops all three on that edge. Both land edge-manifold, so only
+    that **one** face where ordito drops all three on that edge. Both land edge-manifold, so only
     the post-condition is shared, and a second
     incomparable timing row would say nothing the exemption above does not. What open3d *does*
-    supply is that post-condition: it and igl both flip False -> True with triwarp on every input in
+    supply is that post-condition: it and igl both flip False -> True with ordito on every input in
     ``tests/test_repair.py``, which is where this group's real coverage now sits -- before that, the
-    contract was asserted with triwarp's own ``is_edge_manifold``.
+    contract was asserted with ordito's own ``is_edge_manifold``.
     """
     if bench_case.kind == "pymeshlab":
         # MeshLab deletes the smallest-area incident face per non-manifold edge until the edge is
-        # 2-manifold; triwarp drops every face on an over-incident edge and re-tests. Same goal,
+        # 2-manifold; ordito drops every face on an over-incident edge and re-tests. Same goal,
         # a greedier rule, and the first reference this group has had.
         vertices_np = bench_case.vertices_np
         faces_nm_np = _faces_with_non_manifold_np(bench_case, extra)
@@ -388,14 +388,14 @@ def test_remove_non_manifold_faces(bench_case: BenchCase, extra: int) -> None:
     vertices = bench_case.vertices_wp
     faces = _faces_with_non_manifold_wp(bench_case, extra)
     _kept_vertices, kept_faces = bench_case.run(
-        lambda: tw.repair.remove_non_manifold_faces(vertices, faces)
+        lambda: od.repair.remove_non_manifold_faces(vertices, faces)
     )
     assert kept_faces.size > 0
 
 
 @pytest.mark.benchmark(group="split_non_manifold_vertices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "meshlib")
 @pytest.mark.parametrize("extra", _NON_MANIFOLD_COUNTS, ids=["clean", "nm1024"])
 def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     """
@@ -407,7 +407,7 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     ``clean`` case is the floor -- both must detect that there is nothing to do -- and the
     ``nm1024`` case is the work.
 
-    triwarp's cost is an edge sort plus a connected-components pass over ``3 * n_faces`` corner
+    ordito's cost is an edge sort plus a connected-components pass over ``3 * n_faces`` corner
     nodes, so it barely moves between the two cases. ``igl.split_nonmanifold`` is sequential by
     construction -- it explodes the mesh to ``3 * n_faces`` singleton vertices and greedily re-
     merges pairs, re-testing manifoldness after each candidate, with the source calling its own
@@ -416,7 +416,7 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
 
     The two libraries agree on the split exactly for a bowtie vertex, a same-wound fan of three
     faces on one edge, a flipped face and a boundary, but **not on this group's defect**: for a
-    duplicated face igl keeps one arbitrarily chosen pair joined where triwarp splits all copies
+    duplicated face igl keeps one arbitrarily chosen pair joined where ordito splits all copies
     (18 vertices against 15 on an icosahedron with one face duplicated). Both outputs are
     manifold with every face kept; the rows are a cost comparison, and ``tests/test_repair.py``
     carries both the agreement and the divergence.
@@ -449,14 +449,14 @@ def test_split_nonmanifold(bench_case: BenchCase, extra: int) -> None:
     vertices = bench_case.vertices_wp
     faces = _faces_with_non_manifold_wp(bench_case, extra)
     split_vertices, split_faces, _source = bench_case.run(
-        lambda: tw.repair.split_non_manifold_vertices(vertices, faces)
+        lambda: od.repair.split_non_manifold_vertices(vertices, faces)
     )
     assert split_faces.size == faces.size
     assert split_vertices.size >= bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="remove_unreferenced_vertices")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "meshlib")
 @pytest.mark.parametrize("unreferenced", [0, 1], ids=["clean", "padded"])
 def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) -> None:
     """
@@ -479,7 +479,7 @@ def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) 
     open3d's ``remove_unreferenced_vertices`` mutates its mesh in place, so the legacy container is
     rebuilt inside the timed callable (the ``test_repair.py`` rule) -- its row prices the pybind
     ``Vector3dVector`` copy along with the compaction, which is what a caller holding NumPy buffers
-    pays. It agrees with triwarp element-wise on both compacted buffers
+    pays. It agrees with ordito element-wise on both compacted buffers
     (``tests/test_repair.py::test_remove_unreferenced_matches_open3d``).
     """
     vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -530,7 +530,7 @@ def test_remove_unreferenced_vertices(bench_case: BenchCase, unreferenced: int) 
     )
     faces_wp = bench_case.faces_wp
     kept_vertices, kept_faces, _remap = bench_case.run(
-        lambda: tw.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
+        lambda: od.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
     )
     assert int(kept_faces.shape[0]) == faces_wp.size
     assert int(kept_vertices.shape[0]) <= vertices_np.shape[0]
@@ -559,7 +559,7 @@ def _soup(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]
 
 @pytest.mark.benchmark(group="remove_duplicated_vertices")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "pyvista", "meshlib")
 @pytest.mark.parametrize("epsilon", _MERGE_EPSILONS, ids=["exact", "eps1e-6"])
 def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> None:
     """
@@ -574,7 +574,7 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
     if bench_case.kind == "meshlib":
         # ``uniteCloseVertices`` welds in place and returns the merge count, so the soup mesh is
         # rebuilt inside the timed callable. ``uniteOnlyBd=False`` is the setting that matches
-        # triwarp; MeshLib's default of ``True`` would weld only boundary vertices. Its single
+        # ordito; MeshLib's default of ``True`` would weld only boundary vertices. Its single
         # parameter is a distance, so the exact id is that distance at zero rather than a second
         # code path -- unlike pymeshlab and VTK, whose two ids are two different calls.
         soup_np = np.ascontiguousarray(bench_case.vertices_np[bench_case.faces_np].reshape(-1, 3))
@@ -608,10 +608,10 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
 
         bench_case.run(weld_pml)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = _soup(bench_case)
         unique_vertices, _unique_indices, _inverse, _faces = bench_case.run(
-            lambda: tw.repair.remove_duplicated_vertices(vertices, faces, epsilon)
+            lambda: od.repair.remove_duplicated_vertices(vertices, faces, epsilon)
         )
         assert unique_vertices.size <= vertices.size
     else:
@@ -631,7 +631,7 @@ def test_remove_duplicated_vertices(bench_case: BenchCase, epsilon: float) -> No
 
 
 @pytest.mark.benchmark(group="reverse_winding")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_reverse_winding(bench_case: BenchCase) -> None:
     """
     One unconditional corner swap per face: the floor every orientation row is measured against.
@@ -656,13 +656,13 @@ def test_reverse_winding(bench_case: BenchCase) -> None:
         assert len(inverted_tm.faces) == bench_case.n_faces
         return
     faces_wp = bench_case.faces_wp
-    reversed_wp = bench_case.run(lambda: tw.repair.reverse_winding(faces_wp))
+    reversed_wp = bench_case.run(lambda: od.repair.reverse_winding(faces_wp))
     assert reversed_wp.shape == faces_wp.shape
 
 
 @pytest.mark.benchmark(group="make_winding_consistent")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "meshlib")
 def test_make_winding_consistent(bench_case: BenchCase) -> None:
     """
     Flip mask from the parity union-find, then one relabel pass: flat across the axis.
@@ -699,11 +699,11 @@ def test_make_winding_consistent(bench_case: BenchCase) -> None:
             lambda: _new_meshset_pml(vertices_np, faces_np).meshing_re_orient_faces_coherently()
         )
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces, n_vertices = bench_case.faces_wp, bench_case.vertices_wp.size
         # The vertex count every reference is handed with the faces; it narrows the key sort.
         oriented = bench_case.run(
-            lambda: tw.repair.make_winding_consistent(faces, n_vertices=n_vertices)
+            lambda: od.repair.make_winding_consistent(faces, n_vertices=n_vertices)
         )
         assert oriented.size == faces.size
     else:  # trimesh mutates in place: rebuild inside the timed callable
@@ -718,7 +718,7 @@ def test_make_winding_consistent(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="make_volume")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista")
 def test_make_volume(bench_case: BenchCase) -> None:
     """
     Orient the whole surface outward: one watertightness predicate, one reduction, one flip pass.
@@ -742,7 +742,7 @@ def test_make_volume(bench_case: BenchCase) -> None:
 
     pyvista is not identical either, on an input class the scan meshes do not contain: on a
     **multi-shell** mesh it turns each shell outward *from itself*, so a cavity's contribution adds
-    where triwarp's subtracts. Every registry mesh here is a single open shell, so the row is
+    where ordito's subtracts. Every registry mesh here is a single open shell, so the row is
     unaffected; the
     divergence is pinned in ``tests/test_repair.py``.
 
@@ -757,9 +757,9 @@ def test_make_volume(bench_case: BenchCase) -> None:
         )
         assert oriented_pv.n_faces == bench_case.n_faces
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        oriented = bench_case.run(lambda: tw.repair.make_volume(vertices, faces))
+        oriented = bench_case.run(lambda: od.repair.make_volume(vertices, faces))
         assert int(oriented.shape[0]) == faces.size
     else:  # trimesh mutates in place and caches the volume: rebuild inside the timed callable
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -774,12 +774,12 @@ def test_make_volume(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="flip_t_vertices")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_remove_t_vertices(bench_case: BenchCase) -> None:
     """A flip loop over the slivers: no work on ``saddle``, real work on ``saddle_graded``."""
     if bench_case.kind == "pymeshlab":
         # Rewrites the topology, so the MeshSet is rebuilt inside the timed callable.
-        # ``repeat=True`` is MeshLab's own iterate-to-convergence, which is what triwarp's
+        # ``repeat=True`` is MeshLab's own iterate-to-convergence, which is what ordito's
         # ``max_iter`` passes are.
         new_meshset_pml = bench_case.new_meshset_pml
 
@@ -791,13 +791,13 @@ def test_remove_t_vertices(bench_case: BenchCase) -> None:
         assert bench_case.run(repair_pml, rounds=3) > 0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    flipped = bench_case.run(lambda: tw.repair.flip_t_vertices(vertices, faces), rounds=3)
+    flipped = bench_case.run(lambda: od.repair.flip_t_vertices(vertices, faces), rounds=3)
     assert flipped.size == faces.size
 
 
 @pytest.mark.benchmark(group="remove_degenerate_faces")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "meshlib", "trimesh", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "meshlib", "trimesh", "pymeshlab")
 def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
     """
     Find the zero-area triangles and compact them away: an altitude test, a scan and a gather.
@@ -809,14 +809,14 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
     a row that is not is the finding.
 
     Three references, and the split between them is *detect* against *rebuild* -- which is what the
-    rows have to be read through, because triwarp does both:
+    rows have to be read through, because ordito does both:
 
     * **meshlib** ``findDegenerateFaces`` and **trimesh** ``Trimesh.nondegenerate_faces`` stop at
       the face set, so they do strictly less. MeshLib's ``criticalAspectRatio`` is left at its
-      ``FLT_MAX`` default, the setting under which its criterion is triwarp's; trimesh's ``height``
-      is left at its ``1e-08`` default, the same order as triwarp's own ``TOLERANCE_ZERO``, which
-      triwarp does not expose as a parameter.
-    * **pymeshlab** ``meshing_remove_null_faces`` rebuilds, which is triwarp's whole operation. It
+      ``FLT_MAX`` default, the setting under which its criterion is ordito's; trimesh's ``height``
+      is left at its ``1e-08`` default, the same order as ordito's own ``TOLERANCE_ZERO``, which
+      ordito does not expose as a parameter.
+    * **pymeshlab** ``meshing_remove_null_faces`` rebuilds, which is ordito's whole operation. It
       mutates, so its MeshSet is rebuilt per round.
 
     All three find the same faces (``tests/test_repair.py``).
@@ -846,7 +846,7 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     kept_vertices, kept_faces = bench_case.run(
-        lambda: tw.repair.remove_degenerate_faces(vertices, faces)
+        lambda: od.repair.remove_degenerate_faces(vertices, faces)
     )
     assert kept_faces.size <= faces.size
     assert kept_vertices.size <= bench_case.n_vertices
@@ -854,7 +854,7 @@ def test_remove_degenerate_faces(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="fix_self_intersections")
 @pytest.mark.benchaxis("tangle")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("method", ["local", "voxel"])
 def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", "voxel"]) -> None:
     """
@@ -883,12 +883,12 @@ def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", 
     one, while the voxel path wins throughout.
 
     **Read the ``local`` parity at the large end with its quality caveat, which runs the other
-    way.** On this axis' own inputs, with triwarp's detector applied to both outputs: at the small
-    end both clear every intersection, but at the large one triwarp leaves a residue where MeshLib
+    way.** On this axis' own inputs, with ordito's detector applied to both outputs: at the small
+    end both clear every intersection, but at the large one ordito leaves a residue where MeshLib
     reaches zero. So the large cell is a tie for a slightly *less* complete repair -- and the two
     are still different algorithms (MeshLib subdivides the affected band and relaxes it, growing the
     face count; this cuts the band out and refills the rim, shrinking it). ``max_iter`` is what
-    closes triwarp's residue, and the function's Notes carry that table.
+    closes ordito's residue, and the function's Notes carry that table.
 
     The post-condition is what
     ``tests/test_repair.py::test_fix_self_intersections_local_clears_them`` claims, and it uses
@@ -924,7 +924,7 @@ def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", 
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     fixed_vertices, fixed_faces = bench_case.run(
-        lambda: tw.repair.fix_self_intersections(vertices, faces, method=method), rounds=3
+        lambda: od.repair.fix_self_intersections(vertices, faces, method=method), rounds=3
     )
     assert fixed_faces.size > 0
     assert fixed_vertices.size > 0
@@ -933,7 +933,7 @@ def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", 
 
 @pytest.mark.benchmark(group="collapse_small_triangles")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_collapse_small_triangles(bench_case: BenchCase) -> None:
     """
     Collapse the sub-threshold triangles to a fixpoint: the one repair group that iterates.
@@ -941,7 +941,7 @@ def test_collapse_small_triangles(bench_case: BenchCase) -> None:
     The ``quality`` axis is the axis this group is *about*: ``saddle`` has nothing under the
     threshold and exits after one pass, while ``saddle_graded``'s fine end gives the loop rounds of
     real work, so the pair separates the detection cost from the collapsing cost. Both rows use the
-    same threshold, expressed in each library's own parameter -- triwarp's ``epsilon`` is a relative
+    same threshold, expressed in each library's own parameter -- ordito's ``epsilon`` is a relative
     *area* against the squared bounding-box diagonal and MeshLib's ``tinyEdgeLength`` an absolute
     *length* -- so this is a cost comparison at a matched scale rather than at a matched knob.
 
@@ -969,7 +969,7 @@ def test_collapse_small_triangles(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     kept_vertices, kept_faces = bench_case.run(
-        lambda: tw.repair.collapse_small_triangles(vertices, faces, epsilon), rounds=3
+        lambda: od.repair.collapse_small_triangles(vertices, faces, epsilon), rounds=3
     )
     assert kept_faces.size <= faces.size
     assert kept_vertices.size <= bench_case.n_vertices
@@ -977,7 +977,7 @@ def test_collapse_small_triangles(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="remove_tunnels")
 @pytest.mark.benchaxis("genus")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_remove_tunnels(bench_case: BenchCase) -> None:
     """
     Removing every thin handle: homology basis, shorten, cut, fill -- the whole chain in one call.
@@ -995,7 +995,7 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
     ``handles_64``'s 128 overlapping generators still yield one, and its extra cost is the larger
     basis and the longer loops rather than more cutting.
 
-    triwarp-only, and not by omission. MeshLib is the only library that binds the operation and its
+    ordito-only, and not by omission. MeshLib is the only library that binds the operation and its
     ``eliminateTunnels`` is a **no-op** on every input probed -- unchanged face count and Euler
     characteristic at ``maxTunnelLength`` 4.0 and 1e9, ``maxIters`` 1 to 100, all three
     ``TunnelLoopType`` values, ``buildCoLoops`` off, and through the ``FillHoleNicelySettings``
@@ -1009,17 +1009,17 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
     # Every handle in these fixtures is a real one, so an unbounded length eliminates a maximal
     # disjoint family and times the whole chain rather than the length test.
     cut_vertices, cut_faces, removed = bench_case.run(
-        lambda: tw.repair.remove_tunnels(vertices, faces, 1e9), rounds=3
+        lambda: od.repair.remove_tunnels(vertices, faces, 1e9), rounds=3
     )
     assert removed >= 1
     assert cut_vertices.size >= bench_case.n_vertices
-    assert tw.measures.euler_characteristic(cut_faces) == (
-        tw.measures.euler_characteristic(faces) + 2 * removed
+    assert od.measures.euler_characteristic(cut_faces) == (
+        od.measures.euler_characteristic(faces) + 2 * removed
     )
 
 
 @pytest.mark.benchmark(group="remove_degree3_vertices")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
     """
     One pass over every vertex, plus a face compaction -- and usually nothing to remove.
@@ -1033,7 +1033,7 @@ def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
     meshlib's row is ``findInnerVertsOfDegree(topology, 3)`` -- the candidate mask, not the removal,
     since ``eliminateDegree3Vertices`` mutates in place and would need a fresh mesh per round while
     finding nothing after the first. So it is the same *search* on both sides; where it is not a
-    like-for-like is that meshlib is handed a ``MeshTopology`` built outside its row and triwarp
+    like-for-like is that meshlib is handed a ``MeshTopology`` built outside its row and ordito
     validates edge-manifoldness inside its own.
 
     **The pass needs no halfedge structure.** An interior degree-3 vertex's three opposite edges
@@ -1074,7 +1074,7 @@ def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
         pytest.skip(f"{bench_case.mesh_name} is not edge-manifold, so it has no vertex fans")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     out_vertices, out_faces, removed = bench_case.run(
-        lambda: tw.repair.remove_degree3_vertices(vertices, faces, return_count=True), rounds=3
+        lambda: od.repair.remove_degree3_vertices(vertices, faces, return_count=True), rounds=3
     )
     assert removed >= 0
     assert int(out_faces.shape[0]) <= faces.size
@@ -1082,7 +1082,7 @@ def test_remove_degree3_vertices(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="straighten_boundary")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_straighten_boundary(bench_case: BenchCase) -> None:
     """
     Closing rim notches: per pass, a halfedge build, a rim walk and one candidate test per vertex.
@@ -1097,7 +1097,7 @@ def test_straighten_boundary(bench_case: BenchCase) -> None:
     timed callable the way ours is. Both take the same two gates by the same definitions and agree
     exactly on a ragged planar rim (``tests/test_repair.py``).
 
-    triwarp wins the group by more than an order of magnitude and by more the larger the mesh. Both
+    ordito wins the group by more than an order of magnitude and by more the larger the mesh. Both
     rows carry their own structure build, so the ratio is the parallel candidate test against a
     serial rim walk, and it widens with the mesh exactly as that predicts.
 
@@ -1124,14 +1124,14 @@ def test_straighten_boundary(bench_case: BenchCase) -> None:
         pytest.skip(f"{bench_case.mesh_name} is not edge-manifold, so the rim cannot be walked")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     straightened, added = bench_case.run(
-        lambda: tw.repair.straighten_boundary(vertices, faces, return_count=True), rounds=3
+        lambda: od.repair.straighten_boundary(vertices, faces, return_count=True), rounds=3
     )
     assert added >= 0
     assert int(straightened.shape[0]) >= faces.size
 
 
 @pytest.mark.benchmark(group="flatten_degree3_vertices")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_flatten_degree3_vertices(bench_case: BenchCase) -> None:
     """
     The geometric answer to the same defect ``remove_degree3_vertices`` removes topologically.
@@ -1155,7 +1155,7 @@ def test_flatten_degree3_vertices(bench_case: BenchCase) -> None:
     choice -- see ``kernels/repair.py``'s ``select_and_flatten_degree3`` for what moving two
     neighbours at once does to a tetrahedron -- so the cost is recorded rather than weighed.
 
-    triwarp wins the group by more than an order of magnitude at every size. Against
+    ordito wins the group by more than an order of magnitude at every size. Against
     ``remove_degree3_vertices`` on the same meshes this is several times cheaper -- the ratio the
     docstring predicts, since that group repeats the shared halfedge build once per pass and this
     one runs it once. The first mesh in a selection reads high for its size, because it carries the
@@ -1174,6 +1174,6 @@ def test_flatten_degree3_vertices(bench_case: BenchCase) -> None:
         pytest.skip(f"{bench_case.mesh_name} is not edge-manifold, so it has no vertex fans")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     flattened = bench_case.run(
-        lambda: tw.repair.flatten_degree3_vertices(vertices, faces), rounds=3
+        lambda: od.repair.flatten_degree3_vertices(vertices, faces), rounds=3
     )
     assert flattened.shape == (bench_case.n_vertices,)

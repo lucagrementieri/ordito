@@ -5,7 +5,7 @@ One test per convention, so the failing test's *name* says which one was broken.
 reasoning behind each rule live in [`tests/api_conventions.py`](api_conventions.py); this file is
 only the pytest surface -- with two exceptions, both of which exist because a static read cannot
 see what they check: the docstring-example test, which executes the examples, and the lazy-package
-tests at the end, which import `triwarp` in a *subprocess* because the in-process import graph is
+tests at the end, which import `ordito` in a *subprocess* because the in-process import graph is
 already whatever the session made it.
 
 Deliberately not parametrized over modules or functions: that would add hundreds of always-green
@@ -30,7 +30,8 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
+import ordito as od
+from ordito.kernels import array as kernel_array
 from tests.api_conventions import (
     _SHAPE_LATE_OPENINGS,
     _UNCITABLE_REFERENCES,
@@ -76,7 +77,6 @@ from tests.api_conventions import (
     warp_version_problems,
 )
 from tests.conversions import warp_empty
-from triwarp.kernels import array as kernel_array
 
 
 def _fail(headline: str, problems: list[str]) -> None:
@@ -94,13 +94,13 @@ def test_package_scan_is_discoverable() -> None:
     """
     Guard the scan itself: a silently empty scan would make all seven checks vacuously green.
 
-    ``triwarp/`` ships in the wheel, so unlike the parity gate there is no packaged-tree case where
+    ``ordito/`` ships in the wheel, so unlike the parity gate there is no packaged-tree case where
     it can legitimately be missing.
     """
     scan = scan_package()
     _fail("module(s) could not be parsed:", scan.errors)
-    assert scan.modules, "triwarp/ has modules but the scan found none"
-    assert scan.functions, "triwarp/ has public functions but the scan found none"
+    assert scan.modules, "ordito/ has modules but the scan found none"
+    assert scan.functions, "ordito/ has public functions but the scan found none"
 
 
 def test_summaries_do_not_name_a_reference_library() -> None:
@@ -167,7 +167,7 @@ def test_public_names_are_unique_across_modules() -> None:
 
 def test_kernel_modules_are_named_for_their_wrapper() -> None:
     """
-    ``triwarp/kernels/<module>.py`` backs ``triwarp/<module>.py``, one to one.
+    ``ordito/kernels/<module>.py`` backs ``ordito/<module>.py``, one to one.
 
     ``.claude/CLAUDE.md`` section 3.1's rule. It is what stops a wrapper module from being created
     or renamed while its kernels are left behind under the old name -- the half of a move that
@@ -458,29 +458,29 @@ def test_generic_kernels_register_their_overloads() -> None:
     """
     unregistered = [
         key
-        for module_name in _triwarp_kernel_modules()
+        for module_name in _ordito_kernel_modules()
         for key, kernel in wp.get_module(module_name).kernels.items()
         if kernel.is_generic and not kernel.overloads
     ]
     _fail("generic kernel(s) with no registered overload:", sorted(unregistered))
 
 
-def _triwarp_kernel_modules() -> list[str]:
+def _ordito_kernel_modules() -> list[str]:
     """
-    Import every ``triwarp.kernels`` sub-module and return the Warp module names they registered.
+    Import every ``ordito.kernels`` sub-module and return the Warp module names they registered.
 
     Importing is the point, not a side effect: a kernel module Warp has never seen has no entry to
     inspect, and the sub-packages (``kernels/algorithms/``, ``kernels/heat/``) are only reached by
-    the wrappers that use them, so a plain ``import triwarp`` leaves several unregistered.
+    the wrappers that use them, so a plain ``import ordito`` leaves several unregistered.
     """
     import importlib
     import pkgutil
 
-    import triwarp.kernels
+    import ordito.kernels
 
-    for info in pkgutil.walk_packages(triwarp.kernels.__path__, "triwarp.kernels."):
+    for info in pkgutil.walk_packages(ordito.kernels.__path__, "ordito.kernels."):
         importlib.import_module(info.name)
-    return [name for name in list(_warp_user_modules()) if name.startswith("triwarp.kernels")]
+    return [name for name in list(_warp_user_modules()) if name.startswith("ordito.kernels")]
 
 
 def _warp_user_modules() -> Mapping[str, object]:
@@ -520,17 +520,17 @@ def example_namespace(
     queries = wp.array(
         [[0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.5, 0.0]], dtype=wp.vec3, device=device
     )
-    neighbor_idx, neighbor_distance = tw.neighbors.query_nearest(
+    neighbor_idx, neighbor_distance = od.neighbors.query_nearest(
         vertices, vertices, 4, backend="bvh"
     )
     # Thresholded against its own mean, not against zero: the fixture is translated to z + 2, so
     # ``> 0.0`` selects every face and leaves a region with no seam around it.
-    centroids_np = tw.triangles.face_centroids(vertices, faces).numpy()
+    centroids_np = od.triangles.face_centroids(vertices, faces).numpy()
     face_mask = wp.array(
         centroids_np[:, 2] > centroids_np[:, 2].mean(), dtype=wp.bool, device=device
     )
     return {
-        "tw": tw,
+        "od": od,
         "wp": wp,
         "np": np,
         "face_mask": face_mask,
@@ -608,13 +608,13 @@ def test_comparison_label_scan_keys_on_asserts_not_on_fixture_unpacking() -> Non
         """
         def test_unpacks_a_fixture_only(icosphere) -> None:
             mesh_tm, mesh_wp = icosphere
-            answer_wp = tw.measures.volume(mesh_wp.points, mesh_wp.indices)
+            answer_wp = od.measures.volume(mesh_wp.points, mesh_wp.indices)
             assert float(answer_wp) > 0.0
 
         def test_compares_against_the_reference(icosphere) -> None:
             mesh_tm, mesh_wp = icosphere
             volume_tm = mesh_tm.volume
-            assert np.isclose(float(tw.measures.volume(mesh_wp.points, mesh_wp.indices)), volume_tm)
+            assert np.isclose(float(od.measures.volume(mesh_wp.points, mesh_wp.indices)), volume_tm)
         """
     )
     functions = [node for node in ast.parse(source).body if isinstance(node, ast.FunctionDef)]
@@ -624,33 +624,33 @@ def test_comparison_label_scan_keys_on_asserts_not_on_fixture_unpacking() -> Non
 
 # --- the lazy package surface ---------------------------------------------------------------
 #
-# ``triwarp/__init__.py`` resolves every submodule through a PEP 562 ``__getattr__`` so that
-# ``import triwarp`` does not decorate 553 kernels. These four tests pin the contract that change
+# ``ordito/__init__.py`` resolves every submodule through a PEP 562 ``__getattr__`` so that
+# ``import ordito`` does not decorate 553 kernels. These four tests pin the contract that change
 # rests on. The first is the one that matters: the cost regresses the moment any eager import is
 # added back, and it regresses *silently*, because nothing else in the suite can see it -- by the
 # time a test runs, the modules it needed are imported and the surface looks identical.
 
 
-def test_importing_triwarp_pulls_in_no_kernel_modules() -> None:
+def test_importing_ordito_pulls_in_no_kernel_modules() -> None:
     """
-    ``import triwarp`` imports no kernel module, and so decorates no kernel.
+    ``import ordito`` imports no kernel module, and so decorates no kernel.
 
-    Not a library comparison: this is a property of triwarp's own import graph. Runs in a
+    Not a library comparison: this is a property of ordito's own import graph. Runs in a
     subprocess because the in-process answer is always "all of them" -- the test session has
     already imported what it needs.
 
-    A single eager ``from triwarp.mesh import Trimesh`` in ``__init__.py`` is enough to fail this,
+    A single eager ``from ordito.mesh import Trimesh`` in ``__init__.py`` is enough to fail this,
     which is exactly what it is for: that one line costs the better part of a second of
-    ``import triwarp``, and Python imports a parent package before its child, so it costs the same
-    for ``import triwarp.edges`` too.
+    ``import ordito``, and Python imports a parent package before its child, so it costs the same
+    for ``import ordito.edges`` too.
     """
     probe = textwrap.dedent(
         """
         import sys
-        import triwarp
-        kernels = sorted(m for m in sys.modules if m.startswith("triwarp.kernels"))
+        import ordito
+        kernels = sorted(m for m in sys.modules if m.startswith("ordito.kernels"))
         public = sorted(
-            m for m in sys.modules if m.startswith("triwarp.") and ".kernels" not in m
+            m for m in sys.modules if m.startswith("ordito.") and ".kernels" not in m
         )
         print(len(kernels), len(public))
         """
@@ -659,22 +659,22 @@ def test_importing_triwarp_pulls_in_no_kernel_modules() -> None:
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     n_kernels, n_public = (int(token) for token in completed.stdout.split())
-    assert n_kernels == 0, f"import triwarp pulled in {n_kernels} kernel modules"
-    assert n_public == 0, f"import triwarp pulled in {n_public} public modules"
+    assert n_kernels == 0, f"import ordito pulled in {n_kernels} kernel modules"
+    assert n_public == 0, f"import ordito pulled in {n_public} public modules"
 
 
 def test_every_public_name_resolves_and_is_cached() -> None:
     """
     Every name in ``__all__`` resolves, and resolving it caches it into the package namespace.
 
-    Not a library comparison. The caching half is what keeps ``tw.laplacian`` in a hot wrapper an
+    Not a library comparison. The caching half is what keeps ``od.laplacian`` in a hot wrapper an
     ordinary global lookup rather than a ``__getattr__`` call, so it is part of the contract and
     not an implementation detail.
     """
-    for name in tw.__all__:
-        assert getattr(tw, name) is not None
-        assert name in vars(tw), f"{name} resolved but was not cached into triwarp's namespace"
-    assert tw.Trimesh.__name__ == "Trimesh"  # a class, not a submodule: the one special case
+    for name in od.__all__:
+        assert getattr(od, name) is not None
+        assert name in vars(od), f"{name} resolved but was not cached into ordito's namespace"
+    assert od.Trimesh.__name__ == "Trimesh"  # a class, not a submodule: the one special case
 
 
 def test_unknown_attribute_raises_attribute_error() -> None:
@@ -685,13 +685,13 @@ def test_unknown_attribute_raises_attribute_error() -> None:
     against the package, which a bare ``importlib.import_module`` in ``__getattr__`` would break.
     """
     with pytest.raises(AttributeError):
-        _ = tw.definitely_not_a_module
-    assert not hasattr(tw, "definitely_not_a_module")
+        _ = od.definitely_not_a_module
+    assert not hasattr(od, "definitely_not_a_module")
 
 
 def test_dir_lists_the_whole_surface_before_it_is_touched() -> None:
     """
-    ``dir(triwarp)`` lists every public name whether or not it has been resolved.
+    ``dir(ordito)`` lists every public name whether or not it has been resolved.
 
     Not a library comparison. Without the module ``__dir__``, a lazy package lists only what some
     earlier caller happened to touch, which is what makes one hard to explore interactively.
@@ -703,14 +703,14 @@ def test_dir_lists_the_whole_surface_before_it_is_touched() -> None:
     """
     probe = textwrap.dedent(
         """
-        import triwarp
-        print(" ".join(dir(triwarp)))
+        import ordito
+        print(" ".join(dir(ordito)))
         """
     )
     completed = subprocess.run(
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
-    assert sorted(completed.stdout.split()) == sorted([*tw.__all__, "__version__"])
+    assert sorted(completed.stdout.split()) == sorted([*od.__all__, "__version__"])
 
 
 def test_single_index_tid_carries_the_declarative_cast() -> None:
@@ -766,11 +766,11 @@ def test_bare_tid_scan_ignores_multi_index_unpacks() -> None:
 
 def test_no_uncitable_library_references_in_the_package() -> None:
     """
-    Nothing under ``triwarp/`` names a library the shipped package may not cite.
+    Nothing under ``ordito/`` names a library the shipped package may not cite.
 
-    Not a library comparison: this is a licensing property of triwarp's own source. Two libraries
+    Not a library comparison: this is a licensing property of ordito's own source. Two libraries
     are covered, for opposite reasons. MeshLib's licence restricts *use* rather than distribution
-    of derivatives, and triwarp ships ``MIT OR Apache-2.0``, so an attribution comment here reads
+    of derivatives, and ordito ships ``MIT OR Apache-2.0``, so an attribution comment here reads
     as a claim that a permissively licensed package is derived from a proprietary one; the rule has
     failed twice (89 references removed in one pass across 19 files, five back by the eighth
     kernels pass, two saying "port of" in the imperative). ``promesh`` is the mirror-image case: it
@@ -779,7 +779,7 @@ def test_no_uncitable_library_references_in_the_package() -> None:
     Naming MeshLib in ``tests/`` and ``benchmarks/`` is correct and required (a comparison has to
     say what it compares against), so the scan stops at the package.
     """
-    _fail("uncitable library reference(s) under triwarp/:", uncitable_reference_problems())
+    _fail("uncitable library reference(s) under ordito/:", uncitable_reference_problems())
 
 
 def test_uncitable_scan_catches_every_shape_it_has_seen_and_not_circumradius() -> None:
@@ -825,7 +825,7 @@ def test_repeatedly_mapped_kernel_funcs_declare_their_signatures() -> None:
     """
     A kernel module whose ``@wp.func`` is ``wp.map``'d from several sites declares its signatures.
 
-    Not a library comparison: this is a property of triwarp's own module-hash chains. ``wp.map``
+    Not a library comparison: this is a property of ordito's own module-hash chains. ``wp.map``
     names its generated module after the *unqualified* op and forks its hash per call signature, so
     an op reached at three signatures builds its module three times, each build containing every
     kernel accumulated so far. Over one suite run without the tables that is dozens of redundant
@@ -848,7 +848,7 @@ def test_claude_references_name_a_section_that_exists() -> None:
     """
     A ``.claude/CLAUDE.md`` cross-reference resolves, and names a subsection where one exists.
 
-    Not a library comparison: this is a property of triwarp's own prose. Check 24, and it is the
+    Not a library comparison: this is a property of ordito's own prose. Check 24, and it is the
     staleness half of the gate rather than a convention half -- the references it catches were all
     *correct* when they were written and rotted when CLAUDE.md's Part I was renumbered.
 
@@ -880,7 +880,7 @@ def test_admonitions_stay_out_of_numpydoc_item_sections() -> None:
     """
     A ``!!!`` admonition sits in free prose, never between two entries of a section.
 
-    Not a library comparison: this is a property of triwarp's own docstrings. Check 25, and like
+    Not a library comparison: this is a property of ordito's own docstrings. Check 25, and like
     the section-number check above it is a staleness half rather than a convention half -- every
     one of the eight sites it was written for reads perfectly in the source and renders wrongly.
 
@@ -904,7 +904,7 @@ def test_warp_typed_constants_stay_out_of_host_arithmetic() -> None:
     """
     A ``wp.int32`` constant is a kernel argument, never an operand of Python-scope arithmetic.
 
-    Not a library comparison: this is a property of triwarp's own source. Check 26, and it belongs
+    Not a library comparison: this is a property of ordito's own source. Check 26, and it belongs
     to the same family as checks 16, 17, 18, 20 and 22 -- the spelling is legal, the answer is
     correct, and nothing but a scan sees it.
 
@@ -916,7 +916,7 @@ def test_warp_typed_constants_stay_out_of_host_arithmetic() -> None:
     three. That is what ``kernels/array.py``'s ``LOOP_CONDITION_VIEW`` / ``LOOP_PROGRESS_VIEW``
     exist to avoid.
 
-    **The probe that shows it bites**, run against ``triwarp/graph.py`` and reverted: restoring
+    **The probe that shows it bites**, run against ``ordito/graph.py`` and reverted: restoring
     ``state[LOOP_PROGRESS : LOOP_PROGRESS + 1]`` reports two problems (one per bound), the
     one-sided ``state[LOOP_PROGRESS :]`` reports one, and a bare ``LOOP_PROGRESS * 2`` reports one.
     The correct spellings stay silent -- ``int(LOOP_CONDITION) + 1`` is an ``ast.Call`` operand,
@@ -935,9 +935,9 @@ def test_warp_typed_constants_stay_out_of_host_arithmetic() -> None:
 
 def test_no_warp_sparse_triplet_builds_in_the_package() -> None:
     """
-    No ``triwarp/`` module calls ``warp.sparse.bsr_from_triplets``.
+    No ``ordito/`` module calls ``warp.sparse.bsr_from_triplets``.
 
-    Not a library comparison: this is a property of triwarp's own source. Check 27. The probe that
+    Not a library comparison: this is a property of ordito's own source. Check 27. The probe that
     shows it bites: reverting ``laplacian.cotmatrix`` to its triplet build reports one problem.
     """
     _fail("warp.sparse triplet build(s) in the package:", triplet_build_problems())
@@ -950,14 +950,14 @@ def test_every_public_module_is_in_the_docs_nav() -> None:
     Not a library comparison: this is a property of the docs source. Check 28. The probe that
     shows it bites: deleting the ``voxels`` line from the nav reports one problem.
     """
-    _fail("docs nav out of sync with triwarp/:", docs_nav_problems())
+    _fail("docs nav out of sync with ordito/:", docs_nav_problems())
 
 
 def test_array_entries_open_with_their_shape() -> None:
     """
     Every public array entry's description opens with its shape as a code span.
 
-    Not a library comparison: this is a property of triwarp's own docstrings. Check 29. The probe
+    Not a library comparison: this is a property of ordito's own docstrings. Check 29. The probe
     that shows it bites: writing ``faces``' entry in ``adjacency.face_adjacency`` back as
     ``Length-``3 * n_faces`` flat triangle index buffer`` reports one problem.
     """

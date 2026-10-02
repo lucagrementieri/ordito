@@ -9,7 +9,7 @@ import trimesh.repair as tm_repair
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from tests.comparisons import canonical_winding, undirected_edges
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES
 from tests.conversions import (
@@ -155,21 +155,21 @@ def test_topological_measures_match_pymeshlab(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     measures_pml = trimesh_to_pymeshlab(mesh_tm).get_topological_measures()
 
-    assert tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=True) == bool(
+    assert od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=True) == bool(
         measures_pml["is_mesh_two_manifold"]
     )
 
-    unique_edges_wp, _ = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices)
     assert int(unique_edges_wp.shape[0]) == int(measures_pml["edges_number"])
 
-    boundary_edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert int(boundary_edges_wp.shape[0]) == int(measures_pml["boundary_edges"])
 
     n_vertices = mesh_wp.points.size
-    labels_np = tw.graph.connected_component_labels_from_edges(unique_edges_wp, n_vertices).numpy()
+    labels_np = od.graph.connected_component_labels_from_edges(unique_edges_wp, n_vertices).numpy()
     assert len(np.unique(labels_np)) == int(measures_pml["connected_components_number"])
 
-    assert tw.validation.is_vertex_manifold(mesh_wp.indices) == (
+    assert od.validation.is_vertex_manifold(mesh_wp.indices) == (
         int(measures_pml["non_two_manifold_vertices"]) == 0
     )
 
@@ -185,16 +185,16 @@ def test_topological_measures_match_pymeshlab(
         and int(measures_pml["non_two_manifold_vertices"]) == 0
         and n_self_intersecting == 0
     )
-    assert tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == watertight_pml
+    assert od.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == watertight_pml
     # ``is_volume`` adds consistent winding on top, which is true of every fixture here.
-    assert tw.validation.is_volume(mesh_wp.points, mesh_wp.indices) == (
-        watertight_pml and tw.validation.is_winding_consistent(mesh_wp.indices)
+    assert od.validation.is_volume(mesh_wp.points, mesh_wp.indices) == (
+        watertight_pml and od.validation.is_winding_consistent(mesh_wp.indices)
     )
 
-    n_loops = len(tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices))
+    n_loops = len(od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices))
     assert (mesh_name in CLOSED_MESHES) == (n_loops == 0)
     n_components = int(measures_pml["connected_components_number"])
-    euler_wp = tw.measures.euler_characteristic(mesh_wp.indices)
+    euler_wp = od.measures.euler_characteristic(mesh_wp.indices)
     assert euler_wp == 2 * n_components - 2 * int(measures_pml["genus"]) - n_loops
 
 
@@ -204,7 +204,7 @@ def test_is_edge_manifold_allow_boundary(request: pytest.FixtureRequest, mesh_na
     """
     Class A: the reduced verdict against ``igl.is_edge_manifold``'s first return, plus NumPy.
 
-    igl always allows boundary edges, so this is the comparison at triwarp's default
+    igl always allows boundary edges, so this is the comparison at ordito's default
     ``allow_boundary_edges=True``; the ``False`` setting has no igl counterpart and is pinned
     against the NumPy reference in the test below.
 
@@ -215,7 +215,7 @@ def test_is_edge_manifold_allow_boundary(request: pytest.FixtureRequest, mesh_na
     single-edge fan cases further down.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    manifold_wp = tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=True)
+    manifold_wp = od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=True)
     manifold_igl = bool(igl.is_edge_manifold(_faces_igl(mesh_tm))[0])
     manifold_np = _edge_manifold_np(mesh_tm.faces, allow_boundary_edges=True)
     assert manifold_wp == manifold_igl
@@ -225,7 +225,7 @@ def test_is_edge_manifold_allow_boundary(request: pytest.FixtureRequest, mesh_na
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_is_edge_manifold_no_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    manifold_wp = tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
+    manifold_wp = od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
     manifold_np = _edge_manifold_np(mesh_tm.faces, allow_boundary_edges=False)
     assert manifold_wp == manifold_np
     # Closed meshes have no boundary edges; open surfaces do.
@@ -239,15 +239,15 @@ def test_is_edge_manifold_matches_open3d(
     request: pytest.FixtureRequest, mesh_name: str, allow_boundary_edges: bool
 ) -> None:
     """
-    Class A: Open3D's ``is_edge_manifold`` shares triwarp's switch with identical semantics.
+    Class A: Open3D's ``is_edge_manifold`` shares ordito's switch with identical semantics.
 
     Unlike igl (which always allows boundary edges), Open3D exposes ``allow_boundary_edges`` with
-    the same two meanings as triwarp's, so both settings are compared. The fixture list spans
+    the same two meanings as ordito's, so both settings are compared. The fixture list spans
     closed and open meshes, so at ``allow_boundary_edges=False`` both answers appear; the
     non-manifold direction at ``True`` is pinned by the three-faces-one-edge case below.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    manifold_wp = tw.validation.is_edge_manifold(
+    manifold_wp = od.validation.is_edge_manifold(
         mesh_wp.indices, allow_boundary_edges=allow_boundary_edges
     )
     manifold_o3d = trimesh_to_open3d(mesh_tm).is_edge_manifold(
@@ -266,18 +266,18 @@ def test_is_edge_manifold_matches_pyvista(request: pytest.FixtureRequest, mesh_n
 
     ``PolyData.is_manifold`` is ``n_open_edges == 0``, and ``n_open_edges`` is ``vtkFeatureEdges``
     with boundary **and** non-manifold edges on -- so it rejects a boundary edge exactly as
-    triwarp's ``False`` setting does and there is nothing to compare at ``True``. The fixtures span
+    ordito's ``False`` setting does and there is nothing to compare at ``True``. The fixtures span
     closed and open meshes, so both answers appear rather than the assert riding on a constant.
 
     The *count* does not map even though the predicate does: on three faces sharing one edge
-    ``n_open_edges`` reads 7 where triwarp counts 6 boundary edges plus 1 non-manifold edge, which
+    ``n_open_edges`` reads 7 where ordito counts 6 boundary edges plus 1 non-manifold edge, which
     is why ``tests/test_boundary.py`` compares against ``extract_feature_edges`` instead. The fan
     case below pins the predicate on that same input.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_pv = trimesh_to_pyvista(mesh_tm)
 
-    manifold_wp = tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
+    manifold_wp = od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
     assert manifold_wp == bool(mesh_pv.is_manifold)
     assert manifold_wp == (mesh_name in CLOSED_MESHES)
     assert (mesh_pv.n_open_edges == 0) == manifold_wp
@@ -287,7 +287,7 @@ def test_is_edge_manifold_nonmanifold_fan_matches_pyvista(device: str) -> None:
     """
     Class B (count convention): three faces on one edge, where pyvista's count differs.
 
-    The second assert is the one worth keeping -- it pins ``n_open_edges == 7`` against triwarp's 6
+    The second assert is the one worth keeping -- it pins ``n_open_edges == 7`` against ordito's 6
     boundary edges on the same mesh, so the "do not map the count" note in
     ``test_is_edge_manifold_matches_pyvista`` is asserted rather than merely written down.
     """
@@ -298,10 +298,10 @@ def test_is_edge_manifold_nonmanifold_fan_matches_pyvista(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mesh_pv = trimesh_to_pyvista(tm.Trimesh(vertices_np, faces_np, process=False))
 
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is False
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is False
     assert bool(mesh_pv.is_manifold) is False
     assert int(mesh_pv.n_open_edges) == 7
-    assert int(tw.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 6
+    assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 6
 
 
 def test_is_edge_manifold_nonmanifold_fan_matches_open3d(device: str) -> None:
@@ -313,7 +313,7 @@ def test_is_edge_manifold_nonmanifold_fan_matches_open3d(device: str) -> None:
     _, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mesh_o3d = trimesh_to_open3d(tm.Trimesh(vertices_np, faces_np, process=False))
     for allow_boundary_edges in (True, False):
-        manifold_wp = tw.validation.is_edge_manifold(
+        manifold_wp = od.validation.is_edge_manifold(
             faces_wp, allow_boundary_edges=allow_boundary_edges
         )
         assert manifold_wp == mesh_o3d.is_edge_manifold(allow_boundary_edges=allow_boundary_edges)
@@ -333,14 +333,14 @@ def test_edge_manifold_mask(
     Length is asserted too, since a short mask would compare equal on its prefix.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.edge_manifold_mask(
+    mask_wp = od.validation.edge_manifold_mask(
         mesh_wp.indices, allow_boundary_edges=allow_boundary_edges
     )
     mask_np = _edge_manifold_mask_np(mesh_tm.faces, allow_boundary_edges)
     assert mask_wp.size == mesh_tm.faces.shape[0]
     assert np.array_equal(mask_wp.numpy(), mask_np)
     # is_edge_manifold is the reduction of the per-face mask.
-    assert bool(mask_wp.numpy().all()) == tw.validation.is_edge_manifold(
+    assert bool(mask_wp.numpy().all()) == od.validation.is_edge_manifold(
         mesh_wp.indices, allow_boundary_edges=allow_boundary_edges
     )
     if allow_boundary_edges:
@@ -351,10 +351,10 @@ def test_edge_manifold_mask(
 
 def test_is_edge_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    n_vertices = tw.array.index_bound(mesh_wp.indices)
-    assert tw.validation.is_edge_manifold(
+    n_vertices = od.array.index_bound(mesh_wp.indices)
+    assert od.validation.is_edge_manifold(
         mesh_wp.indices, n_vertices=n_vertices
-    ) == tw.validation.is_edge_manifold(mesh_wp.indices)
+    ) == od.validation.is_edge_manifold(mesh_wp.indices)
 
 
 @pytest.mark.parametrize("allow_boundary_edges", [True, False])
@@ -372,14 +372,14 @@ def test_is_edge_manifold_radix_is_invariant_to_an_oversized_base(
     answers = set()
     for mesh_name in ("icosahedron", "hemisphere"):
         _, mesh_wp = request.getfixturevalue(mesh_name)
-        tight = tw.array.index_bound(mesh_wp.indices)
-        baseline = tw.validation.is_edge_manifold(
+        tight = od.array.index_bound(mesh_wp.indices)
+        baseline = od.validation.is_edge_manifold(
             mesh_wp.indices, allow_boundary_edges, n_vertices=tight
         )
         answers.add(baseline)
         for base in (tight + 1, tight + 1000):
             assert (
-                tw.validation.is_edge_manifold(
+                od.validation.is_edge_manifold(
                     mesh_wp.indices, allow_boundary_edges, n_vertices=base
                 )
                 == baseline
@@ -404,31 +404,31 @@ def test_is_edge_manifold_rejects_out_of_range_indices(
     bound = None if n_vertices is None else len(mesh_tm.vertices)
     bad_wp = wp.array(bad_np, dtype=wp.int32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="faces must be non-negative indices"):
-        tw.validation.is_edge_manifold(bad_wp, n_vertices=bound)
+        od.validation.is_edge_manifold(bad_wp, n_vertices=bound)
     if offset < 0:
         # Unvalidated, the negative index is packed like any other and the call returns.
-        assert isinstance(tw.validation.is_edge_manifold(bad_wp, validate=False), bool)
-    assert tw.validation.is_edge_manifold(mesh_wp.indices, n_vertices=bound)
+        assert isinstance(od.validation.is_edge_manifold(bad_wp, validate=False), bool)
+    assert od.validation.is_edge_manifold(mesh_wp.indices, n_vertices=bound)
 
 
 def test_is_vertex_manifold_precomputed_shortcut(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    adjacency, adjacency_edges = tw.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
-    assert tw.validation.is_vertex_manifold(
+    adjacency, adjacency_edges = od.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
+    assert od.validation.is_vertex_manifold(
         mesh_wp.indices, face_adjacency=adjacency, face_adjacency_edges=adjacency_edges
-    ) == tw.validation.is_vertex_manifold(mesh_wp.indices)
+    ) == od.validation.is_vertex_manifold(mesh_wp.indices)
     # The half-pair raise now comes from the shared ``adjacency.require_paired_adjacency``, so the
     # message is the one every caller of that resolver reports rather than this module's own.
     with pytest.raises(ValueError, match="both be provided or both omitted"):
-        tw.validation.is_vertex_manifold(mesh_wp.indices, face_adjacency=adjacency)
+        od.validation.is_vertex_manifold(mesh_wp.indices, face_adjacency=adjacency)
 
 
 def test_is_volume_precomputed_edges(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    edges = tw.edges.faces_to_edges(mesh_wp.indices)
-    assert tw.validation.is_volume(
+    edges = od.edges.faces_to_edges(mesh_wp.indices)
+    assert od.validation.is_volume(
         mesh_wp.points, mesh_wp.indices, edges=edges
-    ) == tw.validation.is_volume(mesh_wp.points, mesh_wp.indices)
+    ) == od.validation.is_volume(mesh_wp.points, mesh_wp.indices)
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -443,7 +443,7 @@ def test_is_vertex_manifold(request: pytest.FixtureRequest, mesh_name: str) -> N
     [`test_is_vertex_manifold_bowtie`].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    manifold_wp = tw.validation.is_vertex_manifold(mesh_wp.indices)
+    manifold_wp = od.validation.is_vertex_manifold(mesh_wp.indices)
     manifold_igl = bool(np.asarray(igl.is_vertex_manifold(_faces_igl(mesh_tm))).all())
     assert manifold_wp == manifold_igl
     assert manifold_wp is True
@@ -464,35 +464,35 @@ def test_is_vertex_manifold_bowtie(device: str) -> None:
     )
     faces_np = np.array([[0, 1, 2], [0, 3, 4]])
     _, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    manifold_wp = tw.validation.is_vertex_manifold(faces_wp)
+    manifold_wp = od.validation.is_vertex_manifold(faces_wp)
     manifold_igl = bool(np.asarray(igl.is_vertex_manifold(faces_np.astype(np.int64))).all())
     assert manifold_wp == manifold_igl
     assert manifold_wp is False
     # The bow-tie is still edge-manifold (each edge used once).
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
 
 
 def test_vertex_manifold_compressed_forest(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """
-    Triwarp against triwarp: compressing the corner forest changes no verdict.
+    Ordito against ordito: compressing the corner forest changes no verdict.
 
     Both corner union-finds (from the sorted keys, and from a precomputed adjacency) compress their
     pre-hooked forest only from ``connected_components.ECL_COMPRESS_FROM`` corners, which no
     fixture reaches, so the threshold is lowered to force it. A bowtie next to a closed
     icosahedron, so the mask holds both answers; the oracles are igl's, in the tests above.
     """
-    from triwarp.kernels.algorithms import connected_components as kernel_cc
+    from ordito.kernels.algorithms import connected_components as kernel_cc
 
     ico = tm.creation.icosahedron()
     bowtie_np = np.array([[0, 1, 2], [0, 3, 4]]) + len(ico.vertices)
     vertices_np = np.concatenate([ico.vertices, np.zeros((5, 3))])
     faces_np = np.concatenate([ico.faces, bowtie_np])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    adjacency, adjacency_edges = tw.adjacency.face_adjacency(faces_wp, return_edges=True)
+    adjacency, adjacency_edges = od.adjacency.face_adjacency(faces_wp, return_edges=True)
 
     def answers() -> tuple[np.ndarray, bool]:
-        mask = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp).numpy()
-        tabled = tw.validation.is_vertex_manifold(
+        mask = od.validation.vertex_manifold_mask(vertices_wp, faces_wp).numpy()
+        tabled = od.validation.is_vertex_manifold(
             faces_wp, face_adjacency=adjacency, face_adjacency_edges=adjacency_edges
         )
         return mask, tabled
@@ -531,7 +531,7 @@ def test_is_vertex_manifold_unreferenced_vertices(
     manifold_igl = bool(np.asarray(igl.is_vertex_manifold(faces_np)).all())
     assert manifold_igl is expected
     answers = {
-        tw.validation.is_vertex_manifold(faces_wp, n_vertices=n_vertices)
+        od.validation.is_vertex_manifold(faces_wp, n_vertices=n_vertices)
         for n_vertices in (None, n_bound, n_bound + 7)
     }
     assert answers == {manifold_igl}
@@ -544,16 +544,16 @@ def test_is_vertex_manifold_matches_open3d(request: pytest.FixtureRequest, mesh_
     Class B: equal on edge-manifold input, which every fixture here is.
 
     Open3D's ``IsVertexManifold`` tests whether the faces incident to a vertex are *edge-connected
-    at all*; triwarp and igl require a manifold fan. The two definitions coincide exactly when the
+    at all*; ordito and igl require a manifold fan. The two definitions coincide exactly when the
     mesh is edge-manifold, and diverge on vertices sitting on a non-manifold edge -- three faces
-    sharing one edge are mutually connected (Open3D: manifold) but not a fan (triwarp: not). The
+    sharing one edge are mutually connected (Open3D: manifold) but not a fan (ordito: not). The
     divergent input class is asserted below so the restriction stays measured, and the bow-tie
     case supplies the ``False`` answer that keeps this comparison non-vacuous.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    assert tw.validation.is_edge_manifold(mesh_wp.indices) is True  # the class-B precondition
+    assert od.validation.is_edge_manifold(mesh_wp.indices) is True  # the class-B precondition
     manifold_o3d = trimesh_to_open3d(mesh_tm).is_vertex_manifold()
-    assert tw.validation.is_vertex_manifold(mesh_wp.indices) == manifold_o3d
+    assert od.validation.is_vertex_manifold(mesh_wp.indices) == manifold_o3d
 
 
 def test_is_vertex_manifold_open3d_agreement_and_divergence(device: str) -> None:
@@ -561,8 +561,8 @@ def test_is_vertex_manifold_open3d_agreement_and_divergence(device: str) -> None
     Class B, restriction pinned from both sides: Open3D tests connectivity, not a fan.
 
     On the edge-manifold bow-tie the libraries agree (both ``False``); on the edge-non-manifold
-    three-face fan they deliberately diverge (Open3D ``True``, triwarp ``False``) because Open3D
-    checks connectivity where triwarp checks for a fan. If Open3D ever changes its answer here,
+    three-face fan they deliberately diverge (Open3D ``True``, ordito ``False``) because Open3D
+    checks connectivity where ordito checks for a fan. If Open3D ever changes its answer here,
     the class-B precondition in the test above stops being the right restriction.
     """
     bow_v = np.array(
@@ -572,7 +572,7 @@ def test_is_vertex_manifold_open3d_agreement_and_divergence(device: str) -> None
     _, bow_faces_wp = numpy_to_warp(bow_v, bow_f, device)
     bow_o3d = trimesh_to_open3d(tm.Trimesh(bow_v, bow_f, process=False)).is_vertex_manifold()
     assert bow_o3d is False
-    assert tw.validation.is_vertex_manifold(bow_faces_wp) == bow_o3d
+    assert od.validation.is_vertex_manifold(bow_faces_wp) == bow_o3d
 
     fan_v = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]]
@@ -580,7 +580,7 @@ def test_is_vertex_manifold_open3d_agreement_and_divergence(device: str) -> None
     fan_f = np.array([[0, 1, 2], [0, 3, 1], [0, 1, 4]])
     _, fan_faces_wp = numpy_to_warp(fan_v, fan_f, device)
     assert trimesh_to_open3d(tm.Trimesh(fan_v, fan_f, process=False)).is_vertex_manifold() is True
-    assert tw.validation.is_vertex_manifold(fan_faces_wp) is False
+    assert od.validation.is_vertex_manifold(fan_faces_wp) is False
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -592,12 +592,12 @@ def test_vertex_manifold_mask(request: pytest.FixtureRequest, mesh_name: str) ->
     assert pins the predicate as the mask's reduction, so the two cannot drift apart.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.vertex_manifold_mask(mesh_wp.points, mesh_wp.indices)
+    mask_wp = od.validation.vertex_manifold_mask(mesh_wp.points, mesh_wp.indices)
     mask_igl = igl.is_vertex_manifold(_faces_igl(mesh_tm))
     assert mask_wp.size == mesh_tm.vertices.shape[0]
     assert np.array_equal(mask_wp.numpy(), mask_igl)
     # is_vertex_manifold is the reduction of the per-vertex mask.
-    assert bool(mask_wp.numpy().all()) == tw.validation.is_vertex_manifold(mesh_wp.indices)
+    assert bool(mask_wp.numpy().all()) == od.validation.is_vertex_manifold(mesh_wp.indices)
 
 
 def test_vertex_manifold_mask_unreferenced(device: str) -> None:
@@ -614,7 +614,7 @@ def test_vertex_manifold_mask_unreferenced(device: str) -> None:
     )
     faces_np = np.array([[0, 1, 2], [0, 3, 4]])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    mask_wp = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp)
+    mask_wp = od.validation.vertex_manifold_mask(vertices_wp, faces_wp)
     expected = np.array([False, True, True, True, True, False])
     assert mask_wp.size == vertices_np.shape[0]
     assert np.array_equal(mask_wp.numpy(), expected)
@@ -624,14 +624,14 @@ def test_vertex_manifold_mask_faces_without_vertices(device: str) -> None:
     # Vertices present but no faces: every vertex is unreferenced -> all False.
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    mask_wp = tw.validation.vertex_manifold_mask(vertices_wp, faces_wp)
+    mask_wp = od.validation.vertex_manifold_mask(vertices_wp, faces_wp)
     assert np.array_equal(mask_wp.numpy(), np.zeros(4, dtype=bool))
 
 
 @pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
 def test_is_self_intersecting_clean(request: pytest.FixtureRequest, mesh_name: str) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    assert tw.validation.is_self_intersecting(mesh_wp) is False
+    assert od.validation.is_self_intersecting(mesh_wp) is False
 
 
 def test_is_self_intersecting_crossing(device: str) -> None:
@@ -648,7 +648,7 @@ def test_is_self_intersecting_crossing(device: str) -> None:
     faces_np = np.array([[0, 1, 2], [3, 4, 5]])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    assert tw.validation.is_self_intersecting(mesh_wp) is True
+    assert od.validation.is_self_intersecting(mesh_wp) is True
 
 
 def test_is_self_intersecting_separated(device: str) -> None:
@@ -665,7 +665,7 @@ def test_is_self_intersecting_separated(device: str) -> None:
     faces_np = np.array([[0, 1, 2], [3, 4, 5]])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    assert tw.validation.is_self_intersecting(mesh_wp) is False
+    assert od.validation.is_self_intersecting(mesh_wp) is False
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -673,16 +673,16 @@ def test_face_self_intersecting_mask_matches_predicate(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: the mask's reduction must equal the predicate.
+    Ordito against ordito: the mask's reduction must equal the predicate.
 
     The predicate carries the reference comparison (trimesh and MeshLab); what only this can
     check is that the per-face mask and the whole-mesh answer come from the same test.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
     assert mask_wp.size == mesh_tm.faces.shape[0]
-    predicate = tw.validation.is_self_intersecting(mesh_wp)
-    assert bool(tw.reduce.any(mask_wp)) == predicate
+    predicate = od.validation.is_self_intersecting(mesh_wp)
+    assert bool(od.reduce.any(mask_wp)) == predicate
 
 
 @pytest.mark.parametrize("mesh_name", ["boy_surface", "icosahedron", "cave_cube"])
@@ -699,9 +699,9 @@ def test_face_self_intersecting_mask_matches_meshlib(
     [`meshlib_bitset_to_numpy`][tests.conversions.meshlib_bitset_to_numpy], which states the face
     domain. Read raw, the comparison fails by shape on exactly the meshes where it should pass.
 
-    ``touchIsIntersection=False`` is the setting that matches triwarp, which flags a pair only when
+    ``touchIsIntersection=False`` is the setting that matches ordito, which flags a pair only when
     Moller's interval test finds a genuine crossing; at ``True`` MeshLib additionally flags coplanar
-    contact and reads **253** faces against triwarp's 177 on ``boy_surface``. That is the convention
+    contact and reads **253** faces against ordito's 177 on ``boy_surface``. That is the convention
     knob, so it is passed explicitly rather than left at its default.
 
     Non-vacuous in both directions: ``boy_surface`` is a closed surface that passes through itself,
@@ -710,7 +710,7 @@ def test_face_self_intersecting_mask_matches_meshlib(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_faces = mesh_tm.faces.shape[0]
-    mask_wp = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     colliding_ml = mm.findSelfCollidingTrianglesBS(mm.MeshPart(mesh_ml), touchIsIntersection=False)
@@ -718,7 +718,7 @@ def test_face_self_intersecting_mask_matches_meshlib(
 
     assert mask_ml.sum() > 0 if mesh_name == "boy_surface" else mask_ml.sum() == 0
     assert np.array_equal(mask_wp.numpy(), mask_ml)
-    assert tw.validation.is_self_intersecting(mesh_wp) is bool(mask_ml.any())
+    assert od.validation.is_self_intersecting(mesh_wp) is bool(mask_ml.any())
 
 
 def test_face_self_intersecting_mask_two_boxes_matches_meshlib(device: str) -> None:
@@ -734,7 +734,7 @@ def test_face_self_intersecting_mask_two_boxes_matches_meshlib(device: str) -> N
     tangled_tm = _tangled_boxes()
 
     vertices_wp, faces_wp = numpy_to_warp(tangled_tm.vertices, tangled_tm.faces, device)
-    mask_wp = tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp)
+    mask_wp = od.validation.face_self_intersecting_mask(vertices_wp, faces_wp)
 
     mesh_ml = trimesh_to_meshlib(tangled_tm)
     colliding_ml = mm.findSelfCollidingTrianglesBS(mm.MeshPart(mesh_ml), touchIsIntersection=False)
@@ -757,13 +757,13 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
 
     ``compute_selection_by_self_intersections_per_face`` writes the selection onto
     ``current_mesh()`` and ``face_selection_array()`` reads it back as a bool array, which needs no
-    transform at all and matches triwarp's mask **exactly on all three inputs**.
+    transform at all and matches ordito's mask **exactly on all three inputs**.
     ``get_self_intersecting_triangles`` returns colliding **pairs**, so ``np.unique`` over them is
     the named transform.
 
     Measured, faces flagged of the input's total:
 
-    | input | triwarp | meshlib | pymeshlab | open3d |
+    | input | ordito | meshlib | pymeshlab | open3d |
     |---|---|---|---|---|
     | two boxes offset (0.5, 0.5, 0.5), 24 faces | 12 | 12 | 12 | **11** |
     | two icosphere(2) offset 0.7, 640 faces | 84 | 84 | 84 | 84 |
@@ -800,7 +800,7 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
         n_expected = 0
 
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    mask_np = tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy()
+    mask_np = od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy()
 
     pairs_o3d = np.asarray(trimesh_to_open3d(mesh_tm).get_self_intersecting_triangles())
     faces_o3d = np.unique(pairs_o3d) if pairs_o3d.size else np.empty(0, dtype=np.int64)
@@ -813,14 +813,14 @@ def test_face_self_intersecting_mask_matches_open3d_and_pymeshlab(device: str, k
     assert int(mask_pml.sum()) == n_expected
     assert np.array_equal(mask_np, mask_pml)
 
-    triwarp_faces = np.flatnonzero(mask_np).astype(np.int64)
+    ordito_faces = np.flatnonzero(mask_np).astype(np.int64)
     if kind == "boxes":
         # The parallel-edge configuration open3d's narrow phase misses one of.
         assert faces_o3d.size == n_expected - 1
-        assert set(faces_o3d.tolist()) < set(triwarp_faces.tolist())
+        assert set(faces_o3d.tolist()) < set(ordito_faces.tolist())
     else:
         assert faces_o3d.size == n_expected
-        assert np.array_equal(faces_o3d.astype(np.int64), triwarp_faces)
+        assert np.array_equal(faces_o3d.astype(np.int64), ordito_faces)
 
 
 @pytest.mark.parity("face_self_intersecting_mask", "pymeshfix")
@@ -882,12 +882,12 @@ def test_face_self_intersecting_mask_matches_pymeshfix(device: str, kind: str) -
     ]
 
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    mask_wp = tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp)
+    mask_wp = od.validation.face_self_intersecting_mask(vertices_wp, faces_wp)
 
     assert faces_pmf.size == n_expected  # non-vacuity: the reference answered this input
     assert np.array_equal(np.flatnonzero(mask_wp.numpy()), np.sort(faces_pmf))
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    assert tw.validation.is_self_intersecting(mesh_wp) is (n_expected > 0)
+    assert od.validation.is_self_intersecting(mesh_wp) is (n_expected > 0)
 
 
 @pytest.mark.parity("face_self_intersecting_mask", "meshlib")
@@ -914,7 +914,7 @@ def test_face_self_intersecting_mask_on_an_interpenetrating_torus(
     """
     mesh_tm, mesh_wp = torus_self_intersecting
     n_faces = mesh_tm.faces.shape[0]
-    mask_wp = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
 
     colliding_ml = mm.findSelfCollidingTrianglesBS(
         mm.MeshPart(trimesh_to_meshlib(mesh_tm)), touchIsIntersection=False
@@ -923,19 +923,19 @@ def test_face_self_intersecting_mask_on_an_interpenetrating_torus(
 
     assert int(mask_ml.sum()) == 64  # non-vacuity, and the number the old code doubled
     assert np.array_equal(mask_wp, mask_ml)
-    assert tw.validation.is_self_intersecting(mesh_wp) is True
+    assert od.validation.is_self_intersecting(mesh_wp) is True
 
 
 def test_face_self_intersecting_mask_tangential_contact_divergence(
     bohemian_dome: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Not a parity assert: the input class where triwarp and MeshLib disagree, pinned with numbers.
+    Not a parity assert: the input class where ordito and MeshLib disagree, pinned with numbers.
 
     The Bohemian dome's two sheets meet along a curve they are *tangent* to rather than crossing
     transversally, so which triangles count is decided at the tolerance. Both sides now find
     **161** of 3 042 faces and disagree about **2** of them -- and against an exact ``float64``
-    arbiter it is *MeshLib* that has one false positive and one false negative there, while triwarp
+    arbiter it is *MeshLib* that has one false positive and one false negative there, while ordito
     matches exactly.
 
     Two earlier readings of this test were wrong, which is why the history is kept. It first said
@@ -950,7 +950,7 @@ def test_face_self_intersecting_mask_tangential_contact_divergence(
     """
     mesh_tm, mesh_wp = bohemian_dome
     n_faces = mesh_tm.faces.shape[0]
-    mask_wp = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
+    mask_wp = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     colliding_ml = mm.findSelfCollidingTrianglesBS(mm.MeshPart(mesh_ml), touchIsIntersection=False)
@@ -970,7 +970,7 @@ def test_is_winding_consistent(request: pytest.FixtureRequest, mesh_name: str) -
     implementation; [`test_is_winding_consistent_flipped`] supplies the other branch.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    winding_wp = tw.validation.is_winding_consistent(mesh_wp.indices)
+    winding_wp = od.validation.is_winding_consistent(mesh_wp.indices)
     assert winding_wp == bool(mesh_tm.is_winding_consistent)
     assert winding_wp is True
 
@@ -988,7 +988,7 @@ def test_is_winding_consistent_flipped(icosahedron: tuple[tm.Trimesh, wp.Mesh]) 
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]  # reverse winding of half the faces
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
     mesh_flipped_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_flipped, process=False)
-    winding_wp = tw.validation.is_winding_consistent(faces_wp)
+    winding_wp = od.validation.is_winding_consistent(faces_wp)
     assert winding_wp == bool(mesh_flipped_tm.is_winding_consistent)
     assert winding_wp is False
 
@@ -998,9 +998,9 @@ def test_edge_winding_consistent_mask_matches_predicate(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.edge_winding_consistent_mask(mesh_wp.indices)
-    aggregated = bool(tw.reduce.all(mask_wp)) if mask_wp.size > 0 else True
-    assert aggregated == tw.validation.is_winding_consistent(mesh_wp.indices)
+    mask_wp = od.validation.edge_winding_consistent_mask(mesh_wp.indices)
+    aggregated = bool(od.reduce.all(mask_wp)) if mask_wp.size > 0 else True
+    assert aggregated == od.validation.is_winding_consistent(mesh_wp.indices)
     assert aggregated is True
 
 
@@ -1011,15 +1011,15 @@ def test_edge_winding_consistent_mask_flags_flipped(
     faces_flipped = mesh_tm.faces.copy()
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]  # reverse winding of half the faces
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
-    mask_wp = tw.validation.edge_winding_consistent_mask(faces_wp)
+    mask_wp = od.validation.edge_winding_consistent_mask(faces_wp)
     assert mask_wp.size > 0
-    assert bool(tw.reduce.all(mask_wp)) is False
+    assert bool(od.reduce.all(mask_wp)) is False
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_is_orientable_fixtures(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    orientable_wp = tw.validation.is_orientable(mesh_wp.indices)
+    orientable_wp = od.validation.is_orientable(mesh_wp.indices)
     orientable_np = _orientable_np(mesh_tm.faces)
     assert orientable_wp == orientable_np
     assert orientable_wp is True
@@ -1031,18 +1031,18 @@ def test_is_orientable_flip_invariance(icosahedron: tuple[tm.Trimesh, wp.Mesh]) 
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]  # reverse winding of half the faces
     faces_wp = wp.array(faces_flipped.reshape(-1).astype(np.int32), dtype=wp.int32)
     # Orientability is flip-invariant even though the winding is now inconsistent.
-    assert tw.validation.is_orientable(faces_wp) is True
+    assert od.validation.is_orientable(faces_wp) is True
     assert _orientable_np(faces_flipped) is True
 
 
 def test_is_orientable_mobius(device: str) -> None:
     vertices_np, faces_np = _mobius_strip(12)
     _, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    assert tw.validation.is_orientable(faces_wp) is False
+    assert od.validation.is_orientable(faces_wp) is False
     assert _orientable_np(faces_np) is False
     # The Möbius strip is still edge- and vertex-manifold.
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
-    assert tw.validation.is_vertex_manifold(faces_wp) is True
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
+    assert od.validation.is_vertex_manifold(faces_wp) is True
 
 
 def test_is_orientable_closed_non_orientable(boy_surface: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1056,10 +1056,10 @@ def test_is_orientable_closed_non_orientable(boy_surface: tuple[tm.Trimesh, wp.M
     """
     mesh_tm, mesh_wp = boy_surface
     assert mesh_tm.is_watertight
-    assert tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) is True
-    assert tw.validation.is_orientable(mesh_wp.indices) is False
+    assert od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) is True
+    assert od.validation.is_orientable(mesh_wp.indices) is False
     assert _orientable_np(mesh_tm.faces) is False
-    assert tw.validation.is_winding_consistent(mesh_wp.indices) is False
+    assert od.validation.is_winding_consistent(mesh_wp.indices) is False
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "mobius", "boy_surface"])
@@ -1068,7 +1068,7 @@ def test_orientation_predicates_with_vertex_bound_match_without(
     request: pytest.FixtureRequest, mesh_name: str, flip_half: bool
 ) -> None:
     """
-    Triwarp against triwarp: ``n_vertices=`` only narrows the key sort; no answer moves.
+    Ordito against ordito: ``n_vertices=`` only narrows the key sort; no answer moves.
 
     The oracle-carrying path is the one without the bound (the tests above). Flipping half the
     faces makes ``is_winding_consistent`` ``False`` and the flip mask non-trivial, and the two
@@ -1084,24 +1084,24 @@ def test_orientation_predicates_with_vertex_bound_match_without(
     )
     n_vertices = mesh_tm.vertices.shape[0]
 
-    winding = tw.validation.is_winding_consistent(faces_wp)
-    assert tw.validation.is_winding_consistent(faces_wp, n_vertices=n_vertices) == winding
+    winding = od.validation.is_winding_consistent(faces_wp)
+    assert od.validation.is_winding_consistent(faces_wp, n_vertices=n_vertices) == winding
     assert winding is (not flip_half and mesh_name == "icosahedron")
-    orientable = tw.validation.is_orientable(faces_wp)
-    assert tw.validation.is_orientable(faces_wp, n_vertices=n_vertices) == orientable
+    orientable = od.validation.is_orientable(faces_wp)
+    assert od.validation.is_orientable(faces_wp, n_vertices=n_vertices) == orientable
     assert orientable is (mesh_name == "icosahedron")
     if not orientable:
         # On a non-orientable mesh the parity hooks race on CUDA, so the best-effort flip mask
         # differs between two runs of the unbounded path alone; only the verdicts compare there.
         return
-    flips_np = tw.validation.face_flip_mask(faces_wp).numpy()
+    flips_np = od.validation.face_flip_mask(faces_wp).numpy()
     assert flips_np.any() == flip_half
     assert np.array_equal(
-        tw.validation.face_flip_mask(faces_wp, n_vertices=n_vertices).numpy(), flips_np
+        od.validation.face_flip_mask(faces_wp, n_vertices=n_vertices).numpy(), flips_np
     )
     assert np.array_equal(
-        tw.repair.make_winding_consistent(faces_wp, n_vertices=n_vertices).numpy(),
-        tw.repair.make_winding_consistent(faces_wp).numpy(),
+        od.repair.make_winding_consistent(faces_wp, n_vertices=n_vertices).numpy(),
+        od.repair.make_winding_consistent(faces_wp).numpy(),
     )
 
 
@@ -1117,10 +1117,10 @@ def test_face_flip_mask_all_false_on_consistent(
     orientable fixtures.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.face_flip_mask(mesh_wp.indices)
+    mask_wp = od.validation.face_flip_mask(mesh_wp.indices)
     assert mask_wp.size == mesh_tm.faces.shape[0]
     # Fixtures are consistently wound, so no face needs flipping.
-    assert bool(tw.reduce.any(mask_wp)) is False
+    assert bool(od.reduce.any(mask_wp)) is False
 
 
 def _triangle_ribbon(n_quads: int) -> tuple[np.ndarray, np.ndarray]:
@@ -1142,7 +1142,7 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     Class B: igl's flip mask is *derived* from its reoriented face table, not returned.
 
     ``igl.bfs_orient(F)`` returns ``(FF, C)`` and ``C`` is the per-face **component id** -- all
-    zeros on a connected mesh -- which is the trap this test exists to pin: comparing triwarp's bits
+    zeros on a connected mesh -- which is the trap this test exists to pin: comparing ordito's bits
     against ``C`` would compare them against a constant and pass for the wrong reason. The named
     transform is therefore *recover the mask*: a face was flipped iff its row in ``FF`` is the
     reversal of its row in ``F``, which the first assert checks is the only possibility (every row
@@ -1169,8 +1169,8 @@ def test_face_flip_mask_matches_igl(device: str) -> None:
     assert bool((unchanged_igl | reversed_igl).all()), "a row is neither kept nor reversed"
     assert np.unique(components_igl).size == 1, "the ribbon is one component"
 
-    mask_wp = tw.validation.face_flip_mask(faces_wp).numpy()
-    repaired_np = tw.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
+    mask_wp = od.validation.face_flip_mask(faces_wp).numpy()
+    repaired_np = od.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
 
     assert np.array_equal(mask_wp, ~unchanged_igl)
     assert np.array_equal(canonical_winding(repaired_np), canonical_winding(oriented_igl))
@@ -1183,13 +1183,13 @@ def test_face_flip_mask_long_path(device: str) -> None:
 
     This is the deep-propagation case: an orientation flood fill needs one round per node here,
     while the parity union-find behind
-    [`face_orientation_bits`][triwarp.validation.face_orientation_bits] is depth-independent. The
+    [`face_orientation_bits`][ordito.validation.face_orientation_bits] is depth-independent. The
     answer is unique because the component representative is the smallest face id, so face 0 keeps
     its winding and every other face is determined relative to it.
 
     Class B against ``trimesh.repair.fix_winding``, the flood fill the benchmark times. Two named
-    transforms. The reference *rewrites the mesh* rather than returning bits, so triwarp's bits are
-    applied via [`make_winding_consistent`][triwarp.repair.make_winding_consistent] to compare the
+    transforms. The reference *rewrites the mesh* rather than returning bits, so ordito's bits are
+    applied via [`make_winding_consistent`][ordito.repair.make_winding_consistent] to compare the
     two rewritten face arrays; and a flip is emitted as a rotation of the reversed triangle, so both
     go through [`tests.comparisons.canonical_winding`][] -- which is insensitive to the starting
     corner and still sensitive to the orientation under test. No global sign fix is needed: both
@@ -1202,19 +1202,19 @@ def test_face_flip_mask_long_path(device: str) -> None:
     flipped_np[scrambled_np] = flipped_np[scrambled_np][:, ::-1]
     _, faces_wp = numpy_to_warp(vertices_np, flipped_np, device)
 
-    assert tw.validation.is_orientable(faces_wp) is True
-    bits_wp, _signed_edges_wp, _signs_wp, _m = tw.validation.face_orientation_bits(faces_wp)
-    mask_np = tw.validation.face_flip_mask(faces_wp).numpy()
+    assert od.validation.is_orientable(faces_wp) is True
+    bits_wp, _signed_edges_wp, _signs_wp, _m = od.validation.face_orientation_bits(faces_wp)
+    mask_np = od.validation.face_flip_mask(faces_wp).numpy()
     assert np.array_equal(mask_np, bits_wp.numpy().astype(bool))
     assert bool(mask_np[0]) is False
     assert np.array_equal(mask_np, scrambled_np != scrambled_np[0])
 
     # Applying the mask must reproduce the original strip, up to the global flip face 0 anchors.
     # Compared as cyclic windings: a flip is emitted as a rotation of the reversed triangle.
-    repaired_np = tw.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
+    repaired_np = od.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
     expected_np = faces_np[:, ::-1] if scrambled_np[0] else faces_np
     assert np.array_equal(canonical_winding(repaired_np), canonical_winding(expected_np))
-    assert tw.validation.is_winding_consistent(faces_wp) is False
+    assert od.validation.is_winding_consistent(faces_wp) is False
 
     # trimesh reference: its fix_winding is a flood fill over the same face-adjacency graph, and
     # agrees face for face (both anchor on the first face of the component).
@@ -1255,14 +1255,14 @@ def test_face_orientation_bits_leave_edges_unsatisfied_only_when_non_orientable(
     the particular triangulation.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    orient_wp, signed_edges_wp, signs_wp, m = tw.validation.face_orientation_bits(mesh_wp.indices)
+    orient_wp, signed_edges_wp, signs_wp, m = od.validation.face_orientation_bits(mesh_wp.indices)
 
     assert m > 0, "a mesh with no face adjacency would make this vacuous"
     orient_np = orient_wp.numpy()
     edges_np = signed_edges_wp.numpy()
     frustrated_np = (orient_np[edges_np[:, 0]] ^ orient_np[edges_np[:, 1]]) != signs_wp.numpy()
 
-    assert bool(tw.validation.is_orientable(mesh_wp.indices)) is orientable
+    assert bool(od.validation.is_orientable(mesh_wp.indices)) is orientable
     assert (int(frustrated_np.sum()) == 0) is orientable
 
 
@@ -1284,7 +1284,7 @@ def test_is_watertight_matches_open3d(request: pytest.FixtureRequest, mesh_name:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     watertight_o3d = trimesh_to_open3d(mesh_tm).is_watertight()
 
-    assert tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == watertight_o3d
+    assert od.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == watertight_o3d
     assert watertight_o3d == (mesh_name in CLOSED_MESHES)
 
 
@@ -1294,7 +1294,7 @@ def test_is_watertight_rejects_self_intersection_like_open3d(device: str) -> Non
 
     Two interpenetrating unit boxes are closed, edge-manifold and vertex-manifold, so every test
     above passes them and ``trimesh.is_watertight`` calls them watertight. Open3D does not, and
-    neither may triwarp -- this is the only case in the module that separates the two definitions,
+    neither may ordito -- this is the only case in the module that separates the two definitions,
     and without it the parametrized test above would be satisfied by an edge-manifold check alone.
     """
     tangled_tm = _tangled_boxes()
@@ -1307,9 +1307,9 @@ def test_is_watertight_rejects_self_intersection_like_open3d(device: str) -> Non
     )
 
     assert trimesh_to_open3d(tangled_tm).is_watertight() is False
-    assert tw.validation.is_watertight(vertices_wp, faces_wp) is False
+    assert od.validation.is_watertight(vertices_wp, faces_wp) is False
     # The clause that does the work: it *is* edge-manifold and closed, which is all trimesh checks.
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
     assert bool(tangled_tm.is_watertight) is True
 
 
@@ -1333,18 +1333,18 @@ def test_is_watertight_rejects_a_connected_surface_that_intersects_itself(
     can fail.
 
     Sharpest as a disagreement: ``trimesh.is_watertight`` returns **True** for both, because its
-    definition is "every edge has exactly two faces" and stops there. triwarp follows Open3D, and
+    definition is "every edge has exactly two faces" and stops there. ordito follows Open3D, and
     the assert pins the two of them together against trimesh rather than merely restating a
     convention.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    assert tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) is True
-    assert tw.validation.is_vertex_manifold(mesh_wp.indices) is True
-    assert int(tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0]) == 0
-    assert tw.validation.is_self_intersecting(mesh_wp) is True
+    assert od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) is True
+    assert od.validation.is_vertex_manifold(mesh_wp.indices) is True
+    assert int(od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0]) == 0
+    assert od.validation.is_self_intersecting(mesh_wp) is True
 
-    assert tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices) is False
+    assert od.validation.is_watertight(mesh_wp.points, mesh_wp.indices) is False
     assert trimesh_to_open3d(mesh_tm).is_watertight() is False
     assert (
         mesh_tm.is_watertight is True
@@ -1357,16 +1357,16 @@ def test_is_watertight_closedness_clause_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B: ``MeshTopology.isClosed`` is the *closedness* clause of triwarp's definition.
+    Class B: ``MeshTopology.isClosed`` is the *closedness* clause of ordito's definition.
 
-    The named transform is which clause is being compared. triwarp follows Open3D -- edge-manifold
+    The named transform is which clause is being compared. ordito follows Open3D -- edge-manifold
     without boundary, vertex-manifold, and no self-intersection -- where ``isClosed`` answers only
     "every edge has two faces", trimesh's weaker definition. On these fixtures, none of which
     self-intersects, the three definitions coincide and the comparison is exact in both directions.
 
     Where they part is asserted here rather than left to the docstring, on the same two
     interpenetrating boxes [`test_is_watertight_rejects_self_intersection_like_open3d`] uses:
-    ``isClosed`` reads **True** and triwarp reads ``False``. So MeshLib is the oracle for the
+    ``isClosed`` reads **True** and ordito reads ``False``. So MeshLib is the oracle for the
     closedness clause and open3d stays the oracle for the composite predicate.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1374,14 +1374,14 @@ def test_is_watertight_closedness_clause_matches_meshlib(
 
     closed_ml = mesh_ml.topology.isClosed()
     assert closed_ml == (mesh_name in CLOSED_MESHES)
-    assert tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == closed_ml
-    assert tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) == closed_ml
+    assert od.validation.is_watertight(mesh_wp.points, mesh_wp.indices) == closed_ml
+    assert od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False) == closed_ml
 
     tangled_tm = _tangled_boxes()
     vertices_wp, faces_wp = numpy_to_warp(tangled_tm.vertices, tangled_tm.faces, mesh_wp.device)
     # The clause MeshLib does not carry: closed, and still not watertight under Open3D's definition.
     assert trimesh_to_meshlib(tangled_tm).topology.isClosed() is True
-    assert tw.validation.is_watertight(vertices_wp, faces_wp) is False
+    assert od.validation.is_watertight(vertices_wp, faces_wp) is False
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -1395,7 +1395,7 @@ def test_is_watertight(request: pytest.FixtureRequest, mesh_name: str) -> None:
     [`test_is_watertight_rejects_self_intersection_like_open3d`].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    watertight_wp = tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
+    watertight_wp = od.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
     assert watertight_wp == (mesh_name in CLOSED_MESHES)
     # These fixtures are not self-intersecting, so Open3D's composite definition agrees with
     # trimesh's "every edge shared by exactly two faces" check.
@@ -1407,7 +1407,7 @@ def test_is_watertight_calls_a_mesh_factory_only_past_the_manifold_tests(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: a ``mesh=`` callable gives the answer a ``wp.Mesh`` does, lazily.
+    Ordito against ordito: a ``mesh=`` callable gives the answer a ``wp.Mesh`` does, lazily.
 
     ``test_is_watertight`` carries the oracle. The factory must be called exactly when both
     manifold tests pass -- the edge test stops ``mobius`` and the open fixtures before it, and the
@@ -1420,11 +1420,11 @@ def test_is_watertight_calls_a_mesh_factory_only_past_the_manifold_tests(
         calls.append(1)
         return mesh_wp
 
-    answer = tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=factory)
-    assert answer == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=mesh_wp)
-    reaches_broad_phase = tw.validation.is_edge_manifold(
+    answer = od.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=factory)
+    assert answer == od.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=mesh_wp)
+    reaches_broad_phase = od.validation.is_edge_manifold(
         mesh_wp.indices, allow_boundary_edges=False
-    ) and tw.validation.is_vertex_manifold(mesh_wp.indices)
+    ) and od.validation.is_vertex_manifold(mesh_wp.indices)
     assert len(calls) == int(reaches_broad_phase)
 
 
@@ -1433,11 +1433,11 @@ def test_face_watertight_mask_matches_reference(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.face_watertight_mask(mesh_wp.indices)
+    mask_wp = od.validation.face_watertight_mask(mesh_wp.indices)
     mask_np = _edge_manifold_mask_np(mesh_tm.faces, allow_boundary_edges=False)
     assert np.array_equal(mask_wp.numpy(), mask_np)
     # Equivalent to edge_manifold_mask with boundary edges disallowed.
-    edge_mask_wp = tw.validation.edge_manifold_mask(mesh_wp.indices, allow_boundary_edges=False)
+    edge_mask_wp = od.validation.edge_manifold_mask(mesh_wp.indices, allow_boundary_edges=False)
     assert np.array_equal(mask_wp.numpy(), edge_mask_wp.numpy())
 
 
@@ -1452,7 +1452,7 @@ def test_face_watertight_mask_broken_faces_reference(
     library defines the order.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mask_wp = tw.validation.face_watertight_mask(mesh_wp.indices)
+    mask_wp = od.validation.face_watertight_mask(mesh_wp.indices)
     # Faces breaking watertightness are the complement of the mask (trimesh's broken_faces).
     broken_ours = np.flatnonzero(~mask_wp.numpy())
     broken_tm = np.asarray(tm_repair.broken_faces(mesh_tm), dtype=np.int64)
@@ -1469,7 +1469,7 @@ def test_is_volume(request: pytest.FixtureRequest, mesh_name: str) -> None:
     agree with the fixture table, which is maintained independently.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    volume_wp = tw.validation.is_volume(mesh_wp.points, mesh_wp.indices)
+    volume_wp = od.validation.is_volume(mesh_wp.points, mesh_wp.indices)
     assert volume_wp == bool(mesh_tm.is_volume)
     assert volume_wp == (mesh_name in CLOSED_MESHES)
 
@@ -1486,7 +1486,7 @@ def test_is_volume_inward_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_inward, mesh_wp.device)
     mesh_inward_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_inward, process=False)
     # Still watertight and winding-consistent, but the enclosed signed volume is negative.
-    volume_wp = tw.validation.is_volume(vertices_wp, faces_wp)
+    volume_wp = od.validation.is_volume(vertices_wp, faces_wp)
     assert volume_wp == bool(mesh_inward_tm.is_volume)
     assert volume_wp is False
 
@@ -1494,35 +1494,35 @@ def test_is_volume_inward_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
 def test_empty_mesh(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is True
-    assert tw.validation.is_vertex_manifold(faces_wp) is True
-    assert tw.validation.is_orientable(faces_wp) is True
-    assert tw.validation.is_winding_consistent(faces_wp) is True
-    assert tw.validation.is_volume(vertices_wp, faces_wp) is False
-    assert tw.measures.euler_characteristic(faces_wp) == 0
-    assert tw.validation.edge_manifold_mask(faces_wp).size == 0
-    assert tw.validation.vertex_manifold_mask(vertices_wp, faces_wp).size == 0
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True) is True
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is True
+    assert od.validation.is_vertex_manifold(faces_wp) is True
+    assert od.validation.is_orientable(faces_wp) is True
+    assert od.validation.is_winding_consistent(faces_wp) is True
+    assert od.validation.is_volume(vertices_wp, faces_wp) is False
+    assert od.measures.euler_characteristic(faces_wp) == 0
+    assert od.validation.edge_manifold_mask(faces_wp).size == 0
+    assert od.validation.vertex_manifold_mask(vertices_wp, faces_wp).size == 0
 
 
 def test_is_self_intersecting_fewer_than_two_faces(device: str) -> None:
     # A `warp.Mesh` with zero triangles corrupts CUDA state when its BVH is built (a Warp 1.17
-    # bug independent of triwarp), so this exercises the n_faces < 2 short-circuit with a
+    # bug independent of ordito), so this exercises the n_faces < 2 short-circuit with a
     # single-triangle mesh instead of a fully empty one.
     vertices_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
     faces_np = np.array([[0, 1, 2]])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    assert tw.validation.is_self_intersecting(mesh_wp) is False
+    assert od.validation.is_self_intersecting(mesh_wp) is False
 
 
 def test_new_masks_empty_mesh(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.validation.edge_winding_consistent_mask(faces_wp).size == 0
-    assert tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).size == 0
-    assert tw.validation.face_watertight_mask(faces_wp).size == 0
-    assert tw.validation.face_flip_mask(faces_wp).size == 0
+    assert od.validation.edge_winding_consistent_mask(faces_wp).size == 0
+    assert od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).size == 0
+    assert od.validation.face_watertight_mask(faces_wp).size == 0
+    assert od.validation.face_flip_mask(faces_wp).size == 0
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -1541,14 +1541,14 @@ def test_supplied_mesh_gives_the_same_answer(
     prebuilt_wp = wp.Mesh(points=mesh_wp.points, indices=mesh_wp.indices)
 
     assert np.array_equal(
-        tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy(),
-        tw.validation.face_self_intersecting_mask(
+        od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy(),
+        od.validation.face_self_intersecting_mask(
             mesh_wp.points, mesh_wp.indices, mesh=prebuilt_wp
         ).numpy(),
     )
-    assert tw.validation.is_watertight(
+    assert od.validation.is_watertight(
         mesh_wp.points, mesh_wp.indices
-    ) == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=prebuilt_wp)
+    ) == od.validation.is_watertight(mesh_wp.points, mesh_wp.indices, mesh=prebuilt_wp)
 
 
 def test_face_defective_mask_flags_the_thin_face(
@@ -1556,7 +1556,7 @@ def test_face_defective_mask_flags_the_thin_face(
 ) -> None:
     vertices_np, faces_np = t_vertex_patch
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    bad_np = tw.validation.face_defective_mask(vertices_wp, faces_wp, min_quality=0.2).numpy()
+    bad_np = od.validation.face_defective_mask(vertices_wp, faces_wp, min_quality=0.2).numpy()
     # The sliver (1, 4, 2) is the last face, and it is the only thin one.
     assert bad_np[-1]
     assert bad_np.sum() == 1
@@ -1568,7 +1568,7 @@ def test_face_defective_mask_flags_the_fold(
     """Only the *culprit* of a fold is flagged, not the good face on the other side of the edge."""
     vertices_np, faces_np = folded_patch
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    folded_np = tw.validation.face_defective_mask(
+    folded_np = od.validation.face_defective_mask(
         vertices_wp, faces_wp, min_quality=None, max_fold_angle=160.0
     ).numpy()
     assert np.array_equal(folded_np.astype(bool), np.array([False, False, True]))
@@ -1594,7 +1594,7 @@ def test_face_defective_mask_flags_the_misoriented_face(device: str) -> None:
     faces_np[target] = faces_np[target][::-1]
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    bad_np = tw.validation.face_defective_mask(
+    bad_np = od.validation.face_defective_mask(
         vertices_wp, faces_wp, min_quality=None, max_normal_angle=60.0
     ).numpy()
     assert np.array_equal(np.flatnonzero(bad_np), np.array([target]))
@@ -1602,7 +1602,7 @@ def test_face_defective_mask_flags_the_misoriented_face(device: str) -> None:
 
 def test_face_defective_mask_all_criteria_disabled(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    bad_np = tw.validation.face_defective_mask(
+    bad_np = od.validation.face_defective_mask(
         mesh_wp.points, mesh_wp.indices, min_quality=None, max_normal_angle=None
     ).numpy()
     assert not bad_np.any()
@@ -1611,15 +1611,15 @@ def test_face_defective_mask_all_criteria_disabled(icosahedron: tuple[tm.Trimesh
 def test_face_defective_mask_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="max_fold_angle must be in"):
-        tw.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_fold_angle=200.0)
+        od.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_fold_angle=200.0)
     with pytest.raises(ValueError, match="max_normal_angle must be in"):
-        tw.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_normal_angle=0.0)
+        od.validation.face_defective_mask(mesh_wp.points, mesh_wp.indices, max_normal_angle=0.0)
 
 
 def test_face_defective_mask_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
+    assert od.validation.face_defective_mask(vertices_wp, faces_wp).shape == (0,)
 
 
 @pytest.mark.parity("face_defective_mask", "pymeshlab")
@@ -1643,7 +1643,7 @@ def test_face_defective_mask_matches_pymeshlab_on_folds(
     selected_pml = meshset_pml.current_mesh().face_selection_array()
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    folded_np = tw.validation.face_defective_mask(
+    folded_np = od.validation.face_defective_mask(
         vertices_wp, faces_wp, min_quality=None, max_fold_angle=160.0
     ).numpy()
     assert np.array_equal(folded_np.astype(bool), selected_pml.astype(bool))
@@ -1680,9 +1680,9 @@ def test_face_defective_mask_matches_meshlib(
     """
     Class B (compare detection): ``findOverlappingTris`` under the named angle-to-dot transform.
 
-    MeshLib parameterizes a fold by the **dot product** of the two normals where triwarp takes the
+    MeshLib parameterizes a fold by the **dot product** of the two normals where ordito takes the
     dihedral angle in degrees, so the transform is ``maxNormalDot = cos(radians(angle))``: its own
-    default of ``-0.99`` is 171.9 degrees, not triwarp's 160. Fed that, the two agree face for face
+    default of ``-0.99`` is 171.9 degrees, not ordito's 160. Fed that, the two agree face for face
     on a fan of seven independently hinged pairs spanning 10 to 175 degrees, at both thresholds.
 
     ``findNotSmoothFaces`` is **not** the pairing, and that was measured: it reports **zero** faces
@@ -1690,18 +1690,18 @@ def test_face_defective_mask_matches_meshlib(
     pass vacuously against any implementation.
 
     Two conventions the fan is shaped around. MeshLib is **inclusive at the threshold** where
-    triwarp is exclusive -- a pair at exactly 140 degrees is flagged by MeshLib and not by triwarp
+    ordito is exclusive -- a pair at exactly 140 degrees is flagged by MeshLib and not by ordito
     at ``angle=140`` -- so no fixture angle sits on a threshold used here. And MeshLib's criterion
     is *proximity plus antiparallel normals*, not adjacency: on the three-face
     ``folded_patch`` it flags all three faces because the folded apex triangle lies over both quad
-    halves, where triwarp flags only the one face whose dihedral exceeds the threshold. That
+    halves, where ordito flags only the one face whose dihedral exceeds the threshold. That
     divergence is asserted below rather than avoided, since it is the reason the fan exists.
     """
     fan_angles = (10.0, 60.0, 100.0, 140.0, 150.0, 165.0, 175.0)
     vertices_np, faces_np = _hinge_fan_np(fan_angles)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    folded_wp = tw.validation.face_defective_mask(
+    folded_wp = od.validation.face_defective_mask(
         vertices_wp, faces_wp, min_quality=None, max_fold_angle=threshold
     ).numpy()
 
@@ -1719,7 +1719,7 @@ def test_face_defective_mask_matches_meshlib(
     # The divergence the fan avoids: proximity, not adjacency, so an apex over two faces flags both.
     patch_vertices_np, patch_faces_np = folded_patch
     patch_vertices_wp, patch_faces_wp = numpy_to_warp(patch_vertices_np, patch_faces_np, device)
-    patch_wp = tw.validation.face_defective_mask(
+    patch_wp = od.validation.face_defective_mask(
         patch_vertices_wp, patch_faces_wp, min_quality=None, max_fold_angle=threshold
     ).numpy()
     patch_ml = meshlib_bitset_to_numpy(

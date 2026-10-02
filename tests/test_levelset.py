@@ -1,5 +1,5 @@
 """
-Regression tests for ``triwarp.levelset``.
+Regression tests for ``ordito.levelset``.
 
 The level-set offset against pymeshlab's uniform resampler and MeshLib's ``offsetMesh``, both of
 which march the same kind of field -- plus the invariant that is stronger than either comparison:
@@ -23,8 +23,8 @@ from meshlib import mrmeshpy as mm
 from pytorch3d.ops.marching_cubes import marching_cubes as p3d_marching_cubes
 from scipy.spatial import cKDTree
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import (
     assert_unordered_rows_equal,
     canonical_winding,
@@ -60,8 +60,8 @@ def test_marching_cubes_extracts_an_analytic_sphere(device: str) -> None:
     """Every extracted vertex must land on the sphere the field describes, to grid resolution."""
     radius, resolution = 0.6, 32
     field_wp = wp.array(_sphere_field(resolution, radius), dtype=wp.float32, device=device)
-    vertices_wp, faces_wp = tw.levelset.marching_cubes(
-        twt.as_array3d(field_wp, wp.float32),
+    vertices_wp, faces_wp = od.levelset.marching_cubes(
+        odt.as_array3d(field_wp, wp.float32),
         bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)),
     )
     assert faces_wp.size > 0
@@ -87,7 +87,7 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
       with ``nx, ny, nz`` separately. It returns **three** values -- a 2-tuple unpack raises
       ``ValueError: too many values to unpack``.
     * **pyvista**'s ``ImageData`` addresses samples on grid **nodes**, so its ``origin`` is
-      triwarp's ``bounds`` lower corner *directly* -- the exact opposite of MeshLib's
+      ordito's ``bounds`` lower corner *directly* -- the exact opposite of MeshLib's
       voxel-*centre* origin, which the test above shifts by half a voxel. Its ``point_data`` wants
       Fortran order too.
 
@@ -108,8 +108,8 @@ def test_marching_cubes_matches_igl_and_pyvista(device: str) -> None:
         np.ascontiguousarray(field_np, dtype=np.float32), dtype=wp.float32, device=device
     )
     bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
-    vertices_wp, faces_wp = tw.levelset.marching_cubes(
-        twt.as_array3d(field_wp, wp.float32), 0.0, bounds=bounds
+    vertices_wp, faces_wp = od.levelset.marching_cubes(
+        odt.as_array3d(field_wp, wp.float32), 0.0, bounds=bounds
     )
     vertices_np = vertices_wp.numpy().astype(np.float64)
 
@@ -165,14 +165,14 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     identical field the two return the *same mesh* -- 3 744 vertices and 7 484 faces on both sides
     here, agreeing to a two-sided Hausdorff of **1.2e-07**, which is the float32 floor
     ``getNumpyVerts`` bottoms out at (CLAUDE.md section 7.6). The transform is the whole content of
-    the comparison and it is load-bearing: where triwarp's ``bounds`` lower corner is the position
+    the comparison and it is load-bearing: where ordito's ``bounds`` lower corner is the position
     of sample ``[0, 0, 0]``, ``params.origin`` is that sample's *cell* corner, so passing the same
     number to both leaves the surfaces a rigid half-voxel apart -- measured at 0.0369, exactly the
     half diagonal ``sqrt(3) * spacing / 2``, and 3e5 times the agreement the shift buys.
 
     ``lessInside=True`` is the other convention, and it is the winding rather than the geometry:
-    with it the extracted volume is ``+0.902`` against triwarp's ``+0.902`` (8e-08 relative), and
-    with ``lessInside=False`` it is exactly the negation. True is the value that matches triwarp's
+    with it the extracted volume is ``+0.902`` against ordito's ``+0.902`` (8e-08 relative), and
+    with ``lessInside=False`` it is exactly the negation. True is the value that matches ordito's
     outside-positive field convention.
 
     The invariants beside the comparison are what a vertex-cloud match cannot see: both meshes are
@@ -184,11 +184,11 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     field_np = _sphere_field(resolution, radius)
     spacing = 2.0 / (resolution - 1)
     field_wp = wp.array(field_np, dtype=wp.float32, device=device)
-    vertices_wp, faces_wp = tw.levelset.marching_cubes(
-        twt.as_array3d(field_wp, wp.float32),
+    vertices_wp, faces_wp = od.levelset.marching_cubes(
+        odt.as_array3d(field_wp, wp.float32),
         bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)),
     )
-    vertices_np, faces_tw_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
+    vertices_np, faces_od_np = vertices_wp.numpy(), faces_wp.numpy().reshape(-1, 3)
 
     def march_ml(origin: float) -> tuple[np.ndarray, np.ndarray]:
         """March the identical field with the lower corner at ``origin`` on every axis."""
@@ -205,11 +205,11 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     vertices_ml_np, faces_ml_np = march_ml(-1.0 - spacing / 2)
     assert faces_ml_np.shape[0] > 0
     assert vertices_ml_np.shape[0] == len(vertices_np)
-    assert faces_ml_np.shape[0] == faces_tw_np.shape[0]
+    assert faces_ml_np.shape[0] == faces_od_np.shape[0]
     assert hausdorff_two_sided(vertices_np, vertices_ml_np) < 1e-5
     assert (
         hausdorff_two_sided(
-            vertices_np[faces_tw_np].mean(axis=1), vertices_ml_np[faces_ml_np].mean(axis=1)
+            vertices_np[faces_od_np].mean(axis=1), vertices_ml_np[faces_ml_np].mean(axis=1)
         )
         < 1e-5
     )
@@ -221,19 +221,19 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     )
 
     # Invariants a point-set match cannot see: both are closed spheres, and both wind outward.
-    for mesh_faces_np in (faces_tw_np, faces_ml_np):
+    for mesh_faces_np in (faces_od_np, faces_ml_np):
         assert open_edge_count(mesh_faces_np) == 0
         assert euler_characteristic(mesh_faces_np) == 2
-    volume_tw = tm.Trimesh(vertices_np, faces_tw_np, process=False).volume
+    volume_od = tm.Trimesh(vertices_np, faces_od_np, process=False).volume
     volume_ml = tm.Trimesh(vertices_ml_np, faces_ml_np, process=False).volume
-    assert volume_tw > 0.0
-    assert volume_ml == pytest.approx(volume_tw, rel=1e-5)
+    assert volume_od > 0.0
+    assert volume_ml == pytest.approx(volume_od, rel=1e-5)
 
 
 @pytest.mark.parity("marching_cubes", "pytorch3d")
 def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     """
-    Class A: the fifth implementation of the case table, in triwarp's own index space.
+    Class A: the fifth implementation of the case table, in ordito's own index space.
 
     ``return_local_coords=False`` is what makes this a direct comparison: with it ``True``
     pytorch3d rescales its output into a normalized ``[-1, 1]`` cube and the two would differ by an
@@ -262,7 +262,7 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     vertices_p3d = vertices_p3d[0].cpu().numpy()
 
     field_wp = wp.array(field_np, dtype=wp.float32, device=device)
-    vertices_wp, faces_wp = tw.levelset.marching_cubes(twt.as_array3d(field_wp, wp.float32), iso)
+    vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32), iso)
 
     assert vertices_p3d.shape[0] > 0
     assert vertices_wp.size == vertices_p3d.shape[0]
@@ -276,7 +276,7 @@ def test_marching_cubes_index_space_by_default(device: str) -> None:
     """Without ``bounds`` the vertices are lattice indices, which is the documented convention."""
     resolution = 24
     field_wp = wp.array(_sphere_field(resolution, 0.6), dtype=wp.float32, device=device)
-    vertices_np = tw.levelset.marching_cubes(twt.as_array3d(field_wp, wp.float32))[0].numpy()
+    vertices_np = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))[0].numpy()
     assert vertices_np.min() >= 0.0
     assert vertices_np.max() <= float(resolution - 1)
     # Centred field, so the extracted surface is centred on the lattice centre.
@@ -285,14 +285,14 @@ def test_marching_cubes_index_space_by_default(device: str) -> None:
 
 def test_marching_cubes_empty_when_the_field_never_crosses(device: str) -> None:
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)
-    _vertices_wp, faces_wp = tw.levelset.marching_cubes(twt.as_array3d(field_wp, wp.float32))
+    _vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))
     assert faces_wp.size == 0
 
 
 def test_marching_cubes_invalid(device: str) -> None:
     thin_wp = wp.array(np.zeros((1, 8, 8), dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="at least 2 wide"):
-        tw.levelset.marching_cubes(twt.as_array3d(thin_wp, wp.float32))
+        od.levelset.marching_cubes(odt.as_array3d(thin_wp, wp.float32))
 
 
 def _signed_distance_to(
@@ -301,7 +301,7 @@ def _signed_distance_to(
     """Signed distance from every row of ``points_np`` to the mesh, by winding sign."""
     vertices_wp, faces_wp = mesh_wp
     points_wp = points_to_warp(points_np, vertices_wp.device)
-    return tw.proximity.signed_distance_on_mesh(
+    return od.proximity.signed_distance_on_mesh(
         vertices_wp, faces_wp, points_wp, sign_mode="winding"
     ).numpy()
 
@@ -330,7 +330,7 @@ def test_offset_mesh_lands_at_the_requested_distance(
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
-    offset_vertices_wp, offset_faces_wp = tw.levelset.offset_mesh(
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
     assert offset_faces_wp.size > 0
@@ -338,10 +338,10 @@ def test_offset_mesh_lands_at_the_requested_distance(
     signed_np = _signed_distance_to((vertices_wp, faces_wp), offset_vertices_wp.numpy())
     assert np.abs(signed_np - distance).max() < 0.1 * _VOXEL
 
-    volume_before = float(tw.measures.volume(vertices_wp, faces_wp))
-    volume_after = float(tw.measures.volume(offset_vertices_wp, offset_faces_wp))
+    volume_before = float(od.measures.volume(vertices_wp, faces_wp))
+    volume_after = float(od.measures.volume(offset_vertices_wp, offset_faces_wp))
     assert (volume_after > volume_before) is (distance > 0.0)
-    assert tw.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
+    assert od.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
 
 
 @pytest.mark.parametrize("distance", [0.2, -0.2])
@@ -375,7 +375,7 @@ def test_offset_mesh_matches_meshlib(
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
-    offset_vertices_wp, offset_faces_wp = tw.levelset.offset_mesh(
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
 
@@ -408,10 +408,10 @@ def test_offset_mesh_matches_pymeshlab(device: str, icosphere: tuple[tm.Trimesh,
     ``generate_resampled_uniform_mesh`` is MeshLab's offset, and its two length parameters are the
     trap: both take a wrapper type, and its ``offset`` as a ``PercentageValue`` runs from *full
     erosion* at 0 % to full dilation at 100 %, so its own 50 % default is the **zero** offset.
-    ``PureValue`` is therefore mandatory here, and it is the same number triwarp gets.
+    ``PureValue`` is therefore mandatory here, and it is the same number ordito gets.
 
     Compared on the surfaces (two-sided Hausdorff) and on the same distance invariant the test above
-    applies to triwarp: MeshLab's own output sits at mean signed distance **+0.1999** with a spread
+    applies to ordito: MeshLab's own output sits at mean signed distance **+0.1999** with a spread
     of 0.0002 from the input, so the two implementations are measuring the same quantity rather than
     two things that happen to look alike.
 
@@ -426,7 +426,7 @@ def test_offset_mesh_matches_pymeshlab(device: str, icosphere: tuple[tm.Trimesh,
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
-    offset_vertices_wp, offset_faces_wp = tw.levelset.offset_mesh(
+    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
 
@@ -471,12 +471,12 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
 
-    survivor_vertices_wp, survivor_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -0.9)
+    survivor_vertices_wp, survivor_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -0.9)
     assert survivor_faces_wp.size > 0
     radius_np = np.linalg.norm(survivor_vertices_wp.numpy(), axis=1)
     assert 0.05 < radius_np.max() < 0.15  # the sphere that is left, not a stray cell
 
-    _empty_vertices_wp, empty_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -1.5)
+    _empty_vertices_wp, empty_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -1.5)
     assert empty_faces_wp.size == 0
 
 
@@ -487,11 +487,11 @@ def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) 
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
     )
     with pytest.raises(ValueError, match="non-zero"):
-        tw.levelset.offset_mesh(vertices_wp, faces_wp, 0.0)
+        od.levelset.offset_mesh(vertices_wp, faces_wp, 0.0)
     with pytest.raises(ValueError, match="voxel_size must be positive"):
-        tw.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
+        od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
     with pytest.raises(ValueError, match="at least one face"):
-        tw.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
+        od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse", "unit_box"])
@@ -516,17 +516,17 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices_wp.size
     n_faces = faces_wp.size // 3
-    n_rim = int(tw.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape[0])
+    n_rim = int(od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape[0])
 
-    shell_vertices_wp, shell_faces_wp = tw.levelset.thicken_mesh(vertices_wp, faces_wp, thickness)
+    shell_vertices_wp, shell_faces_wp = od.levelset.thicken_mesh(vertices_wp, faces_wp, thickness)
 
     assert shell_vertices_wp.size == 2 * n_vertices
     assert shell_faces_wp.size // 3 == 2 * n_faces + 2 * n_rim
-    assert tw.validation.is_watertight(shell_vertices_wp, shell_faces_wp)
-    assert tw.validation.is_winding_consistent(shell_faces_wp)
-    assert tw.validation.is_edge_manifold(shell_faces_wp, False)
+    assert od.validation.is_watertight(shell_vertices_wp, shell_faces_wp)
+    assert od.validation.is_winding_consistent(shell_faces_wp)
+    assert od.validation.is_edge_manifold(shell_faces_wp, False)
 
-    volume = float(tw.measures.volume(shell_vertices_wp, shell_faces_wp))
+    volume = float(od.measures.volume(shell_vertices_wp, shell_faces_wp))
     assert volume > 0.0
     assert volume < mesh_tm.area * thickness  # the inward layer has the smaller area
     assert volume > 0.5 * mesh_tm.area * thickness
@@ -553,7 +553,7 @@ def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
     """
     thickness = 0.05
     mesh_tm, mesh_wp = hemisphere
-    shell_vertices_wp, shell_faces_wp = tw.levelset.thicken_mesh(
+    shell_vertices_wp, shell_faces_wp = od.levelset.thicken_mesh(
         mesh_wp.points, mesh_wp.indices, thickness
     )
 
@@ -566,7 +566,7 @@ def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
     assert shell_ml.vertices.shape[0] == shell_vertices_wp.size
     assert shell_ml.faces.shape[0] == shell_faces_wp.size // 3
     assert np.isclose(
-        float(tw.measures.volume(shell_vertices_wp, shell_faces_wp)),
+        float(od.measures.volume(shell_vertices_wp, shell_faces_wp)),
         shell_ml.volume,
         rtol=1e-4,
         atol=1e-6,
@@ -613,24 +613,24 @@ def test_thicken_mesh_self_intersects_past_the_curvature_radius(
     _, mesh_wp = half_torus
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    thin_vertices_wp, thin_faces_wp = tw.levelset.thicken_mesh(vertices_wp, faces_wp, 0.05)
-    thin_np = tw.validation.face_self_intersecting_mask(thin_vertices_wp, thin_faces_wp).numpy()
+    thin_vertices_wp, thin_faces_wp = od.levelset.thicken_mesh(vertices_wp, faces_wp, 0.05)
+    thin_np = od.validation.face_self_intersecting_mask(thin_vertices_wp, thin_faces_wp).numpy()
     assert int(thin_np.sum()) == 0
-    assert tw.validation.is_watertight(thin_vertices_wp, thin_faces_wp)
+    assert od.validation.is_watertight(thin_vertices_wp, thin_faces_wp)
 
-    folded_vertices_wp, folded_faces_wp = tw.levelset.thicken_mesh(vertices_wp, faces_wp, thickness)
-    folded_np = tw.validation.face_self_intersecting_mask(
+    folded_vertices_wp, folded_faces_wp = od.levelset.thicken_mesh(vertices_wp, faces_wp, thickness)
+    folded_np = od.validation.face_self_intersecting_mask(
         folded_vertices_wp, folded_faces_wp
     ).numpy()
     assert int(folded_np.sum()) > 100
-    assert not tw.validation.is_watertight(folded_vertices_wp, folded_faces_wp)
+    assert not od.validation.is_watertight(folded_vertices_wp, folded_faces_wp)
 
     # The recommended alternative at the same distance, and it comes out clean.
-    inward_vertices_wp, inward_faces_wp = tw.levelset.offset_mesh(vertices_wp, faces_wp, -thickness)
+    inward_vertices_wp, inward_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -thickness)
     if inward_faces_wp.size > 0:
         assert (
             int(
-                tw.validation.face_self_intersecting_mask(inward_vertices_wp, inward_faces_wp)
+                od.validation.face_self_intersecting_mask(inward_vertices_wp, inward_faces_wp)
                 .numpy()
                 .sum()
             )
@@ -642,8 +642,8 @@ def test_thicken_mesh_guards(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]) -> No
     """Not a library comparison: the three documented value guards."""
     _, mesh_wp = icosphere_coarse
     with pytest.raises(ValueError, match="thickness must be positive"):
-        tw.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.0)
+        od.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.0)
     with pytest.raises(ValueError, match="outside must be non-negative"):
-        tw.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.1, outside=-1.0)
+        od.levelset.thicken_mesh(mesh_wp.points, mesh_wp.indices, 0.1, outside=-1.0)
     with pytest.raises(ValueError, match="at least one face"):
-        tw.levelset.thicken_mesh(mesh_wp.points, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
+        od.levelset.thicken_mesh(mesh_wp.points, warp_empty(0, wp.int32, mesh_wp.device), 0.1)

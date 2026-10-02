@@ -1,6 +1,6 @@
 # Concepts
 
-Four ideas shape every function in triwarp. None of them are optional design flourishes — each
+Four ideas shape every function in ordito. None of them are optional design flourishes — each
 one is a constraint the whole library is built against, and understanding them up front saves
 having to reverse-engineer them from a confusing signature later.
 
@@ -10,8 +10,8 @@ The core API is free functions over [`warp.array`](https://nvidia.github.io/warp
 buffers. There is no mandatory mesh object and no hidden state:
 
 ```python
-vertices, faces = tw.creation.icosphere(subdivisions=3)
-areas = tw.triangles.face_areas(vertices, faces)  # a plain wp.array[wp.float32], nothing else
+vertices, faces = od.creation.icosphere(subdivisions=3)
+areas = od.triangles.face_areas(vertices, faces)  # a plain wp.array[wp.float32], nothing else
 ```
 
 A mesh is always the same two things — a `wp.array[wp.vec3]` of vertex positions and a
@@ -20,7 +20,7 @@ object with methods. That flat layout is deliberate: it's the shape a Warp kerne
 a stride computation, and it's the one convention every function in the package agrees on, so a
 buffer produced by one function is always a valid argument to the next.
 
-The optional [`Trimesh`][triwarp.mesh.Trimesh] class is a thin wrapper around exactly this pair,
+The optional [`Trimesh`][ordito.mesh.Trimesh] class is a thin wrapper around exactly this pair,
 with derived quantities (normals, adjacency, boundary loops) computed lazily and cached on first
 access. It exists for convenience, not because the free functions need it — every one of
 `Trimesh`'s properties is also a public function you can call directly on raw arrays.
@@ -41,15 +41,15 @@ its own input arrays:
 ```python
 import warp as wp
 
-cpu_vertices, cpu_faces = tw.creation.icosphere(subdivisions=2, device="cpu")
-gpu_vertices, gpu_faces = tw.creation.icosphere(subdivisions=2, device="cuda:0")
+cpu_vertices, cpu_faces = od.creation.icosphere(subdivisions=2, device="cpu")
+gpu_vertices, gpu_faces = od.creation.icosphere(subdivisions=2, device="cuda:0")
 
-tw.triangles.face_areas(cpu_vertices, cpu_faces)  # runs on the CPU backend
-tw.triangles.face_areas(gpu_vertices, gpu_faces)  # runs on cuda:0
+od.triangles.face_areas(cpu_vertices, cpu_faces)  # runs on the CPU backend
+od.triangles.face_areas(gpu_vertices, gpu_faces)  # runs on cuda:0
 ```
 
 A function that allocates a *new* array without being given one to place it on (a primitive
-constructor like `tw.creation.icosphere`) takes a `device=` keyword and defaults to Warp's current
+constructor like `od.creation.icosphere`) takes a `device=` keyword and defaults to Warp's current
 device — `wp.set_device("cuda:0")` (or a `wp.ScopedDevice`) sets that default for a whole block of
 code, same as any other Warp program.
 
@@ -70,10 +70,10 @@ when the caller already knows the bound:
 
 ```python
 # Without n_vertices, the function reads back a count to size an internal table.
-adjacency = tw.adjacency.face_adjacency(faces)
+adjacency = od.adjacency.face_adjacency(faces)
 
 # If you already know how many vertices the mesh has, pass it and skip that readback.
-adjacency = tw.adjacency.face_adjacency(faces, n_vertices=vertices.shape[0])
+adjacency = od.adjacency.face_adjacency(faces, n_vertices=vertices.shape[0])
 ```
 
 This matters most inside a loop — a saved readback is trivial once, and adds up over a thousand
@@ -83,10 +83,10 @@ iterations of a solver or a remeshing pass.
 
 Every public module has both a test file, comparing its output against an established CPU
 geometry-processing library (trimesh, libigl, Open3D, MeshLab, potpourri3d, PyTorch3D, and
-others — see [`triwarp.validation`][triwarp.validation]-style parity in the test suite), and a
+others — see [`ordito.validation`][ordito.validation]-style parity in the test suite), and a
 benchmark file. A performance change lands only with a before/after measurement behind it, and a
 correctness change is asserted on actual values, never on shape or "did it run" alone. The
-[Performance](performance.md) page and [Benchmarks](https://github.com/lucagrementieri/triwarp/tree/main/benchmarks)
+[Performance](performance.md) page and [Benchmarks](https://github.com/lucagrementieri/ordito/tree/main/benchmarks)
 in the repository are where that discipline is visible from the outside — every number quoted
 there is reproducible with the same commands the library's own test suite uses.
 

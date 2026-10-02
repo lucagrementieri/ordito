@@ -1,6 +1,6 @@
-"""Regression tests for ``triwarp.remesh`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.remesh`` against Trimesh (CPU reference)."""
 
-# This file tests ``triwarp.remesh``'s private passes and buffers directly.
+# This file tests ``ordito.remesh``'s private passes and buffers directly.
 # pyright: reportPrivateUsage=false
 
 from __future__ import annotations
@@ -21,8 +21,10 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito.kernels import remesh as kernel_remesh
+from ordito.triangles import FaceQualityMetric
 from tests.comparisons import (
     hausdorff_surface_two_sided,
     lexsort_rows,
@@ -53,8 +55,6 @@ from tests.conversions import (
     warp_empty,
     warp_to_trimesh,
 )
-from triwarp.kernels import remesh as kernel_remesh
-from triwarp.triangles import FaceQualityMetric
 
 
 class _RemeshKwargs(TypedDict):
@@ -93,7 +93,7 @@ def _signed_volume(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
 def _filled_hemisphere(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     """Fill the hemisphere's boundary and return (vertices_wp, faces_wp, region_mask_wp)."""
     _, mesh_wp = hemisphere
-    faces_filled = tw.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
+    faces_filled = od.holes.fill_min_weight(mesh_wp.points, mesh_wp.indices)
     n0 = mesh_wp.indices.size // 3
     n1 = faces_filled.size // 3
     region = np.zeros(n1, dtype=bool)
@@ -163,7 +163,7 @@ def _meshlib_remesh_spread(vertices_np: np.ndarray, faces_np: np.ndarray, target
     rows of which 7 696 are ``[0, 0, 0]``**, against 5 104 real faces. Those rows contribute a
     zero-length edge ``(0, 0)`` to the edge set, which deflates the reference's mean and inflates
     the very spread this function exists to report -- i.e. it makes the bound below *looser*, in
-    triwarp's favour, which is the direction nothing would notice. The effect happens to be small,
+    ordito's favour, which is the direction nothing would notice. The effect happens to be small,
     because ``np.unique`` collapses all 7 696 padding rows into that one edge: CV **0.2525 ->
     0.2522**. The fix is for the reading to be right, not because the number moved.
     """
@@ -260,8 +260,8 @@ def test_remesh_emits_no_degenerate_faces(device: str) -> None:
             dtype=wp.int32,
             device=device,
         )
-        target = float(tw.edges.mean_edge_length(vertices_wp, faces_wp))
-        out_vertices, out_faces = tw.remesh.isotropic_remesh(
+        target = float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+        out_vertices, out_faces = od.remesh.isotropic_remesh(
             vertices_wp, faces_wp, target_length=target, iterations=3
         )
         out_vertices_np = out_vertices.numpy().astype(np.float64)
@@ -317,14 +317,14 @@ def test_smooth_pass_is_the_area_weighted_centroid(device: str) -> None:
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    codes_wp, _boundary = tw.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
-    relaxed_np = tw.remesh._smooth_pass(vertices_wp, faces_wp, codes_wp).numpy().astype(np.float64)
+    codes_wp, _boundary = od.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
+    relaxed_np = od.remesh._smooth_pass(vertices_wp, faces_wp, codes_wp).numpy().astype(np.float64)
 
     positions_np = vertices_wp.numpy().astype(np.float64)
     free = codes_wp.numpy() == 0
     assert free.sum() > 1000  # non-vacuity: the pass has a real interior to move
 
-    normals_np = tw.vertices.vertex_normals(vertices_wp, faces_wp).numpy().astype(np.float64)
+    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp).numpy().astype(np.float64)
     delta = _area_weighted_ring_centroid(positions_np, faces_np) - positions_np
     expected = positions_np + delta - np.einsum("ij,ij->i", delta, normals_np)[:, None] * normals_np
 
@@ -376,7 +376,7 @@ def test_smooth_pass_vetoes_a_move_that_would_fold_a_face(device: str) -> None:
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    codes_wp, _boundary = tw.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
+    codes_wp, _boundary = od.remesh._classify(vertices_wp, faces_wp, wp.float32(math.radians(30.0)))
     assert codes_wp.numpy()[0] == 0  # the centre is FREE, so only the veto can hold it still
 
     # Non-vacuity: the proposal this pass would otherwise commit really does invert incident faces.
@@ -397,7 +397,7 @@ def test_smooth_pass_vetoes_a_move_that_would_fold_a_face(device: str) -> None:
             folded += 1
     assert folded == 3
 
-    relaxed_np = tw.remesh._smooth_pass(vertices_wp, faces_wp, codes_wp).numpy().astype(np.float64)
+    relaxed_np = od.remesh._smooth_pass(vertices_wp, faces_wp, codes_wp).numpy().astype(np.float64)
     assert np.array_equal(relaxed_np, vertices_wp.numpy().astype(np.float64))
 
 
@@ -409,7 +409,7 @@ def test_remesh_edge_concentration(
     device: str, mesh_name: str, target_scale: float, spread_bound: float
 ) -> None:
     """
-    Class C (a spread statistic): both remeshes hit the requested target, triwarp more tightly.
+    Class C (a spread statistic): both remeshes hit the requested target, ordito more tightly.
 
     No correspondence exists -- the two run different stopping rules (a fixed ``iterations`` x five
     parallel passes against a serial local-operation queue), so they return different meshes -- and
@@ -423,7 +423,7 @@ def test_remesh_edge_concentration(
 
     | | ``icosphere(3)`` @ 0.5x | graded patch @ 1.0x |
     |---|---|---|
-    | triwarp coefficient of variation | 0.0419 | 0.1227 |
+    | ordito coefficient of variation | 0.0419 | 0.1227 |
     | meshlib CV (the reference) | 0.2522 | 0.1994 |
     | ratio, against the bound here | 0.166 vs 0.5 (**3.0x**) | 0.615 vs 0.85 (**1.4x**) |
     | mean / target | 0.9975 | 1.0029 |
@@ -452,9 +452,9 @@ def test_remesh_edge_concentration(
     else:
         reference_vertices, reference_faces = _graded_patch(n=48)
         vertices_wp, faces_wp = numpy_to_warp(reference_vertices, reference_faces, device)
-    target = target_scale * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = target_scale * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=10
     )
     vertices_np = out_vertices.numpy().astype(np.float64)
@@ -471,13 +471,13 @@ def test_remesh_edge_concentration(
 
 def test_remesh_watertight_genus_preserved(device: str) -> None:
     _sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    target = 0.5 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = 0.5 * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=10
     )
     mesh_out = warp_to_trimesh(out_vertices, out_faces)
-    assert tw.validation.is_watertight(out_vertices, out_faces)
+    assert od.validation.is_watertight(out_vertices, out_faces)
     assert mesh_out.euler_number == 2  # genus 0
     # Volume of the unit sphere is preserved to a few percent.
     assert abs(mesh_out.volume - 4.0 / 3.0 * np.pi) / (4.0 / 3.0 * np.pi) < 0.05
@@ -486,10 +486,10 @@ def test_remesh_watertight_genus_preserved(device: str) -> None:
 def test_remesh_valence_variance_decreases(device: str) -> None:
     # A noisy, irregular triangulation: perturbed icosphere with random extra subdivision.
     sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    target = tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = od.edges.mean_edge_length(vertices_wp, faces_wp)
     valence_before = _valences(sphere.faces, sphere.vertices.shape[0])
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=10
     )
     faces_np = out_faces.numpy().reshape(-1, 3)
@@ -500,9 +500,9 @@ def test_remesh_valence_variance_decreases(device: str) -> None:
 
 def test_remesh_surface_distance_bounded(device: str) -> None:
     sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    target = 0.5 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = 0.5 * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=10
     )
     hausdorff = hausdorff_surface_two_sided(
@@ -525,13 +525,13 @@ def test_remesh_cave_cube_manifold(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> Non
     mesh_tm, mesh_wp = cave_cube
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
-    target = 0.5 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = 0.5 * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=8
     )
     mesh_out = warp_to_trimesh(out_vertices, out_faces)
-    assert tw.validation.is_watertight(out_vertices, out_faces)
+    assert od.validation.is_watertight(out_vertices, out_faces)
     # Two nested cubes: Euler characteristic 4 (two genus-0 shells) is preserved.
     assert mesh_out.euler_number == mesh_tm.euler_number
 
@@ -540,9 +540,9 @@ def test_remesh_feature_preservation(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> N
     _mesh_tm, mesh_wp = cave_cube
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
-    target = 0.4 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = 0.4 * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, _ = tw.remesh.isotropic_remesh(
+    out_vertices, _ = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=8, feature_angle=30.0
     )
     vertices_np = out_vertices.numpy().astype(np.float64)
@@ -559,9 +559,9 @@ def test_remesh_boundary_preservation(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
     vertices_wp = wp.clone(mesh_wp.points)
     faces_wp = wp.clone(mesh_wp.indices)
     n_loops_before = len(warp_to_trimesh(mesh_wp.points, mesh_wp.indices).outline().entities)
-    target = 0.5 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
+    target = 0.5 * od.edges.mean_edge_length(vertices_wp, faces_wp)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=8
     )
     mesh_out = warp_to_trimesh(out_vertices, out_faces)
@@ -573,10 +573,10 @@ def test_remesh_flags_off(device: str) -> None:
     _sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=2)
     n_faces_before = faces_wp.size // 3
     # Collapse-only (no split/swap/smooth/reproject) can only reduce the face count.
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp,
         faces_wp,
-        target_length=10.0 * tw.edges.mean_edge_length(vertices_wp, faces_wp),
+        target_length=10.0 * od.edges.mean_edge_length(vertices_wp, faces_wp),
         iterations=5,
         split=False,
         swap=False,
@@ -584,14 +584,14 @@ def test_remesh_flags_off(device: str) -> None:
         reproject=False,
     )
     assert out_faces.size // 3 <= n_faces_before
-    assert tw.validation.is_watertight(out_vertices, out_faces)
+    assert od.validation.is_watertight(out_vertices, out_faces)
 
 
 def test_collapse_pass_commits_a_useful_fraction_on_a_structured_patch(device: str) -> None:
     """
     The collapse stage removes a real fraction of a grid patch's vertices, not a handful.
 
-    Not a library comparison: this is a claim about triwarp's own parallel independent set, and no
+    Not a library comparison: this is a claim about ordito's own parallel independent set, and no
     reference exposes one pass of a collapse stage. The independent set is chosen by an atomic-min
     lock over each candidate's two closed 1-rings, and the *key* it locks by decides how much a
     pass commits. ``edges_unique`` orders edges lexicographically by endpoint index, which on a
@@ -607,12 +607,12 @@ def test_collapse_pass_commits_a_useful_fraction_on_a_structured_patch(device: s
     be. Every other ``isotropic_remesh`` test passed against the broken version, which is how it
     survived; a claim about the input's shape is a claim an assert can carry cheaply.
     """
-    vertices_wp, faces_wp = tw.creation.grid(count=(68, 68), extents=(1.0, 1.0), device=device)
+    vertices_wp, faces_wp = od.creation.grid(count=(68, 68), extents=(1.0, 1.0), device=device)
     n_vertices = vertices_wp.size
-    target = 2.0 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
-    low, high = tw.remesh._length_bands(None, target, n_vertices, device)
+    target = 2.0 * od.edges.mean_edge_length(vertices_wp, faces_wp)
+    low, high = od.remesh._length_bands(None, target, n_vertices, device)
 
-    out_vertices, out_faces, _incidence = tw.remesh._collapse_pass(
+    out_vertices, out_faces, _incidence = od.remesh._collapse_pass(
         vertices_wp, faces_wp, low, high, wp.float32(math.radians(30.0))
     )
     removed = n_vertices - out_vertices.size
@@ -630,7 +630,7 @@ def test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face(device: str) -> 
     The collapse stage rejects a collapse that inverts an incident face, as the quadric one does.
 
     Not a library comparison: no reference exposes one pass of a collapse stage, and this is a
-    claim about triwarp's own guard. ``collapse_candidates`` shares ``collapse_survivor`` and
+    claim about ordito's own guard. ``collapse_candidates`` shares ``collapse_survivor`` and
     ``satisfies_link_condition`` with ``quadric_collapse_candidates`` precisely because a
     duplicated *decision rule* is a correctness hazard, and for a long time it did not share the
     fold veto -- the link condition is topological and the anti-oscillation walk bounds *lengths*,
@@ -668,9 +668,9 @@ def test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face(device: str) -> 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.astype(np.int32), device)
 
     n_vertices = vertices_wp.size
-    target = 2.0 * tw.edges.mean_edge_length(vertices_wp, faces_wp)
-    low, high = tw.remesh._length_bands(None, target, n_vertices, device)
-    out_vertices, out_faces, _incidence = tw.remesh._collapse_pass(
+    target = 2.0 * od.edges.mean_edge_length(vertices_wp, faces_wp)
+    low, high = od.remesh._length_bands(None, target, n_vertices, device)
+    out_vertices, out_faces, _incidence = od.remesh._collapse_pass(
         vertices_wp, faces_wp, low, high, wp.float32(math.radians(30.0))
     )
 
@@ -703,7 +703,7 @@ def test_remesh_adaptive_sizing_field_grades_the_result(device: str) -> None:
     field_np = ((0.3 + 1.7 * fraction) * target).astype(np.float32)
     field_wp = wp.array(np.ascontiguousarray(field_np), dtype=wp.float32, device=device)
 
-    out_vertices, out_faces = tw.remesh.isotropic_remesh(
+    out_vertices, out_faces = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=field_wp, iterations=3
     )
     points_np = out_vertices.numpy().astype(np.float64)
@@ -743,10 +743,10 @@ def test_remesh_constant_sizing_field_reproduces_the_scalar_target(device: str) 
         np.full(len(sphere_tm.vertices), target, dtype=np.float32), dtype=wp.float32, device=device
     )
 
-    scalar_v, scalar_f = tw.remesh.isotropic_remesh(
+    scalar_v, scalar_f = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=target, iterations=3
     )
-    field_v, field_f = tw.remesh.isotropic_remesh(
+    field_v, field_f = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, target_length=constant_wp, iterations=3
     )
 
@@ -761,7 +761,7 @@ def test_remesh_max_deviation_bounds_the_surface_distance(device: str, divisor: 
     ``max_deviation`` bounds the result's distance to the input, measured with the query it uses.
 
     The bound is asserted against
-    [`closest_point_on_mesh`][triwarp.proximity.closest_point_on_mesh] — the same
+    [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh] — the same
     ``wp.mesh_query_point_no_sign`` the clamp is built on, so this is the function's actual contract
     and it holds to 1.4e-07. It is deliberately *not* asserted against trimesh: the two queries
     disagree by up to 2.1e-05 in absolute terms, so a trimesh-side assert reads 1.37x the bound at a
@@ -774,17 +774,17 @@ def test_remesh_max_deviation_bounds_the_surface_distance(device: str, divisor: 
     _sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
     common: _RemeshKwargs = {"target_length": 0.06, "iterations": 5, "reproject": False}
 
-    free_v, _free_f = tw.remesh.isotropic_remesh(vertices_wp, faces_wp, **common)
+    free_v, _free_f = od.remesh.isotropic_remesh(vertices_wp, faces_wp, **common)
     free_deviation = float(
-        tw.reduce.max(tw.proximity.closest_point_on_mesh(vertices_wp, faces_wp, free_v)[1])
+        od.reduce.max(od.proximity.closest_point_on_mesh(vertices_wp, faces_wp, free_v)[1])
     )
     bound = free_deviation / divisor
 
-    bounded_v, _bounded_f = tw.remesh.isotropic_remesh(
+    bounded_v, _bounded_f = od.remesh.isotropic_remesh(
         vertices_wp, faces_wp, max_deviation=bound, **common
     )
     deviation = float(
-        tw.reduce.max(tw.proximity.closest_point_on_mesh(vertices_wp, faces_wp, bounded_v)[1])
+        od.reduce.max(od.proximity.closest_point_on_mesh(vertices_wp, faces_wp, bounded_v)[1])
     )
 
     # The bound binds: without it the surface moves further than the bound allows.
@@ -796,32 +796,32 @@ def test_remesh_target_validation(device: str) -> None:
     _sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=1)
     n_vertices = vertices_wp.size
     with pytest.raises(ValueError, match="target_length"):
-        tw.remesh.isotropic_remesh(vertices_wp, faces_wp, target_length=-1.0)
+        od.remesh.isotropic_remesh(vertices_wp, faces_wp, target_length=-1.0)
     with pytest.raises(ValueError, match="one target_length per vertex"):
-        tw.remesh.isotropic_remesh(
+        od.remesh.isotropic_remesh(
             vertices_wp,
             faces_wp,
             target_length=wp.full(n_vertices + 1, 0.1, dtype=wp.float32, device=device),
         )
     with pytest.raises(ValueError, match="positive target_length everywhere"):
-        tw.remesh.isotropic_remesh(
+        od.remesh.isotropic_remesh(
             vertices_wp,
             faces_wp,
             target_length=wp.zeros(n_vertices, dtype=wp.float32, device=device),
         )
     with pytest.raises(ValueError, match="max_deviation"):
-        tw.remesh.isotropic_remesh(vertices_wp, faces_wp, max_deviation=0.0)
+        od.remesh.isotropic_remesh(vertices_wp, faces_wp, max_deviation=0.0)
 
 
 def test_remesh_empty_and_degenerate(device: str) -> None:
     empty_v = warp_empty(0, wp.vec3, device)
     empty_f = warp_empty(0, wp.int32, device)
-    _out_v, out_f = tw.remesh.isotropic_remesh(empty_v, empty_f)
+    _out_v, out_f = od.remesh.isotropic_remesh(empty_v, empty_f)
     assert out_f.size == 0
 
     # iterations=0 returns a clone unchanged.
     _sphere, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=1)
-    _out_v, out_f = tw.remesh.isotropic_remesh(vertices_wp, faces_wp, iterations=0)
+    _out_v, out_f = od.remesh.isotropic_remesh(vertices_wp, faces_wp, iterations=0)
     assert out_f.size == faces_wp.size
 
 
@@ -835,9 +835,9 @@ def test_subdivide_to_size_matches_meshlib(device: str) -> None:
     """
     Class C (no correspondence): both split until every edge is under the same length cap.
 
-    ``subdivideMesh``'s ``maxEdgeLen`` is triwarp's ``max_edge`` and the two share the guarantee --
+    ``subdivideMesh``'s ``maxEdgeLen`` is ordito's ``max_edge`` and the two share the guarantee --
     every surviving edge below the cap -- but not the route: MeshLib also *flips* edges as it goes
-    (its ``maxDeviationAfterFlip`` gate) where triwarp only splits, so the outputs differ in face
+    (its ``maxDeviationAfterFlip`` gate) where ordito only splits, so the outputs differ in face
     count. Measured on ``icosphere(2)`` at half the mean edge: 3 200 faces against 3 320, longest
     edge 0.143 against 0.141 with a cap of 0.150, and the two surfaces **0.021** apart, which is
     0.14 of the cap.
@@ -854,9 +854,9 @@ def test_subdivide_to_size_matches_meshlib(device: str) -> None:
     """
     sphere_tm = tm.creation.icosphere(subdivisions=2)
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    max_edge = 0.5 * float(tw.edges.mean_edge_length(vertices_wp, faces_wp))
+    max_edge = 0.5 * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
 
-    out_vertices_wp, out_faces_wp = tw.remesh.subdivide_to_size(vertices_wp, faces_wp, max_edge)
+    out_vertices_wp, out_faces_wp = od.remesh.subdivide_to_size(vertices_wp, faces_wp, max_edge)
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
 
     mesh_ml = numpy_to_meshlib(sphere_tm.vertices, sphere_tm.faces)
@@ -886,17 +886,17 @@ def test_subdivide_region_to_size_matches_meshlib(device: str) -> None:
     Class C (no correspondence): the same cap, applied to the same half of the same mesh.
 
     meshlib is the only reference with a region restriction, and it has the whole parameter set:
-    ``SubdivideSettings.region`` is triwarp's ``region``, and ``maxEdgeLen`` / ``maxEdgeSplits`` /
+    ``SubdivideSettings.region`` is ordito's ``region``, and ``maxEdgeLen`` / ``maxEdgeSplits`` /
     ``maxDeviationAfterFlip`` are ``max_edge`` / ``max_splits`` / ``max_deviation``. So this is the
     comparison in ``test_subdivide_to_size_matches_meshlib`` with one field set, and it diverges for
-    the same reason: MeshLib *flips* as it splits where triwarp only splits.
+    the same reason: MeshLib *flips* as it splits where ordito only splits.
 
     Measured on ``icosphere(3)``'s upper half at 0.6 of the mean edge:
 
     | | faces | region | area inside | area outside |
     |---|---|---|---|---|
     | input | 1 280 | 624 | 6.087263879 | 6.419228855 |
-    | triwarp | 3 200 | 2 496 | **6.087263824** | 6.419228780 |
+    | ordito | 3 200 | 2 496 | **6.087263824** | 6.419228780 |
     | meshlib | 3 256 | 2 552 | 6.084993649 | 6.419228780 |
 
     Two things in that table are the test. **The complement's area is identical on both sides to
@@ -907,7 +907,7 @@ def test_subdivide_region_to_size_matches_meshlib(device: str) -> None:
     reason, which is why the invariant here is the area and the face count rather than the face
     buffer.
 
-    **Inside** the region the two part company in the direction the flip predicts: triwarp preserves
+    **Inside** the region the two part company in the direction the flip predicts: ordito preserves
     the area to 9e-09 relative (a split cannot move a surface) and MeshLib loses 2.3e-03 (a flip
     can). That is the discriminating fact, so it is asserted rather than absorbed into a tolerance.
 
@@ -928,9 +928,9 @@ def test_subdivide_region_to_size_matches_meshlib(device: str) -> None:
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
-    max_edge = 0.6 * float(tw.edges.mean_edge_length(vertices_wp, faces_wp))
+    max_edge = 0.6 * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
 
-    out_vertices_wp, out_faces_wp, out_region_wp = tw.remesh.subdivide_region_to_size(
+    out_vertices_wp, out_faces_wp, out_region_wp = od.remesh.subdivide_region_to_size(
         vertices_wp, faces_wp, region_wp, max_edge
     )
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
@@ -1006,7 +1006,7 @@ def test_subdivide_region_to_size_never_writes_into_the_caller(device: str) -> N
     faces_before = faces_wp.numpy().copy()
     vertices_before = vertices_wp.numpy().copy()
 
-    out_vertices_wp, out_faces_wp, _out_region_wp = tw.remesh.subdivide_region_to_size(
+    out_vertices_wp, out_faces_wp, _out_region_wp = od.remesh.subdivide_region_to_size(
         vertices_wp, faces_wp, region_wp, max_edge=100.0
     )
 
@@ -1033,7 +1033,7 @@ def test_cluster_decimate_matches_open3d(
     sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     simplified_o3d = trimesh_to_open3d(sphere_tm).simplify_vertex_clustering(voxel_size=voxel_size)
 
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.cluster_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=voxel_size, contraction=contraction
     )
     assert decimated_faces_wp.size // 3 == len(simplified_o3d.triangles)
@@ -1063,7 +1063,7 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     it returns a ``VertBitSet`` selecting one surviving vertex per voxel and never builds a mesh --
     where ``cluster_decimate`` contracts each cell's vertices to a representative and rebuilds the
     faces. What the two share is the cell decomposition, so the comparable quantity is **how many
-    cells the surface occupies**, which is triwarp's output vertex count and MeshLib's bit count.
+    cells the surface occupies**, which is ordito's output vertex count and MeshLib's bit count.
 
     Measured on ``icosphere(4)`` at 2 %, 5 % and 10 % of the bounding-box diagonal: 2 310 / 541 /
     151 against MeshLib's 2 394 / 548 / 128, i.e. ratios of **0.97 / 0.99 / 1.18**. The residual is
@@ -1081,7 +1081,7 @@ def test_cluster_decimate_matches_meshlib_cell_count(device: str, voxel_fraction
     )
     voxel_size = voxel_fraction * diagonal
 
-    clustered_vertices_wp, clustered_faces_wp = tw.remesh.cluster_decimate(
+    clustered_vertices_wp, clustered_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=voxel_size
     )
     sampled_ml = mm.verticesGridSampling(
@@ -1100,7 +1100,7 @@ def test_cluster_decimate_stays_near_the_input_surface(device: str) -> None:
     """A resampling, so the shape has to survive: Hausdorff within about one cell."""
     sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     voxel_size = 0.2
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.cluster_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=voxel_size
     )
     deviation = hausdorff_surface_two_sided(
@@ -1115,7 +1115,7 @@ def test_cluster_decimate_stays_near_the_input_surface(device: str) -> None:
 def test_cluster_decimate_emits_no_degenerate_or_duplicated_faces(device: str) -> None:
     """Collapsed faces are dropped and welded duplicates deduped: both are part of the algorithm."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.cluster_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=0.25
     )
     faces_np = decimated_faces_wp.numpy().reshape(-1, 3)
@@ -1151,10 +1151,10 @@ def test_cluster_decimate_matches_a_numpy_transcription(
         np.concatenate((sphere_tm.faces, sphere_tm.faces[:, ::-1] + n_sheet)),
         device,
     )
-    out_vertices_wp, out_faces_wp = tw.remesh.cluster_decimate(
+    out_vertices_wp, out_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=voxel_size, contraction=contraction
     )
-    voxel, origin, bound = tw.voxels.resolve_voxel_grid(
+    voxel, origin, bound = od.voxels.resolve_voxel_grid(
         vertices_wp, voxel_size, return_cell_bound=True
     )
     vertices_np = vertices_wp.numpy()
@@ -1203,7 +1203,7 @@ def test_cluster_decimate_decimates_monotonically(device: str) -> None:
     """A wider cell can only ever produce fewer faces."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     counts = [
-        tw.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=size)[1].size // 3
+        od.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=size)[1].size // 3
         for size in (0.05, 0.1, 0.2, 0.4)
     ]
     assert counts == sorted(counts, reverse=True)
@@ -1213,9 +1213,9 @@ def test_cluster_decimate_decimates_monotonically(device: str) -> None:
 def test_cluster_decimate_default_voxel_size(device: str) -> None:
     """The default is 1% of the bounding-box diagonal, matching MeshLab's ``threshold``."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    default_faces_wp = tw.remesh.cluster_decimate(vertices_wp, faces_wp)[1]
+    default_faces_wp = od.remesh.cluster_decimate(vertices_wp, faces_wp)[1]
     diagonal = float(np.linalg.norm(np.array([2.0, 2.0, 2.0])))
-    explicit_faces_wp = tw.remesh.cluster_decimate(
+    explicit_faces_wp = od.remesh.cluster_decimate(
         vertices_wp, faces_wp, voxel_size=0.01 * diagonal
     )[1]
     assert default_faces_wp.size == explicit_faces_wp.size
@@ -1224,9 +1224,9 @@ def test_cluster_decimate_default_voxel_size(device: str) -> None:
 def test_cluster_decimate_invalid(device: str) -> None:
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=2)
     with pytest.raises(ValueError, match="voxel_size > 0"):
-        tw.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=0.0)
+        od.remesh.cluster_decimate(vertices_wp, faces_wp, voxel_size=0.0)
     with pytest.raises(ValueError, match="contraction must be"):
-        tw.remesh.cluster_decimate(vertices_wp, faces_wp, contraction="quadric")  # pyright: ignore[reportArgumentType]
+        od.remesh.cluster_decimate(vertices_wp, faces_wp, contraction="quadric")  # pyright: ignore[reportArgumentType]
 
 
 def test_cluster_decimate_collapses_to_nothing(device: str) -> None:
@@ -1239,7 +1239,7 @@ def test_cluster_decimate_collapses_to_nothing(device: str) -> None:
     """
     for contraction in ("average", "closest"):
         _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=2)
-        out_vertices_wp, out_faces_wp = tw.remesh.cluster_decimate(
+        out_vertices_wp, out_faces_wp = od.remesh.cluster_decimate(
             vertices_wp, faces_wp, voxel_size=100.0, contraction=contraction
         )
         assert out_vertices_wp.size == 0
@@ -1249,7 +1249,7 @@ def test_cluster_decimate_collapses_to_nothing(device: str) -> None:
 def test_cluster_decimate_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    out_vertices_wp, out_faces_wp = tw.remesh.cluster_decimate(vertices_wp, faces_wp)
+    out_vertices_wp, out_faces_wp = od.remesh.cluster_decimate(vertices_wp, faces_wp)
     assert out_vertices_wp.size == 0
     assert out_faces_wp.size == 0
 
@@ -1298,7 +1298,7 @@ def test_quadric_decimate_beats_igl_and_open3d_on_deviation(device: str, target_
     )
     o3d_tm = open3d_to_trimesh(mesh_o3d)
 
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=target_faces
     )
     assert decimated_faces_wp.size // 3 == target_faces
@@ -1321,21 +1321,21 @@ def test_quadric_decimate_beats_igl_and_open3d_on_deviation(device: str, target_
 def test_quadric_decimate_emits_no_inverted_or_degenerate_faces(device: str) -> None:
     """The normal-flip guard's job: even at 5% of the triangles, nothing folds over."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=0.05
     )
     vertices_np = decimated_vertices_wp.numpy().astype(np.float64)
     faces_np = decimated_faces_wp.numpy().reshape(-1, 3)
     assert _inverted_face_count(vertices_np, faces_np) == 0
     assert _degenerate_face_count(vertices_np, faces_np) == 0
-    assert tw.validation.is_edge_manifold(decimated_faces_wp, allow_boundary_edges=False)
-    assert tw.validation.is_winding_consistent(decimated_faces_wp)
+    assert od.validation.is_edge_manifold(decimated_faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_winding_consistent(decimated_faces_wp)
 
 
 def test_quadric_decimate_preserves_the_topology(device: str) -> None:
     """Not a library comparison: a closed genus-0 surface stays so, and its volume barely moves."""
     sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=0.2
     )
     decimated_tm = warp_to_trimesh(decimated_vertices_wp, decimated_faces_wp)
@@ -1357,7 +1357,7 @@ def test_quadric_decimate_keeps_the_features_of_a_cube(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(box_tm.vertices), np.asarray(box_tm.faces), device
     )
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=0.1
     )
     decimated_tm = warp_to_trimesh(decimated_vertices_wp, decimated_faces_wp)
@@ -1390,7 +1390,7 @@ def test_quadric_decimate_reaches_pymeshlab_quality(device: str) -> None:
     mesh_pml = meshset_pml.current_mesh()
     pml_tm = tm.Trimesh(mesh_pml.vertex_matrix(), mesh_pml.face_matrix(), process=False)
 
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=target_faces
     )
     vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
@@ -1414,7 +1414,7 @@ def test_quadric_decimate_matches_meshlib_quality(device: str, target_faces: int
 
     ``decimateMesh`` takes a **deleted**-face budget rather than a target, so the named transform is
     ``maxDeletedFaces = n_faces - target_faces``; fed that, it lands on exactly the requested count
-    on both targets here, as triwarp does. ``packMesh=True`` is required to read the result at all
+    on both targets here, as ordito does. ``packMesh=True`` is required to read the result at all
     -- without it ``getNumpyFaces`` returns the pre-decimation buffer padded with degenerate
     ``[0, 0, 0]`` rows, which is the hazard
     [`meshlib_to_trimesh`][tests.conversions.meshlib_to_trimesh] exists for.
@@ -1422,7 +1422,7 @@ def test_quadric_decimate_matches_meshlib_quality(device: str, target_faces: int
     There is no correspondence between the outputs -- two greedy quadric solvers with different
     tie-breaking pick different collapses -- so the comparison is the deviation from the *input*
     surface, which is what a decimator is trying to minimize. Measured on ``icosphere(4)``:
-    triwarp is **1.30x** MeshLib's deviation at 2 560 faces and **1.04x** at 1 024, so the bound is
+    ordito is **1.30x** MeshLib's deviation at 2 560 faces and **1.04x** at 1 024, so the bound is
     set at 1.5x.
 
     **Bug class excluded:** a decimator that reaches the face count by collapsing the wrong edges,
@@ -1435,7 +1435,7 @@ def test_quadric_decimate_matches_meshlib_quality(device: str, target_faces: int
     vertices_np = np.ascontiguousarray(sphere_tm.vertices, dtype=np.float64)
     faces_np = np.asarray(sphere_tm.faces)
 
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=target_faces
     )
 
@@ -1472,21 +1472,21 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
     That is the finding this row exists to record rather than hide. ``vtkDecimatePro`` (which is
     what ``PolyData.decimate`` wraps) hits the requested count exactly and, on ``icosphere(4)``,
     leaves a
-    *smaller* two-sided surface deviation than triwarp's batched-parallel collapse: measured
-    **0.00167 / 0.00609 / 0.00986** against triwarp's **0.00255 / 0.00695 / 0.01330** at 2 560 /
+    *smaller* two-sided surface deviation than ordito's batched-parallel collapse: measured
+    **0.00167 / 0.00609 / 0.00986** against ordito's **0.00255 / 0.00695 / 0.01330** at 2 560 /
     1 024 / 512 faces -- a ratio of 1.53 / 1.14 / 1.35. So the bound here is a *band*, at 2.0x with
     a 1.3x margin on the worst reading, and not the one-sided "no worse than" the igl / open3d test
     asserts.
 
     The same measurement puts the four references in order, which is what makes the band meaningful
-    rather than arbitrary: at 2 560 faces, pyvista 0.00167 < triwarp 0.00255 < open3d 0.00364 < igl
+    rather than arbitrary: at 2 560 faces, pyvista 0.00167 < ordito 0.00255 < open3d 0.00364 < igl
     0.00589. Serial priority queues are not all alike, and VTK's is the strongest of the three; the
-    second assert keeps that ordering live by requiring triwarp to stay ahead of the other two on
+    second assert keeps that ordering live by requiring ordito to stay ahead of the other two on
     the same input, so a regression cannot hide inside the loosened ceiling.
 
     ``decimate_pro`` is deliberately **not** the row even though pyvista exposes it: it only
     *removes* vertices, so every surviving point stays exactly on the sphere (mean ``| |r| - 1 |`` =
-    1.4e-17 against 6.5e-04 for ``decimate`` and 6.3e-04 for triwarp, asserted below). A
+    1.4e-17 against 6.5e-04 for ``decimate`` and 6.3e-04 for ordito, asserted below). A
     vertex-removal decimator cannot be beaten on sphere deviation by anything that places new
     vertices, so comparing against it would measure that constraint rather than the quality.
     """
@@ -1501,7 +1501,7 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
         np.asarray(decimated_pv.points), np.asarray(decimated_pv.regular_faces), process=False
     )
 
-    decimated_vertices_wp, decimated_faces_wp = tw.remesh.quadric_decimate(
+    decimated_vertices_wp, decimated_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=target_faces
     )
     assert decimated_faces_wp.size // 3 == target_faces
@@ -1516,7 +1516,7 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
     assert deviation_pv > 0.0
     assert deviation_wp <= 2.0 * deviation_pv
 
-    # ... and triwarp still leads the other two serial queues on the same input.
+    # ... and ordito still leads the other two serial queues on the same input.
     mesh_o3d = trimesh_to_open3d(sphere_tm).simplify_quadric_decimation(
         target_number_of_triangles=target_faces
     )
@@ -1537,7 +1537,7 @@ def test_quadric_decimate_stays_within_the_pyvista_band(device: str, target_face
 def test_quadric_decimate_is_monotone_in_the_target(device: str) -> None:
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=4)
     counts = [
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=ratio)[1].size // 3
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=ratio)[1].size // 3
         for ratio in (0.8, 0.4, 0.2, 0.1)
     ]
     assert counts == sorted(counts, reverse=True)
@@ -1575,12 +1575,12 @@ def test_quadric_decimate_reaches_a_reachable_target_and_floors_on_feature_angle
     assert n_faces == 1280  # non-vacuity: the fixture the floors below were measured on
 
     # Reachable target, hit exactly.
-    reachable = tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=320)[1].size // 3
+    reachable = od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=320)[1].size // 3
     assert reachable == 320
 
     # Unreachable at the default angle, and the floor falls as the angle rises.
     floors = [
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, feature_angle=angle)[
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, feature_angle=angle)[
             1
         ].size
         // 3
@@ -1592,7 +1592,7 @@ def test_quadric_decimate_reaches_a_reachable_target_and_floors_on_feature_angle
     assert floors[-1] == 20  # nothing is a feature at 180 degrees, so the target is reached
 
     # The iteration cap is not what stops the default: more passes give the identical mesh.
-    patient = tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, max_iter=400)[1]
+    patient = od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, max_iter=400)[1]
     assert patient.size // 3 == floors[0]
 
 
@@ -1605,7 +1605,7 @@ def test_quadric_decimate_target_at_or_above_the_input_is_a_copy(device: str) ->
         {"target_ratio": 1.0},
     ):
         # Each dict holds exactly one target, of the type its keyword takes.
-        out_vertices_wp, out_faces_wp = tw.remesh.quadric_decimate(vertices_wp, faces_wp, **kwargs)  # pyright: ignore[reportCallIssue, reportArgumentType]
+        out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(vertices_wp, faces_wp, **kwargs)  # pyright: ignore[reportCallIssue, reportArgumentType]
         assert np.array_equal(out_faces_wp.numpy(), faces_wp.numpy())
         assert np.array_equal(out_vertices_wp.numpy(), vertices_wp.numpy())
 
@@ -1613,19 +1613,19 @@ def test_quadric_decimate_target_at_or_above_the_input_is_a_copy(device: str) ->
 def test_quadric_decimate_invalid(device: str) -> None:
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=1)
     with pytest.raises(ValueError, match="exactly one of target_faces and target_ratio"):
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp)
+        od.remesh.quadric_decimate(vertices_wp, faces_wp)
     with pytest.raises(ValueError, match="exactly one of target_faces and target_ratio"):
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=10, target_ratio=0.5)
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=10, target_ratio=0.5)
     with pytest.raises(ValueError, match="target_faces must be non-negative"):
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=-1)
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=-1)
     with pytest.raises(ValueError, match=r"target_ratio must be in \(0, 1\]"):
-        tw.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=0.0)
+        od.remesh.quadric_decimate(vertices_wp, faces_wp, target_ratio=0.0)
 
 
 def test_quadric_decimate_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    out_vertices_wp, out_faces_wp = tw.remesh.quadric_decimate(
+    out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=0
     )
     assert out_vertices_wp.size == 0
@@ -1649,7 +1649,7 @@ def test_quadric_decimate_captures_its_pass(
     mesh_tm, mesh_wp = icosphere
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    buffers = tw.remesh._DecimationBuffers(
+    buffers = od.remesh._DecimationBuffers(
         vertices_wp, faces_wp, len(mesh_tm.faces) // 4, wp.float32(np.radians(30.0))
     )
     assert buffers.run_pass()  # issued: this is the pass that measures the true edge count
@@ -1672,7 +1672,7 @@ def test_quadric_decimate_padding_never_reaches_the_output(
     """
     mesh_tm, mesh_wp = icosphere
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    buffers = tw.remesh._DecimationBuffers(
+    buffers = od.remesh._DecimationBuffers(
         vertices_wp, faces_wp, len(mesh_tm.faces) // 8, wp.float32(np.radians(30.0))
     )
     passes = 0
@@ -1761,7 +1761,7 @@ def test_winner_budget_rank_matches_the_round_sort_it_replaces(
     bits_np[32 * half + np.flatnonzero(winner_np)] = True
     words_np = np.packbits(bits_np.reshape(-1, 32)[:, ::-1], axis=1).view(">u4").ravel()
     words_wp = wp.array(words_np.astype(np.uint32), dtype=wp.uint32, device=device)
-    scan = tw.remesh._ExclusiveScan(2 * half, wp.get_device(device))
+    scan = od.remesh._ExclusiveScan(2 * half, wp.get_device(device))
     scan.launch(words_wp, words=True)
 
     winners_np = np.flatnonzero(winner_np).astype(np.int32)
@@ -1816,7 +1816,7 @@ def test_quadric_decimate_provenance_maps_are_consistent(
     n_input_vertices = vertices_wp.size
     faces_np = np.asarray(mesh_tm.faces)
 
-    out_vertices_wp, out_faces_wp, vertex_index_wp, face_index_wp = tw.remesh.quadric_decimate(
+    out_vertices_wp, out_faces_wp, vertex_index_wp, face_index_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=target_ratio, return_index=True
     )
     n_out_vertices = out_vertices_wp.size
@@ -1838,7 +1838,7 @@ def test_quadric_decimate_provenance_maps_are_consistent(
     mapped_np = vertex_index_np[faces_np[face_index_np]]
     assert np.array_equal(np.sort(mapped_np, axis=1), np.sort(out_faces_np, axis=1))
 
-    plain_vertices_wp, plain_faces_wp = tw.remesh.quadric_decimate(
+    plain_vertices_wp, plain_faces_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_ratio=target_ratio
     )
     assert np.array_equal(plain_faces_wp.numpy(), out_faces_wp.numpy())
@@ -1871,7 +1871,7 @@ def test_quadric_decimate_provenance_on_degenerate_inputs(
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    kept_vertices_wp, kept_faces_wp, vertex_index_wp, face_index_wp = tw.remesh.quadric_decimate(
+    kept_vertices_wp, kept_faces_wp, vertex_index_wp, face_index_wp = od.remesh.quadric_decimate(
         vertices_wp, faces_wp, target_faces=8, return_index=True
     )
     assert np.array_equal(kept_vertices_wp.numpy(), vertices_np[:3])
@@ -1881,7 +1881,7 @@ def test_quadric_decimate_provenance_on_degenerate_inputs(
 
     # A mesh with nothing unreferenced is untouched by that compaction, which is what keeps the
     # no-op path a pass-through for every ordinary input.
-    clean_vertices_wp, clean_faces_wp = tw.remesh.quadric_decimate(
+    clean_vertices_wp, clean_faces_wp = od.remesh.quadric_decimate(
         points_to_warp(vertices_np[:3], device), faces_wp, target_faces=8
     )
     assert np.array_equal(clean_vertices_wp.numpy(), vertices_np[:3])
@@ -1893,7 +1893,7 @@ def test_quadric_decimate_provenance_on_degenerate_inputs(
     grid_vertices_wp, grid_faces_wp = numpy_to_warp(
         grid_vertices_np, np.asarray(grid_tm.faces, dtype=np.int32).reshape(-1), device
     )
-    _vertices_wp, _faces_wp, grid_index_wp, _face_wp = tw.remesh.quadric_decimate(
+    _vertices_wp, _faces_wp, grid_index_wp, _face_wp = od.remesh.quadric_decimate(
         grid_vertices_wp, grid_faces_wp, target_faces=8, return_index=True
     )
     assert int(grid_index_wp.numpy()[-1]) == -1  # the unreferenced vertex
@@ -1942,10 +1942,10 @@ def _delone_violations(vertices_np: np.ndarray, faces_np: np.ndarray, region_np:
 def test_flip_to_delaunay_reduces_violations(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    nv, nf, nr = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
+    nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
 
     before = _delone_violations(nv.numpy(), nf.numpy().reshape(-1, 3), nr.numpy())
-    flipped = tw.remesh.flip_to_delaunay(nv, nf, region=nr)
+    flipped = od.remesh.flip_to_delaunay(nv, nf, region=nr)
     after = _delone_violations(nv.numpy(), flipped.numpy().reshape(-1, 3), nr.numpy())
 
     assert after <= before
@@ -1966,15 +1966,15 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     one, where both flip that one edge and return the identical pair of triangles.
 
     On a mesh with hundreds of violations the *outputs* differ, and that is a property of the
-    algorithms rather than of the criterion -- triwarp commits a conflict-free independent set per
+    algorithms rather than of the criterion -- ordito commits a conflict-free independent set per
     round where MeshLib works a queue, so which of two competing flips wins differs. What is
-    asserted there is the fixpoint, which is the actual claim either function makes: after triwarp's
+    asserted there is the fixpoint, which is the actual claim either function makes: after ordito's
     pass, **MeshLib finds 0 further flips to make**, against **942** in the input. That is a
     stronger statement than a face-set comparison and it is checked with the reference's own
-    criterion, not triwarp's.
+    criterion, not ordito's.
 
-    The converse is not symmetric and is asserted as measured rather than papered over: triwarp
-    still changes **20 of 1 280** faces in MeshLib's output, so triwarp's test is the stricter of
+    The converse is not symmetric and is asserted as measured rather than papered over: ordito
+    still changes **20 of 1 280** faces in MeshLib's output, so ordito's test is the stricter of
     the two on near-cocircular quads.
     """
     # A kite: the diagonal 0-2 (length 2.0) is longer than 1-3 (1.8), so it is the one to flip.
@@ -1983,7 +1983,7 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     )
     kite_faces_np = np.array([[0, 1, 2], [0, 2, 3]], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(kite_vertices_np, kite_faces_np, device)
-    flipped_wp = tw.remesh.flip_to_delaunay(vertices_wp, wp.clone(faces_wp), max_iter=100)
+    flipped_wp = od.remesh.flip_to_delaunay(vertices_wp, wp.clone(faces_wp), max_iter=100)
 
     mesh_ml = numpy_to_meshlib(kite_vertices_np, kite_faces_np)
     assert mm.makeDeloneEdgeFlips(mesh_ml, mm.DeloneSettings(), 100) == 1  # it flipped the diagonal
@@ -2001,7 +2001,7 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
     )
     vertices_wp, faces_wp = numpy_to_warp(jittered_np, sphere_tm.faces, device)
     delaunay_np = (
-        tw.remesh.flip_to_delaunay(vertices_wp, wp.clone(faces_wp), max_iter=100)
+        od.remesh.flip_to_delaunay(vertices_wp, wp.clone(faces_wp), max_iter=100)
         .numpy()
         .reshape(-1, 3)
     )
@@ -2018,10 +2018,10 @@ def test_flip_to_delaunay_matches_meshlib(device: str) -> None:
 
 def test_flip_to_delaunay_region_gated(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
-    nv, nf, nr = tw.remesh.subdivide_region_to_size(
+    nv, nf, nr = od.remesh.subdivide_region_to_size(
         v, f, region, max_edge=1e9, delaunay=False
     )  # no splits; just exercise gating on the raw fill patch
-    flipped = tw.remesh.flip_to_delaunay(nv, nf, region=nr)
+    flipped = od.remesh.flip_to_delaunay(nv, nf, region=nr)
     faces_before = nf.numpy().reshape(-1, 3)
     faces_after = flipped.numpy().reshape(-1, 3)
     region_np = nr.numpy()
@@ -2036,9 +2036,9 @@ def test_flip_topology_matches_the_composed_adjacency(
     """
     ``_FlipTopology`` reproduces the wrapper chain it replaces, exactly.
 
-    The flip loop stopped composing [`face_adjacency`][triwarp.adjacency.face_adjacency],
-    [`face_adjacency_unshared`][triwarp.adjacency.face_adjacency_unshared] and a second
-    [`sort_and_argsort`][triwarp.array.sort_and_argsort] of the edge keys, and builds all three on
+    The flip loop stopped composing [`face_adjacency`][ordito.adjacency.face_adjacency],
+    [`face_adjacency_unshared`][ordito.adjacency.face_adjacency_unshared] and a second
+    [`sort_and_argsort`][ordito.array.sort_and_argsort] of the edge keys, and builds all three on
     fixed buffers instead — a measured 1.5-2.6x. That is only sound while the two agree row for
     row, including a fresh build's row *order* (ascending key, which is the order the
     independent-set claims rank candidates in). This is an internal-consistency check, not a
@@ -2048,16 +2048,16 @@ def test_flip_topology_matches_the_composed_adjacency(
     faces = mesh_wp.indices
     n_vertices = len(mesh_tm.vertices)
 
-    topology = tw.remesh._FlipTopology(faces, n_vertices)
+    topology = od.remesh._FlipTopology(faces, n_vertices)
     rows = topology.rebuild()
 
-    edges_sorted = tw.edges.faces_to_edges(faces, sorted=True)
-    adjacency_ref, adjacency_edges_ref = tw.adjacency.face_adjacency(
+    edges_sorted = od.edges.faces_to_edges(faces, sorted=True)
+    adjacency_ref, adjacency_edges_ref = od.adjacency.face_adjacency(
         faces, return_edges=True, n_vertices=n_vertices
     )
-    unshared_ref = tw.adjacency.face_adjacency_unshared(faces, adjacency_ref, adjacency_edges_ref)
-    keys_ref, _order = tw.array.sort_and_argsort(
-        tw.grouping.hash_indices_rows(edges_sorted, max_index=n_vertices, validate=False)
+    unshared_ref = od.adjacency.face_adjacency_unshared(faces, adjacency_ref, adjacency_edges_ref)
+    keys_ref, _order = od.array.sort_and_argsort(
+        od.grouping.hash_indices_rows(edges_sorted, max_index=n_vertices, validate=False)
     )
 
     assert rows == int(adjacency_ref.shape[0]) > 0
@@ -2072,7 +2072,7 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
     icosphere: tuple[tm.Trimesh, wp.Mesh], flip_budget: int | None
 ) -> None:
     """
-    Triwarp against triwarp: the flip loop's maintained topology against a rebuild of its output.
+    Ordito against ordito: the flip loop's maintained topology against a rebuild of its output.
 
     After the first flipping round the loop stops regrouping and keeps its rows, halfedge maps and
     duplicate-edge set current through each commit. Whatever state it ends in must describe the
@@ -2091,10 +2091,10 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
     n_vertices = len(mesh_tm.vertices)
     region = wp.ones(faces.size // 3, dtype=wp.int32, device=device)
 
-    topology = tw.remesh._FlipTopology(faces, n_vertices)
+    topology = od.remesh._FlipTopology(faces, n_vertices)
     if flip_budget is not None:
         topology._flip_budget = flip_budget
-    flips = tw.remesh._flip_region_faces(vertices, faces, region, None, None, 50, topology)
+    flips = od.remesh._flip_region_faces(vertices, faces, region, None, None, 50, topology)
     assert flips > 200
     assert topology.incremental
     halfedge_row = topology.halfedge_row
@@ -2102,10 +2102,10 @@ def test_flip_topology_incremental_state_matches_a_fresh_build(
     assert halfedge_row is not None
     assert row_halfedges is not None
 
-    fresh = tw.remesh._FlipTopology(faces, n_vertices)
+    fresh = od.remesh._FlipTopology(faces, n_vertices)
     fresh.rebuild(incremental=True)
 
-    def rows(t: tw.remesh._FlipTopology) -> np.ndarray:
+    def rows(t: od.remesh._FlipTopology) -> np.ndarray:
         return np.hstack([t.adjacency.numpy(), t.adjacency_edges.numpy(), t.unshared.numpy()])
 
     assert np.array_equal(lexsort_rows(rows(topology)), lexsort_rows(rows(fresh)))
@@ -2151,10 +2151,10 @@ def test_flip_topology_drops_non_manifold_edges_like_face_adjacency(device: str)
     faces_np = np.array([0, 1, 2, 0, 3, 1, 1, 3, 2, 2, 3, 0, 0, 1, 4], dtype=np.int32)
     faces = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    topology = tw.remesh._FlipTopology(faces, 5)
+    topology = od.remesh._FlipTopology(faces, 5)
     rows = topology.rebuild()
 
-    adjacency_ref = tw.adjacency.face_adjacency(faces, n_vertices=5)
+    adjacency_ref = od.adjacency.face_adjacency(faces, n_vertices=5)
     assert rows == int(adjacency_ref.shape[0])
     assert np.array_equal(topology.adjacency.numpy(), adjacency_ref.numpy())
     # Edge (0, 1) carries three corners, so no row of the table mentions the pair it would form.
@@ -2164,10 +2164,10 @@ def test_flip_topology_drops_non_manifold_edges_like_face_adjacency(device: str)
 @pytest.mark.parametrize("flip", [False, True])
 def test_flip_topology_edges_unique_matches_edges_unique(device: str, flip: bool) -> None:
     """
-    Triwarp against triwarp: the flip pass's edge sort is ``edges_unique`` for the faces it leaves.
+    Ordito against ordito: the flip pass's edge sort is ``edges_unique`` for the faces it leaves.
 
     ``subdivide_region_to_size`` reads its next pass's unique edges off the topology the flip pass
-    left rather than calling [`edges_unique`][triwarp.edges.edges_unique] again, and the split
+    left rather than calling [`edges_unique`][ordito.edges.edges_unique] again, and the split
     numbers its new vertices in that edge order, so the two must agree row for row and corner for
     corner. ``edges_unique`` carries the oracle. The ``flip`` arm runs a Delone pass that rewrites
     faces first -- a sheared grid, whose every quad has the better diagonal -- so the check covers
@@ -2176,11 +2176,11 @@ def test_flip_topology_edges_unique_matches_edges_unique(device: str, flip: bool
     vertices_np, faces_np = _sheared_grid(n=12)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     n_vertices = vertices_wp.size
-    topology = tw.remesh._FlipTopology(faces_wp, n_vertices)
+    topology = od.remesh._FlipTopology(faces_wp, n_vertices)
     if flip:
         before_np = faces_wp.numpy().copy()
         region_flags = wp.full(faces_np.shape[0], 1, dtype=wp.int32, device=device)
-        flips = tw.remesh._flip_region_faces(
+        flips = od.remesh._flip_region_faces(
             vertices_wp, faces_wp, region_flags, None, None, 8, topology
         )
         assert flips > 0
@@ -2190,7 +2190,7 @@ def test_flip_topology_edges_unique_matches_edges_unique(device: str, flip: bool
     assert topology.built
 
     unique_edges_wp, inverse_wp = topology.edges_unique()
-    unique_edges_ref, inverse_ref = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    unique_edges_ref, inverse_ref = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
     assert np.array_equal(unique_edges_wp.numpy(), unique_edges_ref.numpy())
     assert np.array_equal(inverse_wp.numpy(), inverse_ref.numpy())
 
@@ -2254,7 +2254,7 @@ def _min_quality(
     faces_wp: wp.array[wp.int32],
     metric: FaceQualityMetric = "area_max_side",
 ) -> float:
-    return float(tw.triangles.face_quality(vertices_wp, faces_wp, metric=metric).numpy().min())
+    return float(od.triangles.face_quality(vertices_wp, faces_wp, metric=metric).numpy().min())
 
 
 def _total_bend(vertices_np: np.ndarray, faces_np: np.ndarray) -> float:
@@ -2269,14 +2269,14 @@ def test_flip_by_objective_planarity_improves_the_worst_triangle(device: str) ->
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     before = _min_quality(vertices_wp, faces_wp)
 
-    flipped_wp = tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
+    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
     after = _min_quality(vertices_wp, flipped_wp)
     assert after > before * 1.4
 
     # A retriangulation: same faces, same vertices, still a clean manifold patch.
     assert flipped_wp.size == faces_wp.size
-    assert tw.validation.is_winding_consistent(flipped_wp)
-    assert tw.validation.is_edge_manifold(flipped_wp)
+    assert od.validation.is_winding_consistent(flipped_wp)
+    assert od.validation.is_edge_manifold(flipped_wp)
     assert _degenerate_face_count(vertices_np, flipped_wp.numpy().reshape(-1, 3)) == 0
 
 
@@ -2301,14 +2301,14 @@ def test_flip_by_objective_planarity_at_least_matches_pymeshlab(device: str) -> 
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     _vertices_pml_wp, faces_pml_wp = numpy_to_warp(vertices_np, faces_pml, device)
-    flipped_wp = tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
+    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
     assert _min_quality(vertices_wp, flipped_wp) >= 0.9 * _min_quality(vertices_wp, faces_pml_wp)
 
 
 def test_flip_by_objective_planarity_refuses_a_curved_quad(device: str) -> None:
     """With ``planar_angle=0`` nothing is flat enough, so the triangulation must be untouched."""
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
-    flipped_wp = tw.remesh.flip_by_objective(
+    flipped_wp = od.remesh.flip_by_objective(
         vertices_wp, faces_wp, objective="planarity", planar_angle=0.0
     )
     assert np.array_equal(flipped_wp.numpy(), faces_wp.numpy())
@@ -2320,12 +2320,12 @@ def test_flip_by_objective_curvature_flattens(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     before = _total_bend(vertices_np, faces_np)
 
-    flipped_wp = tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
+    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
     after = _total_bend(vertices_np, flipped_wp.numpy().reshape(-1, 3))
     assert after < before
     assert flipped_wp.size == faces_wp.size
-    assert tw.validation.is_winding_consistent(flipped_wp)
-    assert tw.validation.is_edge_manifold(flipped_wp)
+    assert od.validation.is_winding_consistent(flipped_wp)
+    assert od.validation.is_edge_manifold(flipped_wp)
 
 
 def test_flip_by_objective_curvature_leaves_a_sphere_alone(device: str) -> None:
@@ -2338,7 +2338,7 @@ def test_flip_by_objective_curvature_leaves_a_sphere_alone(device: str) -> None:
     """
     sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
     before = _total_bend(np.asarray(sphere_tm.vertices), np.asarray(sphere_tm.faces))
-    flipped_wp = tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
+    flipped_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="curvature")
     after = _total_bend(np.asarray(sphere_tm.vertices), flipped_wp.numpy().reshape(-1, 3))
     assert after <= before * (1.0 + 1e-6)
 
@@ -2352,8 +2352,8 @@ def test_flip_by_objective_region_gated(device: str) -> None:
     region_np[: n_faces // 4] = True
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
 
-    full_wp = tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
-    gated_wp = tw.remesh.flip_by_objective(
+    full_wp = od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="planarity")
+    gated_wp = od.remesh.flip_by_objective(
         vertices_wp, faces_wp, objective="planarity", region=region_wp
     )
     changed_full = int((full_wp.numpy() != faces_wp.numpy()).sum())
@@ -2370,11 +2370,11 @@ def test_flip_by_objective_invalid(device: str) -> None:
     """
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=1)
     with pytest.raises(ValueError, match="objective must be"):
-        tw.remesh.flip_by_objective(vertices_wp, faces_wp, objective="delaunay")  # pyright: ignore[reportArgumentType]
+        od.remesh.flip_by_objective(vertices_wp, faces_wp, objective="delaunay")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="metric must be one of"):
-        tw.remesh.flip_by_objective(vertices_wp, faces_wp, metric="aspect_ratio")  # pyright: ignore[reportArgumentType]
+        od.remesh.flip_by_objective(vertices_wp, faces_wp, metric="aspect_ratio")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="planar_angle must be in"):
-        tw.remesh.flip_by_objective(vertices_wp, faces_wp, planar_angle=200.0)
+        od.remesh.flip_by_objective(vertices_wp, faces_wp, planar_angle=200.0)
 
 
 # --- intrinsic_delaunay ---------------------------------------------------------------
@@ -2385,7 +2385,7 @@ def test_intrinsic_delaunay_removes_negative_cotangent_weights(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
     flipped = bsr_to_dense(
-        tw.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices), n_vertices
+        od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices), n_vertices
     )
 
     # A non-negative off-diagonal (in this sign convention, where the diagonal is negative) is what
@@ -2399,8 +2399,8 @@ def test_intrinsic_delaunay_leaves_a_delaunay_mesh_alone(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    original_lengths = tw.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices).numpy()
-    faces, lengths, n_flips = tw.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
+    original_lengths = od.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices).numpy()
+    faces, lengths, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
     # These fixtures come from an icosphere, whose triangulation is already intrinsically Delaunay.
     assert n_flips == 0
@@ -2451,12 +2451,12 @@ def test_intrinsic_delaunay_resolves_interior_violations_via_multi_edges(device:
     two-opposite-angles condition has nothing to compare a boundary edge's one angle against, so an
     obtuse boundary corner is not a Delaunay violation and no flip addresses it.
     """
-    vertices_wp, faces_wp = tw.creation.parametric_surface("dini", device=device)
-    intrinsic_faces_wp, lengths_wp, n_flips = tw.remesh.intrinsic_delaunay(vertices_wp, faces_wp)
+    vertices_wp, faces_wp = od.creation.parametric_surface("dini", device=device)
+    intrinsic_faces_wp, lengths_wp, n_flips = od.remesh.intrinsic_delaunay(vertices_wp, faces_wp)
     assert n_flips > 0  # The comparison is not vacuous: the flipper did real work first.
 
     faces_np = intrinsic_faces_wp.numpy().reshape(-1, 3)
-    cot_np = tw.laplacian.cotmatrix_entries_intrinsic(lengths_wp).numpy()
+    cot_np = od.laplacian.cotmatrix_entries_intrinsic(lengths_wp).numpy()
     weight, incident, _opposite = _summed_cotangent_weights(faces_np, cot_np)
 
     interior = [e for e in weight if incident[e] >= 2]
@@ -2483,24 +2483,24 @@ def test_intrinsic_delaunay_metric_matches_igl(
     """
     The intrinsic metric after flipping, against libigl's serial flipper.
 
-    The two cannot be compared face for face: triwarp flips independent sets in parallel rounds
+    The two cannot be compared face for face: ordito flips independent sets in parallel rounds
     where libigl drains a queue, so the *sequence* differs and so does the face ordering. What must
     agree is where they land, because the intrinsic Delaunay triangulation of a surface is unique
     away from cocircular degeneracies -- so the multiset of edge lengths is the invariant, and this
     is Class B with a sort rather than a weakened tolerance.
 
-    That makes it a real check rather than a formality: on ``half_torus`` triwarp performs **298**
+    That makes it a real check rather than a formality: on ``half_torus`` ordito performs **298**
     flips and still reaches libigl's metric to 1e-4, which a wrong flip rule or a mis-unfolded
     diagonal would not. ``igl.intrinsic_delaunay_cotmatrix`` is used for its second return value
     (the lengths); it assembles a matrix as well, which is why the benchmark reads its row as
-    including work triwarp's does not.
+    including work ordito's does not.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _lengths_igl = igl.intrinsic_delaunay_cotmatrix(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), mesh_tm.faces.astype(np.int64)
     )[1]
 
-    _faces_wp, lengths_wp, n_flips = tw.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
+    _faces_wp, lengths_wp, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
     assert n_flips > 0, "fixture is already Delaunay; this would assert nothing"
     assert np.allclose(
@@ -2518,7 +2518,7 @@ def _undirected_intrinsic_lengths(faces_np: np.ndarray, lengths_np: np.ndarray) 
     ``lengths[f, e]`` belongs to the edge *opposite* corner ``e``, so the same interior edge appears
     in two face corners and a boundary edge in one. Deduplicating rather than doubling is what makes
     the multiset comparable on an open mesh: ``half_torus`` has 64 boundary edges, so the naive
-    ``np.repeat(..., 2)`` of the reference side is 3 136 entries against triwarp's 3 072.
+    ``np.repeat(..., 2)`` of the reference side is 3 136 entries against ordito's 3 072.
     """
     faces = faces_np.reshape(-1, 3)
     corners = [
@@ -2549,7 +2549,7 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
     A second witness for the invariant
     [`test_intrinsic_delaunay_metric_matches_igl`][tests.test_remesh.test_intrinsic_delaunay_metric_matches_igl]
     rests on, and a sharper one, because this reference **disagrees about the flips and still agrees
-    about the metric**. On ``torus`` triwarp performs 476 flips and ``makeDeloneEdgeFlips`` performs
+    about the metric**. On ``torus`` ordito performs 476 flips and ``makeDeloneEdgeFlips`` performs
     **592** -- a 1.24x difference in the work done -- yet the resulting edge-length multisets match
     to 5.96e-08 absolute / 2.22e-07 relative. That is the content of the claim: the intrinsic
     Delaunay triangulation of a fixed surface is unique away from cocircular degeneracies, so the
@@ -2557,9 +2557,9 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
     Comparing against igl alone cannot show this, since igl exposes no flip count.
 
     The named transform is
-    [`_undirected_intrinsic_lengths`][tests.test_remesh._undirected_intrinsic_lengths]: triwarp
+    [`_undirected_intrinsic_lengths`][tests.test_remesh._undirected_intrinsic_lengths]: ordito
     returns a per-corner ``(n_faces, 3)`` table and ``EdgeLengthMesh.edgeLengths`` is indexed by
-    undirected edge, so triwarp's side is deduplicated to one length per edge. Doubling the
+    undirected edge, so ordito's side is deduplicated to one length per edge. Doubling the
     reference instead is wrong on an open mesh -- see that helper's docstring for the 64-edge
     discrepancy on ``half_torus``.
 
@@ -2571,10 +2571,10 @@ def test_intrinsic_delaunay_metric_matches_meshlib(
         triangulation and would move the surface, which is the thing this function is defined not
         to do. Its settings type differs accordingly -- ``IntrinsicDeloneSettings``, whose
         ``threshold`` defaults to ``0.0``, i.e. flip whenever the opposite angles sum past pi, which
-        is triwarp's rule exactly.
+        is ordito's rule exactly.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_wp, lengths_wp, n_flips = tw.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
+    faces_wp, lengths_wp, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
     edge_mesh_ml = mm.EdgeLengthMesh.fromMesh(trimesh_to_meshlib(mesh_tm))
     n_flips_ml = mm.makeDeloneEdgeFlips(edge_mesh_ml, mm.IntrinsicDeloneSettings(), 100)
@@ -2603,7 +2603,7 @@ def test_intrinsic_delaunay_flips_a_grid_and_preserves_the_metric(
     show.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces, lengths, n_flips = tw.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
+    faces, lengths, n_flips = od.remesh.intrinsic_delaunay(mesh_wp.points, mesh_wp.indices)
 
     # A quad grid split by diagonals is not Delaunay, so there is work to do...
     assert n_flips > 0
@@ -2623,7 +2623,7 @@ def test_subdivide(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     Class A: one uniform 1-to-4 pass against ``trimesh.remesh.subdivide``, vertices and faces.
 
     The reference is computed in ``float64`` and cast down, so the comparison is not measuring
-    triwarp's precision against numpy's. Both the new midpoints and the face renumbering are
+    ordito's precision against numpy's. Both the new midpoints and the face renumbering are
     compared, which is what pins the child-face ordering downstream code relies on.
     """
     mesh_tm, mesh_wp = icosahedron
@@ -2634,7 +2634,7 @@ def test_subdivide(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     new_v_tm, new_f_tm = tm.remesh.subdivide(vertices_np.astype(np.float64), faces_np)[:2]
     new_v_tm = new_v_tm.astype(np.float32)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    new_v_wp, new_f_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     new_v_wp_np = new_v_wp.numpy()
     new_f_wp_np = new_f_wp.numpy().reshape(-1, 3)
@@ -2659,17 +2659,17 @@ def test_subdivide_matches_open3d(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> No
     """
     Class B: Open3D's ``subdivide_midpoint`` is the same 1:4 split under a different vertex order.
 
-    Neither library defines the output ordering -- triwarp appends one new vertex per unique edge in
+    Neither library defines the output ordering -- ordito appends one new vertex per unique edge in
     its own edge order, Open3D in its -- so the named transform matches the face **centroid sets**
     and requires the match to be a bijection. A lexsort compare is not usable: the icosahedron's
-    centroids carry coordinate ties that triwarp resolves in ``float32`` and Open3D in ``float64``,
+    centroids carry coordinate ties that ordito resolves in ``float32`` and Open3D in ``float64``,
     so the row order is decided by rounding noise (measured: a 1.59 spurious mismatch).
     """
     mesh_tm, mesh_wp = icosahedron
 
     mesh_o3d = trimesh_to_open3d(mesh_tm).subdivide_midpoint(number_of_iterations=1)
     mesh_ref = open3d_to_trimesh(mesh_o3d)
-    vertices_wp, faces_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     assert vertices_wp.size == mesh_ref.vertices.shape[0]
     assert faces_wp.size // 3 == mesh_ref.faces.shape[0]
@@ -2714,7 +2714,7 @@ def test_subdivide_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh
     mesh_tm, mesh_wp = icosphere_coarse
     subdivided_p3d = p3d_ops.SubdivideMeshes()(trimesh_to_pytorch3d(mesh_tm))
     vertices_p3d, faces_p3d = pytorch3d_to_numpy(subdivided_p3d)
-    vertices_wp, faces_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     assert vertices_p3d.shape[0] == 4 * len(mesh_tm.vertices) - 6
     assert faces_p3d.shape[0] == 4 * len(mesh_tm.faces)
@@ -2731,7 +2731,7 @@ def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class B: ``igl.upsample`` is the same 1:4 midpoint split under a different vertex order.
 
-    igl keeps the original vertices in place and appends one per unique edge, exactly as triwarp
+    igl keeps the original vertices in place and appends one per unique edge, exactly as ordito
     does, so the *vertex* arrays agree on their leading ``n_vertices`` rows -- which is asserted
     directly and is a stronger statement than the centroid match alone. The new vertices and the
     faces are ordered by each library's own edge enumeration, so those go through the same
@@ -2744,7 +2744,7 @@ def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
         np.asarray,
         igl.upsample(np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)),
     )
-    vertices_wp, faces_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     assert vertices_wp.size == vertices_upsampled_igl.shape[0]
     assert faces_wp.size // 3 == faces_upsampled_igl.shape[0]
@@ -2768,7 +2768,7 @@ def test_subdivide_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
 def test_subdivide_empty(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    new_v_wp, new_f_wp = tw.remesh.subdivide(vertices_wp, faces_wp)
+    new_v_wp, new_f_wp = od.remesh.subdivide(vertices_wp, faces_wp)
     assert new_v_wp.size == 0
     assert new_f_wp.size == 0
 
@@ -2780,7 +2780,7 @@ def test_subdivide_edge_lengths(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None
     vertices_np = mesh_tm.vertices.astype(np.float32)
     faces_np = mesh_tm.faces.astype(np.int32)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    new_v_wp, new_f_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     new_v_np = new_v_wp.numpy()
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
@@ -2800,13 +2800,13 @@ def _loop_odd_correspondence(
     faces_wp_np: np.ndarray, faces_igl: np.ndarray, n_new: int, n_original: int
 ) -> np.ndarray:
     """
-    Map each of triwarp's new edge vertices onto igl's, decoded from the two face tables.
+    Map each of ordito's new edge vertices onto igl's, decoded from the two face tables.
 
     Both libraries emit four children per face in input face order, and one of those children is the
-    central triangle spanning the face's three *new* vertices -- triwarp emits it fourth and igl
+    central triangle spanning the face's three *new* vertices -- ordito emits it fourth and igl
     third. Reading that row off both tables therefore pairs the two enumerations corner by corner,
     which is exact where a coordinate ``lexsort`` would be decided by rounding noise. Returns
-    ``perm`` with ``perm[triwarp_index] == igl_index`` over the new vertices.
+    ``perm`` with ``perm[ordito_index] == igl_index`` over the new vertices.
     """
     perm = np.full(n_new, -1, dtype=np.int64)
     perm[faces_wp_np[3::4].ravel()] = faces_igl[2::4].ravel()
@@ -2841,7 +2841,7 @@ def test_subdivide_loop_matches_igl(mesh_name: str, request: pytest.FixtureReque
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_original = int(mesh_tm.vertices.shape[0])
 
-    vertices_wp, faces_wp = tw.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
 
     vertices_igl, faces_loop_igl = map(
         np.asarray,
@@ -2886,7 +2886,7 @@ def test_subdivide_loop_matches_open3d(mesh_name: str, request: pytest.FixtureRe
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_original = int(mesh_tm.vertices.shape[0])
 
-    vertices_wp, faces_wp = tw.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
 
     mesh_o3d = trimesh_to_open3d(mesh_tm).subdivide_loop(number_of_iterations=1)
     vertices_o3d = np.asarray(mesh_o3d.vertices)
@@ -2919,14 +2919,14 @@ def test_subdivide_loop_keeps_the_boundary_in_the_boundary(
     lands in the affine hull of the *old* rim, which the interior rule's ``beta`` term would leave.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    boundary_wp = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices)
+    boundary_wp = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices)
     assert boundary_wp.size > 0, "the fixture has a boundary to preserve"
 
-    vertices_wp, faces_wp = tw.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
+    vertices_wp, faces_wp = od.remesh.subdivide_loop(mesh_wp.points, mesh_wp.indices)
 
     rim_before_np = mesh_wp.points.numpy()[boundary_wp.numpy()]
     rim_after_np = vertices_wp.numpy()[
-        tw.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
+        od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
     ]
     # Every new rim vertex is a convex combination of old rim vertices, so it cannot leave their
     # bounding box; an interior stencil leaking in would pull it inward, off the rim.
@@ -2947,13 +2947,13 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
     ``number_of_subdivs`` is meant to be reproduced.
     """
     _, mesh_wp = icosahedron
-    volume_before = tw.measures.volume(mesh_wp.points, mesh_wp.indices)
+    volume_before = od.measures.volume(mesh_wp.points, mesh_wp.indices)
 
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     volumes = []
     for _ in range(3):
-        vertices_wp, faces_wp = tw.remesh.subdivide_loop(vertices_wp, faces_wp)
-        volumes.append(tw.measures.volume(vertices_wp, faces_wp))
+        vertices_wp, faces_wp = od.remesh.subdivide_loop(vertices_wp, faces_wp)
+        volumes.append(od.measures.volume(vertices_wp, faces_wp))
 
     assert volumes[0] < volume_before, "Loop pulls a convex surface inward"
     # Converging, not collapsing: successive passes change the volume by less and less, and the
@@ -2964,8 +2964,8 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
 
     # The midpoint split on the same input keeps the solid, which is the contrast being drawn: an
     # earlier strict ``>`` here passed only on the rounding of one summation order.
-    vertices_mid_wp, faces_mid_wp = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
-    volume_mid = tw.measures.volume(vertices_mid_wp, faces_mid_wp)
+    vertices_mid_wp, faces_mid_wp = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    volume_mid = od.measures.volume(vertices_mid_wp, faces_mid_wp)
     assert np.isclose(volume_mid, volume_before, rtol=1e-6, atol=0.0)
     assert volumes[0] < volume_before * (1.0 - 1e-3)
 
@@ -2987,7 +2987,7 @@ def test_subdivide_loop_leaves_a_nonmanifold_edge_at_its_midpoint(device: str) -
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    vertices_new_wp, faces_new_wp = tw.remesh.subdivide_loop(vertices_wp, faces_wp)
+    vertices_new_wp, faces_new_wp = od.remesh.subdivide_loop(vertices_wp, faces_wp)
 
     positions_np = vertices_new_wp.numpy()
     midpoint_np = 0.5 * (vertices_np[0] + vertices_np[1])
@@ -3000,7 +3000,7 @@ def test_subdivide_loop_empty(device: str) -> None:
     """An empty mesh passes through, matching ``subdivide``."""
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    vertices_new_wp, faces_new_wp = tw.remesh.subdivide_loop(vertices_wp, faces_wp)
+    vertices_new_wp, faces_new_wp = od.remesh.subdivide_loop(vertices_wp, faces_wp)
     assert vertices_new_wp.size == 0
     assert faces_new_wp.size == 0
 
@@ -3032,7 +3032,7 @@ def test_subdivide_loop_operator_reproduces_its_own_positions(
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices_wp.size
 
-    moved_wp, subdivided_faces_wp, operator = tw.remesh.subdivide_loop(
+    moved_wp, subdivided_faces_wp, operator = od.remesh.subdivide_loop(
         vertices_wp, faces_wp, return_operator=True
     )
     assert int(operator.nrow) == moved_wp.size
@@ -3042,7 +3042,7 @@ def test_subdivide_loop_operator_reproduces_its_own_positions(
     assert np.allclose(np.asarray(operator_np.sum(axis=1)).ravel(), 1.0, rtol=1e-6, atol=1e-6)
     assert np.allclose(operator_np @ vertices_wp.numpy(), moved_wp.numpy(), rtol=1e-6, atol=1e-6)
 
-    plain_vertices_wp, plain_faces_wp = tw.remesh.subdivide_loop(vertices_wp, faces_wp)
+    plain_vertices_wp, plain_faces_wp = od.remesh.subdivide_loop(vertices_wp, faces_wp)
     assert np.array_equal(plain_faces_wp.numpy(), subdivided_faces_wp.numpy())
     # Positions from two separate calls, not compared byte for byte: the ring sums are accumulated
     # with atomics, so their float32 order varies run to run on CUDA.
@@ -3069,13 +3069,13 @@ def test_subdivide_loop_operator_carries_a_field(
     n_vertices = vertices_wp.size
     device = vertices_wp.device
 
-    moved_wp, _faces_wp, operator = tw.remesh.subdivide_loop(
+    moved_wp, _faces_wp, operator = od.remesh.subdivide_loop(
         vertices_wp, faces_wp, return_operator=True
     )
     n_out = moved_wp.size
 
     constant_wp = wp.full(n_vertices, wp.float32(2.5), dtype=wp.float32, device=device)
-    carried_wp = tw.interpolation.transfer_through_operator(constant_wp, operator)
+    carried_wp = od.interpolation.transfer_through_operator(constant_wp, operator)
     assert carried_wp.shape == (n_out,)
     assert np.allclose(carried_wp.numpy(), 2.5, rtol=1e-6, atol=1e-6)
 
@@ -3084,11 +3084,11 @@ def test_subdivide_loop_operator_carries_a_field(
     direction_np = np.array([0.3, -0.7, 0.2], dtype=np.float32)
     linear_np = mesh_wp.points.numpy() @ direction_np
     linear_wp = wp.array(linear_np, dtype=wp.float32, device=device)
-    carried_linear_np = tw.interpolation.transfer_through_operator(linear_wp, operator).numpy()
+    carried_linear_np = od.interpolation.transfer_through_operator(linear_wp, operator).numpy()
     assert np.allclose(carried_linear_np, moved_wp.numpy() @ direction_np, rtol=1e-5, atol=1e-5)
 
     # vec3: transferring the positions themselves is the operator's own identity.
-    carried_positions_wp = tw.interpolation.transfer_through_operator(vertices_wp, operator)
+    carried_positions_wp = od.interpolation.transfer_through_operator(vertices_wp, operator)
     assert np.allclose(carried_positions_wp.numpy(), moved_wp.numpy(), rtol=1e-6, atol=1e-6)
 
     # vec2: a UV pair whose components sum to one stays a partition, since the rows are affine.
@@ -3096,7 +3096,7 @@ def test_subdivide_loop_operator_carries_a_field(
         np.stack([np.linspace(0.0, 1.0, n_vertices), np.linspace(1.0, 0.0, n_vertices)], axis=1),
         dtype=np.float32,
     )
-    carried_uv_np = tw.interpolation.transfer_through_operator(
+    carried_uv_np = od.interpolation.transfer_through_operator(
         points_to_warp_uv(uv_np, device), operator
     ).numpy()
     assert carried_uv_np.shape == (n_out, 2)
@@ -3117,7 +3117,7 @@ def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
         device=device,
     )
     faces_wp = warp_empty(0, wp.int32, device)
-    _vertices_wp, _faces_wp, identity = tw.remesh.subdivide_loop(
+    _vertices_wp, _faces_wp, identity = od.remesh.subdivide_loop(
         vertices_wp, faces_wp, return_operator=True
     )
     assert int(identity.nrow) == 3
@@ -3126,12 +3126,12 @@ def test_transfer_through_operator_guards_and_empty_inputs(device: str) -> None:
         np.array([1.0, 2.0, 3.0], dtype=np.float32), dtype=wp.float32, device=device
     )
     assert np.allclose(
-        tw.interpolation.transfer_through_operator(field_wp, identity).numpy(),
+        od.interpolation.transfer_through_operator(field_wp, identity).numpy(),
         np.array([1.0, 2.0, 3.0]),
     )
 
     with pytest.raises(ValueError, match="columns"):
-        tw.interpolation.transfer_through_operator(
+        od.interpolation.transfer_through_operator(
             wp.zeros(2, dtype=wp.float32, device=device), identity
         )
 
@@ -3148,7 +3148,7 @@ def test_subdivide_to_size_reference_regular(icosahedron: tuple[tm.Trimesh, wp.M
     faces_np = mesh_tm.faces.astype(np.int32)
     max_edge = 0.6 * _max_edge_length(mesh_tm.vertices.astype(np.float32), faces_np)
 
-    new_v_wp, new_f_wp, index_wp = tw.remesh.subdivide_to_size(
+    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
         mesh_wp.points, mesh_wp.indices, max_edge, return_index=True
     )
     new_v_np = new_v_wp.numpy()
@@ -3192,7 +3192,7 @@ def test_subdivide_to_size_matches_pymeshlab(
     worst nearest-neighbour distance **6.5e-08**. So no transform on the geometry is needed at all.
 
     Two on the plumbing, both matching what the benchmark passes. ``threshold`` takes a wrapper type
-    and gets ``ml.PureValue`` fed from the same absolute length triwarp receives, not a
+    and gets ``ml.PureValue`` fed from the same absolute length ordito receives, not a
     ``PercentageValue`` of MeshLab's own bounding box. And ``iterations`` is a pass *cap* rather
     than a convergence criterion, so it is set well above the ``log2`` depth the target needs and
     the surplus passes find nothing left to refine; this is why the two converge to the same fixed
@@ -3217,14 +3217,14 @@ def test_subdivide_to_size_matches_pymeshlab(
     vertices_pml = np.asarray(meshset_pml.current_mesh().vertex_matrix(), dtype=np.float64)
     faces_pml = np.asarray(meshset_pml.current_mesh().face_matrix())
 
-    vertices_wp, faces_wp = tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    vertices_wp, faces_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
     vertices_np = vertices_wp.numpy().astype(np.float64)
     faces_np = faces_wp.numpy().reshape(-1, 3)
 
     assert len(vertices_np) == vertices_pml.shape[0]
     assert faces_np.shape[0] == faces_pml.shape[0]
 
-    # Same vertex set, then the same faces once triwarp's indices are remapped onto MeshLab's.
+    # Same vertex set, then the same faces once ordito's indices are remapped onto MeshLab's.
     distance_np, remap_np = KDTree(vertices_pml).query(vertices_np)
     assert np.max(distance_np) < 1e-5, f"vertices differ by up to {np.max(distance_np):.3e}"
     assert len(set(np.asarray(remap_np).tolist())) == remap_np.size
@@ -3242,7 +3242,7 @@ def test_subdivide_to_size_reference_mixed(device: str) -> None:
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     max_edge = 1.9
 
-    new_v_wp, new_f_wp, index_wp = tw.remesh.subdivide_to_size(
+    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
         mesh_wp.points, mesh_wp.indices, max_edge, max_iter=1, return_index=True
     )
     new_v_np = new_v_wp.numpy()
@@ -3279,9 +3279,9 @@ def test_subdivide_to_size_max_edge(
 ) -> None:
     """Every edge is at most ``max_edge`` after subdivision (the defining property)."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    max_edge = frac * tw.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
+    max_edge = frac * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
     result_max_edge = _max_edge_length(new_v_wp.numpy(), new_f_wp.numpy().reshape(-1, 3))
 
     assert result_max_edge <= max_edge + 1e-4
@@ -3294,7 +3294,7 @@ def test_subdivide_to_size_noop(mesh_name: str, request: pytest.FixtureRequest) 
     faces_np = mesh_tm.faces.astype(np.int32)
     max_edge = 2.0 * _max_edge_length(mesh_wp.points.numpy(), faces_np)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
 
     assert np.array_equal(new_v_wp.numpy(), mesh_wp.points.numpy())
     assert np.array_equal(new_f_wp.numpy().reshape(-1, 3), faces_np)
@@ -3307,9 +3307,9 @@ def test_subdivide_to_size_crack_free(
 ) -> None:
     """Not a library comparison: closed input stays watertight, every edge shared by two faces."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    max_edge = frac * tw.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
+    max_edge = frac * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
 
     _, counts = np.unique(undirected_edges(new_f_np), axis=0, return_counts=True)
@@ -3332,7 +3332,7 @@ def test_subdivide_to_size_preserves_surface(
     faces_np = mesh_tm.faces.astype(np.int32)
     max_edge = 0.4 * _max_edge_length(vertices_np, faces_np)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
+    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, max_edge)
     new_v_np = new_v_wp.numpy()
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
 
@@ -3354,7 +3354,7 @@ def test_subdivide_to_size_return_index(mesh_name: str, request: pytest.FixtureR
     n_in_faces = faces_np.shape[0]
     max_edge = 0.5 * _max_edge_length(vertices_np, faces_np)
 
-    new_v_wp, new_f_wp, index_wp = tw.remesh.subdivide_to_size(
+    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
         mesh_wp.points, mesh_wp.indices, max_edge, return_index=True
     )
     new_v_np = new_v_wp.numpy()
@@ -3392,7 +3392,7 @@ def test_subdivide_to_size_empty(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
 
-    new_v_wp, new_f_wp, index_wp = tw.remesh.subdivide_to_size(
+    new_v_wp, new_f_wp, index_wp = od.remesh.subdivide_to_size(
         vertices_wp, faces_wp, 1.0, return_index=True
     )
     assert new_v_wp.size == 0
@@ -3409,7 +3409,7 @@ def test_subdivide_to_size_single_triangle(device: str) -> None:
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    new_v_wp, new_f_wp = tw.remesh.subdivide_to_size(vertices_wp, faces_wp, 1.5)
+    new_v_wp, new_f_wp = od.remesh.subdivide_to_size(vertices_wp, faces_wp, 1.5)
     new_v_np = new_v_wp.numpy()
     new_f_np = new_f_wp.numpy().reshape(-1, 3)
 
@@ -3422,9 +3422,9 @@ def test_subdivide_to_size_single_triangle(device: str) -> None:
 
 def test_subdivide_to_size_max_iter_exceeded(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    small_edge = 0.1 * tw.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
+    small_edge = 0.1 * od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
     with pytest.raises(ValueError, match="max_iter exceeded"):
-        tw.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, small_edge, max_iter=0)
+        od.remesh.subdivide_to_size(mesh_wp.points, mesh_wp.indices, small_edge, max_iter=0)
 
 
 def test_subdivide_to_size_sizing_field(device: str) -> None:
@@ -3441,7 +3441,7 @@ def test_subdivide_to_size_sizing_field(device: str) -> None:
     field_np = (0.08 + 0.32 * fraction).astype(np.float32)
     field_wp = wp.array(np.ascontiguousarray(field_np), dtype=wp.float32, device=device)
 
-    out_vertices, out_faces = tw.remesh.subdivide_to_size(
+    out_vertices, out_faces = od.remesh.subdivide_to_size(
         vertices_wp, faces_wp, field_wp, max_iter=12
     )
     points_np = out_vertices.numpy().astype(np.float64)
@@ -3474,7 +3474,7 @@ def test_subdivide_to_size_sizing_field(device: str) -> None:
 def test_subdivide_region_max_edge(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
     max_edge = 0.2 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    nv, nf, nr = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
+    nv, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
     max_edge_np = _region_max_edge(nv.numpy(), nf.numpy().reshape(-1, 3), nr.numpy())
     assert max_edge_np <= max_edge + 1e-4
 
@@ -3482,7 +3482,7 @@ def test_subdivide_region_max_edge(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
 def test_subdivide_region_crack_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    _, nf, _ = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge)
+    _, nf, _ = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge)
     faces_np = nf.numpy().reshape(-1, 3)
     edges = undirected_edges(faces_np)
     _, counts = np.unique(edges, axis=0, return_counts=True)
@@ -3494,7 +3494,7 @@ def test_subdivide_region_outside_untouched(hemisphere: tuple[tm.Trimesh, wp.Mes
     v, f, region = _filled_hemisphere(hemisphere)
     n_vertices_before = v.size
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    _, nf, nr = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
+    _, nf, nr = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
     faces_np = nf.numpy().reshape(-1, 3)
     region_np = nr.numpy()
     original = {tuple(sorted(t)) for t in f.numpy().reshape(-1, 3).tolist()}
@@ -3508,7 +3508,7 @@ def test_subdivide_region_new_vertex_range(hemisphere: tuple[tm.Trimesh, wp.Mesh
     v, f, region = _filled_hemisphere(hemisphere)
     n_vertices_before = v.size
     max_edge = 0.3 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    nv, _, _ = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
+    nv, _, _ = od.remesh.subdivide_region_to_size(v, f, region, max_edge=max_edge, delaunay=False)
     nv_np = nv.numpy()
     assert len(nv_np) > n_vertices_before
     assert np.array_equal(nv_np[:n_vertices_before], v.numpy())
@@ -3518,7 +3518,7 @@ def test_subdivide_region_max_splits(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
     n_vertices_before = v.size
     max_edge = 0.2 * _region_max_edge(v.numpy(), f.numpy().reshape(-1, 3), region.numpy())
-    nv, _, _ = tw.remesh.subdivide_region_to_size(
+    nv, _, _ = od.remesh.subdivide_region_to_size(
         v, f, region, max_edge=max_edge, max_splits=5, delaunay=False
     )
     assert len(nv.numpy()) - n_vertices_before <= 5
@@ -3553,7 +3553,7 @@ def test_subdivide_region_max_splits_takes_the_longest_edges(
         "the budget must bind and still leave a real choice, or the test is about nothing"
     )
 
-    nv, _, _ = tw.remesh.subdivide_region_to_size(
+    nv, _, _ = od.remesh.subdivide_region_to_size(
         v, f, region, max_edge=max_edge, max_splits=budget, delaunay=False
     )
     # One new vertex per split, appended after the originals, so the midpoints identify the edges.
@@ -3575,7 +3575,7 @@ def test_subdivide_region_max_splits_takes_the_longest_edges(
 def test_subdivide_region_empty_region(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     v, f, region = _filled_hemisphere(hemisphere)
     empty = wp.zeros(region.size, dtype=wp.bool, device=region.device)
-    nv, nf, _ = tw.remesh.subdivide_region_to_size(v, f, empty, max_edge=0.01, delaunay=False)
+    nv, nf, _ = od.remesh.subdivide_region_to_size(v, f, empty, max_edge=0.01, delaunay=False)
     assert np.array_equal(nv.numpy(), v.numpy())
     assert np.array_equal(nf.numpy(), f.numpy())
 
@@ -3584,7 +3584,7 @@ def test_subdivide_region_empty_mesh(device: str):
     v = wp.zeros(0, dtype=wp.vec3, device=device)
     f = wp.zeros(0, dtype=wp.int32, device=device)
     region = wp.zeros(0, dtype=wp.bool, device=device)
-    _, nf, _ = tw.remesh.subdivide_region_to_size(v, f, region, max_edge=0.1)
+    _, nf, _ = od.remesh.subdivide_region_to_size(v, f, region, max_edge=0.1)
     assert nf.size == 0
 
 
@@ -3632,7 +3632,7 @@ def _graded_patch_with_hole(device: str, n: int = 17):
     vertices_wp, faces_wp = numpy_to_warp(holed_tm.vertices, holed_tm.faces, device)
     n_faces = faces_wp.size // 3
     # ``preserve_largest_hole`` leaves the grid's own outer boundary open and fills only the punch.
-    filled_wp = tw.holes.fill_min_weight(vertices_wp, faces_wp, preserve_largest_hole=True)
+    filled_wp = od.holes.fill_min_weight(vertices_wp, faces_wp, preserve_largest_hole=True)
     region_np = np.zeros(filled_wp.size // 3, dtype=bool)
     region_np[n_faces:] = True
     return vertices_wp, filled_wp, wp.array(region_np, dtype=wp.bool, device=device), n_faces
@@ -3680,7 +3680,7 @@ def test_refine_region_to_density_matches_the_surroundings_better_than_a_target_
     device: str,
 ) -> None:
     """
-    Not a library comparison: the two triwarp refiners against each other on a graded patch.
+    Not a library comparison: the two ordito refiners against each other on a graded patch.
 
     No reference computes this in isolation -- pymeshfix performs exactly this refinement but only
     inside ``fill_small_boundaries``, where ``tests/test_holes.py`` compares it -- so the claim here
@@ -3698,16 +3698,16 @@ def test_refine_region_to_density_matches_the_surroundings_better_than_a_target_
     here would pass for either.
     """
     vertices_wp, faces_wp, region_wp, n_faces = _graded_patch_with_hole(device)
-    original_faces_wp = wp.clone(twt.as_dense(faces_wp[: 3 * n_faces]))
+    original_faces_wp = wp.clone(odt.as_dense(faces_wp[: 3 * n_faces]))
 
-    density_v, density_f, density_r = tw.remesh.refine_region_to_density(
+    density_v, density_f, density_r = od.remesh.refine_region_to_density(
         vertices_wp, faces_wp, region_wp
     )
-    length_v, length_f, length_r = tw.remesh.subdivide_region_to_size(
+    length_v, length_f, length_r = od.remesh.subdivide_region_to_size(
         vertices_wp,
         faces_wp,
         region_wp,
-        max_edge=float(tw.edges.mean_edge_length(vertices_wp, original_faces_wp)),
+        max_edge=float(od.edges.mean_edge_length(vertices_wp, original_faces_wp)),
         max_splits=100_000,
     )
 
@@ -3743,7 +3743,7 @@ def test_refine_region_to_density_leaves_the_mesh_closed_and_the_outside_alone(
         tuple(sorted(row)) for row in faces_wp.numpy().reshape(-1, 3)[~region_wp.numpy()].tolist()
     }
 
-    new_v, new_f, new_r = tw.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp)
+    new_v, new_f, new_r = od.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp)
 
     assert new_v.size > n_vertices  # non-vacuity: it refined
     assert new_f.size // 3 == faces_wp.size // 3 + 2 * (new_v.size - n_vertices)
@@ -3769,7 +3769,7 @@ def test_refine_region_to_density_alpha_monotone(hemisphere: tuple[tm.Trimesh, w
     vertices_wp, faces_wp, region_wp = _filled_hemisphere(hemisphere)
     n_vertices = vertices_wp.size
     inserted = [
-        tw.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp, alpha=alpha)[0].size
+        od.remesh.refine_region_to_density(vertices_wp, faces_wp, region_wp, alpha=alpha)[0].size
         - n_vertices
         for alpha in (1.0, math.sqrt(2.0), 2.0)
     ]
@@ -3781,14 +3781,14 @@ def test_refine_region_to_density_empty_region(hemisphere: tuple[tm.Trimesh, wp.
     """An empty region is the identity, and the whole mesh as the region still terminates."""
     vertices_wp, faces_wp, region_wp = _filled_hemisphere(hemisphere)
     empty_wp = wp.zeros(region_wp.size, dtype=wp.bool, device=region_wp.device)
-    same_v, same_f, _same_r = tw.remesh.refine_region_to_density(vertices_wp, faces_wp, empty_wp)
+    same_v, same_f, _same_r = od.remesh.refine_region_to_density(vertices_wp, faces_wp, empty_wp)
     assert np.array_equal(same_v.numpy(), vertices_wp.numpy())
     assert np.array_equal(same_f.numpy(), faces_wp.numpy())
 
     # No surrounding mesh at all: the scale attribute falls back to the whole mesh's edges, which
     # must still converge rather than divide by a zero scale for ever.
     all_wp = wp.ones(region_wp.size, dtype=wp.bool, device=region_wp.device)
-    _whole_v, whole_f, _whole_r = tw.remesh.refine_region_to_density(vertices_wp, faces_wp, all_wp)
+    _whole_v, whole_f, _whole_r = od.remesh.refine_region_to_density(vertices_wp, faces_wp, all_wp)
     assert whole_f.size >= faces_wp.size
 
 
@@ -3798,12 +3798,12 @@ def test_refine_region_to_density_empty_region(hemisphere: tuple[tm.Trimesh, wp.
 # but only its faces were ever asserted on an empty mesh, so this keeps that same narrower claim
 # rather than widening it.
 _REMESH_EMPTY_MESH_CASES = [
-    ("flip_to_delaunay", lambda v, f: (tw.remesh.flip_to_delaunay(v, f),)),
-    ("flip_by_objective", lambda v, f: (tw.remesh.flip_by_objective(v, f),)),
+    ("flip_to_delaunay", lambda v, f: (od.remesh.flip_to_delaunay(v, f),)),
+    ("flip_by_objective", lambda v, f: (od.remesh.flip_by_objective(v, f),)),
     (
         "refine_region_to_density",
         lambda v, f: (
-            tw.remesh.refine_region_to_density(v, f, wp.zeros(0, dtype=wp.bool, device=f.device))[
+            od.remesh.refine_region_to_density(v, f, wp.zeros(0, dtype=wp.bool, device=f.device))[
                 1
             ],
         ),
@@ -3832,11 +3832,11 @@ def test_remesh_empty_mesh_is_a_noop(
 # refine_region_to_density has its own but raises the identical message -- verified directly
 # against all three on the same icosphere(1) + 2-element region before merging.
 _REMESH_REJECTS_MISMATCHED_REGION_CASES = [
-    ("flip_to_delaunay", lambda v, f, r: tw.remesh.flip_to_delaunay(v, f, region=r)),
-    ("flip_by_objective", lambda v, f, r: tw.remesh.flip_by_objective(v, f, region=r)),
+    ("flip_to_delaunay", lambda v, f, r: od.remesh.flip_to_delaunay(v, f, region=r)),
+    ("flip_by_objective", lambda v, f, r: od.remesh.flip_by_objective(v, f, region=r)),
     (
         "refine_region_to_density",
-        lambda v, f, r: tw.remesh.refine_region_to_density(v, f, region=r),
+        lambda v, f, r: od.remesh.refine_region_to_density(v, f, region=r),
     ),
 ]
 
@@ -3884,15 +3884,15 @@ def test_refiners_return_buffers_independent_of_their_input(
     new_region_wp = None
     if entry_point == "subdivide_to_size":
         beyond_longest = 10.0 * float(np.ptp(vertices_before, axis=0).max())
-        new_vertices_wp, new_faces_wp = tw.remesh.subdivide_to_size(
+        new_vertices_wp, new_faces_wp = od.remesh.subdivide_to_size(
             vertices_wp, faces_wp, beyond_longest
         )
     elif entry_point == "subdivide_region_to_size":
-        new_vertices_wp, new_faces_wp, new_region_wp = tw.remesh.subdivide_region_to_size(
+        new_vertices_wp, new_faces_wp, new_region_wp = od.remesh.subdivide_region_to_size(
             vertices_wp, faces_wp, empty_wp, max_edge=0.01, delaunay=False
         )
     else:
-        new_vertices_wp, new_faces_wp, new_region_wp = tw.remesh.refine_region_to_density(
+        new_vertices_wp, new_faces_wp, new_region_wp = od.remesh.refine_region_to_density(
             vertices_wp, faces_wp, empty_wp
         )
 
@@ -3944,7 +3944,7 @@ def test_split_edges_all_matches_igl_and_open3d(icosahedron: tuple[tm.Trimesh, w
     libraries number the inserted midpoints in three different orders -- ``lexsort_rows`` is not
     usable on float coordinates (CLAUDE.md section 7.5), and the counts are asserted first so the
     bijection cannot hide a missing or duplicated vertex. Measured max nearest-neighbour distance
-    5.4e-08 against both, i.e. triwarp's float32 storage.
+    5.4e-08 against both, i.e. ordito's float32 storage.
 
     ``igl.upsample`` is pinned to ``icosahedron``: it corrupts the heap on the scan meshes and
     SIGSEGVs on ``bunny``, and ``icosahedron`` is the fixture it is measured clean on over 1 200
@@ -3952,11 +3952,11 @@ def test_split_edges_all_matches_igl_and_open3d(icosahedron: tuple[tm.Trimesh, w
     """
     mesh_tm, mesh_wp = icosahedron
     n_faces = mesh_wp.indices.size // 3
-    unique_edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices)
     every_edge_wp = wp.full(
         int(unique_edges_wp.shape[0]), True, dtype=wp.bool, device=mesh_wp.indices.device
     )
-    split_vertices_wp, split_faces_wp = tw.remesh.split_edges(
+    split_vertices_wp, split_faces_wp = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         every_edge_wp,
@@ -3989,7 +3989,7 @@ def test_split_edges_every_edge_is_the_regular_subdivision(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: splitting every edge must equal ``subdivide``.
+    Ordito against ordito: splitting every edge must equal ``subdivide``.
 
     ``subdivide`` is the half of the pair carrying the oracle -- splitting every edge *is* the
     1-to-4 subdivision, so the two must agree exactly.
@@ -4004,15 +4004,15 @@ def test_split_edges_every_edge_is_the_regular_subdivision(
     ``subdivide_midpoint`` both bind the regular subdivision -- and would upgrade this to Class B.
     """
     _mesh_tm, mesh_wp = icosahedron
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     every_edge = wp.full(
         int(unique_edges.shape[0]), True, dtype=wp.bool, device=mesh_wp.indices.device
     )
 
-    split_v, split_f = tw.remesh.split_edges(
+    split_v, split_f = od.remesh.split_edges(
         mesh_wp.points, mesh_wp.indices, every_edge, unique_edges=unique_edges, inverse=inverse
     )
-    fine_v, fine_f = tw.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
+    fine_v, fine_f = od.remesh.subdivide(mesh_wp.points, mesh_wp.indices)
 
     assert split_f.size // 3 == 4 * (mesh_wp.indices.size // 3)
     assert np.array_equal(split_f.numpy(), fine_f.numpy())
@@ -4031,7 +4031,7 @@ def test_split_edges_honours_caller_supplied_positions(
     """
     _mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.indices.device
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     edges_np = unique_edges.numpy()
     points_np = mesh_wp.points.numpy().astype(np.float64)
 
@@ -4043,7 +4043,7 @@ def test_split_edges_honours_caller_supplied_positions(
     mask_wp = wp.array(np.ascontiguousarray(mask_np), dtype=wp.bool, device=device)
     positions_wp = points_to_warp(quarter_np, device)
 
-    split_v, split_f = tw.remesh.split_edges(
+    split_v, split_f = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         mask_wp,
@@ -4057,7 +4057,7 @@ def test_split_edges_honours_caller_supplied_positions(
     assert np.allclose(inserted, quarter_np, atol=1e-6)
     # Each flagged edge cut one face into two, and the faces are still valid.
     assert split_f.size // 3 > mesh_wp.indices.size // 3
-    assert tw.validation.is_edge_manifold(split_f, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(split_f, allow_boundary_edges=False)
 
 
 def test_split_edges_is_crack_free_for_an_arbitrary_mask(
@@ -4066,17 +4066,17 @@ def test_split_edges_is_crack_free_for_an_arbitrary_mask(
     """Not a library comparison: an arbitrary edge subset still leaves a closed, manifold mesh."""
     mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.indices.device
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     rng = np.random.default_rng(20260811)
     mask_np = rng.random(int(unique_edges.shape[0])) < 0.5
     mask_wp = wp.array(np.ascontiguousarray(mask_np), dtype=wp.bool, device=device)
 
-    split_v, split_f = tw.remesh.split_edges(
+    split_v, split_f = od.remesh.split_edges(
         mesh_wp.points, mesh_wp.indices, mask_wp, unique_edges=unique_edges, inverse=inverse
     )
     assert int(mask_np.sum()) > 0  # anti-vacuity
     assert split_v.size == mesh_wp.points.size + int(mask_np.sum())
-    assert tw.validation.is_edge_manifold(split_f, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(split_f, allow_boundary_edges=False)
     assert np.isclose(warp_to_trimesh(split_v, split_f).area, mesh_tm.area, rtol=1e-5)
 
 
@@ -4085,10 +4085,10 @@ def test_split_edges_carries_a_per_face_index(icosahedron: tuple[tm.Trimesh, wp.
     _mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.indices.device
     n_faces = mesh_wp.indices.size // 3
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     mask_wp = wp.full(int(unique_edges.shape[0]), True, dtype=wp.bool, device=device)
 
-    _v, faces_wp, provenance = tw.remesh.split_edges(
+    _v, faces_wp, provenance = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         mask_wp,
@@ -4106,7 +4106,7 @@ def test_split_edges_carries_a_per_face_index(icosahedron: tuple[tm.Trimesh, wp.
     # An explicit index is carried rather than replaced: label faces by parity and check it
     # survives.
     labels_np = (np.arange(n_faces) % 2).astype(np.int32)
-    _v2, _f2, carried = tw.remesh.split_edges(
+    _v2, _f2, carried = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         mask_wp,
@@ -4120,10 +4120,10 @@ def test_split_edges_carries_a_per_face_index(icosahedron: tuple[tm.Trimesh, wp.
 
 def test_split_edges_empty_mask_is_a_copy(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=mesh_wp.indices.device)
 
-    split_v, split_f, index = tw.remesh.split_edges(
+    split_v, split_f, index = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         nothing,
@@ -4140,7 +4140,7 @@ def test_split_edges_empty_mask_does_not_alias_the_caller_index(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Not a library comparison: buffer ownership is triwarp's contract, not a reference's.
+    Not a library comparison: buffer ownership is ordito's contract, not a reference's.
 
     The sibling above pins the *values* on the no-split path; this pins that the third return is
     the caller's own ``index`` buffer copied rather than handed straight back, so that ownership
@@ -4152,12 +4152,12 @@ def test_split_edges_empty_mask_does_not_alias_the_caller_index(
     """
     _mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.indices.device
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     nothing = wp.zeros(int(unique_edges.shape[0]), dtype=wp.bool, device=device)
     n_faces = mesh_wp.indices.size // 3
-    carry = tw.array.arange(n_faces, device=device)
+    carry = od.array.arange(n_faces, device=device)
 
-    _split_v, _split_f, index = tw.remesh.split_edges(
+    _split_v, _split_f, index = od.remesh.split_edges(
         mesh_wp.points,
         mesh_wp.indices,
         nothing,
@@ -4175,13 +4175,13 @@ def test_split_edges_empty_mask_does_not_alias_the_caller_index(
 def test_split_edges_validation(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.indices.device
-    unique_edges, inverse = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges, inverse = od.edges.edges_unique(mesh_wp.indices)
     n_edges = int(unique_edges.shape[0])
     n_faces = mesh_wp.indices.size // 3
     full_mask = wp.full(n_edges, True, dtype=wp.bool, device=device)
 
     with pytest.raises(ValueError, match="one entry per unique edge"):
-        tw.remesh.split_edges(
+        od.remesh.split_edges(
             mesh_wp.points,
             mesh_wp.indices,
             wp.full(n_edges + 1, True, dtype=wp.bool, device=device),
@@ -4189,7 +4189,7 @@ def test_split_edges_validation(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None
             inverse=inverse,
         )
     with pytest.raises(ValueError, match="one entry per flagged edge"):
-        tw.remesh.split_edges(
+        od.remesh.split_edges(
             mesh_wp.points,
             mesh_wp.indices,
             full_mask,
@@ -4198,7 +4198,7 @@ def test_split_edges_validation(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None
             inverse=inverse,
         )
     with pytest.raises(ValueError, match="one entry per face"):
-        tw.remesh.split_edges(
+        od.remesh.split_edges(
             mesh_wp.points,
             mesh_wp.indices,
             full_mask,

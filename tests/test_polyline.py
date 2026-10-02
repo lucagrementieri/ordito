@@ -12,7 +12,8 @@ from meshlib import mrmeshpy as mm
 from trimesh.path import segments as tm_segments
 from trimesh.path import traversal as tm_traversal
 
-import triwarp as tw
+import ordito as od
+from ordito.kernels import polyline as kernel_polyline
 from tests.comparisons import hausdorff_two_sided
 from tests.conversions import (
     meshlib_to_trimesh,
@@ -21,7 +22,6 @@ from tests.conversions import (
     polyline_to_pyvista,
     warp_empty,
 )
-from triwarp.kernels import polyline as kernel_polyline
 
 if TYPE_CHECKING:
     import pyvista as pv
@@ -255,26 +255,26 @@ def _radius_np(
 def test_open_polyline_drops_duplicate_endpoint(device: str) -> None:
     pts_np = _random_open_polyline(0)
     closed_np = _closed_from(pts_np)
-    opened_wp = tw.polyline.polyline_open(points_to_warp(closed_np, device))
+    opened_wp = od.polyline.polyline_open(points_to_warp(closed_np, device))
     assert np.allclose(opened_wp.numpy(), pts_np.astype(np.float32), rtol=1e-5, atol=1e-5)
 
 
 def test_open_polyline_leaves_open_unchanged(device: str) -> None:
     pts_np = _random_open_polyline(1)
-    opened_wp = tw.polyline.polyline_open(points_to_warp(pts_np, device))
+    opened_wp = od.polyline.polyline_open(points_to_warp(pts_np, device))
     assert np.allclose(opened_wp.numpy(), pts_np.astype(np.float32), rtol=1e-5, atol=1e-5)
 
 
 def test_close_polyline_appends_first_point(device: str) -> None:
     pts_np = _random_open_polyline(2)
-    closed_wp = tw.polyline.polyline_close(points_to_warp(pts_np, device))
+    closed_wp = od.polyline.polyline_close(points_to_warp(pts_np, device))
     expected = _closed_from(pts_np).astype(np.float32)
     assert np.allclose(closed_wp.numpy(), expected, rtol=1e-5, atol=1e-5)
 
 
 def test_close_polyline_leaves_closed_unchanged(device: str) -> None:
     closed_np = _closed_from(_random_open_polyline(3))
-    closed_wp = tw.polyline.polyline_close(points_to_warp(closed_np, device))
+    closed_wp = od.polyline.polyline_close(points_to_warp(closed_np, device))
     assert np.allclose(closed_wp.numpy(), closed_np.astype(np.float32), rtol=1e-5, atol=1e-5)
 
 
@@ -287,7 +287,7 @@ def test_polyline_length_matches_trimesh(device: str, seed: int) -> None:
     pts_np = _random_open_polyline(seed)
     segs = np.stack([pts_np[:-1], pts_np[1:]], axis=1)
     length_tm = tm_segments.length(segs, summed=True)
-    length_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device))
+    length_wp = od.polyline.polyline_length(points_to_warp(pts_np, device))
     assert np.allclose(length_wp, length_tm, rtol=1e-4, atol=1e-4)
 
 
@@ -303,7 +303,7 @@ def test_polyline_length_closed_matches_trimesh(device: str) -> None:
     closed_np = _closed_from(pts_np)
     segs = np.stack([closed_np[:-1], closed_np[1:]], axis=1)
     length_tm = tm_segments.length(segs, summed=True)
-    length_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
+    length_wp = od.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
     assert np.allclose(length_wp, length_tm, rtol=1e-4, atol=1e-4)
 
 
@@ -332,12 +332,12 @@ def test_polyline_length_matches_meshlib(device: str) -> None:
     """
     pts_np = _random_open_polyline(2, n=50)
 
-    length_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device))
+    length_wp = od.polyline.polyline_length(points_to_warp(pts_np, device))
     length_ml = mm.calcLength(_contour_ml(pts_np))
     assert length_ml > 0.0  # non-vacuity
     assert length_wp == pytest.approx(length_ml, rel=1e-6)
 
-    closed_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
+    closed_wp = od.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
     closed_ml = mm.calcLength(_contour_ml(_closed_from(pts_np)))
     assert closed_ml > length_ml  # the closing segment is real
     assert closed_wp == pytest.approx(closed_ml, rel=1e-6)
@@ -348,7 +348,7 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
     """
     Class A: VTK's ``compute_arc_length`` accumulates the same segments, to 7.35e-08 relative.
 
-    The residual is triwarp's ``float32`` buffer against pyvista's exact float64 point storage, and
+    The residual is ordito's ``float32`` buffer against pyvista's exact float64 point storage, and
     it is the same floor every pyvista row in the suite bottoms out at.
 
     **The input has to be one line cell.** ``polyline_to_pyvista`` builds it that way because
@@ -363,7 +363,7 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
     """
     pts_np = _random_open_polyline(2, n=50)
 
-    length_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device))
+    length_wp = od.polyline.polyline_length(points_to_warp(pts_np, device))
     arc_pv = np.asarray(
         cast("pv.PolyData", polyline_to_pyvista(pts_np).compute_arc_length())["arc_length"]
     )
@@ -371,7 +371,7 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
     assert length_pv > 0.0  # non-vacuity
     assert np.allclose(length_wp, length_pv, rtol=1e-5, atol=1e-5)
 
-    closed_wp = tw.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
+    closed_wp = od.polyline.polyline_length(points_to_warp(pts_np, device), closed=True)
     closed_pv = float(
         np.asarray(
             cast("pv.PolyData", polyline_to_pyvista(_closed_from(pts_np)).compute_arc_length())[
@@ -388,7 +388,7 @@ def test_polyline_length_matches_pyvista(device: str) -> None:
 
 def test_polyline_centroid_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(20)
-    centroid_wp = tw.polyline.polyline_centroid(points_to_warp(pts_np, device))
+    centroid_wp = od.polyline.polyline_centroid(points_to_warp(pts_np, device))
     assert np.allclose(list(centroid_wp), _centroid_np(pts_np), rtol=1e-4, atol=1e-4)
 
 
@@ -404,17 +404,17 @@ def test_polyline_centroid_closed_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(20)
     polyline_wp = points_to_warp(pts_np, device)
 
-    centroid_wp = tw.polyline.polyline_centroid(polyline_wp, closed=True)
+    centroid_wp = od.polyline.polyline_centroid(polyline_wp, closed=True)
 
     assert np.allclose(list(centroid_wp), _centroid_np(_closed_from(pts_np)), rtol=1e-4, atol=1e-4)
     assert not np.allclose(
-        list(centroid_wp), list(tw.polyline.polyline_centroid(polyline_wp)), atol=1e-3
+        list(centroid_wp), list(od.polyline.polyline_centroid(polyline_wp)), atol=1e-3
     )
 
 
 def test_polyline_normal_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(22)
-    normal_wp = tw.polyline.polyline_normal(points_to_warp(pts_np, device))
+    normal_wp = od.polyline.polyline_normal(points_to_warp(pts_np, device))
     # polyline_normal treats the polyline as a closed loop (Newell's method); the normal sign is
     # well-defined by the summed cross products, so compare directly.
     assert np.allclose(list(normal_wp), _closed_normal_np(pts_np), rtol=1e-4, atol=1e-4)
@@ -422,7 +422,7 @@ def test_polyline_normal_matches_reference(device: str) -> None:
 
 def test_polyline_normal_requires_three_points(device: str) -> None:
     with pytest.raises(ValueError, match="three points"):
-        tw.polyline.polyline_normal(points_to_warp(_random_open_polyline(0, n=2), device))
+        od.polyline.polyline_normal(points_to_warp(_random_open_polyline(0, n=2), device))
 
 
 # --- angles (NumPy reference; trimesh vector_angle cross-check) ---
@@ -430,19 +430,19 @@ def test_polyline_normal_requires_three_points(device: str) -> None:
 
 def test_polyline_angles_open_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(30)
-    angles_wp = tw.polyline.polyline_angles(points_to_warp(pts_np, device))
+    angles_wp = od.polyline.polyline_angles(points_to_warp(pts_np, device))
     assert np.allclose(angles_wp.numpy(), _angles_np(pts_np), rtol=1e-4, atol=1e-4)
 
 
 def test_polyline_angles_closed_matches_reference(device: str) -> None:
     closed_np = _closed_from(_random_open_polyline(31))
-    angles_wp = tw.polyline.polyline_angles(points_to_warp(closed_np, device))
+    angles_wp = od.polyline.polyline_angles(points_to_warp(closed_np, device))
     assert np.allclose(angles_wp.numpy(), _angles_np(closed_np), rtol=1e-4, atol=1e-4)
 
 
 def test_polyline_angles_closed_length_matches_original(device: str) -> None:
     pts_np = _random_open_polyline(32)
-    angles_wp = tw.polyline.polyline_angles(points_to_warp(pts_np, device), closed=True)
+    angles_wp = od.polyline.polyline_angles(points_to_warp(pts_np, device), closed=True)
     assert angles_wp.size == pts_np.shape[0]
 
 
@@ -459,7 +459,7 @@ def test_polyline_angles_closed_is_indexed_by_vertex_not_by_segment(device: str)
     by coincidence.
     """
     triangle_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32)
-    angles_wp = tw.polyline.polyline_angles(points_to_warp(triangle_np, device), closed=True)
+    angles_wp = od.polyline.polyline_angles(points_to_warp(triangle_np, device), closed=True)
     expected = np.radians([90.0, 135.0, 135.0])
     assert np.allclose(angles_wp.numpy(), expected, rtol=1e-4, atol=1e-4)
 
@@ -472,7 +472,7 @@ def test_distance_to_polyline_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(40)
     points_np = rng.standard_normal((25, 3))
     points_wp = points_to_warp(points_np, device)
-    distances_wp = tw.polyline.polyline_point_distance(points_wp, points_to_warp(pts_np, device))
+    distances_wp = od.polyline.polyline_point_distance(points_wp, points_to_warp(pts_np, device))
     assert np.allclose(distances_wp.numpy(), _distance_np(points_np, pts_np), rtol=1e-4, atol=1e-4)
 
 
@@ -492,7 +492,7 @@ def test_distance_to_polyline_matches_meshlib(device: str) -> None:
     pts_np = _random_open_polyline(40, n=40)
     points_np = rng.standard_normal((50, 3)) * 3.0 + pts_np.mean(axis=0)
 
-    distances_wp = tw.polyline.polyline_point_distance(
+    distances_wp = od.polyline.polyline_point_distance(
         points_to_warp(points_np, device), points_to_warp(pts_np, device)
     )
 
@@ -531,7 +531,7 @@ def test_distance_to_polyline_matches_pyvista(device: str) -> None:
     pts_np = _random_open_polyline(40, n=40)
     points_np = rng.standard_normal((50, 3)) * 3.0 + pts_np.mean(axis=0)
 
-    distances_wp = tw.polyline.polyline_point_distance(
+    distances_wp = od.polyline.polyline_point_distance(
         points_to_warp(points_np, device), points_to_warp(pts_np, device)
     )
 
@@ -551,7 +551,7 @@ def test_distance_to_single_point_polyline(device: str) -> None:
     rng = np.random.default_rng(41)
     points_np = rng.standard_normal((10, 3))
     target_np = rng.standard_normal((1, 3))
-    distances_wp = tw.polyline.polyline_point_distance(
+    distances_wp = od.polyline.polyline_point_distance(
         points_to_warp(points_np, device), points_to_warp(target_np, device)
     )
     expected = np.linalg.norm(points_np - target_np[0], axis=-1)
@@ -564,7 +564,7 @@ def test_distance_to_empty_polyline_is_infinite(device: str) -> None:
     points_wp = points_to_warp(rng.standard_normal((5, 3)), device)
     empty_wp = warp_empty(0, wp.vec3, device)
 
-    distances_wp = tw.polyline.polyline_point_distance(points_wp, empty_wp)
+    distances_wp = od.polyline.polyline_point_distance(points_wp, empty_wp)
 
     assert np.array_equal(distances_wp.numpy(), np.full(5, np.inf, dtype=np.float32))
 
@@ -576,7 +576,7 @@ def test_polyline_point_distance_slices_match_one_thread_per_query(
     """
     The segment-sliced search answers what one thread walking every segment does, bit for bit.
 
-    Triwarp against triwarp: the parity tests above carry the oracle, this pins the two schedules
+    Ordito against ordito: the parity tests above carry the oracle, this pins the two schedules
     ``polyline_point_distance`` chooses between. Fifty queries against a 3 000-point walk slice the
     segments on CUDA (and not on the CPU device, where both sides are the one-thread kernel); a
     minimum is order-free, so any split of the segments must give the same floats.
@@ -591,7 +591,7 @@ def test_polyline_point_distance_slices_match_one_thread_per_query(
         inputs=[queries_wp, polyline_wp, wp.int32(closed), unsliced_wp],
         device=device,
     )
-    distances_wp = tw.polyline.polyline_point_distance(queries_wp, polyline_wp, closed=closed)
+    distances_wp = od.polyline.polyline_point_distance(queries_wp, polyline_wp, closed=closed)
     assert np.array_equal(distances_wp.numpy(), unsliced_wp.numpy())
 
 
@@ -601,7 +601,7 @@ def test_polyline_point_distance_slices_match_one_thread_per_query(
 @pytest.mark.parametrize("step", [0.3, 0.75])
 def test_upsample_polyline_matches_reference(device: str, step: float) -> None:
     pts_np = _random_open_polyline(50)
-    upsampled_wp = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step)
+    upsampled_wp = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step)
     assert np.allclose(upsampled_wp.numpy(), _upsample_np(pts_np, step), rtol=1e-4, atol=1e-4)
 
 
@@ -610,7 +610,7 @@ def test_upsample_point_count(device: str) -> None:
     step = 0.4
     seg_len = np.linalg.norm(np.diff(pts_np, axis=0), axis=-1)
     expected_count = int(np.clip(seg_len // step, 1, None).astype(np.int64).sum())
-    upsampled = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
+    upsampled = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
     assert len(upsampled) == expected_count
 
 
@@ -620,11 +620,11 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
     Class C (no correspondence): the same curve resampled two ways, both of them *on* the curve.
 
     ``subdividePolyline`` takes the same ``maxEdgeLen``, and it is the only reference that resamples
-    a 3-D polyline at all. What the two do not share is the rule: triwarp splits each segment into
+    a 3-D polyline at all. What the two do not share is the rule: ordito splits each segment into
     ``max(floor(length / step), 1)`` **equal** pieces, so it lands near the step and can overshoot
     it by up to 2x; MeshLib **bisects** until every edge is under the cap, so it lands under the
     step and can undershoot by up to 2x. Measured on a 128-point helix (spacing 0.100273) at a step
-    of 0.040109 -- triwarp 254 points at spacing 0.050136, MeshLib 509 at 0.025068. Both are inside
+    of 0.040109 -- ordito 254 points at spacing 0.050136, MeshLib 509 at 0.025068. Both are inside
     the factor of two, from opposite sides, which is what the count bound below asserts.
 
     The claim that does hold exactly is the one that matters: **every point either library emits
@@ -636,7 +636,7 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
 
     **Bug class excluded:** a resampler that interpolates off the curve (a spline fit, a smoothing
     pass) or that leaves the spacing where it found it. **Mutation probe, measured:** feeding
-    ``polyline_smooth_upsample``'s output to the deviation assert -- triwarp's own curvature-aware
+    ``polyline_smooth_upsample``'s output to the deviation assert -- ordito's own curvature-aware
     variant, which is *meant* to leave the chord -- gives 1.1e-03, four orders past the 1e-05 bound.
     """
     steps_np = np.linspace(0.0, 4.0 * np.pi, 128)
@@ -644,7 +644,7 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
     spacing = float(np.linalg.norm(np.diff(pts_np, axis=0), axis=1).mean())
     step = 0.4 * spacing
 
-    dense_wp = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step)
+    dense_wp = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step)
     dense_np = dense_wp.numpy().astype(np.float64)
 
     polyline_ml = _polyline_ml(pts_np)
@@ -665,7 +665,7 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
         assert emitted.mean() > 0.5 * step
 
     # Mutation probe for the deviation bound: the curvature-aware variant leaves the chord.
-    smooth_np = tw.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
+    smooth_np = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
     assert _max_deviation_np(smooth_np.astype(np.float64), pts_np) > 1e-4
 
 
@@ -675,7 +675,7 @@ def test_upsample_polyline_matches_meshlib(device: str) -> None:
 @pytest.mark.parametrize("step", [0.3, 0.75])
 def test_smooth_upsample_matches_reference(device: str, step: float) -> None:
     pts_np = _random_open_polyline(50)
-    smoothed_wp = tw.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step)
+    smoothed_wp = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step)
     assert np.allclose(
         smoothed_wp.numpy(), _smooth_upsample_np(pts_np, step, closed=False), rtol=1e-4, atol=1e-4
     )
@@ -684,7 +684,7 @@ def test_smooth_upsample_matches_reference(device: str, step: float) -> None:
 @pytest.mark.parametrize("step", [0.3, 0.75])
 def test_smooth_upsample_closed_matches_reference(device: str, step: float) -> None:
     pts_np = _closed_from(_random_open_polyline(52))
-    smoothed_wp = tw.polyline.polyline_smooth_upsample(
+    smoothed_wp = od.polyline.polyline_smooth_upsample(
         points_to_warp(pts_np, device), step, closed=True
     )
     assert np.allclose(
@@ -695,8 +695,8 @@ def test_smooth_upsample_closed_matches_reference(device: str, step: float) -> N
 def test_smooth_upsample_same_point_count_as_linear(device: str) -> None:
     pts_np = _random_open_polyline(53)
     step = 0.4
-    linear = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
-    smoothed = tw.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
+    linear = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
+    smoothed = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
     assert smoothed.shape == linear.shape
 
 
@@ -705,15 +705,15 @@ def test_smooth_upsample_straight_line_reduces_to_linear(device: str) -> None:
     # the result must coincide with plain linear upsampling.
     pts_np = np.stack([np.linspace(0.0, 3.0, 7), np.zeros(7), np.zeros(7)], axis=1)
     step = 0.25
-    linear = tw.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
-    smoothed = tw.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
+    linear = od.polyline.polyline_upsample(points_to_warp(pts_np, device), step).numpy()
+    smoothed = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), step).numpy()
     assert np.allclose(smoothed, linear, rtol=1e-5, atol=1e-5)
 
 
 def test_smooth_upsample_preserves_original_vertices(device: str) -> None:
     # Each segment's first sample (t == 0) is its start vertex, so all but the final vertex survive.
     pts_np = _random_open_polyline(54, n=6)
-    smoothed = tw.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), 0.5).numpy()
+    smoothed = od.polyline.polyline_smooth_upsample(points_to_warp(pts_np, device), 0.5).numpy()
     for vertex in pts_np[:-1]:
         assert np.any(np.all(np.isclose(smoothed, vertex, rtol=1e-4, atol=1e-4), axis=1))
 
@@ -723,12 +723,12 @@ def test_smooth_upsample_closed_recovers_circle(device: str) -> None:
     # arcs, so every inserted point lies on the circle (a linear upsample would cut inside it).
     radius = 2.0
     polygon_np = _planar_circle(8, radius)
-    smoothed = tw.polyline.polyline_smooth_upsample(
+    smoothed = od.polyline.polyline_smooth_upsample(
         points_to_warp(polygon_np, device), 0.35, closed=True
     ).numpy()
     assert np.allclose(np.linalg.norm(smoothed, axis=-1), radius, rtol=1e-3, atol=1e-3)
     # The added points genuinely bulge outward relative to the straight-chord upsample.
-    linear = tw.polyline.polyline_upsample(
+    linear = od.polyline.polyline_upsample(
         points_to_warp(polygon_np, device), 0.35, closed=True
     ).numpy()
     assert np.linalg.norm(linear, axis=-1).min() < radius - 1e-2
@@ -747,7 +747,7 @@ def test_smooth_upsample_closed_recovers_circle_at_any_scale(device: str, radius
     original, always-passing scale; the smaller ones reproduce the failure this guards against.
     """
     polygon_np = _planar_circle(8, radius)
-    smoothed = tw.polyline.polyline_smooth_upsample(
+    smoothed = od.polyline.polyline_smooth_upsample(
         points_to_warp(polygon_np, device), 0.35 * radius, closed=True
     ).numpy()
     assert np.allclose(np.linalg.norm(smoothed, axis=-1), radius, rtol=1e-3, atol=1e-3 * radius)
@@ -764,13 +764,13 @@ def test_smooth_upsample_detects_an_already_closed_input(device: str) -> None:
     radius = 2.0
     ring_np = _planar_circle(8, radius)
     closed_np = np.concatenate([ring_np, ring_np[:1]], axis=0)
-    smoothed = tw.polyline.polyline_smooth_upsample(points_to_warp(closed_np, device), 0.35).numpy()
+    smoothed = od.polyline.polyline_smooth_upsample(points_to_warp(closed_np, device), 0.35).numpy()
     assert np.allclose(np.linalg.norm(smoothed[:, :2], axis=-1), radius, rtol=1e-3, atol=1e-3)
 
 
 def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
     single = points_to_warp(np.array([[1.0, 2.0, 3.0]]), device)
-    assert tw.polyline.polyline_smooth_upsample(single, 0.5).size == 1
+    assert od.polyline.polyline_smooth_upsample(single, 0.5).size == 1
 
 
 # --- cumulative_arc_length (NumPy reference) ---
@@ -778,7 +778,7 @@ def test_smooth_upsample_short_polyline_unchanged(device: str) -> None:
 
 def test_cumulative_arc_length_matches_reference(device: str) -> None:
     pts_np = _random_open_polyline(40)
-    cumulative_wp = tw.polyline.cumulative_arc_length(points_to_warp(pts_np, device))
+    cumulative_wp = od.polyline.cumulative_arc_length(points_to_warp(pts_np, device))
     segment_lengths_np = np.linalg.norm(np.diff(pts_np, axis=0), axis=1)
     expected_np = np.concatenate([[0.0], np.cumsum(segment_lengths_np)])
     assert np.allclose(cumulative_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
@@ -787,9 +787,9 @@ def test_cumulative_arc_length_matches_reference(device: str) -> None:
 def test_cumulative_arc_length_last_entry_is_total_length(device: str) -> None:
     pts_np = _random_open_polyline(25)
     polyline_wp = points_to_warp(pts_np, device)
-    cumulative_wp = tw.polyline.cumulative_arc_length(polyline_wp)
+    cumulative_wp = od.polyline.cumulative_arc_length(polyline_wp)
     assert np.isclose(
-        float(cumulative_wp.numpy()[-1]), tw.polyline.polyline_length(polyline_wp), rtol=1e-5
+        float(cumulative_wp.numpy()[-1]), od.polyline.polyline_length(polyline_wp), rtol=1e-5
     )
 
 
@@ -799,7 +799,7 @@ def test_cumulative_arc_length_last_entry_is_total_length(device: str) -> None:
 @pytest.mark.parametrize("step", [0.5, 1.5])
 def test_downsample_polyline_matches_reference(device: str, step: float) -> None:
     pts_np = _random_open_polyline(60)
-    downsampled_wp = tw.polyline.polyline_downsample(points_to_warp(pts_np, device), step)
+    downsampled_wp = od.polyline.polyline_downsample(points_to_warp(pts_np, device), step)
     assert np.allclose(downsampled_wp.numpy(), _downsample_np(pts_np, step), rtol=1e-4, atol=1e-4)
 
 
@@ -807,7 +807,7 @@ def test_downsample_polyline_branches_agree(device: str) -> None:
     """
     The pointer-doubling greedy selection is the serial walk's, exactly.
 
-    **Triwarp against triwarp**, not a parity assert: the oracle is the *serial* branch, which
+    **Ordito against ordito**, not a parity assert: the oracle is the *serial* branch, which
     ``test_downsample_polyline_matches_reference`` pins to a NumPy transcription of the same greedy
     rule and ``test_downsample_polyline_matches_meshlib`` compares against ``decimatePolyline``.
     This test carries no oracle of its own; it exists because
@@ -857,7 +857,7 @@ def test_downsample_polyline_branches_agree(device: str) -> None:
             device=device,
         )
         doubling_wp = wp.zeros(n, dtype=wp.int32, device=device)
-        tw.polyline._greedy_downsample_doubling(cumulative_wp, step, None, False, doubling_wp)  # pyright: ignore[reportPrivateUsage]
+        od.polyline._greedy_downsample_doubling(cumulative_wp, step, None, False, doubling_wp)  # pyright: ignore[reportPrivateUsage]
 
         assert int(serial_wp.numpy().sum()) > 1, f"{spacing}: the walk kept only the first point"
         assert np.array_equal(serial_wp.numpy(), doubling_wp.numpy()), spacing
@@ -880,11 +880,11 @@ def test_downsample_polyline_above_the_doubling_threshold(device: str) -> None:
     rule itself), that reorders or moves them (subsequence and membership), or that drops the ends
     of the polyline it should start from.
     """
-    n = 2 * tw.polyline._DOWNSAMPLE_DOUBLING_FROM  # pyright: ignore[reportPrivateUsage]
+    n = 2 * od.polyline._DOWNSAMPLE_DOUBLING_FROM  # pyright: ignore[reportPrivateUsage]
     rng = np.random.default_rng(5)
     points_np = np.cumsum(rng.standard_normal((n, 3)) * 0.01, axis=0)
     step = 0.05
-    sparse_wp = tw.polyline.polyline_downsample(points_to_warp(points_np, device), step)
+    sparse_wp = od.polyline.polyline_downsample(points_to_warp(points_np, device), step)
 
     kept_np = sparse_wp.numpy()
     assert 2 < len(kept_np) < n, "vacuous: the selection kept everything or nothing"
@@ -904,7 +904,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
     Class C (a derived scalar): the same number of points removed, both answers on the curve.
 
     ``decimatePolyline`` reaches a *count* where ``polyline_downsample`` reaches a *step*, so the
-    named transform is to hand it triwarp's own deletion count as ``maxDeletedVertices`` and open
+    named transform is to hand it ordito's own deletion count as ``maxDeletedVertices`` and open
     ``maxError`` up so the count is what binds. Without that they would stop for different reasons
     and the comparison would be two unrelated reductions.
 
@@ -920,7 +920,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
     *sets* differ, because a collapse queue and an arc-length walk choose differently, which is why
     this is a scalar comparison rather than an equality.
 
-    One convention is left as a measured divergence rather than asserted: triwarp keeps the
+    One convention is left as a measured divergence rather than asserted: ordito keeps the
     **first** point by contract and the last only when the walk lands on it (at four times the
     spacing its last kept point is one short of the end), where MeshLib at ``touchBdVertices=False``
     keeps both.
@@ -933,7 +933,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
     spacing = float(np.linalg.norm(np.diff(pts_np, axis=0), axis=1).mean())
 
     for factor, n_bound in ((2.0, 60), (4.0, 34)):
-        sparse_wp = tw.polyline.polyline_downsample(
+        sparse_wp = od.polyline.polyline_downsample(
             points_to_warp(pts_np, device), factor * spacing
         )
         sparse_np = sparse_wp.numpy().astype(np.float64)
@@ -958,7 +958,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
             assert _max_deviation_np(reduced_np, pts_np) < 1e-5
             # The start of the curve survives, so this shortened rather than trimmed.
             assert np.allclose(reduced_np[0], pts_np[0], rtol=1e-5, atol=1e-5)
-        # MeshLib additionally keeps the far endpoint; triwarp's greedy walk need not land on it.
+        # MeshLib additionally keeps the far endpoint; ordito's greedy walk need not land on it.
         assert np.allclose(sparse_ml[-1], pts_np[-1], rtol=1e-5, atol=1e-5)
 
 
@@ -968,7 +968,7 @@ def test_downsample_polyline_matches_meshlib(device: str) -> None:
 @pytest.mark.parametrize("num_points", [5, 50])
 def test_resample_polyline_matches_numpy_interp(device: str, num_points: int) -> None:
     pts_np = _random_open_polyline(70)
-    resampled_wp = tw.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
+    resampled_wp = od.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
     assert np.allclose(resampled_wp.numpy(), _resample_np(pts_np, num_points), rtol=1e-4, atol=1e-4)
 
 
@@ -976,7 +976,7 @@ def test_resample_polyline_matches_trimesh(device: str) -> None:
     """
     Class A: arc-length resampling against ``trimesh.path.traversal.resample_path``.
 
-    Tolerance is ``1e-3`` rather than ``1e-5`` because triwarp interpolates in ``float32`` and
+    Tolerance is ``1e-3`` rather than ``1e-5`` because ordito interpolates in ``float32`` and
     trimesh in ``float64`` over a cumulative arc length, so the error grows along the path;
     [`test_resample_polyline_matches_numpy_interp`] is the tight version of the same claim against
     an oracle in matching precision.
@@ -984,14 +984,14 @@ def test_resample_polyline_matches_trimesh(device: str) -> None:
     pts_np = _random_open_polyline(71)
     num_points = 40
     resampled_tm = tm_traversal.resample_path(pts_np, count=num_points)
-    resampled_wp = tw.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
+    resampled_wp = od.polyline.polyline_resample(points_to_warp(pts_np, device), num_points)
     assert np.allclose(resampled_wp.numpy(), resampled_tm, rtol=1e-3, atol=1e-3)
 
 
 def test_resample_polyline_closed_shape_and_endpoints(device: str) -> None:
     pts_np = _random_open_polyline(72)
     num_points = 16
-    resampled_wp = tw.polyline.polyline_resample(
+    resampled_wp = od.polyline.polyline_resample(
         points_to_warp(pts_np, device), num_points, closed=True
     )
     resampled = resampled_wp.numpy()
@@ -1002,7 +1002,7 @@ def test_resample_polyline_closed_shape_and_endpoints(device: str) -> None:
 
 def test_resample_single_point_repeats(device: str) -> None:
     point_np = np.array([[1.0, 2.0, 3.0]])
-    resampled_wp = tw.polyline.polyline_resample(points_to_warp(point_np, device), 5)
+    resampled_wp = od.polyline.polyline_resample(points_to_warp(point_np, device), 5)
     assert np.allclose(resampled_wp.numpy(), np.repeat(point_np, 5, axis=0), rtol=1e-5, atol=1e-5)
 
 
@@ -1015,7 +1015,7 @@ def test_resample_empty_polyline_is_returned_unchanged(device: str, closed: bool
     samples out of the empty result and raise Warp's zero-length-slice ``RuntimeError``.
     """
     empty_wp = warp_empty(0, wp.vec3, device)
-    assert tw.polyline.polyline_resample(empty_wp, 5, closed=closed).shape == (0,)
+    assert od.polyline.polyline_resample(empty_wp, 5, closed=closed).shape == (0,)
 
 
 # --- radius (NumPy reference) ---
@@ -1033,7 +1033,7 @@ def test_polyline_radius_explicit_plane_matches_reference(
     pts_np = _planar_circle(24, radius=2.0)
     center_np = np.zeros(3)
     normal_np = np.array([0.0, 0.0, 1.0])
-    radius_wp = tw.polyline.polyline_radius(
+    radius_wp = od.polyline.polyline_radius(
         points_to_warp(pts_np, device),
         reduction,
         wp.vec3(*center_np.tolist()),
@@ -1048,7 +1048,7 @@ def test_polyline_radius_default_plane_matches_reference(
     device: str, reduction: Literal["min", "max", "mean", "median"]
 ) -> None:
     pts_np = _random_open_polyline(80)
-    radius_wp = tw.polyline.polyline_radius(points_to_warp(pts_np, device), reduction)
+    radius_wp = od.polyline.polyline_radius(points_to_warp(pts_np, device), reduction)
     radius_np = _radius_np(pts_np, reduction)
     assert np.allclose(radius_wp, radius_np, rtol=1e-3, atol=1e-3)
 
@@ -1069,7 +1069,7 @@ def test_polyline_radius_closed_matches_reference(
     polyline_wp = points_to_warp(pts_np, device)
     center_wp, normal_wp = wp.vec3(0.0, 0.0, 0.0), wp.vec3(0.0, 0.0, 1.0)
 
-    radius_wp = tw.polyline.polyline_radius(
+    radius_wp = od.polyline.polyline_radius(
         polyline_wp, reduction, center_wp, normal_wp, closed=True
     )
 
@@ -1082,8 +1082,8 @@ def test_polyline_radius_closed_default_plane_differs_from_open(device: str) -> 
     pts_np = _random_open_polyline(80)
     polyline_wp = points_to_warp(pts_np, device)
     assert not np.isclose(
-        tw.polyline.polyline_radius(polyline_wp, "mean", closed=True),
-        tw.polyline.polyline_radius(polyline_wp, "mean"),
+        od.polyline.polyline_radius(polyline_wp, "mean", closed=True),
+        od.polyline.polyline_radius(polyline_wp, "mean"),
         rtol=1e-3,
     )
 
@@ -1095,22 +1095,22 @@ def test_polyline_radius_closed_on_a_closed_input_adds_no_segment(
     """
     ``closed=True`` on a loop already ending on its first point is the open call, bit for bit.
 
-    Triwarp against triwarp: ``test_polyline_radius_closed_matches_reference`` carries the oracle
+    Ordito against ordito: ``test_polyline_radius_closed_matches_reference`` carries the oracle
     for the loop stored open. Past three points the fused reductions decide on the device whether
     the closing segment is already there, so this is the branch where a wrong decision would add
     a stand-in segment and move the reduction and the default plane.
     """
     pts_np = _planar_circle(24, radius=2.0) + np.array([0.0, 0.0, 0.3]) * np.arange(24)[:, None]
     polyline_wp = points_to_warp(np.concatenate([pts_np, pts_np[:1]]), device)
-    assert tw.polyline.polyline_radius(polyline_wp, reduction, closed=True) == (
-        tw.polyline.polyline_radius(polyline_wp, reduction)
+    assert od.polyline.polyline_radius(polyline_wp, reduction, closed=True) == (
+        od.polyline.polyline_radius(polyline_wp, reduction)
     )
 
 
 def test_polyline_radius_rejects_unknown_reduction(device: str) -> None:
     pts_np = _random_open_polyline(81)
     with pytest.raises(ValueError, match="unsupported reduction"):
-        tw.polyline.polyline_radius(points_to_warp(pts_np, device), "sum")  # pyright: ignore[reportArgumentType]
+        od.polyline.polyline_radius(points_to_warp(pts_np, device), "sum")  # pyright: ignore[reportArgumentType]
 
 
 def test_polyline_radius_two_points_raises_its_own_message(device: str) -> None:
@@ -1123,13 +1123,13 @@ def test_polyline_radius_two_points_raises_its_own_message(device: str) -> None:
     """
     two_points = points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device)
     with pytest.raises(ValueError, match="polyline_radius requires at least three points"):
-        tw.polyline.polyline_radius(two_points)
+        od.polyline.polyline_radius(two_points)
 
 
 def test_polyline_radius_two_points_with_explicit_plane_succeeds(device: str) -> None:
     """With both defaults supplied explicitly, a 2-point polyline needs no minimum beyond two."""
     two_points = points_to_warp(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]), device)
-    radius = tw.polyline.polyline_radius(
+    radius = od.polyline.polyline_radius(
         two_points, center=wp.vec3(0.5, 1.0, 0.0), normal=wp.vec3(0.0, 0.0, 1.0)
     )
     assert np.isclose(radius, 1.0, atol=1e-5)
@@ -1157,7 +1157,7 @@ def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_
     else:
         values_np = rng.integers(0, 1000, size=n).astype(dtype_np)
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
-    assert np.allclose(tw.reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
+    assert np.allclose(od.reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
 
 
 # --- edge cases ---
@@ -1165,19 +1165,19 @@ def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_
 
 def test_length_short_polyline_is_zero(device: str) -> None:
     single = points_to_warp(np.array([[0.0, 0.0, 0.0]]), device)
-    assert tw.polyline.polyline_length(single) == 0.0
+    assert od.polyline.polyline_length(single) == 0.0
 
 
 def test_angles_short_polyline_is_zeros(device: str) -> None:
     single = points_to_warp(np.array([[0.0, 0.0, 0.0]]), device)
-    angles = tw.polyline.polyline_angles(single).numpy()
+    angles = od.polyline.polyline_angles(single).numpy()
     assert np.array_equal(angles, np.zeros(1, dtype=np.float32))
 
 
 def test_distance_empty_polyline(device: str) -> None:
     points = points_to_warp(np.random.default_rng(99).standard_normal((4, 3)), device)
     empty = warp_empty(0, wp.vec3, device)
-    assert tw.polyline.polyline_point_distance(points, empty).size == 4
+    assert od.polyline.polyline_point_distance(points, empty).size == 4
 
 
 # --- triangulate (ear clipping) ---
@@ -1244,7 +1244,7 @@ def test_triangulate_polyline_matches_meshlib(device: str) -> None:
     is dropping z and closing the ring. Omitting the repeat is the silent failure mode: an open
     square comes back as **one** triangle over three vertices rather than two over four.
 
-    The diagonals are free, so the outputs differ face for face -- on the L-shape triwarp returns
+    The diagonals are free, so the outputs differ face for face -- on the L-shape ordito returns
     ``[[4,5,0],[0,1,2],[0,2,3],[4,0,3]]`` and MeshLib ``[[3,5,0],[5,3,4],[1,3,0],[3,1,2]]`` -- and
     what a triangulation of a simple polygon must agree on is the *count* (``n - 2``) and the total
     area. Measured exact on both an L-shape (4 triangles, area 3.00000) and a 10-vertex star
@@ -1271,7 +1271,7 @@ def test_triangulate_polyline_matches_meshlib(device: str) -> None:
         ),
     ):
         points_np = np.column_stack([polygon_np, np.zeros(polygon_np.shape[0])])
-        faces_wp = tw.polyline.polyline_triangulate(points_to_warp(points_np, device)).numpy()
+        faces_wp = od.polyline.polyline_triangulate(points_to_warp(points_np, device)).numpy()
 
         contour_ml = mm.std_vector_Vector2_float()
         for point_np in np.vstack([polygon_np, polygon_np[:1]]):  # closed: the repeat is required
@@ -1302,7 +1302,7 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
 
     Two things about the input, both measured. The line cell must be **closed** -- the first index
     repeated, which is what ``polyline_to_pyvista(closed=True)`` does -- and it introduces **zero**
-    Steiner points, so the filled polygon reuses the loop's own vertices exactly as triwarp does.
+    Steiner points, so the filled polygon reuses the loop's own vertices exactly as ordito does.
     And ``delaunay_2d(edge_source=loop)`` is *not* the alternative route: it ignores the loop as a
     boundary and triangulates the convex hull, measured 63 cells covering area **4.465** against
     the star's 3.264.
@@ -1312,7 +1312,7 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
         ("star", _star(5)[:, :2]),
     ):
         points_np = np.column_stack([polygon_np, np.zeros(polygon_np.shape[0])])
-        faces_wp = tw.polyline.polyline_triangulate(points_to_warp(points_np, device)).numpy()
+        faces_wp = od.polyline.polyline_triangulate(points_to_warp(points_np, device)).numpy()
 
         filled_pv = polyline_to_pyvista(points_np, closed=True).triangulate_contours()
         assert filled_pv.is_all_triangles, name
@@ -1327,7 +1327,7 @@ def test_triangulate_polyline_matches_pyvista(device: str) -> None:
 
 def test_triangulate_convex_is_fan(device: str) -> None:
     pts_np = _convex_ngon(8)
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     n = pts_np.shape[0]
     expected = np.stack([np.zeros(n - 2), np.arange(1, n - 1), np.arange(2, n)], axis=1)
     assert np.array_equal(faces_wp.numpy(), expected.astype(np.int32))
@@ -1336,46 +1336,46 @@ def test_triangulate_convex_is_fan(device: str) -> None:
 
 def test_triangulate_l_shape(device: str) -> None:
     pts_np = _l_shape()
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     _assert_valid_triangulation(pts_np, faces_wp.numpy())
 
 
 def test_triangulate_star(device: str) -> None:
     pts_np = _star(6)
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     _assert_valid_triangulation(pts_np, faces_wp.numpy())
 
 
 def test_triangulate_tilted_plane(device: str) -> None:
     pts_np = _rotate_into_3d(_star(6), seed=7)
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     _assert_valid_triangulation(pts_np, faces_wp.numpy())
 
 
 def test_triangulate_clockwise_orientation(device: str) -> None:
     pts_np = _l_shape()[::-1].copy()  # reverse to clockwise
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     _assert_valid_triangulation(pts_np, faces_wp.numpy())
 
 
 def test_triangulate_closed_input_matches_open(device: str) -> None:
     pts_np = _star(5)
     closed_np = _closed_from(pts_np)
-    faces_open = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device)).numpy()
-    faces_closed = tw.polyline.polyline_triangulate(points_to_warp(closed_np, device)).numpy()
+    faces_open = od.polyline.polyline_triangulate(points_to_warp(pts_np, device)).numpy()
+    faces_closed = od.polyline.polyline_triangulate(points_to_warp(closed_np, device)).numpy()
     assert np.array_equal(faces_open, faces_closed)
 
 
 def test_triangulate_single_triangle(device: str) -> None:
     pts_np = _convex_ngon(3)
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     assert faces_wp.shape == (1, 3)
     assert set(faces_wp.numpy().ravel().tolist()) == {0, 1, 2}
 
 
 def test_triangulate_too_few_points(device: str) -> None:
     pts_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
-    faces_wp = tw.polyline.polyline_triangulate(points_to_warp(pts_np, device))
+    faces_wp = od.polyline.polyline_triangulate(points_to_warp(pts_np, device))
     assert faces_wp.shape == (0, 3)
 
 
@@ -1420,7 +1420,7 @@ def _simplify_np(pts_np: np.ndarray, tol: float) -> tuple[np.ndarray, np.ndarray
 @pytest.mark.parametrize("seed", [0, 7, 42])
 def test_simplify_matches_reference(device: str, tol: float, seed: int) -> None:
     pts_np = _random_open_polyline(seed, n=40)
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
     simplified_np, indices_np = _simplify_np(pts_np, tol)
     assert np.array_equal(indices_wp.numpy(), indices_np.astype(np.int32))
     assert np.allclose(
@@ -1443,7 +1443,7 @@ def test_simplify_deep_split_tree_matches_reference(device: str) -> None:
         [radius * np.cos(angle), radius * np.sin(angle), np.zeros_like(angle)], axis=1
     )
     tol = 1e-2 * float(np.ptp(pts_np, axis=0).max())
-    _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
+    _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
     _, indices_np = _simplify_np(pts_np, tol)
     # Non-vacuous in both directions: a spiral that kept everything, or collapsed to its endpoints,
     # would pass the equality below while testing nothing about the recursion.
@@ -1485,7 +1485,7 @@ def test_simplify_non_finite_terminates(
     unresolved-argmax guard is unreachable rather than load-bearing here.
     """
     pts_np = np.array(builder(), dtype=np.float64)
-    _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.1)
+    _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.1)
     kept = indices_wp.numpy()
     assert kept[0] == 0
     assert kept[-1] == pts_np.shape[0] - 1
@@ -1494,7 +1494,7 @@ def test_simplify_non_finite_terminates(
 
 def test_simplify_collinear_collapses_to_endpoints(device: str) -> None:
     pts_np = np.stack([np.linspace(0.0, 1.0, 11), np.zeros(11), np.zeros(11)], axis=1)
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), 1e-3)
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), 1e-3)
     assert np.array_equal(indices_wp.numpy(), np.array([0, 10], dtype=np.int32))
     assert np.allclose(simplified_wp.numpy(), pts_np[[0, 10]].astype(np.float32))
 
@@ -1502,27 +1502,27 @@ def test_simplify_collinear_collapses_to_endpoints(device: str) -> None:
 def test_simplify_preserves_a_sharp_corner(device: str) -> None:
     # A tent: the apex deviates far from the base chord and must be kept.
     pts_np = np.array([[0.0, 0.0, 0.0], [1.0, 1.0, 0.0], [2.0, 0.0, 0.0]], dtype=np.float64)
-    _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.1)
+    _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.1)
     assert np.array_equal(indices_wp.numpy(), np.array([0, 1, 2], dtype=np.int32))
 
 
 def test_simplify_empty(device: str) -> None:
     empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(empty_wp, 0.5)
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(empty_wp, 0.5)
     assert simplified_wp.shape == (0,)
     assert indices_wp.shape == (0,)
 
 
 def test_simplify_single_point(device: str) -> None:
     pts_np = np.array([[0.3, -0.4, 1.2]])
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.5)
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.5)
     assert np.array_equal(indices_wp.numpy(), np.array([0], dtype=np.int32))
     assert np.allclose(simplified_wp.numpy(), pts_np.astype(np.float32))
 
 
 def test_simplify_two_points_kept(device: str) -> None:
     pts_np = np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]])
-    _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.5)
+    _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), 0.5)
     assert np.array_equal(indices_wp.numpy(), np.array([0, 1], dtype=np.int32))
 
 
@@ -1552,7 +1552,7 @@ def test_simplify_block_and_round_loop_match_reference(
     else:
         pts_np = np.cumsum(np.random.default_rng(5).normal(size=(1500, 3)), axis=0)
         tol = 0.5
-    _, indices_wp = tw.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
+    _, indices_wp = od.polyline.polyline_simplify(points_to_warp(pts_np, device), tol)
     _, indices_np = _simplify_np(pts_np, tol)
     # Non-vacuous: a real share of the points is dropped and a real share kept.
     assert 10 < indices_np.size < pts_np.shape[0] - 100
@@ -1563,7 +1563,7 @@ def test_simplify_block_and_round_loop_match_reference(
 def test_simplify_closed_matches_reference(device: str, tol: float) -> None:
     pts_np = _random_open_polyline(3, n=30)
     closed_np = _closed_from(pts_np)
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(
         points_to_warp(pts_np, device), tol, closed=True
     )
     simplified_np, indices_np = _simplify_np(closed_np, tol)
@@ -1593,7 +1593,7 @@ def test_simplify_closed_through_both_round_forms(
     pts_np = np.stack([radius * np.cos(angle), radius * np.sin(angle), 0.1 * angle], axis=1)
     closed_np = _closed_from(pts_np)
     input_np = closed_np if repeated else pts_np
-    simplified_wp, indices_wp = tw.polyline.polyline_simplify(
+    simplified_wp, indices_wp = od.polyline.polyline_simplify(
         points_to_warp(input_np, device), 0.02, closed=True
     )
     simplified_np, indices_np = _simplify_np(closed_np, 0.02)
@@ -1612,28 +1612,28 @@ def test_simplify_matches_the_two_decimators(device: str, tolerance: float) -> N
     """
     Class C (a derived scalar): three decimators removing the same number of points.
 
-    Neither reference is Ramer-Douglas-Peucker and **neither takes triwarp's tolerance**, which is
+    Neither reference is Ramer-Douglas-Peucker and **neither takes ordito's tolerance**, which is
     the finding this test exists to pin rather than a limitation to apologise for.
     ``decimatePolyline``'s ``maxError`` is a *collapse cost*, not a deviation bound: driven by it at
     0.8134 on this fixture, its output sits **1.9187** from the input, 2.4x the number it was
     handed. So a tolerance-matched comparison would compare two different quantities under one
-    parameter name. Both references are therefore driven by the **count** triwarp's tolerance
+    parameter name. Both references are therefore driven by the **count** ordito's tolerance
     produces, and what is compared is where each one puts the points it keeps.
 
     Measured at the two settings below, all three keeping the same count:
 
-    | tolerance | kept | triwarp | meshlib | pyvista |
+    | tolerance | kept | ordito | meshlib | pyvista |
     |---|---|---|---|---|
     | 0.8 | 39 of 40 | 0.373016 | **0.151980** | 0.373016 |
     | 2.4 | 10 of 40 | 1.760643 | 2.402235 | 1.918705 |
 
     Two things in that table. **pyvista is exact at the light setting** -- ``decimate_polyline``
-    retains triwarp's own point set, a two-sided Hausdorff of **0.0** -- and diverges at the heavy
+    retains ordito's own point set, a two-sided Hausdorff of **0.0** -- and diverges at the heavy
     one (1.9187), both legal since neither claims a unique answer at a 4x reduction. And **MeshLib
     is the most accurate of the three at the light setting and the only one over budget at the heavy
     one** (2.402235 against 2.4), which is the same fact as the paragraph above: its reduction is
     driven by a quadric cost, so the deviation is an outcome rather than a promise. That is why the
-    tolerance bound below is asserted on triwarp and pyvista and not on MeshLib.
+    tolerance bound below is asserted on ordito and pyvista and not on MeshLib.
 
     pyvista's ``PolyData`` must hold **one** line cell. ``pv.lines_from_points`` gives one two-point
     cell per segment and ``decimate_polyline`` is then a **no-op at every reduction**, so a
@@ -1651,7 +1651,7 @@ def test_simplify_matches_the_two_decimators(device: str, tolerance: float) -> N
     something any reduction of roughly the right size passes.
     """
     pts_np = _random_open_polyline(50, n=40)
-    simplified_wp, _indices_wp = tw.polyline.polyline_simplify(
+    simplified_wp, _indices_wp = od.polyline.polyline_simplify(
         points_to_warp(pts_np, device), tolerance
     )
     simplified_np = simplified_wp.numpy().astype(np.float64)
@@ -1689,7 +1689,7 @@ def test_closed_keyword_equals_closing_the_polyline_explicitly(device: str, endi
     """
     ``closed=True`` is exactly the open computation on ``polyline_close(polyline)``.
 
-    Triwarp against triwarp: the convention, asserted once for every function that carries the
+    Ordito against ordito: the convention, asserted once for every function that carries the
     keyword rather than seven times in seven near-identical tests. Three of the ten additionally
     drop the duplicated seam point on the way out, so they are checked against the sliced form
     instead -- which is the whole difference between the two groups and the thing most likely to
@@ -1707,56 +1707,56 @@ def test_closed_keyword_equals_closing_the_polyline_explicitly(device: str, endi
         pts_np = np.concatenate([pts_np, seam_np])
     polyline_wp = points_to_warp(pts_np, device)
     stored_np = polyline_wp.numpy()
-    assert tw.polyline.is_closed(polyline_wp) == (ending != "open")
+    assert od.polyline.is_closed(polyline_wp) == (ending != "open")
     assert np.array_equal(stored_np[0], stored_np[-1]) == (ending == "repeated")
-    closed_wp = tw.polyline.polyline_close(polyline_wp)
+    closed_wp = od.polyline.polyline_close(polyline_wp)
     queries_wp = points_to_warp(_random_open_polyline(34, n=15), device)
     n_original = polyline_wp.size
 
     # Pure delegation: closed=True adds the segment and changes nothing else.
     assert np.isclose(
-        tw.polyline.polyline_length(polyline_wp, closed=True),
-        tw.polyline.polyline_length(closed_wp),
+        od.polyline.polyline_length(polyline_wp, closed=True),
+        od.polyline.polyline_length(closed_wp),
     )
     assert np.allclose(
-        list(tw.polyline.polyline_centroid(polyline_wp, closed=True)),
-        list(tw.polyline.polyline_centroid(closed_wp)),
+        list(od.polyline.polyline_centroid(polyline_wp, closed=True)),
+        list(od.polyline.polyline_centroid(closed_wp)),
     )
     assert np.isclose(
-        tw.polyline.polyline_radius(polyline_wp, "mean", closed=True),
-        tw.polyline.polyline_radius(closed_wp, "mean"),
+        od.polyline.polyline_radius(polyline_wp, "mean", closed=True),
+        od.polyline.polyline_radius(closed_wp, "mean"),
     )
     assert np.array_equal(
-        tw.polyline.polyline_point_distance(queries_wp, polyline_wp, closed=True).numpy(),
-        tw.polyline.polyline_point_distance(queries_wp, closed_wp).numpy(),
+        od.polyline.polyline_point_distance(queries_wp, polyline_wp, closed=True).numpy(),
+        od.polyline.polyline_point_distance(queries_wp, closed_wp).numpy(),
     )
     assert np.array_equal(
-        tw.polyline.polyline_upsample(polyline_wp, 0.3, closed=True).numpy(),
-        tw.polyline.polyline_upsample(closed_wp, 0.3).numpy(),
+        od.polyline.polyline_upsample(polyline_wp, 0.3, closed=True).numpy(),
+        od.polyline.polyline_upsample(closed_wp, 0.3).numpy(),
     )
     assert np.array_equal(
-        tw.polyline.polyline_downsample(polyline_wp, 0.3, closed=True).numpy(),
-        tw.polyline.polyline_downsample(closed_wp, 0.3).numpy(),
+        od.polyline.polyline_downsample(polyline_wp, 0.3, closed=True).numpy(),
+        od.polyline.polyline_downsample(closed_wp, 0.3).numpy(),
     )
-    simplified_closed, indices_closed = tw.polyline.polyline_simplify(
+    simplified_closed, indices_closed = od.polyline.polyline_simplify(
         polyline_wp, 0.05, closed=True
     )
-    simplified_explicit, indices_explicit = tw.polyline.polyline_simplify(closed_wp, 0.05)
+    simplified_explicit, indices_explicit = od.polyline.polyline_simplify(closed_wp, 0.05)
     assert np.array_equal(simplified_closed.numpy(), simplified_explicit.numpy())
     assert np.array_equal(indices_closed.numpy(), indices_explicit.numpy())
 
     # ...and the three that drop the duplicated seam point, so their result is a cyclic ring.
     assert np.array_equal(
-        tw.polyline.polyline_resample(polyline_wp, 17, closed=True).numpy(),
-        tw.polyline.polyline_resample(closed_wp, 18).numpy()[0:17],
+        od.polyline.polyline_resample(polyline_wp, 17, closed=True).numpy(),
+        od.polyline.polyline_resample(closed_wp, 18).numpy()[0:17],
     )
     assert np.array_equal(
-        tw.polyline.polyline_angles(polyline_wp, closed=True).numpy(),
-        tw.polyline.polyline_angles(closed_wp).numpy()[0:n_original],
+        od.polyline.polyline_angles(polyline_wp, closed=True).numpy(),
+        od.polyline.polyline_angles(closed_wp).numpy()[0:n_original],
     )
     assert np.array_equal(
-        tw.polyline.polyline_smooth_upsample(polyline_wp, 0.3, closed=True).numpy(),
-        tw.polyline.polyline_smooth_upsample(closed_wp, 0.3, closed=True).numpy(),
+        od.polyline.polyline_smooth_upsample(polyline_wp, 0.3, closed=True).numpy(),
+        od.polyline.polyline_smooth_upsample(closed_wp, 0.3, closed=True).numpy(),
     )
 
 
@@ -1769,7 +1769,7 @@ _L_RING = np.array([[0.0, 0.0], [2.0, 0.0], [2.0, 1.0], [1.0, 1.0], [1.0, 2.0], 
 @pytest.mark.parametrize("ring_name", ["square", "L"])
 def test_triangulate_polygon(device: str, ring_name: str) -> None:
     ring_np = _SQUARE_RING if ring_name == "square" else _L_RING
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     assert vertices_wp.size == ring_np.shape[0]
     assert faces_wp.size // 3 == ring_np.shape[0] - 2
     # No Steiner points, and the triangles must tile the polygon exactly.
@@ -1799,7 +1799,7 @@ def test_triangulate_polygon_star(device: str, n: int) -> None:
     apart around the ring -- the configuration that made a raw-index rank clip one ear per round.
     """
     ring_np = _star_ring_wp(n)
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     assert vertices_wp.size == n
     assert faces_wp.size // 3 == n - 2
 
@@ -1849,7 +1849,7 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str, n: int) 
     """
     Class C: two valid ear clippings, so only the tiled region is comparable.
 
-    ``trimesh.creation.triangulate_polygon`` cuts *different* diagonals from triwarp's clipper.
+    ``trimesh.creation.triangulate_polygon`` cuts *different* diagonals from ordito's clipper.
 
     There is no elementwise correspondence to recover -- two valid ear clippings of one polygon are
     genuinely different triangle sets -- so the comparison is the tiled region itself, sampled at
@@ -1865,7 +1865,7 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str, n: int) 
 
     **Mutation probe, measured on ``n=64``, 1 275 of the 4 000 samples interior:** the two agree on
     **4 000 / 4 000** points, and the assert is exact equality, so every probe below clears it by
-    its full count. Dropping one triwarp triangle disagrees on 25; translating the ring by 1% of its
+    its full count. Dropping one ordito triangle disagrees on 25; translating the ring by 1% of its
     radius, on 206. Both degenerate implementations fail too: an all-zero face buffer keeps the
     ``n - 2`` count and still disagrees on all 1 275 interior points, and the naive single fan --
     valid only for a convex ring -- disagrees on 1 777.
@@ -1874,7 +1874,7 @@ def test_triangulate_polygon_covers_same_region_as_trimesh(device: str, n: int) 
     vertex arrays directly comparable as sets.
     """
     ring_np = _star_ring_wp(n)
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     vertices_tm, faces_tm = tm.creation.triangulate_polygon(sg.Polygon(ring_np))
 
     assert faces_wp.size // 3 == faces_tm.shape[0] == n - 2
@@ -1913,7 +1913,7 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
     ring_np = np.vstack(
         (np.column_stack((x_np, 1e-7 * np.sin(np.pi * x_np))), np.array([[0.5, -0.25]]))
     )
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
     vertices_tm, faces_tm = tm.creation.triangulate_polygon(sg.Polygon(ring_np))
     assert vertices_wp.size == n
     assert faces_wp.size // 3 == faces_tm.shape[0] == n - 2
@@ -1930,13 +1930,13 @@ def test_triangulate_polygon_near_collinear(device: str) -> None:
 
 def test_triangulate_polygon_drops_repeated_closing_point(device: str) -> None:
     closed_np = np.vstack((_SQUARE_RING, _SQUARE_RING[:1]))
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(points_to_warp_uv(closed_np, device))
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(closed_np, device))
     assert vertices_wp.size == _SQUARE_RING.shape[0]
     assert faces_wp.size // 3 == _SQUARE_RING.shape[0] - 2
 
 
 def test_triangulate_polygon_too_few_points(device: str) -> None:
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(
         points_to_warp_uv(np.zeros((2, 2)), device)
     )
     assert vertices_wp.size == 2
@@ -1970,7 +1970,7 @@ def test_triangulate_polygon_leaves_a_clockwise_input_unchanged(device: str) -> 
     assert _signed_ring_area(ring_np) < 0.0  # the fixture really is clockwise
     ring_wp = points_to_warp_uv(ring_np, device)
     before_np = ring_wp.numpy().copy()
-    vertices_wp, faces_wp = tw.polyline.triangulate_polygon(ring_wp)
+    vertices_wp, faces_wp = od.polyline.triangulate_polygon(ring_wp)
     assert np.array_equal(ring_wp.numpy(), before_np)
     assert np.array_equal(vertices_wp.numpy(), before_np)
     assert faces_wp.size // 3 == 62
@@ -1983,7 +1983,7 @@ def test_triangulate_polygon_single_block_matches_round_loop(
     device: str, n: int, clockwise: bool, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Triwarp against triwarp: the single-block ear loop against the captured round loop.
+    Ordito against ordito: the single-block ear loop against the captured round loop.
 
     A ring up to ``EAR_ONE_BLOCK_MAX`` corners is clipped on CUDA by one block that runs every
     round itself, a longer one by the four-launch round loop; the trimesh cover test carries the
@@ -2002,7 +2002,7 @@ def test_triangulate_polygon_single_block_matches_round_loop(
     rows = {}
     for cap in (0, 10**9):
         monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", cap)
-        _, faces_wp = tw.polyline.triangulate_polygon(ring_wp)
+        _, faces_wp = od.polyline.triangulate_polygon(ring_wp)
         faces_np = faces_wp.numpy().reshape(-1, 3)
         rows[cap] = faces_np[np.lexsort(faces_np.T[::-1])]
     assert rows[0].shape == (n - 2, 3)
@@ -2014,10 +2014,10 @@ def test_polyline_radius_closed_three_points_raises(device: str) -> None:
     """A three-point closed loop has no plane, so the default normal rejects it."""
     pts_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
     with pytest.raises(ValueError, match="polyline_normal requires at least three points"):
-        tw.polyline.polyline_radius(points_to_warp(pts_np, device))
+        od.polyline.polyline_radius(points_to_warp(pts_np, device))
     # An explicit normal needs no plane fit, so the same input measures: the centroid is the
     # segment's midpoint, which lies on it.
-    radius = tw.polyline.polyline_radius(
+    radius = od.polyline.polyline_radius(
         points_to_warp(pts_np, device), "max", normal=wp.vec3(0, 0, 1)
     )
     assert np.isclose(radius, 0.0, atol=1e-6)

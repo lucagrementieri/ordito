@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.intersection`` against Trimesh and potpourri3d."""
+"""Regression tests for ``ordito.intersection`` against Trimesh and potpourri3d."""
 
 from __future__ import annotations
 
@@ -16,7 +16,9 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree
 
-import triwarp as tw
+import ordito as od
+from ordito.constants import TOLERANCE_MERGE
+from ordito.kernels import graph as kernel_graph
 from tests.comparisons import hausdorff_two_sided
 from tests.conftest import MESHES, OPEN_MESHES
 from tests.conversions import (
@@ -33,15 +35,13 @@ from tests.conversions import (
     warp_empty,
     warp_to_trimesh,
 )
-from triwarp.constants import TOLERANCE_MERGE
-from triwarp.kernels import graph as kernel_graph
 
 _SPLIT_MESHES = ["icosphere", "unit_box", "torus"]
 
 
 def _plane_ml(normal_np: np.ndarray, origin_np: np.ndarray) -> mm.Plane3f:
     """
-    Build a ``Plane3f`` from triwarp's ``(normal, point)`` pair.
+    Build a ``Plane3f`` from ordito's ``(normal, point)`` pair.
 
     MeshLib's plane is the ``n . x == d`` form, so the named transform on every plane pairing in
     this file is ``d = normal . origin``. Passing the origin itself would place the plane through
@@ -134,7 +134,7 @@ def test_segments_with_plane_axis_aligned(device: str) -> None:
 
     start_points_wp = points_to_warp(endpoints_np[0], device)
     end_points_wp = points_to_warp(endpoints_np[1], device)
-    intersections_wp, valid_wp = tw.intersection.segments_with_plane(
+    intersections_wp, valid_wp = od.intersection.segments_with_plane(
         start_points_wp,
         end_points_wp,
         wp.vec3(*plane_normal.tolist()),
@@ -166,7 +166,7 @@ def test_segments_with_plane_parallel(device: str) -> None:
 
     start_points_wp = points_to_warp(endpoints_np[0], device)
     end_points_wp = points_to_warp(endpoints_np[1], device)
-    _, valid_wp = tw.intersection.segments_with_plane(
+    _, valid_wp = od.intersection.segments_with_plane(
         start_points_wp,
         end_points_wp,
         wp.vec3(*plane_normal.tolist()),
@@ -234,14 +234,14 @@ def test_mesh_with_plane_matches_trimesh(
     sides go through ``_segments_equal``, which sorts endpoints within a segment and then
     segments within the set. ``miss_plane``'s expected answer is the empty set on both sides --
     ``_segments_equal`` already handles that, and this is verified directly against trimesh
-    rather than only checking triwarp's own output shape, which is what the unmerged test did.
+    rather than only checking ordito's own output shape, which is what the unmerged test did.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     for plane_normal, plane_origin in plane_scenario(mesh_tm):
         lines_tm = tm_intersections.mesh_plane(
             mesh=mesh_tm, plane_normal=plane_normal, plane_origin=plane_origin
         )
-        lines_wp = tw.intersection.mesh_with_plane(
+        lines_wp = od.intersection.mesh_with_plane(
             mesh_wp.points,
             mesh_wp.indices,
             wp.vec3(*plane_normal.tolist()),
@@ -265,7 +265,7 @@ def test_mesh_with_plane_return_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -
     lines_tm, faces_tm = tm_intersections.mesh_plane(
         mesh=mesh_tm, plane_normal=plane_normal, plane_origin=plane_origin, return_faces=True
     )
-    lines_wp, faces_wp = tw.intersection.mesh_with_plane(
+    lines_wp, faces_wp = od.intersection.mesh_with_plane(
         mesh_wp.points,
         mesh_wp.indices,
         wp.vec3(*plane_normal.tolist()),
@@ -281,7 +281,7 @@ def test_mesh_with_plane_return_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -
 @pytest.mark.parity("mesh_with_mesh", "meshlib")
 def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class B on the *curve*: both references order the contour where triwarp returns segments.
+    Class B on the *curve*: both references order the contour where ordito returns segments.
 
     Neither pairing can be compared element-wise, and for the same reason in both directions:
     ``extractPlaneSections`` and ``findIntersectionContours`` walk the intersection into an ordered
@@ -290,7 +290,7 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     passes through, which is what a caller of either actually consumes.
 
     Measured on ``icosphere(3)`` cut at ``z = 0.13``: MeshLib returns **one** closed section of 95
-    points against triwarp's 94 segments -- the same 94, with the first point repeated to close --
+    points against ordito's 94 segments -- the same 94, with the first point repeated to close --
     and the perimeters are **6.217219 against 6.217220**. Every decoded point sits at exactly the
     plane's ``z``, which is the assert that catches a plane built from the wrong ``d``.
 
@@ -303,7 +303,7 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     origin_np = mesh_tm.vertices.mean(axis=0) + np.array([0.0, 0.0, 0.13])
     mesh_ml = trimesh_to_meshlib(mesh_tm)
 
-    segments_wp = tw.intersection.mesh_with_plane(
+    segments_wp = od.intersection.mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
     ).numpy()
     sections_ml = mm.extractPlaneSections(mm.MeshPart(mesh_ml), _plane_ml(normal_np, origin_np))
@@ -321,7 +321,7 @@ def test_plane_and_mesh_sections_match_meshlib(icosphere: tuple[tm.Trimesh, wp.M
     other_tm = mesh_tm.copy()
     other_tm.apply_translation([1.2, 0.0, 0.0])
     other_wp = trimesh_to_warp(other_tm, str(mesh_wp.points.device))
-    crossing_wp = tw.intersection.mesh_with_mesh(
+    crossing_wp = od.intersection.mesh_with_mesh(
         mesh_wp.points, mesh_wp.indices, other_wp.points, other_wp.indices
     ).numpy()
     contours_ml = mm.findIntersectionContours(mesh_ml, trimesh_to_meshlib(other_tm))
@@ -388,7 +388,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
     Two transforms, both named. Its ``vertValues`` is a ``VertScalars`` filled per vertex -- there
     is no array constructor, so the fill is a Python loop over ``VertId`` keys -- and its output is
     a list of ``EdgePoint`` contours that must go through ``Mesh.edgePoint`` to become positions.
-    Its closed contours repeat their first point where triwarp returns the cycle once and flags it
+    Its closed contours repeat their first point where ordito returns the cycle once and flags it
     ``closed``, which is the same convention potpourri3d's ``marching_triangles`` uses.
 
     Measured on the ``z`` field of ``icosphere(3)`` at 0.13: one closed curve, 94 points against 95,
@@ -408,7 +408,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
     field_np = np.ascontiguousarray(mesh_tm.vertices[:, 2], dtype=np.float32)
     field_wp = wp.array(field_np, dtype=wp.float32, device=mesh_wp.points.device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, field_wp, isovalue
     )
 
@@ -440,7 +440,7 @@ def test_marching_triangles_matches_meshlib(icosphere: tuple[tm.Trimesh, wp.Mesh
         * np.sin(6.0 * mesh_tm.vertices[:, 2]),
         dtype=np.float32,
     )
-    wave_curves_wp, wave_closed_wp = tw.intersection.marching_triangles(
+    wave_curves_wp, wave_closed_wp = od.intersection.marching_triangles(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(wave_np, dtype=wp.float32, device=mesh_wp.points.device),
@@ -484,7 +484,7 @@ def test_marching_triangles_matches_potpourri3d(
 
     Section 6 records the decode: ``(element_index, coords)`` pairs dispatched on
     ``len(coords)`` through ``pp3d.edges``, and its closed curves repeat their first point
-    where triwarp's do not. Both transforms are on the reference side; the positions are then
+    where ordito's do not. Both transforms are on the reference side; the positions are then
     compared directly.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -496,7 +496,7 @@ def test_marching_triangles_matches_potpourri3d(
     isovalue = float(0.5137 * values_np.min() + 0.4863 * values_np.max())
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, isovalue, n_vertices=len(vertices_np)
     )
     curves_pp, closed_pp = _curves_pp(vertices_np, faces_np, values_np, isovalue)
@@ -528,13 +528,13 @@ def test_marching_triangles_matches_igl(request: pytest.FixtureRequest, mesh_nam
 
     igl gives ``(points, segments, segment_values)`` with no curve structure at all -- every
     crossing is an independent 2-point segment -- where ``marching_triangles`` returns polylines.
-    The named transform is therefore to reduce triwarp's curves to the same soup: each consecutive
+    The named transform is therefore to reduce ordito's curves to the same soup: each consecutive
     pair of a curve is a segment, plus the closing pair for a closed curve. Two quantities are then
     directly comparable and both are asserted: the total segment length, and the point sets through
     a two-sided Hausdorff distance.
 
     Segment *count* is not compared, and that is deliberate: a polyline of ``n`` points contributes
-    ``n - 1`` segments (``n`` closed), so triwarp's count is derived from its linking while igl's is
+    ``n - 1`` segments (``n`` closed), so ordito's count is derived from its linking while igl's is
     the raw crossing count -- they agree here but the equality is a property of this input rather
     than of the two algorithms, and asserting it would be asserting the wrong thing.
 
@@ -553,7 +553,7 @@ def test_marching_triangles_matches_igl(request: pytest.FixtureRequest, mesh_nam
         vertices_np, faces_np, values_np, np.array([isovalue])
     )
     points_igl, segments_igl = np.asarray(points_igl), np.asarray(segments_igl)
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, isovalue, n_vertices=len(vertices_np)
     )
 
@@ -589,7 +589,7 @@ def test_marching_triangles_many_components_matches_potpourri3d(device: str) -> 
     """
     # An oscillating field breaks the level set into many small loops, which is what exercises the
     # segment linking rather than the per-face crossing arithmetic.
-    mesh_tm = tw.creation.icosphere(subdivisions=3)
+    mesh_tm = od.creation.icosphere(subdivisions=3)
     vertices_np = np.ascontiguousarray(mesh_tm[0].numpy(), dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm[1].numpy().reshape(-1, 3), dtype=np.int32)
     values_np = np.ascontiguousarray(
@@ -601,7 +601,7 @@ def test_marching_triangles_many_components_matches_potpourri3d(device: str) -> 
     faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
     values_wp = wp.array(values_np, dtype=wp.float64, device=device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         vertices_wp, faces_wp, values_wp, isovalue, n_vertices=len(vertices_np)
     )
     curves_pp, closed_pp = _curves_pp(vertices_np, faces_np, values_np, isovalue)
@@ -627,20 +627,20 @@ def test_marching_triangles_open_curve_ends_on_the_boundary(
     isovalue = float(values_np.mean())
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, isovalue, n_vertices=len(vertices_np)
     )
 
     assert not all(closed_wp)
     boundary_vertices = mesh_wp.points.numpy()[
-        tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+        od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
     ]
     for points, is_closed in zip([curve.numpy() for curve in curves_wp], closed_wp, strict=True):
         if is_closed:
             continue
         # Both ends of an open curve sit on a boundary edge, hence within one edge length of a
         # boundary vertex.
-        edge_length = tw.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
+        edge_length = od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices)
         for end in (points[0], points[-1]):
             assert np.linalg.norm(boundary_vertices - end, axis=1).min() <= edge_length
 
@@ -658,7 +658,7 @@ def test_marching_triangles_exact_vertex_hit_is_reported_once(device: str) -> No
     faces_wp = wp.array(np.array([0, 1, 2, 3, 2, 1], dtype=np.int32), dtype=wp.int32, device=device)
     values_wp = wp.array(np.array([-1.0, 0.0, 0.0, 1.0], dtype=np.float32), device=device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         vertices_wp, faces_wp, values_wp, 0.0, n_vertices=4
     )
 
@@ -684,7 +684,7 @@ def test_marching_triangles_level_set_is_the_piecewise_linear_one(
     isovalue = 0.1234
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
 
-    curves_wp, _ = tw.intersection.marching_triangles(
+    curves_wp, _ = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, isovalue, n_vertices=len(vertices_np)
     )
 
@@ -702,7 +702,7 @@ def test_marching_triangles_no_crossing(icosahedron: tuple[tm.Trimesh, wp.Mesh])
         dtype=wp.float64,
         device=mesh_wp.device,
     )
-    assert tw.intersection.marching_triangles(mesh_wp.points, mesh_wp.indices, values_wp, 1e6) == (
+    assert od.intersection.marching_triangles(mesh_wp.points, mesh_wp.indices, values_wp, 1e6) == (
         [],
         [],
     )
@@ -712,7 +712,7 @@ def test_marching_triangles_empty(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     values_wp = warp_empty(0, wp.float32, device)
-    assert tw.intersection.marching_triangles(vertices_wp, faces_wp, values_wp) == ([], [])
+    assert od.intersection.marching_triangles(vertices_wp, faces_wp, values_wp) == ([], [])
 
 
 @pytest.mark.parametrize("field", ["plane", "wave"])
@@ -720,7 +720,7 @@ def test_marching_triangles_is_its_packed_form_split(
     icosphere: tuple[tm.Trimesh, wp.Mesh], field: str
 ) -> None:
     """
-    Triwarp against triwarp: the list form is the packed form, curve by curve.
+    Ordito against ordito: the list form is the packed form, curve by curve.
 
     ``marching_triangles`` carries the potpourri3d, igl and MeshLib comparisons above; this pins
     ``marching_triangles_with_offsets`` to it -- the same points in the same order, total-terminated
@@ -735,10 +735,10 @@ def test_marching_triangles_is_its_packed_form_split(
         values_np = np.sin(9.0 * vertices_np[:, 0]) * np.cos(7.0 * vertices_np[:, 1])
     values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
 
-    curves_wp, closed_wp = tw.intersection.marching_triangles(
+    curves_wp, closed_wp = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, values_wp, 0.05
     )
-    points_wp, offsets_wp, closed_packed_wp = tw.intersection.marching_triangles_with_offsets(
+    points_wp, offsets_wp, closed_packed_wp = od.intersection.marching_triangles_with_offsets(
         mesh_wp.points, mesh_wp.indices, values_wp, 0.05
     )
 
@@ -758,7 +758,7 @@ def test_marching_triangles_with_offsets_empty(icosahedron: tuple[tm.Trimesh, wp
     """An empty level set is no points, ``[0]`` offsets and no flags."""
     _, mesh_wp = icosahedron
     values_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float32, device=mesh_wp.device)
-    points_wp, offsets_wp, closed_wp = tw.intersection.marching_triangles_with_offsets(
+    points_wp, offsets_wp, closed_wp = od.intersection.marching_triangles_with_offsets(
         mesh_wp.points, mesh_wp.indices, values_wp, 1e6
     )
     assert points_wp.size == 0
@@ -777,9 +777,9 @@ def _marching_triangles_both_links(
     results = []
     for on_device in (False, True):
         monkeypatch.setattr(
-            tw.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
+            od.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
         )
-        curves_wp, closed_wp = tw.intersection.marching_triangles(
+        curves_wp, closed_wp = od.intersection.marching_triangles(
             vertices_wp, faces_wp, values_wp, isovalue
         )
         results.append(([curve.numpy() for curve in curves_wp], closed_wp))
@@ -797,7 +797,7 @@ def test_marching_triangles_device_link_matches_host_link(
     hops: int,
 ) -> None:
     """
-    Triwarp against triwarp: the device link returns the host link's curves exactly.
+    Ordito against ordito: the device link returns the host link's curves exactly.
 
     The host link (``_link_segments``) carries the oracle, through the potpourri3d, igl and
     MeshLib comparisons above; this pins the device link to it -- the same curves in the same
@@ -840,7 +840,7 @@ def test_marching_triangles_rejects_inconsistent_winding(
     which the host link reports as inconsistent winding; the device link hands such a level set
     to the host link rather than chaining it.
     """
-    vertices_np, faces_np = (array.numpy() for array in tw.creation.icosphere(subdivisions=2))
+    vertices_np, faces_np = (array.numpy() for array in od.creation.icosphere(subdivisions=2))
     faces_np = faces_np.reshape(-1, 3).copy()
     values_np = vertices_np[:, 2].astype(np.float64) - 0.1
     positive = values_np[faces_np] >= 0.0
@@ -851,10 +851,10 @@ def test_marching_triangles_rejects_inconsistent_winding(
 
     for on_device in (False, True):
         monkeypatch.setattr(
-            tw.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
+            od.intersection, "_links_on_device", lambda device, n, on_device=on_device: on_device
         )
         with pytest.raises(ValueError, match="not consistently oriented"):
-            tw.intersection.marching_triangles(vertices_wp, faces_wp, values_wp, 0.0)
+            od.intersection.marching_triangles(vertices_wp, faces_wp, values_wp, 0.0)
 
 
 def _pyvista_intersection_segments(mesh1_pv: pv.PolyData, mesh2_pv: pv.PolyData) -> np.ndarray:
@@ -900,7 +900,7 @@ def test_mesh_with_mesh_empty(
     _, ico_wp = icosahedron
     _, cave_wp = cave_cube
 
-    lines_wp = tw.intersection.mesh_with_mesh(
+    lines_wp = od.intersection.mesh_with_mesh(
         ico_wp.points, ico_wp.indices, cave_wp.points, cave_wp.indices
     )
     assert lines_wp.shape == (0, 2)
@@ -921,7 +921,7 @@ def test_mesh_with_mesh_icosahedron_cave_cube(
     by 0.6 the same three numbers read 170 = 170, a **bit-identical** 5.984692574 and 2.77e-07.
 
     MeshLib's ``findIntersectionContours`` covers the same group and does strictly more (it links
-    the crossing into ordered contours); VTK's filter returns the soup triwarp returns, which is why
+    the crossing into ordered contours); VTK's filter returns the soup ordito returns, which is why
     this is Class B where that pairing is Class C.
     """
     ico_tm, ico_wp = icosahedron
@@ -933,7 +933,7 @@ def test_mesh_with_mesh_icosahedron_cave_cube(
     ref_segments_np = _pyvista_intersection_segments(
         trimesh_to_pyvista(ico_tm), trimesh_to_pyvista(cave_at_ico_tm)
     )
-    lines_wp = tw.intersection.mesh_with_mesh(
+    lines_wp = od.intersection.mesh_with_mesh(
         ico_wp.points, ico_wp.indices, cave_wp.points, cave_wp.indices
     )
     segments_np = lines_wp.numpy().reshape(-1, 2, 3)
@@ -981,12 +981,12 @@ def test_mesh_with_mesh_near_tangent_pair_is_not_dropped(device: str) -> None:
     faces_a_wp = wp.array(faces_a_np, dtype=wp.int32, device=device)
     faces_b_wp = wp.array(faces_b_np, dtype=wp.int32, device=device)
 
-    crossing = tw.intersection._colliding_face_pairs(  # pyright: ignore[reportPrivateUsage]
+    crossing = od.intersection._colliding_face_pairs(  # pyright: ignore[reportPrivateUsage]
         verts_wp, faces_a_wp, verts_wp, faces_b_wp, 16, "probe"
     )
     assert crossing is not None, "the float64 broad phase must confirm this pair genuinely crosses"
 
-    segments_wp = tw.intersection.mesh_with_mesh(verts_wp, faces_a_wp, verts_wp, faces_b_wp)
+    segments_wp = od.intersection.mesh_with_mesh(verts_wp, faces_a_wp, verts_wp, faces_b_wp)
     assert int(segments_wp.shape[0]) == 1
     p0, p1 = segments_wp.numpy()[0]
     assert np.linalg.norm(p1 - p0) > 1e-5, "the recovered segment must not itself be degenerate"
@@ -1022,21 +1022,21 @@ def test_mesh_collision_pairs_matches_meshlib(
     box_ml = meshlib_bitset_to_numpy(colliding_ml[1], box_tm.faces.shape[0])
     assert int(sphere_ml.sum()) > 0  # non-vacuity: the reference found the collision
 
-    sphere_mask_wp, box_mask_wp = tw.intersection.collision_masks(
+    sphere_mask_wp, box_mask_wp = od.intersection.collision_masks(
         sphere_wp.points, sphere_wp.indices, box_wp.points, box_wp.indices
     )
     assert np.array_equal(sphere_mask_wp.numpy(), sphere_ml)
     assert np.array_equal(box_mask_wp.numpy(), box_ml)
 
     # The reversed argument order, where the swap fires the other way.
-    box_first_wp, sphere_second_wp = tw.intersection.collision_masks(
+    box_first_wp, sphere_second_wp = od.intersection.collision_masks(
         box_wp.points, box_wp.indices, sphere_wp.points, sphere_wp.indices
     )
     assert np.array_equal(box_first_wp.numpy(), box_ml)
     assert np.array_equal(sphere_second_wp.numpy(), sphere_ml)
 
     # The pairs reduce to those masks, and every index is in range for its own mesh.
-    pairs_np = tw.intersection.mesh_collision_pairs(
+    pairs_np = od.intersection.mesh_collision_pairs(
         sphere_wp.points, sphere_wp.indices, box_wp.points, box_wp.indices
     ).numpy()
     assert len(pairs_np) > 0
@@ -1073,7 +1073,7 @@ def test_mesh_collision_pairs_matches_pymeshfix(device: str, kind: str) -> None:
     Both fixtures agree exactly, on both devices: (26, 8) faces for the sphere against the box and
     (42, 42) for the two spheres, i.e. 34 and 84 faces of the concatenation.
 
-    Worth knowing if this ever fails alone: pymeshfix counts a *touching* pair where triwarp and
+    Worth knowing if this ever fails alone: pymeshfix counts a *touching* pair where ordito and
     MeshLib (at ``touchIsIntersection=False``) do not, so its answer is a superset in general and
     equal here only because both configurations interpenetrate cleanly. ``tests/test_repair.py``
     carries a measured case where the two conventions differ by 97 faces.
@@ -1093,7 +1093,7 @@ def test_mesh_collision_pairs_matches_pymeshfix(device: str, kind: str) -> None:
     second_wp = trimesh_to_warp(second_tm, device)
     first_mask_np, second_mask_np = (
         mask_wp.numpy()
-        for mask_wp in tw.intersection.collision_masks(
+        for mask_wp in od.intersection.collision_masks(
             first_wp.points, first_wp.indices, second_wp.points, second_wp.indices
         )
     )
@@ -1128,12 +1128,12 @@ def test_mesh_collision_pairs_beats_meshlib_on_axis_aligned_boxes(device: str) -
     Two unit boxes offset by ``(0.5, 0.5, 0.5)`` interpenetrate at a corner, and every crossing
     there is between axis-aligned triangles whose edges are parallel -- the configuration a
     separating-axis narrow phase gets wrong and an interval test does not. An exact ``float64``
-    Moller test over all 144 face pairs says **(6, 6)**; triwarp reports (6, 6) and MeshLib says
+    Moller test over all 144 face pairs says **(6, 6)**; ordito reports (6, 6) and MeshLib says
     **(5, 4)**, missing one face on the first mesh and two on the second.
 
-    So this is recorded as a place triwarp is *more* accurate, which is worth pinning for two
+    So this is recorded as a place ordito is *more* accurate, which is worth pinning for two
     reasons: the equality above must not be generalized into "the two always agree", and a future
-    change that made triwarp match MeshLib here would be a regression rather than a fix.
+    change that made ordito match MeshLib here would be a regression rather than a fix.
     """
     first_tm = tm.creation.box()
     second_tm = tm.creation.box()
@@ -1141,7 +1141,7 @@ def test_mesh_collision_pairs_beats_meshlib_on_axis_aligned_boxes(device: str) -
     first_wp = trimesh_to_warp(first_tm, device)
     second_wp = trimesh_to_warp(second_tm, device)
 
-    first_mask_wp, second_mask_wp = tw.intersection.collision_masks(
+    first_mask_wp, second_mask_wp = od.intersection.collision_masks(
         first_wp.points, first_wp.indices, second_wp.points, second_wp.indices
     )
     assert int(first_mask_wp.numpy().sum()) == 6
@@ -1170,28 +1170,28 @@ def test_mesh_collision_pairs_degenerate(device: str) -> None:
     first_wp = trimesh_to_warp(first_tm, device)
     far_wp = trimesh_to_warp(far_tm, device)
 
-    pairs_wp = tw.intersection.mesh_collision_pairs(
+    pairs_wp = od.intersection.mesh_collision_pairs(
         first_wp.points, first_wp.indices, far_wp.points, far_wp.indices
     )
     assert pairs_wp.shape == (0, 2)
-    first_mask_wp, far_mask_wp = tw.intersection.collision_masks(
+    first_mask_wp, far_mask_wp = od.intersection.collision_masks(
         first_wp.points, first_wp.indices, far_wp.points, far_wp.indices
     )
     assert not bool(first_mask_wp.numpy().any())
     assert not bool(far_mask_wp.numpy().any())
 
     empty_faces_wp = warp_empty(0, wp.int32, device)
-    empty_pairs_wp = tw.intersection.mesh_collision_pairs(
+    empty_pairs_wp = od.intersection.mesh_collision_pairs(
         first_wp.points, first_wp.indices, first_wp.points, empty_faces_wp
     )
     assert empty_pairs_wp.shape == (0, 2)
-    _mask_wp, empty_mask_wp = tw.intersection.collision_masks(
+    _mask_wp, empty_mask_wp = od.intersection.collision_masks(
         first_wp.points, first_wp.indices, first_wp.points, empty_faces_wp
     )
     assert empty_mask_wp.shape == (0,)
 
     with pytest.raises(ValueError, match="max_triangle_collisions"):
-        tw.intersection.mesh_collision_pairs(
+        od.intersection.mesh_collision_pairs(
             first_wp.points,
             first_wp.indices,
             far_wp.points,
@@ -1284,7 +1284,7 @@ def test_slice_mesh_with_plane_matches_trimesh(
         vertices_tm, faces_tm, _ = tm_intersections.slice_faces_plane(
             mesh_tm.vertices, mesh_tm.faces, plane_normal_np, plane_origin_np
         )
-        vertices_wp, faces_wp = tw.intersection.slice_mesh_with_plane(
+        vertices_wp, faces_wp = od.intersection.slice_mesh_with_plane(
             mesh_wp.points,
             mesh_wp.indices,
             wp.vec3(*plane_normal_np.tolist()),
@@ -1310,7 +1310,7 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
     """
     Class B on the retriangulation: the same face counts and the same area, from two mutating calls.
 
-    ``trimWithPlane`` keeps the **positive** side, which is triwarp's convention, and
+    ``trimWithPlane`` keeps the **positive** side, which is ordito's convention, and
     ``subdivideWithPlane`` inserts the section as real edges and returns the ``FaceBitSet`` of that
     side -- exactly the ``(vertices, faces, side_mask)`` triple ``split_mesh_with_plane`` returns.
     Both mutate the mesh they are given and return something else, so each gets its own.
@@ -1319,7 +1319,7 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
     suggests: the slice is **670 faces** on both sides with an area of **5.438285** on both, and the
     split is **1 468 faces, 736 vertices and 670 positive faces** on both, with an area of
     **12.506493**. What is *not* shared is the vertex count of the slice -- 477 against 383 -- since
-    triwarp emits a cut vertex per crossing edge where MeshLib reuses its half-edge topology, which
+    ordito emits a cut vertex per crossing edge where MeshLib reuses its half-edge topology, which
     is why this is a count-and-area comparison rather than a buffer one.
 
     The plane's ``d`` is the transform, and the assert that catches it getting lost is the z-range:
@@ -1330,7 +1330,7 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
     origin_np = mesh_tm.vertices.mean(axis=0) + np.array([0.0, 0.0, 0.13])
     plane_ml = _plane_ml(normal_np, origin_np)
 
-    sliced_vertices_wp, sliced_faces_wp = tw.intersection.slice_mesh_with_plane(
+    sliced_vertices_wp, sliced_faces_wp = od.intersection.slice_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
     )
     sliced_tm = warp_to_trimesh(sliced_vertices_wp, sliced_faces_wp)
@@ -1348,7 +1348,7 @@ def test_slice_and_split_with_plane_match_meshlib(icosphere: tuple[tm.Trimesh, w
     assert np.isclose(trimmed_tm.vertices[:, 2].min(), origin_np[2], atol=1e-5)
 
     # The splitting form: the same cut, both sides kept, with the positive side as a mask.
-    split_vertices_wp, split_faces_wp, side_wp = tw.intersection.split_mesh_with_plane(
+    split_vertices_wp, split_faces_wp, side_wp = od.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
     )
     split_tm = warp_to_trimesh(split_vertices_wp, split_faces_wp)
@@ -1371,7 +1371,7 @@ def test_split_mesh_with_plane_matches_pyvista(device: str) -> None:
     Class B against ``PolyData.clip(return_clipped=True)``, VTK's both-sides plane clip.
 
     The named transform is the **side convention**: pyvista's ``clip`` keeps the side the normal
-    points *away* from, so its ``kept`` is triwarp's ``~above`` and its ``clipped`` is ``above``
+    points *away* from, so its ``kept`` is ordito's ``~above`` and its ``clipped`` is ``above``
     (measured ``kept z in [-1, 0.1]`` against a plane at ``z = 0.1`` with normal ``+z``). Take the
     names at face value and the two areas are swapped, which the per-side asserts below catch.
 
@@ -1382,14 +1382,14 @@ def test_split_mesh_with_plane_matches_pyvista(device: str) -> None:
     bidirectionally (measured 5.4e-08).
 
     VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
-    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and ordito emit two
     triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     height = 0.1
 
-    vertices_wp, faces_wp, above_wp = tw.intersection.split_mesh_with_plane(
+    vertices_wp, faces_wp, above_wp = od.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, height)
     )
     kept_pv, clipped_pv = trimesh_to_pyvista(mesh_tm).clip(
@@ -1428,7 +1428,7 @@ def test_split_mesh_with_plane_refines_without_cracking(
     Not a library comparison: crack-free, on-plane, side-pure and area-preserving invariants.
 
     Every one of these would fail for a per-face cut like
-    [`slice_mesh_with_plane`][triwarp.intersection.slice_mesh_with_plane]'s, which is the point of
+    [`slice_mesh_with_plane`][ordito.intersection.slice_mesh_with_plane]'s, which is the point of
     the function: a closed input stays closed, the Euler characteristic is unchanged (inserting a
     curve of edges into a triangulation adds equal numbers of vertices, edges and faces), and no
     output face straddles the plane, which is what makes the ``above`` label well defined.
@@ -1438,9 +1438,9 @@ def test_split_mesh_with_plane_refines_without_cracking(
     normal_np = normal_np / np.linalg.norm(normal_np)
     origin_np = mesh_tm.vertices.mean(axis=0)
     n_vertices_in = mesh_wp.points.size
-    closed_in = tw.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
+    closed_in = od.validation.is_edge_manifold(mesh_wp.indices, allow_boundary_edges=False)
 
-    vertices_wp, faces_wp, above_wp = tw.intersection.split_mesh_with_plane(
+    vertices_wp, faces_wp, above_wp = od.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
     )
     points_np = vertices_wp.numpy().astype(np.float64)
@@ -1461,11 +1461,11 @@ def test_split_mesh_with_plane_refines_without_cracking(
     assert (above_np == (dots.max(axis=1) > 1e-6)).all()
 
     # Crack-free: manifoldness and area survive, and so does the Euler characteristic.
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=not closed_in) is True
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=not closed_in) is True
     if closed_in:
-        assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is True
+        assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False) is True
     assert np.isclose(tm.Trimesh(points_np, faces_np, process=False).area, mesh_tm.area, rtol=1e-5)
-    assert tw.measures.euler_characteristic(faces_wp) == tw.measures.euler_characteristic(
+    assert od.measures.euler_characteristic(faces_wp) == od.measures.euler_characteristic(
         mesh_wp.indices
     )
 
@@ -1477,7 +1477,7 @@ def test_split_mesh_with_plane_above_block_is_the_slice(
     """
     The ``above`` submesh is exactly what ``slice_mesh_with_plane`` returns.
 
-    Not triwarp-compared-with-itself for its own sake: the two share no code path — the slice cuts
+    Not ordito-compared-with-itself for its own sake: the two share no code path — the slice cuts
     per face into three compacted classes, this splits per *edge* and labels afterwards — so
     agreeing on face count and area to ``1e-6`` is a real cross-check of the label convention, which
     is the one thing a caller has to get right. It also pins the documented promise that the two
@@ -1487,11 +1487,11 @@ def test_split_mesh_with_plane_above_block_is_the_slice(
     normal = wp.vec3(0.0, 0.0, 1.0)
     origin = wp.vec3(*mesh_tm.vertices.mean(axis=0).tolist())
 
-    split_v, split_f, above = tw.intersection.split_mesh_with_plane(
+    split_v, split_f, above = od.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, normal, origin
     )
-    above_v, above_f = tw.selection.submesh_from_face_mask(split_v, split_f, above)
-    slice_v, slice_f = tw.intersection.slice_mesh_with_plane(
+    above_v, above_f = od.selection.submesh_from_face_mask(split_v, split_f, above)
+    slice_v, slice_f = od.intersection.slice_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, normal, origin
     )
 
@@ -1519,7 +1519,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
     origin_np = mesh_tm.vertices[apex]
     n_vertices_in = mesh_wp.points.size
 
-    vertices_wp, faces_wp, _ = tw.intersection.split_mesh_with_plane(
+    vertices_wp, faces_wp, _ = od.intersection.split_mesh_with_plane(
         mesh_wp.points, mesh_wp.indices, wp.vec3(*normal_np.tolist()), wp.vec3(*origin_np.tolist())
     )
     points_np = vertices_wp.numpy().astype(np.float64)
@@ -1537,7 +1537,7 @@ def test_split_mesh_with_plane_through_a_vertex_inserts_nothing_there(
 def test_split_mesh_with_plane_misses_the_mesh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """A plane clear of the mesh returns it unchanged with a constant label."""
     mesh_tm, mesh_wp = icosahedron
-    vertices_wp, faces_wp, above_wp = tw.intersection.split_mesh_with_plane(
+    vertices_wp, faces_wp, above_wp = od.intersection.split_mesh_with_plane(
         mesh_wp.points,
         mesh_wp.indices,
         wp.vec3(0.0, 0.0, 1.0),
@@ -1573,19 +1573,19 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(device: str) -> None:
     nearest-neighbour comparison rather than an element-wise one.
 
     ``invert=False`` is not optional and is the trap in this row: ``clip_scalar``'s **default keeps
-    the low side** (measured 798 faces below ``z = 0.1`` against 670 above), where triwarp keeps
+    the low side** (measured 798 faces below ``z = 0.1`` against 670 above), where ordito keeps
     ``values >= isovalue``. Take the default and the two answers are different regions of the same
     mesh, which the face-count assert catches only because they happen to differ in size.
 
     VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
-    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and ordito emit two
     triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     isovalue = 0.1
 
-    clipped_v, clipped_f = tw.intersection.clip_mesh_with_field(
+    clipped_v, clipped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
     mesh_pv = trimesh_to_pyvista(mesh_tm)
@@ -1623,7 +1623,7 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(device:
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     isovalue = 0.1
 
-    capped_v, capped_f = tw.intersection.clip_mesh_with_field(
+    capped_v, capped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue, cap=True
     )
     capped_tm = warp_to_trimesh(capped_v, capped_f)
@@ -1632,10 +1632,10 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(device:
 
     assert closed_pv.n_open_edges == 0
     assert capped_tm.is_watertight
-    assert tw.validation.is_edge_manifold(capped_f, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(capped_f, allow_boundary_edges=False)
     assert np.isclose(capped_tm.volume, closed_pv.volume, rtol=1e-5)
     # The cap is not free: without it the same clip is open.
-    _, uncapped_f = tw.intersection.clip_mesh_with_field(
+    _, uncapped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
     assert capped_f.size > uncapped_f.size
@@ -1663,13 +1663,13 @@ def test_clip_mesh_with_field_reproduces_slice_mesh_with_plane(
         device=mesh_wp.device,
     )
 
-    sliced_v, sliced_f = tw.intersection.slice_mesh_with_plane(
+    sliced_v, sliced_f = od.intersection.slice_mesh_with_plane(
         mesh_wp.points,
         mesh_wp.indices,
         wp.vec3(*plane_normal_np.tolist()),
         wp.vec3(*plane_origin_np.tolist()),
     )
-    clipped_v, clipped_f = tw.intersection.clip_mesh_with_field(
+    clipped_v, clipped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, field_wp
     )
     assert sliced_f.size > 0
@@ -1700,7 +1700,7 @@ def test_clip_mesh_with_field_through_a_saddle_vertex_reuses_it(device: str) -> 
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     values_wp = wp.array(values_np, dtype=wp.float32, device=device)
 
-    new_v, new_f = tw.intersection.clip_mesh_with_field(vertices_wp, faces_wp, values_wp, 0.0)
+    new_v, new_f = od.intersection.clip_mesh_with_field(vertices_wp, faces_wp, values_wp, 0.0)
     positions_np = new_v.numpy()
 
     # Exactly one genuine crossing (corner 1 to corner 2) plus the reused on-plane corner: three
@@ -1720,7 +1720,7 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
     """
     Round trip for the region/level-set pair: the clip's rim is the contour, edge for edge.
 
-    [`marching_triangles`][triwarp.intersection.marching_triangles] returns the level set and this
+    [`marching_triangles`][ordito.intersection.marching_triangles] returns the level set and this
     returns the region on one side of it, so the boundary of the region has to *be* the level set.
     Compared as total length plus a two-sided point-set distance, because the clip's rim carries one
     vertex per crossing where the contour carries one per segment endpoint.
@@ -1738,19 +1738,19 @@ def test_clip_mesh_with_field_section_is_the_marching_triangles_curve(
         np.ascontiguousarray(field_np, dtype=np.float32), dtype=wp.float32, device=mesh_wp.device
     )
 
-    curves, closed = tw.intersection.marching_triangles(
+    curves, closed = od.intersection.marching_triangles(
         mesh_wp.points, mesh_wp.indices, field_wp, isovalue
     )
     assert len(curves) == 1
     contour_np = curves[0].numpy().astype(np.float64)
 
-    clipped_v, clipped_f = tw.intersection.clip_mesh_with_field(
+    clipped_v, clipped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, field_wp, isovalue
     )
-    welded_v, _unique, _inverse, welded_f = tw.repair.remove_duplicated_vertices(
+    welded_v, _unique, _inverse, welded_f = od.repair.remove_duplicated_vertices(
         clipped_v, clipped_f
     )
-    rim_edges_np = tw.boundary.boundary_edges(welded_v, welded_f).numpy()
+    rim_edges_np = od.boundary.boundary_edges(welded_v, welded_f).numpy()
     positions_np = welded_v.numpy().astype(np.float64)
     rim_np = positions_np[np.unique(rim_edges_np)]
     assert len(rim_np) == len(contour_np)
@@ -1769,13 +1769,13 @@ def test_clip_mesh_with_field_accepts_a_float64_field(
     mesh_tm, mesh_wp = icosahedron
     field_np = mesh_tm.vertices[:, 2] - mesh_tm.centroid[2]
     isovalue = 0.05
-    clipped_64 = tw.intersection.clip_mesh_with_field(
+    clipped_64 = od.intersection.clip_mesh_with_field(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(np.ascontiguousarray(field_np), dtype=wp.float64, device=mesh_wp.device),
         isovalue,
     )
-    clipped_32 = tw.intersection.clip_mesh_with_field(
+    clipped_32 = od.intersection.clip_mesh_with_field(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(
@@ -1803,27 +1803,27 @@ _INTERSECTION_EMPTY_MESH_CASES = [
     (
         "mesh_with_plane",
         lambda v, f: (
-            tw.intersection.mesh_with_plane(v, f, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)),
+            od.intersection.mesh_with_plane(v, f, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)),
         ),
         ((0, 2),),
     ),
     (
         "slice_mesh_with_plane",
-        lambda v, f: tw.intersection.slice_mesh_with_plane(
+        lambda v, f: od.intersection.slice_mesh_with_plane(
             v, f, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
         ),
         ((0,), (0,)),
     ),
     (
         "split_mesh_with_plane",
-        lambda v, f: tw.intersection.split_mesh_with_plane(
+        lambda v, f: od.intersection.split_mesh_with_plane(
             v, f, wp.vec3(0.0, 0.0, 1.0), wp.vec3(0.0, 0.0, 0.0)
         ),
         ((0,), (0,), (0,)),
     ),
     (
         "clip_mesh_with_field",
-        lambda v, f: tw.intersection.clip_mesh_with_field(
+        lambda v, f: od.intersection.clip_mesh_with_field(
             v, f, warp_empty(0, wp.float32, f.device)
         ),
         ((0,), (0,)),
@@ -1854,7 +1854,7 @@ def _off_vertex_isovalue(mesh_tm: tm.Trimesh) -> float:
     Pick a height strictly between two vertex heights, so no corner lies *on* the level set.
 
     A quantile of the data is often a data point, and an isovalue that coincides with a vertex is a
-    different case with a different answer: triwarp splits such a face into two triangles where VTK
+    different case with a different answer: ordito splits such a face into two triangles where VTK
     emits three, so the parity row would fail on a convention rather than on a defect.
 
     The midpoint of the **largest gap** rather than of an arbitrary neighbouring pair, because
@@ -1871,15 +1871,15 @@ def _split_sides(
     mesh_wp: wp.Mesh, field_wp: wp.array[wp.float32], isovalue: float
 ) -> tuple[tm.Trimesh, tm.Trimesh, tm.Trimesh]:
     """Split along the level set and return the whole result and its two sides, as trimeshes."""
-    vertices_wp, faces_wp, positive_wp = tw.intersection.split_faces_along_field(
+    vertices_wp, faces_wp, positive_wp = od.intersection.split_faces_along_field(
         mesh_wp.points, mesh_wp.indices, field_wp, isovalue
     )
     positive_np = positive_wp.numpy()
     negative_wp = wp.array(~positive_np, dtype=wp.bool, device=faces_wp.device)
     return (
         warp_to_trimesh(vertices_wp, faces_wp),
-        warp_to_trimesh(*tw.selection.submesh_from_face_mask(vertices_wp, faces_wp, positive_wp)),
-        warp_to_trimesh(*tw.selection.submesh_from_face_mask(vertices_wp, faces_wp, negative_wp)),
+        warp_to_trimesh(*od.selection.submesh_from_face_mask(vertices_wp, faces_wp, positive_wp)),
+        warp_to_trimesh(*od.selection.submesh_from_face_mask(vertices_wp, faces_wp, negative_wp)),
     )
 
 
@@ -1902,7 +1902,7 @@ def test_split_faces_along_field_matches_pyvista_clip_scalar_both(
     order -- the same reason the clip's own row uses a nearest-neighbour compare.
 
     VTK 9.7's clip emits a triangle cut with two corners kept as **one quad** (its linear-cell
-    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and triwarp emit two
+    clip now reads ``vtkMarchingCellsClipCases``), where earlier releases and ordito emit two
     triangles, so the reference is ``triangulate()``-d before any count is compared.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1962,13 +1962,13 @@ def test_split_faces_along_field_partitions_the_surface(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     isovalue = _off_vertex_isovalue(mesh_tm)
     field_wp = _height_field(mesh_tm, str(mesh_wp.device))
-    vertices_wp, faces_wp, _positive_wp = tw.intersection.split_faces_along_field(
+    vertices_wp, faces_wp, _positive_wp = od.intersection.split_faces_along_field(
         mesh_wp.points, mesh_wp.indices, field_wp, isovalue
     )
     whole_tm, positive_tm, negative_tm = _split_sides(mesh_wp, field_wp, isovalue)
 
     assert faces_wp.size // 3 > len(mesh_tm.faces)  # non-vacuity: faces were cut
-    assert tw.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
     assert whole_tm.is_watertight == mesh_tm.is_watertight
     assert np.isclose(whole_tm.area, mesh_tm.area, rtol=1e-5)
     assert np.isclose(positive_tm.area + negative_tm.area, mesh_tm.area, rtol=1e-5)
@@ -1993,7 +1993,7 @@ def test_split_faces_along_field_positive_side_is_the_clip(
     field_wp = _height_field(mesh_tm, str(mesh_wp.device))
     _whole_tm, positive_tm, _negative_tm = _split_sides(mesh_wp, field_wp, isovalue)
     clipped_tm = warp_to_trimesh(
-        *tw.intersection.clip_mesh_with_field(mesh_wp.points, mesh_wp.indices, field_wp, isovalue)
+        *od.intersection.clip_mesh_with_field(mesh_wp.points, mesh_wp.indices, field_wp, isovalue)
     )
     assert 0 < len(clipped_tm.faces) < len(mesh_tm.faces)  # non-vacuity
     assert len(positive_tm.faces) == len(clipped_tm.faces)
@@ -2016,7 +2016,7 @@ def test_split_faces_along_field_degenerate_level_sets(
     torus_tm, torus_wp = torus
     field_wp = _height_field(torus_tm, str(torus_wp.device))
     assert np.count_nonzero(np.abs(torus_tm.vertices[:, 2]) < 1e-9) > 0  # the rings really are at 0
-    vertices_wp, faces_wp, positive_wp = tw.intersection.split_faces_along_field(
+    vertices_wp, faces_wp, positive_wp = od.intersection.split_faces_along_field(
         torus_wp.points, torus_wp.indices, field_wp, 0.0
     )
     assert np.array_equal(faces_wp.numpy(), torus_wp.indices.numpy())
@@ -2026,7 +2026,7 @@ def test_split_faces_along_field_degenerate_level_sets(
     sphere_tm, sphere_wp = icosphere
     sphere_field_wp = _height_field(sphere_tm, str(sphere_wp.device))
     for isovalue in (float(sphere_tm.vertices[:, 2].max()) + 1.0, -10.0):
-        _v, out_faces_wp, out_positive_wp = tw.intersection.split_faces_along_field(
+        _v, out_faces_wp, out_positive_wp = od.intersection.split_faces_along_field(
             sphere_wp.points, sphere_wp.indices, sphere_field_wp, isovalue
         )
         assert np.array_equal(out_faces_wp.numpy(), sphere_wp.indices.numpy())
@@ -2035,10 +2035,10 @@ def test_split_faces_along_field_degenerate_level_sets(
     # A vertex exactly on the level set: its incident faces take the two-triangle class, so the
     # face count grows by less than two per crossed face and no output triangle is degenerate.
     on_vertex = float(sphere_tm.vertices[17, 2])
-    corner_v_wp, corner_f_wp, _ = tw.intersection.split_faces_along_field(
+    corner_v_wp, corner_f_wp, _ = od.intersection.split_faces_along_field(
         sphere_wp.points, sphere_wp.indices, sphere_field_wp, on_vertex
     )
-    _normals_wp, areas_wp = tw.triangles.face_normals_and_areas(corner_v_wp, corner_f_wp)
+    _normals_wp, areas_wp = od.triangles.face_normals_and_areas(corner_v_wp, corner_f_wp)
     areas_np = areas_wp.numpy()
     assert areas_np.min() > 0.0
     assert np.isclose(areas_np.sum(), sphere_tm.area, rtol=1e-5)

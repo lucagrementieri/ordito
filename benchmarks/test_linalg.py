@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.linalg``: the conjugate-gradient solvers behind every smoother and map.
+Benchmarks for ``ordito.linalg``: the conjugate-gradient solvers behind every smoother and map.
 
 Axis: **quality**. This module has no size story worth telling -- ``nnz`` sets the cost of one
 mat-vec and that is arithmetic -- but it has a conditioning story, and conditioning is the whole
@@ -29,8 +29,8 @@ Three knobs are swept on top of it, each isolating a different lever:
   is the amortization question: if ``x50`` lands near 50x ``once``, the preallocation is not earning
   its API surface.
 
-Everything runs in **float64**, the operator dtype these entry points require. ``triwarp-cpu`` is
-timed as well as ``triwarp-cuda``: ``warp.optim.linear.cg`` converges on the Warp CPU backend,
+Everything runs in **float64**, the operator dtype these entry points require. ``ordito-cpu`` is
+timed as well as ``ordito-cuda``: ``warp.optim.linear.cg`` converges on the Warp CPU backend,
 verified against ``numpy.linalg.solve`` on a small SPD system.
 
 References
@@ -39,10 +39,10 @@ References
 ``compute_scalar_by_scalar_harmonic_field_per_vertex`` (MeshLab's Generate Scalar Harmonic Field) is
 a Dirichlet-constrained solve of the same cotangent system ``min_quad_with_fixed`` solves, so the
 two answer the same question by opposite means -- MeshLab factors the free-free block directly,
-triwarp runs batched CG on it.
+ordito runs batched CG on it.
 
 That makes it worth more than a timing row: it is the **conditioning control**. It is flat across
-the axis meshes where triwarp spreads several-fold at 1% pinned, so triwarp wins on the
+the axis meshes where ordito spreads several-fold at 1% pinned, so ordito wins on the
 well-conditioned mesh and loses on the graded one, and the entire spread is its CG iteration count
 rather than anything intrinsic about the problem: a direct factorization of the identical system
 does not care. It is the same observation the potpourri3d rows make in
@@ -73,8 +73,8 @@ import pytest
 import scipy.sparse as sp
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase
 
 # Fraction of vertices pinned as Dirichlet boundary conditions.
@@ -91,16 +91,16 @@ _N_RHS = 2
 
 _SEED = 23
 
-_operator_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float64]] = {}
-_fixed_cache: dict[tuple[str, str, float], tuple[wp.array[wp.bool], twt.Array2dFloat64]] = {}
+_operator_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float64]] = {}
+_fixed_cache: dict[tuple[str, str, float], tuple[wp.array[wp.bool], odt.Array2dFloat64]] = {}
 _rhs_cache: dict[tuple[str, str], wp.array[wp.float64]] = {}
 
 
-def _operator(bench_case: BenchCase) -> twt.BsrMatrix[wp.float64]:
+def _operator(bench_case: BenchCase) -> odt.BsrMatrix[wp.float64]:
     """Float64 cotangent stiffness -- the *input*; its assembly is timed in test_laplacian."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _operator_cache:
-        _operator_cache[key] = tw.laplacian.cotmatrix(
+        _operator_cache[key] = od.laplacian.cotmatrix(
             bench_case.vertices_wp, bench_case.faces_wp, dtype=wp.float64
         )
     return _operator_cache[key]
@@ -120,7 +120,7 @@ def _fixed_mask_np(bench_case: BenchCase, fraction: float) -> np.ndarray:
     return mask_np
 
 
-def _fixed(bench_case: BenchCase, fraction: float) -> tuple[wp.array[wp.bool], twt.Array2dFloat64]:
+def _fixed(bench_case: BenchCase, fraction: float) -> tuple[wp.array[wp.bool], odt.Array2dFloat64]:
     """``(fixed_mask, fixed_values)`` pinning ``fraction`` of the vertices, at a fixed seed."""
     key = (bench_case.mesh_name, str(bench_case.device), fraction)
     if key not in _fixed_cache:
@@ -128,7 +128,7 @@ def _fixed(bench_case: BenchCase, fraction: float) -> tuple[wp.array[wp.bool], t
         values_np = np.tile(bench_case.vertices_np[:, 2], (_N_RHS, 1))
         _fixed_cache[key] = (
             wp.array(mask_np, dtype=wp.bool, device=bench_case.device),
-            twt.as_array2d(
+            odt.as_array2d(
                 wp.array(
                     np.ascontiguousarray(values_np), dtype=wp.float64, device=bench_case.device
                 ),
@@ -156,7 +156,7 @@ def _harmonic_endpoints_pml(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarr
 
 @pytest.mark.benchmark(group="min_quad_with_fixed")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "igl")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "igl")
 @pytest.mark.parametrize("fixed_fraction", _FIXED_FRACTIONS, ids=["pin1pct", "pin50pct"])
 def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> None:
     """
@@ -167,7 +167,7 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
     ``saddle_graded`` at 1% pinned -- the worst-conditioned, largest free system.
 
     The pymeshlab row is the control for exactly that cell: its direct factorization of the same
-    system is flat across the mesh pair, so whatever spread triwarp shows is the CG iteration count
+    system is flat across the mesh pair, so whatever spread ordito shows is the CG iteration count
     and not the problem.
 
     **libigl binds the function this one is named after**, and it is the closer control of the two:
@@ -178,8 +178,8 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
     ``-L``.
 
     It is a direct factorization too, so read the two reference rows together: both should be flat
-    where triwarp's CG is not, and igl's should additionally be flat in ``fixed_fraction`` where
-    triwarp's is not -- a smaller free block is less work for CG and roughly the same amount of
+    where ordito's CG is not, and igl's should additionally be flat in ``fixed_fraction`` where
+    ordito's is not -- a smaller free block is less work for CG and roughly the same amount of
     fill-reducing ordering for a factorization.
     """
     if bench_case.kind == "igl":
@@ -189,7 +189,7 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
         known_igl = np.ascontiguousarray(
             np.flatnonzero(_fixed_mask_np(bench_case, fixed_fraction)).astype(np.int64)
         )
-        # The same pinned values triwarp's row is given: the z coordinate at the pinned vertices.
+        # The same pinned values ordito's row is given: the z coordinate at the pinned vertices.
         values_igl = np.ascontiguousarray(vertices_np[known_igl, 2]).reshape(-1, 1)
         zeros_igl = np.zeros((n_vertices, 1))
         equality_igl = sp.csr_matrix((0, n_vertices))
@@ -226,7 +226,7 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
     operator = _operator(bench_case)
     fixed_mask, fixed_values = _fixed(bench_case, fixed_fraction)
     solution, _free_map, n_free = bench_case.run(
-        lambda: tw.linalg.min_quad_with_fixed(operator, fixed_mask, fixed_values)
+        lambda: od.linalg.min_quad_with_fixed(operator, fixed_mask, fixed_values)
     )
     assert solution.shape[0] == _N_RHS
     assert n_free > 0, "a fully-pinned system returns without solving, so there is nothing to time"
@@ -234,18 +234,18 @@ def test_min_quad_with_fixed(bench_case: BenchCase, fixed_fraction: float) -> No
 
 @pytest.mark.benchmark(group="solve_spd_columns")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("check_every", _CHECK_EVERY, ids=["every", "ondevice"])
 def test_solve_spd_columns(bench_case: BenchCase, check_every: int) -> None:
     """Residual-check cadence: host syncs traded against possibly-wasted iterations."""
     operator, rhs = _operator(bench_case), _rhs(bench_case)
     solution = wp.zeros_like(rhs)
-    solution_2d = twt.as_array2d(solution, wp.float64)
-    rhs_2d = twt.as_array2d(rhs, wp.float64)
+    solution_2d = odt.as_array2d(solution, wp.float64)
+    rhs_2d = odt.as_array2d(rhs, wp.float64)
 
     def run() -> tuple[int, float, float]:
         solution.zero_()
-        return tw.linalg.solve_spd_columns(operator, rhs_2d, solution_2d, check_every=check_every)
+        return od.linalg.solve_spd_columns(operator, rhs_2d, solution_2d, check_every=check_every)
 
     # ``check_every=0`` reports its iteration count in a device array (the residual test runs
     # inside ``wp.capture_while``), while a positive cadence reports a host int -- so only the
@@ -256,7 +256,7 @@ def test_solve_spd_columns(bench_case: BenchCase, check_every: int) -> None:
 
 @pytest.mark.benchmark(group="multigrid_preconditioner")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_multigrid_preconditioner(bench_case: BenchCase) -> None:
     """
     Hierarchy *setup* only: the cost that decides whether a call site should ask for the V-cycle.
@@ -283,13 +283,13 @@ def test_multigrid_preconditioner(bench_case: BenchCase) -> None:
     which is a total loss.
     """
     operator = _operator(bench_case)
-    preconditioner = bench_case.run(lambda: tw.linalg.multigrid_preconditioner(operator))
+    preconditioner = bench_case.run(lambda: od.linalg.multigrid_preconditioner(operator))
     assert preconditioner.shape[0] == int(operator.nrow)
 
 
 @pytest.mark.benchmark(group="spd_column_solver_amortized")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("repeats", _REPEATS, ids=["once", "x50"])
 def test_spd_column_solver_amortized(bench_case: BenchCase, repeats: int) -> None:
     """
@@ -306,12 +306,12 @@ def test_spd_column_solver_amortized(bench_case: BenchCase, repeats: int) -> Non
     costs a fixed fraction of a millisecond a call whatever it does, so this row runs twice as slow
     as at ``check_every=10`` while every other solver group got faster. See the ``check_every``
     notes on
-    ``triwarp.linalg.solve_spd_columns``.
+    ``ordito.linalg.solve_spd_columns``.
     """
     operator, rhs = _operator(bench_case), _rhs(bench_case)
     solution = wp.zeros_like(rhs)
-    solver = tw.linalg.spd_column_solver(
-        operator, twt.as_array2d(rhs, wp.float64), twt.as_array2d(solution, wp.float64)
+    solver = od.linalg.spd_column_solver(
+        operator, odt.as_array2d(rhs, wp.float64), odt.as_array2d(solution, wp.float64)
     )
 
     def run() -> None:

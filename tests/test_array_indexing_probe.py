@@ -8,12 +8,12 @@ slice, a reversed view -- each of those is a legal ``wp.array`` that prints corr
 gathers the wrong elements, with no exception. And the corrupt read is **faster** than the correct
 one, because it touches a contiguous prefix, so neither the suite nor a benchmark catches it.
 
-Every gather in ``triwarp/`` therefore either passes a whole array, a contiguous prefix slice, or a
+Every gather in ``ordito/`` therefore either passes a whole array, a contiguous prefix slice, or a
 buffer explicitly ``wp.clone``d out of a view -- a discipline nothing enforced until this file
 existed. Section 3.4 cited it as already present; it was not, and only stale ``__pycache__``
 remnants of a one-off exploratory run survived.
 
-These are capability probes, not regression tests for triwarp code: they pin what the *platform*
+These are capability probes, not regression tests for ordito code: they pin what the *platform*
 does, so a future conversion can check rather than guess, and so a Warp release that fixes any of
 this is noticed rather than silently relied upon. See ``.claude/CLAUDE.md`` sections 3.4 and 10.
 """
@@ -23,8 +23,8 @@ from __future__ import annotations
 import numpy as np
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conversions import warp_empty
 
 
@@ -61,16 +61,16 @@ def test_gather_through_a_column_view_ignores_the_stride(device: str) -> None:
 
 
 def test_cloning_the_index_view_first_is_correct(device: str) -> None:
-    """The prescribed fix: densify the index buffer, then gather. This is what ``triwarp/`` does."""
+    """The prescribed fix: densify the index buffer, then gather. This is what ``ordito/`` does."""
     payload_np = np.arange(20, dtype=np.float32)
     edges_np = np.array([[0, 10], [1, 11], [2, 12], [3, 13], [4, 14]], dtype=np.int32)
     payload_wp = wp.array(payload_np, dtype=wp.float32, device=device)
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
 
     for column in (0, 1):
-        dense_wp = wp.clone(twt.as_dense(edges_wp[:, column]))
+        dense_wp = wp.clone(odt.as_dense(edges_wp[:, column]))
         assert dense_wp.is_contiguous
-        gathered_wp = tw.array.gather(payload_wp, dense_wp)
+        gathered_wp = od.array.gather(payload_wp, dense_wp)
         assert np.array_equal(gathered_wp.numpy(), payload_np[edges_np[:, column]])
 
 
@@ -98,9 +98,9 @@ def test_contiguous_prefix_slice_index_is_safe(device: str) -> None:
     payload_wp = wp.array(payload_np, dtype=wp.float32, device=device)
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
 
-    prefix_wp = twt.as_dense(indices_wp[:4])
+    prefix_wp = odt.as_dense(indices_wp[:4])
     assert prefix_wp.is_contiguous
-    gathered_wp = tw.array.gather(payload_wp, prefix_wp)
+    gathered_wp = od.array.gather(payload_wp, prefix_wp)
     assert np.array_equal(gathered_wp.numpy(), payload_np[indices_np[:4]])
 
 

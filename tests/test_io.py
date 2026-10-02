@@ -9,7 +9,7 @@ import pytest
 import pytorch3d.io as p3d_io
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -51,7 +51,7 @@ def test_load_mesh_data_roundtrip(tmp_path: Path, device: str):
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
 
-    data_wp = tw.io.load_mesh_data(path, device=device)
+    data_wp = od.io.load_mesh_data(path, device=device)
 
     assert "faces" in data_wp
     assert "vertex_normals" in data_wp
@@ -74,7 +74,7 @@ def test_load_mesh_returns_wp_mesh(tmp_path: Path, device: str):
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
 
-    mesh_wp = tw.io.load_mesh(path, device=device)
+    mesh_wp = od.io.load_mesh(path, device=device)
 
     assert isinstance(mesh_wp, wp.Mesh)
     assert np.allclose(mesh_wp.points.numpy(), source["vertices"], rtol=1e-5, atol=1e-5)
@@ -85,9 +85,9 @@ def test_load_mesh_returns_wp_mesh(tmp_path: Path, device: str):
     "load_mesh",
     "pytorch3d",
     benchmarked=False,
-    reason="triwarp.io has no benchmark group at all and deliberately so -- it is a meshio "
+    reason="ordito.io has no benchmark group at all and deliberately so -- it is a meshio "
     "round-trip, so a row here would time meshio's PLY parser against pytorch3d's, neither of "
-    "which is triwarp code. tests/api_conventions.py carries io in "
+    "which is ordito code. tests/api_conventions.py carries io in "
     "_MODULES_WITHOUT_BENCHMARKS for that reason. The values are still worth comparing, which is "
     "what this test does.",
 )
@@ -96,7 +96,7 @@ def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
     Class B: ``pytorch3d.io.load_ply`` reads the same file to the same buffers after a float cast.
 
     Both sides parse the *same* PLY, so the only thing between them is storage: pytorch3d returns
-    float32 verts and int64 faces where meshio hands triwarp float64 that ``wp.vec3`` narrows, and
+    float32 verts and int64 faces where meshio hands ordito float64 that ``wp.vec3`` narrows, and
     the faces are byte-equal with no transform. A second independent parser is worth having on a
     loader precisely because a format bug is invisible to a round trip through the writer that
     produced the file.
@@ -107,7 +107,7 @@ def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
     vertices_p3d, faces_p3d = p3d_io.load_ply(str(path))
-    mesh_wp = tw.io.load_mesh(path, device=device)
+    mesh_wp = od.io.load_mesh(path, device=device)
 
     assert vertices_p3d.shape == source["vertices"].shape
     assert np.array_equal(mesh_wp.points.numpy(), vertices_p3d.numpy())
@@ -116,9 +116,9 @@ def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
 
 def test_face_normals_cover_every_triangle_block(monkeypatch: pytest.MonkeyPatch, device: str):
     """
-    Triwarp against meshio: ``face_normals`` must be row-aligned with ``faces``, block count aside.
+    Ordito against meshio: ``face_normals`` must be row-aligned with ``faces``, block count aside.
 
-    Not a library comparison -- no reference loader exposes triwarp's dict -- so the oracle is
+    Not a library comparison -- no reference loader exposes ordito's dict -- so the oracle is
     meshio's own ``cell_data_dict[name]["triangle"]``, which concatenates the triangle blocks in the
     same order ``cells_dict["triangle"]`` does. A file that splits its triangles across several
     blocks is ordinary (gmsh and VTK physical groups do it), and reading ``cell_data[name][i]`` for
@@ -148,7 +148,7 @@ def test_face_normals_cover_every_triangle_block(monkeypatch: pytest.MonkeyPatch
     assert len(mesh_mio.cells) == 2, "the fixture must split its triangles across two blocks"
     monkeypatch.setattr(meshio, "read", lambda _path: mesh_mio)
 
-    data_wp = tw.io.load_mesh_data("unread.msh", device=device)
+    data_wp = od.io.load_mesh_data("unread.msh", device=device)
 
     faces_mio = mesh_mio.cells_dict["triangle"]
     normals_mio = np.column_stack(
@@ -169,4 +169,4 @@ def test_load_mesh_without_faces_raises(tmp_path: Path, device: str):
     meshio.write(str(path), meshio.Mesh(points_np, []))
 
     with pytest.raises(ValueError, match="no triangle faces"):
-        tw.io.load_mesh(path, device=device)
+        od.io.load_mesh(path, device=device)

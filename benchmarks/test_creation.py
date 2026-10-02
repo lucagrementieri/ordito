@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.creation``: parametric primitive generation.
+Benchmarks for ``ordito.creation``: parametric primitive generation.
 
 The only benchmarks in the suite with **no input mesh**, so they use the ``bench_lib`` fixture
 rather than ``bench_case`` — see the mesh-free path in ``conftest.pytest_generate_tests``. Their
@@ -13,7 +13,7 @@ References
 ----------
 **trimesh** is the direct port source, so it is apples-to-apples everywhere: identical profile,
 section count and face template. The one structural difference is the clean-up — trimesh hashes
-positions inside ``Trimesh(process=True)`` where triwarp derives the coincident vertices from the
+positions inside ``Trimesh(process=True)`` where ordito derives the coincident vertices from the
 profile — and that step is measured on both sides rather than factored out.
 
 **open3d** covers four, with caveats that matter for reading the numbers: ``create_cylinder`` /
@@ -35,11 +35,11 @@ buffer.
 the annulus is the only annular factory outside trimesh. ``create_cube(size=)`` takes one scale
 factor rather than three extents, so it builds a cube where the others build a box — twelve
 triangles either way, which is all that group measures. Its three non-icosahedral Platonic solids
-are where triwarp's constant tables came from and the only reference for them; **libigl** has
+are where ordito's constant tables came from and the only reference for them; **libigl** has
 exactly one, ``igl.icosahedron()``, which is why ``platonic_solids`` carries an icosahedron case.
 Those rows take no parameters on any side and so are pure fixed cost. ``create_sphere_cap`` takes
-the full aperture in degrees where triwarp takes the polar half-angle in radians, so its ``angle``
-is twice triwarp's and both generate the identical lattice. MeshLab's primitives are a fixed
+the full aperture in degrees where ordito takes the polar half-angle in radians, so its ``angle``
+is twice ordito's and both generate the identical lattice. MeshLab's primitives are a fixed
 catalogue rather than a profile-and-sweep toolkit, so there is no ``uv_sphere`` / ``revolve`` /
 ``capsule`` / ``sweep_polygon`` / ``truncated_prisms`` counterpart. Every ``create_*`` pushes a new
 mesh onto the set, so each row builds a fresh ``ml.MeshSet`` inside the timed callable; an empty
@@ -48,15 +48,15 @@ set is cheap, so unlike the mesh-driven modules that build is not a meaningful s
 **pyvista** (VTK 9.6) is the reference for the four parametric-surface groups and nothing else here
 — ``pv.Sphere`` / ``Cube`` / ``Icosphere`` come in their own frames and scales. ``pv.Parametric*``
 evaluates the identical map but takes a different route to the mesh: a per-point C++ loop, then
-``vtkCleanPolyData`` welding the raw lattice by *distance*, where triwarp identifies the seam
+``vtkCleanPolyData`` welding the raw lattice by *distance*, where ordito identifies the seam
 combinatorially and never allocates the duplicates. ``clean=True`` is passed explicitly on every
 row because pyvista's own default differs per surface, and an unwelded surface is a different and
 cheaper thing to time.
 
 What the numbers say
 --------------------
-**triwarp is flat in resolution** — a revolution primitive is two launches over one buffer each, so
-its cost is the host-side allocation and launch floor every triwarp wrapper shares. trimesh
+**ordito is flat in resolution** — a revolution primitive is two launches over one buffer each, so
+its cost is the host-side allocation and launch floor every ordito wrapper shares. trimesh
 therefore wins at a low section count and loses by orders of magnitude at a high one, and open3d's
 tight C++ loops win outright at small sizes while falling behind above a few thousand sections.
 
@@ -95,7 +95,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchLibrary
 
 if TYPE_CHECKING:
@@ -153,13 +153,13 @@ def _new_cube_pml() -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="box")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 def test_box(bench_lib: BenchLibrary) -> None:
     """
     The suite's launch-overhead calibration probe.
 
     ``box`` is a 12-triangle constant table, so there is nothing to sweep and nothing to scale: what
-    this group measures is the fixed host-side cost of *any* triwarp wrapper call -- allocation plus
+    this group measures is the fixed host-side cost of *any* ordito wrapper call -- allocation plus
     Warp's launch path, a fraction of which is the NumPy prologue.
 
     That floor is the baseline every other group should be read against: a group sitting at it
@@ -183,9 +183,9 @@ def test_box(bench_lib: BenchLibrary) -> None:
         assert _new_cube_pml().current_mesh().face_number() == 12
         bench_lib.run(_new_cube_pml)
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
-        _, faces_wp = bench_lib.run(lambda: tw.creation.box(extents=(1.0, 2.0, 3.0), device=device))
+        _, faces_wp = bench_lib.run(lambda: od.creation.box(extents=(1.0, 2.0, 3.0), device=device))
         assert faces_wp.size == 36
     elif bench_lib.kind == "trimesh":
         mesh_tm = bench_lib.run(lambda: tm.creation.box(extents=[1.0, 2.0, 3.0]))
@@ -197,7 +197,7 @@ def test_box(bench_lib: BenchLibrary) -> None:
 
 
 @pytest.mark.benchmark(group="platonic_solids")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "open3d", "pymeshlab")
 @pytest.mark.parametrize(
     ("builder", "filter_name", "n_faces"),
     [
@@ -247,12 +247,12 @@ def test_platonic_solids(
         assert bench_lib.run(solid_pml) == n_faces
         return
     device = bench_lib.device
-    _, faces_wp = bench_lib.run(lambda: getattr(tw.creation, builder)(device=device))
+    _, faces_wp = bench_lib.run(lambda: getattr(od.creation, builder)(device=device))
     assert faces_wp.size // 3 == n_faces
 
 
 @pytest.mark.benchmark(group="grid")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 @pytest.mark.parametrize("count", [32, 512])
 def test_grid(bench_lib: BenchLibrary, count: int) -> None:
     """
@@ -285,18 +285,18 @@ def test_grid(bench_lib: BenchLibrary, count: int) -> None:
         assert bench_lib.run(grid_pml) == n_faces
         return
     device = bench_lib.device
-    _, faces_wp = bench_lib.run(lambda: tw.creation.grid(count=(count, count), device=device))
+    _, faces_wp = bench_lib.run(lambda: od.creation.grid(count=(count, count), device=device))
     assert faces_wp.size // 3 == n_faces
 
 
 @pytest.mark.benchmark(group="sphere_cap")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("subdivisions", [3, 6])
 def test_sphere_cap(bench_lib: BenchLibrary, subdivisions: int) -> None:
     """
     The concentric-ring lattice: one thread per vertex and one per triangle, both closed forms.
 
-    Flat in resolution on the triwarp side, like the revolution primitives, because the lattice is
+    Flat in resolution on the ordito side, like the revolution primitives, because the lattice is
     one launch rather than a host loop over ``2 ** subdivisions`` rings. MeshLab's own generator is
     a per-vertex C++ loop and carries that quadratic slope, which is what widens the gap with
     ``subdivisions``.
@@ -313,7 +313,7 @@ def test_sphere_cap(bench_lib: BenchLibrary, subdivisions: int) -> None:
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(
-        lambda: tw.creation.sphere_cap(
+        lambda: od.creation.sphere_cap(
             angle=math.radians(30.0), subdivisions=subdivisions, device=device
         )
     )
@@ -321,7 +321,7 @@ def test_sphere_cap(bench_lib: BenchLibrary, subdivisions: int) -> None:
 
 
 @pytest.mark.benchmark(group="icosphere")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "pytorch3d")
 @pytest.mark.parametrize("subdivisions", _SUBDIVISIONS)
 def test_icosphere(bench_lib: BenchLibrary, subdivisions: int) -> None:
     # No open3d counterpart: create_icosahedron is never subdivided. MeshLab's create_sphere is
@@ -348,10 +348,10 @@ def test_icosphere(bench_lib: BenchLibrary, subdivisions: int) -> None:
 
         assert bench_lib.run(sphere_pml) == 20 * 4**subdivisions
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(
-            lambda: tw.creation.icosphere(subdivisions=subdivisions, device=device)
+            lambda: od.creation.icosphere(subdivisions=subdivisions, device=device)
         )
         assert faces_wp.size // 3 == 20 * 4**subdivisions
     else:
@@ -360,7 +360,7 @@ def test_icosphere(bench_lib: BenchLibrary, subdivisions: int) -> None:
 
 
 @pytest.mark.benchmark(group="uv_sphere")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
     """
@@ -386,8 +386,8 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
     *written* to four decimals (``tests/test_creation.py::test_icosphere_matches_pytorch3d``). It
     is the only reference here that builds on the GPU, and its implementation is the one thing this
     row prices that the others do not: it subdivides **iteratively** through ``SubdivideMeshes``,
-    one pass per level, where triwarp's connectivity is closed-form and costs one launch whatever
-    the level. So expect its column to grow with the level where triwarp's is flat -- that contrast
+    one pass per level, where ordito's connectivity is closed-form and costs one launch whatever
+    the level. So expect its column to grow with the level where ordito's is flat -- that contrast
     is the point of the row.
     """
     count = (2 * sections, sections)
@@ -395,9 +395,9 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
         mesh_ml = bench_lib.run(lambda: mm.makeUVSphere(1.0, sections, 2 * sections - 2))
         assert mesh_ml.topology.numValidFaces() == 2 * sections * (2 * sections - 2)
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
-        _, faces_wp = bench_lib.run(lambda: tw.creation.uv_sphere(count=count, device=device))
+        _, faces_wp = bench_lib.run(lambda: od.creation.uv_sphere(count=count, device=device))
         assert faces_wp.size > 0
     elif bench_lib.kind == "trimesh":
         # trimesh doubles an explicit longitude count.
@@ -410,14 +410,14 @@ def test_uv_sphere(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="cylinder")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_cylinder(bench_lib: BenchLibrary, sections: int) -> None:
     """
     A ring table plus two caps, at three resolutions.
 
     meshlib's ``makeCylinder`` builds the same mesh -- same counts, volume and area
-    (``tests/test_creation.py``) -- **base-anchored** at ``z = 0`` where triwarp centres it, which
+    (``tests/test_creation.py``) -- **base-anchored** at ``z = 0`` where ordito centres it, which
     is a frame convention rather than a difference in the table. Its radius defaults to 0.1 rather
     than 1, so the row passes it explicitly.
     """
@@ -425,10 +425,10 @@ def test_cylinder(bench_lib: BenchLibrary, sections: int) -> None:
         mesh_ml = bench_lib.run(lambda: mm.makeCylinder(1.0, 2.0, sections))
         assert mesh_ml.topology.numValidFaces() == 4 * sections
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(
-            lambda: tw.creation.cylinder(radius=1.0, height=2.0, sections=sections, device=device)
+            lambda: od.creation.cylinder(radius=1.0, height=2.0, sections=sections, device=device)
         )
         assert faces_wp.size // 3 == 4 * sections
     elif bench_lib.kind == "trimesh":
@@ -445,7 +445,7 @@ def test_cylinder(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="cone")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_cone(bench_lib: BenchLibrary, sections: int) -> None:
     """
@@ -467,10 +467,10 @@ def test_cone(bench_lib: BenchLibrary, sections: int) -> None:
 
         bench_lib.run(cone_pml)
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(
-            lambda: tw.creation.cone(radius=1.0, height=2.0, sections=sections, device=device)
+            lambda: od.creation.cone(radius=1.0, height=2.0, sections=sections, device=device)
         )
         assert faces_wp.size // 3 == 2 * sections
     elif bench_lib.kind == "trimesh":
@@ -488,16 +488,16 @@ def test_cone(bench_lib: BenchLibrary, sections: int) -> None:
     "pymeshlab",
     oracle="trimesh",
     reason="D6 different primitive: MeshLab's create_annulus builds a flat holed *disk* while "
-    "triwarp's annulus is an annular *cylinder* with height, so the two do not bound the same "
+    "ordito's annulus is an annular *cylinder* with height, so the two do not bound the same "
     "solid and MeshLab emits fewer faces at the same side count. trimesh is the oracle here and "
     "is asserted in tests/test_creation.py::test_annulus.",
 )
 @pytest.mark.benchmark(group="annulus")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_annulus(bench_lib: BenchLibrary, sections: int) -> None:
     # No open3d counterpart: there is no annular-cylinder factory. MeshLab's annulus is a flat holed
-    # disk rather than triwarp's annular *cylinder*, so it builds fewer faces at the same section
+    # disk rather than ordito's annular *cylinder*, so it builds fewer faces at the same section
     # count -- a floor for this row rather than an equivalent.
     if bench_lib.kind == "pymeshlab":
 
@@ -507,10 +507,10 @@ def test_annulus(bench_lib: BenchLibrary, sections: int) -> None:
 
         bench_lib.run(annulus_pml)
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(
-            lambda: tw.creation.annulus(0.5, 1.0, height=2.0, sections=sections, device=device)
+            lambda: od.creation.annulus(0.5, 1.0, height=2.0, sections=sections, device=device)
         )
         assert faces_wp.size // 3 == 8 * sections
     else:
@@ -521,7 +521,7 @@ def test_annulus(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="torus")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib", "pytorch3d")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
     """
@@ -531,7 +531,7 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
     secondaryResolution)`` -- so the minor resolution is passed as the 32 the other rows fix.
 
     **pytorch3d**'s ``utils.torus`` takes the **minor** radius first and its ``sides`` / ``rings``
-    are the minor and major loop counts, the reverse of triwarp's ``(major_sections,
+    are the minor and major loop counts, the reverse of ordito's ``(major_sections,
     minor_sections)`` -- the mapping is pinned in
     ``tests/test_creation.py::test_torus_matches_pytorch3d``. It builds the vertex table in a
     **Python double loop** and only the tensor conversion is native, so its column is the honest
@@ -560,10 +560,10 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
 
         assert bench_lib.run(torus_pml) == 2 * 32 * sections
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         _, faces_wp = bench_lib.run(
-            lambda: tw.creation.torus(1.0, 0.25, major_sections=sections, device=device)
+            lambda: od.creation.torus(1.0, 0.25, major_sections=sections, device=device)
         )
         assert faces_wp.size // 3 == 2 * 32 * sections
     elif bench_lib.kind == "trimesh":
@@ -580,7 +580,7 @@ def test_torus(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="revolve")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
 @pytest.mark.parametrize("sections", _SECTIONS)
 def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
     # The shared engine, timed directly on a 64-point profile so the per-slice work dominates the
@@ -598,12 +598,12 @@ def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
         mesh_ml = bench_lib.run(lambda: mm.makeSolidOfRevolution(profile_ml, sections))
         assert mesh_ml.topology.numValidFaces() == 2 * 63 * sections
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         profile_wp = wp.array(
             np.ascontiguousarray(profile_np, dtype=np.float32), dtype=wp.vec2, device=device
         )
-        _, faces_wp = bench_lib.run(lambda: tw.creation.revolve(profile_wp, sections=sections))
+        _, faces_wp = bench_lib.run(lambda: od.creation.revolve(profile_wp, sections=sections))
         assert faces_wp.size // 3 == 2 * 63 * sections
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.revolve(profile_np, sections=sections))
@@ -611,19 +611,19 @@ def test_revolve(bench_lib: BenchLibrary, sections: int) -> None:
 
 
 @pytest.mark.benchmark(group="extrude_polygon")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pyvista", "open3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista", "open3d")
 @pytest.mark.parametrize("ring_size", [64, 1024])
 def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     """
     Cap, extrude and wall a closed ring: dominated by the cap triangulation.
 
-    A convex ring takes triwarp's single-fan fast path, which is what makes the ear clipper the
+    A convex ring takes ordito's single-fan fast path, which is what makes the ear clipper the
     interesting part of the other rows rather than of this one.
 
     Three references, and the split between them is **who triangulates the cap**:
 
     * **trimesh** ``creation.extrude_polygon`` takes a shapely polygon and triangulates it itself,
-      so its row includes the cap -- the same work triwarp's does.
+      so its row includes the cap -- the same work ordito's does.
     * **pyvista** ``extrude((0, 0, h), capping=True)`` takes a ``PolyData`` whose single polygon
       *cell* is the cap, so VTK triangulates on the way out; ``.triangulate()`` is inside the row
       because without it the result is polygons rather than triangles and the counts are not
@@ -636,7 +636,7 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     All three land on the same mesh, watertight with chi = 2 (``tests/test_creation.py``).
     """
     if bench_lib.kind == "pyvista":
-        # ``_ring_np`` is the 2-D ring triwarp's ``wp.vec2`` signature takes; both references
+        # ``_ring_np`` is the 2-D ring ordito's ``wp.vec2`` signature takes; both references
         # want 3-D points.
         ring_np = np.column_stack([_ring_np(ring_size), np.zeros(ring_size)])
         polygon_pv = pv.PolyData(ring_np, faces=np.hstack([[ring_size], np.arange(ring_size)]))
@@ -659,9 +659,9 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
         extruded_o3d = bench_lib.run(lambda: disc_o3d.extrude_linear([0.0, 0.0, 1.0]))  # pyright: ignore[reportArgumentType]
         assert int(extruded_o3d.triangle.indices.shape[0]) == 2 * (ring_size - 2) + 2 * ring_size
         return
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         ring_wp = _ring_wp(ring_size, str(bench_lib.device))
-        _, faces_wp = bench_lib.run(lambda: tw.creation.extrude_polygon(ring_wp, 1.0))
+        _, faces_wp = bench_lib.run(lambda: od.creation.extrude_polygon(ring_wp, 1.0))
         assert faces_wp.size // 3 == 2 * (ring_size - 2) + 2 * ring_size
     else:
         polygon = sg.Polygon(_ring_np(ring_size))
@@ -670,18 +670,18 @@ def test_extrude_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
 
 
 @pytest.mark.benchmark(group="sweep_polygon")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_sweep_polygon(bench_lib: BenchLibrary) -> None:
     # A long helix so the per-slice frame construction and wall emission dominate the one-off
     # triangulation. No open3d counterpart.
     path_np = _helix_np(_SWEEP_PATH)
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = str(bench_lib.device)
         ring_wp = _ring_wp(_SWEEP_RING, device)
         path_wp = wp.array(
             np.ascontiguousarray(path_np, dtype=np.float32), dtype=wp.vec3, device=device
         )
-        _, faces_wp = bench_lib.run(lambda: tw.creation.sweep_polygon(ring_wp, path_wp))
+        _, faces_wp = bench_lib.run(lambda: od.creation.sweep_polygon(ring_wp, path_wp))
         assert faces_wp.size // 3 > 0
     else:
         polygon = sg.Polygon(_ring_np(_SWEEP_RING))
@@ -690,14 +690,14 @@ def test_sweep_polygon(bench_lib: BenchLibrary) -> None:
 
 
 @pytest.mark.benchmark(group="truncated_prisms")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("face_count", [1_024, 262_144])
 def test_truncated_prisms(bench_lib: BenchLibrary, face_count: int) -> None:
     # Perfectly per-triangle parallel, so this is the cleanest kernel-versus-NumPy comparison in the
     # module. The input soup is built outside the timed region: it is the input, not the operation.
     # No open3d counterpart.
     triangles_np = np.random.default_rng(0).random((face_count, 3, 3)) + np.array([0.0, 0.0, 1.0])
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         vertices_wp = wp.array(
             np.ascontiguousarray(triangles_np.reshape(-1, 3), dtype=np.float32),
@@ -707,7 +707,7 @@ def test_truncated_prisms(bench_lib: BenchLibrary, face_count: int) -> None:
         faces_wp = wp.array(
             np.arange(3 * face_count, dtype=np.int32), dtype=wp.int32, device=device
         )
-        _, out_faces_wp = bench_lib.run(lambda: tw.creation.truncated_prisms(vertices_wp, faces_wp))
+        _, out_faces_wp = bench_lib.run(lambda: od.creation.truncated_prisms(vertices_wp, faces_wp))
         assert out_faces_wp.size // 3 == 8 * face_count
     else:
         mesh_tm = bench_lib.run(lambda: tm.creation.truncated_prisms(triangles_np))
@@ -715,7 +715,7 @@ def test_truncated_prisms(bench_lib: BenchLibrary, face_count: int) -> None:
 
 
 @pytest.mark.benchmark(group="parametric_surface")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("surface", ["boy", "dini"])
 @pytest.mark.parametrize("resolution", [40, 160, 640])
 def test_parametric_surface(
@@ -728,10 +728,10 @@ def test_parametric_surface(
     lattice does the most identification work, and ``dini`` is a plain open patch that does none.
     The axis is the resolution, quadratic in both.
 
-    Every resolution here is above the device gate, so the triwarp side is the device lattice's flat
+    Every resolution here is above the device gate, so the ordito side is the device lattice's flat
     floor: one launch marking the canonical keys and the surviving triangles, one scan, two
     readbacks sizing the outputs, one launch emitting them and one evaluating the map. VTK evaluates
-    its map in a per-point C++ loop and then *welds by distance*, which is the part triwarp does
+    its map in a per-point C++ loop and then *welds by distance*, which is the part ordito does
     combinatorially and for free.
     """
     if bench_lib.kind == "pyvista":
@@ -743,13 +743,13 @@ def test_parametric_surface(
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(
-        lambda: tw.creation.parametric_surface(surface, resolution, resolution, device=device)
+        lambda: od.creation.parametric_surface(surface, resolution, resolution, device=device)
     )
     assert faces_wp.size // 3 > 0
 
 
 @pytest.mark.benchmark(group="super_ellipsoid")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("resolution", [40, 640])
 def test_super_ellipsoid(bench_lib: BenchLibrary, resolution: int) -> None:
     """The superquadric sphere: the same lattice plus two signed powers per coordinate."""
@@ -761,7 +761,7 @@ def test_super_ellipsoid(bench_lib: BenchLibrary, resolution: int) -> None:
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(
-        lambda: tw.creation.super_ellipsoid(
+        lambda: od.creation.super_ellipsoid(
             u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
@@ -769,7 +769,7 @@ def test_super_ellipsoid(bench_lib: BenchLibrary, resolution: int) -> None:
 
 
 @pytest.mark.benchmark(group="super_toroid")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("resolution", [40, 640])
 def test_super_toroid(bench_lib: BenchLibrary, resolution: int) -> None:
     """The superquadric torus: both directions wrap, so no cell is dropped at any resolution."""
@@ -781,7 +781,7 @@ def test_super_toroid(bench_lib: BenchLibrary, resolution: int) -> None:
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(
-        lambda: tw.creation.super_toroid(
+        lambda: od.creation.super_toroid(
             u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
@@ -798,7 +798,7 @@ def test_super_toroid(bench_lib: BenchLibrary, resolution: int) -> None:
     "tests/test_creation.py::test_random_hills without needing VTK.",
 )
 @pytest.mark.benchmark(group="random_hills")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("resolution", [40, 640])
 def test_random_hills(bench_lib: BenchLibrary, resolution: int) -> None:
     """The height field: the plain grid lattice, plus a 30-term sum per vertex on the device."""
@@ -810,7 +810,7 @@ def test_random_hills(bench_lib: BenchLibrary, resolution: int) -> None:
         return
     device = bench_lib.device
     _, faces_wp = bench_lib.run(
-        lambda: tw.creation.random_hills(
+        lambda: od.creation.random_hills(
             seed=0, u_resolution=resolution, v_resolution=resolution, device=device
         )
     )
@@ -820,20 +820,20 @@ def test_random_hills(bench_lib: BenchLibrary, resolution: int) -> None:
 @pytest.mark.noparity(
     "trimesh",
     reason="D5 stochastic with no shared invariant: both draw n random triangles in the unit "
-    "cube, but triwarp takes a seed and trimesh does not, so no two runs can be aligned. Only "
+    "cube, but ordito takes a seed and trimesh does not, so no two runs can be aligned. Only "
     "the shape, the bounds and the cost are comparable, and the first two are asserted in "
     "tests/test_creation.py::test_random_soup without needing trimesh.",
 )
 @pytest.mark.benchmark(group="random_soup")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("face_count", [1_024, 262_144])
 def test_random_soup(bench_lib: BenchLibrary, face_count: int) -> None:
     # Pure generation: Warp's per-thread RNG against NumPy's global stream. Values differ by
-    # construction (see the note in triwarp.creation.random_soup); only the cost is comparable.
-    if bench_lib.kind == "triwarp":
+    # construction (see the note in ordito.creation.random_soup); only the cost is comparable.
+    if bench_lib.kind == "ordito":
         device = bench_lib.device
         vertices_wp, _ = bench_lib.run(
-            lambda: tw.creation.random_soup(face_count, seed=0, device=device)
+            lambda: od.creation.random_soup(face_count, seed=0, device=device)
         )
         assert vertices_wp.size == 3 * face_count
     else:

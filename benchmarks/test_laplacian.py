@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.laplacian``.
+Benchmarks for ``ordito.laplacian``.
 
 Times the operator builders that every solver in the library sits on top of: the per-face
 half-cotangent weights, the assembled cotangent stiffness matrix, the row-normalized umbrella
@@ -17,27 +17,27 @@ References
 ----------
 **libigl** is the reference for everything with a direct equivalent: ``igl.cotmatrix_entries`` (both
 overloads), ``igl.cotmatrix`` and ``igl.massmatrix`` (``MASSMATRIX_TYPE_BARYCENTRIC``, the lumping
-triwarp implements). **trimesh** is the reference for the umbrella operator —
+ordito implements). **trimesh** is the reference for the umbrella operator —
 ``trimesh.smoothing.laplacian_calculation`` builds exactly the row-normalized 1-ring averaging
 matrix ``laplacian`` returns, for both ``equal_weight`` settings.
 
 ``graph_laplacian`` has no reference: libigl builds ``A - diag(rowsum(A))`` inline inside
 ``igl::harmonic`` rather than exposing it, and reassembling it here out of ``igl.adjacency_matrix``
 plus scipy would time a hand-rolled composition rather than a library function. It is timed for
-triwarp alone.
+ordito alone.
 
 The operator family (``k_harmonic``, ``hessian_energy``, ``curved_hessian_energy``,
 ``crouzeix_raviart_*``) is igl-referenced throughout and sits on the **scale** axis rather than the
 scan sweep: ``igl::crouzeix_raviart_*`` and ``igl::orient_halfedges`` (inside
-``curved_hessian_energy``) assume edge-manifold input — igl asserts it, triwarp documents it as
-undefined -- and the scan meshes are not. Two structural notes on those rows: triwarp assembles
+``curved_hessian_energy``) assume edge-manifold input — igl asserts it, ordito documents it as
+undefined -- and the scan meshes are not. Two structural notes on those rows: ordito assembles
 ``k_harmonic`` by a triplet pass per power instead of ``bsr_mm``, which is about twice ``bsr_mm``'s
 speed through the middle of the axis while ``bsr_mm`` wins at the top of it on CUDA, so this row's
 margin is the one that would move first; and ``hessian_energy``'s
 per-vertex work is quadratic in valence, which is harmless on the uniform-valence spheres but would
 dominate on ``fan_hub``. Every group's margin grows with size, from single digits at the small end
 to one or two orders of magnitude at the large one -- except ``crouzeix_raviart_massmatrix``, whose
-triwarp side is a flat host launch/alloc floor across the axis and therefore *loses* the small point
+ordito side is a flat host launch/alloc floor across the axis and therefore *loses* the small point
 while winning the large one outright.
 
 **open3d** has no equivalent for any function in this module. Its smoothing filters
@@ -48,12 +48,12 @@ never expose a matrix, and ``open3d.geometry`` has no cotangent or mass matrix a
 What is inside the timed callable
 ---------------------------------
 Everything the public function does, including the sparse assembly (``bsr_from_triplets`` for
-triwarp, the COO→CSC build for igl/trimesh). The trimesh reference constructs its ``tm.Trimesh``
+ordito, the COO→CSC build for igl/trimesh). The trimesh reference constructs its ``tm.Trimesh``
 inside the timed region because ``laplacian_calculation`` reads the cached ``vertex_neighbors``
 property, which would otherwise make rounds 2..n measure nothing but the sparse assembly.
 
 The edge-length table for the intrinsic variant *is* precomputed and cached (it is the function's
-input, not part of its work) — with ``igl.edge_lengths``, so triwarp and libigl consume
+input, not part of its work) — with ``igl.edge_lengths``, so ordito and libigl consume
 bit-identical values.
 """
 
@@ -69,12 +69,12 @@ import trimesh as tm
 import trimesh.smoothing as tms
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase
 
 _edge_lengths_np_cache: dict[str, np.ndarray] = {}
-_edge_lengths_wp_cache: dict[tuple[str, str], twt.Array2dFloat32] = {}
+_edge_lengths_wp_cache: dict[tuple[str, str], odt.Array2dFloat32] = {}
 
 
 def _edge_lengths_np(bench_case: BenchCase) -> np.ndarray:
@@ -87,11 +87,11 @@ def _edge_lengths_np(bench_case: BenchCase) -> np.ndarray:
     return _edge_lengths_np_cache[name]
 
 
-def _edge_lengths_wp(bench_case: BenchCase) -> twt.Array2dFloat32:
+def _edge_lengths_wp(bench_case: BenchCase) -> odt.Array2dFloat32:
     """Upload the same table as a float32 ``(n_faces, 3)`` buffer on this case's device."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _edge_lengths_wp_cache:
-        _edge_lengths_wp_cache[key] = twt.as_array2d(
+        _edge_lengths_wp_cache[key] = odt.as_array2d(
             wp.array(
                 np.ascontiguousarray(_edge_lengths_np(bench_case), dtype=np.float32),
                 dtype=wp.float32,
@@ -105,7 +105,7 @@ def _edge_lengths_wp(bench_case: BenchCase) -> twt.Array2dFloat32:
 # **These rows run on ``lucy`` and are deliberately not capped.** A ``lucy`` sparse assembly in
 # torch is the single largest device allocation this suite makes, and torch's
 # ``CUDACachingAllocator`` reserves those blocks until an explicit ``empty_cache()`` -- without
-# which the module fails to allocate and **every ``triwarp-cuda`` row after it is lost**, silently
+# which the module fails to allocate and **every ``ordito-cuda`` row after it is lost**, silently
 # dropping out of the comparison and *understating* the loss table. The fix is the general one, in
 # ``BenchCase.run``'s pytorch3d teardown; with the release in place and no cap at all the module
 # runs clean, so a cap here would cost the four ``lucy`` comparisons for nothing. If a future
@@ -121,13 +121,13 @@ def _packed_p3d(bench_case: BenchCase, *, edges: bool = False) -> tuple[torch.Te
     would price two groups under one name and make the assembly look 2-3x its cost.
 
     **That reasoning has to be applied to both sides, or the row is a misreading.** Handing
-    pytorch3d ``edges_packed()`` while triwarp derives its own edge set *inside* the timed call
+    pytorch3d ``edges_packed()`` while ordito derives its own edge set *inside* the timed call
     compares an assembly against an assembly-plus-derivation -- and the derivation is the larger
     half, not a detail: on the largest mesh ``edges_unique`` is most of the whole
     ``laplacian(equal_weight=False)`` call. Read like for like the row is a win, and pytorch3d's own
-    ``edges_packed()`` costs more than triwarp's entire call.
+    ``edges_packed()`` costs more than ordito's entire call.
 
-    So the two edge-list groups now hand triwarp the same precomputed edges through
+    So the two edge-list groups now hand ordito the same precomputed edges through
     ``laplacian``'s ``edges`` keyword (``_edges_unique_wp``), and both rows price the assembly
     alone. The derivation stays where it belongs, in ``edges_unique``'s own group.
     """
@@ -139,21 +139,21 @@ def _packed_p3d(bench_case: BenchCase, *, edges: bool = False) -> tuple[torch.Te
     return (verts_p3d, topology_p3d)
 
 
-_edges_wp_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
+_edges_wp_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
 
 
-def _edges_unique_wp(bench_case: BenchCase) -> twt.Array2dInt32:
+def _edges_unique_wp(bench_case: BenchCase) -> odt.Array2dInt32:
     """
     Return the unique undirected edges, read outside the timed callable as pytorch3d's are.
 
     ``edges_packed()`` is memoized on the ``Meshes`` and read outside the row; this is the same
-    quantity for the triwarp branch, so the two edge-list groups compare assembly against
+    quantity for the ordito branch, so the two edge-list groups compare assembly against
     assembly. See ``_packed_p3d`` for why priced-once-elsewhere is the right convention and why
     applying it to one side only was the largest single misreading in the loss table.
     """
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _edges_wp_cache:
-        _edges_wp_cache[key] = tw.edges.edges_unique(
+        _edges_wp_cache[key] = od.edges.edges_unique(
             bench_case.faces_wp, n_vertices=bench_case.n_vertices
         )[0]
     return _edges_wp_cache[key]
@@ -164,7 +164,7 @@ def _assembled_p3d(matrix: torch.Tensor, *, normalize: bool = False) -> torch.Te
     Finish the assembly ``ops``' Laplacians defer, so the row prices a matrix and not a promise.
 
     Every ``ops`` assembler returns an **uncoalesced** ``sparse_coo_tensor`` -- a bag of
-    ``(index, value)`` pairs in scatter order -- where triwarp returns a ``BsrMatrix``, a sorted
+    ``(index, value)`` pairs in scatter order -- where ordito returns a ``BsrMatrix``, a sorted
     CSR with unique columns. ``bsr_from_triplets`` does that sort and dedup eagerly; ``.coalesce()``
     is where torch does the same work. A row that omits it compares an assembly against a scatter,
     which is the same misreading ``_packed_p3d`` describes for the edge lists, arriving by a
@@ -186,7 +186,7 @@ def _assembled_p3d(matrix: torch.Tensor, *, normalize: bool = False) -> torch.Te
     grows with the mesh, while the row-sum normalization adds a further fraction of it. Read that
     probe-to-probe rather than against a harness number (section 15.4).
 
-    ``lucy`` is measured separately because holding three triwarp operators and the torch tensors
+    ``lucy`` is measured separately because holding three ordito operators and the torch tensors
     at once does not fit: on the torch side alone the coalesce is several times the raw assembly,
     at an unchanged peak. So the leveling needs no ``skip_larger_than`` cap of its own -- the peak
     is the raw call's, which this module already runs.
@@ -203,13 +203,13 @@ def _assembled_p3d(matrix: torch.Tensor, *, normalize: bool = False) -> torch.Te
 
 
 @pytest.mark.benchmark(group="cotmatrix_entries")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_cotmatrix_entries(bench_case: BenchCase) -> None:
     """Per-face half-cotangent weights from vertex positions (``igl::cotmatrix_entries``)."""
     n_faces = int(bench_case.faces_np.shape[0])
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        entries = bench_case.run(lambda: tw.laplacian.cotmatrix_entries(vertices, faces))
+        entries = bench_case.run(lambda: od.laplacian.cotmatrix_entries(vertices, faces))
         assert entries.shape == (n_faces, 3)
     else:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -218,13 +218,13 @@ def test_cotmatrix_entries(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="cotmatrix_entries_intrinsic")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_cotmatrix_entries_intrinsic(bench_case: BenchCase) -> None:
     """The same weights from a precomputed edge-length table: the weight arithmetic alone."""
     n_faces = int(bench_case.faces_np.shape[0])
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         edge_lengths = _edge_lengths_wp(bench_case)
-        entries = bench_case.run(lambda: tw.laplacian.cotmatrix_entries_intrinsic(edge_lengths))
+        entries = bench_case.run(lambda: od.laplacian.cotmatrix_entries_intrinsic(edge_lengths))
         assert entries.shape == (n_faces, 3)
     else:
         edge_lengths_np = _edge_lengths_np(bench_case)
@@ -233,7 +233,7 @@ def test_cotmatrix_entries_intrinsic(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="cotmatrix")
-@pytest.mark.benchlibs("triwarp", "igl", "potpourri3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "potpourri3d", "pytorch3d")
 def test_cotmatrix(bench_case: BenchCase) -> None:
     """
     Assembled cotangent stiffness matrix: weight kernel plus the sparse build.
@@ -241,18 +241,18 @@ def test_cotmatrix(bench_case: BenchCase) -> None:
     **pytorch3d**'s ``cot_laplacian`` is the fourth assembly here and the only one on the GPU. It
     does not assemble a matrix: it wraps ``3F`` entries as an *uncoalesced* ``sparse_coo_tensor``
     and adds its transpose, so the duplicate ``(i, j)`` pairs are never summed and no diagonal is
-    ever written, where triwarp sorts the mesh's edge keys into a CSR, sums each entry's
+    ever written, where ordito sorts the mesh's edge keys into a CSR, sums each entry's
     half-cotangents and writes each diagonal as its row's sum. The row therefore times
     ``_assembled_p3d``, which finishes the assembly -- and this row is why that helper exists.
 
     The structure names the mechanism rather than merely being consistent with it: on ``dragon``
     the uncoalesced tensor holds 5 228 484 entries (``6F``), coalescing it gives 2 618 512, and
-    triwarp's ``nnz_sync()`` differ by **exactly the vertex count**, which is the diagonal
+    ordito's ``nnz_sync()`` differ by **exactly the vertex count**, which is the diagonal
     pytorch3d has none of (its coalesced diagonal is absmax **0**). So the leveled row still
     **flatters pytorch3d by a diagonal**: it is charged the sort and the duplicate sum, not the row
-    sum triwarp also assembles.
+    sum ordito also assembles.
 
-    Even so the row inverts: triwarp is ahead on most of the scan sweep and within session drift on
+    Even so the row inverts: ordito is ahead on most of the scan sweep and within session drift on
     the rest (section 15.7). The prebuilt-sparsity-pattern rewrite the old number invited (assemble
     into an ``edges_unique`` pattern instead of sorting triplets) is **declined on that
     measurement**: there was never a gap to close. It also returns the lumped mass reciprocal
@@ -269,9 +269,9 @@ def test_cotmatrix(bench_case: BenchCase) -> None:
         )
         assert matrix_p3d.shape == (n_vertices, n_vertices)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        matrix = bench_case.run(lambda: tw.laplacian.cotmatrix(vertices, faces))
+        matrix = bench_case.run(lambda: od.laplacian.cotmatrix(vertices, faces))
         assert matrix.nrow == n_vertices
     elif bench_case.kind == "potpourri3d":
         # potpourri3d assembles this one in Python (vectorized numpy into a scipy COO), not in
@@ -287,22 +287,22 @@ def test_cotmatrix(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="connection_laplacian")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_connection_laplacian(bench_case: BenchCase) -> None:
     """Assembly only: the same triplets as ``cotmatrix`` with a rotation in every off-diagonal."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    matrix = bench_case.run(lambda: tw.laplacian.connection_laplacian(vertices, faces))
+    matrix = bench_case.run(lambda: od.laplacian.connection_laplacian(vertices, faces))
     assert matrix.nrow == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="laplacian_equal_weight")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "pytorch3d")
 def test_laplacian_equal_weight(bench_case: BenchCase) -> None:
     """
     Row-normalized 1-ring averaging operator with unit weights.
 
     **pytorch3d**'s ``ops.laplacian`` is the same operator with **-1** on the diagonal where
-    triwarp writes 0 (pinned bit-exactly off the diagonal in
+    ordito writes 0 (pinned bit-exactly off the diagonal in
     ``tests/test_laplacian.py::test_laplacian_operators_match_pytorch3d``), and it is the only row
     here with GPU kernels. It takes the edge list rather than the faces, so ``edges_packed()`` is
     read outside the timed callable -- that derivation is what ``edges_unique`` times in
@@ -310,13 +310,13 @@ def test_laplacian_equal_weight(bench_case: BenchCase) -> None:
 
     Its result is an **uncoalesced** COO, so the row times ``_assembled_p3d``; here the call is a
     pure sort, since ``_nnz()`` is unchanged by it (this assembler writes no duplicate index).
-    Leveled, the harness has triwarp ahead everywhere but the smallest mesh, and only just behind
+    Leveled, the harness has ordito ahead everywhere but the smallest mesh, and only just behind
     there, which is where both sides sit near the launch floor -- against a reported loss on four of
-    five before. The row still runs **against** triwarp in one respect worth stating: pytorch3d
-    writes ``V`` explicit ``-1`` diagonal entries that triwarp does not, so it sorts measurably more
+    five before. The row still runs **against** ordito in one respect worth stating: pytorch3d
+    writes ``V`` explicit ``-1`` diagonal entries that ordito does not, so it sorts measurably more
     of them.
 
-    This group needs no matching precomputation on the triwarp side, and the reason is worth
+    This group needs no matching precomputation on the ordito side, and the reason is worth
     stating because it is *not* symmetry with the inverse-distance group: ``equal_weight=True``
     takes the ``symmetric=False`` branch, whose triplets come straight off ``faces_to_edges`` --
     it never calls ``edges_unique`` at all. That is also why the largest mesh costs a third of what
@@ -330,9 +330,9 @@ def test_laplacian_equal_weight(bench_case: BenchCase) -> None:
         )
         assert matrix_p3d.shape == (n_vertices, n_vertices)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        matrix = bench_case.run(lambda: tw.laplacian.laplacian(vertices, faces, equal_weight=True))
+        matrix = bench_case.run(lambda: od.laplacian.laplacian(vertices, faces, equal_weight=True))
         assert matrix.nrow == n_vertices
     else:  # rebuild inside: laplacian_calculation reads the cached vertex_neighbors property
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -345,7 +345,7 @@ def test_laplacian_equal_weight(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="laplacian_inverse_distance")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "pytorch3d")
 def test_laplacian_inverse_distance(bench_case: BenchCase) -> None:
     """
     The same operator with inverse-edge-length weights (the geometry-dependent branch).
@@ -362,7 +362,7 @@ def test_laplacian_inverse_distance(bench_case: BenchCase) -> None:
     With that settled the remaining two *are* the ratio, so the row times
     ``_assembled_p3d(..., normalize=True)`` and both sides then hold the same matrix (the parity
     test pins it). Of the two transforms the coalesce is the larger and the division adds to it, and
-    triwarp is ahead across the whole scan sweep, tightest on the smallest mesh -- the shape every
+    ordito is ahead across the whole scan sweep, tightest on the smallest mesh -- the shape every
     group here shows once the two sides produce the same matrix.
     """
     n_vertices = bench_case.n_vertices
@@ -373,11 +373,11 @@ def test_laplacian_inverse_distance(bench_case: BenchCase) -> None:
         )
         assert matrix_p3d.shape == (n_vertices, n_vertices)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         edges = _edges_unique_wp(bench_case)
         matrix = bench_case.run(
-            lambda: tw.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges)
+            lambda: od.laplacian.laplacian(vertices, faces, equal_weight=False, edges=edges)
         )
         assert matrix.nrow == n_vertices
     else:
@@ -391,33 +391,33 @@ def test_laplacian_inverse_distance(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="graph_laplacian")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_graph_laplacian(bench_case: BenchCase) -> None:
     """
-    Combinatorial graph Laplacian ``A - diag(deg)``, timed for triwarp alone.
+    Combinatorial graph Laplacian ``A - diag(deg)``, timed for ordito alone.
 
     Not because nothing computes it -- ``scipy.sparse.csgraph.laplacian`` is exactly this operator
     up to a sign (an exact match against a sign flip), and libigl assembles it
     inline inside ``igl::harmonic``. Neither is a *row*: scipy takes an adjacency matrix, which is
-    not triwarp's input, and libigl does not bind the composition, so either row would time an
+    not ordito's input, and libigl does not bind the composition, so either row would time an
     assembly written here rather than a library function. The module docstring above carries the
     argument, and ``tests/test_parametrization.py::test_graph_laplacian_matches_igl`` is the
     correctness comparison the decline does not cost.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    matrix = bench_case.run(lambda: tw.laplacian.graph_laplacian(vertices, faces))
+    matrix = bench_case.run(lambda: od.laplacian.graph_laplacian(vertices, faces))
     assert matrix.nrow == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="mass_matrix_entries")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "igl", "potpourri3d")
 def test_mass_matrix_entries(bench_case: BenchCase) -> None:
     """Barycentric lumped mass per vertex: a scatter-add, so on the valence axis for contention."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        mass = bench_case.run(lambda: tw.laplacian.mass_matrix_entries(vertices, faces))
+        mass = bench_case.run(lambda: od.laplacian.mass_matrix_entries(vertices, faces))
         assert mass.shape == (n_vertices,)
     elif bench_case.kind == "potpourri3d":
         # ``vertex_areas`` is one third of the incident face areas, i.e. exactly this diagonal;
@@ -437,13 +437,13 @@ def test_mass_matrix_entries(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="mass_matrix")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "pytorch3d")
 def test_mass_matrix(bench_case: BenchCase) -> None:
     """
     The same diagonal, assembled as a sparse matrix.
 
     **pytorch3d** has no separate mass-matrix entry point: ``cot_laplacian`` returns the lumped
-    reciprocal ``inv_areas`` as its second value, three times triwarp's diagonal
+    reciprocal ``inv_areas`` as its second value, three times ordito's diagonal
     (``1 / inv_areas == 3 * M_ii``). So this row times the **same call** the
     ``cotmatrix`` group times and is an *upper* bound here rather than a race -- it prices the
     stiffness assembly as well. It is still worth the row: it is the only GPU one in the group, and
@@ -454,7 +454,7 @@ def test_mass_matrix(bench_case: BenchCase) -> None:
     beside it would charge pytorch3d for an answer this row does not read. The scope mismatch here
     already runs against pytorch3d and needs no correction -- and it does not need one on the
     numbers either, which is worth recording because it is easy to file this row with the other
-    three: triwarp is already ahead on both meshes.
+    three: ordito is already ahead on both meshes.
     """
     n_vertices = bench_case.n_vertices
     if bench_case.kind == "pytorch3d":
@@ -462,9 +462,9 @@ def test_mass_matrix(bench_case: BenchCase) -> None:
         _, inv_areas_p3d = bench_case.run(lambda: p3d_ops.cot_laplacian(vertices_p3d, faces_p3d))
         assert inv_areas_p3d.shape[0] == n_vertices
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        matrix = bench_case.run(lambda: tw.laplacian.mass_matrix(vertices, faces))
+        matrix = bench_case.run(lambda: od.laplacian.mass_matrix(vertices, faces))
         assert matrix.nrow == n_vertices
     else:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -475,13 +475,13 @@ def test_mass_matrix(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="robust_laplacian")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_robust_laplacian(bench_case: BenchCase) -> None:
     """Mollified edge lengths plus the intrinsic cotangent assembly."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        matrix = bench_case.run(lambda: tw.laplacian.robust_laplacian(vertices, faces))
+        matrix = bench_case.run(lambda: od.laplacian.robust_laplacian(vertices, faces))
         assert matrix.nrow == n_vertices
     else:  # igl's intrinsic overload, from the same length table (built on the host with numpy)
         triangles_np = bench_case.vertices_np[bench_case.faces_np]
@@ -502,11 +502,11 @@ def test_robust_laplacian(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="mollify_intrinsic")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_mollify_intrinsic(bench_case: BenchCase) -> None:
     """The length table, the max-reduce and the two host readbacks it needs."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    lengths, _ = bench_case.run(lambda: tw.laplacian.mollify_intrinsic(vertices, faces))
+    lengths, _ = bench_case.run(lambda: od.laplacian.mollify_intrinsic(vertices, faces))
     assert lengths.shape == (bench_case.n_faces, 3)
 
 
@@ -526,7 +526,7 @@ def _scalar_field_wp(bench_case: BenchCase) -> wp.array[wp.float64]:
 
 
 @pytest.mark.benchmark(group="face_gradients")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista")
 @pytest.mark.parametrize("precomputed", [False, True], ids=["from_positions", "face_data"])
 def test_face_gradients(bench_case: BenchCase, precomputed: bool) -> None:
     """
@@ -538,15 +538,15 @@ def test_face_gradients(bench_case: BenchCase, precomputed: bool) -> None:
     in-repo consumers, always do.
 
     **The two sides return different things and that is the comparison.** ``igl.grad(V, F)``
-    *assembles* a sparse ``(3F, V)`` operator and never applies it; triwarp applies the same
+    *assembles* a sparse ``(3F, V)`` operator and never applies it; ordito applies the same
     operator face by face and never materialises it. So igl's row is dominated by building 3F x 3
-    triplets and triwarp's by reading the field, which is exactly the trade the two designs make --
+    triplets and ordito's by reading the field, which is exactly the trade the two designs make --
     read it as "assemble once, apply many" against "apply directly", not as one side being faster at
     the same job. The values agree, through the matrix product, in ``tests/test_laplacian.py``.
 
     **pyvista applies it and then averages onto the points**: ``compute_derivative`` returns a
     per-*point* gradient for a point-data field (``preference='cell'`` does not move it), so its row
-    carries a cell-to-point pass triwarp's does not. It is the closest thing here to triwarp's
+    carries a cell-to-point pass ordito's does not. It is the closest thing here to ordito's
     "apply directly" design, which is why it earns a row that igl's assembled operator cannot be
     compared against directly.
     """
@@ -570,12 +570,12 @@ def test_face_gradients(bench_case: BenchCase, precomputed: bool) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values = _scalar_field_wp(bench_case)
     if precomputed:
-        normals, areas = tw.triangles.face_normals_and_areas(vertices, faces)
+        normals, areas = od.triangles.face_normals_and_areas(vertices, faces)
         gradients = bench_case.run(
-            lambda: tw.laplacian.face_gradients(
+            lambda: od.laplacian.face_gradients(
                 vertices, faces, values, face_normals=normals, face_areas=areas
             )
         )
     else:
-        gradients = bench_case.run(lambda: tw.laplacian.face_gradients(vertices, faces, values))
+        gradients = bench_case.run(lambda: od.laplacian.face_gradients(vertices, faces, values))
     assert gradients.shape == (bench_case.n_faces,)

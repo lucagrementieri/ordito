@@ -20,9 +20,9 @@ timing spread then attributes to a named cause rather than to "a different mesh"
 control comes first in each tuple, so a results table reads left-to-right as "baseline, then the
 perturbation".
 
-Meshes are built with ``trimesh.creation``, never with ``triwarp.creation``: a benchmark input
+Meshes are built with ``trimesh.creation``, never with ``ordito.creation``: a benchmark input
 must not depend on the code under test, and ``conftest._load_numpy`` exists so that trimesh, igl,
-open3d and warp all receive one shared NumPy source. ``triwarp.creation`` is the *subject* of
+open3d and warp all receive one shared NumPy source. ``ordito.creation`` is the *subject* of
 ``test_creation``, never the supplier of another module's input.
 """
 
@@ -337,7 +337,7 @@ def _handles(holes_per_side: int, max_edge: float = 0.195, span: float = 16.0) -
 
     The only mesh family here whose perturbed property is **topological genus**, which nothing else
     in either registry has -- every scan mesh and every other feature mesh is genus 0, and
-    ``triwarp.homology`` needs a closed surface with handles or it has nothing to find.
+    ``ordito.homology`` needs a closed surface with handles or it has nothing to find.
 
     Built in the order that makes the face count a smooth knob: subdivide the slab *first*, then cut
     the holes. Cutting first and subdividing after quantizes the count in powers of four, because

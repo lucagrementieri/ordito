@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.interpolation`` against igl (CPU reference)."""
+"""Regression tests for ``ordito.interpolation`` against igl (CPU reference)."""
 
 import igl
 import numpy as np
@@ -8,8 +8,8 @@ import pyvista as pv
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conversions import points_to_pyvista, points_to_warp, trimesh_to_pyvista, warp_empty
 
 
@@ -34,7 +34,7 @@ def test_average_onto_faces(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     face_values_pv = np.asarray(mesh_pv.point_data_to_cell_data().cell_data["field"])
 
     vertex_values_wp = wp.array(vertex_values_np, dtype=wp.float32, device=mesh_wp.device)
-    face_values_wp = tw.interpolation.average_onto_faces(mesh_wp.indices, vertex_values_wp)
+    face_values_wp = od.interpolation.average_onto_faces(mesh_wp.indices, vertex_values_wp)
     assert np.allclose(face_values_wp.numpy(), face_values_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(face_values_wp.numpy(), face_values_pv, rtol=1e-5, atol=1e-5)
 
@@ -74,7 +74,7 @@ def test_average_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     vertex_values_pml = np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
 
     face_values_wp = wp.array(face_values_np, dtype=wp.float32, device=mesh_wp.device)
-    vertex_values_wp = tw.interpolation.average_onto_vertices(
+    vertex_values_wp = od.interpolation.average_onto_vertices(
         n_vertices, mesh_wp.indices, face_values_wp
     )
     mesh_pv = trimesh_to_pyvista(mesh_tm)
@@ -93,7 +93,7 @@ def test_average_from_edges_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]
 
     ``igl.orient_halfedges(F)`` supplies the ``(E, oE)`` tables *both* sides consume, so this does
     not compare two edge numberings -- it compares the averaging over one. That is the honest split:
-    triwarp has no ``orient_halfedges`` of its own to pair against igl's, and giving each side its
+    ordito has no ``orient_halfedges`` of its own to pair against igl's, and giving each side its
     own numbering would make a mismatch of index conventions look like a mismatch of averages.
     """
     mesh_tm, mesh_wp = half_torus
@@ -110,14 +110,14 @@ def test_average_from_edges_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]
         faces_np, edges_igl, orientation_igl, edge_values_np
     )
 
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(edges_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device), wp.int32
     )
-    orientation_wp = twt.as_array2d(
+    orientation_wp = odt.as_array2d(
         wp.array(orientation_igl.astype(np.int32), dtype=wp.int32, device=mesh_wp.device), wp.int32
     )
     edge_values_wp = wp.array(edge_values_np, dtype=wp.float32, device=mesh_wp.device)
-    vertex_values_wp = tw.interpolation.average_from_edges_onto_vertices(
+    vertex_values_wp = od.interpolation.average_from_edges_onto_vertices(
         n_vertices, mesh_wp.indices, edges_wp, orientation_wp, edge_values_wp
     )
     assert np.allclose(vertex_values_wp.numpy(), vertex_values_igl, rtol=1e-5, atol=1e-5)
@@ -178,7 +178,7 @@ def test_transfer_onto_vertices_matches_pymeshlab(device: str):
     )
     target_vertices_wp = points_to_warp(target_tm.vertices, device)
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=device)
-    transferred_wp, distance_wp = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, distance_wp = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, target_vertices_wp
     )
     assert np.allclose(transferred_wp.numpy(), transferred_pml, rtol=1e-4, atol=1e-4)
@@ -194,7 +194,7 @@ def test_transfer_onto_vertices_matches_pymeshlab(device: str):
     source_pv.point_data["field"] = values_np
     sampled_pv = pv.PolyData(np.ascontiguousarray(source_tm.vertices)).sample(source_pv)
     valid_pv = np.asarray(sampled_pv.point_data["vtkValidPointMask"]).astype(bool)
-    self_wp, _self_distance = tw.interpolation.transfer_onto_vertices(
+    self_wp, _self_distance = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, source_vertices_wp
     )
     assert valid_pv.all()  # a coincident target is inside a source cell everywhere
@@ -220,11 +220,11 @@ def test_transfer_onto_vertices_reproduces_a_linear_field(device: str):
     )
     # Target vertices projected onto the source surface first, so "linear on the source" holds
     # exactly rather than up to the two spheres' radial gap.
-    projected_wp, _distance, _face = tw.proximity.closest_point_on_mesh(
+    projected_wp, _distance, _face = od.proximity.closest_point_on_mesh(
         source_vertices_wp, source_faces_wp, points_to_warp(target_tm.vertices, device)
     )
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=device)
-    transferred_wp, _distance = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, _distance = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, projected_wp
     )
     assert np.allclose(
@@ -243,10 +243,10 @@ def test_transfer_onto_vertices_vec3_field(device: str):
     )
     target_vertices_wp = points_to_warp(target_tm.vertices, device)
     # Transferring the source *positions* must reproduce each target vertex's closest point.
-    transferred_wp, _distance = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, _distance = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, source_vertices_wp, target_vertices_wp
     )
-    closest_wp, _distance, _face = tw.proximity.closest_point_on_mesh(
+    closest_wp, _distance, _face = od.proximity.closest_point_on_mesh(
         source_vertices_wp, source_faces_wp, target_vertices_wp
     )
     assert np.allclose(transferred_wp.numpy(), closest_wp.numpy(), rtol=1e-4, atol=1e-4)
@@ -254,7 +254,7 @@ def test_transfer_onto_vertices_vec3_field(device: str):
 
 def test_transfer_onto_vertices_vec2_field(device: str):
     """
-    Triwarp against triwarp: a ``wp.vec2`` UV field transfers, and componentwise like two scalars.
+    Ordito against ordito: a ``wp.vec2`` UV field transfers, and componentwise like two scalars.
 
     Not a library comparison: pymeshlab's ``transfer_attributes_per_vertex`` moves its own named
     attributes, not an arbitrary buffer, so there is no reference to hand a bare UV pair to. The
@@ -278,7 +278,7 @@ def test_transfer_onto_vertices_vec2_field(device: str):
 
     uv_np = np.ascontiguousarray(source_tm.vertices[:, :2], dtype=np.float32)
     uv_wp = wp.array(uv_np, dtype=wp.vec2, device=device)
-    transferred_wp, _distance = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, _distance = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, uv_wp, target_vertices_wp
     )
     assert transferred_wp.dtype == wp.vec2
@@ -288,7 +288,7 @@ def test_transfer_onto_vertices_vec2_field(device: str):
         scalar_wp = wp.array(
             np.ascontiguousarray(uv_np[:, column]), dtype=wp.float32, device=device
         )
-        scalar_transfer_wp, _distance = tw.interpolation.transfer_onto_vertices(
+        scalar_transfer_wp, _distance = od.interpolation.transfer_onto_vertices(
             source_vertices_wp, source_faces_wp, scalar_wp, target_vertices_wp
         )
         assert np.array_equal(transferred_wp.numpy()[:, column], scalar_transfer_wp.numpy())
@@ -321,10 +321,10 @@ def test_transfer_onto_vertices_survives_a_sliver_source_face(device: str):
     values_wp = wp.array(values_np, dtype=wp.float32, device=device)
     targets_wp = points_to_warp(targets_np, device)
 
-    transferred_wp, distance_wp = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, distance_wp = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, targets_wp
     )
-    closest_wp, _distance, face_wp = tw.proximity.closest_point_on_mesh(
+    closest_wp, _distance, face_wp = od.proximity.closest_point_on_mesh(
         source_vertices_wp, source_faces_wp, targets_wp
     )
     assert np.all(face_wp.numpy() >= 0), "the query must land on the sliver, not miss it"
@@ -351,7 +351,7 @@ def test_transfer_onto_vertices_misses_stay_zero(device: str):
         dtype=wp.vec3,
         device=device,
     )
-    transferred_wp, distance_wp = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, distance_wp = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, targets_wp, max_dist=0.1
     )
     assert np.isclose(transferred_wp.numpy()[0], 1.0, rtol=1e-5)
@@ -365,7 +365,7 @@ def test_transfer_onto_vertices_length_mismatch(device: str):
     values_wp = wp.zeros(3, dtype=wp.float32, device=device)
     targets_wp = wp.zeros(2, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="one entry per source vertex"):
-        tw.interpolation.transfer_onto_vertices(
+        od.interpolation.transfer_onto_vertices(
             source_vertices_wp, source_faces_wp, values_wp, targets_wp
         )
 
@@ -375,7 +375,7 @@ def test_transfer_onto_vertices_empty(device: str):
     source_faces_wp = warp_empty(0, wp.int32, device)
     values_wp = wp.zeros(0, dtype=wp.float32, device=device)
     targets_wp = wp.zeros(3, dtype=wp.vec3, device=device)
-    transferred_wp, distance_wp = tw.interpolation.transfer_onto_vertices(
+    transferred_wp, distance_wp = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, targets_wp
     )
     assert np.array_equal(transferred_wp.numpy(), np.zeros(3, dtype=np.float32))
@@ -417,7 +417,7 @@ def _interpolate_wp(
     device: str,
     k: int | None = None,
 ) -> np.ndarray:
-    return tw.interpolation.interpolate_from_points(
+    return od.interpolation.interpolate_from_points(
         points_to_warp(source_np, device),
         wp.array(
             np.ascontiguousarray(values_np, dtype=np.float32), dtype=wp.float32, device=device
@@ -477,7 +477,7 @@ def test_interpolate_from_points_is_exact_at_the_sources(device: str):
 
     Class A, and it pins a convention rather than a formula: the Gaussian blend of the coincident
     point's *neighbours* would not reproduce the datum (measured 5.39 against 7.0 on a two-source
-    probe), so VTK short-circuits a zero distance and triwarp copies that.
+    probe), so VTK short-circuits a zero distance and ordito copies that.
     """
     source_np, values_np, _ = _scattered_cloud()
     coincident_np = source_np[:5]
@@ -499,7 +499,7 @@ def test_interpolate_from_points_unreached_queries_get_the_null_value(device: st
 
     # The null value is the caller's, and it is what an unreached query gets.
     far_np = np.array([[100.0, 100.0, 100.0]])
-    filled_wp = tw.interpolation.interpolate_from_points(
+    filled_wp = od.interpolation.interpolate_from_points(
         points_to_warp(source_np, device),
         wp.array(
             np.ascontiguousarray(values_np, dtype=np.float32), dtype=wp.float32, device=device
@@ -515,7 +515,7 @@ def test_interpolate_from_points_vec3_field(device: str):
     """A ``wp.vec3`` field interpolates componentwise, which is the second registered overload."""
     source_np, values_np, query_np = _scattered_cloud()
     vectors_np = np.column_stack((values_np, 2.0 * values_np, -values_np))
-    interpolated_wp = tw.interpolation.interpolate_from_points(
+    interpolated_wp = od.interpolation.interpolate_from_points(
         points_to_warp(source_np, device),
         points_to_warp(vectors_np, device),
         points_to_warp(query_np, device),
@@ -535,24 +535,24 @@ def test_interpolate_from_points_invalid(device: str):
     )
     query_wp = points_to_warp(query_np, device)
     with pytest.raises(ValueError, match="one entry per source point"):
-        tw.interpolation.interpolate_from_points(
-            source_wp, twt.as_dense(values_wp[:10]), query_wp, 0.2
+        od.interpolation.interpolate_from_points(
+            source_wp, odt.as_dense(values_wp[:10]), query_wp, 0.2
         )
     with pytest.raises(ValueError, match="radius must be positive"):
-        tw.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.0)
+        od.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.0)
     with pytest.raises(ValueError, match="k must be positive"):
-        tw.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.2, k=0)
+        od.interpolation.interpolate_from_points(source_wp, values_wp, query_wp, 0.2, k=0)
 
 
 def test_interpolate_from_points_empty(device: str):
     empty_points = warp_empty(0, wp.vec3, device)
     empty_values = warp_empty(0, wp.float32, device)
     query_wp = wp.array([[0.0, 0.0, 0.0]], dtype=wp.vec3, device=device)
-    interpolated_wp = tw.interpolation.interpolate_from_points(
+    interpolated_wp = od.interpolation.interpolate_from_points(
         empty_points, empty_values, query_wp, 0.5, null_value=3.0
     )
     assert interpolated_wp.list() == [3.0]
     assert (
-        tw.interpolation.interpolate_from_points(empty_points, empty_values, empty_points, 0.5).size
+        od.interpolation.interpolate_from_points(empty_points, empty_values, empty_points, 0.5).size
         == 0
     )

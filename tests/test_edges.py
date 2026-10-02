@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.edges`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.edges`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ import trimesh.grouping as tm_grouping
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import assert_unordered_rows_equal, lexsort_rows
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -62,7 +62,7 @@ def test_edges(device: str) -> None:
     edges_np = tm.geometry.faces_to_edges(faces_np)
 
     faces_wp = _faces_np_to_wp(faces_np, device)
-    edges_wp = tw.edges.faces_to_edges(faces_wp)
+    edges_wp = od.edges.faces_to_edges(faces_wp)
     assert np.array_equal(edges_wp.numpy(), edges_np)
 
 
@@ -71,7 +71,7 @@ def test_edges_match_igl(device: str) -> None:
     """
     Class B (row order): ``igl.oriented_facets`` emits the same ``3F`` directed pairs, permuted.
 
-    trimesh lists all three edges of face 0, then all three of face 1, and triwarp matches that
+    trimesh lists all three edges of face 0, then all three of face 1, and ordito matches that
     exactly (the test above). igl groups by *corner* instead -- every face's edge 0, then every
     face's edge 1 -- so the row order differs while the multiset does not, which is what
     [`tests.comparisons.lexsort_rows`][] canonicalises.
@@ -84,7 +84,7 @@ def test_edges_match_igl(device: str) -> None:
     faces_np = rng.integers(0, 50, size=(20, 3), dtype=np.int32)
 
     edges_igl = np.asarray(igl.oriented_facets(np.ascontiguousarray(faces_np, dtype=np.int64)))
-    edges_wp = tw.edges.faces_to_edges(_faces_np_to_wp(faces_np, device))
+    edges_wp = od.edges.faces_to_edges(_faces_np_to_wp(faces_np, device))
 
     assert edges_igl.shape == (faces_np.shape[0] * 3, 2)
     assert np.array_equal(lexsort_rows(edges_wp.numpy()), lexsort_rows(edges_igl))
@@ -103,14 +103,14 @@ def test_edges_sorted(device: str) -> None:
     edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
 
     faces_wp = _faces_np_to_wp(faces_np, device)
-    edges_wp = tw.edges.faces_to_edges(faces_wp, sorted=True)
+    edges_wp = od.edges.faces_to_edges(faces_wp, sorted=True)
     assert np.array_equal(edges_wp.numpy(), edges_np)
 
 
 def test_edges_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert tw.edges.faces_to_edges(faces_wp).shape == (0, 2)
-    assert tw.edges.faces_to_edges(faces_wp, sorted=True).shape == (0, 2)
+    assert od.edges.faces_to_edges(faces_wp).shape == (0, 2)
+    assert od.edges.faces_to_edges(faces_wp, sorted=True).shape == (0, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -132,7 +132,7 @@ def test_edges_face(device: str) -> None:
     faces_np = rng.integers(0, 50, size=(n_faces, 3), dtype=np.int32)
 
     faces_wp = _faces_np_to_wp(faces_np, device)
-    face_idx_wp = tw.edges.edges_face(faces_wp)
+    face_idx_wp = od.edges.edges_face(faces_wp)
 
     # each face f contributes edges at positions 3*f, 3*f+1, 3*f+2
     expected = np.repeat(np.arange(n_faces, dtype=np.int32), 3)
@@ -141,7 +141,7 @@ def test_edges_face(device: str) -> None:
 
 def test_edges_face_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert tw.edges.edges_face(faces_wp).shape == (0,)
+    assert od.edges.edges_face(faces_wp).shape == (0,)
 
 
 # ---------------------------------------------------------------------------
@@ -156,14 +156,14 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (row-set canonicalization): the unique undirected edge set, both sides lexsorted.
 
-    triwarp's order comes from a parallel hash and trimesh's from ``unique_rows``, so neither
+    ordito's order comes from a parallel hash and trimesh's from ``unique_rows``, so neither
     is defined; the rows are already min-first on both sides. The inverse that pairs with this
     set is checked by [`test_edges_unique_inverse`], which this sort would otherwise
     invalidate.
 
     The call omits ``n_vertices=``, so this is the *inferred* radix base -- the path the
     ``edges_unique_auto_nv`` benchmark group times, which is why that group's marker rides here.
-    The hint is triwarp's own parameter and no reference has one, so both groups compare against
+    The hint is ordito's own parameter and no reference has one, so both groups compare against
     the identical trimesh answer.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -171,7 +171,7 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     unique_idx_tm, _ = tm_grouping.unique_rows(np.sort(mesh_tm.edges, axis=1))
     unique_edges_tm = np.sort(mesh_tm.edges, axis=1)[unique_idx_tm]
 
-    unique_edges_wp, _ = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices)
     unique_edges_wp_np = unique_edges_wp.numpy()
 
     assert np.array_equal(lexsort_rows(unique_edges_wp_np), lexsort_rows(unique_edges_tm))
@@ -181,17 +181,17 @@ def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
 @pytest.mark.parity("edges_unique_inverse", "trimesh")
 def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Triwarp against triwarp: ``unique_edges[inverse]`` must rebuild the sorted edge table.
+    Ordito against ordito: ``unique_edges[inverse]`` must rebuild the sorted edge table.
 
-    The inverse indexes into triwarp's *own* row order, which no reference shares and which
+    The inverse indexes into ordito's *own* row order, which no reference shares and which
     [`test_edges_unique`] deliberately sorts away -- so the reconstruction is the only sound
     oracle. ``faces_to_edges`` carries its own trimesh comparison above, so this is not
     circular.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    unique_edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
-    edges_sorted_wp = tw.edges.faces_to_edges(mesh_wp.indices, sorted=True)
+    unique_edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices)
+    edges_sorted_wp = od.edges.faces_to_edges(mesh_wp.indices, sorted=True)
 
     # unique_edges[inverse] must reconstruct edges_sorted
     reconstructed = unique_edges_wp.numpy()[inverse_wp.numpy()]
@@ -223,7 +223,7 @@ def test_edges_unique_matches_potpourri3d(request: pytest.FixtureRequest, mesh_n
         )
     )
 
-    unique_edges_wp, _ = tw.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    unique_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     assert_unordered_rows_equal(np.sort(unique_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
 
 
@@ -246,7 +246,7 @@ def test_edges_unique_and_inverse_match_igl(request: pytest.FixtureRequest, mesh
       directed-edge orderings, so they need both ends aligned. Composing each map with its own table
       removes the first difference; the second is a fixed permutation, because igl stacks its
       directed edges by column (``[F[:,1:3]; F[:,[2,0]]; F[:,0:2]]``, so entry ``f + k * n_faces``)
-      while triwarp interleaves them per face (``3f+0 = (v0,v1)``, ``3f+1 = (v1,v2)``,
+      while ordito interleaves them per face (``3f+0 = (v0,v1)``, ``3f+1 = (v1,v2)``,
       ``3f+2 = (v2,v0)``). Verified exact on icosahedron, icosphere(2) and box.
 
     Composing and then permuting is what makes this a real check of the map rather than of the edge
@@ -269,24 +269,24 @@ def test_edges_unique_and_inverse_match_igl(request: pytest.FixtureRequest, mesh
     unique_edges_igl = np.asarray(unique_edges_igl)
     inverse_igl = np.asarray(inverse_igl).ravel()
 
-    unique_edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)
+    unique_edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)
     unique_edges_np = unique_edges_wp.numpy()
 
     # The standalone entry point is what the ``edges_unique_inverse`` benchmark group times; it must
     # return the same map the combined call does.
-    standalone_wp = tw.edges.edges_unique_inverse(mesh_wp.indices, n_vertices=n_vertices)
+    standalone_wp = od.edges.edges_unique_inverse(mesh_wp.indices, n_vertices=n_vertices)
     assert np.array_equal(standalone_wp.numpy(), inverse_wp.numpy())
 
     assert_unordered_rows_equal(np.sort(unique_edges_np, axis=1), np.sort(unique_edges_igl, axis=1))
 
     # The inferred-base call (the ``edges_unique_auto_nv`` group) must return the same set, so
     # igl's answer covers both groups: the hint only picks the radix width.
-    auto_edges_wp, _auto_inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
+    auto_edges_wp, _auto_inverse_wp = od.edges.edges_unique(mesh_wp.indices)
     assert_unordered_rows_equal(
         np.sort(auto_edges_wp.numpy(), axis=1), np.sort(unique_edges_igl, axis=1)
     )
 
-    # Compose each inverse map with its own table, then reorder igl's directed edges into triwarp's
+    # Compose each inverse map with its own table, then reorder igl's directed edges into ordito's
     # per-face interleaving (see the docstring) so the two are indexed the same way.
     n_faces = len(faces_np)
     order_igl = np.empty(3 * n_faces, dtype=np.int64)
@@ -310,18 +310,18 @@ def test_edges_unique_and_inverse_match_pytorch3d(
     Class B, twice: the edge set after a sort, and the inverse map after a remap and a permutation.
 
     ``Meshes.edges_packed`` orders its rows by the hash ``V * v0 + v1``, i.e. already lexsorted, so
-    only triwarp's side moves for the set half. The inverse half needs two steps and both were
-    recovered by measurement: pytorch3d numbers its unique edges differently, so triwarp's labels
+    only ordito's side moves for the set half. The inverse half needs two steps and both were
+    recovered by measurement: pytorch3d numbers its unique edges differently, so ordito's labels
     are remapped into pytorch3d's numbering through the sorted pair, and only then does the column
     order line up -- ``faces_packed_to_edges_packed[:, (2, 0, 1)]``, because pytorch3d builds it by
-    concatenating ``[e12, e20, e01]`` and reshaping, against triwarp's ``(e01, e12, e20)``.
+    concatenating ``[e12, e20, e01]`` and reshaping, against ordito's ``(e01, e12, e20)``.
 
     Doing the remap *and* the permutation is what makes this a check of the map rather than of the
     edge set: it fails on an off-by-one, on a permuted table, or on two directed edges assigned to
     the wrong unique row.
 
     ``edges_unique_auto_nv`` rides here because pytorch3d has no vertex-count hint either -- it
-    computes the same list whichever way triwarp is called, so one comparison covers both groups.
+    computes the same list whichever way ordito is called, so one comparison covers both groups.
     The hinted and inferred calls are asserted equal below rather than the marker resting on the
     hint being irrelevant; that equality *is* the whole content of the inferred-base group, since
     the hint only chooses the radix width.
@@ -336,14 +336,14 @@ def test_edges_unique_and_inverse_match_pytorch3d(
     face_edges_p3d = face_edges_t.numpy()
 
     n_vertices = mesh_wp.points.size
-    unique_edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices)
     unique_edges_np = unique_edges_wp.numpy()
-    hinted_edges_wp, hinted_inverse_wp = tw.edges.edges_unique(
+    hinted_edges_wp, hinted_inverse_wp = od.edges.edges_unique(
         mesh_wp.indices, n_vertices=n_vertices
     )
     assert np.array_equal(hinted_edges_wp.numpy(), unique_edges_np)
     assert np.array_equal(hinted_inverse_wp.numpy(), inverse_wp.numpy())
-    face_edges_np = tw.edges.edges_unique_inverse(mesh_wp.indices).numpy().reshape(-1, 3)
+    face_edges_np = od.edges.edges_unique_inverse(mesh_wp.indices).numpy().reshape(-1, 3)
 
     assert edges_p3d.shape[0] > 0
     assert np.array_equal(inverse_wp.numpy().reshape(-1, 3), face_edges_np)
@@ -375,7 +375,7 @@ def test_edges_unique_matches_pyvista(request: pytest.FixtureRequest, mesh_name:
         cast("pv.PolyData", trimesh_to_pyvista(mesh_tm).extract_all_edges()), mesh_tm.vertices
     )
 
-    unique_edges_wp, _inverse_wp = tw.edges.edges_unique(mesh_wp.indices)
+    unique_edges_wp, _inverse_wp = od.edges.edges_unique(mesh_wp.indices)
 
     assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
     assert_unordered_rows_equal(np.sort(unique_edges_wp.numpy(), axis=1), edges_pv)
@@ -392,18 +392,18 @@ def test_edges_unique_radix_is_invariant_to_an_oversized_base(
     that count exceeds ``max(faces) + 1`` whenever the mesh carries unreferenced vertices.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    tight = tw.array.index_bound(mesh_wp.indices)
-    edges_tight_wp, inverse_tight_wp = tw.edges.edges_unique(mesh_wp.indices, n_vertices=tight)
+    tight = od.array.index_bound(mesh_wp.indices)
+    edges_tight_wp, inverse_tight_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=tight)
 
     for base in (tight + 1, tight + 1000):
-        edges_wp, inverse_wp = tw.edges.edges_unique(mesh_wp.indices, n_vertices=base)
+        edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=base)
         assert np.array_equal(edges_wp.numpy(), edges_tight_wp.numpy())
         assert np.array_equal(inverse_wp.numpy(), inverse_tight_wp.numpy())
 
 
 def test_edges_unique_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = tw.edges.edges_unique(faces_wp)
+    unique_wp, inverse_wp = od.edges.edges_unique(faces_wp)
     assert unique_wp.shape == (0, 2)
     assert inverse_wp.shape == (0,)
 
@@ -417,8 +417,8 @@ def test_edges_unique_empty(device: str) -> None:
 def test_edges_unique_inverse_standalone(request: pytest.FixtureRequest, mesh_name: str) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
 
-    _unique_edges_wp, inverse_from_unique = tw.edges.edges_unique(mesh_wp.indices)
-    inverse_standalone = tw.edges.edges_unique_inverse(mesh_wp.indices)
+    _unique_edges_wp, inverse_from_unique = od.edges.edges_unique(mesh_wp.indices)
+    inverse_standalone = od.edges.edges_unique_inverse(mesh_wp.indices)
     assert np.array_equal(inverse_from_unique.numpy(), inverse_standalone.numpy())
 
 
@@ -436,7 +436,7 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
     Sorting the lengths is weaker than pairing each with its edge, and that is the honest limit
     here: the pairing is pinned separately by [`test_edges_unique`] plus
     [`test_edges_unique_inverse`]. The reference lengths come from a ``float32`` copy of the
-    vertices, so this is not measuring triwarp's precision against numpy's.
+    vertices, so this is not measuring ordito's precision against numpy's.
 
     MeshLib's ``edgeLengths`` is the second reference and needs the same sort -- it indexes by
     ``UndirectedEdgeId``, which is its own numbering. Its answer comes back as an
@@ -454,7 +454,7 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
     )
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    lengths_wp = tw.edges.edges_unique_length(vertices_wp, mesh_wp.indices)
+    lengths_wp = od.edges.edges_unique_length(vertices_wp, mesh_wp.indices)
     lengths_wp_np = lengths_wp.numpy()
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -473,11 +473,11 @@ def test_edges_unique_length_precomputed(device: str) -> None:
     faces_wp = _faces_np_to_wp(faces_np, device)
     vertices_wp = points_to_warp(verts_np, device)
 
-    unique_edges_wp, _ = tw.edges.edges_unique(faces_wp)
-    lengths_via_precomputed = tw.edges.edges_unique_length(
+    unique_edges_wp, _ = od.edges.edges_unique(faces_wp)
+    lengths_via_precomputed = od.edges.edges_unique_length(
         vertices_wp, faces_wp, unique_edges=unique_edges_wp
     )
-    lengths_fresh = tw.edges.edges_unique_length(vertices_wp, faces_wp)
+    lengths_fresh = od.edges.edges_unique_length(vertices_wp, faces_wp)
     assert np.allclose(lengths_via_precomputed.numpy(), lengths_fresh.numpy(), rtol=1e-5, atol=1e-5)
 
 
@@ -503,7 +503,7 @@ def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     lengths_tm = np.linalg.norm(verts_np[edges_np[:, 1]] - verts_np[edges_np[:, 0]], axis=1)
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    lengths_wp = tw.edges.edges_length(vertices_wp, mesh_wp.indices)
+    lengths_wp = od.edges.edges_length(vertices_wp, mesh_wp.indices)
 
     assert np.allclose(np.sort(lengths_wp.numpy()), np.sort(lengths_tm), rtol=1e-4, atol=1e-4)
 
@@ -515,9 +515,9 @@ def test_edges_length_precomputed(device: str) -> None:
     faces_wp = _faces_np_to_wp(faces_np, device)
     vertices_wp = points_to_warp(verts_np, device)
 
-    edges_in_wp = tw.edges.faces_to_edges(faces_wp)
-    lengths_via_precomputed = tw.edges.edges_length(vertices_wp, faces_wp, edges_in=edges_in_wp)
-    lengths_fresh = tw.edges.edges_length(vertices_wp, faces_wp)
+    edges_in_wp = od.edges.faces_to_edges(faces_wp)
+    lengths_via_precomputed = od.edges.edges_length(vertices_wp, faces_wp, edges_in=edges_in_wp)
+    lengths_fresh = od.edges.edges_length(vertices_wp, faces_wp)
     assert np.allclose(lengths_via_precomputed.numpy(), lengths_fresh.numpy(), rtol=1e-5, atol=1e-5)
 
 
@@ -538,21 +538,21 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
     faces_np = rng.integers(0, 30, size=(10, 3), dtype=np.int32)
     faces_wp = _faces_np_to_wp(faces_np, device)
     vertices_wp = points_to_warp(verts_np, device)
-    triples_wp = twt.as_array2d(wp.array(faces_np, dtype=wp.int32, ndim=2, device=device), wp.int32)
+    triples_wp = odt.as_array2d(wp.array(faces_np, dtype=wp.int32, ndim=2, device=device), wp.int32)
 
     with pytest.raises(ValueError, match=r"unique_edges must have shape \(k, 2\)"):
-        tw.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=triples_wp)
+        od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=triples_wp)
     with pytest.raises(ValueError, match=r"edges_in must have shape \(k, 2\)"):
-        tw.edges.edges_length(vertices_wp, faces_wp, edges_in=triples_wp)
+        od.edges.edges_length(vertices_wp, faces_wp, edges_in=triples_wp)
     with pytest.raises(ValueError, match=r"edges_sorted must have shape \(k, 2\)"):
-        tw.edges.edges_unique(faces_wp, edges_sorted=triples_wp)
+        od.edges.edges_unique(faces_wp, edges_sorted=triples_wp)
 
     # Non-vacuity: the same three keywords still accept the tables they are meant to take.
-    pairs_wp = tw.edges.faces_to_edges(faces_wp, sorted=True)
-    unique_wp, _inverse = tw.edges.edges_unique(faces_wp, edges_sorted=pairs_wp)
-    assert tw.edges.edges_length(vertices_wp, faces_wp, edges_in=pairs_wp).size == 30
+    pairs_wp = od.edges.faces_to_edges(faces_wp, sorted=True)
+    unique_wp, _inverse = od.edges.edges_unique(faces_wp, edges_sorted=pairs_wp)
+    assert od.edges.edges_length(vertices_wp, faces_wp, edges_in=pairs_wp).size == 30
     assert (
-        tw.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_wp).size
+        od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_wp).size
         == unique_wp.shape[0]
     )
 
@@ -560,7 +560,7 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
 def test_edges_length_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     verts_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.edges.edges_length(verts_wp, faces_wp).shape == (0,)
+    assert od.edges.edges_length(verts_wp, faces_wp).shape == (0,)
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
@@ -571,7 +571,7 @@ def test_mean_edge_length(request: pytest.FixtureRequest, mesh_name: str) -> Non
 
     An interior edge is therefore counted twice and a boundary edge once. The closing block asserts
     this really is a different number from
-    [`mean_unique_edge_length`][triwarp.edges.mean_unique_edge_length] on the open fixtures -- the
+    [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] on the open fixtures -- the
     two functions exist because libigl needs both, so a change collapsing them into one must fail.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -582,12 +582,12 @@ def test_mean_edge_length(request: pytest.FixtureRequest, mesh_name: str) -> Non
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
     assert np.allclose(
-        tw.edges.mean_edge_length(vertices_wp, mesh_wp.indices), per_face_np, rtol=1e-4, atol=1e-4
+        od.edges.mean_edge_length(vertices_wp, mesh_wp.indices), per_face_np, rtol=1e-4, atol=1e-4
     )
 
     # The unique-edge average is the same number only when there is no boundary.
-    unique_wp = tw.edges.mean_unique_edge_length(vertices_wp, mesh_wp.indices)
-    n_boundary = int(tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
+    unique_wp = od.edges.mean_unique_edge_length(vertices_wp, mesh_wp.indices)
+    n_boundary = int(od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
     if n_boundary == 0:
         assert np.isclose(unique_wp, per_face_np, rtol=1e-6)
     else:
@@ -604,11 +604,11 @@ def test_edge_length_averages_match_their_references(
     """
     Both edge averages, each against the libigl function it is meant to reproduce.
 
-    libigl carries two, and triwarp now exposes one for each:
-    [`mean_edge_length`][triwarp.edges.mean_edge_length] is
+    libigl carries two, and ordito now exposes one for each:
+    [`mean_edge_length`][ordito.edges.mean_edge_length] is
     ``CurvatureCalculator::getAverageEdge`` (each edge once per incident face), which
     ``igl::principal_curvature`` uses to set its sphere radius;
-    [`mean_unique_edge_length`][triwarp.edges.mean_unique_edge_length] is ``igl::avg_edge_length``
+    [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] is ``igl::avg_edge_length``
     (each edge once), which ``igl::heat_geodesics`` uses to set its timestep.
 
     They agree exactly on a closed mesh -- every edge has two incident faces there -- and diverge
@@ -618,7 +618,7 @@ def test_edge_length_averages_match_their_references(
     swapped for one another.
 
     The per-face length *table* is Class B: igl's ``(n_faces, 3)`` uses its opposite-edge corner
-    convention against triwarp's flat face-order buffer, so rows are sorted before comparing.
+    convention against ordito's flat face-order buffer, so rows are sorted before comparing.
 
     MeshLib's ``averageEdgeLength`` is a fourth reference for the unique-edge average specifically,
     and it settles *which* mean it computes -- undirected edges, once each -- which is the whole
@@ -629,17 +629,17 @@ def test_edge_length_averages_match_their_references(
     faces_np = mesh_tm.faces.astype(np.int64)
 
     lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
-    lengths_wp = tw.edges.edges_length(mesh_wp.points, mesh_wp.indices).numpy().reshape(-1, 3)
+    lengths_wp = od.edges.edges_length(mesh_wp.points, mesh_wp.indices).numpy().reshape(-1, 3)
     assert np.allclose(
         np.sort(lengths_wp, axis=1), np.sort(lengths_igl, axis=1), rtol=1e-4, atol=1e-5
     )
 
     # Per-face average == igl's curvature-side getAverageEdge, i.e. edge_lengths().mean().
-    per_face_wp = float(tw.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices))
+    per_face_wp = float(od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices))
     assert np.isclose(per_face_wp, float(lengths_igl.mean()), rtol=1e-4)
 
     # Unique-edge average == igl::avg_edge_length == MeshLab's avg_edge_length.
-    unique_wp = float(tw.edges.mean_unique_edge_length(mesh_wp.points, mesh_wp.indices))
+    unique_wp = float(od.edges.mean_unique_edge_length(mesh_wp.points, mesh_wp.indices))
     assert np.isclose(unique_wp, float(igl.avg_edge_length(vertices_np, faces_np)), rtol=1e-4)
     measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
     assert np.isclose(unique_wp, float(measures_pml["avg_edge_length"]), rtol=1e-4)
@@ -654,7 +654,7 @@ def test_edge_length_averages_match_their_references(
     assert np.isclose(unique_wp, unique_np, rtol=1e-4)
 
     # The two averages coincide only when there is no boundary.
-    n_boundary = int(tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
+    n_boundary = int(od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
     if n_boundary == 0:
         assert np.isclose(per_face_wp, unique_wp, rtol=1e-4)
     else:
@@ -664,7 +664,7 @@ def test_edge_length_averages_match_their_references(
 def test_mean_edge_length_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     verts_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.edges.mean_edge_length(verts_wp, faces_wp) == 0.0
+    assert od.edges.mean_edge_length(verts_wp, faces_wp) == 0.0
 
 
 # --- face_edge_lengths ----------------------------------------------------------------
@@ -678,16 +678,16 @@ def test_face_edge_lengths_are_the_opposite_edges(
 
     Both are kept because they answer different questions. igl is the library reference and returns
     the identical ``(n_faces, 3)`` table in the same column order (measured 3.7e-08 apart on
-    icosphere(2), triwarp's float32 vertex buffer being the floor); the hand-rolled stack *names*
+    icosphere(2), ordito's float32 vertex buffer being the floor); the hand-rolled stack *names*
     the convention -- corner ``k`` holds the length of the edge opposite vertex ``k`` -- which is
     the part a reader needs and which a second library agreeing cannot state.
 
     The column order is load-bearing and this checks it: every non-identity permutation of igl's
-    columns differs from triwarp's answer by 0.045 on icosphere(2), so an order mistake fails rather
+    columns differs from ordito's answer by 0.045 on icosphere(2), so an order mistake fails rather
     than passing on symmetry.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    lengths = tw.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices).numpy()
+    lengths = od.edges.face_edge_lengths(mesh_wp.points, mesh_wp.indices).numpy()
 
     triangles = np.asarray(mesh_tm.vertices)[np.asarray(mesh_tm.faces)]
     expected = np.stack(
@@ -710,7 +710,7 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     """
     ``validate=False`` skips a range check, not any of the work that produces the answer.
 
-    Triwarp against triwarp: the oracle for the row set itself is
+    Ordito against ordito: the oracle for the row set itself is
     ``test_edges_unique_matches_trimesh``, and what this pins is that the keyword every internal
     caller now passes cannot change what those callers see. It also pins the guard the default
     still provides, on an out-of-range index that would otherwise pack into a colliding key and
@@ -722,8 +722,8 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     _vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     n_vertices = int(vertices_np.shape[0])
 
-    validated, validated_inverse = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-    unvalidated, unvalidated_inverse = tw.edges.edges_unique(
+    validated, validated_inverse = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    unvalidated, unvalidated_inverse = od.edges.edges_unique(
         faces_wp, n_vertices=n_vertices, validate=False
     )
     assert validated.shape[0] > 0
@@ -735,11 +735,11 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     broken_np[0] = n_vertices + 5
     broken_wp = wp.array(broken_np, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="must be less than n_vertices"):
-        _ = tw.edges.edges_unique(broken_wp, n_vertices=n_vertices)
+        _ = od.edges.edges_unique(broken_wp, n_vertices=n_vertices)
 
     # And the inferred-bound path checks the half it can: a negative index.
     negative_np = faces_np.copy()
     negative_np[0] = -3
     negative_wp = wp.array(negative_np, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="non-negative"):
-        _ = tw.edges.edges_unique(negative_wp)
+        _ = od.edges.edges_unique(negative_wp)

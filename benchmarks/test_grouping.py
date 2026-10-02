@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.grouping``: fixed-multiplicity grouping and row deduplication.
+Benchmarks for ``ordito.grouping``: fixed-multiplicity grouping and row deduplication.
 
 ``group`` runs the ``face_adjacency`` workload on the scan sweep -- interior edges appear exactly
 twice, so ``length=2`` groups are the adjacent face pairs, and the cost is one radix sort over
@@ -26,20 +26,20 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
 # Fraction of the rows that are distinct: everything unique, against a tenth as many distinct
 # values repeated ten times. The input length is identical, so only the collision density moves.
 _UNIQUE_FRACTIONS = [1.0, 0.1]
 
-_rows_cache: dict[tuple[str, str, float], tuple[twt.Array2dInt32, np.ndarray]] = {}
+_rows_cache: dict[tuple[str, str, float], tuple[odt.Array2dInt32, np.ndarray]] = {}
 
 
 def _duplicate_rows(
     bench_case: BenchCase, unique_fraction: float
-) -> tuple[twt.Array2dInt32, np.ndarray]:
+) -> tuple[odt.Array2dInt32, np.ndarray]:
     """Build an ``(n, 3)`` int32 row block whose distinct-row count is ``unique_fraction * n``."""
     key = (bench_case.mesh_name, str(bench_case.device), unique_fraction)
     if key not in _rows_cache:
@@ -49,7 +49,7 @@ def _duplicate_rows(
         rows_wp = wp.array(rows_np.reshape(-1), dtype=wp.int32, device=bench_case.device).reshape(
             rows_np.shape
         )
-        _rows_cache[key] = (twt.as_array2d(rows_wp, wp.int32), rows_np)
+        _rows_cache[key] = (odt.as_array2d(rows_wp, wp.int32), rows_np)
     return _rows_cache[key]
 
 
@@ -59,7 +59,7 @@ _inverse_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
 def _edge_inverse(bench_case: BenchCase) -> wp.array[wp.int32]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _inverse_cache:
-        _inverse_cache[key] = tw.edges.edges_unique_inverse(
+        _inverse_cache[key] = od.edges.edges_unique_inverse(
             bench_case.faces_wp, n_vertices=bench_case.n_vertices
         )
     return _inverse_cache[key]
@@ -70,7 +70,7 @@ _inverse_np_cache: dict[str, np.ndarray] = {}
 
 def _edge_inverse_np(bench_case: BenchCase) -> np.ndarray:
     """
-    Return the same key array on the host, for the reference branches, built without triwarp.
+    Return the same key array on the host, for the reference branches, built without ordito.
 
     A reference case carries no device, so it cannot be handed ``_edge_inverse``'s buffer -- and it
     should not be, because a benchmark input must not come from the code under test (see
@@ -88,7 +88,7 @@ def _edge_inverse_np(bench_case: BenchCase) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="group")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_group(bench_case: BenchCase) -> None:
     """
     Fixed-multiplicity index grouping over the edge inverse: a radix sort plus a segment pass.
@@ -100,9 +100,9 @@ def test_group(bench_case: BenchCase) -> None:
     reference so that its input does not come from the code under test -- so this row is the
     grouping alone. Capped at ``bunny``, past which the reference's segment walk is unaffordable.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         inverse = _edge_inverse(bench_case)
-        pairs = bench_case.run(lambda: tw.grouping.group(inverse, 2))
+        pairs = bench_case.run(lambda: od.grouping.group(inverse, 2))
         assert pairs.shape[1] == 2
         assert pairs.shape[0] > 0
     else:
@@ -116,7 +116,7 @@ def test_group(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="unique_faces")
-@pytest.mark.benchlibs("triwarp", "igl", "trimesh")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh")
 @pytest.mark.parametrize("duplicate_fraction", [0.0, 0.5], ids=["allunique", "half"])
 def test_unique_faces(bench_case: BenchCase, duplicate_fraction: float) -> None:
     """
@@ -127,9 +127,9 @@ def test_unique_faces(bench_case: BenchCase, duplicate_fraction: float) -> None:
     from a plain row dedup -- the flipped copies must collapse.
 
     ``igl.unique_simplices`` is the same operation and returns ``(FF, IA, IC)`` where ``IC`` is
-    triwarp's inverse. One difference to know before comparing: **igl returns the sorted rows**
-    (``FF == sort(F(IA, :), 2)``) where triwarp returns the first occurrence with its original
-    winding intact, so the parity comparison sorts triwarp's rows first.
+    ordito's inverse. One difference to know before comparing: **igl returns the sorted rows**
+    (``FF == sort(F(IA, :), 2)``) where ordito returns the first occurrence with its original
+    winding intact, so the parity comparison sorts ordito's rows first.
 
     ``Trimesh.unique_faces`` is the third implementation and the one that makes this group's axis
     legible: it is a *mask* rather than a rebuild, so it does strictly less than the other two rows
@@ -169,13 +169,13 @@ def test_unique_faces(bench_case: BenchCase, duplicate_fraction: float) -> None:
         dtype=wp.int32,
         device=bench_case.device,
     )
-    unique_wp = bench_case.run(lambda: tw.grouping.unique_faces(faces_wp))
+    unique_wp = bench_case.run(lambda: od.grouping.unique_faces(faces_wp))
     assert 0 < int(unique_wp.shape[0]) // 3 <= bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="unique_rows")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("unique_fraction", _UNIQUE_FRACTIONS, ids=["allunique", "tenth"])
 def test_unique_rows(bench_case: BenchCase, unique_fraction: float) -> None:
     """
@@ -187,8 +187,8 @@ def test_unique_rows(bench_case: BenchCase, unique_fraction: float) -> None:
     needs to. Total input length is held fixed so only the duplicate density varies.
     """
     rows_wp, rows_np = _duplicate_rows(bench_case, unique_fraction)
-    if bench_case.kind == "triwarp":
-        unique = bench_case.run(lambda: tw.grouping.unique_rows(rows_wp))
+    if bench_case.kind == "ordito":
+        unique = bench_case.run(lambda: od.grouping.unique_rows(rows_wp))
         assert unique[0].size > 0
     else:
         unique_tm = bench_case.run(lambda: tm.grouping.unique_rows(rows_np))

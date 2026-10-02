@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.mesh.Trimesh`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.mesh.Trimesh`` against Trimesh (CPU reference)."""
 
 # This file tests Trimesh's private property cache and key tables directly.
 # pyright: reportPrivateUsage=false
@@ -13,7 +13,8 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
+import ordito as od
+from ordito.mesh import _ORIENTATION_DEPENDENT_KEYS, _TOPOLOGY_KEYS
 from tests.comparisons import (
     SET_VALUED_CACHE_KEYS,
     assert_nonconstant,
@@ -26,7 +27,6 @@ from tests.comparisons import (
 )
 from tests.conftest import CLOSED_MESHES, MESHES, OPEN_MESHES, populate_cache
 from tests.conversions import numpy_to_warp, points_to_warp, points_to_warp_uv, warp_empty
-from triwarp.mesh import _ORIENTATION_DEPENDENT_KEYS, _TOPOLOGY_KEYS
 
 # ---------------------------------------------------------------------------
 # construction
@@ -35,8 +35,8 @@ from triwarp.mesh import _ORIENTATION_DEPENDENT_KEYS, _TOPOLOGY_KEYS
 
 def test_construction_flat_and_2d_faces_agree(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh_flat = tw.Trimesh(mesh_wp.points, mesh_wp.indices)
-    mesh_2d = tw.Trimesh(mesh_wp.points, mesh_wp.indices.reshape((-1, 3)))
+    mesh_flat = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    mesh_2d = od.Trimesh(mesh_wp.points, mesh_wp.indices.reshape((-1, 3)))
     assert np.array_equal(mesh_flat.faces.numpy(), mesh_2d.faces.numpy())
 
 
@@ -45,26 +45,26 @@ def test_construction_bad_faces_ndim_raises(icosahedron: tuple[tm.Trimesh, wp.Me
     n_faces = mesh_wp.indices.size // 3
     bad_faces = wp.zeros((n_faces, 3, 1), dtype=wp.int32, device=mesh_wp.device)
     with pytest.raises(TypeError):
-        tw.Trimesh(mesh_wp.points, bad_faces)
+        od.Trimesh(mesh_wp.points, bad_faces)
 
 
 def test_construction_bad_2d_faces_shape_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     bad_faces = wp.zeros((mesh_wp.indices.size // 4, 4), dtype=wp.int32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="shape"):
-        tw.Trimesh(mesh_wp.points, bad_faces)
+        od.Trimesh(mesh_wp.points, bad_faces)
 
 
 def test_construction_faces_size_not_multiple_of_three_raises(device: str) -> None:
     vertices_wp = wp.zeros(4, dtype=wp.vec3, device=device)
     faces_wp = wp.zeros(4, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="multiple of 3"):
-        tw.Trimesh(vertices_wp, faces_wp)
+        od.Trimesh(vertices_wp, faces_wp)
 
 
 def test_from_warp_mesh_seeds_warp_mesh_cache(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.warp_mesh is mesh_wp
     assert mesh.vertices is mesh_wp.points
     assert mesh.faces is mesh_wp.indices
@@ -75,7 +75,7 @@ def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
     # raise instead of building one.
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    mesh = tw.Trimesh(vertices_wp, faces_wp)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
     with pytest.raises(ValueError, match="zero triangles"):
         _ = mesh.warp_mesh
 
@@ -83,7 +83,7 @@ def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
 def test_mesh_from_numpy_round_trip(icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
     """Class A: the numpy arrays survive the upload unchanged, positions and indices alike."""
     mesh_tm, _mesh_wp = icosahedron
-    mesh = tw.io.mesh_from_numpy(mesh_tm.vertices, mesh_tm.faces, device=device)
+    mesh = od.io.mesh_from_numpy(mesh_tm.vertices, mesh_tm.faces, device=device)
     assert np.allclose(mesh.vertices.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
     assert np.array_equal(mesh.faces.numpy().reshape(-1, 3), mesh_tm.faces)
 
@@ -106,7 +106,7 @@ def test_geometry_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
     assumption would show.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     assert np.allclose(mesh.face_normals.numpy(), mesh_tm.face_normals, rtol=1e-5, atol=1e-5)
     assert np.allclose(mesh.face_areas.numpy(), mesh_tm.area_faces, rtol=1e-5, atol=1e-5)
@@ -129,7 +129,7 @@ def test_bounds_and_diagonal_match_trimesh(request: pytest.FixtureRequest, mesh_
     corner convention would show up here and nowhere else.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     lower, upper = mesh.bounds
 
     assert np.allclose(np.array([list(lower), list(upper)]), mesh_tm.bounds, rtol=1e-5, atol=1e-5)
@@ -151,7 +151,7 @@ def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name
     permutation or a wrong reference point could not pass on an isotropic answer.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     assert mesh.volume == pytest.approx(mesh_tm.volume, rel=1e-5)
     assert np.allclose(mesh.center_mass, mesh_tm.center_mass, rtol=1e-4, atol=1e-4)
@@ -163,11 +163,11 @@ def test_mass_properties_match_trimesh(request: pytest.FixtureRequest, mesh_name
 def test_mass_properties_share_by_product(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: ``center_mass`` and ``moment_inertia`` come from one call."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.center_mass
     assert "moment_inertia" in mesh._cache
 
-    other = tw.Trimesh.from_warp_mesh(mesh_wp)
+    other = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = other.moment_inertia
     assert "center_mass" in other._cache
 
@@ -176,7 +176,7 @@ def test_mass_properties_share_by_product(icosahedron: tuple[tm.Trimesh, wp.Mesh
 def test_extents_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """Class A: ``extents`` against ``trimesh.Trimesh.extents``, the box's side lengths."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert np.allclose(mesh.extents, mesh_tm.extents, rtol=1e-5, atol=1e-5)
     assert min(mesh.extents) > 0.0  # non-vacuity: no fixture is flat
 
@@ -185,7 +185,7 @@ def test_extents_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str)
 def test_triangles_center_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """Class A: ``triangles_center`` against ``trimesh.Trimesh.triangles_center``."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert np.allclose(
         mesh.triangles_center.numpy(), mesh_tm.triangles_center, rtol=1e-5, atol=1e-5
     )
@@ -200,7 +200,7 @@ def test_body_count_matches_trimesh(request: pytest.FixtureRequest, mesh_name: s
     non-vacuity -- a property that returned a constant ``1`` would pass the parametrization alone.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    assert tw.Trimesh.from_warp_mesh(mesh_wp).body_count == mesh_tm.body_count
+    assert od.Trimesh.from_warp_mesh(mesh_wp).body_count == mesh_tm.body_count
 
 
 def test_body_count_counts_disconnected_bodies(device: str) -> None:
@@ -212,7 +212,7 @@ def test_body_count_counts_disconnected_bodies(device: str) -> None:
     assert isinstance(combined_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(combined_tm.vertices, combined_tm.faces, device)
 
-    mesh = tw.Trimesh(vertices_wp, faces_wp)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
     assert mesh.body_count == 3
     assert mesh.body_count == combined_tm.body_count
 
@@ -231,7 +231,7 @@ def test_faces_unique_edges_indexes_edges_unique(
     the latter.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     unique_wp = mesh.edges_unique.numpy()
     resolved_wp = unique_wp[mesh.faces_unique_edges.numpy()]
@@ -252,7 +252,7 @@ def test_face_adjacency_projections_and_convex_match_trimesh(
     fixture, since a property returning all-``True`` would otherwise pass on a convex mesh.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     assert np.allclose(
         mesh.face_adjacency_projections.numpy(),
@@ -266,7 +266,7 @@ def test_face_adjacency_projections_and_convex_match_trimesh(
 def test_face_adjacency_convex_is_not_constant(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Class A: the non-convex fixture produces both answers, so the mask is not a constant."""
     mesh_tm, mesh_wp = cave_cube
-    convex_wp = tw.Trimesh.from_warp_mesh(mesh_wp).face_adjacency_convex.numpy()
+    convex_wp = od.Trimesh.from_warp_mesh(mesh_wp).face_adjacency_convex.numpy()
     assert convex_wp.any()
     assert not convex_wp.all()
     assert np.array_equal(convex_wp, mesh_tm.face_adjacency_convex)
@@ -288,7 +288,7 @@ def test_contains_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
     where a parity ray is genuinely ambiguous and the answers may differ.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     lower, upper = mesh_tm.bounds
     axes = [np.linspace(lo, hi, 7)[1:-1] + 1e-3 for lo, hi in zip(lower, upper, strict=True)]
     grid_np = np.stack(np.meshgrid(*axes, indexing="ij"), axis=-1).reshape(-1, 3)
@@ -303,7 +303,7 @@ def test_contains_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
 def test_contains_reuses_the_cached_bvh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the query goes through the cached BVH rather than building one."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.contains(points_to_warp(np.zeros((1, 3)), mesh.device))
     assert mesh._cache["warp_mesh"] is mesh_wp
 
@@ -319,7 +319,7 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
     point sampled from face ``j`` and labelled ``i`` still lies on the surface.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     points_wp, face_index_wp = mesh.sample(512, seed=3)
 
     points_np, faces_np = points_wp.numpy(), face_index_wp.numpy()
@@ -336,13 +336,13 @@ def test_sample_lies_on_the_surface(request: pytest.FixtureRequest, mesh_name: s
 
 def test_sample_is_reproducible_under_a_seed(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: one seed gives one answer.
+    Ordito against ordito: one seed gives one answer.
 
     The oracle for the sampler's correctness is ``test_sample_lies_on_the_surface``; this pins
     only that the seed is honoured, which that test cannot see.
     """
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     first, _ = mesh.sample(64, seed=11)
     second, _ = mesh.sample(64, seed=11)
     assert np.array_equal(first.numpy(), second.numpy())
@@ -351,14 +351,14 @@ def test_sample_is_reproducible_under_a_seed(icosahedron: tuple[tm.Trimesh, wp.M
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Triwarp against triwarp: the mask and index forms of ``submesh`` agree with each other.
+    Ordito against ordito: the mask and index forms of ``submesh`` agree with each other.
 
-    ``triwarp.selection`` carries the oracle for the extraction itself (``tests/test_selection.py``
+    ``ordito.selection`` carries the oracle for the extraction itself (``tests/test_selection.py``
     compares it against trimesh); this pins the class's dtype dispatch, which is the only thing the
     method adds and the only place a wrong branch would show.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     keep_np = np.zeros(mesh.n_faces, dtype=bool)
     keep_np[::2] = True
 
@@ -374,7 +374,7 @@ def test_submesh_matches_the_free_function(request: pytest.FixtureRequest, mesh_
 def test_submesh_bad_dtype_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: the guard on a selector that is neither indices nor a mask."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     with pytest.raises(TypeError, match=r"wp\.int32 or wp\.bool"):
         mesh.submesh(wp.zeros(4, dtype=wp.float32, device=mesh.device))
 
@@ -392,7 +392,7 @@ def test_split_and_add_round_trip(device: str) -> None:
     combined_tm = tm.util.concatenate(parts)
     assert isinstance(combined_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(combined_tm.vertices, combined_tm.faces, device)
-    mesh = tw.Trimesh(vertices_wp, faces_wp)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
 
     bodies = mesh.split()
     assert len(bodies) == len(combined_tm.split(only_watertight=False)) == 3
@@ -409,7 +409,7 @@ def test_split_and_add_round_trip(device: str) -> None:
 def test_copy_shares_nothing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a parity assert: ``copy`` breaks the aliasing every other method preserves."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.face_normals
     duplicate = mesh.copy()
 
@@ -437,7 +437,7 @@ def test_edges_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> 
     [`test_edges_unique_matches_trimesh`] is.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     assert np.array_equal(mesh.edges.numpy(), mesh_tm.edges)
     assert np.array_equal(mesh.edges_sorted.numpy(), mesh_tm.edges_sorted)
@@ -449,13 +449,13 @@ def test_edges_unique_matches_trimesh(request: pytest.FixtureRequest, mesh_name:
     """
     Class B (row-set canonicalization): the unique edge *set* matches after a shared lexsort.
 
-    Here the order genuinely is not defined by either library -- triwarp's comes from a parallel
+    Here the order genuinely is not defined by either library -- ordito's comes from a parallel
     hash and trimesh's from a serial scan -- so both sides are sorted. The `inverse` is then checked
-    against triwarp's own ``edges_sorted`` rather than trimesh's, because it indexes into triwarp's
+    against ordito's own ``edges_sorted`` rather than trimesh's, because it indexes into ordito's
     row order and that is the invariant the sort throws away.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     unique_wp = mesh.edges_unique.numpy()
     unique_tm = mesh_tm.edges_unique
@@ -476,7 +476,7 @@ def test_face_adjacency_matches_trimesh(request: pytest.FixtureRequest, mesh_nam
     either -- so both have to be canonicalized before the sets can be compared elementwise.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     adjacency_wp = mesh.face_adjacency.numpy()
     adjacency_tm = tm.graph.face_adjacency(mesh=mesh_tm)
@@ -496,13 +496,13 @@ def test_vertex_face_adjacency_matches_trimesh(
     Class B on ``vertex_face_adjacency``: row *sets*, after two named transforms.
 
     trimesh returns a dense ``(n_vertices, max_degree)`` array right-padded with ``-1`` where
-    triwarp returns a CSR pair, and neither orders a row -- triwarp's counting sort fills each row
+    ordito returns a CSR pair, and neither orders a row -- ordito's counting sort fills each row
     through an atomic cursor, so the order differs between two calls on the same mesh. The set is
     the whole claim, and it is the one the free function's docstring makes ("each row is a set, not
     a rotation").
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     faces_np, offsets_np = (array.numpy() for array in mesh.vertex_face_adjacency)
 
     padded_tm = mesh_tm.vertex_faces
@@ -517,7 +517,7 @@ def test_halfedge_properties_match_the_free_functions(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: the facade against ``triwarp.halfedge``, which carries the oracle.
+    Ordito against ordito: the facade against ``ordito.halfedge``, which carries the oracle.
 
     No reference library exposes a halfedge structure (``tests/test_halfedge.py`` is invariant-only
     for that reason), so what is testable here is that the properties are the free functions'
@@ -525,11 +525,11 @@ def test_halfedge_properties_match_the_free_functions(
     count both functions would otherwise read back -- does not change them.
     """
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     faces_wp = mesh.faces
 
-    assert np.array_equal(mesh.halfedge_twins.numpy(), tw.halfedge.halfedge_twins(faces_wp).numpy())
-    rings_free = tw.halfedge.vertex_one_rings(faces_wp)
+    assert np.array_equal(mesh.halfedge_twins.numpy(), od.halfedge.halfedge_twins(faces_wp).numpy())
+    rings_free = od.halfedge.vertex_one_rings(faces_wp)
     for cached, free in zip(mesh.vertex_one_rings, rings_free, strict=True):
         assert np.array_equal(cached.numpy(), free.numpy())
 
@@ -538,7 +538,7 @@ def test_operator_properties_match_the_free_functions(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: the operator group against the functions that assemble it.
+    Ordito against ordito: the operator group against the functions that assemble it.
 
     Each of these is compared with a reference elsewhere -- ``cotmatrix`` and the mass diagonal
     against igl in ``tests/test_laplacian.py``, ``laplacian_operator`` against trimesh in
@@ -549,31 +549,31 @@ def test_operator_properties_match_the_free_functions(
     diagonal from ``face_areas``).
     """
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     vertices_wp, faces_wp = mesh.vertices, mesh.faces
 
     assert np.allclose(
         mesh.cotmatrix_entries.numpy(),
-        tw.laplacian.cotmatrix_entries(vertices_wp, faces_wp).numpy(),
+        od.laplacian.cotmatrix_entries(vertices_wp, faces_wp).numpy(),
         rtol=1e-5,
         atol=1e-5,
     )
     assert np.allclose(
         mesh.mass_matrix_entries.numpy(),
-        tw.laplacian.mass_matrix_entries(vertices_wp, faces_wp).numpy(),
+        od.laplacian.mass_matrix_entries(vertices_wp, faces_wp).numpy(),
         rtol=1e-5,
         atol=1e-5,
     )
     for cached_matrix, free_matrix in (
-        (mesh.cotmatrix, tw.laplacian.cotmatrix(vertices_wp, faces_wp)),
-        (mesh.laplacian_operator, tw.laplacian.laplacian(vertices_wp, faces_wp)),
+        (mesh.cotmatrix, od.laplacian.cotmatrix(vertices_wp, faces_wp)),
+        (mesh.laplacian_operator, od.laplacian.laplacian(vertices_wp, faces_wp)),
     ):
         for cached_np, free_np in zip(
             bsr_arrays(cached_matrix), bsr_arrays(free_matrix), strict=True
         ):
             assert np.allclose(cached_np, free_np, rtol=1e-5, atol=1e-5)
 
-    frames_free = tw.tangent_space.vertex_tangent_frames(vertices_wp, faces_wp)
+    frames_free = od.tangent_space.vertex_tangent_frames(vertices_wp, faces_wp)
     for cached, free in zip(mesh.vertex_tangent_frames, frames_free, strict=True):
         assert np.allclose(cached.numpy(), free.numpy(), rtol=1e-5, atol=1e-5)
     # The gauge is the normal's, so its third field is the class's own vertex normals verbatim.
@@ -588,12 +588,12 @@ def test_operator_properties_match_the_free_functions(
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
 def test_boundary_matches_free_functions(request: pytest.FixtureRequest, mesh_name: str) -> None:
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
-    boundary_edges_ref = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_ref = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(mesh.boundary_edges.numpy(), boundary_edges_ref.numpy())
 
-    boundary_vertex_indices_ref = tw.boundary.boundary_vertex_indices(
+    boundary_vertex_indices_ref = od.boundary.boundary_vertex_indices(
         mesh_wp.points, mesh_wp.indices
     )
     assert np.array_equal(mesh.boundary_vertex_indices.numpy(), boundary_vertex_indices_ref.numpy())
@@ -616,11 +616,11 @@ def test_boundary_loops_matches_trimesh_outline(
     [`tests.comparisons.trimesh_outline_loops`][]: the entities index the mesh's own vertex array,
     and a closed entity repeats its first point as its last.
 
-    The loop *set* is the claim, not the order: triwarp ranks loops by length and trimesh by
+    The loop *set* is the claim, not the order: ordito ranks loops by length and trimesh by
     traversal, and neither fixes a starting point within a loop.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     loops_tm = trimesh_outline_loops(mesh_tm)
     assert len(loops_tm) > 0  # non-vacuous: these fixtures have rims
@@ -629,7 +629,7 @@ def test_boundary_loops_matches_trimesh_outline(
 
 def test_boundary_loops_empty_for_closed_mesh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.boundary_loops == []
     assert mesh.boundary_vertex_indices.shape == (0,)
 
@@ -651,7 +651,7 @@ def test_euler_characteristic_matches_trimesh(
     could not pass this parametrisation.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.euler_characteristic == int(mesh_tm.euler_number)
 
 
@@ -666,7 +666,7 @@ def test_is_winding_consistent_matches_trimesh(
     what make this live, since every closed orientable mesh in the suite answers ``True``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.is_winding_consistent == bool(mesh_tm.is_winding_consistent)
 
 
@@ -678,7 +678,7 @@ def test_is_volume_matches_trimesh(request: pytest.FixtureRequest, mesh_name: st
     The open fixtures supply the ``False`` branch, so this is not a one-branch assert.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.is_volume == bool(mesh_tm.is_volume)
 
 
@@ -686,13 +686,13 @@ def test_is_volume_matches_trimesh(request: pytest.FixtureRequest, mesh_name: st
 def test_is_watertight_matches_free_function(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
-    # triwarp.is_watertight follows Open3D semantics (manifold-closed + no self-intersections),
+    # ordito.is_watertight follows Open3D semantics (manifold-closed + no self-intersections),
     # not trimesh's "every edge shared by exactly two faces" — compare against the free
     # function, not mesh_tm.is_watertight. The trimesh comparison is the test below, which
-    # decomposes triwarp's answer into trimesh's clause and the one trimesh does not have.
+    # decomposes ordito's answer into trimesh's clause and the one trimesh does not have.
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
-    expected = tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    expected = od.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
     assert mesh.is_watertight == expected
 
 
@@ -705,25 +705,25 @@ def test_is_watertight_decomposes_into_trimesh_clause(
     Class B: ``Trimesh.is_watertight`` is exactly one of the two conjuncts this property tests.
 
     The named transform is the conjunction itself. trimesh answers "every edge is shared by exactly
-    two faces"; triwarp follows Open3D and requires that **and** no self-intersection, so the two
+    two faces"; ordito follows Open3D and requires that **and** no self-intersection, so the two
     disagree by construction on a closed surface that passes through itself and comparing them
-    directly would look like a bug in triwarp. Supplying the missing conjunct makes it an equality:
+    directly would look like a bug in ordito. Supplying the missing conjunct makes it an equality:
     ``mesh.is_watertight == mesh_tm.is_watertight and not is_self_intersecting(...)``, measured
     exact on all eight surfaces probed (the four fixtures here plus ``roman``, ``klein``,
     ``cross_cap`` and ``mobius``).
 
     That is a stronger claim than an implication, and it is the one worth making: an implication
-    (triwarp ⟹ trimesh) would also pass for a property that always answered ``False``.
+    (ordito ⟹ trimesh) would also pass for a property that always answered ``False``.
 
     Non-vacuous in both directions on this parametrisation -- ``icosahedron`` and ``cave_cube`` are
     watertight both ways, the two open fixtures fail trimesh's clause, and ``bohemian_dome`` is the
-    input that separates the two definitions: trimesh ``True``, triwarp ``False``.
+    input that separates the two definitions: trimesh ``True``, ordito ``False``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     edge_manifold_closed_tm = bool(mesh_tm.is_watertight)
-    self_intersecting = tw.validation.is_self_intersecting(mesh_wp)
+    self_intersecting = od.validation.is_self_intersecting(mesh_wp)
     assert mesh.is_watertight == (edge_manifold_closed_tm and not self_intersecting)
 
 
@@ -732,7 +732,7 @@ def test_is_watertight_builds_the_bvh_only_when_it_needs_one(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: the cold property against the free function, and what it caches.
+    Ordito against ordito: the cold property against the free function, and what it caches.
 
     The free function carries the oracle (``test_is_watertight_decomposes_into_trimesh_clause``).
     What this pins is the cold path the ``from_warp_mesh`` tests never reach: a ``Trimesh`` built
@@ -742,11 +742,11 @@ def test_is_watertight_builds_the_bvh_only_when_it_needs_one(
     so both outcomes of the caching are asserted.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh(mesh_wp.points, mesh_wp.indices)
-    reaches_broad_phase = tw.validation.is_edge_manifold(
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    reaches_broad_phase = od.validation.is_edge_manifold(
         mesh_wp.indices, allow_boundary_edges=False
-    ) and tw.validation.is_vertex_manifold(mesh_wp.indices)
-    assert mesh.is_watertight == tw.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
+    ) and od.validation.is_vertex_manifold(mesh_wp.indices)
+    assert mesh.is_watertight == od.validation.is_watertight(mesh_wp.points, mesh_wp.indices)
     assert ("warp_mesh" in mesh._cache) == reaches_broad_phase
     if reaches_broad_phase:
         assert mesh.warp_mesh is mesh._cache["warp_mesh"]
@@ -757,7 +757,7 @@ def test_is_edge_and_vertex_manifold_closed_meshes(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.is_edge_manifold is True
     assert mesh.is_vertex_manifold is True
     assert mesh.is_self_intersecting is False
@@ -770,14 +770,14 @@ def test_is_edge_and_vertex_manifold_closed_meshes(
 
 def test_cached_property_identity(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert mesh.face_normals is mesh.face_normals
     assert mesh.edges_unique is mesh.edges_unique
 
 
 def test_face_normals_and_areas_share_by_product(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     normals = mesh.face_normals
     assert "face_areas" in mesh._cache
     assert mesh.face_areas is mesh._cache["face_areas"]
@@ -786,7 +786,7 @@ def test_face_normals_and_areas_share_by_product(icosahedron: tuple[tm.Trimesh, 
 
 def test_edges_unique_shares_inverse_by_product(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     unique = mesh.edges_unique
     assert "edges_unique_inverse" in mesh._cache
     assert mesh.edges_unique_inverse is mesh._cache["edges_unique_inverse"]
@@ -795,7 +795,7 @@ def test_edges_unique_shares_inverse_by_product(icosahedron: tuple[tm.Trimesh, w
 
 def test_face_adjacency_shares_edges_by_product(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     adjacency = mesh.face_adjacency
     assert "face_adjacency_edges" in mesh._cache
     assert mesh.face_adjacency_edges is mesh._cache["face_adjacency_edges"]
@@ -804,14 +804,14 @@ def test_face_adjacency_shares_edges_by_product(icosahedron: tuple[tm.Trimesh, w
 
 def test_cached_properties_are_frozen(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     with pytest.raises(AttributeError):
         mesh.face_normals = mesh.face_normals
 
 
 def test_invalidate_clears_cache_and_recomputes(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     normals_before = mesh.face_normals
     mesh.invalidate()
     assert mesh._cache == {}
@@ -824,7 +824,7 @@ def test_with_vertices_keeps_topology_drops_geometry(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     edges_before = mesh.edges
     _ = mesh.face_normals
     _ = mesh.warp_mesh
@@ -845,7 +845,7 @@ def test_with_vertices_carries_every_topology_key(
 ) -> None:
     """Each faces-only cached property survives ``with_vertices`` (the ``_TOPOLOGY_KEYS`` rule)."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     before = getattr(mesh, key)
     assert key in mesh._cache
 
@@ -861,7 +861,7 @@ def test_face_adjacency_angles_is_not_a_topology_key(
 ) -> None:
     """``face_adjacency_angles`` reads ``face_normals``, so ``with_vertices`` must drop it."""
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.face_adjacency_angles
 
     translated_np = mesh.vertices.numpy() + np.array([0.0, 0.0, 1.0], dtype=np.float32)
@@ -872,7 +872,7 @@ def test_face_adjacency_angles_is_not_a_topology_key(
 
 def test_with_vertices_wrong_count_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     too_few = points_to_warp(mesh.vertices.numpy()[:-1], mesh.device)
     with pytest.raises(ValueError, match="vertex count"):
         mesh.with_vertices(too_few)
@@ -880,7 +880,7 @@ def test_with_vertices_wrong_count_raises(icosahedron: tuple[tm.Trimesh, wp.Mesh
 
 def test_with_faces_starts_with_empty_cache(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     _ = mesh.edges
 
     new_mesh = mesh.with_faces(wp.clone(mesh.faces))
@@ -890,13 +890,13 @@ def test_with_faces_starts_with_empty_cache(icosahedron: tuple[tm.Trimesh, wp.Me
 
 def test_warp_mesh_supports_ray_queries(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
 
     origins = wp.array([wp.vec3(0.0, 0.0, 2.0)], dtype=wp.vec3, device=mesh.device)
     directions = wp.array([wp.vec3(0.0, 0.0, -1.0)], dtype=wp.vec3, device=mesh.device)
 
-    hits_ref = tw.ray.intersects_any(mesh_wp, origins, directions)
-    hits = tw.ray.intersects_any(mesh.warp_mesh, origins, directions)
+    hits_ref = od.ray.intersects_any(mesh_wp, origins, directions)
+    hits = od.ray.intersects_any(mesh.warp_mesh, origins, directions)
     assert np.array_equal(hits.numpy(), hits_ref.numpy())
 
 
@@ -911,7 +911,7 @@ def test_invert_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) 
     sides, which is what separates this from a mirroring transform.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     inverted = mesh.invert()
 
     flipped_tm = mesh_tm.copy()
@@ -927,10 +927,10 @@ def test_invert_carried_cache_matches_recomputation(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: every entry ``invert`` carries equals recomputing it from scratch.
+    Ordito against ordito: every entry ``invert`` carries equals recomputing it from scratch.
 
     The same gate as ``test_carried_cache_matches_recomputation``, for the winding flip. The
-    oracle is the uncached ``tw.Trimesh(vertices, reversed_faces)``.
+    oracle is the uncached ``od.Trimesh(vertices, reversed_faces)``.
 
     Non-vacuity: the carried set is asserted non-empty and to include the assembled ``cotmatrix``,
     which is the one worth carrying; and the run spans a closed and an open mesh, because
@@ -938,12 +938,12 @@ def test_invert_carried_cache_matches_recomputation(
     closed mesh and fail on an open one.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = populate_cache(tw.Trimesh.from_warp_mesh(mesh_wp))
+    mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     inverted = mesh.invert()
 
     assert inverted._cache
     assert "cotmatrix" in inverted._cache
-    reference = tw.Trimesh(inverted.vertices, inverted.faces)
+    reference = od.Trimesh(inverted.vertices, inverted.faces)
     for key, carried in inverted._cache.items():
         if key in SET_VALUED_CACHE_KEYS:
             assert csr_row_sets(
@@ -966,7 +966,7 @@ def test_invert_drops_the_orientation_dependent_caches(
 ) -> None:
     """Not a parity assert: a flip costs the same caches a mirroring transform does."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = populate_cache(tw.Trimesh.from_warp_mesh(mesh_wp))
+    mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     assert _ORIENTATION_DEPENDENT_KEYS & set(mesh._cache), "fixture did not populate them"
     assert not (_ORIENTATION_DEPENDENT_KEYS & set(mesh.invert()._cache))
 
@@ -979,7 +979,7 @@ def test_invert_negates_normals_and_volume(icosphere: tuple[tm.Trimesh, wp.Mesh]
     shortcut `invert` takes; ``volume`` is dropped and recomputed, and must come back negated.
     """
     mesh_tm, mesh_wp = icosphere
-    mesh = populate_cache(tw.Trimesh.from_warp_mesh(mesh_wp))
+    mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
     inverted = mesh.invert()
 
     assert np.allclose(
@@ -1005,7 +1005,7 @@ def test_invert_is_an_involution(request: pytest.FixtureRequest, mesh_name: str)
     normals and volume and never return to the original face buffer.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert np.array_equal(mesh.invert().invert().faces.numpy(), mesh.faces.numpy())
 
 
@@ -1047,7 +1047,7 @@ def test_with_vertices_drops_every_position_dependent_cache(
 ) -> None:
     """Each position-dependent cached property is dropped by ``with_vertices``, not carried."""
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert getattr(mesh, key) is not None
     assert key in mesh._cache
 
@@ -1080,7 +1080,7 @@ def test_cached_property_reuses_its_dependencies(
     does.
     """
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     assert getattr(mesh, name) is not None
     for dependency in dependencies:
         assert dependency in mesh._cache, f"{name} rebuilt {dependency} instead of caching it"
@@ -1097,7 +1097,7 @@ def test_vector_heat_operators_shares_its_two_sub_bundles(
     and two bundles at two diffusion times would split that into two numbers.
     """
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     vector_system, scalar, frames, _preconditioner = mesh.vector_heat_operators
 
     assert scalar is mesh.heat_operators
@@ -1128,7 +1128,7 @@ _PRECOMPUTED_ARGUMENT_IDS = (
 
 
 def _precomputed_argument_cases(
-    mesh: tw.Trimesh,
+    mesh: od.Trimesh,
 ) -> dict[str, tuple[Callable[[], object], Callable[[], object]]]:
     """
     ``id -> (rebuild-it-yourself call, fed-from-the-cache call)`` per precomputed argument.
@@ -1141,10 +1141,10 @@ def _precomputed_argument_cases(
     """
     vertices_wp, faces_wp = mesh.vertices, mesh.faces
     device = mesh.device
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
     corner_uv_np = mesh.vertices.numpy()[faces_wp.numpy()][:, :2]
     texcoords_wp = points_to_warp_uv(corner_uv_np, str(device))
-    centroids_np = tw.triangles.face_centroids(vertices_wp, faces_wp).numpy()
+    centroids_np = od.triangles.face_centroids(vertices_wp, faces_wp).numpy()
     region_wp = wp.array(centroids_np[:, 2] > 0.0, dtype=wp.bool, device=device)
     queries_wp = points_to_warp(
         np.array([[0.4, 0.4, 0.4], [1.5, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32), str(device)
@@ -1152,42 +1152,42 @@ def _precomputed_argument_cases(
 
     return {
         "seams.cut_along_edges(twins=)": (
-            lambda: tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp),
-            lambda: tw.seams.cut_along_edges(
+            lambda: od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp),
+            lambda: od.seams.cut_along_edges(
                 vertices_wp, faces_wp, creases_wp, twins=mesh.halfedge_twins
             ),
         ),
         "seams.uv_seam_edges(twins=)": (
-            lambda: tw.seams.uv_seam_edges(faces_wp, texcoords_wp),
-            lambda: tw.seams.uv_seam_edges(faces_wp, texcoords_wp, twins=mesh.halfedge_twins),
+            lambda: od.seams.uv_seam_edges(faces_wp, texcoords_wp),
+            lambda: od.seams.uv_seam_edges(faces_wp, texcoords_wp, twins=mesh.halfedge_twins),
         ),
         "repair.flatten_degree3_vertices(rings=)": (
-            lambda: tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp),
-            lambda: tw.repair.flatten_degree3_vertices(
+            lambda: od.repair.flatten_degree3_vertices(vertices_wp, faces_wp),
+            lambda: od.repair.flatten_degree3_vertices(
                 vertices_wp, faces_wp, rings=mesh.vertex_one_rings
             ),
         ),
         "energies.hessian_energy(vertex_faces=)": (
-            lambda: tw.energies.hessian_energy(vertices_wp, faces_wp),
-            lambda: tw.energies.hessian_energy(
+            lambda: od.energies.hessian_energy(vertices_wp, faces_wp),
+            lambda: od.energies.hessian_energy(
                 vertices_wp, faces_wp, vertex_faces=mesh.vertex_face_adjacency
             ),
         ),
         "smoothing.equalize_triangle_areas(vertex_faces=)": (
-            lambda: tw.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, iterations=2),
-            lambda: tw.smoothing.equalize_triangle_areas(
+            lambda: od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, iterations=2),
+            lambda: od.smoothing.equalize_triangle_areas(
                 vertices_wp, faces_wp, iterations=2, vertex_faces=mesh.vertex_face_adjacency
             ),
         ),
         "smoothing.smooth_region_boundary(vertex_faces=)": (
-            lambda: tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp),
-            lambda: tw.smoothing.smooth_region_boundary(
+            lambda: od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp),
+            lambda: od.smoothing.smooth_region_boundary(
                 vertices_wp, faces_wp, region_wp, vertex_faces=mesh.vertex_face_adjacency
             ),
         ),
         "smoothing.filter_normals(face_normals=)": (
-            lambda: tw.smoothing.filter_normals(vertices_wp, faces_wp, iterations=3),
-            lambda: tw.smoothing.filter_normals(
+            lambda: od.smoothing.filter_normals(vertices_wp, faces_wp, iterations=3),
+            lambda: od.smoothing.filter_normals(
                 vertices_wp,
                 faces_wp,
                 iterations=3,
@@ -1196,8 +1196,8 @@ def _precomputed_argument_cases(
             ),
         ),
         "smoothing.filter_mut_dif_laplacian(face_normals=)": (
-            lambda: tw.smoothing.filter_mut_dif_laplacian(vertices_wp, faces_wp, iterations=2),
-            lambda: tw.smoothing.filter_mut_dif_laplacian(
+            lambda: od.smoothing.filter_mut_dif_laplacian(vertices_wp, faces_wp, iterations=2),
+            lambda: od.smoothing.filter_mut_dif_laplacian(
                 vertices_wp,
                 faces_wp,
                 iterations=2,
@@ -1206,20 +1206,20 @@ def _precomputed_argument_cases(
             ),
         ),
         "laplacian.mass_matrix_entries(face_areas=)": (
-            lambda: tw.laplacian.mass_matrix_entries(vertices_wp, faces_wp),
-            lambda: tw.laplacian.mass_matrix_entries(
+            lambda: od.laplacian.mass_matrix_entries(vertices_wp, faces_wp),
+            lambda: od.laplacian.mass_matrix_entries(
                 vertices_wp, faces_wp, face_areas=mesh.face_areas
             ),
         ),
         "laplacian.mass_matrix(face_areas=)": (
-            lambda: tw.laplacian.mass_matrix(vertices_wp, faces_wp),
-            lambda: tw.laplacian.mass_matrix(vertices_wp, faces_wp, face_areas=mesh.face_areas),
+            lambda: od.laplacian.mass_matrix(vertices_wp, faces_wp),
+            lambda: od.laplacian.mass_matrix(vertices_wp, faces_wp, face_areas=mesh.face_areas),
         ),
         "triangles.corner_normals(face_normals=)": (
-            lambda: tw.triangles.corner_normals(
+            lambda: od.triangles.corner_normals(
                 vertices_wp, faces_wp, creases_wp, weighting="area"
             ),
-            lambda: tw.triangles.corner_normals(
+            lambda: od.triangles.corner_normals(
                 vertices_wp,
                 faces_wp,
                 creases_wp,
@@ -1234,8 +1234,8 @@ def _precomputed_argument_cases(
         # tangent direction is principal and two identical calls disagree by up to 1.618 (measured)
         # while the magnitudes agree to 3.6e-07.
         "curvature.principal_curvature(face_normals=)": (
-            lambda: tw.curvature.principal_curvature(vertices_wp, faces_wp, radius=2)[2:],
-            lambda: tw.curvature.principal_curvature(
+            lambda: od.curvature.principal_curvature(vertices_wp, faces_wp, radius=2)[2:],
+            lambda: od.curvature.principal_curvature(
                 vertices_wp,
                 faces_wp,
                 radius=2,
@@ -1244,10 +1244,10 @@ def _precomputed_argument_cases(
             )[2:],
         ),
         "validation.face_defective_mask(face_normals=)": (
-            lambda: tw.validation.face_defective_mask(
+            lambda: od.validation.face_defective_mask(
                 vertices_wp, faces_wp, max_normal_angle=60.0, max_fold_angle=160.0
             ),
-            lambda: tw.validation.face_defective_mask(
+            lambda: od.validation.face_defective_mask(
                 vertices_wp,
                 faces_wp,
                 max_normal_angle=60.0,
@@ -1256,20 +1256,20 @@ def _precomputed_argument_cases(
             ),
         ),
         "proximity.normals_at_closest_faces(face_normals=)": (
-            lambda: tw.proximity.normals_at_closest_faces(mesh.warp_mesh, queries_wp),
-            lambda: tw.proximity.normals_at_closest_faces(
+            lambda: od.proximity.normals_at_closest_faces(mesh.warp_mesh, queries_wp),
+            lambda: od.proximity.normals_at_closest_faces(
                 mesh.warp_mesh, queries_wp, face_normals=mesh.face_normals
             ),
         ),
         "heat.distance.heat_operators(cot_entries=)": (
-            lambda: tw.heat.heat_operators(vertices_wp, faces_wp),
-            lambda: tw.heat.heat_operators(
+            lambda: od.heat.heat_operators(vertices_wp, faces_wp),
+            lambda: od.heat.heat_operators(
                 vertices_wp, faces_wp, cot_entries=mesh.cotmatrix_entries
             ),
         ),
         "heat.vector.vector_heat_operators(scalar_operators=)": (
-            lambda: tw.heat.vector_heat_operators(vertices_wp, faces_wp),
-            lambda: tw.heat.vector_heat_operators(
+            lambda: od.heat.vector_heat_operators(vertices_wp, faces_wp),
+            lambda: od.heat.vector_heat_operators(
                 vertices_wp,
                 faces_wp,
                 scalar_operators=mesh.heat_operators,
@@ -1286,7 +1286,7 @@ def test_a_precomputed_argument_does_not_change_the_answer(
     """
     Every keyword added for the cache returns what the wrapper would have computed itself.
 
-    Not a parity assert: triwarp against triwarp, and the *recomputing* call is the one every
+    Not a parity assert: ordito against ordito, and the *recomputing* call is the one every
     reference comparison in the suite already runs, so it carries the oracle. What this closes is
     the failure mode a precomputed argument introduces and nothing else can see -- the wrapper
     trusting a buffer that is the right shape and the wrong quantity.
@@ -1296,7 +1296,7 @@ def test_a_precomputed_argument_does_not_change_the_answer(
     equality is not a property of the *unchanged* code either.
     """
     _mesh_tm, mesh_wp = icosphere_coarse
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     cases = _precomputed_argument_cases(mesh)
     # The ids are a module-level tuple so a case added to the table without one (or the reverse)
     # fails here rather than silently going untested.

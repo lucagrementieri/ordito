@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.bounds`` against trimesh, open3d and libigl."""
+"""Regression tests for ``ordito.bounds`` against trimesh, open3d and libigl."""
 
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import lexsort_rows
 from tests.conftest import MESHES
 from tests.conversions import (
@@ -32,7 +32,7 @@ _OBJECTIVES: list[_Objective] = ["volume", "surface_area", "diagonal"]
 
 
 def _bounds_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
-    """Stack triwarp's two corner ``wp.vec3`` into the ``(2, 3)`` layout every reference uses."""
+    """Stack ordito's two corner ``wp.vec3`` into the ``(2, 3)`` layout every reference uses."""
     return np.stack(
         [
             np.array([lower_wp.x, lower_wp.y, lower_wp.z]),
@@ -65,11 +65,11 @@ def test_aabb_matches_trimesh_open3d_and_igl(
     MeshLib's ``computeBoundingBox`` is Class A and returns a ``Box3f`` -- ``.min`` / ``.max``, the
     two corners directly. Its ``region`` argument is passed ``None`` for the whole mesh; note that
     it takes the *topology* as well as the points, so on a mesh with unreferenced vertices it would
-    box only the referenced ones, where triwarp's takes the point buffer alone. Every fixture here
+    box only the referenced ones, where ordito's takes the point buffer alone. Every fixture here
     references every vertex, so the two coincide.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    lower_wp, upper_wp = tw.bounds.aabb(mesh_wp.points)
+    lower_wp, upper_wp = od.bounds.aabb(mesh_wp.points)
     bounds_wp = _bounds_np(lower_wp, upper_wp)
 
     bounds_np = np.vstack((mesh_tm.vertices.min(axis=0), mesh_tm.vertices.max(axis=0)))
@@ -113,12 +113,12 @@ def test_aabb_and_diagonal_match_pyvista(request: pytest.FixtureRequest, mesh_na
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_pv = trimesh_to_pyvista(mesh_tm)
 
-    lower_wp, upper_wp = tw.bounds.aabb(mesh_wp.points)
+    lower_wp, upper_wp = od.bounds.aabb(mesh_wp.points)
     bounds_pv = np.asarray(mesh_pv.bounds).reshape(3, 2).T
     assert np.allclose(_bounds_np(lower_wp, upper_wp), bounds_pv, rtol=1e-5, atol=1e-5)
 
     assert np.isclose(
-        tw.bounds.enclosing_diagonal(mesh_wp.points), float(mesh_pv.length), rtol=1e-5, atol=1e-5
+        od.bounds.enclosing_diagonal(mesh_wp.points), float(mesh_pv.length), rtol=1e-5, atol=1e-5
     )
     # The bbox midpoint, which is what pyvista's ``center`` is -- not the surface centroid.
     assert np.allclose(np.asarray(mesh_pv.center), bounds_pv.mean(axis=0), rtol=1e-5, atol=1e-5)
@@ -133,7 +133,7 @@ def test_enclosing_diagonal_single_cloud_matches_igl(
     Class A: the bbox diagonal length, against ``igl.bounding_box_diagonal``.
 
     Both sides compute the box internally from one point set: ``enclosing_diagonal`` with no
-    ``other`` is the single-cloud form, and the only path by which triwarp produces this number.
+    ``other`` is the single-cloud form, and the only path by which ordito produces this number.
 
     The fixtures span a cube-like solid and two thin open surfaces, so no single axis dominates the
     answer on all of them: an implementation returning the longest *extent* rather than the diagonal
@@ -144,7 +144,7 @@ def test_enclosing_diagonal_single_cloud_matches_igl(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     )
 
-    diagonal_wp = tw.bounds.enclosing_diagonal(mesh_wp.points)
+    diagonal_wp = od.bounds.enclosing_diagonal(mesh_wp.points)
 
     assert np.isclose(diagonal_wp, diagonal_igl, rtol=1e-5, atol=1e-5)
     # Not merely the longest extent: on these fixtures the two differ by more than the tolerance.
@@ -157,10 +157,10 @@ def test_aabb_single_point(device: str) -> None:
     points_wp = wp.array(
         np.array([[1.5, -2.5, 3.5]], dtype=np.float32), dtype=wp.vec3, device=device
     )
-    lower_wp, upper_wp = tw.bounds.aabb(points_wp)
+    lower_wp, upper_wp = od.bounds.aabb(points_wp)
 
     assert np.allclose(_bounds_np(lower_wp, upper_wp), [[1.5, -2.5, 3.5]] * 2, rtol=1e-6)
-    assert tw.bounds.enclosing_diagonal(points_wp) == 0.0
+    assert od.bounds.enclosing_diagonal(points_wp) == 0.0
 
 
 def test_aabb_union_encloses_both_boxes() -> None:
@@ -168,15 +168,15 @@ def test_aabb_union_encloses_both_boxes() -> None:
     a_min, a_max = wp.vec3(-1.0, 0.0, 2.0), wp.vec3(1.0, 3.0, 4.0)
     b_min, b_max = wp.vec3(0.0, -5.0, 3.0), wp.vec3(2.0, 1.0, 3.5)
 
-    union_min, union_max = tw.bounds.aabb_union(a_min, a_max, b_min, b_max)
+    union_min, union_max = od.bounds.aabb_union(a_min, a_max, b_min, b_max)
 
-    assert np.allclose(twt.vec3_floats(union_min), [-1.0, -5.0, 2.0])
-    assert np.allclose(twt.vec3_floats(union_max), [2.0, 3.0, 4.0])
+    assert np.allclose(odt.vec3_floats(union_min), [-1.0, -5.0, 2.0])
+    assert np.allclose(odt.vec3_floats(union_max), [2.0, 3.0, 4.0])
     # Idempotent, and each input box is contained in the result.
     for box_min, box_max in ((a_min, a_max), (b_min, b_max)):
-        again_min, again_max = tw.bounds.aabb_union(union_min, union_max, box_min, box_max)
-        assert np.allclose(twt.vec3_floats(again_min), [-1.0, -5.0, 2.0])
-        assert np.allclose(twt.vec3_floats(again_max), [2.0, 3.0, 4.0])
+        again_min, again_max = od.bounds.aabb_union(union_min, union_max, box_min, box_max)
+        assert np.allclose(odt.vec3_floats(again_min), [-1.0, -5.0, 2.0])
+        assert np.allclose(odt.vec3_floats(again_max), [2.0, 3.0, 4.0])
 
 
 def test_aabb_union_matches_a_pooled_reduction(device: str) -> None:
@@ -190,10 +190,10 @@ def test_aabb_union_matches_a_pooled_reduction(device: str) -> None:
     cloud_a = rng.normal(size=(200, 3)).astype(np.float32) + 4.0
     cloud_b = rng.normal(size=(300, 3)).astype(np.float32) - 2.0
 
-    boxes = [tw.bounds.aabb(points_to_warp(cloud, device)) for cloud in (cloud_a, cloud_b)]
-    union_min, union_max = tw.bounds.aabb_union(*boxes[0], *boxes[1])
+    boxes = [od.bounds.aabb(points_to_warp(cloud, device)) for cloud in (cloud_a, cloud_b)]
+    union_min, union_max = od.bounds.aabb_union(*boxes[0], *boxes[1])
 
-    pooled_min, pooled_max = tw.bounds.aabb(points_to_warp(np.vstack([cloud_a, cloud_b]), device))
+    pooled_min, pooled_max = od.bounds.aabb(points_to_warp(np.vstack([cloud_a, cloud_b]), device))
     assert np.allclose(_bounds_np(union_min, union_max), _bounds_np(pooled_min, pooled_max))
 
 
@@ -219,13 +219,13 @@ def test_enclosing_diagonal_matches_igl_on_the_pooled_cloud(
     queries_np = rng.random((64, 3)) * extent_np + vertices_np.max(axis=0)
 
     queries_wp = points_to_warp(queries_np, mesh_wp.device)
-    diagonal_wp = tw.bounds.enclosing_diagonal(mesh_wp.points, queries_wp)
+    diagonal_wp = od.bounds.enclosing_diagonal(mesh_wp.points, queries_wp)
     diagonal_igl = igl.bounding_box_diagonal(np.vstack([vertices_np, queries_np]))
 
     assert diagonal_igl > 0.0
     # Strictly larger than either side alone, or the union is not being taken.
-    assert diagonal_wp > tw.bounds.enclosing_diagonal(mesh_wp.points) + 1e-4
-    assert diagonal_wp > tw.bounds.enclosing_diagonal(queries_wp) + 1e-4
+    assert diagonal_wp > od.bounds.enclosing_diagonal(mesh_wp.points) + 1e-4
+    assert diagonal_wp > od.bounds.enclosing_diagonal(queries_wp) + 1e-4
     assert np.allclose(diagonal_wp, diagonal_igl, rtol=1e-5, atol=1e-5)
 
 
@@ -235,9 +235,9 @@ def test_enclosing_diagonal_ignores_an_empty_second_set(device: str) -> None:
     cloud_wp = points_to_warp(rng.normal(size=(128, 3)), device)
     empty_wp = warp_empty(0, wp.vec3, device)
 
-    alone = tw.bounds.enclosing_diagonal(cloud_wp)
-    assert alone == tw.bounds.enclosing_diagonal(cloud_wp, None)
-    assert alone == tw.bounds.enclosing_diagonal(cloud_wp, empty_wp)
+    alone = od.bounds.enclosing_diagonal(cloud_wp)
+    assert alone == od.bounds.enclosing_diagonal(cloud_wp, None)
+    assert alone == od.bounds.enclosing_diagonal(cloud_wp, empty_wp)
 
 
 def _corner_box_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
@@ -254,7 +254,7 @@ def _corner_box_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
     vertices of 12 / 16 / 97 / 544 across the four fixtures, checked here by an assert rather than
     by this sentence.
 
-    The 1% outward pad is the float32 half of it: triwarp tests the ``float32`` vertex buffer where
+    The 1% outward pad is the float32 half of it: ordito tests the ``float32`` vertex buffer where
     the reference tests trimesh's ``float64`` one, so a plane placed exactly at a coordinate would
     let the two disagree at the boundary on rounding alone. Pushed off the data, the inclusive rule
     is pinned by ``test_points_in_aabb_boundary_and_non_finite_match_open3d`` instead, where both
@@ -266,22 +266,22 @@ def _corner_box_np(lower_wp: wp.vec3, upper_wp: wp.vec3) -> np.ndarray:
 
 
 def _corners_wp(box_np: np.ndarray) -> tuple[wp.vec3, wp.vec3]:
-    """Return a ``(2, 3)`` box as its two ``wp.vec3`` corners, for the triwarp side."""
+    """Return a ``(2, 3)`` box as its two ``wp.vec3`` corners, for the ordito side."""
     return wp.vec3(*box_np[0].tolist()), wp.vec3(*box_np[1].tolist())
 
 
 def _aabb_o3d(box_np: np.ndarray) -> o3d.geometry.AxisAlignedBoundingBox:
-    """Open3D's axis-aligned box over the *same* two corners triwarp is given."""
+    """Open3D's axis-aligned box over the *same* two corners ordito is given."""
     return o3d.geometry.AxisAlignedBoundingBox(box_np[0], box_np[1])
 
 
 def _obb_o3d(box_np: np.ndarray, frame_np: np.ndarray) -> o3d.geometry.OrientedBoundingBox:
     """
-    Open3D's oriented box built **from** triwarp's ``(rotation, min_bound, max_bound)`` triple.
+    Open3D's oriented box built **from** ordito's ``(rotation, min_bound, max_bound)`` triple.
 
-    Constructing the reference's input from triwarp's output is what leaves the *predicate* as the
+    Constructing the reference's input from ordito's output is what leaves the *predicate* as the
     only thing under test: Open3D takes a world-space centre, a box-to-world rotation and an
-    extent, where triwarp takes a world-to-box frame and the extent in box coordinates, so the
+    extent, where ordito takes a world-to-box frame and the extent in box coordinates, so the
     conversion is a transpose plus one corner rebuild. Had the box been searched independently on
     both sides, a disagreement could not be attributed to either half.
     """
@@ -304,7 +304,7 @@ def _original_face_rows(
     lexsort hazard is about float coordinates, and none survive to here.
 
     The match is nearest-neighbour with a bijection check rather than an equality, because a crop
-    moves no vertex but triwarp *stores* them in ``float32`` where the reference table is trimesh's
+    moves no vertex but ordito *stores* them in ``float32`` where the reference table is trimesh's
     ``float64``: measured 4.3e-07 at worst on these fixtures, against a vertex spacing of order
     0.05 on the finest of them, so the 1e-5 bound sits ~20x above the rounding and ~5 000x below
     the nearest wrong answer. The bijection is what makes the bound safe: two output vertices
@@ -326,12 +326,12 @@ def test_points_in_aabb_matches_open3d(request: pytest.FixtureRequest, mesh_name
 
     Both sides are handed the identical two corners, so the only thing that can differ is the
     comparison. The mask assert is the second half of the same claim -- the index form is defined
-    as [`flatnonzero`][triwarp.array.flatnonzero] of the mask, and this pins that the two agree
+    as [`flatnonzero`][ordito.array.flatnonzero] of the mask, and this pins that the two agree
     rather than trusting the composition.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp = mesh_wp.points
-    box_np = _corner_box_np(*tw.bounds.aabb(vertices_wp))
+    box_np = _corner_box_np(*od.bounds.aabb(vertices_wp))
 
     indices_o3d = np.sort(
         np.asarray(
@@ -344,10 +344,10 @@ def test_points_in_aabb_matches_open3d(request: pytest.FixtureRequest, mesh_name
     assert 0 < indices_o3d.size < mesh_tm.vertices.shape[0]
 
     lower_wp, upper_wp = _corners_wp(box_np)
-    indices_wp = tw.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
+    indices_wp = od.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
     assert np.array_equal(indices_wp.numpy(), indices_o3d)
 
-    mask_wp = tw.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
+    mask_wp = od.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
     assert np.array_equal(np.flatnonzero(mask_wp.numpy()), indices_o3d)
 
 
@@ -388,7 +388,7 @@ def test_points_in_aabb_boundary_and_non_finite_match_open3d(device: str) -> Non
     )
     assert np.array_equal(indices_o3d, np.arange(5)), "the reference's own convention moved"
 
-    indices_wp = tw.bounds.points_in_aabb(points_to_warp(points_np, device), *_corners_wp(box_np))
+    indices_wp = od.bounds.points_in_aabb(points_to_warp(points_np, device), *_corners_wp(box_np))
     assert np.array_equal(indices_wp.numpy(), indices_o3d)
 
 
@@ -397,8 +397,8 @@ def test_points_in_obb_matches_open3d(request: pytest.FixtureRequest, mesh_name:
     """
     Class A: the same index-list equality through an oriented box, on a tilted cloud.
 
-    The box comes from [`oriented_bounding_box`][triwarp.bounds.oriented_bounding_box] and is
-    handed to Open3D through ``_obb_o3d``, so triwarp's ``(rotation, min_bound, max_bound)``
+    The box comes from [`oriented_bounding_box`][ordito.bounds.oriented_bounding_box] and is
+    handed to Open3D through ``_obb_o3d``, so ordito's ``(rotation, min_bound, max_bound)``
     convention is under test alongside the predicate: a transposed frame or a corner read in world
     coordinates instead of box coordinates selects a different set, not a differently-numbered one.
     The cloud is tilted so that the frame is far from the identity and the assert cannot pass
@@ -407,7 +407,7 @@ def test_points_in_obb_matches_open3d(request: pytest.FixtureRequest, mesh_name:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(points_wp, 256)
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(points_wp, 256)
     frame_np = _frame_np(rotation_wp)
     box_np = _corner_box_np(lower_wp, upper_wp)
     assert not np.allclose(frame_np, np.eye(3), atol=1e-3), "the frame is the identity"
@@ -421,16 +421,16 @@ def test_points_in_obb_matches_open3d(request: pytest.FixtureRequest, mesh_name:
     )
     assert 0 < indices_o3d.size < points_np.shape[0]
 
-    indices_wp = tw.bounds.points_in_obb(points_wp, rotation_wp, *_corners_wp(box_np))
+    indices_wp = od.bounds.points_in_obb(points_wp, rotation_wp, *_corners_wp(box_np))
     assert np.array_equal(indices_wp.numpy(), indices_o3d)
 
-    mask_wp = tw.bounds.points_in_obb_mask(points_wp, rotation_wp, *_corners_wp(box_np))
+    mask_wp = od.bounds.points_in_obb_mask(points_wp, rotation_wp, *_corners_wp(box_np))
     assert np.array_equal(np.flatnonzero(mask_wp.numpy()), indices_o3d)
 
 
 def test_points_in_obb_with_the_identity_frame_is_the_aabb_form(device: str) -> None:
     """
-    Triwarp against triwarp: the oriented query at ``rotation = I`` is the axis-aligned one.
+    Ordito against ordito: the oriented query at ``rotation = I`` is the axis-aligned one.
 
     Not a parity assert -- the two entry points share one predicate, and the Open3D comparisons
     above carry the oracle for both. What this pins is that the *rotation* is applied as a
@@ -445,10 +445,10 @@ def test_points_in_obb_with_the_identity_frame_is_the_aabb_form(device: str) -> 
     lower_wp, upper_wp = _corners_wp(np.array([[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]))
     identity_wp = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-    aligned_np = tw.bounds.points_in_aabb(points_wp, lower_wp, upper_wp).numpy()
+    aligned_np = od.bounds.points_in_aabb(points_wp, lower_wp, upper_wp).numpy()
     assert np.array_equal(aligned_np, np.arange(3)), "the axis-aligned answer moved"
     assert np.array_equal(
-        tw.bounds.points_in_obb(points_wp, identity_wp, lower_wp, upper_wp).numpy(), aligned_np
+        od.bounds.points_in_obb(points_wp, identity_wp, lower_wp, upper_wp).numpy(), aligned_np
     )
 
 
@@ -466,14 +466,14 @@ def test_crop_points_matches_open3d(request: pytest.FixtureRequest, mesh_name: s
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp = mesh_wp.points
-    box_np = _corner_box_np(*tw.bounds.aabb(vertices_wp))
+    box_np = _corner_box_np(*od.bounds.aabb(vertices_wp))
     box_o3d = _aabb_o3d(box_np)
 
     cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(mesh_tm.vertices))
     kept_o3d = np.asarray(cloud_o3d.crop(box_o3d).points)
     assert 0 < kept_o3d.shape[0] < mesh_tm.vertices.shape[0]
 
-    kept_wp, indices_wp = tw.bounds.crop_points(vertices_wp, *_corners_wp(box_np))
+    kept_wp, indices_wp = od.bounds.crop_points(vertices_wp, *_corners_wp(box_np))
     assert np.allclose(kept_wp.numpy(), kept_o3d, rtol=1e-5, atol=1e-5)
     assert np.array_equal(
         indices_wp.numpy(),
@@ -490,7 +490,7 @@ def test_crop_points_matches_open3d(request: pytest.FixtureRequest, mesh_name: s
 @pytest.mark.parametrize("oriented", [False, True])
 def test_index_crop_and_mask_forms_agree(device: str, oriented: bool) -> None:
     """
-    Triwarp against triwarp: the index and crop forms select exactly the mask form's points.
+    Ordito against ordito: the index and crop forms select exactly the mask form's points.
 
     Not a parity assert -- the Open3D comparisons above carry the oracle. The index and crop forms
     test containment in a flag kernel of their own rather than compacting the mask, so this pins
@@ -514,15 +514,15 @@ def test_index_crop_and_mask_forms_agree(device: str, oriented: bool) -> None:
         np.cos(angle), -np.sin(angle), 0.0, np.sin(angle), np.cos(angle), 0.0, 0.0, 0.0, 1.0
     )
     if oriented:
-        mask_np = tw.bounds.points_in_obb_mask(points_wp, rotation_wp, lower_wp, upper_wp).numpy()
-        indices_wp = tw.bounds.points_in_obb(points_wp, rotation_wp, lower_wp, upper_wp)
-        kept_wp, crop_indices_wp = tw.bounds.crop_points(
+        mask_np = od.bounds.points_in_obb_mask(points_wp, rotation_wp, lower_wp, upper_wp).numpy()
+        indices_wp = od.bounds.points_in_obb(points_wp, rotation_wp, lower_wp, upper_wp)
+        kept_wp, crop_indices_wp = od.bounds.crop_points(
             points_wp, lower_wp, upper_wp, rotation=rotation_wp
         )
     else:
-        mask_np = tw.bounds.points_in_aabb_mask(points_wp, lower_wp, upper_wp).numpy()
-        indices_wp = tw.bounds.points_in_aabb(points_wp, lower_wp, upper_wp)
-        kept_wp, crop_indices_wp = tw.bounds.crop_points(points_wp, lower_wp, upper_wp)
+        mask_np = od.bounds.points_in_aabb_mask(points_wp, lower_wp, upper_wp).numpy()
+        indices_wp = od.bounds.points_in_aabb(points_wp, lower_wp, upper_wp)
+        kept_wp, crop_indices_wp = od.bounds.crop_points(points_wp, lower_wp, upper_wp)
     expected_np = np.flatnonzero(mask_np)
     assert 0 < expected_np.size < points_np.shape[0]
     assert not mask_np[:3].any(), "a non-finite row was selected"
@@ -545,13 +545,13 @@ def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    box_np = _corner_box_np(*tw.bounds.aabb(vertices_wp))
+    box_np = _corner_box_np(*od.bounds.aabb(vertices_wp))
 
     mesh_o3d = trimesh_to_open3d(mesh_tm).crop(_aabb_o3d(box_np))
     faces_o3d = np.asarray(mesh_o3d.triangles)
     assert 0 < faces_o3d.shape[0] < mesh_tm.faces.shape[0]
 
-    sub_vertices_wp, sub_faces_wp = tw.bounds.crop_mesh(vertices_wp, faces_wp, *_corners_wp(box_np))
+    sub_vertices_wp, sub_faces_wp = od.bounds.crop_mesh(vertices_wp, faces_wp, *_corners_wp(box_np))
     assert sub_faces_wp.size // 3 == faces_o3d.shape[0]
     assert sub_vertices_wp.size == np.asarray(mesh_o3d.vertices).shape[0]
     assert np.array_equal(
@@ -567,7 +567,7 @@ def test_crop_mesh_matches_open3d(request: pytest.FixtureRequest, mesh_name: str
         ),
     )
 
-    inside_np = tw.bounds.points_in_aabb_mask(sub_vertices_wp, *_corners_wp(box_np)).numpy()
+    inside_np = od.bounds.points_in_aabb_mask(sub_vertices_wp, *_corners_wp(box_np)).numpy()
     assert inside_np.all(), "a cropped vertex lies outside the box"
 
 
@@ -596,13 +596,13 @@ def test_crop_mesh_drops_the_faces_that_straddle_the_box(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel(), device)
     lower_wp, upper_wp = _corners_wp(np.array([[-0.5, -0.5, -0.5], [1.5, 1.5, 0.5]]))
 
-    sub_vertices_wp, sub_faces_wp = tw.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
+    sub_vertices_wp, sub_faces_wp = od.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
     assert sub_faces_wp.size // 3 == 2
     assert sub_vertices_wp.size == 4
 
     # ``face_mode="any"`` is the documented escape hatch, and it keeps the straddling one.
-    mask_wp = tw.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
-    _, any_faces_wp = tw.selection.submesh_from_vertex_mask(
+    mask_wp = od.bounds.points_in_aabb_mask(vertices_wp, lower_wp, upper_wp)
+    _, any_faces_wp = od.selection.submesh_from_vertex_mask(
         vertices_wp, faces_wp, mask_wp, face_mode="any"
     )
     assert any_faces_wp.size // 3 == 3
@@ -616,14 +616,14 @@ def test_points_in_aabb_empty_cloud_and_empty_box(device: str) -> None:
     lower_wp, upper_wp = wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)
     identity_wp = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
 
-    assert tw.bounds.points_in_aabb(empty_wp, lower_wp, upper_wp).size == 0
-    assert tw.bounds.points_in_aabb_mask(empty_wp, lower_wp, upper_wp).size == 0
-    assert tw.bounds.points_in_obb(empty_wp, identity_wp, lower_wp, upper_wp).size == 0
-    assert tw.bounds.crop_points(empty_wp, lower_wp, upper_wp)[0].size == 0
+    assert od.bounds.points_in_aabb(empty_wp, lower_wp, upper_wp).size == 0
+    assert od.bounds.points_in_aabb_mask(empty_wp, lower_wp, upper_wp).size == 0
+    assert od.bounds.points_in_obb(empty_wp, identity_wp, lower_wp, upper_wp).size == 0
+    assert od.bounds.crop_points(empty_wp, lower_wp, upper_wp)[0].size == 0
 
     # An inverted box is empty rather than universal: no point satisfies both comparisons.
-    assert tw.bounds.points_in_aabb(cloud_wp, upper_wp, lower_wp).size == 0
-    assert tw.bounds.points_in_obb(cloud_wp, identity_wp, upper_wp, lower_wp).size == 0
+    assert od.bounds.points_in_aabb(cloud_wp, upper_wp, lower_wp).size == 0
+    assert od.bounds.points_in_obb(cloud_wp, identity_wp, upper_wp, lower_wp).size == 0
 
 
 def _tilted_cloud(
@@ -646,7 +646,7 @@ def _tilted_cloud(
 
 
 def _frame_np(rotation_wp: wp.mat33) -> np.ndarray:
-    """Return triwarp's world-to-box frame as ``(3, 3)`` NumPy, its rows still the box axes."""
+    """Return ordito's world-to-box frame as ``(3, 3)`` NumPy, its rows still the box axes."""
     return np.array([[rotation_wp[i, j] for j in range(3)] for i in range(3)])
 
 
@@ -678,7 +678,7 @@ def test_oriented_bounding_box_matches_igl(
 
     This is a *search*, and the comparison is only meaningful because both libraries search the
     identical candidate set -- the Super-Fibonacci spiral of [Alexa 2022] with the identity
-    appended, which triwarp adopts precisely so that the two are comparable. So this is not "two
+    appended, which ordito adopts precisely so that the two are comparable. So this is not "two
     heuristics landed near each other": with the same candidates and the same three objectives the
     argmin is the same element, and the assertion is tight rather than statistical (measured
     agreement 1e-7 relative, asserted at 1e-5).
@@ -687,7 +687,7 @@ def test_oriented_bounding_box_matches_igl(
     number each reports, so a library that returned a good loss with the wrong frame would fail.
 
     ``refine_iterations=0``: igl has no refinement, and the identical-candidate-set argument is
-    only about the sampled phase -- refined, triwarp is strictly better than this comparison.
+    only about the sampled phase -- refined, ordito is strictly better than this comparison.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
@@ -697,11 +697,11 @@ def test_oriented_bounding_box_matches_igl(
         "diagonal": igl.ORIENTED_BOUNDING_BOX_MINIMIZE_DIAGONAL_LENGTH,
     }[objective]
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
         points_wp, 512, objective, refine_iterations=0
     )
 
-    # igl applies its matrix on the right of a row vector, so its frame is triwarp's transposed.
+    # igl applies its matrix on the right of a row vector, so its frame is ordito's transposed.
     frame_igl = np.asarray(igl.oriented_bounding_box(points_np, 512, igl_objective)).T
     frame_wp = _frame_np(rotation_wp)
     loss_wp = _achieved_loss(points_np, frame_wp, objective)
@@ -712,7 +712,7 @@ def test_oriented_bounding_box_matches_igl(
     # tie with the axis-aligned box would mean the other 511 never improved on it.
     assert loss_wp < _achieved_loss(points_np, np.eye(3), objective) * 0.99
 
-    # And triwarp's own bounds are the extent in its own frame -- the convention the docstring
+    # And ordito's own bounds are the extent in its own frame -- the convention the docstring
     # states, and the only part of the answer igl does not return.
     projected_np = points_np @ frame_wp.T
     assert np.allclose(
@@ -731,7 +731,7 @@ def test_oriented_bounding_box_frame_matches_igl_transposed(
     Class B: the same frame as igl, element-wise, once transposed for the row-vector convention.
 
     Stronger than the objective comparison above and it pins the one thing that comparison cannot --
-    which of the two transpose conventions triwarp returns. Reading it the wrong way round still
+    which of the two transpose conventions ordito returns. Reading it the wrong way round still
     gives an orthonormal matrix and a plausible box, so nothing else here would catch it.
 
     Element-wise equality of the *frames* is only well posed because the minimizer is unique on a
@@ -740,7 +740,7 @@ def test_oriented_bounding_box_frame_matches_igl_transposed(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    rotation_wp, _, _ = tw.bounds.oriented_bounding_box(points_wp, 512, refine_iterations=0)
+    rotation_wp, _, _ = od.bounds.oriented_bounding_box(points_wp, 512, refine_iterations=0)
 
     frame_np = _frame_np(rotation_wp)
     assert np.allclose(frame_np, np.asarray(igl.oriented_bounding_box(points_np, 512)).T, atol=1e-5)
@@ -758,12 +758,12 @@ def test_oriented_bounding_box_agrees_with_trimesh_hull_search(
     Class C: the sampled box and trimesh's hull-face search find the same box within a band.
 
     A derived scalar -- box volume -- because no correspondence exists between the two frames: the
-    two libraries minimize the same quantity over *different* candidate sets, triwarp over a
+    two libraries minimize the same quantity over *different* candidate sets, ordito over a
     low-discrepancy sampling of ``SO(3)`` and trimesh over the orientations flush with a convex-hull
     face, and different orientations can realise the same volume.
 
     **Neither side bounds the other, and that was measured rather than assumed.** trimesh's answer
-    reads like an exact minimum and is not one: with refinement triwarp returns **3.4% less**
+    reads like an exact minimum and is not one: with refinement ordito returns **3.4% less**
     volume on the tilted half torus and 2.1% less on the icosahedron, so the hull-face restriction
     can miss the optimum. Hence a two-sided band rather than an inequality.
 
@@ -782,7 +782,7 @@ def test_oriented_bounding_box_agrees_with_trimesh_hull_search(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(points_wp, 32768)
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(points_wp, 32768)
 
     volume_wp = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
     _, extents_tm = tm.bounds.oriented_bounds(tm.PointCloud(points_np))
@@ -803,7 +803,7 @@ def test_oriented_bounding_box_beats_the_pyvista_pca_box(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class C, and the one reference in this module that triwarp's search should *dominate*.
+    Class C, and the one reference in this module that ordito's search should *dominate*.
 
     VTK's ``oriented_bounding_box`` is PCA of the **points** (not of the hull, as open3d's
     ``get_oriented_bounding_box`` is), so it minimizes nothing and there is no correspondence
@@ -813,7 +813,7 @@ def test_oriented_bounding_box_beats_the_pyvista_pca_box(
     Unlike those two the relation is one-sided by construction: a search over ``SO(3)`` cannot lose
     to a single fixed orientation by more than its own sampling error. Measured ``volume_wp /
     volume_pv`` refined at 32 768 candidates: **1.00001 (icosahedron), 1.00015 (cave_cube), 0.9428
-    (hemisphere), 0.8353 (half_torus)** -- so triwarp is up to 17% tighter and never more than 0.02%
+    (hemisphere), 0.8353 (half_torus)** -- so ordito is up to 17% tighter and never more than 0.02%
     looser, and the ``1.02`` ceiling clears the worst reading by 130x on that side. The floor is a
     sanity bound rather than a tight one: PCA is not arbitrarily bad on these shapes.
 
@@ -828,12 +828,12 @@ def test_oriented_bounding_box_beats_the_pyvista_pca_box(
     volume_pv = float(box_pv.volume)
     assert volume_pv > 0.0, "the reference produced a box before it is compared to"
 
-    _rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(points_wp, 32768)
+    _rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(points_wp, 32768)
     volume_wp = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
     assert volume_pv * 0.75 <= volume_wp <= volume_pv * 1.02
 
     # The axis-aligned box is what a search that scored nothing would return, and it fails.
-    _rotation_np, lower_np, upper_np = tw.bounds.oriented_bounding_box(
+    _rotation_np, lower_np, upper_np = od.bounds.oriented_bounding_box(
         points_wp, 1, refine_iterations=0
     )
     assert float(np.prod(np.ptp(_bounds_np(lower_np, upper_np), axis=0))) > volume_pv * 1.02
@@ -850,7 +850,7 @@ def test_oriented_bounding_box_agrees_with_open3d_minimal_box(
     The same derived-scalar comparison as the trimesh test above, against a third independent
     minimizer -- ``get_minimal_oriented_bounding_box``, a convex-hull search like trimesh's. Not
     ``get_oriented_bounding_box``: that one is PCA of the hull and minimizes nothing (measured
-    12.9% above triwarp on the tilted half_torus, and *exact* on cave_cube where axis-snapping is
+    12.9% above ordito on the tilted half_torus, and *exact* on cave_cube where axis-snapping is
     what PCA happens to do), so a band around it would be a band around an unrelated quantity.
 
     Neither side bounds the other, measured refined on these four tilted fixtures:
@@ -868,7 +868,7 @@ def test_oriented_bounding_box_agrees_with_open3d_minimal_box(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(points_wp, 32768)
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(points_wp, 32768)
 
     volume_wp = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
     cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points_np))
@@ -890,17 +890,17 @@ def test_oriented_bounding_box_prefilter_returns_the_identical_box(device: str) 
     order-independent, so the two boxes must agree to float32 exactness — not merely in volume.
     """
     rng = np.random.default_rng(23)
-    n = tw.bounds.CONVEX_PREFILTER_MIN_POINTS + 10_000
+    n = od.bounds.CONVEX_PREFILTER_MIN_POINTS + 10_000
     cloud_np = (rng.standard_normal((n, 3)) @ np.diag([3.0, 1.0, 0.5])).astype(np.float32)
     cloud_wp = points_to_warp(cloud_np, device)
 
-    kept_wp = tw.array.gather(
-        cloud_wp, tw.array.flatnonzero(tw.points.convex_superset_mask(cloud_wp))
+    kept_wp = od.array.gather(
+        cloud_wp, od.array.flatnonzero(od.points.convex_superset_mask(cloud_wp))
     )
     assert kept_wp.size < n // 10, "the prefilter must actually discard interior points"
 
-    rotation_dense, lower_dense, upper_dense = tw.bounds.oriented_bounding_box(cloud_wp)
-    rotation_kept, lower_kept, upper_kept = tw.bounds.oriented_bounding_box(kept_wp)
+    rotation_dense, lower_dense, upper_dense = od.bounds.oriented_bounding_box(cloud_wp)
+    rotation_kept, lower_kept, upper_kept = od.bounds.oriented_bounding_box(kept_wp)
 
     assert np.allclose(_frame_np(rotation_dense), _frame_np(rotation_kept), rtol=0, atol=0)
     assert np.array_equal(_bounds_np(lower_dense, upper_dense), _bounds_np(lower_kept, upper_kept))
@@ -918,13 +918,13 @@ def test_oriented_bounding_box_single_rotation_is_the_aabb(
     *improve* on the sampled answer -- refined ``rotations=1`` legitimately beats the AABB.
     """
     _, mesh_wp = icosahedron
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
         mesh_wp.points, 1, refine_iterations=0
     )
 
     assert np.array_equal(_frame_np(rotation_wp), np.eye(3))
     assert np.array_equal(
-        _bounds_np(lower_wp, upper_wp), _bounds_np(*tw.bounds.aabb(mesh_wp.points))
+        _bounds_np(lower_wp, upper_wp), _bounds_np(*od.bounds.aabb(mesh_wp.points))
     )
 
 
@@ -950,7 +950,7 @@ def test_oriented_bounding_box_never_loses_to_the_aabb(
             np.prod(
                 np.ptp(
                     _bounds_np(
-                        *tw.bounds.oriented_bounding_box(points_wp, n, refine_iterations=0)[1:]
+                        *od.bounds.oriented_bounding_box(points_wp, n, refine_iterations=0)[1:]
                     ),
                     axis=0,
                 )
@@ -962,7 +962,7 @@ def test_oriented_bounding_box_never_loses_to_the_aabb(
     assert volumes == sorted(volumes, reverse=True)
     assert volumes[-1] < volumes[0] * 0.95, "the tilted cloud's box is materially tighter"
     assert np.isclose(
-        volumes[0], float(np.prod(np.ptp(_bounds_np(*tw.bounds.aabb(points_wp)), axis=0)))
+        volumes[0], float(np.prod(np.ptp(_bounds_np(*od.bounds.aabb(points_wp)), axis=0)))
     )
 
 
@@ -984,7 +984,7 @@ def test_oriented_bounding_box_refinement_is_monotone(
     points_np, points_wp = _tilted_cloud(mesh_tm, mesh_wp.device)
 
     def volume(rotations: int, refine_iterations: int) -> float:
-        rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(
+        rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
             points_wp, rotations, refine_iterations=refine_iterations
         )
         volume_box = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
@@ -1006,7 +1006,7 @@ def test_oriented_bounding_box_refines_from_fewer_candidates_than_chains(
     """
     Refinement is reachable below ``_REFINE_CHAINS`` candidates, and still never loses to the AABB.
 
-    Triwarp against triwarp -- no reference refines a sampled box, and the oracle here is the
+    Ordito against ordito -- no reference refines a sampled box, and the oracle here is the
     axis-aligned box the candidate set is built to contain. The counts straddle two boundaries the
     rest of the file never reaches: the chain seeding has fewer distinct candidates than chains to
     give them below four, so it pads by repeating a pick, and ``_REFINE_WINDOW`` bounds the walk at
@@ -1022,13 +1022,13 @@ def test_oriented_bounding_box_refines_from_fewer_candidates_than_chains(
     cloud_np = (rng.standard_normal((2_000, 3)) @ np.diag([4.0, 1.0, 0.3])).astype(np.float32)
     cloud_wp = points_to_warp(cloud_np, device)
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
         cloud_wp, rotations, refine_iterations=8
     )
 
     assert np.allclose(_frame_np(rotation_wp) @ _frame_np(rotation_wp).T, np.eye(3), atol=1e-5)
     volume_wp = float(np.prod(np.ptp(_bounds_np(lower_wp, upper_wp), axis=0)))
-    volume_aabb = float(np.prod(np.ptp(_bounds_np(*tw.bounds.aabb(cloud_wp)), axis=0)))
+    volume_aabb = float(np.prod(np.ptp(_bounds_np(*od.bounds.aabb(cloud_wp)), axis=0)))
     assert volume_wp <= volume_aabb * (1.0 + 1e-6)
     # Non-vacuity: this cloud is tilted, so refinement has something to find even from one
     # candidate -- otherwise every count would pass by returning the axis-aligned box.
@@ -1041,7 +1041,7 @@ def test_oriented_bounding_box_refines_from_fewer_candidates_than_chains(
 @pytest.mark.parametrize("seed_device", ["cpu", "cuda:0"])
 def test_oriented_bounding_box_chain_seeding_agrees_across_devices(seed_device: str) -> None:
     """
-    Triwarp against triwarp: the single-block chain seeding must pick the same frames on the CPU.
+    Ordito against ordito: the single-block chain seeding must pick the same frames on the CPU.
 
     ``oriented_box_seed_chains`` is the module's only ``wp.launch_tiled`` kernel, and the ``device``
     fixture returns ``cuda:0`` whenever CUDA is present, so without an explicit parametrize its CPU
@@ -1057,7 +1057,7 @@ def test_oriented_bounding_box_chain_seeding_agrees_across_devices(seed_device: 
     rng = np.random.default_rng(37)
     cloud_np = (rng.standard_normal((1_500, 3)) @ np.diag([3.0, 1.5, 0.4])).astype(np.float32)
 
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(
         points_to_warp(cloud_np, seed_device), 512, refine_iterations=0
     )
 
@@ -1068,7 +1068,7 @@ def test_oriented_bounding_box_chain_seeding_agrees_across_devices(seed_device: 
     # CUDA and not on the CPU, so the candidate set itself differs by 1.19e-07 before any search
     # runs (measured, and the same on both sides of this change).
     reference_wp = points_to_warp(cloud_np, "cpu")
-    rotation_cpu, lower_cpu, upper_cpu = tw.bounds.oriented_bounding_box(
+    rotation_cpu, lower_cpu, upper_cpu = od.bounds.oriented_bounding_box(
         reference_wp, 512, refine_iterations=0
     )
     assert np.allclose(_frame_np(rotation_wp), _frame_np(rotation_cpu), rtol=0, atol=1e-6)
@@ -1085,7 +1085,7 @@ def test_oriented_bounding_box_chain_seeding_agrees_across_devices(seed_device: 
 def test_oriented_bounding_box_empty_cloud(device: str) -> None:
     """An empty cloud gives the identity frame and the same inverted box ``aabb`` returns."""
     empty_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    rotation_wp, lower_wp, upper_wp = tw.bounds.oriented_bounding_box(empty_wp)
+    rotation_wp, lower_wp, upper_wp = od.bounds.oriented_bounding_box(empty_wp)
 
     assert np.array_equal(_frame_np(rotation_wp), np.eye(3))
     assert np.all(np.isposinf(_bounds_np(lower_wp, upper_wp)[0]))
@@ -1098,8 +1098,8 @@ def test_oriented_bounding_box_rejects_bad_arguments(device: str) -> None:
         np.array([[0.0, 0.0, 0.0], [1.0, 2.0, 3.0]], dtype=np.float32), dtype=wp.vec3, device=device
     )
     with pytest.raises(ValueError, match="rotations must be >= 1"):
-        tw.bounds.oriented_bounding_box(points_wp, 0)
+        od.bounds.oriented_bounding_box(points_wp, 0)
     with pytest.raises(ValueError, match="objective must be"):
-        tw.bounds.oriented_bounding_box(points_wp, 8, "perimeter")  # pyright: ignore[reportArgumentType]
+        od.bounds.oriented_bounding_box(points_wp, 8, "perimeter")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="refine_iterations must be >= 0"):
-        tw.bounds.oriented_bounding_box(points_wp, 8, refine_iterations=-1)
+        od.bounds.oriented_bounding_box(points_wp, 8, refine_iterations=-1)

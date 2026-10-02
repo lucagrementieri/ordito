@@ -1,8 +1,8 @@
 """
-Benchmarks for ``triwarp.proximity`` hot paths.
+Benchmarks for ``ordito.proximity`` hot paths.
 
 Covers winding number, signed distance, tangent spheres and geodesic-ball queries. The AABB
-reduction moved to [`test_bounds.py`](test_bounds.py), where ``triwarp.bounds`` lives.
+reduction moved to [`test_bounds.py`](test_bounds.py), where ``ordito.bounds`` lives.
 ``winding_number`` is O(n_queries x n_faces) even in the tiled variant, so ``lucy`` is skipped; the
 pinned serial (``tiled=False``) path is additionally capped at ``bunny`` because one thread per
 query walking every face takes minutes beyond that.
@@ -17,7 +17,7 @@ inside/outside test is raycasting-based, a different algorithm answering a coars
 no tangent-sphere, local-thickness or geodesic-ball query at all.
 
 ``signed_distance_on_mesh`` has **two** references, and they are the only two that exist: libigl's
-``igl.signed_distance``, whose ``sign_type`` axis maps onto triwarp's ``sign_mode`` one-for-one, and
+``igl.signed_distance``, whose ``sign_type`` axis maps onto ordito's ``sign_mode`` one-for-one, and
 pymeshlab's, whose sign rule is a third algorithm and therefore appears once.
 
 **One thing libigl's signed distance does that no assert may ignore:** for both winding-based sign
@@ -25,13 +25,13 @@ types it returns ``(1 - 2w) * d`` rather than ``sign(1 - 2w) * d``, with ``w`` t
 winding number. So its magnitude is only ``|d|`` where ``w`` is exactly 0 or 1, and near the surface
 it is scaled down -- measured on ``bunny_decimated``, ``|S|`` deviates from the pseudonormal type's
 by **2.7e-2 of the bbox diagonal** for both winding types, while the pseudonormal type agrees with
-triwarp to **8e-8**. That is why the parity oracle is the pseudonormal type and why the winding row
+ordito to **8e-8**. That is why the parity oracle is the pseudonormal type and why the winding row
 here is a *cost* comparison only.
 
 **And the Barnes-Hut approximation does pay**, which is worth recording because a smaller probe had
 suggested otherwise. At this module's query count ``igl.fast_winding_number`` is 2.6-3.6x
 ``igl.winding_number`` for a maximum winding deviation of 0.004. It is not a row of its own because
-triwarp exposes no approximate-winding entry point to put opposite it (``winding_number`` is the
+ordito exposes no approximate-winding entry point to put opposite it (``winding_number`` is the
 exact sum; the Barnes-Hut walk exists only inside ``signed_distance_on_mesh(sign_mode="winding")``),
 but it is the number to weigh a fast-winding port against.
 
@@ -40,11 +40,11 @@ of one mesh against another, so the query points go in as a second, face-less me
 comes back on their vertex scalar attribute. Three things to read its row against:
 
 - **Its sign is a third algorithm.** MeshLab takes the dot product with the reference normal at the
-  closest point -- neither triwarp's 5-ray parity test nor its Barnes-Hut winding accumulation. So
+  closest point -- neither ordito's 5-ray parity test nor its Barnes-Hut winding accumulation. So
   it appears once rather than twice, in the ``parity`` row.
 - **Its per-query cost grows with the reference mesh**, an order of magnitude across the scan sweep
   at a fixed query count, while being cleanly linear in the query count at a fixed mesh. A
-  closest-point query that is *not* sublinear in the face count is the opposite of what triwarp's
+  closest-point query that is *not* sublinear in the face count is the opposite of what ordito's
   BVH does -- two orders of magnitude against it, widening with the mesh -- which is why it is
   capped at ``bunny`` with ``rounds=3``.
 - It writes only the vertex scalar, so the two-mesh MeshSet is built once and shared.
@@ -73,8 +73,8 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from scipy.spatial import Delaunay
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, BenchLibrary, mesh_ml_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -134,7 +134,7 @@ def _query_points_ml(bench_case: BenchCase, count: int = _N_QUERIES) -> mm.std_v
 
 
 @pytest.mark.benchmark(group="winding_number")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista", "meshlib")
 @pytest.mark.parametrize("n_queries", _N_QUERIES_SWEEP)
 def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
     """
@@ -159,12 +159,12 @@ def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
 
     **meshlib answers a Barnes-Hut approximation of it**, and that is the whole reason its row is
     interesting here: ``FastWindingNumber(mesh).calcFromVector`` walks the mesh's AABB tree and
-    replaces a distant subtree by a dipole, so unlike triwarp's and igl's rows it is *not*
+    replaces a distant subtree by a dipole, so unlike ordito's and igl's rows it is *not*
     ``O(queries x faces)`` and should not follow the product. ``beta=20`` is the accuracy at which
     it agrees with the exact sum to 1e-05; its own default of 2 is 24x looser, so a row at the
     default would be timing a coarser answer. The tree build is inside the timed callable because
     ``FastWindingNumber`` is constructed per call, the same no-hoisting situation igl's AABB tree
-    and triwarp's ``wp.Mesh`` are in.
+    and ordito's ``wp.Mesh`` are in.
     """
     skip_larger_than(bench_case, "happy_buddha", "O(queries x faces): lucy is untenable")
     if n_queries > _N_QUERIES:
@@ -200,10 +200,10 @@ def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
 
         assert len(bench_case.run(winding_ml)) == n_queries
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points = _query_points_wp(bench_case, n_queries)
-        result = bench_case.run(lambda: tw.proximity.winding_number(vertices, faces, points))
+        result = bench_case.run(lambda: od.proximity.winding_number(vertices, faces, points))
         assert result.shape == (n_queries,)
     else:  # igl exact generalized winding number
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -213,14 +213,14 @@ def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
 
 
 @pytest.mark.benchmark(group="winding_number_serial")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_winding_number_serial(bench_case: BenchCase) -> None:
     """Pinned ``tiled=False`` reference path: one thread per query loops over every face."""
     skip_larger_than(bench_case, "bunny", "serial winding takes minutes beyond bunny")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     points = _query_points_wp(bench_case)
     result = bench_case.run(
-        lambda: tw.proximity.winding_number(vertices, faces, points, tiled=False)
+        lambda: od.proximity.winding_number(vertices, faces, points, tiled=False)
     )
     assert result.shape == (_N_QUERIES,)
 
@@ -243,14 +243,14 @@ def _distance_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="closest_point_on_mesh")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
     """
     The unsigned closest-point query, without the sign work the group below pays for.
 
     Read against ``signed_distance_on_mesh``: both walk a BVH to the nearest triangle, and the
     difference between the groups is what signing costs -- five perturbed parity rays or a winding
-    traversal on triwarp's side, a projection-normal test on MeshLib's. That comparison is why this
+    traversal on ordito's side, a projection-normal test on MeshLib's. That comparison is why this
     group exists separately rather than being folded into the signed one.
 
     meshlib's batched form is ``PointsToMeshProjector``; the per-query ``findProjection`` free
@@ -313,7 +313,7 @@ def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     points = _query_points_wp(bench_case)
     closest, distances, faces_hit = bench_case.run(
-        lambda: tw.proximity.closest_point_on_mesh(vertices, faces, points)
+        lambda: od.proximity.closest_point_on_mesh(vertices, faces, points)
     )
     assert closest.shape == (_N_QUERIES,)
     assert distances.shape == (_N_QUERIES,)
@@ -321,15 +321,15 @@ def test_closest_point_on_mesh(bench_case: BenchCase) -> None:
 
 
 _crease_np_cache: dict[str, np.ndarray] = {}
-_crease_wp_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
+_crease_wp_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
 
 
 def _crease_edges_np(bench_case: BenchCase) -> np.ndarray:
     """
     Build the mesh's sharp edges at 30 degrees on the host, cached once per mesh.
 
-    Built with trimesh rather than with ``tw.seams.crease_edges`` so that **both** rows of the edge
-    query get the identical edge set: ``vertices_wp`` is triwarp-only, so a triwarp-built set could
+    Built with trimesh rather than with ``od.seams.crease_edges`` so that **both** rows of the edge
+    query get the identical edge set: ``vertices_wp`` is ordito-only, so a ordito-built set could
     not be handed to the pyvista row, and timing each side against its own crease set would fold a
     different input into a query comparison.
     """
@@ -344,11 +344,11 @@ def _crease_edges_np(bench_case: BenchCase) -> np.ndarray:
     return _crease_np_cache[bench_case.mesh_name]
 
 
-def _crease_edges_wp(bench_case: BenchCase) -> twt.Array2dInt32:
+def _crease_edges_wp(bench_case: BenchCase) -> odt.Array2dInt32:
     """Upload that edge set to the case's device, cached: an input, not part of the measure."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _crease_wp_cache:
-        _crease_wp_cache[key] = twt.as_array2d(
+        _crease_wp_cache[key] = odt.as_array2d(
             wp.array(_crease_edges_np(bench_case), dtype=wp.int32, device=bench_case.device),
             wp.int32,
         )
@@ -356,7 +356,7 @@ def _crease_edges_wp(bench_case: BenchCase) -> twt.Array2dInt32:
 
 
 @pytest.mark.benchmark(group="closest_point_on_edges")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 def test_closest_point_on_edges(bench_case: BenchCase) -> None:
     """
     The **wireframe** closest-point query: the same queries against the mesh's crease edges.
@@ -364,10 +364,10 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
     Read against ``closest_point_on_mesh``, which answers the same queries against the surface. The
     two are different structures over the same geometry -- a BVH of per-edge boxes against Warp's
     triangle mesh BVH -- and the edge set is far smaller than the face set, so the ratio prices
-    triwarp's hand-written deepening traversal against Warp's built-in one on an easier input.
+    ordito's hand-written deepening traversal against Warp's built-in one on an easier input.
 
     The crease set is built outside the timed callable and on the host, so both rows get the
-    identical edge set (see ``_crease_edges_np``); it is the *input* here, and triwarp's own
+    identical edge set (see ``_crease_edges_np``); it is the *input* here, and ordito's own
     ``crease_edges`` is timed in ``test_seams.py``. Its size is a mesh property rather than a knob,
     which is why this group takes no axis of its own.
 
@@ -378,7 +378,7 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
     it answers one query per call, so a row would time a Python loop rather than the traversal
     (``tests/test_proximity.py`` carries it as a ``benchmarked=False`` claim).
 
-    Two readings. triwarp leads pyvista by well over an order of magnitude, and the slope across the
+    Two readings. ordito leads pyvista by well over an order of magnitude, and the slope across the
     scan sweep is the crease *count* rather than the face count. And the number to read it against
     is ``closest_point_on_mesh`` on the same queries and mesh: **this query is slower over an edge
     set some thirty times smaller**, so the hand-written deepening loop is losing to Warp's built-in
@@ -407,7 +407,7 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
     edges = _crease_edges_wp(bench_case)
     queries = _query_points_wp(bench_case)
     closest, distances, edge_ids = bench_case.run(
-        lambda: tw.proximity.closest_point_on_edges(vertices, edges, queries)
+        lambda: od.proximity.closest_point_on_edges(vertices, edges, queries)
     )
     assert closest.shape == (_N_QUERIES,)
     assert distances.shape == (_N_QUERIES,)
@@ -415,7 +415,7 @@ def test_closest_point_on_edges(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="signed_distance_on_mesh")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
 @pytest.mark.parametrize("sign_mode", ["parity", "winding"])
 def test_signed_distance_on_mesh(
     bench_case: BenchCase, sign_mode: Literal["parity", "winding"]
@@ -430,25 +430,25 @@ def test_signed_distance_on_mesh(
     ``signed_distance_on_mesh`` constructs its own mesh, so there is no way for a caller to hoist
     it.
 
-    **libigl is the only reference whose sign axis maps onto both of triwarp's modes**, which is why
+    **libigl is the only reference whose sign axis maps onto both of ordito's modes**, which is why
     it appears twice where pymeshlab appears once: ``SIGNED_DISTANCE_TYPE_PSEUDONORMAL`` against
     ``"parity"`` and ``SIGNED_DISTANCE_TYPE_FAST_WINDING_NUMBER`` against ``"winding"`` -- the
-    second is the same Barnes-Hut family triwarp's mode is. Its AABB tree is built per call, as
-    triwarp's ``wp.Mesh`` is, and it gets ``rounds=3`` like the pymeshlab row.
+    second is the same Barnes-Hut family ordito's mode is. Its AABB tree is built per call, as
+    ordito's ``wp.Mesh`` is, and it gets ``rounds=3`` like the pymeshlab row.
 
     **open3d's row is Embree**: ``RaycastingScene.compute_signed_distance`` signs by ray parity, so
-    it pairs with ``"parity"`` only, and it shares triwarp's sign convention exactly. The scene
+    it pairs with ``"parity"`` only, and it shares ordito's sign convention exactly. The scene
     build sits inside the timed callable for the same no-hoisting reason.
 
     **pyvista's row is an exact SDF and the closest match in the set**:
-    ``compute_implicit_distance`` (``vtkImplicitPolyDataDistance``) shares triwarp's sign convention
+    ``compute_implicit_distance`` (``vtkImplicitPolyDataDistance``) shares ordito's sign convention
     and agrees to 1.5e-07 with identical signs on 2 000 queries, which is why it is the parity
     oracle for this group. One row only: it has a single sign rule.
 
     Two things to read off the rows. The references are one to two orders of magnitude behind, and
     **the mode ratio disagrees between the two sides** -- igl's winding sign costs over twice its
-    pseudonormal one where triwarp's two modes are within a third of each other, because the
-    solid-angle walk rides the BVH traversal triwarp is already doing. Read igl's *medians* here,
+    pseudonormal one where ordito's two modes are within a third of each other, because the
+    solid-angle walk rides the BVH traversal ordito is already doing. Read igl's *medians* here,
     not its minima: its pseudonormal row spreads nearly twofold on the larger mesh.
     """
     if bench_case.kind == "pyvista":
@@ -480,7 +480,7 @@ def test_signed_distance_on_mesh(
 
     if bench_case.kind == "open3d":
         if sign_mode != "parity":
-            pytest.skip("Embree signs by ray parity, so it pairs with triwarp's parity mode only")
+            pytest.skip("Embree signs by ray parity, so it pairs with ordito's parity mode only")
         import open3d as o3d
 
         vertices_f32 = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32)
@@ -489,7 +489,7 @@ def test_signed_distance_on_mesh(
         queries_t = o3d.core.Tensor(np.ascontiguousarray(_query_points_np(bench_case), np.float32))  # pyright: ignore[reportCallIssue]
 
         def signed_distance_o3d() -> o3d.core.Tensor:
-            # The Embree BVH build goes inside, mirroring triwarp's own in-call wp.Mesh build.
+            # The Embree BVH build goes inside, mirroring ordito's own in-call wp.Mesh build.
             scene = o3d.t.geometry.RaycastingScene()
             scene.add_triangles(o3d.core.Tensor(vertices_f32), o3d.core.Tensor(faces_u32))  # pyright: ignore[reportCallIssue]
             return scene.compute_signed_distance(queries_t)
@@ -505,7 +505,7 @@ def test_signed_distance_on_mesh(
         # ``findSignedDistances`` is the batched form and takes a ``VertCoords``, so the cloud is
         # uploaded as a PointCloud outside the timed callable, as every other row's cloud is. It
         # builds the reference mesh's AABB tree on first use, and that build is inside -- the same
-        # no-hoisting position triwarp's per-call ``wp.Mesh`` is in.
+        # no-hoisting position ordito's per-call ``wp.Mesh`` is in.
         mesh_np = (bench_case.vertices_np, bench_case.faces_np)
         cloud_ml = mn.pointCloudFromPoints(
             cast("Buffer", np.ascontiguousarray(_query_points_np(bench_case), dtype=np.float64))
@@ -534,7 +534,7 @@ def test_signed_distance_on_mesh(
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     points = _query_points_wp(bench_case)
     distance = bench_case.run(
-        lambda: tw.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode=sign_mode)
+        lambda: od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode=sign_mode)
     )
     assert distance.shape == (_N_QUERIES,)
 
@@ -568,7 +568,7 @@ def _triangular_lattice_2d(rows: int) -> tuple[np.ndarray, Delaunay, np.ndarray]
 
 
 @pytest.mark.benchmark(group="containing_faces_2d")
-@pytest.mark.benchlibs("triwarp", "scipy", "pyvista")
+@pytest.mark.benchlibs("ordito", "scipy", "pyvista")
 @pytest.mark.parametrize("rows", _LATTICE_ROWS, ids=["lattice26", "lattice80", "lattice240"])
 def test_containing_faces_2d(bench_lib: BenchLibrary, rows: int) -> None:
     """
@@ -582,13 +582,13 @@ def test_containing_faces_2d(bench_lib: BenchLibrary, rows: int) -> None:
     point triangulation would make this row's own correctness assert flaky for a reason that has
     nothing to do with cost.
 
-    **The comparison is deliberately unfavourable to triwarp.**
+    **The comparison is deliberately unfavourable to ordito.**
     ``scipy.spatial.Delaunay.find_simplex`` is timed on a triangulation built *outside* the
-    timed region, while triwarp's row includes building its BVH on every call -- there is no
-    prebuilt-index entry point on this side. Read the row as a floor on triwarp's margin, not as
+    timed region, while ordito's row includes building its BVH on every call -- there is no
+    prebuilt-index entry point on this side. Read the row as a floor on ordito's margin, not as
     a like-for-like split; scipy is doing strictly less work per call.
 
-    pyvista's ``find_containing_cell`` is in scipy's position rather than triwarp's: its locator is
+    pyvista's ``find_containing_cell`` is in scipy's position rather than ordito's: its locator is
     built lazily on the ``PolyData`` and pre-warmed here, so it too is timed with its index in hand.
     It locates in **3-D** -- the lattice and the queries get a zero ``z`` -- and it is the only
     reference in the suite that answers this question correctly: ``igl.in_element`` returns
@@ -626,7 +626,7 @@ def test_containing_faces_2d(bench_lib: BenchLibrary, rows: int) -> None:
         np.ascontiguousarray(queries_np, dtype=np.float32), dtype=wp.vec2, device=device
     )
     located_wp = bench_lib.run(
-        lambda: tw.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp)
+        lambda: od.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp)
     )
     # Exact on this lattice, which is why the fixture is a lattice; see the docstring.
     assert np.array_equal(located_wp.numpy(), triangulation_sp.find_simplex(queries_np))
@@ -652,7 +652,7 @@ def _separated_vertices_wp(bench_case: BenchCase, offset: float) -> wp.array[wp.
 
 
 @pytest.mark.benchmark(group="mesh_to_mesh_distance")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("offset", _CLEARANCE_OFFSETS, ids=["near", "far"])
 def test_mesh_to_mesh_distance(bench_case: BenchCase, offset: float) -> None:
     """
@@ -726,7 +726,7 @@ def test_mesh_to_mesh_distance(bench_case: BenchCase, offset: float) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     shifted = _separated_vertices_wp(bench_case, offset)
     distance, face_a, face_b = bench_case.run(
-        lambda: tw.proximity.mesh_to_mesh_distance(vertices, faces, shifted, faces), rounds=3
+        lambda: od.proximity.mesh_to_mesh_distance(vertices, faces, shifted, faces), rounds=3
     )
     assert distance > 0.0
     assert face_a >= 0

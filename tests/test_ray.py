@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.ray`` against trimesh."""
+"""Regression tests for ``ordito.ray`` against trimesh."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from tests.conversions import (
     points_to_pyvista,
     points_to_warp,
@@ -56,7 +56,7 @@ def test_intersects_location(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B (row order): the ``(ray, face)`` hit pairs equal trimesh's after a shared lexsort.
 
-    triwarp emits one row per hit in BVH order and trimesh in its own, so both sides are ordered
+    ordito emits one row per hit in BVH order and trimesh in its own, so both sides are ordered
     by ``(ray, face)`` first -- exact on integer rows. The hit *positions* are checked by
     [`test_intersects_location_cave_cube`], which has an analytic answer to compare against.
     """
@@ -65,7 +65,7 @@ def test_intersects_location(request: pytest.FixtureRequest, mesh_name: str):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    _loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
+    _loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
     tri_tm, ray_tm = mesh_tm.ray.intersects_id(origins_np, directions_np, multiple_hits=False)
     tri_wp_np = tri_wp.numpy()
     ray_wp_np = ray_wp.numpy()
@@ -86,7 +86,7 @@ def test_intersects_location_miss(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
+    loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
     assert loc_wp.size == 0
     assert tri_wp.size == 0
     assert ray_wp.size == 0
@@ -110,7 +110,7 @@ def test_intersects_location_cave_cube(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    loc_wp, ray_wp, _tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
+    loc_wp, ray_wp, _tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
     loc_tm, ray_tm, _tri_tm = mesh_tm.ray.intersects_location(
         origins_np, directions_np, multiple_hits=False
     )
@@ -134,7 +134,7 @@ def test_intersects_first(request: pytest.FixtureRequest, mesh_name: str):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    triangle_wp = tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
+    triangle_wp = od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
     triangle_tm = mesh_tm.ray.intersects_first(origins_np, directions_np)
     # Without this the test still passes on two all-miss answers; see _upward_rays.
     assert (triangle_tm != -1).any()
@@ -157,7 +157,7 @@ def test_intersects_first_miss(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    triangle_wp = tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
+    triangle_wp = od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy()
     triangle_tm = mesh_tm.ray.intersects_first(origins_np, directions_np)
     assert np.array_equal(triangle_wp, triangle_tm)
     assert (triangle_wp == -1).all()
@@ -171,7 +171,7 @@ def test_intersects_any(request: pytest.FixtureRequest, mesh_name: str):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    hit_wp = tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy()
+    hit_wp = od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy()
     hit_tm = mesh_tm.ray.intersects_any(origins_np, directions_np)
     # An all-False mask matches an all-False mask; see _upward_rays.
     assert hit_tm.any()
@@ -192,7 +192,7 @@ def test_intersects_any_miss(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    hit_wp = tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy()
+    hit_wp = od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy()
     hit_tm = mesh_tm.ray.intersects_any(origins_np, directions_np)
     assert np.array_equal(hit_wp, hit_tm)
     assert not hit_wp.any()
@@ -235,16 +235,16 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     The batched call is the pairing rather than the per-ray ``rayMeshIntersect`` (which agrees too,
     on every one of 100 rays) because a Python loop over rays would be measuring the loop -- the
     same reason the curvature comparisons use ``mrmeshnumpy``'s batched forms. Its four outputs map
-    one-to-one onto triwarp's three entry points: ``isectFaces`` is ``intersects_first``'s dense
+    one-to-one onto ordito's three entry points: ``isectFaces`` is ``intersects_first``'s dense
     face array, ``intersectingRays`` is ``intersects_any``'s mask, and ``isectPts`` paired with
     that bitset is ``intersects_location``'s compacted ``(points, rays, faces)`` triple, once that
     triple is sorted by ray -- its compaction emits rows in BVH order, not in ray order, which the
     trimesh comparison below handles with the same sort.
 
     Two conventions, both named. MeshLib returns the hits **densely** with an invalid ``FaceId``
-    where triwarp writes ``-1``, so the transform on the first form is ``FaceId -> int`` with
+    where ordito writes ``-1``, so the transform on the first form is ``FaceId -> int`` with
     invalid mapping to ``-1``; and its location output is dense too, so the class-B half is
-    selecting the rows ``intersectingRays`` marks, in ray order, which is the order triwarp's
+    selecting the rows ``intersectingRays`` marks, in ray order, which is the order ordito's
     compaction already produces.
 
     Non-vacuous: 208 of 256 rays hit the icosahedron and 197 the hemisphere, so neither the hit
@@ -271,13 +271,13 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
 
     assert 0 < hit_ml.sum() < origins_np.shape[0]  # both branches present
 
-    faces_wp = tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp)
+    faces_wp = od.ray.intersects_first(mesh_wp, origins_wp, directions_wp)
     assert np.array_equal(faces_wp.numpy(), faces_ml)
 
-    hit_wp = tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp)
+    hit_wp = od.ray.intersects_any(mesh_wp, origins_wp, directions_wp)
     assert np.array_equal(hit_wp.numpy(), hit_ml)
 
-    locations_wp, rays_wp, triangles_wp = tw.ray.intersects_location(
+    locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
         mesh_wp, origins_wp, directions_wp
     )
     order_wp = np.argsort(rays_wp.numpy(), kind="stable")
@@ -301,13 +301,13 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     and ``t_hit`` densely, which is ``intersects_first`` directly and ``intersects_location`` after
     one transform.
 
-    Two conventions, both named. A miss is ``RaycastingScene.INVALID_ID`` where triwarp writes
+    Two conventions, both named. A miss is ``RaycastingScene.INVALID_ID`` where ordito writes
     ``-1``, and ``t_hit`` is ``inf`` there. And the hit *position* is not returned at all: it is
     ``origin + t_hit * direction``, which is the class-B half -- the same
-    ``float32`` recomputation triwarp's kernel does, so the two agree to the ray parameter's own
+    ``float32`` recomputation ordito's kernel does, so the two agree to the ray parameter's own
     precision rather than exactly.
 
-    triwarp's ``intersects_location`` compacts in BVH order rather than ray order, so its rows are
+    ordito's ``intersects_location`` compacts in BVH order rather than ray order, so its rows are
     sorted by ray first, exactly as the meshlib and trimesh comparisons above do.
 
     Non-vacuous: the assert requires both branches present in the hit mask, so a scene that hit
@@ -342,14 +342,14 @@ def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str)
     assert np.array_equal(hit_o3d, faces_o3d >= 0)
 
     assert np.array_equal(
-        tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy(),
+        od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy(),
         faces_o3d.astype(np.int32),
     )
     assert np.array_equal(
-        tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy(), hit_o3d
+        od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy(), hit_o3d
     )
 
-    locations_wp, rays_wp, triangles_wp = tw.ray.intersects_location(
+    locations_wp, rays_wp, triangles_wp = od.ray.intersects_location(
         mesh_wp, origins_wp, directions_wp
     )
     order_wp = np.argsort(rays_wp.numpy(), kind="stable")
@@ -364,13 +364,13 @@ def test_intersects_empty_rays(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
     origins_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    assert tw.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
-    assert tw.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
-    loc_wp, ray_wp, tri_wp = tw.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
+    assert od.ray.intersects_first(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
+    assert od.ray.intersects_any(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
+    loc_wp, ray_wp, tri_wp = od.ray.intersects_location(mesh_wp, origins_wp, directions_wp)
     assert loc_wp.size == 0
     assert tri_wp.size == 0
     assert ray_wp.size == 0
-    assert tw.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
+    assert od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy().shape == (0,)
 
 
 @pytest.mark.parametrize("n_origins", [0, 4])
@@ -390,10 +390,10 @@ def test_intersects_rejects_mismatched_shapes(
     origins_wp = warp_empty(n_origins, wp.vec3, mesh_wp.device)
     directions_wp = warp_empty(n_origins + 3, wp.vec3, mesh_wp.device)
     for query in (
-        tw.ray.intersects_first,
-        tw.ray.intersects_any,
-        tw.ray.intersects_location,
-        tw.ray.longest_ray,
+        od.ray.intersects_first,
+        od.ray.intersects_any,
+        od.ray.intersects_location,
+        od.ray.longest_ray,
     ):
         with pytest.raises(ValueError, match="same shape"):
             query(mesh_wp, origins_wp, directions_wp)
@@ -411,7 +411,7 @@ def test_longest_ray(request: pytest.FixtureRequest, mesh_name: str):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    distances_wp_np = tw.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
+    distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
     distances_tm_np = tm.proximity.longest_ray(mesh_tm, origins_np, directions_np)
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
 
@@ -426,7 +426,7 @@ def test_longest_ray_surface_normals(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(closest_np, mesh_wp.device)
     directions_wp = points_to_warp(normals_np, mesh_wp.device)
-    distances_wp_np = tw.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
+    distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
     distances_tm_np = tm.proximity.longest_ray(mesh_tm, closest_np, normals_np)
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
 
@@ -440,7 +440,7 @@ def test_longest_ray_miss(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 
     origins_wp = points_to_warp(origins_np, mesh_wp.device)
     directions_wp = points_to_warp(directions_np, mesh_wp.device)
-    distances_wp_np = tw.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
+    distances_wp_np = od.ray.longest_ray(mesh_wp, origins_wp, directions_wp).numpy()
     distances_tm_np = tm.proximity.longest_ray(mesh_tm, origins_np, directions_np)
     _assert_longest_ray_allclose(distances_wp_np, distances_tm_np)
     assert np.isinf(distances_wp_np).all()
@@ -462,22 +462,22 @@ def test_contains_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     center_np = np.asarray([mesh_tm.center_mass], dtype=np.float32)
 
     points_wp = points_to_warp(inside_np, mesh_wp.device)
-    contains_wp = tw.ray.contains_points(mesh_wp, points_wp).numpy()
+    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert contains_wp.all()
     assert np.array_equal(contains_wp, mesh_tm.contains(inside_np))
 
     points_wp = points_to_warp(outside_np, mesh_wp.device)
-    contains_wp = tw.ray.contains_points(mesh_wp, points_wp).numpy()
+    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert not contains_wp.any()
     assert np.array_equal(contains_wp, mesh_tm.contains(outside_np))
 
     points_wp = points_to_warp(far_np, mesh_wp.device)
-    contains_wp = tw.ray.contains_points(mesh_wp, points_wp).numpy()
+    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert not contains_wp.any()
     assert np.array_equal(contains_wp, mesh_tm.contains(far_np))
 
     points_wp = points_to_warp(center_np, mesh_wp.device)
-    contains_wp = tw.ray.contains_points(mesh_wp, points_wp).numpy()
+    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert contains_wp.all()
     assert np.array_equal(contains_wp, mesh_tm.contains(center_np))
 
@@ -511,7 +511,7 @@ def test_contains_points_matches_pyvista(request: pytest.FixtureRequest, mesh_na
     assert 0 < int(contains_pv.sum()) < len(points_np)  # both answers present
 
     points_wp = points_to_warp(points_np, mesh_wp.device)
-    assert np.array_equal(tw.ray.contains_points(mesh_wp, points_wp).numpy(), contains_pv)
+    assert np.array_equal(od.ray.contains_points(mesh_wp, points_wp).numpy(), contains_pv)
 
 
 def test_contains_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
@@ -525,7 +525,7 @@ def test_contains_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
     origin_np = np.array([[0.0, 0.0, 0.0]], dtype=np.float32)
 
     points_wp = points_to_warp(origin_np, mesh_wp.device)
-    contains_wp = tw.ray.contains_points(mesh_wp, points_wp).numpy()
+    contains_wp = od.ray.contains_points(mesh_wp, points_wp).numpy()
     assert not contains_wp.any()
     assert np.array_equal(contains_wp, mesh_tm.contains(origin_np))
 
@@ -533,4 +533,4 @@ def test_contains_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]):
 def test_contains_empty_points(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    assert tw.ray.contains_points(mesh_wp, points_wp).numpy().shape == (0,)
+    assert od.ray.contains_points(mesh_wp, points_wp).numpy().shape == (0,)

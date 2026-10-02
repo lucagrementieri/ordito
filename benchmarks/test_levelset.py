@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.levelset``.
+Benchmarks for ``ordito.levelset``.
 
 Two groups, and both are sized by the **lattice** rather than by a mesh, which is what the module
 has in common: ``marching_cubes`` takes a field and no mesh at all, and ``offset_mesh`` turns its
@@ -50,8 +50,8 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from pytorch3d.ops.marching_cubes import marching_cubes as p3d_marching_cubes
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 # Cell widths as a fraction of the bounding-box diagonal, and the offset distance as a multiple of
@@ -70,7 +70,7 @@ def _cell_and_offset(bench_case: BenchCase, divisor: int) -> tuple[float, float]
 
 
 @pytest.mark.benchmark(group="offset_mesh")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "meshlib", "pymeshlab")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)
 def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     """
@@ -80,9 +80,9 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     compares two field-and-march implementations rather than two parameter conventions. The lattice
     includes the padding the offset needs -- ``ceil(distance / cell) + 2`` cells on every side, or
     the level set is clipped by the boundary -- which at four cells of offset is a noticeable
-    fraction of the box and is paid by triwarp's row alone (both references pad internally).
+    fraction of the box and is paid by ordito's row alone (both references pad internally).
 
-    Read the two divisors as a slope. 2x the resolution is **8x the samples**, and triwarp's row
+    Read the two divisors as a slope. 2x the resolution is **8x the samples**, and ordito's row
     grows only **2.8x** -- the samples are independent queries, so a lattice this size does not
     saturate the GPU and the wall clock tracks occupancy rather than work. The reference rows grow
     2.2x (meshlib) and 1.6x (pymeshlab) for the same reason on their own cores, and sit an order of
@@ -119,7 +119,7 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     offset_vertices, offset_faces = bench_case.run(
-        lambda: tw.levelset.offset_mesh(vertices, faces, distance, cell)
+        lambda: od.levelset.offset_mesh(vertices, faces, distance, cell)
     )
     assert int(offset_faces.shape[0]) > 0
     assert int(offset_vertices.shape[0]) > 0
@@ -127,7 +127,7 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
 
 @pytest.mark.benchmark(group="thicken_mesh")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_thicken_mesh(bench_case: BenchCase) -> None:
     """
     The topology-preserving shell: two vertex passes and one band, no lattice anywhere.
@@ -148,7 +148,7 @@ def test_thicken_mesh(bench_case: BenchCase) -> None:
     The thickness is 1 % of the bounding-box diagonal, which is small enough that neither side folds
     (a shell that self-intersects past the local curvature radius is not the same amount of work).
 
-    **The reference is capped at ``sphere_med`` because of what the slope shows.** triwarp is flat
+    **The reference is capped at ``sphere_med`` because of what the slope shows.** ordito is flat
     across the ``scale`` axis -- three launches against the launch floor -- where meshlib is
     superlinear, so the gap runs from single-figure to four orders of magnitude over that axis. For
     two implementations of the same construction that means the reference's cost is not the
@@ -173,14 +173,14 @@ def test_thicken_mesh(bench_case: BenchCase) -> None:
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     shell_vertices, shell_faces = bench_case.run(
-        lambda: tw.levelset.thicken_mesh(vertices, faces, thickness)
+        lambda: od.levelset.thicken_mesh(vertices, faces, thickness)
     )
     assert shell_vertices.size == 2 * bench_case.n_vertices
     assert shell_faces.size >= 6 * bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="signed_distance_grid")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)
 def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
     """
@@ -196,7 +196,7 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
     *from the function under test* rather than re-derived, so neither side gets a different lattice.
 
     The two slopes are the whole row. For 8x the samples open3d grows 6.7x -- a saturated CPU doing
-    the work -- where triwarp grows 1.9x, a GPU that was not full at the coarser lattice, so the gap
+    the work -- where ordito grows 1.9x, a GPU that was not full at the coarser lattice, so the gap
     widens several-fold across the resolution pair. Subtracting these from ``offset_mesh`` prices
     the extraction, which grows an order of magnitude over the same pair: past a certain resolution
     the offset is dominated by ``MarchingCubes`` rather than by the field.
@@ -209,7 +209,7 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
         skip_larger_than(bench_case, "bunny", "the reference is a single-threaded BVH walk")
         # The lattice has to be the *same* lattice, so it is taken from the function under test
         # rather than re-derived here -- run once, untimed, on host copies, since ``vertices_wp`` is
-        # a triwarp-only accessor and this row has no device.
+        # a ordito-only accessor and this row has no device.
         vertices_cpu = wp.array(
             np.ascontiguousarray(bench_case.vertices_np, dtype=np.float32),
             dtype=wp.vec3,
@@ -220,8 +220,8 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
             dtype=wp.int32,
             device="cpu",
         )
-        field_wp, box = tw.proximity.signed_distance_grid(vertices_cpu, faces_cpu, cell)
-        samples_np = tw.voxels.grid_points(field_wp.shape, bounds=box, device="cpu").numpy()
+        field_wp, box = od.proximity.signed_distance_grid(vertices_cpu, faces_cpu, cell)
+        samples_np = od.voxels.grid_points(field_wp.shape, bounds=box, device="cpu").numpy()
         scene_o3d = o3d.t.geometry.RaycastingScene()
         # The stub omits ``Tensor``'s dtype/device defaults.
         scene_o3d.add_triangles(
@@ -234,7 +234,7 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
         return
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    field, box = bench_case.run(lambda: tw.proximity.signed_distance_grid(vertices, faces, cell))
+    field, box = bench_case.run(lambda: od.proximity.signed_distance_grid(vertices, faces, cell))
     assert field.shape[0] >= 2
     assert float(box[1][0]) > float(box[0][0])
 
@@ -249,7 +249,7 @@ _MARCHING_RESOLUTIONS = [64, 128]
 _MARCHING_TORUS = (0.65, 0.28, 1.1)
 
 _marching_field_cache: dict[int, np.ndarray] = {}
-_marching_field_wp_cache: dict[tuple[int, str], twt.Array3dFloat32] = {}
+_marching_field_wp_cache: dict[tuple[int, str], odt.Array3dFloat32] = {}
 _marching_volume_ml_cache: dict[int, mm.SimpleVolume] = {}
 
 
@@ -275,7 +275,7 @@ def _marching_volume_ml(resolution: int) -> mm.SimpleVolume:
     cache legal here where ``new_mesh_ml`` is required elsewhere.
 
     ``simpleVolumeFrom3Darray`` returns ``voxelSize = (1, 1, 1)`` whatever the array it was handed,
-    so the spacing is assigned afterwards; both are outside the timed region, matching triwarp's
+    so the spacing is assigned afterwards; both are outside the timed region, matching ordito's
     row, whose field is likewise a device array in hand before the clock starts.
     """
     if resolution not in _marching_volume_ml_cache:
@@ -291,7 +291,7 @@ def _marching_volume_ml(resolution: int) -> mm.SimpleVolume:
 
 
 @pytest.mark.benchmark(group="marching_cubes")
-@pytest.mark.benchlibs("triwarp", "meshlib", "igl", "pyvista", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "igl", "pyvista", "pytorch3d")
 @pytest.mark.parametrize("resolution", _MARCHING_RESOLUTIONS)
 def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     """
@@ -307,12 +307,12 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     cleanest comparisons -- two implementations of one function, not two algorithms answering one
     question. The named transform the test carries is a convention rather than a cost:
     ``params.origin`` addresses the voxel *centre*, so it is handed ``lower - spacing / 2``, and
-    ``lessInside=True`` is what matches triwarp's outside-positive winding.
+    ``lessInside=True`` is what matches ordito's outside-positive winding.
 
     It is also the fairest CPU-versus-GPU row this module has, since MeshLib is the suite's only
     **multi-threaded** CPU reference. Both are far sublinear in the lattice, which is the shape to
     watch: read a regression here as the *slope* steepening rather than the absolute number moving.
-    ``triwarp-cpu`` loses to meshlib by an order of magnitude, which is the other edge of the same
+    ``ordito-cpu`` loses to meshlib by an order of magnitude, which is the other edge of the same
     knife and not a defect to chase -- a hundred-odd threads of C++ against Warp's CPU backend is
     not a comparison of algorithms, and CLAUDE.md section 9's "decide on the CUDA number" governs.
 
@@ -387,13 +387,13 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     device = bench_lib.device
     key = (resolution, str(device))
     if key not in _marching_field_wp_cache:
-        _marching_field_wp_cache[key] = twt.as_array3d(
+        _marching_field_wp_cache[key] = odt.as_array3d(
             wp.array(_marching_field_np(resolution), dtype=wp.float32, device=device), wp.float32
         )
     field_wp = _marching_field_wp_cache[key]
     half = _MARCHING_TORUS[2]
     bounds = (wp.vec3(-half, -half, -half), wp.vec3(half, half, half))
     _vertices_wp, faces_wp = bench_lib.run(
-        lambda: tw.levelset.marching_cubes(field_wp, 0.0, bounds=bounds)
+        lambda: od.levelset.marching_cubes(field_wp, 0.0, bounds=bounds)
     )
     assert faces_wp.size > 0

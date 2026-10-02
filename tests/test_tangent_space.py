@@ -1,5 +1,5 @@
 """
-Regression tests for ``triwarp.tangent_space`` against potpourri3d (CPU reference).
+Regression tests for ``ordito.tangent_space`` against potpourri3d (CPU reference).
 
 Tangent frames are only defined up to a rotation within the tangent plane — each library picks its
 own reference halfedge — so the comparisons here are the gauge-invariant ones: normals directly,
@@ -16,7 +16,7 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 from tests.conftest import MESHES
 
 
@@ -40,7 +40,7 @@ def test_vertex_tangent_frames_are_orthonormal(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_wp, basis_y_wp, normal_wp = tw.tangent_space.vertex_tangent_frames(
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )
 
@@ -67,7 +67,7 @@ def test_vertex_tangent_frames_match_potpourri3d(
     elementwise is what section 6 rules out.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_wp, basis_y_wp, normal_wp = tw.tangent_space.vertex_tangent_frames(
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )
     basis_x_pp, basis_y_pp, normal_pp = (
@@ -98,7 +98,7 @@ def test_vertex_tangent_frames_isolated_vertex(device: str) -> None:
         device=device,
     )
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    basis_x_wp, basis_y_wp, _ = tw.tangent_space.vertex_tangent_frames(vertices_wp, faces_wp)
+    basis_x_wp, basis_y_wp, _ = od.tangent_space.vertex_tangent_frames(vertices_wp, faces_wp)
 
     assert np.isfinite(basis_x_wp.numpy()).all()
     assert np.allclose(np.linalg.norm(basis_y_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
@@ -115,15 +115,15 @@ def test_halfedge_tangent_angles_span_the_rescaled_disk(
 ) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    ring_wp, offsets_wp, is_boundary_wp = tw.halfedge.vertex_one_rings(
+    ring_wp, offsets_wp, is_boundary_wp = od.halfedge.vertex_one_rings(
         mesh_wp.indices, n_vertices=n_vertices
     )
-    angles = tw.tangent_space.halfedge_tangent_angles(
+    angles = od.tangent_space.halfedge_tangent_angles(
         mesh_wp.points, mesh_wp.indices, rings=(ring_wp, offsets_wp, is_boundary_wp)
     ).numpy()
 
     offsets, ring, is_boundary = offsets_wp.numpy(), ring_wp.numpy(), is_boundary_wp.numpy()
-    corner_angles = tw.triangles.face_angles(mesh_wp.points, mesh_wp.indices).numpy()
+    corner_angles = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices).numpy()
     for vertex in range(n_vertices):
         ring_halfedges = ring[offsets[vertex] : offsets[vertex + 1]]
         if len(ring_halfedges) == 0:
@@ -174,7 +174,7 @@ def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
     cannot be used at all.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rho = tw.tangent_space.halfedge_transport_angles(mesh_wp.points, mesh_wp.indices).numpy()
+    rho = od.tangent_space.halfedge_transport_angles(mesh_wp.points, mesh_wp.indices).numpy()
 
     # A single transport angle depends on both endpoints' reference directions, but the holonomy
     # around a face does not — the reference rotations cancel around a closed loop — so that is what
@@ -208,8 +208,8 @@ def test_halfedge_transport_angles_are_antisymmetric(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    twins = tw.halfedge.halfedge_twins(mesh_wp.indices).numpy()
-    rho = tw.tangent_space.halfedge_transport_angles(mesh_wp.points, mesh_wp.indices).numpy()
+    twins = od.halfedge.halfedge_twins(mesh_wp.indices).numpy()
+    rho = od.tangent_space.halfedge_transport_angles(mesh_wp.points, mesh_wp.indices).numpy()
 
     # Transporting a vector across an edge and back is the identity: rho_ij = -rho_ji (mod 2*pi).
     interior = np.flatnonzero(twins >= 0)
@@ -230,7 +230,7 @@ def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_na
     itself, and ``igl.local_basis`` uses the same rule, so ``basis_x``, ``basis_y`` and the normal
     are each compared element-wise with no transform.
 
-    That makes this the test that pins the **convention** rather than a property: were triwarp to
+    That makes this the test that pins the **convention** rather than a property: were ordito to
     switch to, say, the longest edge or a projected global axis, the frame would still be
     orthonormal and still span the face, and only this comparison would notice.
     """
@@ -240,7 +240,7 @@ def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_na
         np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
     )
 
-    basis_x_wp, basis_y_wp, normal_wp = tw.tangent_space.face_tangent_frames(
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.face_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )
 
@@ -260,7 +260,7 @@ def test_face_tangent_frames_are_orthonormal_and_in_plane(
     the whole gauge rests on, and the one a refactor could silently change.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_wp, basis_y_wp, normal_wp = tw.tangent_space.face_tangent_frames(
+    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.face_tangent_frames(
         mesh_wp.points, mesh_wp.indices
     )
     basis_x_np = basis_x_wp.numpy()
@@ -283,7 +283,7 @@ def test_face_tangent_frames_are_orthonormal_and_in_plane(
 def test_face_tangent_frames_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    basis_x, basis_y, normals = tw.tangent_space.face_tangent_frames(vertices_wp, faces_wp)
+    basis_x, basis_y, normals = od.tangent_space.face_tangent_frames(vertices_wp, faces_wp)
     assert basis_x.shape == (0,)
     assert basis_y.shape == (0,)
     assert normals.shape == (0,)

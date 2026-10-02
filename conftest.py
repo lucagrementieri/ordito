@@ -7,7 +7,7 @@ because argparse rejects a duplicate option string, so registering it in both ma
 anything. Each suite interprets it on its own, but ``auto`` means the same thing in both --
 **one** device, cuda if available -- for two different reasons that happen to agree:
 
-- ``benchmarks/`` -- a ``triwarp-cpu`` row timed beside a ``triwarp-cuda`` one is a fight the CPU
+- ``benchmarks/`` -- a ``ordito-cpu`` row timed beside a ``ordito-cuda`` one is a fight the CPU
   cannot win (CLAUDE.md section 13), so it is off unless asked for.
 - ``tests/`` -- correctness *is* worth checking on both devices, but not inside one process:
   **Warp's CPU work is ~36x slower once CUDA has been initialised** (50.57 s against 1.40 s on one
@@ -29,11 +29,11 @@ DEVICE_CHOICES = ("auto", "cpu", "cuda", "both")
 
 def pytest_addoption(parser: pytest.Parser) -> None:
     """Register ``--device`` once for the whole repository."""
-    parser.getgroup("triwarp").addoption(
+    parser.getgroup("ordito").addoption(
         "--device",
         action="store",
         default="auto",
         choices=list(DEVICE_CHOICES),
         help="device selection. tests/: auto=both devices minus slow_cpu, cpu, cuda, both="
-        "everything. benchmarks/: triwarp target(s) to time, auto=cuda if available else cpu.",
+        "everything. benchmarks/: ordito target(s) to time, auto=cuda if available else cpu.",
     )

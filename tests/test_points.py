@@ -13,10 +13,10 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp.grouping as tw_grouping
-import triwarp.neighbors as tw_neighbors
-import triwarp.points as tw
-import triwarp.typing as twt
+import ordito.grouping as od_grouping
+import ordito.neighbors as od_neighbors
+import ordito.points as od
+import ordito.typing as odt
 from tests.comparisons import assert_same_up_to_sign
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -55,8 +55,8 @@ def test_point_plane_distance(device: str) -> None:
     rather than an assumption both sides happen to share.
 
     pyvista's ``compute_implicit_distance`` evaluates the same signed dot product, and the
-    comparison is made against the **exact** float64 answer as well as against triwarp's so the
-    residuals are attributable: measured 1.27e-07 for pyvista and 2.11e-07 for triwarp on a
+    comparison is made against the **exact** float64 answer as well as against ordito's so the
+    residuals are attributable: measured 1.27e-07 for pyvista and 2.11e-07 for ordito on a
     1 000-point cloud, i.e. each at its own storage precision rather than either being wrong.
 
     ``half_space_mask`` is claimed here too, because pyvista reaches it the only way it can -- one
@@ -76,13 +76,13 @@ def test_point_plane_distance(device: str) -> None:
     distances_tm = tm.point_plane_distance(points_np, plane_normal_np, plane_origin_np)
 
     points_wp = points_to_warp(points_np, device)
-    distances_wp = tw.point_plane_distance(
+    distances_wp = od.point_plane_distance(
         points_wp, wp.vec3(*plane_normal_np.tolist()), wp.vec3(*plane_origin_np.tolist())
     )
 
     assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
 
-    # pyvista, against the exact answer as well as against triwarp's.
+    # pyvista, against the exact answer as well as against ordito's.
     unit_np = plane_normal_np / np.linalg.norm(plane_normal_np)
     exact_np = (points_np - plane_origin_np) @ unit_np
     extent = 20.0 * float(np.abs(points_np).max())
@@ -96,7 +96,7 @@ def test_point_plane_distance(device: str) -> None:
     assert np.allclose(distances_wp.numpy(), distances_pv, rtol=1e-5, atol=1e-5)
 
     # half_space_mask is that field thresholded, which is pyvista's only route to it.
-    mask_wp = tw.half_space_mask(
+    mask_wp = od.half_space_mask(
         points_wp, wp.vec3(*plane_normal_np.tolist()), wp.vec3(*plane_origin_np.tolist())
     )
     assert 0 < int(mask_wp.numpy().sum()) < points_np.shape[0]  # both branches present
@@ -108,7 +108,7 @@ def test_half_space_mask_matches_meshlib(device: str) -> None:
     """
     Class A: the same half-space selection as ``findHalfSpacePoints``, boundary convention included.
 
-    meshlib's plane is ``dot(n, x) = d`` and triwarp's is a normal plus a point on it, so the
+    meshlib's plane is ``dot(n, x) = d`` and ordito's is a normal plus a point on it, so the
     transform is ``d = dot(n, origin)`` -- an argument mapping, not a value one, which is why this
     is Class A rather than B. The normal is deliberately **not** unit length: only the sign of the
     projection can matter, and a comparison at unit scale would not show that.
@@ -133,22 +133,22 @@ def test_half_space_mask_matches_meshlib(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     normal_wp = wp.vec3(*plane_normal_np.tolist())
     origin_wp = wp.vec3(*plane_origin_np.tolist())
-    mask_wp = tw.half_space_mask(points_wp, normal_wp, origin_wp)
+    mask_wp = od.half_space_mask(points_wp, normal_wp, origin_wp)
 
     assert np.array_equal(mask_wp.numpy(), mask_ml)
     assert 0 < int(mask_ml.sum()) < points_np.shape[0]  # both answers present, so not vacuous
 
     # Opposite normals partition the points off the plane, which the strict test is what makes true.
-    opposite_wp = tw.half_space_mask(points_wp, wp.vec3(*(-plane_normal_np).tolist()), origin_wp)
+    opposite_wp = od.half_space_mask(points_wp, wp.vec3(*(-plane_normal_np).tolist()), origin_wp)
     assert not np.any(mask_wp.numpy() & opposite_wp.numpy())
     assert np.all(mask_wp.numpy() | opposite_wp.numpy())
 
     # A point exactly on the plane is in neither half, for both libraries and both normals.
     on_plane_np = np.ascontiguousarray(plane_origin_np[None, :], dtype=np.float32)
     on_plane_wp = points_to_warp(on_plane_np, device)
-    assert not bool(tw.half_space_mask(on_plane_wp, normal_wp, origin_wp).numpy()[0])
+    assert not bool(od.half_space_mask(on_plane_wp, normal_wp, origin_wp).numpy()[0])
     assert not bool(
-        tw.half_space_mask(on_plane_wp, wp.vec3(*(-plane_normal_np).tolist()), origin_wp).numpy()[0]
+        od.half_space_mask(on_plane_wp, wp.vec3(*(-plane_normal_np).tolist()), origin_wp).numpy()[0]
     )
     assert not bool(
         meshlib_bitset_to_numpy(
@@ -162,17 +162,17 @@ def test_half_space_mask_defaults_to_the_origin(device: str) -> None:
     Not a library comparison: the ``plane_origin=None`` default and the empty input.
 
     ``None`` means the world origin, matching
-    [`point_plane_distance`][triwarp.points.point_plane_distance], so the mask is then the sign of
+    [`point_plane_distance`][ordito.points.point_plane_distance], so the mask is then the sign of
     ``dot(n, p)`` alone.
     """
     points_np = np.array([[0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [0.0, 0.0, 0.0]], dtype=np.float32)
     points_wp = points_to_warp(points_np, device)
     assert np.array_equal(
-        tw.half_space_mask(points_wp, wp.vec3(0.0, 0.0, 1.0)).numpy(),
+        od.half_space_mask(points_wp, wp.vec3(0.0, 0.0, 1.0)).numpy(),
         np.array([True, False, False]),
     )
 
-    empty_wp = tw.half_space_mask(warp_empty(0, wp.vec3, device), wp.vec3(1.0, 0.0, 0.0))
+    empty_wp = od.half_space_mask(warp_empty(0, wp.vec3, device), wp.vec3(1.0, 0.0, 0.0))
     assert empty_wp.shape == (0,)
     assert empty_wp.dtype == wp.bool
 
@@ -180,7 +180,7 @@ def test_half_space_mask_defaults_to_the_origin(device: str) -> None:
 def test_centroid(device: str) -> None:
     points_np = _random_points(128, seed=14)
     points_wp = points_to_warp(points_np, device)
-    centroid_wp = tw.centroid(points_wp)
+    centroid_wp = od.centroid(points_wp)
     assert np.allclose(centroid_wp.numpy()[0], points_np.mean(axis=0), rtol=1e-5, atol=1e-5)
 
 
@@ -189,12 +189,12 @@ def test_gram_matrix(device: str) -> None:
     points_np = _random_points(200, seed=10)
     points_wp = points_to_warp(points_np, device)
     gram_np = points_np.T @ points_np
-    assert np.allclose(tw.gram_matrix(points_wp).numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
+    assert np.allclose(od.gram_matrix(points_wp).numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
 
 
 def test_gram_matrix_empty(device: str) -> None:
     points_wp = warp_empty(0, wp.vec3, device)
-    assert np.allclose(tw.gram_matrix(points_wp).numpy()[0], np.zeros((3, 3)))
+    assert np.allclose(od.gram_matrix(points_wp).numpy()[0], np.zeros((3, 3)))
 
 
 @pytest.mark.parity("fit_line", "trimesh")
@@ -217,7 +217,7 @@ def test_fit_line(device: str) -> None:
     axis_tm = tm.major_axis(points_np)
 
     points_wp = points_to_warp(points_np, device)
-    axis_wp = tw.fit_line(points_wp)
+    axis_wp = od.fit_line(points_wp)
 
     # axis is direction-only: compare up to sign against trimesh and the
     # ground-truth direction.
@@ -230,7 +230,7 @@ def test_centered_covariance(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     centered_np = points_np - points_np.mean(axis=0)
     scatter_np = centered_np.T @ centered_np
-    cov_wp = tw.centered_covariance(points_wp)
+    cov_wp = od.centered_covariance(points_wp)
     assert np.allclose(cov_wp.numpy()[0], scatter_np, rtol=1e-4, atol=1e-4)
 
 
@@ -241,7 +241,7 @@ def test_centered_covariance_precomputed_center(device: str) -> None:
     center_wp = points_to_warp(mean_np.reshape(1, 3), device)
     centered_np = points_np - mean_np
     scatter_np = centered_np.T @ centered_np
-    cov_wp = tw.centered_covariance(points_wp, center=center_wp)
+    cov_wp = od.centered_covariance(points_wp, center=center_wp)
     assert np.allclose(cov_wp.numpy()[0], scatter_np, rtol=1e-4, atol=1e-4)
 
 
@@ -254,7 +254,7 @@ def test_principal_axes(device: str) -> None:
     points_np = (rng.standard_normal((500, 3)) @ np.diag([3.0, 1.0, 0.2])) + 5.0
     points_wp = points_to_warp(points_np, device)
 
-    rotation_wp, eigenvalues_wp, centroid_wp = tw.principal_axes(points_wp)
+    rotation_wp, eigenvalues_wp, centroid_wp = od.principal_axes(points_wp)
     rotation_np = np.array(rotation_wp).reshape(3, 3)
 
     axes_pv = pv.principal_axes(points_np)
@@ -295,9 +295,9 @@ def test_fit_plane_matches_meshlib(device: str) -> None:
     Class B (sign gauge only): ``PointAccumulator.getBestPlanef`` is the same least-squares plane.
 
     The transform is the *representation*: MeshLib returns a ``Plane3f`` -- a unit normal and an
-    offset ``d`` -- where triwarp returns a centroid and a normal, so the comparison is the normal
+    offset ``d`` -- where ordito returns a centroid and a normal, so the comparison is the normal
     up to sign (both are the smallest-eigenvalue covariance eigenvector, whose direction neither
-    library fixes) plus the plane equation ``n . c == d`` evaluated at triwarp's centroid.
+    library fixes) plus the plane equation ``n . c == d`` evaluated at ordito's centroid.
 
     Measured on an anisotropic 500-point cloud: ``|dot| = 1.0000000`` to seven digits, which is
     tighter than the trimesh and MeshLab pairings above and is why this is the one asserted at
@@ -309,7 +309,7 @@ def test_fit_plane_matches_meshlib(device: str) -> None:
         [2.0, -1.0, 0.5]
     )
     points_wp = points_to_warp(points_np, device)
-    normal_wp, centroid_wp = tw.fit_plane(points_wp)
+    normal_wp, centroid_wp = od.fit_plane(points_wp)
 
     plane_ml = _point_accumulator_ml(points_np).getBestPlanef()
     normal_ml = np.array([plane_ml.n.x, plane_ml.n.y, plane_ml.n.z], dtype=np.float64)
@@ -328,12 +328,12 @@ def test_principal_axes_matches_meshlib(device: str) -> None:
 
     ``getCenteredCovarianceEigen`` is an out-parameter call -- it takes a centroid, a ``Matrix3``
     and an eigenvalue vector to fill and returns a ``bool`` -- and it orders its eigenvalues
-    **ascending** where triwarp orders them descending, so the named transform is a reversal plus
+    **ascending** where ordito orders them descending, so the named transform is a reversal plus
     the per-axis sign every eigenvector comparison needs. Measured on a 500-point anisotropic cloud
     the eigenvalues agree to 4 digits (4542.72 / 538.20 / 19.62 on both sides, reversed) and each
     axis matches to ``|dot| = 1``.
 
-    Its eigenvalues are of the *scatter* matrix, carrying no ``1/n``, which is triwarp's convention
+    Its eigenvalues are of the *scatter* matrix, carrying no ``1/n``, which is ordito's convention
     too -- so this pins that convention against a second library, where the pyvista pairing above
     pins the axes alone.
     """
@@ -342,7 +342,7 @@ def test_principal_axes_matches_meshlib(device: str) -> None:
         [2.0, -1.0, 0.5]
     )
     points_wp = points_to_warp(points_np, device)
-    rotation_wp, eigenvalues_wp, centroid_wp = tw.principal_axes(points_wp)
+    rotation_wp, eigenvalues_wp, centroid_wp = od.principal_axes(points_wp)
 
     centroid_ml = mm.Vector3d()
     eigenvectors_ml = mm.Matrix3d()
@@ -389,23 +389,23 @@ def test_principal_axes_is_not_fit_line(device: str) -> None:
     moderate_wp = points_to_warp(moderate_np, device)
 
     leading_np = np.linalg.eigh(np.cov(moderate_np.T))[1][:, -1]
-    first_axis_np = np.array(tw.principal_axes(moderate_wp)[0]).reshape(3, 3)[0]
+    first_axis_np = np.array(od.principal_axes(moderate_wp)[0]).reshape(3, 3)[0]
 
     # principal_axes is the leading eigenvector ...
     assert np.isclose(abs(float(np.dot(first_axis_np, leading_np))), 1.0, atol=1e-4)
     # ... and the weighted major axis is a measurably different direction, on both sides.
     assert abs(float(np.dot(tm.major_axis(moderate_np), leading_np))) < 0.99
-    assert abs(float(np.dot(np.array(tw.fit_line(moderate_wp)), leading_np))) < 0.99
+    assert abs(float(np.dot(np.array(od.fit_line(moderate_wp)), leading_np))) < 0.99
 
     # On a needle every definition coincides, which is why the difference went unnoticed.
     needle_np = (rng.uniform(-10.0, 10.0, 200)[:, None] * np.array([0.3, 0.5, 0.8])) + (
         0.01 * rng.standard_normal((200, 3))
     )
     needle_wp = points_to_warp(needle_np, device)
-    needle_first_np = np.array(tw.principal_axes(needle_wp)[0]).reshape(3, 3)[0]
+    needle_first_np = np.array(od.principal_axes(needle_wp)[0]).reshape(3, 3)[0]
     assert np.isclose(abs(float(np.dot(needle_first_np, tm.major_axis(needle_np)))), 1.0, atol=1e-3)
     assert np.isclose(
-        abs(float(np.dot(np.array(tw.fit_line(needle_wp)), tm.major_axis(needle_np)))),
+        abs(float(np.dot(np.array(od.fit_line(needle_wp)), tm.major_axis(needle_np)))),
         1.0,
         atol=1e-3,
     )
@@ -419,7 +419,7 @@ def test_principal_axes_degenerate_spectrum(device: str) -> None:
         0.01 * rng.standard_normal((200, 3))
     )
     points_wp = points_to_warp(points_np, device)
-    rotation_np = np.array(tw.principal_axes(points_wp)[0]).reshape(3, 3)
+    rotation_np = np.array(od.principal_axes(points_wp)[0]).reshape(3, 3)
     axes_pv = pv.principal_axes(points_np)
 
     assert np.isclose(abs(float(np.dot(rotation_np[0], axes_pv[0]))), 1.0, atol=1e-5)
@@ -433,7 +433,7 @@ def test_principal_axes_degenerate_spectrum(device: str) -> None:
 def test_principal_axes_empty_and_single(device: str) -> None:
     """An empty cloud gives the identity frame; a single point gives a frame at that point."""
     empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    rotation_wp, eigenvalues_wp, centroid_wp = tw.principal_axes(empty_wp)
+    rotation_wp, eigenvalues_wp, centroid_wp = od.principal_axes(empty_wp)
     assert np.array_equal(np.array(rotation_wp).reshape(3, 3), np.eye(3))
     assert np.array_equal(np.array(eigenvalues_wp), np.zeros(3))
     assert np.array_equal(np.array(centroid_wp), np.zeros(3))
@@ -441,7 +441,7 @@ def test_principal_axes_empty_and_single(device: str) -> None:
     single_wp = wp.array(
         np.array([[1.0, 2.0, 3.0]], dtype=np.float32), dtype=wp.vec3, device=device
     )
-    rotation_wp, _eigenvalues_wp, centroid_wp = tw.principal_axes(single_wp)
+    rotation_wp, _eigenvalues_wp, centroid_wp = od.principal_axes(single_wp)
     assert np.isclose(float(np.linalg.det(np.array(rotation_wp).reshape(3, 3))), 1.0, atol=1e-6)
     assert np.allclose(np.array(centroid_wp), np.array([1.0, 2.0, 3.0]))
 
@@ -453,7 +453,7 @@ def test_fit_plane(device: str) -> None:
 
     trimesh's ``plane_fit`` returns the centroid and normal directly. **MeshLab** returns a *dict*,
     so the transform is the ``"fitting_plane_normal"`` key -- the rotation matrix and average error
-    it also builds are work triwarp does not do. Two of its quirks are load-bearing and match what
+    it also builds are work ordito does not do. Two of its quirks are load-bearing and match what
     the benchmark passes: it raises ``Cannot compute rotation: there is no selection`` unless
     something is selected, so ``set_selection_all`` is how it is told to fit *all* the points; and
     it takes a face-less MeshSet, which is what these bare points are. Both references leave the
@@ -476,7 +476,7 @@ def test_fit_plane(device: str) -> None:
     normal_pml /= np.linalg.norm(normal_pml)
 
     points_wp = points_to_warp(points_np, device)
-    normal_wp, centroid_wp = tw.fit_plane(points_wp)
+    normal_wp, centroid_wp = od.fit_plane(points_wp)
 
     assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-4, atol=1e-4)
     # normal is sign-ambiguous: compare up to sign.
@@ -509,7 +509,7 @@ def test_fit_plane_normal_matches_pyvista(device: str) -> None:
     )
 
     points_wp = points_to_warp(points_np, device)
-    normal_wp, centroid_wp = tw.fit_plane(points_wp)
+    normal_wp, centroid_wp = od.fit_plane(points_wp)
 
     assert np.isclose(
         abs(float(np.dot(np.array(normal_wp), np.asarray(normal_pv)))), 1.0, atol=1e-4
@@ -531,7 +531,7 @@ def test_plane_basis_is_right_handed_and_orthonormal(normal: tuple[float, float,
     both: two normals take the ``x`` seed and three the ``y`` seed. A non-unit normal is included
     because the signature says it need not be normalized. Measured residuals at most 3.7e-08.
     """
-    u_wp, v_wp = tw.plane_basis(wp.vec3(*normal))
+    u_wp, v_wp = od.plane_basis(wp.vec3(*normal))
 
     u_np = np.array(list(u_wp))
     v_np = np.array(list(v_wp))
@@ -548,13 +548,13 @@ def test_covariance(device: str) -> None:
     points_np = _random_points(200, seed=13)
     points_wp = points_to_warp(points_np, device)
     cov_np = np.cov(points_np.T, ddof=1)
-    assert np.allclose(tw.covariance(points_wp).numpy()[0], cov_np, rtol=1e-4, atol=1e-4)
+    assert np.allclose(od.covariance(points_wp).numpy()[0], cov_np, rtol=1e-4, atol=1e-4)
 
 
 def test_covariance_too_few_points_raises(device: str) -> None:
     points_wp = wp.zeros(1, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="ddof"):
-        tw.covariance(points_wp)
+        od.covariance(points_wp)
 
 
 def test_fit_line_large(device: str) -> None:
@@ -575,7 +575,7 @@ def test_fit_line_large(device: str) -> None:
     axis_tm = tm.major_axis(points_np)
 
     points_wp = points_to_warp(points_np, device)
-    axis_wp = tw.fit_line(points_wp)
+    axis_wp = od.fit_line(points_wp)
 
     assert np.isclose(np.abs(np.dot(np.array(axis_wp), axis_tm)), 1.0, atol=1e-4)
     assert np.isclose(np.abs(np.dot(np.array(axis_wp), direction_np)), 1.0, atol=1e-3)
@@ -595,7 +595,7 @@ def test_fit_plane_large(device: str) -> None:
     centroid_tm, normal_tm = tm.plane_fit(points_np)
 
     points_wp = points_to_warp(points_np, device)
-    normal_wp, centroid_wp = tw.fit_plane(points_wp)
+    normal_wp, centroid_wp = od.fit_plane(points_wp)
 
     assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-4, atol=1e-4)
     assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_tm)), 1.0, atol=1e-4)
@@ -616,7 +616,7 @@ def test_point_plane_distance_no_origin(device: str) -> None:
     distances_tm = tm.point_plane_distance(points_np, plane_normal_np)
 
     points_wp = points_to_warp(points_np, device)
-    distances_wp = tw.point_plane_distance(points_wp, wp.vec3(*plane_normal_np.tolist()))
+    distances_wp = od.point_plane_distance(points_wp, wp.vec3(*plane_normal_np.tolist()))
 
     assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
 
@@ -646,7 +646,7 @@ def test_radial_sort(device: str) -> None:
     ordered_tm = tm.radial_sort(points_np, origin=origin_np, normal=normal_np)
 
     points_wp = points_to_warp(points_np, device)
-    ordered_wp = tw.radial_sort(
+    ordered_wp = od.radial_sort(
         points_wp, wp.vec3(*origin_np.tolist()), wp.vec3(*normal_np.tolist())
     )
 
@@ -681,7 +681,7 @@ def test_radial_sort_perpendicular_to_a_tilted_normal(device: str) -> None:
     normal_np = np.array([1.0, 0.0, 0.0])
 
     points_wp = points_to_warp(points_np, device)
-    ordered_wp = tw.radial_sort(
+    ordered_wp = od.radial_sort(
         points_wp, wp.vec3(*origin_np.tolist()), wp.vec3(*normal_np.tolist())
     ).numpy()
 
@@ -720,7 +720,7 @@ def test_radial_sort_with_start(device: str) -> None:
     ordered_tm = tm.radial_sort(points_np, origin=origin_np, normal=normal_np, start=start_np)
 
     points_wp = points_to_warp(points_np, device)
-    ordered_wp = tw.radial_sort(
+    ordered_wp = od.radial_sort(
         points_wp,
         wp.vec3(*origin_np.tolist()),
         wp.vec3(*normal_np.tolist()),
@@ -742,7 +742,7 @@ def test_radial_sort_parallel_start_raises(device: str) -> None:
 
     points_wp = points_to_warp(points_np, device)
     with pytest.raises(ValueError, match=r"must not.*parallel"):
-        tw.radial_sort(
+        od.radial_sort(
             points_wp,
             wp.vec3(*origin_np.tolist()),
             wp.vec3(*normal_np.tolist()),
@@ -768,7 +768,7 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
 
     Both fix the smallest-eigenvalue covariance eigenvector and neither fixes its direction, so the
     named transform on all three sides is ``|dot| == 1``. **MeshLab** additionally needs
-    ``smoothiter=0`` -- its default runs a normal-smoothing pass afterwards, which triwarp does not
+    ``smoothiter=0`` -- its default runs a normal-smoothing pass afterwards, which ordito does not
     do -- and a face-less MeshSet, since ``compute_normal_for_point_clouds`` is for datasets with no
     faces. Both parameters are the ones the benchmark passes.
 
@@ -788,10 +788,10 @@ def test_estimate_normals_matches_open3d(device: str) -> None:
     meshset_pml.compute_normal_for_point_clouds(k=knn, smoothiter=0)
     normals_pml = np.asarray(meshset_pml.current_mesh().vertex_normal_matrix())
 
-    # triwarp: build the same k-neighbourhood (self + knn-1 = knn points total), then PCA.
+    # ordito: build the same k-neighbourhood (self + knn-1 = knn points total), then PCA.
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=knn, backend="bvh")
-    normals_wp = tw.estimate_normals(points_wp, neighbor_idx_wp)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=knn, backend="bvh")
+    normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp)
 
     # Both estimators fix the smallest-eigenvalue covariance eigenvector but leave the sign
     # free, so compare up to sign. A few points may disagree on KNN ties; require the vast
@@ -807,12 +807,12 @@ def test_estimate_normals_matches_pytorch3d(device: str) -> None:
     Class B: the smallest-eigenvector normal, up to sign (``|dot| == 1``).
 
     ``disambiguate_directions=False`` is not a convenience: with it ``True`` pytorch3d applies the
-    SHOT sign rule, which triwarp has no counterpart for, so the two would disagree on a
+    SHOT sign rule, which ordito has no counterpart for, so the two would disagree on a
     fixture-dependent subset of points for a reason that is not about the eigenvector. Left off,
     both sides leave the sign free and the comparison is the *subspace* -- measured min ``|dot|``
     0.9999979 and mean 1.0 over 600 points at a 16-neighbour window.
 
-    Both sides get the identical neighbourhood: triwarp's k-NN is what
+    Both sides get the identical neighbourhood: ordito's k-NN is what
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` pins against ``knn_points``,
     so a disagreement here is in the eigen-decomposition rather than in the gather.
     """
@@ -823,8 +823,8 @@ def test_estimate_normals_matches_pytorch3d(device: str) -> None:
         points_to_torch(points_np, device), neighborhood_size=16, disambiguate_directions=False
     )[0]
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=16)
-    normals_wp = tw.estimate_normals(points_wp, neighbor_idx_wp)
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=16)
+    normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp)
 
     assert normals_p3d.shape == (600, 3)
     alignment_np = np.abs(
@@ -848,7 +848,7 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
     """
     Class B (sign gauge): ``makeUnorientedNormals`` is the same PCA under a *radius* search.
 
-    The named transform is the neighbourhood: MeshLib searches by **radius** where triwarp is given
+    The named transform is the neighbourhood: MeshLib searches by **radius** where ordito is given
     a k-nearest table, so the two see the same points only where the cloud is uniform -- which is
     what the Fibonacci sphere is for. Measured there: minimum ``|dot|`` **0.99966** at a radius of
     1.5 mean spacings and **0.99945** at 3.0, i.e. every one of 2 000 normals agrees, and the result
@@ -856,7 +856,7 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
 
     ``makeOrientedNormals`` is the oriented sibling and fixes the sign by propagating over a
     spanning structure; on a closed cloud it agrees with the outward radial direction on **100 %**
-    of points, which is the assert below. That is the half triwarp's ``orient_reference`` does with
+    of points, which is the assert below. That is the half ordito's ``orient_reference`` does with
     a single reference vector instead, and the two are compared here for the first time.
     """
     knn = 30
@@ -864,10 +864,10 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
     spacing = float(np.sqrt(4.0 * np.pi / points_np.shape[0]))
 
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, _distances_wp = tw_neighbors.query_nearest(
+    neighbor_idx_wp, _distances_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=knn, backend="bvh"
     )
-    normals_wp = tw.estimate_normals(points_wp, neighbor_idx_wp).numpy()
+    normals_wp = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
 
     cloud_ml = points_to_meshlib(points_np)
     for radius_scale in (1.5, 3.0):
@@ -876,7 +876,7 @@ def test_estimate_normals_matches_meshlib(device: str) -> None:
         assert normals_ml.shape == points_np.shape  # non-vacuity: one normal per point
         assert np.abs(np.einsum("ij,ij->i", normals_wp, normals_ml)).min() > 0.999
 
-    # The oriented form, against triwarp's outward reference: both point away from the centre.
+    # The oriented form, against ordito's outward reference: both point away from the centre.
     oriented_ml = mm.makeOrientedNormals(cloud_ml, 2.0 * spacing)
     outward_np = points_np / np.linalg.norm(points_np, axis=1, keepdims=True)
     assert (np.einsum("ij,ij->i", mn.toNumpyArray(oriented_ml), outward_np) > 0.0).all()
@@ -889,22 +889,22 @@ def test_estimate_normals_orientation(device: str) -> None:
     points_np = _fibonacci_sphere(1000)
     centroid_np = points_np.mean(axis=0)
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=20, backend="bvh")
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=20, backend="bvh")
 
     # Default: outward from the cloud centroid (the reference vector the kernel uses).
-    normals_default = tw.estimate_normals(points_wp, neighbor_idx_wp).numpy()
+    normals_default = od.estimate_normals(points_wp, neighbor_idx_wp).numpy()
     assert np.all(np.einsum("ij,ij->i", normals_default, points_np - centroid_np) >= -tol)
 
     # Align with a fixed direction (Open3D orient_normals_to_align_with_direction).
     reference_np = np.array([0.0, 0.0, 1.0])
-    normals_dir = tw.estimate_normals(
+    normals_dir = od.estimate_normals(
         points_wp, neighbor_idx_wp, orient_reference=wp.vec3(*reference_np.tolist())
     ).numpy()
     assert np.all(normals_dir @ reference_np >= -tol)
 
     # Toward a camera at the sphere centre (Open3D orient_normals_towards_camera_location):
     # every normal points inward, i.e. opposite the outward position vector.
-    normals_cam = tw.estimate_normals(
+    normals_cam = od.estimate_normals(
         points_wp, neighbor_idx_wp, camera_location=wp.vec3(0.0, 0.0, 0.0)
     ).numpy()
     assert np.all(np.einsum("ij,ij->i", normals_cam, points_np) <= tol)
@@ -926,22 +926,22 @@ def test_estimate_normals_rejects_a_table_that_is_not_one_row_per_point(device: 
     """
     points_wp = points_to_warp(_fibonacci_sphere(10), device)
     for rows in (6, 14):
-        neighbor_idx_wp = twt.as_array2d(
+        neighbor_idx_wp = odt.as_array2d(
             wp.zeros((rows, 4), dtype=wp.int32, device=device), wp.int32
         )
         with pytest.raises(ValueError, match=r"one row per point"):
-            tw.estimate_normals(points_wp, neighbor_idx_wp)
+            od.estimate_normals(points_wp, neighbor_idx_wp)
 
     # The accepting case, so the guard is a bound and not a blanket refusal.
-    matching_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=4, backend="bvh")
-    assert tw.estimate_normals(points_wp, matching_wp).shape == (10,)
+    matching_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=4, backend="bvh")
+    assert od.estimate_normals(points_wp, matching_wp).shape == (10,)
 
 
 def test_estimate_normals_mutually_exclusive_orientation(device: str) -> None:
     points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=8, backend="bvh")
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=8, backend="bvh")
     with pytest.raises(ValueError, match=r"at most one"):
-        tw.estimate_normals(
+        od.estimate_normals(
             points_wp,
             neighbor_idx_wp,
             orient_reference=wp.vec3(0.0, 0.0, 1.0),
@@ -973,10 +973,10 @@ def test_outlier_probability_matches_scipy(device: str) -> None:
     probability_np = _loop_reference(points_np, k)
 
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, neighbor_distance_wp = tw_neighbors.query_nearest(
+    neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=k, backend="bvh"
     )
-    probability_wp = tw.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
+    probability_wp = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
     assert np.allclose(probability_wp.numpy(), probability_np, rtol=1e-4, atol=1e-4)
 
 
@@ -988,10 +988,10 @@ def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
     points_np = _cloud_with_outliers(n_inliers=n_inliers, n_outliers=n_outliers)
 
     points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, neighbor_distance_wp = tw_neighbors.query_nearest(
+    neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=k, backend="bvh"
     )
-    probability_wp = tw.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
+    probability_wp = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
     ranked = np.argsort(-probability_wp.numpy())
     assert set(ranked[:n_outliers].tolist()) == set(range(n_inliers, n_inliers + n_outliers))
 
@@ -1013,28 +1013,28 @@ def test_outlier_probability_is_scale_invariant(device: str) -> None:
     scores = []
     for factor in (1.0, 100.0):
         points_wp = points_to_warp(points_np * factor, device)
-        neighbor_idx_wp, neighbor_distance_wp = tw_neighbors.query_nearest(
+        neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
             points_wp, points_wp, k=32, backend="bvh"
         )
-        scores.append(tw.outlier_probability(neighbor_idx_wp, neighbor_distance_wp).numpy())
+        scores.append(od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp).numpy())
     assert np.allclose(scores[0], scores[1], rtol=1e-4, atol=1e-4)
 
 
 def test_outlier_probability_invalid_scale(device: str) -> None:
     points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, neighbor_distance_wp = tw_neighbors.query_nearest(
+    neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=4, backend="bvh"
     )
     with pytest.raises(ValueError, match="scale must be positive"):
-        tw.outlier_probability(neighbor_idx_wp, neighbor_distance_wp, scale=0.0)
+        od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp, scale=0.0)
 
 
 def test_outlier_probability_shape_mismatch(device: str) -> None:
     points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, _ = tw_neighbors.query_nearest(points_wp, points_wp, k=4, backend="bvh")
-    _, neighbor_distance_wp = tw_neighbors.query_nearest(points_wp, points_wp, k=5, backend="bvh")
+    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=4, backend="bvh")
+    _, neighbor_distance_wp = od_neighbors.query_nearest(points_wp, points_wp, k=5, backend="bvh")
     with pytest.raises(ValueError, match="same shape"):
-        tw.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
+        od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
 
 
 @pytest.mark.parity("statistical_outlier_mask", "open3d")
@@ -1055,10 +1055,10 @@ def test_statistical_outlier_mask_matches_open3d(device: str) -> None:
     outlier_o3d[np.asarray(keep_indices)] = False
 
     points_wp = points_to_warp(points_np, device)
-    _idx, neighbor_distance_wp = tw_neighbors.query_nearest(
+    _idx, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=k, backend="bvh"
     )
-    outlier_wp = tw.statistical_outlier_mask(neighbor_distance_wp, std_ratio=std_ratio)
+    outlier_wp = od.statistical_outlier_mask(neighbor_distance_wp, std_ratio=std_ratio)
     assert np.array_equal(outlier_wp.numpy().astype(bool), outlier_o3d)
 
 
@@ -1069,9 +1069,9 @@ def test_statistical_outlier_mask_matches_open3d(device: str) -> None:
     reason="findOutliers is a different criterion, not a different tuning: its four modes are "
     "connectivity- and normal-based (SmallComponents, WeaklyConnected, FarSurface, AwayNormal) "
     "where statistical_outlier_mask is a z-score on the k-NN mean distance, and it takes a radius "
-    "where triwarp takes a neighbour count. Timing them against each other would price two "
+    "where ordito takes a neighbour count. Timing them against each other would price two "
     "different questions -- measured on a planted cloud, SmallComponents flags 26 points to "
-    "triwarp's 13 while both contain all 15 planted outliers. open3d's remove_statistical_outlier "
+    "ordito's 13 while both contain all 15 planted outliers. open3d's remove_statistical_outlier "
     "is the same z-score and carries the timed row; the comparison here is what MeshLib can still "
     "say about the answer.",
 )
@@ -1082,14 +1082,14 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     ``findOutliers`` with ``OutlierTypeMask.SmallComponents`` labels a point an outlier when its
     connected component under a radius graph is small, which is a different question from a z-score
     on the k-NN mean distance -- so there is no correspondence to compare and the statistic is what
-    each finds. On the planted cloud both find **all 15** seeded outliers, and triwarp's 13 flagged
+    each finds. On the planted cloud both find **all 15** seeded outliers, and ordito's 13 flagged
     points are a **subset** of MeshLib's 26: it is the more conservative of the two, with zero false
     positives against MeshLib's 11.
 
     **Bug class excluded:** a detector that flags the wrong points, or flags on the wrong scale --
     containment is what a looser threshold cannot fake, since a mask that grew arbitrarily would
     break the subset relation in the other direction. **Mutation probe, measured:** shuffling
-    triwarp's mask drops the element-wise agreement from 0.969 to 0.906 -- too thin a margin to
+    ordito's mask drops the element-wise agreement from 0.969 to 0.906 -- too thin a margin to
     assert on, which is exactly why the assert is recall plus containment rather than agreement.
 
     **The default mask is unusable and crashes**: ``FindOutliersParams.mask`` defaults to ``All``,
@@ -1103,10 +1103,10 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     planted_np[-n_outliers:] = True
 
     points_wp = points_to_warp(points_np, device)
-    _idx_wp, neighbor_distance_wp = tw_neighbors.query_nearest(
+    _idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
         points_wp, points_wp, k=k, backend="bvh"
     )
-    outlier_wp = tw.statistical_outlier_mask(neighbor_distance_wp, std_ratio=std_ratio).numpy()
+    outlier_wp = od.statistical_outlier_mask(neighbor_distance_wp, std_ratio=std_ratio).numpy()
 
     cloud_ml = points_to_meshlib(points_np)
     params_ml = mm.FindOutliersParams()
@@ -1119,12 +1119,12 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     )  # non-vacuity: not "everything is an outlier"
     assert (outlier_ml & planted_np).sum() == n_outliers  # the reference found every planted one
     assert (outlier_wp & planted_np).sum() >= n_outliers - 2
-    assert (outlier_wp & ~outlier_ml).sum() == 0  # triwarp's set is contained in MeshLib's
+    assert (outlier_wp & ~outlier_ml).sum() == 0  # ordito's set is contained in MeshLib's
 
 
 def test_statistical_outlier_mask_empty(device: str) -> None:
-    neighbor_distance_wp = twt.empty_2d((0, 8), wp.float32, device=device)
-    assert tw.statistical_outlier_mask(neighbor_distance_wp).shape == (0,)
+    neighbor_distance_wp = odt.empty_2d((0, 8), wp.float32, device=device)
+    assert od.statistical_outlier_mask(neighbor_distance_wp).shape == (0,)
 
 
 def test_statistical_outlier_mask_flags_coincident_and_empty_rows_below_two_counted(
@@ -1142,10 +1142,10 @@ def test_statistical_outlier_mask_flags_coincident_and_empty_rows_below_two_coun
     one fully coincident (every neighbour at distance 0), two fully empty (every slot ``inf``) --
     every one of the three must read ``True``.
     """
-    neighbor_distance_wp = twt.as_array2d(
+    neighbor_distance_wp = odt.as_array2d(
         wp.array(np.array([[0.0], [np.inf], [np.inf]], dtype=np.float32), device=device), wp.float32
     )
-    outlier_wp = tw.statistical_outlier_mask(neighbor_distance_wp).numpy()
+    outlier_wp = od.statistical_outlier_mask(neighbor_distance_wp).numpy()
     assert np.array_equal(outlier_wp, np.array([True, True, True]))
 
 
@@ -1176,25 +1176,25 @@ def test_radius_outlier_mask_matches_open3d(device: str) -> None:
     )
 
     points_wp = points_to_warp(points_np, device)
-    count_wp = tw_neighbors.query_ball_count(points_wp, points_wp, radius)
+    count_wp = od_neighbors.query_ball_count(points_wp, points_wp, radius)
     assert np.array_equal(count_wp.numpy(), count_o3d)
 
     for min_neighbors in (3, 6, 12):
         outlier_o3d = count_o3d <= min_neighbors
         # non-vacuity: this threshold splits the cloud rather than condemning or sparing all of it
         assert 0 < outlier_o3d.sum() < 500
-        outlier_wp = tw.radius_outlier_mask(points_wp, radius, min_neighbors)
+        outlier_wp = od.radius_outlier_mask(points_wp, radius, min_neighbors)
         assert np.array_equal(outlier_wp.numpy().astype(bool), outlier_o3d)
 
 
 def test_radius_outlier_mask_invalid_arguments(device: str) -> None:
     points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="radius"):
-        tw.radius_outlier_mask(points_wp, 0.0, 2)
+        od.radius_outlier_mask(points_wp, 0.0, 2)
     with pytest.raises(ValueError, match="min_neighbors"):
-        tw.radius_outlier_mask(points_wp, 1.0, 0)
+        od.radius_outlier_mask(points_wp, 1.0, 0)
     empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.radius_outlier_mask(empty_wp, 1.0, 2).shape == (0,)
+    assert od.radius_outlier_mask(empty_wp, 1.0, 2).shape == (0,)
 
 
 @pytest.mark.parity(
@@ -1226,14 +1226,14 @@ def test_point_finite_mask_matches_open3d(device: str) -> None:
     kept_o3d = np.asarray(points_to_open3d(points_np).remove_non_finite_points().points)
 
     points_wp = points_to_warp(points_np, device)
-    finite_wp = tw.point_finite_mask(points_wp).numpy().astype(bool)
+    finite_wp = od.point_finite_mask(points_wp).numpy().astype(bool)
 
     assert kept_o3d.shape[0] == 36  # non-vacuity: the reference dropped exactly the four planted
     assert np.array_equal(np.flatnonzero(~finite_wp), np.array([3, 7, 11, 19]))
     assert np.allclose(points_np[finite_wp], kept_o3d, rtol=1e-5, atol=1e-5)
 
     empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.point_finite_mask(empty_wp).shape == (0,)
+    assert od.point_finite_mask(empty_wp).shape == (0,)
 
 
 @pytest.mark.parity("point_duplicate_mask", "open3d")
@@ -1263,7 +1263,7 @@ def test_point_duplicate_mask_matches_open3d(device: str) -> None:
     )
 
     points_wp = points_to_warp(points_np, device)
-    duplicate_wp = tw.point_duplicate_mask(points_wp).numpy().astype(bool)
+    duplicate_wp = od.point_duplicate_mask(points_wp).numpy().astype(bool)
 
     # non-vacuity: 10 repeats plus the second zero row, so both the mask and its complement matter
     assert duplicate_wp.sum() == 11
@@ -1271,7 +1271,7 @@ def test_point_duplicate_mask_matches_open3d(device: str) -> None:
     assert np.array_equal(points_np[~duplicate_wp], kept_o3d)
 
     empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.point_duplicate_mask(empty_wp).shape == (0,)
+    assert od.point_duplicate_mask(empty_wp).shape == (0,)
 
 
 @pytest.mark.parity("point_duplicate_mask", "meshlib")
@@ -1311,7 +1311,7 @@ def test_point_duplicate_mask_matches_meshlib(device: str) -> None:
     duplicate_ml = representative_ml != np.arange(points_np.shape[0])
 
     points_wp = points_to_warp(points_np, device)
-    duplicate_wp = tw.point_duplicate_mask(points_wp).numpy().astype(bool)
+    duplicate_wp = od.point_duplicate_mask(points_wp).numpy().astype(bool)
 
     assert duplicate_ml.sum() == 11  # non-vacuity: the mask and its complement both matter
     assert np.array_equal(duplicate_wp, duplicate_ml)
@@ -1333,12 +1333,12 @@ def test_point_duplicate_mask_separates_one_ulp(device: str) -> None:
     points_np = np.array([[one, 0.0, 0.0], [next_one, 0.0, 0.0], [one, 0.0, 0.0]], dtype=np.float32)
 
     points_wp = points_to_warp(points_np, device)
-    duplicate_wp = tw.point_duplicate_mask(points_wp).numpy().astype(bool)
+    duplicate_wp = od.point_duplicate_mask(points_wp).numpy().astype(bool)
 
     # row 1 is one ULP away and is its own position; row 2 repeats row 0 exactly
     assert np.array_equal(duplicate_wp, np.array([False, False, True]))
 
-    _unique_bucketed = tw_grouping.unique_rows(points_wp)
+    _unique_bucketed = od_grouping.unique_rows(points_wp)
     assert _unique_bucketed.size == 1  # the bucketed key merges all three
 
 
@@ -1373,7 +1373,7 @@ def test_point_duplicate_mask_distinct_points_sharing_a_slot(device: str) -> Non
     assert _position_hash_slot_np(points_np[:2], 7).tolist() == [slots_np[first]] * 2
     assert not np.array_equal(points_np[0], points_np[1])
 
-    duplicate_wp = tw.point_duplicate_mask(points_to_warp(points_np, device)).numpy()
+    duplicate_wp = od.point_duplicate_mask(points_to_warp(points_np, device)).numpy()
 
     assert np.array_equal(duplicate_wp, np.array([False, False, True, True]))
 
@@ -1399,7 +1399,7 @@ def test_farthest_point_sample_matches_open3d(device: str) -> None:
         }
         assert len(index_o3d) == count  # non-vacuity: the reference really returned `count` points
 
-        index_wp = tw.farthest_point_sample(points_wp, count).numpy()
+        index_wp = od.farthest_point_sample(points_wp, count).numpy()
         assert set(index_wp.tolist()) == index_o3d
 
 
@@ -1411,18 +1411,18 @@ def test_farthest_point_sample_matches_pytorch3d(device: str) -> None:
     A strictly stronger oracle than the open3d one above, and worth having for exactly that reason:
     open3d routes every selection through ``SelectByIndex``, which emits survivors in ascending
     index order and destroys the greedy order, so that comparison can only assert set equality.
-    pytorch3d returns the indices in the order it picked them. Both libraries and triwarp resolve
+    pytorch3d returns the indices in the order it picked them. Both libraries and ordito resolve
     an arg-max tie to the lowest index, which is what makes an exact sequence comparison legitimate
     on a cloud that happens to tie.
 
-    ``random_start_point=False`` pins pytorch3d's start to index 0, which is triwarp's default.
+    ``random_start_point=False`` pins pytorch3d's start to index 0, which is ordito's default.
     """
     rng = np.random.default_rng(7)
     points_np = rng.normal(size=(500, 3)).astype(np.float32)
     _, indices_p3d = p3d_ops.sample_farthest_points(
         points_to_torch(points_np, device), K=8, random_start_point=False
     )
-    indices_wp = tw.farthest_point_sample(points_to_warp(points_np, device), 8)
+    indices_wp = od.farthest_point_sample(points_to_warp(points_np, device), 8)
 
     assert indices_p3d.shape == (1, 8)
     assert np.unique(indices_p3d.cpu().numpy()).size == 8
@@ -1462,14 +1462,14 @@ def test_farthest_point_sample_sequence_and_coverage(device: str, start: int) ->
     points_np = rng.random((400, 3)).astype(np.float32)
     points_wp = points_to_warp(points_np, device)
 
-    index_wp = tw.farthest_point_sample(points_wp, 40, start=start).numpy()
+    index_wp = od.farthest_point_sample(points_wp, 40, start=start).numpy()
     assert np.array_equal(
         index_wp, _farthest_point_sequence(points_np.astype(np.float64), 40, start)
     )
 
     radii = []
     for count in (4, 10, 40):
-        chosen_np = points_np[tw.farthest_point_sample(points_wp, count, start=start).numpy()]
+        chosen_np = points_np[od.farthest_point_sample(points_wp, count, start=start).numpy()]
         radii.append(
             float(
                 np.linalg.norm(points_np[:, None, :] - chosen_np[None, :, :], axis=2)
@@ -1482,13 +1482,13 @@ def test_farthest_point_sample_sequence_and_coverage(device: str, start: int) ->
 
 def test_farthest_point_sample_invalid_arguments(device: str) -> None:
     points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert tw.farthest_point_sample(points_wp, 0).shape == (0,)
+    assert od.farthest_point_sample(points_wp, 0).shape == (0,)
     with pytest.raises(ValueError, match="count"):
-        tw.farthest_point_sample(points_wp, 5)
+        od.farthest_point_sample(points_wp, 5)
     with pytest.raises(ValueError, match="count"):
-        tw.farthest_point_sample(points_wp, -1)
+        od.farthest_point_sample(points_wp, -1)
     with pytest.raises(ValueError, match="start"):
-        tw.farthest_point_sample(points_wp, 2, start=4)
+        od.farthest_point_sample(points_wp, 2, start=4)
 
 
 @pytest.mark.parity("vector_angle", "trimesh")
@@ -1512,14 +1512,14 @@ def test_vector_angle(device: str) -> None:
 
     vecs_a_wp = points_to_warp(vecs_a_np, device)
     vecs_b_wp = points_to_warp(vecs_b_np, device)
-    angles_wp = tw.vector_angle(vecs_a_wp, vecs_b_wp)
+    angles_wp = od.vector_angle(vecs_a_wp, vecs_b_wp)
     assert np.allclose(angles_wp.numpy(), angles_tm, rtol=1e-5, atol=1e-5)
 
 
 def test_vector_angle_empty(device: str) -> None:
     vecs_a_wp = warp_empty(0, wp.vec3, device)
     vecs_b_wp = warp_empty(0, wp.vec3, device)
-    angles_wp = tw.vector_angle(vecs_a_wp, vecs_b_wp)
+    angles_wp = od.vector_angle(vecs_a_wp, vecs_b_wp)
     assert angles_wp.shape == (0,)
 
 
@@ -1535,7 +1535,7 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
     out equality -- it does not rule out a test. Two properties are checkable and are exactly
     what an approximate hull filter has to guarantee:
 
-    - **soundness**, asserted exactly: every point triwarp selects must be a true hull vertex. This
+    - **soundness**, asserted exactly: every point ordito selects must be a true hull vertex. This
       is the half that catches a real bug -- an implementation that returned interior points, or the
       whole cloud, fails immediately, and no tolerance is involved. Note this is the *fixture's*
       guarantee, not the function's: it holds because 500 standard-normal points are in general
@@ -1557,7 +1557,7 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
     Both hull entry points are checked against the references here, which is why the marker names
     ``convex_subset`` as well as ``convex_subset_mask``: the two benchmark groups time the same
     approximation against the same qhull bar, so one comparison is the honest place for both claims.
-    The *mask against subset* equality below is triwarp-against-triwarp -- the mask is the entry
+    The *mask against subset* equality below is ordito-against-ordito -- the mask is the entry
     point carrying the oracle, and ``test_convex_subset_points`` pins the same pair on positions.
     """
     rng = np.random.default_rng(0)
@@ -1565,7 +1565,7 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
     points_wp = points_to_warp(points_np, device)
 
     selected = set(
-        np.flatnonzero(tw.convex_subset_mask(points_wp, n_directions=256).numpy()).tolist()
+        np.flatnonzero(od.convex_subset_mask(points_wp, n_directions=256).numpy()).tolist()
     )
 
     def hull_indices(hull_vertices: np.ndarray, tolerance: float = 1e-9) -> set[int]:
@@ -1579,7 +1579,7 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
     # ``float32`` where the three references hand back the ``float64`` inputs verbatim, so the
     # lookup needs a float32-scale tolerance: measured 1.2e-07 of round-trip error against a
     # minimum inter-point spacing of 0.046 in this cloud, so 1e-5 is unambiguous by ~4 600x.
-    assert hull_indices(tw.convex_subset(points_wp, n_directions=256).numpy(), 1e-5) == selected
+    assert hull_indices(od.convex_subset(points_wp, n_directions=256).numpy(), 1e-5) == selected
 
     hull_tm = hull_indices(tm.PointCloud(points_np).convex_hull.vertices)
     mesh_o3d, _kept = points_to_open3d(points_np).compute_convex_hull()
@@ -1602,7 +1602,7 @@ def test_convex_subset_mask_sound(device: str) -> None:
     points_np = rng.standard_normal((500, 3)).astype(np.float64)
     points_wp = points_to_warp(points_np, device)
 
-    mask_wp = tw.convex_subset_mask(points_wp, n_directions=256)
+    mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
     selected = np.flatnonzero(mask_wp.numpy())
 
     hull_scipy = scipy.spatial.ConvexHull(points_np)
@@ -1617,8 +1617,8 @@ def test_convex_subset_mask_scale_invariant(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     scaled_wp = points_to_warp(scaled_np, device)
 
-    mask_wp = tw.convex_subset_mask(points_wp, n_directions=256)
-    mask_scaled_wp = tw.convex_subset_mask(scaled_wp, n_directions=256)
+    mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
+    mask_scaled_wp = od.convex_subset_mask(scaled_wp, n_directions=256)
     assert np.array_equal(mask_wp.numpy(), mask_scaled_wp.numpy())
 
     hull_scipy = scipy.spatial.ConvexHull(scaled_np)
@@ -1631,7 +1631,7 @@ def test_convex_subset_recall(device: str) -> None:
     points_np = rng.standard_normal((200, 3)).astype(np.float64)
     points_wp = points_to_warp(points_np, device)
 
-    mask_wp = tw.convex_subset_mask(points_wp, n_directions=4096)
+    mask_wp = od.convex_subset_mask(points_wp, n_directions=4096)
     selected = set(np.flatnonzero(mask_wp.numpy()).tolist())
 
     hull_scipy = scipy.spatial.ConvexHull(points_np)
@@ -1643,8 +1643,8 @@ def test_convex_subset_points(device: str) -> None:
     points_np = rng.standard_normal((300, 3)).astype(np.float64)
     points_wp = points_to_warp(points_np, device)
 
-    mask_wp = tw.convex_subset_mask(points_wp, n_directions=256)
-    subset_wp = tw.convex_subset(points_wp, n_directions=256)
+    mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
+    subset_wp = od.convex_subset(points_wp, n_directions=256)
 
     selected = np.flatnonzero(mask_wp.numpy())
     expected_points = points_np[np.sort(selected)]
@@ -1656,7 +1656,7 @@ def test_convex_masks_slice_filter_matches_exhaustive(
     device: str, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     """
-    Triwarp against triwarp: the slice-filtered sweeps mark exactly what the exhaustive ones do.
+    Ordito against ordito: the slice-filtered sweeps mark exactly what the exhaustive ones do.
 
     From ``SUPPORT_SLICE_FILTER_FROM`` points the support sweeps walk only the slices whose
     extremes reach a threshold; no fixture here is that large, so the threshold is moved both ways
@@ -1669,13 +1669,13 @@ def test_convex_masks_slice_filter_matches_exhaustive(
 
     def masks() -> list[np.ndarray]:
         return [
-            tw.convex_subset_mask(points_wp, n_directions=256).numpy(),
-            tw.convex_superset_mask(points_wp, subdivisions=2).numpy(),
+            od.convex_subset_mask(points_wp, n_directions=256).numpy(),
+            od.convex_superset_mask(points_wp, subdivisions=2).numpy(),
         ]
 
-    monkeypatch.setattr(tw, "SUPPORT_SLICE_FILTER_FROM", 1 << 30)
+    monkeypatch.setattr(od, "SUPPORT_SLICE_FILTER_FROM", 1 << 30)
     exhaustive = masks()
-    monkeypatch.setattr(tw, "SUPPORT_SLICE_FILTER_FROM", 0)
+    monkeypatch.setattr(od, "SUPPORT_SLICE_FILTER_FROM", 0)
     filtered = masks()
     assert all(0 < int(mask.sum()) < mask.size for mask in exhaustive)
     for exhaustive_mask, filtered_mask in zip(exhaustive, filtered, strict=True):
@@ -1684,7 +1684,7 @@ def test_convex_masks_slice_filter_matches_exhaustive(
 
 def test_convex_subset_mask_empty(device: str) -> None:
     points_wp = warp_empty(0, wp.vec3, device)
-    mask_wp = tw.convex_subset_mask(points_wp)
+    mask_wp = od.convex_subset_mask(points_wp)
     assert mask_wp.shape == (0,)
 
 
@@ -1731,7 +1731,7 @@ def test_convex_superset_mask_contains_the_exact_hull(device: str, kind: str) ->
     points_np = _cloud(kind, 20_000, seed=11)
     points_wp = points_to_warp(points_np, device)
 
-    mask_np = tw.convex_superset_mask(points_wp, subdivisions=3).numpy()
+    mask_np = od.convex_superset_mask(points_wp, subdivisions=3).numpy()
     kept = set(np.flatnonzero(mask_np).tolist())
     hull_scipy = set(scipy.spatial.ConvexHull(points_np).vertices.tolist())
 
@@ -1748,7 +1748,7 @@ def test_convex_superset_mask_tightens_with_subdivisions(device: str, kind: str)
 
     counts = []
     for subdivisions in (0, 1, 2, 3):
-        mask_np = tw.convex_superset_mask(points_wp, subdivisions=subdivisions).numpy()
+        mask_np = od.convex_superset_mask(points_wp, subdivisions=subdivisions).numpy()
         assert hull_scipy <= set(np.flatnonzero(mask_np).tolist())
         counts.append(int(mask_np.sum()))
 
@@ -1762,8 +1762,8 @@ def test_convex_superset_mask_contains_the_subset_mask(device: str) -> None:
     points_np = _cloud("gaussian", 5_000, seed=13)
     points_wp = points_to_warp(points_np, device)
 
-    subset_np = tw.convex_subset_mask(points_wp, n_directions=256).numpy()
-    superset_np = tw.convex_superset_mask(points_wp, subdivisions=3).numpy()
+    subset_np = od.convex_subset_mask(points_wp, n_directions=256).numpy()
+    superset_np = od.convex_superset_mask(points_wp, subdivisions=3).numpy()
     hull_scipy = set(scipy.spatial.ConvexHull(points_np).vertices.tolist())
 
     assert set(np.flatnonzero(subset_np).tolist()) <= hull_scipy
@@ -1778,7 +1778,7 @@ def test_convex_superset_mask_scale_invariant(device: str) -> None:
     scaled_wp = points_to_warp(points_np * 10000.0, device)
 
     assert np.array_equal(
-        tw.convex_superset_mask(points_wp).numpy(), tw.convex_superset_mask(scaled_wp).numpy()
+        od.convex_superset_mask(points_wp).numpy(), od.convex_superset_mask(scaled_wp).numpy()
     )
 
 
@@ -1802,12 +1802,12 @@ def test_convex_superset_mask_degenerate_keeps_everything(device: str, kind: str
         points_np = rng.standard_normal((3, 3))
 
     points_wp = points_to_warp(points_np, device)
-    assert tw.convex_superset_mask(points_wp).numpy().all()
+    assert od.convex_superset_mask(points_wp).numpy().all()
 
 
 def test_convex_superset_mask_empty(device: str) -> None:
     points_wp = warp_empty(0, wp.vec3, device)
-    mask_wp = tw.convex_superset_mask(points_wp)
+    mask_wp = od.convex_superset_mask(points_wp)
     assert mask_wp.shape == (0,)
 
 
@@ -1831,8 +1831,8 @@ def test_support_sweep_agrees_across_devices(mask_device: str) -> None:
     points_wp = points_to_warp(points_np, mask_device)
     hull_scipy = set(scipy.spatial.ConvexHull(points_np).vertices.tolist())
 
-    subset_np = tw.convex_subset_mask(points_wp, n_directions=128).numpy()
-    superset_np = tw.convex_superset_mask(points_wp, subdivisions=2).numpy()
+    subset_np = od.convex_subset_mask(points_wp, n_directions=128).numpy()
+    superset_np = od.convex_superset_mask(points_wp, subdivisions=2).numpy()
 
     assert set(np.flatnonzero(subset_np).tolist()) <= hull_scipy
     assert hull_scipy <= set(np.flatnonzero(superset_np).tolist())

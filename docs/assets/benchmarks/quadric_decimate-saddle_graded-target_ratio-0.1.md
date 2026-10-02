@@ -6,7 +6,7 @@ search:
 | Library | Median |
 |---|---|
 | MeshLib | 31.36 ms |
-| triwarp (CUDA) | 46.06 ms |
+| ordito (CUDA) | 46.06 ms |
 | PyVista | 55.12 ms |
 | libigl | 75.98 ms |
 | Open3D | 84.58 ms |

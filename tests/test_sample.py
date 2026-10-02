@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.sample`` vs ``trimesh.sample`` (CPU reference)."""
+"""Regression tests for ``ordito.sample`` vs ``trimesh.sample`` (CPU reference)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,8 @@ from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 from scipy.spatial.distance import pdist
 
-import triwarp as tw
+import ordito as od
+from ordito.kernels import sample as kernel_sample
 from tests.comparisons import chamfer_two_sided
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -28,11 +29,10 @@ from tests.conversions import (
     trimesh_to_pytorch3d,
     warp_empty,
 )
-from triwarp.kernels import sample as kernel_sample
 
 
 def test_sample_fibonacci_sphere_unit(device: str):
-    directions_wp = tw.sample.sample_fibonacci_sphere(1000, device=device)
+    directions_wp = od.sample.sample_fibonacci_sphere(1000, device=device)
     directions_np = directions_wp.numpy()
     assert directions_np.shape == (1000, 3)
     norms = np.linalg.norm(directions_np, axis=1)
@@ -41,23 +41,23 @@ def test_sample_fibonacci_sphere_unit(device: str):
 
 def test_sample_fibonacci_sphere_uniform(device: str):
     # A near-uniform covering of the sphere has its centroid essentially at the origin.
-    directions_np = tw.sample.sample_fibonacci_sphere(4096, device=device).numpy()
+    directions_np = od.sample.sample_fibonacci_sphere(4096, device=device).numpy()
     assert np.allclose(directions_np.mean(axis=0), 0.0, atol=1e-2)
 
 
 def test_sample_fibonacci_sphere_deterministic(device: str):
-    directions_a = tw.sample.sample_fibonacci_sphere(500, device=device).numpy()
-    directions_b = tw.sample.sample_fibonacci_sphere(500, device=device).numpy()
+    directions_a = od.sample.sample_fibonacci_sphere(500, device=device).numpy()
+    directions_b = od.sample.sample_fibonacci_sphere(500, device=device).numpy()
     assert np.array_equal(directions_a, directions_b)
 
 
 def test_sample_fibonacci_sphere_empty(device: str):
-    directions_wp = tw.sample.sample_fibonacci_sphere(0, device=device)
+    directions_wp = od.sample.sample_fibonacci_sphere(0, device=device)
     assert directions_wp.shape == (0,)
 
 
 def test_sample_fibonacci_hemisphere_positive_z(device: str):
-    directions_np = tw.sample.sample_fibonacci_hemisphere(1000, device=device).numpy()
+    directions_np = od.sample.sample_fibonacci_hemisphere(1000, device=device).numpy()
     assert directions_np.shape == (1000, 3)
     assert np.all(directions_np[:, 2] > 0.0)
     norms = np.linalg.norm(directions_np, axis=1)
@@ -65,14 +65,14 @@ def test_sample_fibonacci_hemisphere_positive_z(device: str):
 
 
 def test_sample_fibonacci_hemisphere_empty(device: str):
-    directions_wp = tw.sample.sample_fibonacci_hemisphere(0, device=device)
+    directions_wp = od.sample.sample_fibonacci_hemisphere(0, device=device)
     assert directions_wp.shape == (0,)
 
 
 def test_sample_fibonacci_cone(device: str) -> None:
     """Every direction inside the cone, and both ends of the range match sphere/hemisphere."""
     half_angle = np.deg2rad(25.0)
-    directions_np = tw.sample.sample_fibonacci_cone(512, half_angle, device=device).numpy()
+    directions_np = od.sample.sample_fibonacci_cone(512, half_angle, device=device).numpy()
     assert np.allclose(np.linalg.norm(directions_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
     polar_np = np.arccos(np.clip(directions_np[:, 2], -1.0, 1.0))
     assert polar_np.max() <= half_angle + 1e-6
@@ -80,14 +80,14 @@ def test_sample_fibonacci_cone(device: str) -> None:
     assert np.isclose(directions_np[:, 2].mean(), 0.5 * (1.0 + np.cos(half_angle)), atol=1e-3)
 
     assert np.allclose(
-        tw.sample.sample_fibonacci_cone(64, np.pi / 2.0, device=device).numpy(),
-        tw.sample.sample_fibonacci_hemisphere(64, device=device).numpy(),
+        od.sample.sample_fibonacci_cone(64, np.pi / 2.0, device=device).numpy(),
+        od.sample.sample_fibonacci_hemisphere(64, device=device).numpy(),
         rtol=1e-6,
         atol=1e-6,
     )
     assert np.allclose(
-        tw.sample.sample_fibonacci_cone(64, np.pi, device=device).numpy(),
-        tw.sample.sample_fibonacci_sphere(64, device=device).numpy(),
+        od.sample.sample_fibonacci_cone(64, np.pi, device=device).numpy(),
+        od.sample.sample_fibonacci_sphere(64, device=device).numpy(),
         rtol=1e-6,
         atol=1e-6,
     )
@@ -95,10 +95,10 @@ def test_sample_fibonacci_cone(device: str) -> None:
 
 def test_sample_fibonacci_cone_invalid(device: str) -> None:
     with pytest.raises(ValueError, match=r"half_angle must be in \(0, pi\]"):
-        tw.sample.sample_fibonacci_cone(8, 0.0, device=device)
+        od.sample.sample_fibonacci_cone(8, 0.0, device=device)
     with pytest.raises(ValueError, match=r"half_angle must be in \(0, pi\]"):
-        tw.sample.sample_fibonacci_cone(8, 4.0, device=device)
-    assert tw.sample.sample_fibonacci_cone(0, 1.0, device=device).shape == (0,)
+        od.sample.sample_fibonacci_cone(8, 4.0, device=device)
+    assert od.sample.sample_fibonacci_cone(0, 1.0, device=device).shape == (0,)
 
 
 @pytest.mark.parity("sample_surface", "trimesh", "igl")
@@ -122,7 +122,7 @@ def test_sample_surface(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     face_idx_tm = tm.sample.sample_surface(mesh_tm, count, seed=0)[1]
     freq_tm = np.bincount(face_idx_tm, minlength=n_faces) / count
 
-    face_idx_wp = tw.sample.sample_surface(mesh_wp.points, mesh_wp.indices, count, seed=0)[1]
+    face_idx_wp = od.sample.sample_surface(mesh_wp.points, mesh_wp.indices, count, seed=0)[1]
     freq_wp = np.bincount(face_idx_wp.numpy(), minlength=n_faces) / count
 
     face_idx_igl = igl.random_points_on_mesh(
@@ -160,7 +160,7 @@ def test_sample_surface_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp
     mesh_tm, mesh_wp = icosphere_coarse
     torch.manual_seed(4)
     samples_p3d = p3d_ops.sample_points_from_meshes(trimesh_to_pytorch3d(mesh_tm), 1000)[0].numpy()
-    samples_wp, _ = tw.sample.sample_surface(mesh_wp.points, mesh_wp.indices, 1000, seed=4)
+    samples_wp, _ = od.sample.sample_surface(mesh_wp.points, mesh_wp.indices, 1000, seed=4)
 
     assert samples_p3d.shape == (1000, 3)
     assert float(np.abs(np.linalg.norm(samples_p3d, axis=1) - 1.0).max()) < 0.05
@@ -179,8 +179,8 @@ def test_sample_surface_matches_pytorch3d(icosphere_coarse: tuple[tm.Trimesh, wp
     vertices_wp, faces_wp = numpy_to_warp(
         stretched_tm.vertices, stretched_tm.faces, str(mesh_wp.points.device)
     )
-    _, face_indices_wp = tw.sample.sample_surface(vertices_wp, faces_wp, 20000, seed=1)
-    areas_np = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)[1].numpy()
+    _, face_indices_wp = od.sample.sample_surface(vertices_wp, faces_wp, 20000, seed=1)
+    areas_np = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)[1].numpy()
     counts_np = np.bincount(face_indices_wp.numpy(), minlength=len(stretched_tm.faces))
     assert areas_np.max() / areas_np.min() > 4.0
     assert float(np.corrcoef(counts_np, areas_np)[0, 1]) > 0.8
@@ -201,7 +201,7 @@ def test_sample_surface_with_face_weights(icosahedron: tuple[tm.Trimesh, wp.Mesh
     face_idx_tm = tm.sample.sample_surface(mesh_tm, count, face_weight=weights_np, seed=0)[1]
 
     weights_wp = wp.array(weights_np, dtype=wp.float32, device=mesh_wp.points.device)
-    face_idx_wp = tw.sample.sample_surface(
+    face_idx_wp = od.sample.sample_surface(
         mesh_wp.points, mesh_wp.indices, count, face_weight=weights_wp, seed=0
     )[1]
 
@@ -217,7 +217,7 @@ def test_sample_surface_with_face_weights(icosahedron: tuple[tm.Trimesh, wp.Mesh
 def test_sample_surface_poisson_disk_count(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
     count = 100
-    pts, fids = tw.sample.sample_surface_poisson_disk(
+    pts, fids = od.sample.sample_surface_poisson_disk(
         mesh_wp.points, mesh_wp.indices, count, seed=0
     )
     assert pts.shape == (count,)
@@ -227,7 +227,7 @@ def test_sample_surface_poisson_disk_count(icosahedron: tuple[tm.Trimesh, wp.Mes
 def test_sample_surface_poisson_disk_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     mesh_tm, mesh_wp = icosahedron
     count = 100
-    pts, _ = tw.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, count, seed=1)
+    pts, _ = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, count, seed=1)
     _, dists, _ = tm.proximity.closest_point(mesh_tm, pts.numpy())
     assert np.all(dists < 1e-4)
 
@@ -241,7 +241,7 @@ def test_sample_surface_poisson_disk_min_distance(icosahedron: tuple[tm.Trimesh,
     r_max = 2.0 * math.sqrt((surface_area / count) / (2.0 * math.sqrt(3.0)))
     r_min = r_max * 0.65 * (1.0 - ratio**1.5)
 
-    points, _ = tw.sample.sample_surface_poisson_disk(
+    points, _ = od.sample.sample_surface_poisson_disk(
         mesh_wp.points, mesh_wp.indices, count, init_factor=init_factor, seed=2
     )
     min_dist = float(pdist(points.numpy()).min())
@@ -250,10 +250,10 @@ def test_sample_surface_poisson_disk_min_distance(icosahedron: tuple[tm.Trimesh,
 
 def test_sample_surface_poisson_disk_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    points_a, face_indices_a = tw.sample.sample_surface_poisson_disk(
+    points_a, face_indices_a = od.sample.sample_surface_poisson_disk(
         mesh_wp.points, mesh_wp.indices, 80, seed=7
     )
-    points_b, face_indices_b = tw.sample.sample_surface_poisson_disk(
+    points_b, face_indices_b = od.sample.sample_surface_poisson_disk(
         mesh_wp.points, mesh_wp.indices, 80, seed=7
     )
     assert np.array_equal(points_a.numpy(), points_b.numpy())
@@ -262,7 +262,7 @@ def test_sample_surface_poisson_disk_deterministic(icosahedron: tuple[tm.Trimesh
 
 def test_sample_surface_poisson_disk_count_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    points, face_indices = tw.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, 0)
+    points, face_indices = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, 0)
     assert points.shape == (0,)
     assert face_indices.shape == (0,)
 
@@ -271,7 +271,7 @@ def test_sample_surface_poisson_disk_high_init_factor(icosahedron: tuple[tm.Trim
     """Exercise the GPU top-k branch when local maxima exceed excess."""
     _, mesh_wp = icosahedron
     count = 20
-    pts, fids = tw.sample.sample_surface_poisson_disk(
+    pts, fids = od.sample.sample_surface_poisson_disk(
         mesh_wp.points, mesh_wp.indices, count, init_factor=20.0, seed=3
     )
     assert pts.shape == (count,)
@@ -314,7 +314,7 @@ def _two_patch_mesh() -> tuple[np.ndarray, np.ndarray]:
 
 def test_sample_surface_poisson_disk_keeps_an_isolated_component(device: str):
     """
-    Class C (per-component share): triwarp against ``pymeshlab``'s Poisson-disk sampler.
+    Class C (per-component share): ordito against ``pymeshlab``'s Poisson-disk sampler.
 
     Excludes the bug class "elimination drops a whole component". The share is the only
     comparable statistic -- MeshLab's filter is parametrized by radius and returns whatever count
@@ -328,7 +328,7 @@ def test_sample_surface_poisson_disk_keeps_an_isolated_component(device: str):
     small patch on every seed measured, with the returned count still exactly ``count`` -- so
     nothing about the result's shape or spacing could show it.
 
-    Margin: the far component's area share is 1/101. MeshLab measures 0.0115-0.0152 and triwarp
+    Margin: the far component's area share is 1/101. MeshLab measures 0.0115-0.0152 and ordito
     0.0050-0.0150 per seed, mean 0.0100; the band below admits all of those with ~2.5x headroom
     either way and excludes 0 outright.
     """
@@ -349,16 +349,16 @@ def test_sample_surface_poisson_disk_keeps_an_isolated_component(device: str):
 
     far_counts = []
     for seed in range(5):
-        points_wp, _ = tw.sample.sample_surface_poisson_disk(
+        points_wp, _ = od.sample.sample_surface_poisson_disk(
             vertices_wp, faces_wp, count, seed=seed
         )
         far_counts.append(int((points_wp.numpy()[:, 0] > 30.0).sum()))
     # Never dropped -- this is the assertion the defect failed, at every seed.
     assert min(far_counts) >= 1
 
-    share_tw = float(np.mean(far_counts)) / count
-    assert 0.4 * area_share <= share_tw <= 2.5 * area_share
-    assert 0.4 * share_ml <= share_tw <= 2.5 * share_ml
+    share_od = float(np.mean(far_counts)) / count
+    assert 0.4 * area_share <= share_od <= 2.5 * area_share
+    assert 0.4 * share_ml <= share_od <= 2.5 * share_ml
 
 
 def test_find_local_maxima_flags_an_independent_set(device: str):
@@ -421,7 +421,7 @@ def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
     ``kernels/bounds.oriented_box_candidate_axes``.
     """
     count = 100_000
-    directions_np = tw.sample.sample_fibonacci_sphere(count, device=device).numpy()
+    directions_np = od.sample.sample_fibonacci_sphere(count, device=device).numpy()
 
     index_np = np.arange(count, dtype=np.float64)
     z_np = 1.0 - 2.0 * (index_np + 0.5) / count
@@ -448,7 +448,7 @@ def _blue_noise_radius_for_count(surface_area: float, n: int) -> float:
 def test_sample_surface_blue_noise_min_distance(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     mesh_tm, mesh_wp = icosahedron
     radius = _blue_noise_radius_for_count(float(mesh_tm.area), 80)
-    points, _ = tw.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=2)
+    points, _ = od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=2)
     points_np = points.numpy().reshape(-1, 3)
     if points_np.shape[0] >= 2:
         min_dist = float(pdist(points_np).min())
@@ -458,7 +458,7 @@ def test_sample_surface_blue_noise_min_distance(icosahedron: tuple[tm.Trimesh, w
 def test_sample_surface_blue_noise_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     mesh_tm, mesh_wp = icosahedron
     radius = _blue_noise_radius_for_count(float(mesh_tm.area), 50)
-    pts, _ = tw.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=1)
+    pts, _ = od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=1)
     _, dists, _ = tm.proximity.closest_point(mesh_tm, pts.numpy())
     assert np.all(dists < 1e-4)
 
@@ -466,10 +466,10 @@ def test_sample_surface_blue_noise_on_surface(icosahedron: tuple[tm.Trimesh, wp.
 def test_sample_surface_blue_noise_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
     radius = _blue_noise_radius_for_count(1.0, 30)
-    points_a, face_indices_a = tw.sample.sample_surface_blue_noise(
+    points_a, face_indices_a = od.sample.sample_surface_blue_noise(
         mesh_wp.points, mesh_wp.indices, radius, seed=7
     )
-    points_b, face_indices_b = tw.sample.sample_surface_blue_noise(
+    points_b, face_indices_b = od.sample.sample_surface_blue_noise(
         mesh_wp.points, mesh_wp.indices, radius, seed=7
     )
     assert np.array_equal(points_a.numpy(), points_b.numpy())
@@ -483,7 +483,7 @@ def test_sample_surface_blue_noise_count_order_of_magnitude(
     surface_area = float(mesh_tm.area)
     expected = 50
     radius = _blue_noise_radius_for_count(surface_area, expected)
-    points, _ = tw.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=0)
+    points, _ = od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=0)
     n = points.size
     igl_expected = (
         surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
@@ -518,26 +518,26 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     """
     Class C: five blue-noise samplers, five algorithms, no correspondence between the point sets.
 
-    triwarp reduces a dense pool by randomized priority (flat background grid), Open3D's
+    ordito reduces a dense pool by randomized priority (flat background grid), Open3D's
     ``sample_points_poisson_disk`` runs Yuksel's sample *elimination* from a dense uniform cloud,
     MeshLab's ``generate_sampling_poisson_disk`` is Corsini's hierarchical dart throwing, and
-    ``igl.blue_noise`` is Bridson active-list dart throwing -- which is what triwarp itself ran
-    until the algorithm was replaced, and whose ``30x`` pool oversampling triwarp still uses; and
+    ``igl.blue_noise`` is Bridson active-list dart throwing -- which is what ordito itself ran
+    until the algorithm was replaced, and whose ``30x`` pool oversampling ordito still uses; and
     **meshlib's ``pointUniformSampling`` subsamples a point cloud** rather than a surface, so it is
-    the one reference here that has to be given triwarp's own dense pool as its input -- which makes
+    the one reference here that has to be given ordito's own dense pool as its input -- which makes
     its row the cleanest algorithm-against-algorithm reading of the five, since the pool is
     identical.
     Nothing about the individual samples is shared -- not their count, not their positions, not even
     their number given the same parameter -- so the comparison is on the properties all four claim.
     MeshLab and igl both accept a *radius* (``radius=PureValue(r)`` overrides ``samplenum``; igl's
-    third argument is ``r``), so they get triwarp's own parameter; Open3D takes a count and gets
-    triwarp's output count, exactly as the benchmark parametrizes them.
+    third argument is ``r``), so they get ordito's own parameter; Open3D takes a count and gets
+    ordito's output count, exactly as the benchmark parametrizes them.
 
     **Bug class excluded:** a sampler that is not blue noise at all (assert 1) and one that is blue
     noise over only part of the surface (asserts 2 and 3). Both are live failure modes for a
     grid-based dart thrower -- a mis-sized background cell rejects too little, a mis-mapped cell-to-
     face seeding covers too little -- and neither is visible to
-    ``test_sample_surface_blue_noise_min_distance``, which tests triwarp against itself.
+    ``test_sample_surface_blue_noise_min_distance``, which tests ordito against itself.
 
     **Measured, with both mutation probes.** Two degenerate stand-ins are scored alongside: a
     uniform Monte-Carlo cloud of the *same size* (blue noise's null hypothesis) and one confined to
@@ -545,7 +545,7 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
 
     | | closest pair / r | worst gap / r | faces hit |
     |---|---|---|---|
-    | triwarp | 1.000 | 1.064 | 20 / 20 |
+    | ordito | 1.000 | 1.064 | 20 / 20 |
     | igl, same radius | 1.000 | 1.073 | 20 / 20 |
     | MeshLab, same radius | 1.000 | 1.112 | 20 / 20 |
     | meshlib, same radius and pool | 1.000 | **0.982** | 20 / 20 |
@@ -556,16 +556,16 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     So assert 1 (``>= 0.85``) clears the worst reference by 8% and both probes by **200x** -- it is
     the assert carrying the bug class. Assert 3 (every face hit) separates the clumped probe by a
     factor of 5. Assert 2 (worst gap ``<= 1.4``) is the weakest of the three at a 1.34x margin
-    over the Monte-Carlo probe, and it is applied to triwarp, igl and MeshLab -- the three that
+    over the Monte-Carlo probe, and it is applied to ordito, igl and MeshLab -- the three that
     received the identical radius. Open3D is exempt from it: its elimination sampler genuinely
     leaves larger gaps on a 20-face mesh, a property of its algorithm rather than a disagreement.
 
-    igl is the **closest of the three in output** and the only one that beats triwarp on a column:
-    747 samples against triwarp's 749 (0.3% apart, against MeshLab's 769) and the tightest coverage
-    of the four at 1.073 r. That is worth stating next to the benchmark, where triwarp is 4-24x
+    igl is the **closest of the three in output** and the only one that beats ordito on a column:
+    747 samples against ordito's 749 (0.3% apart, against MeshLab's 769) and the tightest coverage
+    of the four at 1.073 r. That is worth stating next to the benchmark, where ordito is 4-24x
     faster than it -- the port is not buying its speed with quality.
 
-    triwarp's ``1.000`` in the first column is **exact rather than tolerant**, and is a property of
+    ordito's ``1.000`` in the first column is **exact rather than tolerant**, and is a property of
     the algorithm rather than of this fixture: an accepted point is never within ``r`` of another
     accepted one, because the later of any such pair would already have been discarded by the
     earlier one's ball. The two ``0.005`` probe rows are what the column looks like without that.
@@ -574,7 +574,7 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
     radius = _blue_noise_radius_for_count(float(mesh_tm.area), 300)
     dense_np, _face_index = tm.sample.sample_surface(mesh_tm, 20_000, seed=3)[:2]
 
-    points_wp, _face_index_wp = tw.sample.sample_surface_blue_noise(
+    points_wp, _face_index_wp = od.sample.sample_surface_blue_noise(
         mesh_wp.points, mesh_wp.indices, radius, seed=11
     )
     n_samples = points_wp.size
@@ -625,13 +625,13 @@ def test_sample_surface_blue_noise_matches_open3d_pymeshlab_and_igl(
 def test_sample_surface_blue_noise_radius_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="radius"):
-        tw.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, 0.0)
+        od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, 0.0)
 
 
 def test_sample_surface_blue_noise_empty_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     mesh_wp = icosahedron[1]
     empty_faces = warp_empty(0, wp.int32, mesh_wp.points.device)
-    points, face_indices = tw.sample.sample_surface_blue_noise(
+    points, face_indices = od.sample.sample_surface_blue_noise(
         mesh_wp.points, empty_faces, 0.1, seed=0
     )
     assert points.shape == (0,)
@@ -657,7 +657,7 @@ def test_sample_volume_containment(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     """
     mesh_tm, mesh_wp = icosahedron
     count = 5_000
-    points_np = tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, count, seed=42).numpy()
+    points_np = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, count, seed=42).numpy()
     assert points_np.shape == (count, 3)
     assert mesh_tm.contains(points_np).all()
 
@@ -672,27 +672,27 @@ def test_sample_volume_uniform(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     """
     # With 20 000 samples the per-axis std-of-mean is ~0.003, so atol=0.05 is safe.
     mesh_tm, mesh_wp = icosahedron
-    points_np = tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 20_000, seed=0).numpy()
+    points_np = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 20_000, seed=0).numpy()
     assert np.allclose(points_np.mean(axis=0), mesh_tm.center_mass, atol=0.05)
 
 
 def test_sample_volume_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    pts_a = tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
-    pts_b = tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
+    pts_a = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
+    pts_b = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
     assert np.array_equal(pts_a, pts_b)
 
 
 def test_sample_volume_count_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = icosahedron
-    pts = tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 0)
+    pts = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 0)
     assert pts.shape == (0,)
 
 
 def test_sample_volume_not_watertight(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     _, mesh_wp = half_torus
     with pytest.raises(ValueError, match="watertight"):
-        tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
+        od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
 
 
 def test_sample_volume_zero_volume(device: str):
@@ -704,7 +704,7 @@ def test_sample_volume_zero_volume(device: str):
     )
     faces_wp = wp.array([0, 1, 2, 0, 2, 1], dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="zero volume"):
-        tw.sample.sample_volume(vertices_wp, faces_wp, 100)
+        od.sample.sample_volume(vertices_wp, faces_wp, 100)
 
 
 def test_sample_volume_not_star_shaped(torus: tuple[tm.Trimesh, wp.Mesh]):
@@ -712,7 +712,7 @@ def test_sample_volume_not_star_shaped(torus: tuple[tm.Trimesh, wp.Mesh]):
     # of the torus) makes the inner half of the tube contribute negative signed volumes.
     _, mesh_wp = torus
     with pytest.raises(ValueError, match="star-shaped"):
-        tw.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
+        od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
 
 
 def test_resolve_seed_passes_a_seed_through_and_draws_one_otherwise() -> None:
@@ -723,10 +723,10 @@ def test_resolve_seed_passes_a_seed_through_and_draws_one_otherwise() -> None:
     in the package return the same sample set. Two consecutive draws are asserted distinct, which is
     what separates the two readings.
     """
-    assert tw.sample.resolve_seed(1234) == 1234
-    assert tw.sample.resolve_seed(0) == 0
+    assert od.sample.resolve_seed(1234) == 1234
+    assert od.sample.resolve_seed(0) == 0
 
-    drawn = [tw.sample.resolve_seed(None) for _ in range(8)]
+    drawn = [od.sample.resolve_seed(None) for _ in range(8)]
     assert all(0 <= seed < 2**31 for seed in drawn)
     assert all(isinstance(seed, int) for seed in drawn)
     # Eight identical draws would be a fixed default wearing a random one's signature.

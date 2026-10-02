@@ -1,7 +1,7 @@
 """
-Time both triwarp targets, as two processes, so the CPU rows are not inflated.
+Time both ordito targets, as two processes, so the CPU rows are not inflated.
 
-``uv run python benchmarks/devices.py`` runs a CUDA pass and then a ``triwarp-cpu`` pass, and the
+``uv run python benchmarks/devices.py`` runs a CUDA pass and then a ``ordito-cpu`` pass, and the
 CPU pass is spawned with ``CUDA_VISIBLE_DEVICES=""``. The variable is the whole point: **Warp's CPU
 work costs more once CUDA has been initialised in the process**, and the charge behaves like a
 per-launch one, so the factor scales with launch count rather than with work:
@@ -12,26 +12,26 @@ per-launch one, so the factor scales with launch count rather than with work:
 
 Unchanged by ``warp.config.launch_array_access_mode``, so it is CUDA presence and not CLAUDE.md
 section 3.9's launch guard. Either way a
-``triwarp-cpu`` row taken in a CUDA-initialised process is not a slow number, it is a **wrong** one,
-and it reads as triwarp losing to CPU references it actually beats. ``benchmarks/conftest.py`` warns
+``ordito-cpu`` row taken in a CUDA-initialised process is not a slow number, it is a **wrong** one,
+and it reads as ordito losing to CPU references it actually beats. ``benchmarks/conftest.py`` warns
 when that configuration is selected; this script is the way to avoid it.
 
 ``CUDA_VISIBLE_DEVICES`` has to be set before the process starts, so this can only be a second
 process -- not a fixture and not a context manager. Same reason ``tests/devices.py`` exists.
 
-Why the CPU pass is narrowed to ``-k triwarp-cpu``
+Why the CPU pass is narrowed to ``-k ordito-cpu``
 -------------------------------------------------
 The CPU *reference* libraries (trimesh / igl / open3d / scipy / potpourri3d / pymeshlab / pyvista /
 meshlib) are included in **every** pass by ``_selected_libraries``, so a naive two-pass split would
 time them twice and write duplicate rows. Benchmark ids carry the library
-(``test_faces_to_edges[bunny-triwarp-cpu]``), so ``-k triwarp-cpu`` keeps the second pass to exactly
+(``test_faces_to_edges[bunny-ordito-cpu]``), so ``-k ordito-cpu`` keeps the second pass to exactly
 the rows that need the CUDA-free process. The references stay in the CUDA pass, where they are
 unaffected -- they never touch Warp.
 
 Usage
 -----
 ``uv run python benchmarks/devices.py``
-    CUDA pass (``triwarp-cuda`` + every reference), then a CUDA-hidden ``triwarp-cpu`` pass.
+    CUDA pass (``ordito-cuda`` + every reference), then a CUDA-hidden ``ordito-cpu`` pass.
 ``uv run python benchmarks/devices.py -- --size=small -k edges``
     Everything after ``--`` is forwarded to both pytest invocations.
 
@@ -65,7 +65,7 @@ def _and_into_k(extra: list[str], clause: str) -> list[str]:
     Conjoin ``clause`` into an existing ``-k`` expression, or add one if there is none.
 
     Appending a second ``-k`` does **not** work: pytest keeps only the last one, so a forwarded
-    ``-k edges_unique`` would be silently replaced by ``-k triwarp-cpu`` and the pass would run
+    ``-k edges_unique`` would be silently replaced by ``-k ordito-cpu`` and the pass would run
     every CPU row instead of the requested selection. Handles both ``-k expr`` and ``-k=expr``.
     """
     out: list[str] = []
@@ -96,7 +96,7 @@ def _run(label: str, device: str, hide_cuda: bool, extra: list[str]) -> tuple[st
     if hide_cuda:
         env["CUDA_VISIBLE_DEVICES"] = ""
         # The references are timed in the CUDA pass; this pass exists only for the Warp CPU rows.
-        extra = _and_into_k(extra, "triwarp-cpu")
+        extra = _and_into_k(extra, "ordito-cpu")
     command = [sys.executable, "-m", "pytest", "benchmarks/", f"--device={device}", *extra]
     print(f"\n=== {label}: {' '.join(command)}", flush=True)
     if hide_cuda:
@@ -107,10 +107,10 @@ def _run(label: str, device: str, hide_cuda: bool, extra: list[str]) -> tuple[st
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run both triwarp target passes and summarize them."""
+    """Run both ordito target passes and summarize them."""
     parser = argparse.ArgumentParser(
         prog="python benchmarks/devices.py",
-        description="Time both triwarp targets as two processes, the CPU one with CUDA hidden.",
+        description="Time both ordito targets as two processes, the CPU one with CUDA hidden.",
     )
     parser.add_argument(
         "pytest_args", nargs="*", help="extra arguments forwarded to both pytest passes"

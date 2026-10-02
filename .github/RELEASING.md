@@ -1,4 +1,4 @@
-# Releasing triwarp
+# Releasing ordito
 
 Maintainer checklist, run in order before every tag push.
 
@@ -11,7 +11,7 @@ cuts a GitHub Release. Nothing else publishes, and nothing publishes from `main`
 ## One-time setup, before the first tag ever
 
 - [ ] **PyPI Trusted Publishing** configured at <https://pypi.org/manage/account/publishing/>,
-      pointing at owner `lucagrementieri`, repository `triwarp`, workflow `release.yml`,
+      pointing at owner `lucagrementieri`, repository `ordito`, workflow `release.yml`,
       environment `pypi`. There is no API token to store; if this is not set up, the `publish`
       job fails with an OIDC error and nothing is uploaded.
 - [ ] **A `pypi` environment** exists in the repository settings (Settings → Environments). The
@@ -26,8 +26,8 @@ cuts a GitHub Release. Nothing else publishes, and nothing publishes from `main`
       uvx twine upload --repository testpypi dist/*
       python -m venv /tmp/testpypi && /tmp/testpypi/bin/pip install \
           --index-url https://test.pypi.org/simple/ \
-          --extra-index-url https://pypi.org/simple/ triwarp
-      /tmp/testpypi/bin/python -c "import triwarp as tw; print(tw.creation.icosphere(subdivisions=2)[0].shape)"
+          --extra-index-url https://pypi.org/simple/ ordito
+      /tmp/testpypi/bin/python -c "import ordito as od; print(od.creation.icosphere(subdivisions=2)[0].shape)"
       ```
 
 - [ ] **GitHub Pages source** set to "GitHub Actions" (Settings → Pages), which `docs.yml` needs.
@@ -52,7 +52,7 @@ Only version headings may be level-2 — the extractor stops at the next `##`.
 - [ ] `CITATION.cff` `version` and `date-released` updated to match.
 - [ ] The BibTeX block in `README.md` still shows the right `version` and `year`.
 
-`triwarp.__version__` needs no bump — it reads the installed distribution metadata, so it follows
+`ordito.__version__` needs no bump — it reads the installed distribution metadata, so it follows
 `pyproject.toml` automatically and cannot drift from it.
 
 Follow SemVer with the pre-1.0 caveat: while on `0.x`, **minor** for anything that changes a
@@ -70,8 +70,8 @@ eleven-library reference stack, and they are the maintainer's responsibility:
 ```bash
 uv sync --all-groups
 
-uv run ruff format triwarp tests benchmarks
-uv run ruff check triwarp tests benchmarks
+uv run ruff format ordito tests benchmarks
+uv run ruff check ordito tests benchmarks
 uv run basedpyright                        # must be 0 errors
 
 uv run python -m tests.devices             # both devices, as two processes
@@ -106,8 +106,8 @@ Only if a benchmarked function changed since the last release:
 - [ ] `aggregate.py`'s suspect report (on by default at 1.5x; tune with `--suspect`) is clean, or
       every flagged cell was re-measured. A cell whose
       median sits far above its own minimum is a one-off (a Warp module load, a scheduler
-      hiccup), and an inflated *reference* median flatters triwarp exactly as much as an inflated
-      triwarp median hurts it — so a suspect cell must never be published as a ratio.
+      hiccup), and an inflated *reference* median flatters ordito exactly as much as an inflated
+      ordito median hurts it — so a suspect cell must never be published as a ratio.
 
 - [ ] Every ratio quoted in `README.md`, `docs/performance.md` and `docs/benchmarks.md` still
       holds within noise (±10 %, and ±30 % under 100 µs — anything inside that band is drift, not
@@ -128,7 +128,7 @@ timing while the test suite or a docs build is running.
       uvx twine check dist/*
       unzip -l dist/*.whl | grep py.typed        # must be present
       unzip -l dist/*.whl | awk '{print $4}' | cut -d/ -f1 | sort -u
-      #   -> only `triwarp` and `triwarp-X.Y.Z.dist-info`
+      #   -> only `ordito` and `ordito-X.Y.Z.dist-info`
       ```
 
 - [ ] CPU-only smoke test, with CUDA hidden, which is the actual end-user environment:
@@ -136,7 +136,7 @@ timing while the test suite or a docs build is running.
       ```bash
       python -m venv /tmp/wheel-check && /tmp/wheel-check/bin/pip install dist/*.whl
       CUDA_VISIBLE_DEVICES="" /tmp/wheel-check/bin/python -c \
-          "import triwarp as tw; m = tw.Trimesh(*tw.creation.icosphere(subdivisions=2)); print(m.area, m.is_watertight)"
+          "import ordito as od; m = od.Trimesh(*od.creation.icosphere(subdivisions=2)); print(m.area, m.is_watertight)"
       ```
 
 ### 6. Tag and push
@@ -150,14 +150,14 @@ timing while the test suite or a docs build is running.
 ### 7. Verify what shipped
 
 - [ ] `release.yml` succeeded end to end — build, publish and github-release.
-- [ ] The [PyPI listing](https://pypi.org/project/triwarp/) renders the README correctly, and
+- [ ] The [PyPI listing](https://pypi.org/project/ordito/) renders the README correctly, and
       shows the author, license and classifiers.
 - [ ] The GitHub Release body is the changelog section, with the wheel and sdist attached.
 - [ ] A clean install of the published version works:
 
       ```bash
-      python -m venv /tmp/released && /tmp/released/bin/pip install triwarp==X.Y.Z
-      /tmp/released/bin/python -c "import triwarp; print(triwarp.__name__)"
+      python -m venv /tmp/released && /tmp/released/bin/pip install ordito==X.Y.Z
+      /tmp/released/bin/python -c "import ordito; print(ordito.__name__)"
       ```
 
-- [ ] <https://lucagrementieri.github.io/triwarp/> rebuilt and is current.
+- [ ] <https://lucagrementieri.github.io/ordito/> rebuilt and is current.

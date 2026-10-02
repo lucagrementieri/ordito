@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.sample``: uniform surface sampling and blue-noise selection.
+Benchmarks for ``ordito.sample``: uniform surface sampling and blue-noise selection.
 
 The radius targets ~2,000 samples (same helper formula as ``tests/test_sample.py``). Capped at
 ``bunny``.
@@ -16,9 +16,9 @@ prefix the loop consumes) is a **wash**, so the shuffle was never the cost eithe
 
 **open3d**'s ``sample_points_poisson_disk`` is the reference: the same blue-noise / Poisson-disk
 surface sampling problem, parametrized by sample *count* rather than by radius, so it is given
-``_TARGET_SAMPLES`` — the count triwarp's radius is derived to produce. Open3D's implementation
+``_TARGET_SAMPLES`` — the count ordito's radius is derived to produce. Open3D's implementation
 starts from a dense uniform sample and eliminates points down to the target (Yuksel's sample
-elimination), where triwarp reduces a dense pool by randomized priority; the comparison is of
+elimination), where ordito reduces a dense pool by randomized priority; the comparison is of
 cost per sample delivered, not of identical work.
 
 **pymeshlab**'s ``generate_sampling_poisson_disk`` and **libigl**'s ``igl.blue_noise`` are the two
@@ -26,7 +26,7 @@ references that can be given the *radius* rather than a count (``radius=PureValu
 MeshLab's ``samplenum`` outright; igl's third positional argument *is* ``r``), so they receive the
 identical parameter and the radius sweep this group is built around maps across libraries. MeshLab's
 algorithm is Corsini et al.'s *hierarchical* dart throwing and igl's is Bridson active-list dart
-throwing -- **four implementations, four schemes, one parametrization**, with triwarp's randomized-
+throwing -- **four implementations, four schemes, one parametrization**, with ordito's randomized-
 priority selection and open3d's sample elimination as the other two. MeshLab is the closest of the
 three in output: same exact minimum distance, coverage within a few percent. It pushes the sample
 cloud onto
@@ -34,10 +34,10 @@ the MeshSet as a new mesh, so the set is rebuilt per round.
 
 **libigl is where this port came from, and the row inverted when the algorithm changed.** The
 ``30x`` oversampling factor ``sample_surface_blue_noise`` draws its pool at is
-``igl::blue_noise``'s, and while triwarp ran Bridson too, igl was *faster*. With
-randomized-priority selection triwarp leads, and the margin **grows as the radius falls** -- from a
+``igl::blue_noise``'s, and while ordito ran Bridson too, igl was *faster*. With
+randomized-priority selection ordito leads, and the margin **grows as the radius falls** -- from a
 few times at a wide radius to more than an order of magnitude at a narrow one -- because igl's
-serial cost is per accepted sample where triwarp's is per round. igl also returns a few percent
+serial cost is per accepted sample where ordito's is per round. igl also returns a few percent
 *fewer* samples at the same radius, so the ratios are a lower bound per sample delivered -- and its
 *quality* is the best of the three references (``tests/test_sample.py`` measures the coverage gaps),
 so this is not speed bought with quality on either side. It gets ``rounds=3``.
@@ -63,7 +63,7 @@ import pytorch3d.ops as p3d_ops
 import trimesh as tm
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, skip_larger_than
 
 if TYPE_CHECKING:
@@ -73,7 +73,7 @@ _TARGET_SAMPLES = 2_000
 _SEED = 11
 
 # Pool oversampling for the one reference that thins a cloud instead of a surface. 30x is the factor
-# ``igl::blue_noise`` uses and the one triwarp's own sampler inherited, so every row selects from a
+# ``igl::blue_noise`` uses and the one ordito's own sampler inherited, so every row selects from a
 # pool of the same density -- otherwise the row would be measuring how big a pool it was handed.
 _POOL_FACTOR = 30
 
@@ -122,7 +122,7 @@ def _mesh_p3d_fresh(bench_case: BenchCase):
 
 
 @pytest.mark.benchmark(group="sample_surface")
-@pytest.mark.benchlibs("triwarp", "igl", "trimesh", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh", "pytorch3d")
 @pytest.mark.parametrize("count", _UNIFORM_COUNTS, ids=["n10k", "n100k"])
 def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     """
@@ -131,12 +131,12 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     All three libraries take the same two parameters (a count and a seed) and return the same two
     things (positions and the face index each sample landed on), so this is the module's one group
     where nothing has to be matched up -- ``igl.random_points_on_mesh`` and
-    ``tm.sample.sample_surface`` are the same call as triwarp's.
+    ``tm.sample.sample_surface`` are the same call as ordito's.
 
     The axis is the count, and it separates the two sides cleanly: **the references are linear in it
-    and triwarp is flat** -- a decade more samples for no more time, because at these counts
-    triwarp's row is the two launches and the area CDF rather than the sampling. So read the *slope*
-    as the statement: the crossover where triwarp's per-sample cost becomes visible is above a
+    and ordito is flat** -- a decade more samples for no more time, because at these counts
+    ordito's row is the two launches and the area CDF rather than the sampling. So read the *slope*
+    as the statement: the crossover where ordito's per-sample cost becomes visible is above a
     hundred thousand samples.
 
     open3d's ``sample_points_uniformly`` and MeshLab's ``generate_sampling_montecarlo`` are the same
@@ -151,7 +151,7 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
     one, so it is where the flatness above is tested against another parallel implementation rather
     than a serial baseline. It returns positions alone -- the face index is internal -- so unlike
     igl and trimesh it needs no decode but also cannot be asserted against the area law directly;
-    the parity test compares the two clouds distributionally and pins the area law on triwarp's own
+    the parity test compares the two clouds distributionally and pins the area law on ordito's own
     face indices. Its ``Meshes`` memoizes the per-face areas it samples from, so it is built
     **inside** the timed callable and the row carries that derivation, the same thing trimesh's row
     does with its area CDF. One hard limit: it draws the face index with ``torch.multinomial``,
@@ -171,10 +171,10 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
         assert samples_p3d.shape == (1, count, 3)
         return
     skip_larger_than(bench_case, "bunny", "the CPU references are single-threaded per sample")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points, face_index = bench_case.run(
-            lambda: tw.sample.sample_surface(vertices, faces, count, seed=_SEED)
+            lambda: od.sample.sample_surface(vertices, faces, count, seed=_SEED)
         )
         assert points.shape == (count,)
         assert face_index.shape == (count,)
@@ -197,7 +197,7 @@ def test_sample_surface(bench_case: BenchCase, count: int) -> None:
 
 
 @pytest.mark.benchmark(group="blue_noise")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("radius_scale", _RADIUS_SCALES, ids=["r1", "rhalf"])
 def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -> None:
     """
@@ -225,15 +225,15 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
 
     **libigl is the reference this port was written from** -- ``sample_surface_blue_noise`` still
     sizes its pool at the ``30x`` oversampling factor ``igl::blue_noise`` uses -- and it takes the
-    radius directly, so it and MeshLab both receive triwarp's own parameter. It is Bridson
-    active-list dart throwing, which is what triwarp *was*: four schemes across four libraries on
+    radius directly, so it and MeshLab both receive ordito's own parameter. It is Bridson
+    active-list dart throwing, which is what ordito *was*: four schemes across four libraries on
     one parametrization.
 
     **meshlib is the fifth, and the only one that thins a point cloud rather than a surface.** Its
     row therefore gets the dense pool that every one of these algorithms builds internally, supplied
     as its input and *not* timed -- which makes it the one row that prices the selection alone,
-    where the other four each carry their own pool construction. Read the gap between it and triwarp
-    as selection-against-selection, and the gap between triwarp and igl or MeshLab as the whole
+    where the other four each carry their own pool construction. Read the gap between it and ordito
+    as selection-against-selection, and the gap between ordito and igl or MeshLab as the whole
     pipeline. ``UniformSamplingSettings.distance`` is the radius, given the same value.
     """
     skip_larger_than(bench_case, "bunny")
@@ -249,7 +249,7 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         return
     if bench_case.kind == "pymeshlab":
         # MeshLab takes *either* a count or an explicit radius, so this is the one blue-noise
-        # reference that can be matched to triwarp's actual parameter: ``radius=PureValue(r)``
+        # reference that can be matched to ordito's actual parameter: ``radius=PureValue(r)``
         # overrides ``samplenum`` and is fed the identical radius. It pushes a new point-cloud mesh
         # onto the set, so the MeshSet is rebuilt per round.
         radius = radius_scale * _radius_for_mesh(bench_case)
@@ -279,11 +279,11 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
         sampled_ml = bench_case.run(lambda: mm.pointUniformSampling(cloud_ml, settings_ml))
         assert 0 < sampled_ml.count() <= pool_np.shape[0]
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         radius = radius_scale * _radius_for_mesh(bench_case)
         points, face_index = bench_case.run(
-            lambda: tw.sample.sample_surface_blue_noise(vertices, faces, radius, seed=_SEED)
+            lambda: od.sample.sample_surface_blue_noise(vertices, faces, radius, seed=_SEED)
         )
         assert points.shape[0] > 0
         assert face_index.shape == points.shape
@@ -295,13 +295,13 @@ def test_sample_surface_blue_noise(bench_case: BenchCase, radius_scale: float) -
 
 @pytest.mark.benchmark(group="sample_volume")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("count", _UNIFORM_COUNTS, ids=["n10k", "n100k"])
 def test_sample_volume(bench_case: BenchCase, count: int) -> None:
     """
     Uniform sampling *inside* a closed mesh: the tetrahedron-fan CDF and one draw kernel.
 
-    triwarp-only, and deliberately so. ``trimesh.sample.volume_mesh`` is rejection sampling against
+    ordito-only, and deliberately so. ``trimesh.sample.volume_mesh`` is rejection sampling against
     a ray-parity containment test, so it returns a *variable* number of points for a requested
     count and its cost is set by the mesh's fill ratio rather than by the count; timing the two
     against each other would compare an exact method with a stochastic one. The fan decomposition
@@ -318,5 +318,5 @@ def test_sample_volume(bench_case: BenchCase, count: int) -> None:
     construction and span 5k to 328k faces.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    points = bench_case.run(lambda: tw.sample.sample_volume(vertices, faces, count, seed=_SEED))
+    points = bench_case.run(lambda: od.sample.sample_volume(vertices, faces, count, seed=_SEED))
     assert points.shape == (count,)

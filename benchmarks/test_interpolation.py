@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.interpolation``: averaging scatters, barycentric pull, cloud interpolation.
+Benchmarks for ``ordito.interpolation``: averaging scatters, barycentric pull, cloud interpolation.
 
 Three axes, because the module holds three different kinds of function:
 
@@ -15,7 +15,7 @@ Three axes, because the module holds three different kinds of function:
 * **neighbourhood size** for ``interpolate_from_points``, whose kernel reduces each query's mean
   during the hash-grid walk -- so the row is really the number of neighbours visited, and the
   radius is derived from the mean edge length to hold the neighbour count fixed across meshes;
-  triwarp leads pyvista by well over an order of magnitude at both widths. No neighbour list is
+  ordito leads pyvista by well over an order of magnitude at both widths. No neighbour list is
   materialized, so both widths run on every mesh: the 64-neighbour case over lucy used to be a
   ball-query CSR of several gigabytes.
 
@@ -34,7 +34,7 @@ the missing timings):
 * ``igl.average_onto_vertices(V, F, S)`` is the face-to-vertex mean -- note its ``S`` is a
   per-face **scalar**, not a per-face vector, which is the one signature trap here;
 * ``igl.average_from_edges_onto_vertices(F, E, oE, uE)`` needs the ``(E, oE)`` halfedge numbering
-  from ``igl.orient_halfedges(F)``, which is also what triwarp's edge-based overload consumes, so
+  from ``igl.orient_halfedges(F)``, which is also what ordito's edge-based overload consumes, so
   both sides receive the identical edge indexing rather than each building its own.
 
 **pymeshlab**'s ``compute_scalar_transfer_face_to_vertex(areaweight=False)`` is the plain corner
@@ -48,7 +48,7 @@ happens.
 **pyvista**'s ``DataSet.interpolate`` is ``interpolate_from_points``'s reference: a
 ``vtkPointInterpolator`` with a ``vtkGaussianKernel``, given the identical radius and sharpness, so
 the two compute the same weighted mean and differ only in the locator (a
-``vtkStaticPointLocator`` against triwarp's hash grid). It is the module's only pyvista row -- VTK
+``vtkStaticPointLocator`` against ordito's hash grid). It is the module's only pyvista row -- VTK
 has no per-element averaging filter, so the three ``average_*`` groups keep libigl.
 
 trimesh and open3d have no equivalent for any of the four mesh-side functions: attribute averaging
@@ -64,8 +64,8 @@ import pytest
 import pyvista as pv
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
 _FIELD_SEED = 5
@@ -141,7 +141,7 @@ def _edge_numbering(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray, np.n
 
 @pytest.mark.benchmark(group="average_onto_faces")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista")
 def test_average_onto_faces(bench_case: BenchCase) -> None:
     """
     Vertex-to-face mean: a ``3F`` **gather**, so the one direction valence cannot hurt.
@@ -160,10 +160,10 @@ def test_average_onto_faces(bench_case: BenchCase) -> None:
         transferred_pv = bench_case.run(mesh_pv.point_data_to_cell_data)
         assert np.asarray(transferred_pv.cell_data["field"]).shape == (bench_case.n_faces,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
         values = _vertex_field_wp(bench_case)
-        result = bench_case.run(lambda: tw.interpolation.average_onto_faces(faces, values))
+        result = bench_case.run(lambda: od.interpolation.average_onto_faces(faces, values))
         assert result.shape == (bench_case.n_faces,)
         return
     faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int64)
@@ -174,7 +174,7 @@ def test_average_onto_faces(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="average_onto_vertices")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab", "pyvista")
 def test_average_onto_vertices(bench_case: BenchCase) -> None:
     """
     The face-to-vertex scatter: the same contention as the normals rows, without the math.
@@ -211,14 +211,14 @@ def test_average_onto_vertices(bench_case: BenchCase) -> None:
     faces = bench_case.faces_wp
     values = _face_field_wp(bench_case)
     result = bench_case.run(
-        lambda: tw.interpolation.average_onto_vertices(n_vertices, faces, values)
+        lambda: od.interpolation.average_onto_vertices(n_vertices, faces, values)
     )
     assert result.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="average_from_edges_onto_vertices")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_average_from_edges_onto_vertices(bench_case: BenchCase) -> None:
     """
     The edge-to-vertex scatter, over ``igl.orient_halfedges``' edge numbering.
@@ -241,17 +241,17 @@ def test_average_from_edges_onto_vertices(bench_case: BenchCase) -> None:
         return
     device = bench_case.device
     faces = bench_case.faces_wp
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(edges_np.astype(np.int32), dtype=wp.int32, device=device), wp.int32
     )
-    orientation_wp = twt.as_array2d(
+    orientation_wp = odt.as_array2d(
         wp.array(orientation_np.astype(np.int32), dtype=wp.int32, device=device), wp.int32
     )
     values_wp = wp.array(
         np.ascontiguousarray(values_np, dtype=np.float32), dtype=wp.float32, device=device
     )
     result = bench_case.run(
-        lambda: tw.interpolation.average_from_edges_onto_vertices(
+        lambda: od.interpolation.average_from_edges_onto_vertices(
             n_vertices, faces, edges_wp, orientation_wp, values_wp
         )
     )
@@ -259,14 +259,14 @@ def test_average_from_edges_onto_vertices(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="transfer_onto_vertices")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
 def test_transfer_onto_vertices(bench_case: BenchCase) -> None:
     """
     Closest-point plus barycentric blend, transferring a field from a mesh onto itself.
 
     pyvista's ``sample`` interpolates a source field onto a target's points through a cell locator,
     which is this operation -- and on a target that coincides with the source it is exact: measured
-    642 of 642 points valid and 5.96e-08 from triwarp's answer (``tests/test_interpolation.py``).
+    642 of 642 points valid and 5.96e-08 from ordito's answer (``tests/test_interpolation.py``).
     Two things it does that this group's other rows do not: it marks misses in
     ``vtkValidPointMask`` rather than extrapolating, and it interpolates only where the query lands
     *inside* a source cell, so on a target offset from the surface its valid fraction falls sharply.
@@ -306,13 +306,13 @@ def test_transfer_onto_vertices(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values = _vertex_field_wp(bench_case)
     transferred, _distance = bench_case.run(
-        lambda: tw.interpolation.transfer_onto_vertices(vertices, faces, values, vertices)
+        lambda: od.interpolation.transfer_onto_vertices(vertices, faces, values, vertices)
     )
     assert transferred.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="transfer_through_operator")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_transfer_through_operator(bench_case: BenchCase) -> None:
     """
     Carry a per-vertex field through one Loop pass, using the pass's own interpolation operator.
@@ -337,21 +337,21 @@ def test_transfer_through_operator(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values = _vertex_field_wp(bench_case)
 
-    def build() -> twt.BsrMatrix[wp.float32]:
-        _new_vertices, _new_faces, operator = tw.remesh.subdivide_loop(
+    def build() -> odt.BsrMatrix[wp.float32]:
+        _new_vertices, _new_faces, operator = od.remesh.subdivide_loop(
             vertices, faces, return_operator=True
         )
         return operator
 
     n_out = int(build().nrow)
     transferred = bench_case.run(
-        lambda operator: tw.interpolation.transfer_through_operator(values, operator), setup=build
+        lambda operator: od.interpolation.transfer_through_operator(values, operator), setup=build
     )
     assert transferred.shape == (n_out,)
 
 
 @pytest.mark.benchmark(group="interpolate_from_points")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("neighborhood", [8, 64])
 def test_interpolate_from_points(bench_case: BenchCase, neighborhood: int) -> None:
     """
@@ -367,7 +367,7 @@ def test_interpolate_from_points(bench_case: BenchCase, neighborhood: int) -> No
     of an unrelated cell.
 
     pyvista's ``DataSet.interpolate`` is ``vtkPointInterpolator`` with the identical Gaussian kernel
-    and the same radius, its locator being a ``vtkStaticPointLocator`` where triwarp uses a hash
+    and the same radius, its locator being a ``vtkStaticPointLocator`` where ordito uses a hash
     grid.
     """
     radius = float(np.sqrt(neighborhood / np.pi)) * _mean_edge_length(bench_case)
@@ -383,6 +383,6 @@ def test_interpolate_from_points(bench_case: BenchCase, neighborhood: int) -> No
         return
     points, values = bench_case.vertices_wp, _vertex_field_wp(bench_case)
     interpolated_wp = bench_case.run(
-        lambda: tw.interpolation.interpolate_from_points(points, values, points, radius)
+        lambda: od.interpolation.interpolate_from_points(points, values, points, radius)
     )
     assert interpolated_wp.shape == (bench_case.n_vertices,)

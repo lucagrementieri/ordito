@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.combine``: assembling meshes from parts and splitting them apart.
+Benchmarks for ``ordito.combine``: assembling meshes from parts and splitting them apart.
 
 Axis: **components** for ``split`` and ``concatenate``, **loops_dp** for the stitching pair.
 Neither family scales with face count, and this pair is the sharpest example in the package of
@@ -30,7 +30,7 @@ each cluster's faces is part of what an open3d user pays, exactly as scipy is fo
 state: one filter call does both halves and *pushes one new mesh per component* onto the MeshSet, so
 the component count is read straight off ``mesh_number()``. It is also the group's sharpest
 reference, because it carries a per-component host cost: it spreads by more than an order of
-magnitude across the axis where triwarp's batched compaction is nearly flat. That is the shape the
+magnitude across the axis where ordito's batched compaction is nearly flat. That is the shape the
 axis exists to detect, reproduced independently.
 
 Neither trimesh, open3d nor pymeshlab has an equivalent of ``stitch`` / ``stitch_min_weight``:
@@ -53,7 +53,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, mesh_ml_from_numpy
 
 if TYPE_CHECKING:
@@ -75,7 +75,7 @@ def _split_inputs(bench_case: BenchCase) -> _SplitInputs:
     """Return the whole mesh as one soup, on the device (or host) the case needs."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _split_cache:
-        if bench_case.kind == "triwarp":
+        if bench_case.kind == "ordito":
             _split_cache[key] = (bench_case.vertices_wp, bench_case.faces_wp)
         else:
             _split_cache[key] = (bench_case.vertices_np, bench_case.faces_np)
@@ -94,7 +94,7 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 @pytest.mark.benchmark(group="split")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 def test_split(bench_case: BenchCase) -> None:
     """
     Label, sort, then one batched compaction of every component: nearly flat across the axis.
@@ -102,9 +102,9 @@ def test_split(bench_case: BenchCase) -> None:
     meshlib's row stops at the labelling: ``getAllComponents`` returns one ``FaceBitSet`` per
     component and ``cloneRegion`` -- which needs an ``ObjectMesh`` wrapper -- is what would extract
     them, so this is a lower bound on the group rather than the same work. That makes it the useful
-    row to read against triwarp's across the components axis: the gap between them is the
+    row to read against ordito's across the components axis: the gap between them is the
     compaction, which is the half this group was optimized for. ``FaceIncidence.PerEdge`` is
-    triwarp's rule; the mesh is read-only here, so one serves every round.
+    ordito's rule; the mesh is read-only here, so one serves every round.
     """
     expected = {"sphere_med": 1, "parts_64": 64, "parts_1024": 1024}[bench_case.mesh_name]
     if bench_case.kind == "meshlib":
@@ -126,11 +126,11 @@ def test_split(bench_case: BenchCase) -> None:
 
         assert bench_case.run(split_pml, rounds=_ROUNDS) == expected
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = _split_inputs(bench_case)
         assert isinstance(vertices, wp.array)
         assert isinstance(faces, wp.array)
-        parts = bench_case.run(lambda: tw.combine.split(vertices, faces), rounds=_ROUNDS)
+        parts = bench_case.run(lambda: od.combine.split(vertices, faces), rounds=_ROUNDS)
     elif bench_case.kind == "trimesh":
         vertices_np, faces_np = _split_inputs(bench_case)
         assert isinstance(vertices_np, np.ndarray)
@@ -138,7 +138,7 @@ def test_split(bench_case: BenchCase) -> None:
         mesh_tm = tm.Trimesh(vertices_np, faces_np, process=False)
         parts = bench_case.run(lambda: mesh_tm.split(only_watertight=False), rounds=_ROUNDS)
     else:
-        # ``tw.combine.split`` returns compact per-component ``(vertices, faces)`` submeshes, so the
+        # ``od.combine.split`` returns compact per-component ``(vertices, faces)`` submeshes, so the
         # open3d equivalent is ``cluster_connected_triangles`` (the labelling) followed by
         # ``select_by_index`` per cluster (the compaction). ``select_by_index`` takes *vertex*
         # indices, hence the ``np.unique`` over each cluster's faces -- numpy is part of what an
@@ -167,7 +167,7 @@ def _submesh(
     bench_case: BenchCase, lo: int, hi: int
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
-    return tw.selection.submesh_from_face_indices(
+    return od.selection.submesh_from_face_indices(
         bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
     )
 
@@ -236,7 +236,7 @@ def _parts_ml(bench_case: BenchCase, copies: int) -> mm.std_vector_std_shared_pt
 
 
 @pytest.mark.benchmark(group="concatenate")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib", "pytorch3d")
 @pytest.mark.benchmeshes("sphere_med")
 @pytest.mark.parametrize("copies", _CONCAT_COPIES)
 def test_concatenate(bench_case: BenchCase, copies: int) -> None:
@@ -252,7 +252,7 @@ def test_concatenate(bench_case: BenchCase, copies: int) -> None:
     **pytorch3d**'s ``join_meshes_as_scene`` is this operation exactly -- concatenate the vertex
     buffers, shift each piece's indices by the running count -- and
     ``tests/test_combine.py::test_concatenate_matches_pytorch3d`` pins it to byte equality on both
-    halves. Like triwarp's row its pieces are cached (they are the input), and like triwarp's it
+    halves. Like ordito's row its pieces are cached (they are the input), and like ordito's it
     has no gather across separate allocations to exploit, so its slope in the piece count is the
     same shape of per-piece overhead this group exists to measure.
     """
@@ -269,9 +269,9 @@ def test_concatenate(bench_case: BenchCase, copies: int) -> None:
         merged_ml = bench_case.run(lambda: mm.mergeMeshes(pieces_ml))
         assert merged_ml.topology.numValidFaces() == bench_case.n_faces
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         pieces = _parts(bench_case, copies)
-        vertices, faces = bench_case.run(lambda: tw.combine.concatenate(pieces))
+        vertices, faces = bench_case.run(lambda: od.combine.concatenate(pieces))
         assert faces.size // 3 == bench_case.n_faces
         assert vertices.size > 0
     else:

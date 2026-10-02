@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.reconstruction``.
+Benchmarks for ``ordito.reconstruction``.
 
 The point cloud is a registry mesh's own vertices with area-weighted vertex normals — deterministic
 (no sampling RNG), consistently oriented, and it scales with the mesh. Both are precomputed and
@@ -8,24 +8,24 @@ cached: they are the *input*, not part of the operation being timed.
 **open3d** is the reference for ball pivoting
 (``create_from_point_cloud_ball_pivoting``, Bernardini's BPA at the identical radius); it gets the
 same points and computes its own area-weighted normals, the same quantity
-[`vertex_normals`][triwarp.vertices.vertex_normals] produces.
+[`vertex_normals`][ordito.vertices.vertex_normals] produces.
 
 **pymeshlab** is the third BPA implementation, and worth a row because
 ``generate_surface_reconstruction_ball_pivoting`` is VCGlib's original BPA — so its row and open3d's
-price two wrappers over one lineage and only triwarp's is a different program. It gets the
+price two wrappers over one lineage and only ordito's is a different program. It gets the
 identical absolute radius via ``PureValue`` (the ``0%`` default autoguesses one, which would
-compare two different parameters) with ``clustering=0`` to disable a merge step triwarp does not do.
+compare two different parameters) with ``clustering=0`` to disable a merge step ordito does not do.
 The filter
 pushes its output as a new layer without touching the cloud, so the cloud MeshSet is cached;
 ``set_current_mesh(0)`` inside the callable restores the layer the previous round's push moved away
 from.
 
-**Screened Poisson is timed for triwarp alone.** Both CPU references wrap Kazhdan's own solver and
-between them cost the **majority of the whole suite's wall clock** to re-measure a reference triwarp
+**Screened Poisson is timed for ordito alone.** Both CPU references wrap Kazhdan's own solver and
+between them cost the **majority of the whole suite's wall clock** to re-measure a reference ordito
 beats by more than an order of magnitude, with the largest cell running well over an hour without
 completing a round. The rows are **removed**, not capped, and the agreement they were the parity
 evidence for is checked in ``tests/test_reconstruction.py`` at a size a correctness test can afford.
-What remains is a triwarp-only regression row over ``method`` x ``depth``.
+What remains is a ordito-only regression row over ``method`` x ``depth``.
 
 **The pymeshlab cloud is not quite the same cloud**, and that is forced rather than chosen: it drops
 every point whose area-weighted normal is exactly zero — the unreferenced vertices every scan mesh
@@ -97,7 +97,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 if TYPE_CHECKING:
@@ -110,7 +110,7 @@ _NUM_NEIGHBOURS = 18
 # Ball radius as a multiple of the mean edge length (a proxy for point spacing).
 _BPA_RADIUS_FRACTION = 1.5
 
-# Octree depths of ``triwarp.reconstruction.screened_poisson``. This is the module's dominant knob
+# Octree depths of ``ordito.reconstruction.screened_poisson``. This is the module's dominant knob
 # by a wide margin: ``dense`` mode is a ``2^depth`` cubed node grid, so each step is ~8x the nodes
 # and the point count is almost secondary.
 _POISSON_DEPTHS = [7, 9]
@@ -130,7 +130,7 @@ def _normals(bench_case: BenchCase) -> wp.array[wp.vec3]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        _normals_cache[key] = tw.vertices.vertex_normals(vertices, faces)
+        _normals_cache[key] = od.vertices.vertex_normals(vertices, faces)
     return _normals_cache[key]
 
 
@@ -138,7 +138,7 @@ def _cloud_o3d(bench_case: BenchCase) -> o3d.geometry.PointCloud:
     """
     Oriented open3d point cloud: the mesh vertices with area-weighted vertex normals.
 
-    The same input triwarp gets, with the normals computed by open3d's own
+    The same input ordito gets, with the normals computed by open3d's own
     ``compute_vertex_normals`` (also area-weighted). Cached — it is the input, not the operation.
     """
     if bench_case.mesh_name not in _cloud_o3d_cache:
@@ -158,9 +158,9 @@ def _cloud_ml(bench_case: BenchCase) -> mm.PointCloud:
 
     ``_normals`` goes through ``bench_case.vertices_wp``, which needs a Warp device a CPU-bound
     case does not have -- the same reason the pymeshlab cloud takes its normals from trimesh, whose
-    ``vertex_normals`` are area-weighted like triwarp's. Unlike that cloud this one keeps *every*
+    ``vertex_normals`` are area-weighted like ordito's. Unlike that cloud this one keeps *every*
     point, null normals included: ``triangulatePointCloud`` accepts them where screened Poisson
-    rejects the cloud outright, so meshlib reconstructs from exactly the points triwarp does.
+    rejects the cloud outright, so meshlib reconstructs from exactly the points ordito does.
     """
     if bench_case.mesh_name not in _cloud_ml_cache:
         from meshlib import mrmeshnumpy as mn
@@ -201,7 +201,7 @@ def _cloud_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
         # area-weighted normal is exactly zero -- 47 of bunny_decimated's 8 171 and 1 113 of bunny's
         # 35 947. Dropping them here rather than passing ``preclean=True`` keeps the cleaning out of
         # the timed region; the cost is that the reference reconstructs from 0.6% / 3.1% fewer
-        # points than triwarp and open3d do, which is recorded in the module docstring.
+        # points than ordito and open3d do, which is recorded in the module docstring.
         keep_np = np.linalg.norm(normals_np, axis=1) > 0.0
         meshset_pml = ml.MeshSet()
         meshset_pml.add_mesh(
@@ -235,7 +235,7 @@ def _delaunay_points_np(n_points: int) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="delaunay_triangulation")
-@pytest.mark.benchlibs("triwarp", "scipy", "pyvista")
+@pytest.mark.benchlibs("ordito", "scipy", "pyvista")
 @pytest.mark.parametrize("n_points", _DELAUNAY_POINTS)
 def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
     """
@@ -254,18 +254,18 @@ def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
 
         **The flip loop**, which then dominated the small row. Its cost was not the launch count
         the first reading blamed: most of the host time per pass went to
-        [`face_adjacency`][triwarp.adjacency.face_adjacency] and to a *second* radix sort of the
+        [`face_adjacency`][ordito.adjacency.face_adjacency] and to a *second* radix sort of the
         same edge keys ``face_adjacency`` had already sorted internally, against a fraction of that
         in device work for the whole loop. Since a flip leaves the vertex, face and interior-edge
         counts alone, that whole working set is invariant and is built once into fixed buffers by
         one sort and five launches -- worth about 2x at the large end and more at the small one.
-        See [`delaunay_triangulation`][triwarp.reconstruction.delaunay_triangulation].
+        See [`delaunay_triangulation`][ordito.reconstruction.delaunay_triangulation].
 
-    The three implementations answer the same question by different means: triwarp seeds a
+    The three implementations answer the same question by different means: ordito seeds a
     sequential lexicographic incremental triangulation and then drives its **parallel** edge-flip
     loop to the empty-circumcircle fixed point, scipy calls Qhull, and VTK runs
     ``vtkDelaunay2D``'s serial insertion. The answers agree on the interior and differ only in hull
-    slivers -- pyvista's 374 triangles are a strict *subset* of triwarp's 384 on a 200-point cloud
+    slivers -- pyvista's 374 triangles are a strict *subset* of ordito's 384 on a 200-point cloud
     (``tests/test_reconstruction.py``), so read the counts as well as the clock.
     """
     points_np = _delaunay_points_np(n_points)
@@ -283,20 +283,20 @@ def test_delaunay_triangulation(bench_lib: BenchLibrary, n_points: int) -> None:
     points_wp = wp.array(
         np.ascontiguousarray(points_np, dtype=np.float32), dtype=wp.vec2, device=bench_lib.device
     )
-    faces = bench_lib.run(lambda: tw.reconstruction.delaunay_triangulation(points_wp))
+    faces = bench_lib.run(lambda: od.reconstruction.delaunay_triangulation(points_wp))
     assert faces.size % 3 == 0
     assert faces.size > 0
 
 
 @pytest.mark.benchmark(group="triangulate_point_cloud")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_triangulate_point_cloud(bench_case: BenchCase) -> None:
     """
     Local fan triangulation of an oriented cloud, against the only library that has the same one.
 
-    ``numNeighbours`` is triwarp's ``num_neighbours``, passed the same value on both sides -- it is
+    ``numNeighbours`` is ordito's ``num_neighbours``, passed the same value on both sides -- it is
     the k-NN size the fan is optimized over and so the parameter that sets the work. meshlib builds
-    its own k-NN structure inside the call, as triwarp does, so nothing is hoisted out on either
+    its own k-NN structure inside the call, as ordito does, so nothing is hoisted out on either
     side; the cloud and its normals are the input and are cached.
     """
     skip_larger_than(bench_case, "bunny", "local triangulation above bunny dominates the suite")
@@ -309,7 +309,7 @@ def test_triangulate_point_cloud(bench_case: BenchCase) -> None:
         return
     points, normals = bench_case.vertices_wp, _normals(bench_case)
     _vertices, faces = bench_case.run(
-        lambda: tw.reconstruction.triangulate_point_cloud(
+        lambda: od.reconstruction.triangulate_point_cloud(
             points, normals, num_neighbours=_NUM_NEIGHBOURS
         )
     )
@@ -317,7 +317,7 @@ def test_triangulate_point_cloud(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="ball_pivoting")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 def test_ball_pivoting(bench_case: BenchCase) -> None:
     skip_larger_than(bench_case, "bunny", "ball pivoting above bunny dominates the suite")
     radius = _BPA_RADIUS_FRACTION * bench_case.mean_edge
@@ -329,7 +329,7 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
         # **nothing** on the same cloud and the same radius, and takes *longer* doing it, so this
         # a row at ``0`` therefore times a failure and reads slower for it. The clustering fraction
         # is a seed-triangle spacing floor, not an optional post-pass. At the default the two agree:
-        # triwarp's 1 280, asserted in
+        # ordito's 1 280, asserted in
         # tests/test_reconstruction.py::test_ball_pivoting_matches_pymeshlab.
         cloud_pml = _cloud_meshset_pml(bench_case)
         bench_case.run(
@@ -339,10 +339,10 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
             rounds=_HEAVY_ROUNDS,
         )
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, normals = bench_case.vertices_wp, _normals(bench_case)
         _vertices, faces = bench_case.run(
-            lambda: tw.reconstruction.ball_pivoting(points, normals, radius=radius),
+            lambda: od.reconstruction.ball_pivoting(points, normals, radius=radius),
             rounds=_HEAVY_ROUNDS,
         )
         assert int(faces.shape[0]) > 0
@@ -366,13 +366,13 @@ def test_ball_pivoting(bench_case: BenchCase) -> None:
     "surface itself is recovered) and an inner shell of 2 652 faces at radius ~0.55 on a unit "
     "sphere, up to 0.518 from the cloud, which the Poisson solvers do not produce. Its "
     "parameterization is a lattice (origin, dimensions, voxelSize, sigma) rather than an octree "
-    "depth, so triwarp's depth cannot be mapped onto it either; the row is a cost comparison "
+    "depth, so ordito's depth cannot be mapped onto it either; the row is a cost comparison "
     "against a *fast* implicit reconstructor at a matched cell size. open3d and pymeshlab wrap the "
-    "same Kazhdan solver triwarp implements and carry the correctness comparison in "
+    "same Kazhdan solver ordito implements and carry the correctness comparison in "
     "tests/test_reconstruction.py, at a size a correctness test can afford.",
 )
 @pytest.mark.benchmark(group="screened_poisson")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("depth", _POISSON_DEPTHS)
 @pytest.mark.parametrize("method", ["dense", "adaptive"])
 def test_screened_poisson(
@@ -380,11 +380,11 @@ def test_screened_poisson(
 ) -> None:
     # **The CPU Poisson rows were removed, deliberately.** open3d and pymeshlab both wrap Kazhdan's
     # CPU solver, and between them they were the majority of the whole benchmark suite's wall clock
-    # while measuring a reference triwarp had already beaten by more than an order of magnitude:
+    # while measuring a reference ordito had already beaten by more than an order of magnitude:
     # seconds per call at the default depth, and well over an hour without completing a round on the
     # largest cloud. The comparison itself is not lost: it lives in
     # ``tests/test_reconstruction.py``, which still checks both references for agreement at a size a
-    # correctness test can afford. What is left here is triwarp against meshlib, which is a
+    # correctness test can afford. What is left here is ordito against meshlib, which is a
     # *different* implicit reconstructor (see the exemption above) and, unlike the two Kazhdan
     # wrappers, cheap enough to keep.
     skip_larger_than(
@@ -393,7 +393,7 @@ def test_screened_poisson(
     if bench_case.kind == "meshlib":
         if method == "adaptive":
             pytest.skip("its lattice is uniform: there is no adaptive variant to match")
-        # The lattice is matched to triwarp's octree depth by cell *count* along the longest axis,
+        # The lattice is matched to ordito's octree depth by cell *count* along the longest axis,
         # ``2 ** depth``, which is the only parameter the two share. ``sigma`` is set from the
         # cloud's own spacing rather than left at its default of 1.0, an absolute length that would
         # mean something different on every mesh. The volume and the marching are timed together:
@@ -424,7 +424,7 @@ def test_screened_poisson(
         return
     points, normals = bench_case.vertices_wp, _normals(bench_case)
     _vertices, faces = bench_case.run(
-        lambda: tw.reconstruction.screened_poisson(points, normals, depth=depth, method=method),
+        lambda: od.reconstruction.screened_poisson(points, normals, depth=depth, method=method),
         rounds=_HEAVY_ROUNDS,
     )
     assert int(faces.shape[0]) > 0
@@ -436,7 +436,7 @@ _RESAMPLE_CELL_FRACTIONS = [0.02, 0.01]
 
 
 @pytest.mark.benchmark(group="resample_uniform")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("cell_fraction", _RESAMPLE_CELL_FRACTIONS)
 def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
     """
@@ -444,7 +444,7 @@ def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
 
     Both rows get the identical absolute cell size, derived from the mesh's own bounding-box
     diagonal on the host so neither side computes its own. The pair is a slope check: halving the
-    cell is 8x the lattice on both sides, and triwarp rises only slightly for it, so the field
+    cell is 8x the lattice on both sides, and ordito rises only slightly for it, so the field
     evaluation is *not* what dominates and the fixed marching and cleanup passes are. MeshLab is
     sublinear over the same step too. Read a regression here as the slope steepening rather than the
     absolute number moving.
@@ -455,7 +455,7 @@ def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
 
     **libigl's ``offset_surface`` is the same operation at ``isolevel=0``** -- sample the signed
     distance field on a grid, march it -- and its ``signed_distance_type`` is given
-    ``PSEUDONORMAL``, the mode ``tests/test_proximity.py`` establishes agrees with triwarp's default
+    ``PSEUDONORMAL``, the mode ``tests/test_proximity.py`` establishes agrees with ordito's default
     sign to 8e-8. Its resolution parameter ``s`` is a *cell count along the longest axis*, not a
     length, so it receives ``round(longest_extent / voxel_size)`` -- the named transform that puts
     all three rows on the identical lattice. In-harness it is sublinear in the lattice like the
@@ -513,7 +513,7 @@ def test_resample_uniform(bench_case: BenchCase, cell_fraction: float) -> None:
     skip_larger_than(bench_case, "bunny", "a 1% lattice over dragon is 8 GB of field")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _out_vertices, out_faces = bench_case.run(
-        lambda: tw.reconstruction.resample_uniform(vertices, faces, voxel_size=voxel_size),
+        lambda: od.reconstruction.resample_uniform(vertices, faces, voxel_size=voxel_size),
         rounds=_HEAVY_ROUNDS,
     )
     assert int(out_faces.shape[0]) > 0

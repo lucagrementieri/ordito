@@ -1,7 +1,7 @@
 # Cookbook
 
 Task-oriented recipes. Each page is self-contained and runnable end to end — copy the code block,
-`uv run python` it (with `triwarp` installed), and it prints real diagnostics from a real,
+`uv run python` it (with `ordito` installed), and it prints real diagnostics from a real,
 intentionally imperfect input.
 
 | Recipe | What it covers |

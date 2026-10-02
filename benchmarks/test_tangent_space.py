@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.tangent_space``: frames, polar angles and transport.
+Benchmarks for ``ordito.tangent_space``: frames, polar angles and transport.
 
 Three groups over two axes:
 
@@ -22,11 +22,11 @@ constructing ``MeshVectorHeatSolver``, which also builds the halfedge mesh, the 
 and the connection Laplacian, and factors them. There is no way to ask it for the frames alone. So
 its number is an **upper bound** on the frame cost, and a fair number only for the question "what
 does it cost to get to the point of having tangent frames". ``use_intrinsic_delaunay=False`` keeps
-its discretization the same as triwarp's.
+its discretization the same as ordito's.
 
 That same construction is the only route to its connection Laplacian, which is what
-``halfedge_transport_angles`` corresponds to (triwarp will assemble that matrix itself in a later
-phase); until then the transport-angle row is triwarp-only, with potpourri3d's construction cost
+``halfedge_transport_angles`` corresponds to (ordito will assemble that matrix itself in a later
+phase); until then the transport-angle row is ordito-only, with potpourri3d's construction cost
 shown in the frames group rather than double-counted here.
 
 **trimesh**, **libigl** and **open3d** have no tangent-space machinery at all: none exposes a
@@ -42,7 +42,7 @@ import numpy as np
 import potpourri3d as pp3d
 import pytest
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 # Constructing potpourri3d's vector-heat solver factors two sparse systems; it runs into hundreds of
@@ -52,14 +52,14 @@ _ROUNDS = 3
 
 @pytest.mark.benchmark(group="vertex_tangent_frames")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_vertex_tangent_frames(bench_case: BenchCase) -> None:
     """Angle-weighted normals plus a reference direction per vertex."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         basis_x, _, _ = bench_case.run(
-            lambda: tw.tangent_space.vertex_tangent_frames(vertices, faces), rounds=_ROUNDS
+            lambda: od.tangent_space.vertex_tangent_frames(vertices, faces), rounds=_ROUNDS
         )
         assert basis_x.shape == (n_vertices,)
     else:
@@ -77,7 +77,7 @@ def test_vertex_tangent_frames(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_tangent_frames")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_face_tangent_frames(bench_case: BenchCase) -> None:
     """
     A frame per face: one edge normalize and one cross product, plus the face normals.
@@ -92,10 +92,10 @@ def test_face_tangent_frames(bench_case: BenchCase) -> None:
     comparable up to a rotation; ``tests/test_tangent_space.py`` asserts exactly that.
     """
     n_faces = bench_case.n_faces
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         basis_x, _basis_y, _normals = bench_case.run(
-            lambda: tw.tangent_space.face_tangent_frames(vertices, faces)
+            lambda: od.tangent_space.face_tangent_frames(vertices, faces)
         )
         assert basis_x.shape == (n_faces,)
         return
@@ -108,26 +108,26 @@ def test_face_tangent_frames(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="halfedge_tangent_angles")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_halfedge_tangent_angles(bench_case: BenchCase) -> None:
     """Two serial ring walks per vertex: the valence-sensitive group of this module."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    angles = bench_case.run(lambda: tw.tangent_space.halfedge_tangent_angles(vertices, faces))
+    angles = bench_case.run(lambda: od.tangent_space.halfedge_tangent_angles(vertices, faces))
     assert angles.shape == (faces.size,)
 
 
 @pytest.mark.benchmark(group="halfedge_transport_angles")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_halfedge_transport_angles(bench_case: BenchCase) -> None:
     """The connection phases, given the polar angles: one flat pass over the halfedges."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     n_vertices = bench_case.n_vertices
-    twins = tw.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
-    rings = tw.halfedge.vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
-    angles = tw.tangent_space.halfedge_tangent_angles(vertices, faces, rings=rings)
+    twins = od.halfedge.halfedge_twins(faces, n_vertices=n_vertices)
+    rings = od.halfedge.vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
+    angles = od.tangent_space.halfedge_tangent_angles(vertices, faces, rings=rings)
     rho = bench_case.run(
-        lambda: tw.tangent_space.halfedge_transport_angles(
+        lambda: od.tangent_space.halfedge_transport_angles(
             vertices, faces, twins=twins, tangent_angles=angles
         )
     )

@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.visibility`` against pymeshlab (CPU reference)."""
+"""Regression tests for ``ordito.visibility`` against pymeshlab (CPU reference)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     meshlib_scalars_to_numpy,
@@ -44,13 +44,13 @@ def _ellipsoid() -> tm.Trimesh:
 
 def _vertex_normals_wp(mesh_wp: wp.Mesh) -> wp.array[wp.vec3]:
     """Smooth outward normals; face normals would make the field piecewise constant per ring."""
-    return tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    return od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
 
 
 @pytest.mark.parametrize("weight", ["cosine", "uniform"])
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "torus"])
 def test_ambient_occlusion_is_zero_on_a_convex_mesh(
-    request: pytest.FixtureRequest, mesh_name: str, weight: tw.visibility.RayWeight
+    request: pytest.FixtureRequest, mesh_name: str, weight: od.visibility.RayWeight
 ) -> None:
     """
     No ray leaving a convex closed surface can come back, so the occlusion is *exactly* zero.
@@ -60,7 +60,7 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
     rather than a stuck kernel.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    occlusion_np = tw.visibility.ambient_occlusion(
+    occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=64, weight=weight
     ).numpy()
     assert (occlusion_np >= 0.0).all()
@@ -74,7 +74,7 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
 def test_ambient_occlusion_finds_the_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """The inner shell of a hollow cube must be far more occluded than the outer one."""
     mesh_tm, mesh_wp = cave_cube
-    occlusion_np = tw.visibility.ambient_occlusion(
+    occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=128
     ).numpy()
     # The cavity is the inner 0.1-cube; its vertices are the ones near the origin.
@@ -97,7 +97,7 @@ def test_ambient_occlusion_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh
     wall.
 
     **Mutation probe**, the one section 7.4 requires of a Class C threshold and this test did not
-    carry: shuffling the triwarp side, 30 permutations on this fixture, gives ``|r|`` at most
+    carry: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|`` at most
     **0.0695** (mean 0.0269) against the measured **-0.8621** -- a separation of **12.4x**, well
     past the 3x floor, so the threshold is testing the correspondence and not the two marginal
     distributions.
@@ -107,7 +107,7 @@ def test_ambient_occlusion_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.Mesh
     meshset_pml.compute_scalar_ambient_occlusion(rays=256)
     exposure_pml = meshset_pml.current_mesh().vertex_scalar_array()
 
-    occlusion_np = tw.visibility.ambient_occlusion(
+    occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=256
     ).numpy()
 
@@ -135,7 +135,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
     MeshLib solves the terrain form of this integral -- how much of the sky each sample point can
     see -- and it is the same quantity ``ambient_occlusion`` reports as the blocked share, so the
     named part of the comparison is the complement ``svf = 1 - occlusion``. What keeps it Class C
-    rather than Class B is that the two integrate over *different direction sets*: triwarp rotates
+    rather than Class B is that the two integrate over *different direction sets*: ordito rotates
     its own Fibonacci lattice into each point's frame and MeshLib takes the patch list it is given,
     so the residual is quadrature error and not a correspondence.
 
@@ -201,7 +201,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
         dtype=wp.vec3,
         device=device,
     )
-    occlusion_np = tw.visibility.ambient_occlusion(
+    occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, samples_wp, normals=normals_wp, n_rays=n_patches, weight="uniform"
     ).numpy()
 
@@ -219,7 +219,7 @@ def test_ambient_occlusion_converges_with_more_rays(torus: tuple[tm.Trimesh, wp.
     _mesh_tm, mesh_wp = torus
     normals_wp = _vertex_normals_wp(mesh_wp)
     fields = [
-        tw.visibility.ambient_occlusion(
+        od.visibility.ambient_occlusion(
             mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=n_rays
         ).numpy()
         for n_rays in (64, 256, 1024)
@@ -233,10 +233,10 @@ def test_ambient_occlusion_uniform_weight_differs_from_cosine(
     """The two conventions are genuinely different integrals, not a rescaling of each other."""
     _mesh_tm, mesh_wp = torus
     normals_wp = _vertex_normals_wp(mesh_wp)
-    cosine_np = tw.visibility.ambient_occlusion(
+    cosine_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256, weight="cosine"
     ).numpy()
-    uniform_np = tw.visibility.ambient_occlusion(
+    uniform_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256, weight="uniform"
     ).numpy()
     assert not np.allclose(cosine_np, uniform_np, atol=1e-3)
@@ -248,11 +248,11 @@ def test_ambient_occlusion_uniform_weight_differs_from_cosine(
 def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="n_rays >= 1"):
-        tw.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, n_rays=0)
+        od.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, n_rays=0)
     with pytest.raises(ValueError, match="weight must be"):
-        tw.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, weight="lambert")  # pyright: ignore[reportArgumentType]
+        od.visibility.ambient_occlusion(mesh_wp, mesh_wp.points, weight="lambert")  # pyright: ignore[reportArgumentType]
     with pytest.raises(ValueError, match="one entry per point"):
-        tw.visibility.ambient_occlusion(
+        od.visibility.ambient_occlusion(
             mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
         )
 
@@ -260,7 +260,7 @@ def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
 def test_ambient_occlusion_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
-    assert tw.visibility.ambient_occlusion(mesh_wp, points_wp).shape == (0,)
+    assert od.visibility.ambient_occlusion(mesh_wp, points_wp).shape == (0,)
 
 
 def test_ambient_occlusion_empty_still_validates_normals_length(
@@ -277,7 +277,7 @@ def test_ambient_occlusion_empty_still_validates_normals_length(
     _mesh_tm, mesh_wp = icosahedron
     points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per point"):
-        tw.visibility.ambient_occlusion(
+        od.visibility.ambient_occlusion(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
         )
 
@@ -286,7 +286,7 @@ def test_volumetric_obscurance_is_zero_on_a_convex_mesh(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    obscurance_np = tw.visibility.volumetric_obscurance(
+    obscurance_np = od.visibility.volumetric_obscurance(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=64
     ).numpy()
     assert obscurance_np.max() == 0.0
@@ -298,12 +298,12 @@ def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
     """Ambient occlusion is the ``tau -> 0`` limit, so the gap must shrink monotonically."""
     _mesh_tm, mesh_wp = torus
     normals_wp = _vertex_normals_wp(mesh_wp)
-    occlusion_np = tw.visibility.ambient_occlusion(
+    occlusion_np = od.visibility.ambient_occlusion(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128
     ).numpy()
     gaps = [
         np.abs(
-            tw.visibility.volumetric_obscurance(
+            od.visibility.volumetric_obscurance(
                 mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, tau=tau
             ).numpy()
             - occlusion_np
@@ -320,10 +320,10 @@ def test_volumetric_obscurance_attenuates_distant_occluders(
     """A larger ``tau`` discounts every occluder, so the field can only go down."""
     _mesh_tm, mesh_wp = torus
     normals_wp = _vertex_normals_wp(mesh_wp)
-    low_np = tw.visibility.volumetric_obscurance(
+    low_np = od.visibility.volumetric_obscurance(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, tau=0.1
     ).numpy()
-    high_np = tw.visibility.volumetric_obscurance(
+    high_np = od.visibility.volumetric_obscurance(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, tau=10.0
     ).numpy()
     assert (high_np <= low_np + 1e-6).all()
@@ -334,12 +334,12 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.
     """
     Class C (rank correlation), and the sign of the correlation is the claim.
 
-    MeshLab reports *exposure* where triwarp reports *obscurance*, so agreement means a correlation
+    MeshLab reports *exposure* where ordito reports *obscurance*, so agreement means a correlation
     below **-0.8**, not above it -- an implementation that returned exposure would pass a
     ``|corr| > 0.8`` bar and fails this one. The torus is the fixture because its hole obscures the
     inner wall and leaves the outer wall exposed, giving the ranks something to disagree about.
 
-    **Mutation probe**: shuffling the triwarp side, 30 permutations on this fixture, gives ``|r|``
+    **Mutation probe**: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|``
     at most **0.0777** (mean 0.0274) against the measured **-0.8651** -- a separation of **11.1x**,
     past section 7.4's 3x floor.
     """
@@ -348,7 +348,7 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.
     meshset_pml.compute_scalar_by_volumetric_obscurance(rays=256, tau=0.1)
     exposure_pml = meshset_pml.current_mesh().vertex_scalar_array()
 
-    obscurance_np = tw.visibility.volumetric_obscurance(
+    obscurance_np = od.visibility.volumetric_obscurance(
         mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=256, tau=0.1
     ).numpy()
     rank_pml = np.argsort(np.argsort(exposure_pml))
@@ -359,7 +359,7 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(torus: tuple[tm.Trimesh, wp.
 def test_volumetric_obscurance_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="tau must be positive"):
-        tw.visibility.volumetric_obscurance(mesh_wp, mesh_wp.points, tau=0.0)
+        od.visibility.volumetric_obscurance(mesh_wp, mesh_wp.points, tau=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -377,7 +377,7 @@ def _sphere_wp(device: str, radius: float, subdivisions: int = 3):
     sphere_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=radius)
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp)
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
     return sphere_tm, mesh_wp, normals_wp
 
 
@@ -394,7 +394,7 @@ def test_shape_diameter_is_the_diameter_of_a_sphere(device: str, radius: float) 
     """
     _sphere_tm, mesh_wp, normals_wp = _sphere_wp(device, radius)
     cone_angle = np.deg2rad(5.0)
-    diameter_np = tw.visibility.shape_diameter(
+    diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, cone_angle=cone_angle
     ).numpy()
     assert (diameter_np <= 2.0 * radius * (1.0 + 1e-4)).all()
@@ -404,10 +404,10 @@ def test_shape_diameter_is_the_diameter_of_a_sphere(device: str, radius: float) 
 def test_shape_diameter_reduces_to_thickness(device: str) -> None:
     """One ray down a vanishing cone *is* ``thickness(method="ray")``, to float32."""
     _sphere_tm, mesh_wp, normals_wp = _sphere_wp(device, 1.5)
-    diameter_np = tw.visibility.shape_diameter(
+    diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=1, cone_angle=1e-4
     ).numpy()
-    thickness_np = tw.visibility.thickness(
+    thickness_np = od.visibility.thickness(
         mesh_wp, mesh_wp.points, normals=normals_wp, method="ray"
     ).numpy()
     assert np.allclose(diameter_np, thickness_np, rtol=1e-5, atol=1e-5)
@@ -423,8 +423,8 @@ def test_shape_diameter_measures_a_slab(device: str) -> None:
         device=device,
     )
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp)
-    diameter_np = tw.visibility.shape_diameter(
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, cone_angle=np.deg2rad(10.0)
     ).numpy()
 
@@ -442,7 +442,7 @@ def test_shape_diameter_measures_a_slab(device: str) -> None:
 
 def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
     """
-    Triwarp against triwarp: trimming rejects the rays that escape through the cavity.
+    Ordito against ordito: trimming rejects the rays that escape through the cavity.
 
     On a hollow shell the untrimmed mean is dragged out by the rays that cross the whole cavity.
     This is what the outlier rejection is *for*, so it has to be visible: with ``trim`` wide open
@@ -464,11 +464,11 @@ def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
         device=device,
     )
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp)
-    trimmed_np = tw.visibility.shape_diameter(
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    trimmed_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, trim=1.0
     ).numpy()
-    untrimmed_np = tw.visibility.shape_diameter(
+    untrimmed_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, trim=100.0
     ).numpy()
     assert trimmed_np.mean() < untrimmed_np.mean()
@@ -521,8 +521,8 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
         device=device,
     )
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp)
-    diameter_np = tw.visibility.shape_diameter(
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256
     ).numpy()
 
@@ -554,7 +554,7 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
 
     MeshLib has no shape-diameter function -- ``computeRayThicknessAtVertices`` is a single inward
     ray per vertex -- so the comparable claim is the limit
-    [`test_shape_diameter_reduces_to_thickness`] already checks against triwarp itself: as
+    [`test_shape_diameter_reduces_to_thickness`] already checks against ordito itself: as
     ``cone_angle`` goes to zero the bundle collapses onto the inward normal. Running that limit
     against an outside implementation is what makes it a reference comparison, and it pins the ray
     *direction* and the trimming's neutrality at the same time.
@@ -565,13 +565,13 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
     is a genuinely different measure of thickness, not a noisier one, and that number is the reason
     this claim is stated at the narrow cone and the group keeps pymeshlab as its wide-cone oracle.
 
-    The mutation probe: shuffling triwarp's answer takes the median relative difference to **0.157**
+    The mutation probe: shuffling ordito's answer takes the median relative difference to **0.157**
     (238x the measured agreement) and the correlation to -0.02.
     """
     mesh_tm = _ellipsoid()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
 
     thickness_ml = meshlib_scalars_to_numpy(
         mm.computeRayThicknessAtVertices(trimesh_to_meshlib(mesh_tm))
@@ -580,7 +580,7 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
     assert finite.all()  # non-vacuity: every vertex found an opposite surface
     assert_nonconstant(thickness_ml, tol=1.0)  # ... and the answer is not a constant
 
-    narrow_np = tw.visibility.shape_diameter(
+    narrow_np = od.visibility.shape_diameter(
         mesh_wp, vertices_wp, normals=normals_wp, n_rays=64, cone_angle=0.05
     ).numpy()
     relative = np.abs(narrow_np - thickness_ml) / thickness_ml
@@ -588,20 +588,20 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
     assert np.corrcoef(narrow_np, thickness_ml)[0, 1] > 0.999
 
     # The wide cone is a different measure, and saying so is half the claim.
-    wide_np = tw.visibility.shape_diameter(mesh_wp, vertices_wp, normals=normals_wp).numpy()
+    wide_np = od.visibility.shape_diameter(mesh_wp, vertices_wp, normals=normals_wp).numpy()
     assert np.median(np.abs(wide_np - thickness_ml) / thickness_ml) > 0.05
 
 
 def test_shape_diameter_invalid(device: str) -> None:
     _sphere_tm, mesh_wp, normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
     with pytest.raises(ValueError, match="n_rays >= 1"):
-        tw.visibility.shape_diameter(mesh_wp, mesh_wp.points, n_rays=0)
+        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, n_rays=0)
     with pytest.raises(ValueError, match=r"cone_angle must be in \(0, pi / 2\]"):
-        tw.visibility.shape_diameter(mesh_wp, mesh_wp.points, cone_angle=2.0)
+        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, cone_angle=2.0)
     with pytest.raises(ValueError, match="trim must be non-negative"):
-        tw.visibility.shape_diameter(mesh_wp, mesh_wp.points, trim=-1.0)
+        od.visibility.shape_diameter(mesh_wp, mesh_wp.points, trim=-1.0)
     with pytest.raises(ValueError, match="one entry per point"):
-        tw.visibility.shape_diameter(
+        od.visibility.shape_diameter(
             mesh_wp, mesh_wp.points, normals=wp.zeros(2, dtype=wp.vec3, device=device)
         )
     assert normals_wp.size > 0
@@ -610,7 +610,7 @@ def test_shape_diameter_invalid(device: str) -> None:
 def test_shape_diameter_empty(device: str) -> None:
     _sphere_tm, mesh_wp, _normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
     points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    assert tw.visibility.shape_diameter(mesh_wp, points_wp).shape == (0,)
+    assert od.visibility.shape_diameter(mesh_wp, points_wp).shape == (0,)
 
 
 def test_shape_diameter_empty_still_validates_normals_length(device: str) -> None:
@@ -618,7 +618,7 @@ def test_shape_diameter_empty_still_validates_normals_length(device: str) -> Non
     _sphere_tm, mesh_wp, _normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
     points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="one entry per point"):
-        tw.visibility.shape_diameter(
+        od.visibility.shape_diameter(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=device)
         )
 
@@ -645,7 +645,7 @@ def test_thickness_max_sphere(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
 
-    thickness_wp = tw.visibility.thickness(mesh_wp, points_wp, normals=normals_wp).numpy()
+    thickness_wp = od.visibility.thickness(mesh_wp, points_wp, normals=normals_wp).numpy()
     thickness_tm = tm_proximity.thickness(mesh_tm, points_np, normals=normals_np)
 
     finite_tm = np.isfinite(thickness_tm)
@@ -673,7 +673,7 @@ def test_thickness_ray(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
 
-    thickness_wp = tw.visibility.thickness(
+    thickness_wp = od.visibility.thickness(
         mesh_wp, points_wp, normals=normals_wp, method="ray"
     ).numpy()
     thickness_tm = tm_proximity.thickness(mesh_tm, points_np, normals=normals_np, method="ray")
@@ -697,12 +697,12 @@ def test_thickness_at_vertices_matches_meshlib(device: str) -> None:
     The pairing is exact only with the right normals, and that is the substance of this test rather
     than an incidental detail. MeshLib's ``MeshPoint::set`` takes the direction from the
     *pseudonormal*, which section 6 records as the match for
-    [`vertex_normals`][triwarp.vertices.vertex_normals] at ``weighting="angle"`` (1.19e-07).
+    [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"`` (1.19e-07).
     Measured on the ellipsoid: **5.96e-07** absolute and 3.48e-07 relative with those normals,
     against **0.031** -- five orders worse -- with the area-weighted ones. So the second assert is
     what makes the first one a claim about the ray rather than about the tolerance.
 
-    MeshLib reports ``FLT_MAX`` where no opposite surface is found and triwarp reports ``inf``; the
+    MeshLib reports ``FLT_MAX`` where no opposite surface is found and ordito reports ``inf``; the
     fixture is closed, so all 642 vertices are finite here and the mask is asserted rather than
     used to skip elements.
 
@@ -725,16 +725,16 @@ def test_thickness_at_vertices_matches_meshlib(device: str) -> None:
     # non-vacuity: on a sphere every ray would read 2 * radius
     assert_nonconstant(thickness_ml, tol=1.0)
 
-    angle_normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
-    thickness_wp = tw.visibility.thickness(
+    angle_normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    thickness_wp = od.visibility.thickness(
         mesh_wp, vertices_wp, method="ray", normals=angle_normals_wp
     ).numpy()
     assert np.isfinite(thickness_wp).all()
     assert np.allclose(thickness_wp, thickness_ml, rtol=1e-5, atol=1e-5)
 
     # The other weighting is not the pairing, and the gap is five orders of magnitude.
-    area_normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp)
-    thickness_area_np = tw.visibility.thickness(
+    area_normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    thickness_area_np = od.visibility.thickness(
         mesh_wp, vertices_wp, method="ray", normals=area_normals_wp
     ).numpy()
     assert np.abs(thickness_area_np - thickness_ml).max() > 1e-3
@@ -773,7 +773,7 @@ def test_max_tangent_sphere(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
 
-    centers_wp, radii_wp = tw.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
+    centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
     centers_tm, radii_tm = tm_proximity.max_tangent_sphere(mesh_tm, points_np, normals=normals_np)
 
     finite_tm = np.isfinite(radii_tm)
@@ -825,7 +825,7 @@ def test_max_tangent_sphere_reach_matches_trimesh(cave_cube: tuple[tm.Trimesh, w
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
 
-    centers_wp, radii_wp = tw.visibility.max_tangent_sphere(
+    centers_wp, radii_wp = od.visibility.max_tangent_sphere(
         mesh_wp, points_wp, normals=normals_wp, inwards=False
     )
     centers_tm, radii_tm = tm_proximity.max_tangent_sphere(
@@ -848,7 +848,7 @@ def test_max_tangent_sphere_reach_matches_trimesh(cave_cube: tuple[tm.Trimesh, w
     reason="that group times the *exterior* branch, and MeshLib has no exterior form: "
     "InSphereSearchSettings.insideAndOutside returns the smaller of the inside and outside spheres "
     "with a sign rather than the outside one. Its interior form also takes no query set -- it "
-    "answers at every vertex, where triwarp's iteration is ill-conditioned (measured 0.0018 radius "
+    "answers at every vertex, where ordito's iteration is ill-conditioned (measured 0.0018 radius "
     "on a unit sphere, see test_max_tangent_sphere_agrees_across_devices) -- so it cannot be asked "
     "about the interior points this test uses. trimesh has an exterior form, carries the oracle "
     "for the values and is now the group's timed reference; this declaration is about MeshLib "
@@ -859,12 +859,12 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
     Class C (a median relative difference): the same shrinking-sphere algorithm, from just inside.
 
     Both implementations are Inui et al.'s shrinking sphere, so this is the closest thing to a
-    second implementation triwarp's iteration has -- and the reason it is Class C rather than A is a
+    second implementation ordito's iteration has -- and the reason it is Class C rather than A is a
     query-point difference neither side can remove. MeshLib excludes the faces incident to the
-    vertex it measures at (``MeshPoint::notIncidentFaces``); triwarp takes no such predicate, so at
+    vertex it measures at (``MeshPoint::notIncidentFaces``); ordito takes no such predicate, so at
     a point exactly *on* the surface its sphere collapses -- 0.0018 on a unit sphere, the degeneracy
     [`test_max_tangent_sphere_agrees_across_devices`] is written around. MeshLib in turn takes no
-    query set, so it cannot be asked at the offset points. The comparison therefore pulls triwarp's
+    query set, so it cannot be asked at the offset points. The comparison therefore pulls ordito's
     queries a short way inside along the normal and compares the two fields.
 
     Measured on the ellipsoid over 642 vertices spanning 0.52 to 1.40, the median relative
@@ -883,12 +883,12 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
     mesh_tm = _ellipsoid()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
     mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
     extent_np = mesh_tm.bounds[1] - mesh_tm.bounds[0]
 
     settings_ml = mm.InSphereSearchSettings()
     settings_ml.maxRadius = float(0.5 * extent_np.min())  # the default is 1, whatever the scale
-    settings_ml.maxIters = 100  # triwarp's max_iter default, so neither side stops earlier
+    settings_ml.maxIters = 100  # ordito's max_iter default, so neither side stops earlier
     diameter_ml = meshlib_scalars_to_numpy(
         mm.computeInSphereThicknessAtVertices(trimesh_to_meshlib(mesh_tm), settings_ml)
     )
@@ -900,7 +900,7 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
         mesh_tm.vertices - offset * normals_wp.numpy(), dtype=np.float32
     )
     inside_wp = points_to_warp(inside_np, device)
-    _centers_wp, radii_wp = tw.visibility.max_tangent_sphere(
+    _centers_wp, radii_wp = od.visibility.max_tangent_sphere(
         mesh_wp, inside_wp, inwards=True, normals=normals_wp
     )
     diameter_wp = 2.0 * radii_wp.numpy()
@@ -914,7 +914,7 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
 def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    centers_wp, radii_wp = tw.visibility.max_tangent_sphere(mesh_wp, points_wp)
+    centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp)
     assert centers_wp.shape == (0,)
     assert radii_wp.shape == (0,)
 
@@ -932,7 +932,7 @@ def test_max_tangent_sphere_empty_still_validates_normals_length(
     _, mesh_wp = icosahedron
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per point"):
-        tw.visibility.max_tangent_sphere(
+        od.visibility.max_tangent_sphere(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
         )
 
@@ -941,7 +941,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: a caller-supplied non-unit normal must not silently scale the radius.
+    Ordito against ordito: a caller-supplied non-unit normal must not silently scale the radius.
 
     Every ray-bundle measure in this module normalizes its normals defensively (``hemisphere_frame``
     does it per-thread); the shrinking-sphere path had no equivalent guard, so a normal scaled by
@@ -951,14 +951,14 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     """
     _mesh_tm, mesh_wp = icosahedron
     points_wp = mesh_wp.points
-    unit_normals_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    unit_normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     scaled_normals_wp = warp_empty(unit_normals_wp.size, wp.vec3, mesh_wp.device)
     wp.map(wp.mul, unit_normals_wp, wp.float32(2.0), out=scaled_normals_wp)
 
-    centers_unit_wp, radii_unit_wp = tw.visibility.max_tangent_sphere(
+    centers_unit_wp, radii_unit_wp = od.visibility.max_tangent_sphere(
         mesh_wp, points_wp, normals=unit_normals_wp
     )
-    centers_scaled_wp, radii_scaled_wp = tw.visibility.max_tangent_sphere(
+    centers_scaled_wp, radii_scaled_wp = od.visibility.max_tangent_sphere(
         mesh_wp, points_wp, normals=scaled_normals_wp
     )
     assert np.allclose(radii_scaled_wp.numpy(), radii_unit_wp.numpy(), rtol=1e-5, atol=1e-5)
@@ -983,6 +983,6 @@ def test_max_tangent_sphere_agrees_across_devices(kernel_device: str) -> None:
     vertices_np = np.asarray(mesh_tm.vertices)
     points_wp = points_to_warp(vertices_np * 0.95, kernel_device)
     normals_wp = points_to_warp(np.asarray(mesh_tm.vertex_normals), kernel_device)
-    _centers_wp, radii_wp = tw.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
+    _centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp, normals=normals_wp)
     # The inscribed tangent sphere of a unit sphere, from just inside it, is the sphere itself.
     assert np.allclose(radii_wp.numpy(), 0.95, rtol=0.1, atol=0.1)

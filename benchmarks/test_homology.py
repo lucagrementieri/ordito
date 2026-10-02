@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.homology``: a basis of non-contractible loops.
+Benchmarks for ``ordito.homology``: a basis of non-contractible loops.
 
 Axis: **genus**, which exists for this module and is used by nothing else. Every other mesh in
 either registry is genus 0 -- the scan meshes are open surfaces and the feature meshes are spheres,
@@ -12,7 +12,7 @@ What the axis separates is the two halves of the algorithm: building the spannin
 cotree, against *tracing* one walk per generator. ``sphere_med`` at genus 0 is the floor -- the
 trees with no loops to trace at all -- and ``handles_64`` is 128 traces on top of the same work.
 
-triwarp leads meshlib at every genus, where it was level at genus 1 and behind at genus 64. The
+ordito leads meshlib at every genus, where it was level at genus 1 and behind at genus 64. The
 fused rewrite is worth two to three times the previous implementation, and the ratio rises with the
 genus because the tracing it replaced was the part that scaled: the loops were walked one at a time
 in Python over a ``parents`` array read back in full, and they are now two launches and a scan.
@@ -22,7 +22,7 @@ clock: the spread across a 64x genus range is small, so the decomposition domina
 is a fraction of it. There is no longer a ``tree_cotree`` group to read this one against: the
 decomposition stopped
 being a public entry point when it stopped being reachable except through this function, and the
-attribution it existed for is in ``triwarp/kernels/homology.py``'s module docstring.
+attribution it existed for is in ``ordito/kernels/homology.py``'s module docstring.
 
 References
 ----------
@@ -45,7 +45,7 @@ from __future__ import annotations
 import pytest
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 _mesh_ml_cache: dict[str, mm.Mesh] = {}
@@ -60,7 +60,7 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 @pytest.mark.benchmark(group="homology_generators")
 @pytest.mark.benchaxis("genus")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_homology_generators(bench_case: BenchCase) -> None:
     """
     The full basis: spanning tree, cotree, then one loop trace per generator, in one call.
@@ -77,23 +77,23 @@ def test_homology_generators(bench_case: BenchCase) -> None:
         assert len(tunnels_ml) == expected
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = bench_case.run(lambda: tw.homology.homology_generators(vertices, faces))
+    loops = bench_case.run(lambda: od.homology.homology_generators(vertices, faces))
     assert len(loops) == expected
 
 
 @pytest.mark.benchmark(group="homology_generators_with_offsets")
 @pytest.mark.benchaxis("genus")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_homology_generators_with_offsets(bench_case: BenchCase) -> None:
     """
     The packed basis: ``homology_generators`` without the per-loop views.
 
-    Read against that group's triwarp row; the difference is the list, which at genus 64 is 128
+    Read against that group's ordito row; the difference is the list, which at genus 64 is 128
     views.
     """
     expected = {"sphere_med": 0, "handles_1": 2, "handles_64": 128}[bench_case.mesh_name]
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _loops, offsets = bench_case.run(
-        lambda: tw.homology.homology_generators_with_offsets(vertices, faces)
+        lambda: od.homology.homology_generators_with_offsets(vertices, faces)
     )
     assert offsets.size == expected + 1

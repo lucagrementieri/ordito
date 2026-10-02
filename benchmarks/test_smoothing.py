@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.smoothing``.
+Benchmarks for ``ordito.smoothing``.
 
 Four groups over two axes, because this module has two genuinely different cost regimes and the
 switch between them is a keyword argument rather than a mesh property:
@@ -26,9 +26,9 @@ References
 ----------
 **open3d**'s ``filter_smooth_laplacian`` runs the same number of uniform-weight iterations, so it is
 the reference for the ``novol`` case; it has no volume-constraint variant, so ``vol`` stays
-triwarp/trimesh only. Open3D returns a new mesh so the shared one is reusable; **trimesh** mutates
+ordito/trimesh only. Open3D returns a new mesh so the shared one is reusable; **trimesh** mutates
 in place and is rebuilt inside the timed callable. Neither has an implicit smoother, so that half of
-the ``quality`` group is a triwarp-only before/after.
+the ``quality`` group is a ordito-only before/after.
 
 **pymeshlab** carries four of MeshLab's ``apply_coord_*`` smoothers, giving each explicit scheme a
 second independent implementation: ``apply_coord_laplacian_smoothing_scale_dependent`` is the same
@@ -36,7 +36,7 @@ Desbrun scale-dependent umbrella as ``filter_mut_dif_laplacian``;
 ``apply_coord_laplacian_smoothing(cotangentweight=False)`` the same uniform explicit loop (MeshLab
 has no implicit variant, so it appears in the ``explicit`` row only);
 ``apply_coord_taubin_smoothing`` the same lambda-mu alternation at MeshLab's ``mu=-0.53`` against
-triwarp's ``nu=0.5``; and ``apply_coord_hc_laplacian_smoothing`` Vollmer's HC, but **not
+ordito's ``nu=0.5``; and ``apply_coord_hc_laplacian_smoothing`` Vollmer's HC, but **not
 parameter-comparable**.
 
 Two caveats govern every row:
@@ -45,9 +45,9 @@ Two caveats govern every row:
   the row carries the build — about a third of a ten-step Laplacian row on a scan mesh, so subtract
   it before quoting a ratio.
 - **HC Laplacian exposes no parameters at all** — no step count, no ``alpha``/``beta`` — so its row
-  is a *single* filter call against triwarp's ten iterations, and its output matches
+  is a *single* filter call against ordito's ten iterations, and its output matches
   ``filter_humphrey`` at none of the 8 x 11 x 11 ``(iterations, alpha, beta)`` combinations probed.
-  MeshLab's HC is a different formulation of Vollmer's scheme, not triwarp's with other constants.
+  MeshLab's HC is a different formulation of Vollmer's scheme, not ordito's with other constants.
   It is a per-pass cost reference and deliberately **not** a test oracle; trimesh remains the only
   HC check.
 
@@ -79,8 +79,8 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, face_bitset_ml, mesh_ml_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -88,15 +88,15 @@ if TYPE_CHECKING:
 
 _ITERATIONS = 10
 
-_operator_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
+_operator_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
 
 
-def _laplacian_operator(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
+def _laplacian_operator(bench_case: BenchCase) -> odt.BsrMatrix[wp.float32]:
     """Assemble the uniform Laplacian once per (mesh, device) -- an *input*, not the operation."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _operator_cache:
-        _operator_cache[key] = tw.laplacian.laplacian(bench_case.vertices_wp, bench_case.faces_wp)
+        _operator_cache[key] = od.laplacian.laplacian(bench_case.vertices_wp, bench_case.faces_wp)
     return _operator_cache[key]
 
 
@@ -114,10 +114,10 @@ def _skip_pml_beyond_bunny(bench_case: BenchCase) -> None:
     "along the normal. Measured 0.0428 max-coordinate deviation on a noisy icosphere(2) of extent "
     "2.02 at 10 iterations. trimesh is the oracle for this group, in "
     "tests/test_smoothing.py::test_filter_mut_dif_laplacian_volume_constraint. Recorded so it is "
-    "not re-derived: open3d's filter IS triwarp's filter_laplacian under an inverse-distance "
+    "not re-derived: open3d's filter IS ordito's filter_laplacian under an inverse-distance "
     "operator, matching it to 6.6e-08 at *one* iteration and diverging to 0.032 by ten only "
     "because open3d re-derives the edge weights from the current positions every pass while "
-    "triwarp holds the assembled operator fixed.",
+    "ordito holds the assembled operator fixed.",
 )
 @pytest.mark.noparity(
     "pymeshlab",
@@ -126,11 +126,11 @@ def _skip_pml_beyond_bunny(bench_case: BenchCase) -> None:
     "diffusion: apply_coord_laplacian_smoothing_scale_dependent weights the 1-ring by edge length "
     "and exposes no per-vertex rate at all, and its step count is its only parameter. Measured "
     "0.171 max-coordinate deviation on a noisy icosphere(2) of extent 2.02 at 10 iterations -- 4x "
-    "further from triwarp than open3d's row is. trimesh is the oracle for this group, in "
+    "further from ordito than open3d's row is. trimesh is the oracle for this group, in "
     "tests/test_smoothing.py::test_filter_mut_dif_laplacian_volume_constraint.",
 )
 @pytest.mark.benchmark(group="filter_mut_dif_laplacian")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 @pytest.mark.parametrize("volume_constraint", [False, True], ids=["novol", "vol"])
 def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool) -> None:
     """The explicit SpMV loop on the scan sweep: linear in iterations, linear in nnz."""
@@ -156,11 +156,11 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
         )
         assert len(smoothed.vertices) == bench_case.n_vertices
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         operator = _laplacian_operator(bench_case)
         result = bench_case.run(
-            lambda: tw.smoothing.filter_mut_dif_laplacian(
+            lambda: od.smoothing.filter_mut_dif_laplacian(
                 vertices,
                 faces,
                 iterations=_ITERATIONS,
@@ -196,7 +196,7 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
     "handling, not by applying a fixed assembled operator, so it diverges with the iteration count "
     "rather than differing by a tolerance -- measured max coordinate deviation 0.103 / 0.363 / "
     "0.581 at 1 / 5 / 10 iterations on an icosphere(2) at relaxation_factor=1.0 with boundary and "
-    "feature smoothing off, which is the closest parameterization to triwarp's lamb=1.0. Even the "
+    "feature smoothing off, which is the closest parameterization to ordito's lamb=1.0. Even the "
     "single iteration is 1e4 past tolerance, so no mapping of relaxation_factor recovers it. "
     "MeshLab's apply_coord_laplacian_smoothing is this group's oracle -- it applies the same fixed "
     "uniform-weight umbrella -- in tests/test_smoothing.py::"
@@ -208,7 +208,7 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
     oracle="pymeshlab",
     reason="D2 a different algorithm with a measured disagreement: MeshLib's relax is not an "
     "umbrella-Laplacian step at all. Measured on an icosphere(2) at one iteration, its "
-    "displacement is 0.33 +- 0.19 of triwarp's per vertex (range 0.008 to 0.54) and the two "
+    "displacement is 0.33 +- 0.19 of ordito's per vertex (range 0.008 to 0.54) and the two "
     "displacement *directions* disagree -- mean cosine 0.45, minimum -1.0 -- so it is not a "
     "rescaling of the same step and no value of its force parameter recovers one: the closest pair "
     "over a 5x5 sweep of force against lamb still leaves a max coordinate difference of 4.5e-03. "
@@ -220,7 +220,7 @@ def test_filter_mut_dif_laplacian(bench_case: BenchCase, volume_constraint: bool
 )
 @pytest.mark.benchmark(group="filter_laplacian_integration")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib")
 @pytest.mark.parametrize("implicit", [False, True], ids=["explicit", "implicit"])
 def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> None:
     """
@@ -231,7 +231,7 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     mean the solve is not actually conditioning-bound, which is worth knowing either way.
 
     pymeshlab confirms the explicit half independently: it is flat across the mesh pair to within
-    noise where triwarp is orders of magnitude faster and equally flat -- the same statement its
+    noise where ordito is orders of magnitude faster and equally flat -- the same statement its
     harmonic-field row makes in [`test_linalg.py`](test_linalg.py) about where the conditioning cost
     actually lives.
     """
@@ -239,7 +239,7 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
         if implicit:
             pytest.skip("relax is an explicit per-iteration pass: no backward-Euler variant")
         # ``relax`` mutates the mesh and returns a status, so the mesh is rebuilt per round.
-        # ``force`` is left at its own default of 0.5: it is not triwarp's ``lamb`` under another
+        # ``force`` is left at its own default of 0.5: it is not ordito's ``lamb`` under another
         # name (see the exemption above), so there is no value that would make the rows compare
         # outputs -- the row is a cost comparison at each library's own natural setting.
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -271,7 +271,7 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     if bench_case.kind == "pymeshlab":
         if implicit:
             pytest.skip("MeshLab has no implicit / backward-Euler Laplacian smoother")
-        # ``cotangentweight=False`` to match triwarp's uniform-weight operator.
+        # ``cotangentweight=False`` to match ordito's uniform-weight operator.
         bench_case.run(
             lambda: bench_case.new_meshset_pml().apply_coord_laplacian_smoothing(
                 stepsmoothnum=_ITERATIONS, cotangentweight=False
@@ -281,7 +281,7 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     operator = _laplacian_operator(bench_case)
     result = bench_case.run(
-        lambda: tw.smoothing.filter_laplacian(
+        lambda: od.smoothing.filter_laplacian(
             vertices,
             faces,
             iterations=_ITERATIONS,
@@ -298,9 +298,9 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     oracle="trimesh",
     reason="D2 the filter_mut_dif_laplacian finding again, on Taubin's scheme: "
     "filter_smooth_taubin alternates lambda/mu passes toward the inverse-distance-weighted 1-ring "
-    "mean and re-derives those weights from the current positions every pass, while triwarp holds "
+    "mean and re-derives those weights from the current positions every pass, while ordito holds "
     "one assembled operator fixed. Probed before the row landed: the closest mapping (one o3d "
-    "iteration against triwarp's lamb=0.5, nu=0.53, iterations=2 under the inverse-distance "
+    "iteration against ordito's lamb=0.5, nu=0.53, iterations=2 under the inverse-distance "
     "operator) still deviates 3.5e-3 max-coordinate on an icosphere(3) carrying 0.01 noise, and "
     "8.8e-3 under the uniform operator -- 350x past tolerance. Like MeshLab, its iteration count "
     "is in lambda-mu PAIRS. trimesh is the oracle for this group, in "
@@ -312,14 +312,14 @@ def test_filter_laplacian_integration(bench_case: BenchCase, implicit: bool) -> 
     reason="D2 a different algorithm with a measured disagreement: smooth_taubin is VTK's "
     "windowed-sinc filter (vtkWindowedSincPolyDataFilter), parameterized by a pass_band that it "
     "maps to its own kernel weights rather than by lambda / nu, and it warns 'An optimal offset "
-    "for the smoothing filter could not be found' on ordinary input. Measured against triwarp at "
+    "for the smoothing filter could not be found' on ordinary input. Measured against ordito at "
     "pass_band=0.1: max coordinate deviation 0.835 at one iteration -- the whole displacement -- "
     "then 6.5e-03 and 2.6e-02 at 2 and 5, so it is neither close nor consistently off by a "
     "factor. Its iteration count is in lambda-mu PAIRS like MeshLab's. trimesh is the oracle for "
     "this group, in tests/test_smoothing.py::test_filter_taubin.",
 )
 @pytest.mark.benchmark(group="filter_taubin")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "pyvista")
 def test_filter_taubin(bench_case: BenchCase) -> None:
     """
     The lambda-nu alternation: two SpMVs per iteration instead of one.
@@ -327,17 +327,17 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
     Against ``filter_laplacian_integration``'s explicit row this measures exactly the second pass,
     so the two rows should sit at a ratio near 2 and nothing else should separate them. All four
     libraries implement Taubin's 1995 scheme; MeshLab's and open3d's inflating step is ``mu=-0.53``
-    against triwarp's and trimesh's ``nu=0.53``, which changes the fixed point but not the work per
+    against ordito's and trimesh's ``nu=0.53``, which changes the fixed point but not the work per
     pass.
 
     **MeshLab's ``stepsmoothnum`` and open3d's ``number_of_iterations`` count lambda-mu pairs, not
-    half-steps**, where triwarp and trimesh do one half-step per ``iterations`` and alternate. So
+    half-steps**, where ordito and trimesh do one half-step per ``iterations`` and alternate. So
     both get ``_ITERATIONS // 2``: passing ``_ITERATIONS`` to both times twice the passes. The
     MeshLab mapping is pinned exactly in
     ``tests/test_smoothing.py::test_filter_taubin_matches_pymeshlab``; open3d's cannot be (see the
     exemption above).
 
-    **pytorch3d is deliberately absent, and it is the one reference here that agrees with triwarp.**
+    **pytorch3d is deliberately absent, and it is the one reference here that agrees with ordito.**
     ``ops.taubin_smoothing`` rebuilds its inverse-distance operator from the current positions every
     half-pass, and ``filter_taubin(recompute=True)`` matches it closely -- so this is not a
     D2 exemption, it is a pair whose *tested* configuration is not this row's. Timing it here would
@@ -355,11 +355,11 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
         )
         assert smoothed_pv.n_points == bench_case.n_vertices
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         operator = _laplacian_operator(bench_case)
         result = bench_case.run(
-            lambda: tw.smoothing.filter_taubin(
+            lambda: od.smoothing.filter_taubin(
                 vertices, faces, iterations=_ITERATIONS, laplacian_operator=operator
             )
         )
@@ -403,22 +403,22 @@ def test_filter_taubin(bench_case: BenchCase) -> None:
     "tests/test_smoothing.py::test_filter_humphrey.",
 )
 @pytest.mark.benchmark(group="filter_humphrey")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab")
 def test_filter_humphrey(bench_case: BenchCase) -> None:
     """
     HC filtering: a Laplacian pass plus a push-back toward the original positions.
 
     Read the pymeshlab row as a **per-pass** cost only. MeshLab's HC Laplacian takes no parameters,
-    so it is one filter call here against ten triwarp iterations, and the module docstring records
+    so it is one filter call here against ten ordito iterations, and the module docstring records
     that its output matches ``filter_humphrey`` at no parameter setting -- it is a different
     formulation of the same paper's scheme. trimesh's is the parameter-comparable reference.
     """
     skip_larger_than(bench_case, "dragon")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         operator = _laplacian_operator(bench_case)
         result = bench_case.run(
-            lambda: tw.smoothing.filter_humphrey(
+            lambda: od.smoothing.filter_humphrey(
                 vertices, faces, iterations=_ITERATIONS, laplacian_operator=operator
             )
         )
@@ -440,7 +440,7 @@ def test_filter_humphrey(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="filter_implicit_fairing")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_filter_implicit_fairing(bench_case: BenchCase) -> None:
     """
     Implicit fairing, whose operator is rebuilt every pass rather than reused.
@@ -466,7 +466,7 @@ def test_filter_implicit_fairing(bench_case: BenchCase) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)  # a non-converged pass fails the benchmark
         result = bench_case.run(
-            lambda: tw.smoothing.filter_implicit_fairing(vertices, faces, iterations=_ITERATIONS),
+            lambda: od.smoothing.filter_implicit_fairing(vertices, faces, iterations=_ITERATIONS),
             rounds=3,
         )
     assert result.shape == vertices.shape
@@ -506,7 +506,7 @@ def _new_scalar_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="filter_scalar_laplacian")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_filter_scalar_laplacian(bench_case: BenchCase) -> None:
     """Ten diffusion passes over a scalar field, against MeshLab's single full-step pass."""
     n_vertices = bench_case.n_vertices
@@ -527,7 +527,7 @@ def test_filter_scalar_laplacian(bench_case: BenchCase) -> None:
     )
     operator = _laplacian_operator(bench_case)
     smoothed = bench_case.run(
-        lambda: tw.smoothing.filter_scalar_laplacian(
+        lambda: od.smoothing.filter_scalar_laplacian(
             values, vertices, faces, iterations=_ITERATIONS, laplacian_operator=operator
         )
     )
@@ -554,13 +554,13 @@ _TWO_STEP_FIT_STEPS = 20
 )
 @pytest.mark.benchmark(group="filter_normals")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 def test_filter_normals(bench_case: BenchCase) -> None:
     """
     The crease-gated normal diffusion alone: 20 scatter passes over the face adjacency.
 
     meshlib's ``denoiseNormals`` is a **different formulation** of the same job -- an L1
-    minimization over the face graph regularized by ``gamma``, against triwarp's gated diffusion --
+    minimization over the face graph regularized by ``gamma``, against ordito's gated diffusion --
     so the two are not iteration-for-iteration comparable and neither parameter maps to the other.
     What ``tests/test_smoothing.py`` establishes is that both recover the same clean normal field;
     this row prices the two routes to it. Its per-edge weight array is the *input* and is built
@@ -582,7 +582,7 @@ def test_filter_normals(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "pymeshlab":
         # ``apply_normal_smoothing_per_face`` exposes no parameters at all -- no step count, no
-        # threshold -- so its row is a *single* pass against triwarp's 20 and is a per-pass
+        # threshold -- so its row is a *single* pass against ordito's 20 and is a per-pass
         # reference only. It writes the face normal attribute and leaves the coordinates alone, so
         # the MeshSet is shared.
         meshset_pml = bench_case.meshset_pml
@@ -591,7 +591,7 @@ def test_filter_normals(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     normals = bench_case.run(
-        lambda: tw.smoothing.filter_normals(
+        lambda: od.smoothing.filter_normals(
             vertices, faces, iterations=_TWO_STEP_NORMAL_STEPS, threshold=_TWO_STEP_NORMAL_THRESHOLD
         )
     )
@@ -600,7 +600,7 @@ def test_filter_normals(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="filter_two_step")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_filter_two_step(bench_case: BenchCase) -> None:
     """Normal diffusion plus vertex fitting, at MeshLab's own 3 x 20 x 20 defaults on both sides."""
     n_vertices = bench_case.n_vertices
@@ -622,7 +622,7 @@ def test_filter_two_step(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     smoothed = bench_case.run(
-        lambda: tw.smoothing.filter_two_step(
+        lambda: od.smoothing.filter_two_step(
             vertices,
             faces,
             iterations=_TWO_STEP_OUTER,
@@ -640,15 +640,15 @@ def test_filter_two_step(bench_case: BenchCase) -> None:
     oracle="pymeshlab",
     reason="D2 a per-vertex factor no parameter can absorb: open3d's filter_sharpen adds "
     "strength * (deg(v) * v - sum of neighbours), the UNNORMALIZED uniform residual, where "
-    "triwarp's unsharp mask adds weight * (v - mean of neighbours) through a row-stochastic "
-    "operator. Probed before the row landed: the per-vertex displacement ratio o3d/triwarp equals "
+    "ordito's unsharp mask adds weight * (v - mean of neighbours) through a row-stochastic "
+    "operator. Probed before the row landed: the per-vertex displacement ratio o3d/ordito equals "
     "the vertex degree to 7 significant digits (4.99977-6.00074 on icosphere(3), correlation with "
     "degree 0.9999993), so the two agree only on degree-regular meshes and no strength mapping "
     "fixes an irregular one. pymeshlab is the oracle for this group, in "
     "tests/test_smoothing.py::test_filter_sharpen_matches_pymeshlab.",
 )
 @pytest.mark.benchmark(group="filter_sharpen")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 def test_filter_sharpen(bench_case: BenchCase) -> None:
     """Five Laplacian passes plus one blend: the cheapest thing in the module, on the scan sweep."""
     n_vertices = bench_case.n_vertices
@@ -675,7 +675,7 @@ def test_filter_sharpen(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     operator = _laplacian_operator(bench_case)
     sharpened = bench_case.run(
-        lambda: tw.smoothing.filter_sharpen(
+        lambda: od.smoothing.filter_sharpen(
             vertices, faces, weight=0.3, iterations=5, laplacian_operator=operator
         )
     )
@@ -699,7 +699,7 @@ def _free_mask_np(bench_case: BenchCase) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="smooth_region")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_smooth_region(bench_case: BenchCase) -> None:
     """
     Solve the umbrella-Laplacian Dirichlet system on a free region: a sparse solve, not a filter.
@@ -710,7 +710,7 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     the mesh by z on both sides, so the two solve the same system.
 
     meshlib's ``positionVertsSmoothly`` is that same system with the same unit edge weights
-    (``EdgeWeights.Unit``, ``VertexMass.Unit``), factorized where triwarp iterates -- the answers
+    (``EdgeWeights.Unit``, ``VertexMass.Unit``), factorized where ordito iterates -- the answers
     agree to 1e-4. It mutates the mesh in place and returns nothing, so its mesh is rebuilt inside
     the timed callable and the row carries the build.
 
@@ -727,7 +727,7 @@ def test_smooth_region(bench_case: BenchCase) -> None:
         bench_case,
         "bunny",
         "the Dirichlet solve over a quarter of the mesh runs into tens of seconds past bunny "
-        "(15.8 s on dragon, 24.9 s on happy_buddha for one triwarp round)",
+        "(15.8 s on dragon, 24.9 s on happy_buddha for one ordito round)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)
@@ -749,13 +749,13 @@ def test_smooth_region(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     free_wp = wp.array(free_np, dtype=wp.bool, device=bench_case.device)
     smoothed = bench_case.run(
-        lambda: tw.smoothing.smooth_region(vertices, faces, free_wp), rounds=3
+        lambda: od.smoothing.smooth_region(vertices, faces, free_wp), rounds=3
     )
     assert smoothed.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="smooth_region_fixed_rim")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
     """
     The same solve with the region rim pinned: the variant hole filling actually calls.
@@ -766,14 +766,14 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
     says.
 
     meshlib's ``positionVertsSmoothlySharpBd`` is the matching variant and takes the region through
-    ``PositionVertsSmoothlyParams``; it agrees with triwarp to 1e-5 (``tests/test_smoothing.py``).
+    ``PositionVertsSmoothlyParams``; it agrees with ordito to 1e-5 (``tests/test_smoothing.py``).
     Same in-place mutation, so same rebuild inside the timed callable.
     """
     skip_larger_than(
         bench_case,
         "bunny",
         "the Dirichlet solve over a quarter of the mesh runs into tens of seconds past bunny "
-        "(15.8 s on dragon, 24.9 s on happy_buddha for one triwarp round)",
+        "(15.8 s on dragon, 24.9 s on happy_buddha for one ordito round)",
     )
     n_vertices = bench_case.n_vertices
     free_np = _free_mask_np(bench_case)
@@ -792,13 +792,13 @@ def test_smooth_region_fixed_rim(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     free_wp = wp.array(free_np, dtype=wp.bool, device=bench_case.device)
     smoothed = bench_case.run(
-        lambda: tw.smoothing.smooth_region_fixed_rim(vertices, faces, free_wp), rounds=3
+        lambda: od.smoothing.smooth_region_fixed_rim(vertices, faces, free_wp), rounds=3
     )
     assert smoothed.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="inflate")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_inflate(bench_case: BenchCase) -> None:
     """
     The balloon flow: per pass, a vertex-normal build, one displacement map and one Laplacian pass.
@@ -807,7 +807,7 @@ def test_inflate(bench_case: BenchCase) -> None:
     groups is what the normals and the displacement cost, and it should be roughly the normal build,
     since the displacement is one ``wp.map`` with the kernel hoisted out of the loop.
 
-    triwarp-only, and not by omission. MeshLib's ``inflate`` is the only reference that has one and
+    ordito-only, and not by omission. MeshLib's ``inflate`` is the only reference that has one and
     it cannot be timed here: with every vertex selected -- the operation this performs -- it
     collapses the mesh to a point at every pressure probed, because its implicit solve takes the
     *unselected* vertices as its boundary condition. The evidence is in ``tests/test_smoothing.py``.
@@ -818,18 +818,18 @@ def test_inflate(bench_case: BenchCase) -> None:
     less than the runs differ from each other and the volume *falls* where positive pressure must
     raise it. What the row would be timing is the ``preSmooth`` pass.
 
-    triwarp's own row is flat from a feature mesh up to a million faces, so the three passes are
+    ordito's own row is flat from a feature mesh up to a million faces, so the three passes are
     launch-bound rather than data-bound at this scale -- and ``lucy``'s jump at a comparable face
     count is the same unexplained outlier ``split_faces_along_field`` records on that mesh.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     pressure = 0.1 * bench_case.mean_edge
-    inflated = bench_case.run(lambda: tw.smoothing.inflate(vertices, faces, pressure), rounds=3)
+    inflated = bench_case.run(lambda: od.smoothing.inflate(vertices, faces, pressure), rounds=3)
     assert int(inflated.shape[0]) == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="filter_spikes")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_filter_spikes(bench_case: BenchCase) -> None:
     """
     Detect and flatten needle vertices: per pass, the corner angles, a defect scatter and one map.
@@ -869,14 +869,14 @@ def test_filter_spikes(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     repaired, flattened = bench_case.run(
-        lambda: tw.smoothing.filter_spikes(vertices, faces, threshold, return_count=True), rounds=3
+        lambda: od.smoothing.filter_spikes(vertices, faces, threshold, return_count=True), rounds=3
     )
     assert flattened >= 0
     assert int(repaired.shape[0]) == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="equalize_triangle_areas")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_equalize_triangle_areas(bench_case: BenchCase) -> None:
     """
     A 3x3 float64 solve per vertex per pass, over the incident-face CSR.
@@ -892,7 +892,7 @@ def test_equalize_triangle_areas(bench_case: BenchCase) -> None:
 
     meshlib's ``equalizeTriAreas`` is the same solve, threaded across vertices and mutating in
     place, so its mesh is rebuilt per round -- and the positions agree **exactly**
-    (``tests/test_smoothing.py``), which is what makes the ratio a fair one. triwarp wins it by more
+    (``tests/test_smoothing.py``), which is what makes the ratio a fair one. ordito wins it by more
     than an order of magnitude at every size.
 
     The first mesh in a selection carries the module's compile and therefore reads slower than it
@@ -911,13 +911,13 @@ def test_equalize_triangle_areas(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     relaxed = bench_case.run(
-        lambda: tw.smoothing.equalize_triangle_areas(vertices, faces, _ITERATIONS), rounds=3
+        lambda: od.smoothing.equalize_triangle_areas(vertices, faces, _ITERATIONS), rounds=3
     )
     assert relaxed.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="relax_keep_volume")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_relax_keep_volume(bench_case: BenchCase) -> None:
     """
     Two launches per pass over the 1-ring CSR, against ``filter_laplacian``'s one.
@@ -928,7 +928,7 @@ def test_relax_keep_volume(bench_case: BenchCase) -> None:
     here, as there) has moved.
 
     meshlib's ``relaxKeepVolume`` is the same two-pass formulation, and the positions agree closely
-    (``tests/test_smoothing.py``). It mutates in place, so its mesh is rebuilt per round. triwarp
+    (``tests/test_smoothing.py``). It mutates in place, so its mesh is rebuilt per round. ordito
     wins it by most of an order of magnitude, by more the larger the mesh.
 
     Against ``equalize_triangle_areas`` on the same passes and meshes the two are within a third of
@@ -949,13 +949,13 @@ def test_relax_keep_volume(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     relaxed = bench_case.run(
-        lambda: tw.smoothing.relax_keep_volume(vertices, faces, _ITERATIONS), rounds=3
+        lambda: od.smoothing.relax_keep_volume(vertices, faces, _ITERATIONS), rounds=3
     )
     assert relaxed.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="relax_approx")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_relax_approx(bench_case: BenchCase) -> None:
     """
     Neighbourhood fitting, where the neighbourhood build dominates the fit.
@@ -977,7 +977,7 @@ def test_relax_approx(bench_case: BenchCase) -> None:
     **This is the only row in the module whose cost is superlinear**, and the ball is why: it grows
     faster than the face count, because a fixed 3 % radius holds more vertices as the mesh refines.
     That is the thing to watch on any change here -- a regression in the *fit* would move all four
-    rows together, and one in the ball would move only the large two. triwarp wins the row at every
+    rows together, and one in the ball would move only the large two. ordito wins the row at every
     size, by more the larger the mesh.
     """
     skip_larger_than(
@@ -1005,13 +1005,13 @@ def test_relax_approx(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     relaxed = bench_case.run(
-        lambda: tw.smoothing.relax_approx(vertices, faces, radius, 1), rounds=3
+        lambda: od.smoothing.relax_approx(vertices, faces, radius, 1), rounds=3
     )
     assert relaxed.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="smooth_region_boundary")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_smooth_region_boundary(bench_case: BenchCase) -> None:
     """
     A harmonic solve per pass, on the same region as ``smooth_region`` -- but a *scalar* one.
@@ -1027,11 +1027,11 @@ def test_smooth_region_boundary(bench_case: BenchCase) -> None:
     a recorded loop.
 
     meshlib's ``smoothRegionBoundary`` additionally flips the band's interior edges before each
-    solve, which this port does not do -- so its row carries connectivity work triwarp's does not,
+    solve, which this port does not do -- so its row carries connectivity work ordito's does not,
     and the two are pinned on the *moved set* and the rim length rather than element-wise. It
     mutates in place, so its mesh is rebuilt per round.
 
-    The module's one **loss** against meshlib, and the reason is visible in the shape: triwarp is
+    The module's one **loss** against meshlib, and the reason is visible in the shape: ordito is
     flat across the mesh pair while meshlib tracks the mesh, so the row is four conjugate-gradient
     solves and their fixed per-call cost rather than anything proportional.
 
@@ -1067,6 +1067,6 @@ def test_smooth_region_boundary(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     region_wp = wp.array(region_np, dtype=wp.bool, device=bench_case.device)
     smoothed = bench_case.run(
-        lambda: tw.smoothing.smooth_region_boundary(vertices, faces, region_wp, 4), rounds=3
+        lambda: od.smoothing.smooth_region_boundary(vertices, faces, region_wp, 4), rounds=3
     )
     assert smoothed.shape == (bench_case.n_vertices,)

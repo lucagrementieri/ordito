@@ -1,7 +1,7 @@
 """
 The parity gate: a reference library that is *benchmarked* must also be *tested* against.
 
-``benchmarks/`` asserts only shapes and finiteness, so nothing there establishes that triwarp and
+``benchmarks/`` asserts only shapes and finiteness, so nothing there establishes that ordito and
 the reference it is timed against compute the same thing. These tests close that loop by pairing the
 benchmark suite's ``benchmark`` / ``benchlibs`` markers with the correctness suite's ``parity``
 markers, and failing when a benchmarked pair is neither covered by a test nor explicitly exempted
@@ -54,7 +54,7 @@ def test_benchmark_suite_is_discoverable() -> None:
     Guard the scan itself: a silently empty benchmark scan would make the gate vacuously green.
 
     Neither ``tests/`` nor ``benchmarks/`` ships in the wheel (``packages.find`` includes only
-    ``triwarp*``), so a missing directory is a legitimate packaged-tree situation and skips. A
+    ``ordito*``), so a missing directory is a legitimate packaged-tree situation and skips. A
     directory that exists but yields nothing is a broken scanner or a bad path, and fails.
     """
     from tests.parity import _BENCHMARKS_DIR  # pyright: ignore[reportPrivateUsage]
@@ -89,7 +89,7 @@ def test_parity_markers_reference_known_pairs() -> None:
         elif claim.library not in timed:
             problems.append(
                 f"{claim.site}: group {claim.group!r} does not benchmark {claim.library!r} "
-                f"(benchlibs: {', '.join(sorted(timed - {'triwarp'})) or 'none'})"
+                f"(benchlibs: {', '.join(sorted(timed - {'ordito'})) or 'none'})"
             )
     _fail("parity marker(s) name a pair that is not benchmarked:", problems)
 
@@ -201,7 +201,7 @@ def test_parity_claims_read_a_reference_variable() -> None:
     Anti-vacuity: a ``parity`` marker must sit on a test that actually reads the reference's answer.
 
     A marker is a self-assertion, and the likeliest way for one to be wrong is to land on a test
-    that only compares triwarp with itself -- a precomputed-argument shortcut, say. The
+    that only compares ordito with itself -- a precomputed-argument shortcut, say. The
     reference-variable suffixes CLAUDE.md section 7.1 already mandates (``_tm`` / ``_igl`` /
     ``_pp`` / ``_pml`` / ``_o3d``, plus ``_np`` where the oracle is hand-rolled NumPy) are the one
     machine-readable trace that a second implementation was consulted.

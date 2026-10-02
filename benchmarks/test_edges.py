@@ -1,12 +1,12 @@
 """
-Benchmarks for ``triwarp.edges`` vs trimesh and libigl (igl), on real scan meshes.
+Benchmarks for ``ordito.edges`` vs trimesh and libigl (igl), on real scan meshes.
 
 Mirrors the correctness tests in ``tests/test_edges.py`` but times each function instead of
 asserting equality. Every test is parametrised over ``(mesh_name, library)`` by the harness in
 ``conftest.py`` and receives a ``bench_case`` bundling the inputs and a GPU-safe ``run``; the
 ``benchlibs`` marker declares which reference libraries implement an equivalent of the function.
 
-The triwarp ``edges_unique*`` calls pass ``n_vertices=`` (known from the mesh) so the API's
+The ordito ``edges_unique*`` calls pass ``n_vertices=`` (known from the mesh) so the API's
 internal ``.numpy().max()`` host sync does not dominate the GPU measurement.
 
 **open3d** has no equivalent for anything in this module. Its ``TriangleMesh`` exposes edges only as
@@ -27,8 +27,8 @@ It has no counterpart for the directed, per-corner or length variants.
 per-corner table
 ``face_edge_lengths`` returns, in the same column order, so that group is a direct comparison rather
 than an unreferenced one. (``igl.squared_edge_lengths`` is bound as well and would pair with a
-squared entry point; triwarp has none, so there is no row for it.) igl still has no *unique*-edge
-length list, which is why ``edges_unique_length`` and ``edges_length`` stay triwarp-only.
+squared entry point; ordito has none, so there is no row for it.) igl still has no *unique*-edge
+length list, which is why ``edges_unique_length`` and ``edges_length`` stay ordito-only.
 
 **pymeshlab** appears in ``mean_unique_edge_length`` alone. ``get_geometric_measures`` returns
 ``avg_edge_length`` in a dict alongside the area, volume, barycentre and inertia tensor, so it is an
@@ -48,12 +48,12 @@ import pytest
 import trimesh as tm
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, skip_larger_than
 
 
 @pytest.mark.benchmark(group="faces_to_edges")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_faces_to_edges(bench_case: BenchCase) -> None:
     """
     The directed ``(3F, 2)`` all-edges table: the cheapest thing in the module on every library.
@@ -62,9 +62,9 @@ def test_faces_to_edges(bench_case: BenchCase) -> None:
     reference suite relative to its output size -- it emits the same 3F directed pairs, in a
     different row order (class B, see ``tests/test_edges.py``).
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        result = bench_case.run(lambda: tw.edges.faces_to_edges(faces))
+        result = bench_case.run(lambda: od.edges.faces_to_edges(faces))
         assert result.shape == (faces.shape[0], 2)
     elif bench_case.kind == "igl":
         faces_np = bench_case.faces_np
@@ -77,11 +77,11 @@ def test_faces_to_edges(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="faces_to_edges_sorted")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_faces_to_edges_sorted(bench_case: BenchCase) -> None:
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        result = bench_case.run(lambda: tw.edges.faces_to_edges(faces, sorted=True))
+        result = bench_case.run(lambda: od.edges.faces_to_edges(faces, sorted=True))
         assert result.shape == (faces.shape[0], 2)
     else:  # trimesh
         faces = bench_case.faces_np
@@ -90,11 +90,11 @@ def test_faces_to_edges_sorted(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_face")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_edges_face(bench_case: BenchCase) -> None:
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        result = bench_case.run(lambda: tw.edges.edges_face(faces))
+        result = bench_case.run(lambda: od.edges.edges_face(faces))
         assert result.shape == (faces.shape[0],)
     else:  # trimesh: Trimesh.edges_face == repeat(arange(n_faces), 3)
         n_faces = bench_case.faces_np.shape[0]
@@ -135,9 +135,9 @@ def _run_edges_unique_reference(bench_case: BenchCase) -> None:
     """
     Time whichever unique-undirected-edge reference this case names.
 
-    Shared by the two ``edges_unique`` groups because the ``n_vertices=`` hint is triwarp's own
+    Shared by the two ``edges_unique`` groups because the ``n_vertices=`` hint is ordito's own
     parameter: no reference takes a vertex-count hint, so each one runs the identical call in both
-    groups and its two rows are a fixed bar against triwarp's with/without pair.
+    groups and its two rows are a fixed bar against ordito's with/without pair.
     """
     if bench_case.kind == "pytorch3d":
         _run_edges_pytorch3d(bench_case)
@@ -165,19 +165,19 @@ def _run_edges_unique_reference(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_unique")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista", "pytorch3d")
 def test_edges_unique(bench_case: BenchCase) -> None:
 
-    if bench_case.kind != "triwarp":
+    if bench_case.kind != "ordito":
         _run_edges_unique_reference(bench_case)
         return
     faces, nv = bench_case.faces_wp, bench_case.n_vertices
-    unique_edges, _ = bench_case.run(lambda: tw.edges.edges_unique(faces, n_vertices=nv))
+    unique_edges, _ = bench_case.run(lambda: od.edges.edges_unique(faces, n_vertices=nv))
     assert unique_edges.shape[1] == 2
 
 
 @pytest.mark.benchmark(group="edges_unique_auto_nv")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista", "pytorch3d")
 def test_edges_unique_auto_n_vertices(bench_case: BenchCase) -> None:
     """
     Time ``edges_unique`` without the ``n_vertices=`` shortcut.
@@ -185,9 +185,9 @@ def test_edges_unique_auto_n_vertices(bench_case: BenchCase) -> None:
     Exercises the internal vertex-count inference (a full-array host max before the
     ``n_vertices`` device-reduce fix).
 
-    The same three references ``edges_unique`` times, because the hint is triwarp's parameter and
+    The same three references ``edges_unique`` times, because the hint is ordito's parameter and
     none of them has one: they compute the identical unique edge list either way, so their rows are
-    the fixed bar and the difference between the two groups is entirely triwarp's inference. Read
+    the fixed bar and the difference between the two groups is entirely ordito's inference. Read
     the pair, not this row alone -- on its own it prices a reference that never changes.
 
     Time the unique undirected edge list with the ``n_vertices=`` radix hint supplied.
@@ -195,22 +195,22 @@ def test_edges_unique_auto_n_vertices(bench_case: BenchCase) -> None:
     **pytorch3d** joins the reference set as ``Meshes.edges_packed``, which is the same
     deduplication keyed on the hash ``V * v0 + v1`` -- so its rows come back already lexsorted,
     which is why ``tests/test_edges.py::test_edges_unique_and_inverse_match_pytorch3d`` only has to
-    move triwarp's side. It is a memoized accessor on an immutable container, so its ``Meshes``
+    move ordito's side. It is a memoized accessor on an immutable container, so its ``Meshes``
     is built **inside** the timed callable; reading it on a shared object would price nothing.
 
     **pytorch3d** has no hint either, so its row is the same fixed bar the other three are.
     """
-    if bench_case.kind != "triwarp":
+    if bench_case.kind != "ordito":
         _run_edges_unique_reference(bench_case)
         return
     faces = bench_case.faces_wp
-    unique_edges, _ = bench_case.run(lambda: tw.edges.edges_unique(faces))
+    unique_edges, _ = bench_case.run(lambda: od.edges.edges_unique(faces))
     assert unique_edges.shape[1] == 2
 
 
 @pytest.mark.benchmark(group="edges_unique_manifold")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "igl", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "igl", "potpourri3d")
 def test_edges_unique_manifold(bench_case: BenchCase) -> None:
     """
     The same unique-edge list on the clean synthetic meshes, where potpourri3d can run.
@@ -221,9 +221,9 @@ def test_edges_unique_manifold(bench_case: BenchCase) -> None:
     same move that unblocked several libigl comparisons (see the README's measured-hazards section).
     igl is kept alongside so the group is not a two-row table.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces, nv = bench_case.faces_wp, bench_case.n_vertices
-        unique_edges, _ = bench_case.run(lambda: tw.edges.edges_unique(faces, n_vertices=nv))
+        unique_edges, _ = bench_case.run(lambda: od.edges.edges_unique(faces, n_vertices=nv))
         assert unique_edges.shape[1] == 2
     elif bench_case.kind == "potpourri3d":
         # geometry-central's internal edge list, in its own ordering: a timing comparison, not a
@@ -238,14 +238,14 @@ def test_edges_unique_manifold(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_unique_inverse")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pytorch3d")
 def test_edges_unique_inverse(bench_case: BenchCase) -> None:
     if bench_case.kind == "pytorch3d":
         _run_edges_pytorch3d(bench_case, inverse=True)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces, nv = bench_case.faces_wp, bench_case.n_vertices
-        result = bench_case.run(lambda: tw.edges.edges_unique_inverse(faces, n_vertices=nv))
+        result = bench_case.run(lambda: od.edges.edges_unique_inverse(faces, n_vertices=nv))
         assert result.shape == (faces.shape[0],)
     elif bench_case.kind == "trimesh":
         faces = bench_case.faces_np
@@ -262,7 +262,7 @@ def test_edges_unique_inverse(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_unique_length")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
 def test_edges_unique_length(bench_case: BenchCase) -> None:
     """
     One length per undirected edge, which on both sides is really a deduplication.
@@ -288,11 +288,11 @@ def test_edges_unique_length(bench_case: BenchCase) -> None:
 
         assert bench_case.run(run_ml) > 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         nv = bench_case.n_vertices
         result = bench_case.run(
-            lambda: tw.edges.edges_unique_length(vertices, faces, n_vertices=nv)
+            lambda: od.edges.edges_unique_length(vertices, faces, n_vertices=nv)
         )
         assert result.ndim == 1
     else:  # trimesh: unique undirected edges then Euclidean norm
@@ -308,11 +308,11 @@ def test_edges_unique_length(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="edges_length")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_edges_length(bench_case: BenchCase) -> None:
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: tw.edges.edges_length(vertices, faces))
+        result = bench_case.run(lambda: od.edges.edges_length(vertices, faces))
         assert result.shape == (faces.shape[0],)
     elif bench_case.kind == "trimesh":
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -329,7 +329,7 @@ def test_edges_length(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="mean_edge_length")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_mean_edge_length(bench_case: BenchCase) -> None:
     """
     The **per-face** edge average -- ``3 * n_faces`` lengths, every interior edge counted twice.
@@ -338,14 +338,14 @@ def test_mean_edge_length(bench_case: BenchCase) -> None:
     ``CurvatureCalculator::getAverageEdge`` computes and therefore what ``igl::principal_curvature``
     scales its sphere radius by. **Not** ``igl.avg_edge_length`` -- that averages the unique edge
     list and is a different number on any mesh with a boundary, which every scan mesh here has. It
-    is timed in the ``mean_unique_edge_length`` group below against the triwarp function that
+    is timed in the ``mean_unique_edge_length`` group below against the ordito function that
     matches it.
 
     So this group is the cheap one: no deduplication, one pass and a reduction.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        assert bench_case.run(lambda: tw.edges.mean_edge_length(vertices, faces)) >= 0.0
+        assert bench_case.run(lambda: od.edges.mean_edge_length(vertices, faces)) >= 0.0
     elif bench_case.kind == "trimesh":  # mean of all per-face edge norms
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
 
@@ -360,7 +360,7 @@ def test_mean_edge_length(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="mean_unique_edge_length")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "meshlib")
 def test_mean_unique_edge_length(bench_case: BenchCase) -> None:
     """
     The **unique** edge average, where the deduplication is most of the cost.
@@ -371,7 +371,7 @@ def test_mean_unique_edge_length(bench_case: BenchCase) -> None:
     average -- the two differ by 0.55% on an open half-torus and this sweep's meshes all have
     boundaries.
 
-    The interesting comparison is the dedup: triwarp reaches the unique edges through a sort where
+    The interesting comparison is the dedup: ordito reaches the unique edges through a sort where
     the numpy row goes through ``np.unique(axis=0)``, which is why this group is several times the
     cost of its per-face twin on both sides. meshlib is a fifth row on the same number and a sixth
     route to it -- its half-edge structure, built inside the timed callable for the reason the
@@ -394,9 +394,9 @@ def test_mean_unique_edge_length(bench_case: BenchCase) -> None:
         meshset_pml = bench_case.meshset_pml
         assert bench_case.run(meshset_pml.get_geometric_measures)["avg_edge_length"] >= 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        assert bench_case.run(lambda: tw.edges.mean_unique_edge_length(vertices, faces)) >= 0.0
+        assert bench_case.run(lambda: od.edges.mean_unique_edge_length(vertices, faces)) >= 0.0
     elif bench_case.kind == "trimesh":
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
 
@@ -413,13 +413,13 @@ def test_mean_unique_edge_length(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="face_edge_lengths")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_face_edge_lengths(bench_case: BenchCase) -> None:
     """
     The table alone: one pass, three lengths per face, no reduction.
 
     ``igl.edge_lengths(V, F)`` returns the identical ``(n_faces, 3)`` per-corner table in the same
-    column order, agreeing to triwarp's float32 vertex buffer where every column permutation differs
+    column order, agreeing to ordito's float32 vertex buffer where every column permutation differs
     by orders of magnitude more, so the match is the convention and not a coincidence. This is the
     one row in this module where igl has a *length* entry point.
     """
@@ -429,5 +429,5 @@ def test_face_edge_lengths(bench_case: BenchCase) -> None:
         assert lengths_igl.shape == (bench_case.n_faces, 3)
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    lengths = bench_case.run(lambda: tw.edges.face_edge_lengths(vertices, faces))
+    lengths = bench_case.run(lambda: od.edges.face_edge_lengths(vertices, faces))
     assert lengths.shape == (bench_case.n_faces, 3)

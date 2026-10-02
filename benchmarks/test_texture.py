@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.texture``.
+Benchmarks for ``ordito.texture``.
 
 Two inverse pairs, with opposite cost drivers:
 
@@ -76,8 +76,8 @@ import numpy as np
 import pytest
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
 # Texture sizes: 4x the pixels between the two points, so the rasterizers' quadratic term and the
@@ -91,10 +91,10 @@ _RESOLUTION = 1024
 _N_CLASSES = 8
 
 _uv_cache: dict[tuple[str, str], wp.array[wp.vec2]] = {}
-_attribute_cache: dict[tuple[str, str], twt.Array2dFloat32] = {}
+_attribute_cache: dict[tuple[str, str], odt.Array2dFloat32] = {}
 _labels_cache: dict[tuple[str, str], wp.array[wp.int32]] = {}
-_image_cache: dict[tuple[str, str], twt.Array3dFloat32] = {}
-_class_image_cache: dict[tuple[str, str], twt.Array2dInt32] = {}
+_image_cache: dict[tuple[str, str], odt.Array3dFloat32] = {}
+_class_image_cache: dict[tuple[str, str], odt.Array2dInt32] = {}
 
 
 def _uv_wp(bench_case: BenchCase) -> wp.array[wp.vec2]:
@@ -110,7 +110,7 @@ def _uv_wp(bench_case: BenchCase) -> wp.array[wp.vec2]:
     return _uv_cache[key]
 
 
-def _attribute_wp(bench_case: BenchCase) -> twt.Array2dFloat32:
+def _attribute_wp(bench_case: BenchCase) -> odt.Array2dFloat32:
     """``(n_vertices, 3)`` float attribute (the positions themselves) — the usual bake payload."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _attribute_cache:
@@ -131,75 +131,75 @@ def _labels_wp(bench_case: BenchCase) -> wp.array[wp.int32]:
     return _labels_cache[key]
 
 
-def _image_wp(bench_case: BenchCase) -> twt.Array3dFloat32:
+def _image_wp(bench_case: BenchCase) -> odt.Array3dFloat32:
     """Rasterize a float texture to sample back, built once outside the timed region."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _image_cache:
-        _image_cache[key] = tw.texture.rasterize_attribute(
+        _image_cache[key] = od.texture.rasterize_attribute(
             _uv_wp(bench_case), bench_case.faces_wp, _attribute_wp(bench_case), _RESOLUTION
         )
     return _image_cache[key]
 
 
-def _class_image_wp(bench_case: BenchCase) -> twt.Array2dInt32:
+def _class_image_wp(bench_case: BenchCase) -> odt.Array2dInt32:
     """Rasterize a class image to sample back, built once outside the timed region."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _class_image_cache:
-        _class_image_cache[key] = tw.texture.rasterize_discrete_attribute(
+        _class_image_cache[key] = od.texture.rasterize_discrete_attribute(
             _uv_wp(bench_case), bench_case.faces_wp, _labels_wp(bench_case), _RESOLUTION
         )
     return _class_image_cache[key]
 
 
 @pytest.mark.benchmark(group="rasterize_attribute")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("resolution", _RESOLUTIONS)
 def test_rasterize_attribute(bench_case: BenchCase, resolution: int) -> None:
     """Barycentric scatter of a 3-channel attribute, at 512^2 and 2048^2."""
     uv, faces = _uv_wp(bench_case), bench_case.faces_wp
     attribute = _attribute_wp(bench_case)
-    image = bench_case.run(lambda: tw.texture.rasterize_attribute(uv, faces, attribute, resolution))
+    image = bench_case.run(lambda: od.texture.rasterize_attribute(uv, faces, attribute, resolution))
     assert image.shape[:2] == (resolution, resolution)
 
 
 @pytest.mark.benchmark(group="rasterize_discrete_attribute")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("resolution", _RESOLUTIONS)
 def test_rasterize_discrete_attribute(bench_case: BenchCase, resolution: int) -> None:
     """The same scatter, resolving a per-pixel label argmax instead of interpolating."""
     uv, faces = _uv_wp(bench_case), bench_case.faces_wp
     labels = _labels_wp(bench_case)
     class_image = bench_case.run(
-        lambda: tw.texture.rasterize_discrete_attribute(uv, faces, labels, resolution)
+        lambda: od.texture.rasterize_discrete_attribute(uv, faces, labels, resolution)
     )
     assert class_image.shape == (resolution, resolution)
 
 
 @pytest.mark.benchmark(group="remap_attribute_from_uv_linear")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_remap_attribute_from_uv_linear(bench_case: BenchCase) -> None:
     """Per-vertex bilinear texture fetch — the ``wp.lerp`` gather path."""
     skip_larger_than(bench_case, "happy_buddha", "one 1024^2 source texture per mesh is cached")
     uv, image = _uv_wp(bench_case), _image_wp(bench_case)
-    values = bench_case.run(lambda: tw.texture.remap_attribute_from_uv(uv, image, order=1))
+    values = bench_case.run(lambda: od.texture.remap_attribute_from_uv(uv, image, order=1))
     assert values.shape[0] == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="remap_attribute_from_uv_nearest")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_remap_attribute_from_uv_nearest(bench_case: BenchCase) -> None:
     """The same gather without the blend: isolates the bilinear interpolation cost."""
     skip_larger_than(bench_case, "happy_buddha", "one 1024^2 source texture per mesh is cached")
     uv, image = _uv_wp(bench_case), _image_wp(bench_case)
-    values = bench_case.run(lambda: tw.texture.remap_attribute_from_uv(uv, image, order=0))
+    values = bench_case.run(lambda: od.texture.remap_attribute_from_uv(uv, image, order=0))
     assert values.shape[0] == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="remap_discrete_attribute_from_uv")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_remap_discrete_attribute_from_uv(bench_case: BenchCase) -> None:
     """Nearest-neighbor label fetch, preserving the ``-1`` uncovered sentinel."""
     skip_larger_than(bench_case, "happy_buddha", "one 1024^2 class image per mesh is cached")
     uv, class_image = _uv_wp(bench_case), _class_image_wp(bench_case)
-    labels = bench_case.run(lambda: tw.texture.remap_discrete_attribute_from_uv(uv, class_image))
+    labels = bench_case.run(lambda: od.texture.remap_discrete_attribute_from_uv(uv, class_image))
     assert labels.shape[0] == bench_case.n_vertices

@@ -28,9 +28,9 @@ import trimesh as tm  # noqa: E402
 import warp as wp  # noqa: E402
 from meshlib import mrmeshpy as mm  # noqa: E402
 
-import triwarp as tw  # noqa: E402
+import ordito as od  # noqa: E402
+from ordito.mesh import _CachedProperty  # noqa: E402  # pyright: ignore[reportPrivateUsage]
 from tests.conversions import meshlib_to_trimesh, trimesh_to_warp, warp_to_trimesh  # noqa: E402
-from triwarp.mesh import _CachedProperty  # noqa: E402  # pyright: ignore[reportPrivateUsage]
 
 # Reject a launch whose array arguments do not live on the launch device. Warp's default is
 # RELAXED, which passes the pointers straight through: a launch that forgets ``device=`` lands on
@@ -38,7 +38,7 @@ from triwarp.mesh import _CachedProperty  # noqa: E402  # pyright: ignore[report
 # corrupts the host heap when those arrays are freed while the kernel is still running (measured:
 # 20/20 aborts with a free and no sync, 0/20 with either). CHECKED does not catch it -- it
 # validates addressability, which HMM genuinely provides. STRICT is the only mode that rejects a
-# genuine cross-device argument, and no triwarp launch is intentionally cross-device. It is only
+# genuine cross-device argument, and no ordito launch is intentionally cross-device. It is only
 # half the guard: on a CUDA run an omitted ``device=`` resolves to the arrays' own device, so there
 # is no mismatch to reject and only check 15's static scan sees it.
 if hasattr(wp.config, "launch_array_access_mode"):  # warp >= 1.14
@@ -49,7 +49,7 @@ if hasattr(wp.config, "launch_array_access_mode"):  # warp >= 1.14
 # errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the
 # invariants ... explicitly opt in or out" -- which is this suite's only warning on a CPU run. It
 # is raised from inside pytorch3d's ``laplacian_matrices.py``, where it builds the COO tensors
-# ``test_laplacian`` and ``test_energies`` compare against, so nothing triwarp passes it changes
+# ``test_laplacian`` and ``test_energies`` compare against, so nothing ordito passes it changes
 # whether it fires: the notice is about torch's global state, not about our input.
 #
 # *In* is the right half of the choice here, for the same reason STRICT is above. This suite holds
@@ -61,14 +61,14 @@ if hasattr(wp.config, "launch_array_access_mode"):  # warp >= 1.14
 # handful of tests that build one.
 #
 # ``benchmarks/conftest.py`` opts *out* instead, and that is not an inconsistency: a timed
-# pytorch3d row must not be charged for validation triwarp's row does not perform.
+# pytorch3d row must not be charged for validation ordito's row does not perform.
 torch.sparse.check_sparse_tensor_invariants.enable()
 
 
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
-        "parity(group, *libraries, benchmarked=..., reason=...): this test asserts triwarp agrees "
+        "parity(group, *libraries, benchmarked=..., reason=...): this test asserts ordito agrees "
         "with each named reference library for the benchmark group of that name. The gate in "
         "tests/test_parity.py requires one of these (or a noparity exemption in benchmarks/) for "
         "every benchmarked pair. Pass benchmarked=False with a written reason= where the pair is "
@@ -337,7 +337,7 @@ def boy_surface(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     characteristic, so the ``False`` branch of ``is_orientable`` / ``face_orientation_bits`` and the
     impossible branch of ``make_winding_consistent`` are unreachable without it.
     """
-    vertices_wp, faces_wp = tw.creation.parametric_surface("boy", device=device)
+    vertices_wp, faces_wp = od.creation.parametric_surface("boy", device=device)
     mesh = warp_to_trimesh(vertices_wp, faces_wp)
     return mesh, trimesh_to_warp(mesh, device)
 
@@ -345,7 +345,7 @@ def boy_surface(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 @pytest.fixture
 def mobius(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """Moebius band: non-orientable *with* a boundary — one loop of 78 edges, and χ = 0."""
-    vertices_wp, faces_wp = tw.creation.parametric_surface("mobius", device=device)
+    vertices_wp, faces_wp = od.creation.parametric_surface("mobius", device=device)
     mesh = warp_to_trimesh(vertices_wp, faces_wp)
     return mesh, trimesh_to_warp(mesh, device)
 
@@ -353,7 +353,7 @@ def mobius(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 @pytest.fixture
 def bohemian_dome(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """Build a closed genus-1 surface that intersects itself: watertight, orientable, χ = 0."""
-    vertices_wp, faces_wp = tw.creation.parametric_surface("bohemian_dome", device=device)
+    vertices_wp, faces_wp = od.creation.parametric_surface("bohemian_dome", device=device)
     mesh = warp_to_trimesh(vertices_wp, faces_wp)
     return mesh, trimesh_to_warp(mesh, device)
 
@@ -366,7 +366,7 @@ def bohemian_dome(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 #
 # This is the one place in ``tests/`` where a fixture's geometry comes from MeshLib. That is
 # deliberate and it is allowed -- a test dependency is what MeshLib is licensed for, and nothing
-# under ``triwarp/`` names it -- but it goes through ``meshlib_to_trimesh``, which packs the mesh:
+# under ``ordito/`` names it -- but it goes through ``meshlib_to_trimesh``, which packs the mesh:
 # reading ``getNumpyFaces`` off an unpacked one returns rows of ``[0, 0, 0]`` (CLAUDE.md
 # section 7.6).
 _TORUS_PRIMARY_RADIUS = 1.0
@@ -427,7 +427,7 @@ def torus_components(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     Build a torus broken into **eight** disconnected open pieces, 256 faces in total.
 
     The multi-component input for ``combine.split``, the component labellings in
-    [`triwarp.graph`][triwarp.graph] and anything that has to survive a mesh which is not one
+    [`ordito.graph`][ordito.graph] and anything that has to survive a mesh which is not one
     surface. Every piece has a boundary, so it is also the fixture where a per-component *and*
     per-loop answer both have several instances to be wrong about.
     """
@@ -486,7 +486,7 @@ def parabolic_lattice(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     !!! warning
 
         Both triangles of every quad cell are right-angled, so every diagonal's cotangent weight is
-        exactly zero -- the same caveat [`creation.grid`][triwarp.creation.grid] carries. That makes
+        exactly zero -- the same caveat [`creation.grid`][ordito.creation.grid] carries. That makes
         this fixture unusable as input to a ``potpourri3d`` connection-Laplacian comparison, which
         drops such an edge's phase entirely (see ``tests/test_tangent.py``).
     """
@@ -560,11 +560,11 @@ def folded_patch() -> tuple[np.ndarray, np.ndarray]:
 
 
 CACHED_TRIMESH_KEYS = frozenset(
-    name for name, value in vars(tw.Trimesh).items() if isinstance(value, _CachedProperty)
+    name for name, value in vars(od.Trimesh).items() if isinstance(value, _CachedProperty)
 )
 
 
-def populate_cache(mesh: tw.Trimesh) -> tw.Trimesh:
+def populate_cache(mesh: od.Trimesh) -> od.Trimesh:
     """
     Force *every* cached property the fixture supports, not only the ones a caller expects.
 

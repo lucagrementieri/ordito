@@ -1,4 +1,4 @@
-# Contributing to triwarp
+# Contributing to ordito
 
 Thanks for your interest. Bug reports, reproductions, documentation fixes and new geometry
 functions are all welcome.
@@ -9,21 +9,21 @@ agree that your work is dual licensed under MIT and Apache-2.0, matching the pro
 
 ## Before you start
 
-- **Bugs**: open an [issue](https://github.com/lucagrementieri/triwarp/issues) with the mesh (or a
+- **Bugs**: open an [issue](https://github.com/lucagrementieri/ordito/issues) with the mesh (or a
   script that builds one), the device it happened on (`cpu` or `cuda`), and your `warp-lang`
   version. A wrong *answer* is more useful to report than a slow one — see below for why speed
   reports need a specific shape.
-- **New functions**: open an issue first if it is more than a small addition. triwarp deliberately
+- **New functions**: open an issue first if it is more than a small addition. ordito deliberately
   does not add an axis, parameter or mode without a call site that needs it, so a proposal lands
   faster when it names the use case.
-- **Out of scope**: rendering and visualization. triwarp computes geometry; it has no viewer,
+- **Out of scope**: rendering and visualization. ordito computes geometry; it has no viewer,
   rasterizer or camera model, and adding one is not planned. Use PyVista or Open3D for display.
 
 ## Development setup
 
 ```bash
-git clone https://github.com/lucagrementieri/triwarp
-cd triwarp
+git clone https://github.com/lucagrementieri/ordito
+cd ordito
 uv sync --all-groups        # runtime + dev + test + docs + bench
 ```
 
@@ -38,8 +38,8 @@ Run all of these before opening a pull request. They are the same checks CI runs
 is a CI pass:
 
 ```bash
-uv run ruff format triwarp tests benchmarks
-uv run ruff check triwarp tests benchmarks
+uv run ruff format ordito tests benchmarks
+uv run ruff check ordito tests benchmarks
 uv run basedpyright                            # 0 errors expected
 uv run pytest                                  # one device
 ```
@@ -48,10 +48,10 @@ CI additionally measures coverage on its CPU run and fails below a floor, so if 
 moving code in the wrapper layer, check it the way CI will:
 
 ```bash
-uv run pytest --device=cpu --cov=triwarp --cov-report=term
+uv run pytest --device=cpu --cov=ordito --cov-report=term
 ```
 
-The measurement covers `triwarp/*.py` and deliberately not `triwarp/kernels/`. A `@wp.kernel`
+The measurement covers `ordito/*.py` and deliberately not `ordito/kernels/`. A `@wp.kernel`
 body is compiled from its AST rather than called, so coverage.py records every line of it as
 unexecuted no matter how often the kernel runs — including it would report a number that means
 nothing. New wrapper code therefore needs its Python-visible branches exercised: the argument

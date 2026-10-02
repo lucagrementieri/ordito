@@ -5,7 +5,7 @@ search:
 
 | Library | Median |
 |---|---|
-| triwarp (CUDA) | 2.41 ms |
+| ordito (CUDA) | 2.41 ms |
 | PyVista | 40.16 ms |
 | Open3D | 113.89 ms |
 | trimesh | 161.41 ms |

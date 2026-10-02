@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1278.4 326.2" role="img" aria-label="triwarp">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1278.4 326.2" role="img" aria-label="ordito">
   <!-- Mark plus wordmark, for dark backgrounds. Only the wordmark fill differs from the light
        lockup: every mark tone already clears 7:1 against a dark ground, so the mark is unchanged. -->
   <path fill="#98C000" d="M89.2 189.9 L244.2 189.9 L166.7 55.7 ZM244.2 189.9 L399.2 189.9 L321.7 55.7 Z"/>
@@ -8,5 +8,5 @@
   <path fill="#FFD500" d="M2 2 L157 2 L79.5 136.2 ZM331.4 2 L486.4 2 L408.9 136.2 Z"/>
   <text x="578.4" y="215" fill="#EDF3E1" textLength="700" lengthAdjust="spacingAndGlyphs"
         font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="200"
-        font-weight="500">triwarp</text>
+        font-weight="500">ordito</text>
 </svg>

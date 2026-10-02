@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.boundary.boundary_loops``.
+Benchmarks for ``ordito.boundary.boundary_loops``.
 
 Axis: **loops**. Boundary extraction is not driven by mesh size -- ``sphere_med`` has 81 920 faces
 and no boundary at all, and costs less than the 1 024-face ``rim_short``. What it is driven by is
@@ -43,18 +43,18 @@ import pytest
 import trimesh as tm
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 
 @pytest.mark.benchmark(group="boundary_loops")
 @pytest.mark.benchaxis("loops")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "meshlib")
 def test_boundary_loops(bench_case: BenchCase) -> None:
     """
     Ranking plus batched extraction, across no boundary / two long rims / many short loops.
 
-    The four references return four different things and only triwarp returns every loop as an
+    The four references return four different things and only ordito returns every loop as an
     ordered vertex list: ``igl.boundary_loop`` gives the longest loop alone, ``Trimesh.outline()``
     gives a ``Path3D``, and meshlib gives one ``EdgeId`` per hole that the caller must walk. The
     meshlib row therefore includes the ``getLeftRing`` walk, without which it would be timing
@@ -74,9 +74,9 @@ def test_boundary_loops(bench_case: BenchCase) -> None:
 
         bench_case.run(run_ml)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        loops = bench_case.run(lambda: tw.boundary.boundary_loops(vertices, faces))
+        loops = bench_case.run(lambda: od.boundary.boundary_loops(vertices, faces))
         assert isinstance(loops, list)
     elif bench_case.kind == "trimesh":  # rebuild inside: trimesh caches outline internals
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -89,7 +89,7 @@ def test_boundary_loops(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="boundary_edges")
 @pytest.mark.benchaxis("loops")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pymeshlab", "pyvista", "meshlib")
 def test_boundary_edges(bench_case: BenchCase) -> None:
     """
     The unordered predecessor of ``boundary_loops``: the edge sort without the ranking.
@@ -99,13 +99,13 @@ def test_boundary_edges(bench_case: BenchCase) -> None:
     loop count). It reads flat across the whole axis, so everything above it in
     ``boundary_loops`` is ranking and extraction.
 
-    ``igl.boundary_facets`` is the one reference here that returns the same *thing* triwarp does --
+    ``igl.boundary_facets`` is the one reference here that returns the same *thing* ordito does --
     an ``(n_boundary, 2)`` edge list, plus the incident face and corner indices as second and third
-    returns, which is strictly more than triwarp's two columns. It is the right row for this group
+    returns, which is strictly more than ordito's two columns. It is the right row for this group
     and not for ``boundary_loops``, where ``igl.boundary_loop`` returns only the longest loop.
     """
     if bench_case.kind == "meshlib":
-        # ``getBoundaryVerts`` stops one step earlier than triwarp too, marking the boundary
+        # ``getBoundaryVerts`` stops one step earlier than ordito too, marking the boundary
         # *vertices* rather than returning the pairs -- the same relationship pymeshlab's row has,
         # and pinned in tests/test_boundary.py::test_boundary_vertex_indices. Pure (it reads the
         # topology and allocates a bitset), so the mesh is built once outside the timed callable;
@@ -135,9 +135,9 @@ def test_boundary_edges(bench_case: BenchCase) -> None:
         edges_igl, _face_igl, _corner_igl = bench_case.run(lambda: igl.boundary_facets(faces_np))
         assert edges_igl.ndim == 2
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        edges = bench_case.run(lambda: tw.boundary.boundary_edges(vertices, faces))
+        edges = bench_case.run(lambda: od.boundary.boundary_edges(vertices, faces))
         assert edges.ndim == 2
     elif bench_case.kind == "pymeshlab":
         # ``compute_selection_from_mesh_border`` marks the boundary *vertices* rather than returning
@@ -157,7 +157,7 @@ def test_boundary_edges(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="ears")
 @pytest.mark.benchaxis("loops")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_ears(bench_case: BenchCase) -> None:
     """
     Ear triangles -- two boundary edges each -- as ``(face, opposite corner)`` pairs.
@@ -165,12 +165,12 @@ def test_ears(bench_case: BenchCase) -> None:
     ``holes`` uses these to recognise a rim that closes with a single triangle, so the axis
     is the boundary shape rather than the mesh size, like the rest of the module. ``igl.ears``
     returns the identical pair of arrays, which is unusual enough to note: this is one of the few
-    groups where triwarp and igl agree on the *output convention* and not merely the quantity, so
+    groups where ordito and igl agree on the *output convention* and not merely the quantity, so
     the parity assert in ``tests/test_boundary.py`` needs only a row sort.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         faces = bench_case.faces_wp
-        ears, opposite = bench_case.run(lambda: tw.boundary.ears(faces))
+        ears, opposite = bench_case.run(lambda: od.boundary.ears(faces))
         assert ears.shape == opposite.shape
         return
     faces_np = bench_case.faces_np
@@ -179,7 +179,7 @@ def test_ears(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="loop_perimeters")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_loop_perimeters(bench_case: BenchCase) -> None:
     """
     Both loop measures at once: one segmented launch over every rim of the mesh.
@@ -187,7 +187,7 @@ def test_loop_perimeters(bench_case: BenchCase) -> None:
     The cost is the *packing* plus one launch, not the loops themselves -- which is the claim, since
     meshlib answers one hole per call and the scan meshes carry many. Its ``holePerimeter`` takes a
     representative edge, so its row is a Python loop over ``findHoleRepresentiveEdges`` and grows
-    with the hole count where triwarp's does not; that is the shape of the comparison rather than a
+    with the hole count where ordito's does not; that is the shape of the comparison rather than a
     handicap, since there is no batched entry point to call instead.
 
     The loops are produced **outside** the timed callable on both sides: ``boundary_loops`` has its
@@ -216,15 +216,15 @@ def test_loop_perimeters(bench_case: BenchCase) -> None:
         assert bench_case.run(measure_ml) > 0.0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.boundary.boundary_loops(vertices, faces)
+    loops = od.boundary.boundary_loops(vertices, faces)
     if not loops:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
-    perimeters = bench_case.run(lambda: tw.boundary.loop_perimeters(vertices, loops))
+    perimeters = bench_case.run(lambda: od.boundary.loop_perimeters(vertices, loops))
     assert int(perimeters.shape[0]) == len(loops)
 
 
 @pytest.mark.benchmark(group="loop_directed_areas")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_loop_directed_areas(bench_case: BenchCase) -> None:
     """
     The vector measure of the same loops, read against the scalar one above.
@@ -252,8 +252,8 @@ def test_loop_directed_areas(bench_case: BenchCase) -> None:
         assert bench_case.run(areas_ml) == len(holes_ml)
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.boundary.boundary_loops(vertices, faces)
+    loops = od.boundary.boundary_loops(vertices, faces)
     if not loops:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to measure")
-    areas = bench_case.run(lambda: tw.boundary.loop_directed_areas(vertices, loops))
+    areas = bench_case.run(lambda: od.boundary.loop_directed_areas(vertices, loops))
     assert int(areas.shape[0]) == len(loops)

@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.repair`` against libigl."""
+"""Regression tests for ``ordito.repair`` against libigl."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from pymeshfix import _meshfix
 
-import triwarp as tw
+import ordito as od
 from benchmarks.meshes import BUILDERS
 from tests.comparisons import (
     assert_unordered_rows_equal,
@@ -116,7 +116,7 @@ def _assert_is_a_solid(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int
     assert solid_tm.is_watertight
     assert solid_tm.euler_number == 2
     assert len(solid_tm.split(only_watertight=False)) == 1
-    assert int(tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy().sum()) == 0
+    assert int(od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy().sum()) == 0
     return solid_tm
 
 
@@ -126,7 +126,7 @@ def test_make_solid_matches_pymeshfix_on_interpenetrating_shells(device: str) ->
     Class C, and the strongest pipeline pair available: the two answers are the same surface.
 
     ``clean_from_arrays`` is pymeshfix's headline and the reason anyone installs it -- broken
-    digitised surface in, single watertight solid out -- and this is triwarp's composite of the same
+    digitised surface in, single watertight solid out -- and this is ordito's composite of the same
     stages. On two ``icosphere(2)``s translated 1.2 apart (324 v / 640 f, 72 of them
     self-intersecting) the two agree on **everything measurable**: 162 v / 320 f, watertight,
     Euler characteristic 2, one component, no self-intersecting face, enclosed volume 4.0470, and a
@@ -142,7 +142,7 @@ def test_make_solid_matches_pymeshfix_on_interpenetrating_shells(device: str) ->
     mesh_tm = _overlapping_spheres_tm()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
 
-    solid_wp, solid_faces_wp = tw.repair.make_solid(vertices_wp, faces_wp)
+    solid_wp, solid_faces_wp = od.repair.make_solid(vertices_wp, faces_wp)
     solid_tm = _assert_is_a_solid(solid_wp, solid_faces_wp)
 
     vertices_pmf, faces_pmf = _meshfix.clean_from_arrays(
@@ -178,12 +178,12 @@ def test_make_solid_singular_curve_divergence(
     two decide differently. Measured, both ending in a watertight one-component solid with no
     self-intersecting face:
 
-    | input | triwarp | pymeshfix | surface distance |
+    | input | ordito | pymeshfix | surface distance |
     |---|---|---|---|
     | ``torus_self_intersecting`` | 419 v, volume -9.60 | 80 v, volume -6.53 | **0.400** |
     | ``bohemian_dome`` | 855 v, volume 1.42 | 747 v, volume -1.54 | **2.615** |
 
-    pymeshfix removes far more of the torus (80 vertices of 256) where triwarp cuts closer to the
+    pymeshfix removes far more of the torus (80 vertices of 256) where ordito cuts closer to the
     intersection; on the dome both are far from the *input* too (2.61 and 2.22), which is what says
     the gap is the question rather than either answer. So this test asserts the post-conditions on
     both sides and records the divergence instead of bounding it -- a surface bound here would
@@ -196,12 +196,12 @@ def test_make_solid_singular_curve_divergence(
     n_faces = mesh_tm.faces.shape[0]
     assert (
         int(
-            tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy().sum()
+            od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy().sum()
         )
         > 0
     )
 
-    solid_wp, solid_faces_wp = tw.repair.make_solid(mesh_wp.points, mesh_wp.indices)
+    solid_wp, solid_faces_wp = od.repair.make_solid(mesh_wp.points, mesh_wp.indices)
     _assert_is_a_solid(solid_wp, solid_faces_wp)
 
     vertices_pmf, faces_pmf = _meshfix.clean_from_arrays(
@@ -239,10 +239,10 @@ def test_make_solid_closes_and_connects_open_shells(device: str) -> None:
     mesh_tm = _spaced_bowls_tm(3)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
 
-    largest_wp, largest_faces_wp = tw.repair.make_solid(vertices_wp, faces_wp)
+    largest_wp, largest_faces_wp = od.repair.make_solid(vertices_wp, faces_wp)
     largest_tm = _assert_is_a_solid(largest_wp, largest_faces_wp)
 
-    welded_wp, welded_faces_wp = tw.repair.make_solid(
+    welded_wp, welded_faces_wp = od.repair.make_solid(
         vertices_wp, faces_wp, keep_largest=False, join_components=True
     )
     welded_tm = _assert_is_a_solid(welded_wp, welded_faces_wp)
@@ -262,7 +262,7 @@ def test_make_solid_leaves_a_solid_alone(icosphere_coarse: tuple[tm.Trimesh, wp.
     """
     mesh_tm, mesh_wp = icosphere_coarse
 
-    solid_wp, solid_faces_wp = tw.repair.make_solid(mesh_wp.points, mesh_wp.indices)
+    solid_wp, solid_faces_wp = od.repair.make_solid(mesh_wp.points, mesh_wp.indices)
     solid_tm = _assert_is_a_solid(solid_wp, solid_faces_wp)
 
     assert solid_faces_wp.size // 3 == mesh_tm.faces.shape[0]
@@ -277,7 +277,7 @@ def test_make_solid_rejects_negative_iteration_caps(
     """The documented ``ValueError``, for each of the two caps."""
     _mesh_tm, mesh_wp = icosphere_coarse
     with pytest.raises(ValueError, match="must be non-negative"):
-        tw.repair.make_solid(mesh_wp.points, mesh_wp.indices, **kwargs)
+        od.repair.make_solid(mesh_wp.points, mesh_wp.indices, **kwargs)
 
 
 def _resolve_duplicated_faces_ref(faces_np: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -345,7 +345,7 @@ def _assert_duplicate_vertices_match(
         if faces_np is not None
         else (*igl.remove_duplicate_vertices(vertices_np, epsilon), None)
     )
-    # triwarp keeps float32 vertices where igl works in float64, so the surviving position sets are
+    # ordito keeps float32 vertices where igl works in float64, so the surviving position sets are
     # compared with a tolerance rather than exactly (exact equality happens to hold for coordinates
     # that are exactly representable, but not for a mesh with irrational ones).
     assert np.allclose(lexsort_rows(sv_wp), lexsort_rows(np.asarray(sv_igl)), rtol=1e-5, atol=1e-5)
@@ -364,7 +364,7 @@ def test_remove_unreferenced_identity(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     vertices_np = mesh_tm.vertices
     faces_np = mesh_tm.faces
 
-    nv_wp, nf_wp, remap_wp, inverse_wp = tw.repair.remove_unreferenced_vertices(
+    nv_wp, nf_wp, remap_wp, inverse_wp = od.repair.remove_unreferenced_vertices(
         mesh_wp.points, mesh_wp.indices, return_inverse=True
     )
 
@@ -394,7 +394,7 @@ def test_remove_unreferenced_extra_vertices(device: str):
     vertices_full_np = np.vstack([vertices_np, extra])
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_full_np, faces_np, device)
-    nv_wp, nf_wp, remap_wp, inverse_wp = tw.repair.remove_unreferenced_vertices(
+    nv_wp, nf_wp, remap_wp, inverse_wp = od.repair.remove_unreferenced_vertices(
         vertices_wp, faces_wp, return_inverse=True
     )
 
@@ -409,7 +409,7 @@ def test_remove_unreferenced_extra_vertices(device: str):
 @pytest.mark.parity("remove_unreferenced_vertices", "open3d")
 def test_remove_unreferenced_matches_open3d(device: str):
     """
-    Class A on both compacted buffers -- open3d keeps first-occurrence order like triwarp does.
+    Class A on both compacted buffers -- open3d keeps first-occurrence order like ordito does.
 
     open3d returns no forward or inverse map (the mesh is mutated in place and read back), so
     unlike the igl tests only the vertices and faces are comparable; the maps stay pinned by igl.
@@ -426,7 +426,7 @@ def test_remove_unreferenced_matches_open3d(device: str):
     faces_np = np.array([[0, 2, 4], [2, 5, 4]], dtype=np.int32)
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_full_np, faces_np, device)
-    nv_wp, nf_wp, _remap_wp = tw.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
+    nv_wp, nf_wp, _remap_wp = od.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
 
     mesh_o3d = trimesh_to_open3d(tm.Trimesh(vertices_full_np, faces_np, process=False))
     mesh_o3d.remove_unreferenced_vertices()
@@ -442,7 +442,7 @@ def test_remove_unreferenced_sentinel(device: str):
     faces_np = np.array([[0, 1, -1], [0, 2, 1]], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    nv_wp, nf_wp, remap_wp = tw.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
+    nv_wp, nf_wp, remap_wp = od.repair.remove_unreferenced_vertices(vertices_wp, faces_wp)
 
     assert np.allclose(nv_wp.numpy(), vertices_np[[0, 1, 2]], rtol=1e-5, atol=1e-5)
     assert np.array_equal(nf_wp.numpy().reshape(-1, 3), faces_np)
@@ -462,7 +462,7 @@ def test_remove_unreferenced_vertices_matches_meshlib_pack(
     renumbers. Reading before packing is silent and wrong -- measured here on a 42-vertex sphere
     with one interior vertex orphaned: ``points.size()`` reads **42** and ``getNumpyVerts`` returns
     42 rows while ``numValidVerts`` reads **41**, so a comparison that skipped the pack would report
-    a vertex triwarp had removed as a disagreement. After the pack both sides read 41 and 75 faces.
+    a vertex ordito had removed as a disagreement. After the pack both sides read 41 and 75 faces.
 
     The orphaned vertex is chosen *interior* deliberately: the converter sizes its point buffer by
     ``F.max() + 1``, so a **trailing** unreferenced vertex is dropped by
@@ -476,7 +476,7 @@ def test_remove_unreferenced_vertices_matches_meshlib_pack(
     n_vertices = mesh_tm.vertices.shape[0]
 
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, device)
-    kept_wp, kept_faces_wp, _remap_wp = tw.repair.remove_unreferenced_vertices(
+    kept_wp, kept_faces_wp, _remap_wp = od.repair.remove_unreferenced_vertices(
         vertices_wp, faces_wp
     )
 
@@ -549,7 +549,7 @@ def test_remove_unreferenced_vertices_matches_pymeshfix(device: str, placement: 
         )
 
     vertices_wp, faces_wp = numpy_to_warp(padded_np, shifted_np, device)
-    kept_wp, kept_faces_wp, _remap_wp = tw.repair.remove_unreferenced_vertices(
+    kept_wp, kept_faces_wp, _remap_wp = od.repair.remove_unreferenced_vertices(
         vertices_wp, faces_wp
     )
 
@@ -570,7 +570,7 @@ def test_remove_duplicate_vertices_exact(device: str):
     vertices_wp = points_to_warp(vertices_np, device)
 
     faces_wp = warp_empty(0, wp.int32, device)
-    sv_wp, _, svj_wp, _ = tw.repair.remove_duplicated_vertices(vertices_wp, faces_wp, epsilon=0.0)
+    sv_wp, _, svj_wp, _ = od.repair.remove_duplicated_vertices(vertices_wp, faces_wp, epsilon=0.0)
     _assert_duplicate_vertices_match(vertices_np, sv_wp.numpy(), svj_wp.numpy())
 
 
@@ -582,7 +582,7 @@ def test_remove_duplicate_vertices_epsilon(device: str):
     vertices_wp = points_to_warp(vertices_np, device)
 
     faces_wp = warp_empty(0, wp.int32, device)
-    sv_wp, _, svj_wp, _ = tw.repair.remove_duplicated_vertices(
+    sv_wp, _, svj_wp, _ = od.repair.remove_duplicated_vertices(
         vertices_wp, faces_wp, epsilon=epsilon
     )
     _assert_duplicate_vertices_match(vertices_np, sv_wp.numpy(), svj_wp.numpy(), epsilon=epsilon)
@@ -608,7 +608,7 @@ def test_remove_duplicate_vertices_epsilon_negative_coordinates(
 
     epsilon = 1e-6
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    sv_wp, _, svj_wp, sf_wp = tw.repair.remove_duplicated_vertices(
+    sv_wp, _, svj_wp, sf_wp = od.repair.remove_duplicated_vertices(
         vertices_wp, faces_wp, epsilon=epsilon
     )
     assert sv_wp.size == mesh_tm.vertices.shape[0]
@@ -624,7 +624,7 @@ def test_remove_duplicate_vertices_faces(device: str):
     faces_np = np.array([[0, 1, 3], [2, 1, 3]], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    sv_wp, _, svj_wp, sf_wp = tw.repair.remove_duplicated_vertices(vertices_wp, faces_wp, 0.0)
+    sv_wp, _, svj_wp, sf_wp = od.repair.remove_duplicated_vertices(vertices_wp, faces_wp, 0.0)
     _assert_duplicate_vertices_match(
         vertices_np, sv_wp.numpy(), svj_wp.numpy(), sf_wp.numpy(), faces_np
     )
@@ -638,7 +638,7 @@ def test_duplicate_vertex_inverse_matches_the_documented_quantization(
     Class B (label packing): the equivalence classes are the ``epsilon`` grid cells, as documented.
 
     ``hash_vector_rows`` snaps each coordinate to a multiple of ``epsilon`` measured from the data's
-    own minimum corner, so that is the numpy oracle. Only the *partition* is shared -- triwarp names
+    own minimum corner, so that is the numpy oracle. Only the *partition* is shared -- ordito names
     a class by its hash-table slot and ``np.unique`` numbers them in lexicographic order -- hence
     [`same_partition`][tests.comparisons.same_partition]. Measured 34 classes on both sides at both
     tolerances, out of 60 input positions, so the comparison is neither all-merged nor all-distinct.
@@ -649,7 +649,7 @@ def test_duplicate_vertex_inverse_matches_the_documented_quantization(
     positions_np += rng.normal(scale=1e-5, size=positions_np.shape).astype(np.float32)
     positions_wp = points_to_warp(positions_np, device)
 
-    inverse_np = tw.repair.duplicate_vertex_inverse(positions_wp, epsilon).numpy()
+    inverse_np = od.repair.duplicate_vertex_inverse(positions_wp, epsilon).numpy()
 
     cells_np = np.rint((positions_np - positions_np.min(axis=0)) / epsilon).astype(np.int64)
     _cells_np, expected_np = np.unique(cells_np, axis=0, return_inverse=True)
@@ -674,7 +674,7 @@ def test_duplicate_vertex_inverse_at_zero_epsilon_collapses_bitwise_equal_positi
     )
     positions_wp = points_to_warp(positions_np, device)
 
-    inverse_np = tw.repair.duplicate_vertex_inverse(positions_wp, 0.0).numpy()
+    inverse_np = od.repair.duplicate_vertex_inverse(positions_wp, 0.0).numpy()
 
     assert int(inverse_np.max()) + 1 == 3
     assert inverse_np[0] == inverse_np[1]
@@ -697,9 +697,9 @@ def test_duplicate_vertex_inverse_is_what_remove_duplicated_vertices_remaps_by(d
     faces_np = np.array([[0, 1, 2], [3, 4, 5], [6, 1, 2]], dtype=np.int32)
     positions_wp, faces_wp = numpy_to_warp(positions_np, faces_np, device)
 
-    inverse_np = tw.repair.duplicate_vertex_inverse(positions_wp, epsilon).numpy()
+    inverse_np = od.repair.duplicate_vertex_inverse(positions_wp, epsilon).numpy()
 
-    unique_wp, _indices_wp, _inverse_wp, unique_faces_wp = tw.repair.remove_duplicated_vertices(
+    unique_wp, _indices_wp, _inverse_wp, unique_faces_wp = od.repair.remove_duplicated_vertices(
         positions_wp, faces_wp, epsilon
     )
     assert unique_wp.size == 3
@@ -713,7 +713,7 @@ def test_resolve_duplicated_faces_cancelling(device: str):
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    f2_wp, j_wp = tw.repair.resolve_duplicated_faces(faces_wp)
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp)
     f2_np, j_np = _resolve_duplicated_faces_ref(faces_np)
 
     assert np.array_equal(f2_wp.numpy().reshape(-1, 3), f2_np)
@@ -726,7 +726,7 @@ def test_resolve_duplicated_faces_keep_positive(device: str):
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    f2_wp, j_wp = tw.repair.resolve_duplicated_faces(faces_wp)
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp)
     f2_np, j_np = _resolve_duplicated_faces_ref(faces_np)
 
     assert np.array_equal(f2_wp.numpy().reshape(-1, 3), f2_np)
@@ -771,7 +771,7 @@ def test_resolve_duplicated_faces_random(device: str):
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    f2_wp, j_wp = tw.repair.resolve_duplicated_faces(faces_wp)
+    f2_wp, j_wp = od.repair.resolve_duplicated_faces(faces_wp)
     f2_np, j_np = _resolve_duplicated_faces_ref(faces_np)
 
     # The reference emits groups in lexicographic (np.unique) order while the production path
@@ -796,11 +796,11 @@ def test_remove_duplicated_vertices_matches_open3d_and_pymeshlab(
 
     ``benchmarks/test_repair.py`` singles this out: MeshLab has a filter per path
     (``meshing_remove_duplicate_vertices`` for exact, ``meshing_merge_close_vertices`` for a
-    tolerance) that line up with triwarp's two code paths one-for-one, and Open3D's
+    tolerance) that line up with ordito's two code paths one-for-one, and Open3D's
     ``remove_duplicated_vertices`` is the exact path. So unlike its siblings in this module this is
     a straight comparison rather than a semantics negotiation. VTK's ``clean`` is a fourth
     implementation of the exact path and lands on the same 162 (measured 172 -> 162 on a mesh with
-    ten duplicated vertices, matching triwarp exactly).
+    ten duplicated vertices, matching ordito exactly).
 
     **``validate_mesh`` is not the oracle here** and that was measured rather than assumed: its
     ``coincident_points`` field reads *empty* on ten exactly duplicated vertices, so a comparison
@@ -818,7 +818,7 @@ def test_remove_duplicated_vertices_matches_open3d_and_pymeshlab(
 
     vertices_wp = points_to_warp(soup_np, device)
     faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
-    unique_wp, _indices_wp, _inverse_wp, _faces_wp = tw.repair.remove_duplicated_vertices(
+    unique_wp, _indices_wp, _inverse_wp, _faces_wp = od.repair.remove_duplicated_vertices(
         vertices_wp, faces_wp, epsilon
     )
 
@@ -868,21 +868,21 @@ def test_remove_duplicated_vertices_matches_meshlib(
     renumbered differently on each side, so the positions are compared after a lexsort exactly as
     the open3d / pymeshlab / pyvista comparison above does.
 
-    ``uniteOnlyBd=False`` is the setting that matches triwarp and is passed explicitly: MeshLib's
+    ``uniteOnlyBd=False`` is the setting that matches ordito and is passed explicitly: MeshLib's
     default is ``True``, which welds only vertices on a boundary and would leave an interior soup
     untouched. On this input every position is a boundary vertex of its own triangle, so the default
     happens to agree -- which is exactly why it is pinned rather than relied on.
 
     The count is only the headline; a welder that merged the wrong pairs can still reach 162, so the
     positions carry the claim. ``findCloseVertices`` is *not* the pairing: it flags **both** members
-    of a close pair (2 bits for 1 duplicate, measured), where triwarp's answer is the survivors.
+    of a close pair (2 bits for 1 duplicate, measured), where ordito's answer is the survivors.
     """
     mesh_tm, _mesh_wp = icosphere_coarse
     soup_np = np.ascontiguousarray(mesh_tm.vertices[mesh_tm.faces].reshape(-1, 3))
     faces_np = np.arange(soup_np.shape[0], dtype=np.int32).reshape(-1, 3)
 
     vertices_wp, faces_wp = numpy_to_warp(soup_np, faces_np, device)
-    unique_wp, _indices_wp, _inverse_wp, _faces_wp = tw.repair.remove_duplicated_vertices(
+    unique_wp, _indices_wp, _inverse_wp, _faces_wp = od.repair.remove_duplicated_vertices(
         vertices_wp, faces_wp, epsilon
     )
 
@@ -910,7 +910,7 @@ def test_reverse_winding_leaves_its_input_alone(icosphere: tuple[tm.Trimesh, wp.
     """
     _mesh_tm, mesh_wp = icosphere
     before = mesh_wp.indices.numpy().copy()
-    reversed_faces = tw.repair.reverse_winding(mesh_wp.indices)
+    reversed_faces = od.repair.reverse_winding(mesh_wp.indices)
     assert reversed_faces.ptr != mesh_wp.indices.ptr
     assert np.array_equal(mesh_wp.indices.numpy(), before)
 
@@ -923,7 +923,7 @@ def test_make_winding_consistent_matches_pymeshlab(
     Orientation repair against MeshLab's, which reaches the identical winding on every face.
 
     The two algorithms are not the same -- ``benchmarks/test_repair.py`` notes MeshLab does a
-    serial face-to-face visit where triwarp solves the Z2 bits with a parity-carrying union-find --
+    serial face-to-face visit where ordito solves the Z2 bits with a parity-carrying union-find --
     but on a connected orientable surface the answer is unique up to one global flip, so
     agreement is not
     only possible, it is required.
@@ -941,7 +941,7 @@ def test_make_winding_consistent_matches_pymeshlab(
     faces_wp = wp.array(
         np.ascontiguousarray(flipped_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    repaired_wp = tw.repair.make_winding_consistent(faces_wp)
+    repaired_wp = od.repair.make_winding_consistent(faces_wp)
 
     meshset_pml = ml.MeshSet()
     meshset_pml.add_mesh(
@@ -957,7 +957,7 @@ def test_make_winding_consistent_matches_pymeshlab(
         lexsort_rows(canonical_winding(repaired_wp.numpy())),
         lexsort_rows(canonical_winding(faces_pml)),
     )
-    assert tw.validation.is_winding_consistent(repaired_wp)
+    assert od.validation.is_winding_consistent(repaired_wp)
 
 
 @pytest.mark.parametrize("flip_seed_face", [False, True])
@@ -969,13 +969,13 @@ def test_make_winding_consistent_matches_meshlib(
     Class B: the same flip set up to a global flip, which is the gauge the two libraries fix apart.
 
     ``findDisorientedFaces`` returns the faces MeshLib would reverse, so the comparison is between
-    two *sets of faces to flip* -- triwarp's is recovered by differencing its output buffer against
+    two *sets of faces to flip* -- ordito's is recovered by differencing its output buffer against
     its input. They agree exactly, but only up to complementation, and the parametrization is what
-    makes that visible rather than lucky: triwarp's flood fill keeps the **seed face** (face 0) as
+    makes that visible rather than lucky: ordito's flood fill keeps the **seed face** (face 0) as
     it found it, while MeshLib decides globally by ray casting and picks the *outward* orientation.
     So with face 0 left alone the two sets are identical (40 of 320 faces, measured), and with face
     0 among the flipped ones they are exact complements (3 flagged by MeshLib against 317 by
-    triwarp). Either way both windings are consistent, which is the property the function promises.
+    ordito). Either way both windings are consistent, which is the property the function promises.
 
     The bitset is padded to the face count through
     [`meshlib_bitset_to_numpy`][tests.conversions.meshlib_bitset_to_numpy]: it comes back at the
@@ -992,7 +992,7 @@ def test_make_winding_consistent_matches_meshlib(
     faces_np[flipped] = faces_np[flipped][:, ::-1]
 
     _vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_np, device)
-    fixed_np = tw.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
+    fixed_np = od.repair.make_winding_consistent(faces_wp).numpy().reshape(-1, 3)
     flip_set_wp = ~(fixed_np == faces_np).all(axis=1)
 
     mesh_ml = numpy_to_meshlib(mesh_tm.vertices, faces_np)
@@ -1008,8 +1008,8 @@ def test_make_winding_consistent_matches_meshlib(
     faces_ml_np = faces_np.copy()
     faces_ml_np[flip_set_ml] = faces_ml_np[flip_set_ml][:, ::-1]
     _vertices_wp, faces_ml_wp = numpy_to_warp(mesh_tm.vertices, faces_ml_np, device)
-    assert tw.validation.is_winding_consistent(faces_ml_wp) is True
-    assert tw.validation.is_winding_consistent(
+    assert od.validation.is_winding_consistent(faces_ml_wp) is True
+    assert od.validation.is_winding_consistent(
         wp.array(fixed_np.reshape(-1), dtype=wp.int32, device=device)
     )
 
@@ -1040,7 +1040,7 @@ def test_make_winding_consistent_matches_igl(icosahedron: tuple[tm.Trimesh, wp.M
     )
     assert np.unique(components_igl).size == 1
 
-    repaired_wp = tw.repair.make_winding_consistent(faces_wp)
+    repaired_wp = od.repair.make_winding_consistent(faces_wp)
 
     assert np.array_equal(
         canonical_winding(_faces_2d(repaired_wp)), canonical_winding(np.asarray(oriented_igl))
@@ -1061,9 +1061,9 @@ def test_make_winding_consistent_repairs_flipped(icosahedron: tuple[tm.Trimesh, 
     faces_flipped[::2] = faces_flipped[::2][:, ::-1]  # reverse winding of half the faces
     _, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_flipped, mesh_wp.device)
 
-    assert tw.validation.is_winding_consistent(faces_wp) is False
-    repaired_wp = tw.repair.make_winding_consistent(faces_wp)
-    assert tw.validation.is_winding_consistent(repaired_wp) is True
+    assert od.validation.is_winding_consistent(faces_wp) is False
+    repaired_wp = od.repair.make_winding_consistent(faces_wp)
+    assert od.validation.is_winding_consistent(repaired_wp) is True
 
     before = faces_flipped
     after = _faces_2d(repaired_wp)
@@ -1096,12 +1096,12 @@ def test_make_winding_consistent_on_a_non_orientable_mesh(
     operation either way.
     """
     mesh_tm, mesh_wp = mobius
-    assert tw.validation.is_orientable(mesh_wp.indices) is False
+    assert od.validation.is_orientable(mesh_wp.indices) is False
 
-    repaired_wp = tw.repair.make_winding_consistent(mesh_wp.indices)
-    assert tw.validation.is_winding_consistent(repaired_wp) is False
+    repaired_wp = od.repair.make_winding_consistent(mesh_wp.indices)
+    assert od.validation.is_winding_consistent(repaired_wp) is False
 
-    inconsistent_np = ~tw.validation.edge_winding_consistent_mask(repaired_wp).numpy()
+    inconsistent_np = ~od.validation.edge_winding_consistent_mask(repaired_wp).numpy()
     assert 0 < inconsistent_np.sum() < 0.02 * inconsistent_np.size
 
     before, after = mesh_wp.indices.numpy().reshape(-1, 3), _faces_2d(repaired_wp)
@@ -1135,8 +1135,8 @@ def test_make_winding_consistent_matches_pymeshfix(device: str, n_flipped: int) 
     icosphere at volume -3.6587 rather than fixing it -- and each propagates from its own seed face,
     so which of the two orientation classes wins depends on the input. Measured across 1 / 10 / 40 /
     160 / 300 of 320 faces flipped: they agree at +4.0470 for 1 and 10, at **-4.0470** for 160 and
-    300, and **split** at 40, where triwarp reads +4.0470 and pymeshfix -4.0470. Turning the surface
-    inside out is [`make_normals_outward`][triwarp.repair.make_normals_outward]'s job, not this
+    300, and **split** at 40, where ordito reads +4.0470 and pymeshfix -4.0470. Turning the surface
+    inside out is [`make_normals_outward`][ordito.repair.make_normals_outward]'s job, not this
     one's, and asserting a sign here would pin an arbitrary tie-break.
 
     Parametrized over 1, 10 and 40 flipped faces, which spans both the agreeing and the diverging
@@ -1148,16 +1148,16 @@ def test_make_winding_consistent_matches_pymeshfix(device: str, n_flipped: int) 
     faces_np[flipped_np] = faces_np[flipped_np][:, ::-1]
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    assert not tw.validation.is_winding_consistent(faces_wp)  # non-vacuity: input really is broken
-    fixed_wp = tw.repair.make_winding_consistent(faces_wp)
+    assert not od.validation.is_winding_consistent(faces_wp)  # non-vacuity: input really is broken
+    fixed_wp = od.repair.make_winding_consistent(faces_wp)
 
     tin_pmf = numpy_to_pymeshfix(vertices_np, faces_np)
     assert tin_pmf.n_faces == faces_np.shape[0]  # the loader rewound rather than cutting
     assert tin_pmf.n_points == vertices_np.shape[0]
     vertices_pmf, faces_pmf = pymeshfix_to_numpy(tin_pmf)
 
-    assert tw.validation.is_winding_consistent(fixed_wp)
-    assert tw.validation.is_winding_consistent(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
+    assert od.validation.is_winding_consistent(fixed_wp)
+    assert od.validation.is_winding_consistent(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
     volume_wp = warp_to_trimesh(vertices_wp, fixed_wp).volume
     volume_pmf = tm.Trimesh(vertices_pmf, faces_pmf, process=False).volume
     assert np.isclose(abs(volume_wp), abs(volume_pmf), rtol=1e-5, atol=1e-5)
@@ -1166,7 +1166,7 @@ def test_make_winding_consistent_matches_pymeshfix(device: str, n_flipped: int) 
 
 def test_make_winding_consistent_idempotent(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    repaired_wp = tw.repair.make_winding_consistent(mesh_wp.indices)
+    repaired_wp = od.repair.make_winding_consistent(mesh_wp.indices)
     # Already consistently wound: output identical to input.
     assert np.array_equal(_faces_2d(repaired_wp), _faces_2d(mesh_wp.indices))
 
@@ -1198,11 +1198,11 @@ def test_make_winding_consistent_keeps_each_components_lowest_face(device: str) 
     assert flipped[first_faces].any()
     assert not flipped[first_faces].all()
 
-    runs = [_faces_2d(tw.repair.make_winding_consistent(faces_wp)) for _ in range(3)]
+    runs = [_faces_2d(od.repair.make_winding_consistent(faces_wp)) for _ in range(3)]
     assert all(np.array_equal(runs[0], run) for run in runs[1:])
     assert np.array_equal(runs[0][first_faces], faces_np[first_faces])
     repaired_wp = wp.array(runs[0].reshape(-1), dtype=wp.int32, device=device)
-    assert tw.validation.is_winding_consistent(repaired_wp) is True
+    assert od.validation.is_winding_consistent(repaired_wp) is True
 
 
 @pytest.mark.parity("make_volume", "trimesh", "pyvista")
@@ -1235,9 +1235,9 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
 
     **And pyvista parts company on a multi-shell mesh, which is why its equality runs on
     ``icosahedron`` only.** ``cave_cube`` is a unit cube with an inner void, so its enclosed solid
-    is ``outer - cavity``; triwarp returns **0.9990** and pyvista **1.0010**, i.e. pyvista orients
+    is ``outer - cavity``; ordito returns **0.9990** and pyvista **1.0010**, i.e. pyvista orients
     each shell outward *from itself* -- including the cavity's, which then adds instead of
-    subtracting -- where triwarp orients for a positive total. Both are defensible readings of
+    subtracting -- where ordito orients for a positive total. Both are defensible readings of
     "outward" and only one is this function's contract, so the divergence is asserted as a sum
     rather than papered over with a tolerance.
     """
@@ -1245,9 +1245,9 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
     faces_inward = mesh_tm.faces[:, ::-1].copy()  # reverse every face -> inward normals
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_inward, mesh_wp.device)
 
-    assert tw.validation.is_volume(vertices_wp, faces_wp) is False
-    repaired_wp = tw.repair.make_volume(vertices_wp, faces_wp)
-    assert tw.validation.is_volume(vertices_wp, repaired_wp) is True
+    assert od.validation.is_volume(vertices_wp, faces_wp) is False
+    repaired_wp = od.repair.make_volume(vertices_wp, faces_wp)
+    assert od.validation.is_volume(vertices_wp, repaired_wp) is True
 
     # Reference: trimesh.repair.fix_inversion also produces an outward-oriented volume.
     inward_tm = tm.Trimesh(vertices=mesh_tm.vertices, faces=faces_inward, process=False)
@@ -1296,7 +1296,7 @@ def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name
 
 def test_make_volume_leaves_valid_mesh(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    repaired_wp = tw.repair.make_volume(mesh_wp.points, mesh_wp.indices)
+    repaired_wp = od.repair.make_volume(mesh_wp.points, mesh_wp.indices)
     # Already outward-oriented: unchanged.
     assert np.array_equal(_faces_2d(repaired_wp), _faces_2d(mesh_wp.indices))
 
@@ -1315,10 +1315,10 @@ def test_make_normals_outward(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     faces_bad = faces_bad[:, ::-1]  # then invert everything
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, faces_bad, mesh_wp.device)
 
-    assert tw.validation.is_volume(vertices_wp, faces_wp) is False
-    repaired_wp = tw.repair.make_normals_outward(vertices_wp, faces_wp)
-    assert tw.validation.is_winding_consistent(repaired_wp) is True
-    assert tw.validation.is_volume(vertices_wp, repaired_wp) is True
+    assert od.validation.is_volume(vertices_wp, faces_wp) is False
+    repaired_wp = od.repair.make_normals_outward(vertices_wp, faces_wp)
+    assert od.validation.is_winding_consistent(repaired_wp) is True
+    assert od.validation.is_volume(vertices_wp, repaired_wp) is True
 
     # Reference: trimesh.repair.fix_normals. On a closed mesh outward orientation is unique,
     # so per-face normals must agree exactly (index representation may differ).
@@ -1345,19 +1345,19 @@ def test_make_volume_multibody(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
     def _body_is_volume(flat_faces_wp: wp.array[wp.int32], body: slice) -> bool:
         sub = wp.array(flat_faces_wp.numpy()[body], dtype=wp.int32, device=mesh_wp.device)
-        return tw.validation.is_volume(vertices_wp, sub)
+        return od.validation.is_volume(vertices_wp, sub)
 
     # Initially only body B has inward-facing normals.
     assert _body_is_volume(faces_wp, body_a) is True
     assert _body_is_volume(faces_wp, body_b) is False
 
     # multibody corrects each connected component independently -> both outward.
-    repaired_multi = tw.repair.make_volume(vertices_wp, faces_wp, multibody=True)
+    repaired_multi = od.repair.make_volume(vertices_wp, faces_wp, multibody=True)
     assert _body_is_volume(repaired_multi, body_a) is True
     assert _body_is_volume(repaired_multi, body_b) is True
 
     # The single-body path flips all-or-nothing and cannot orient two opposing bodies outward.
-    repaired_single = tw.repair.make_volume(vertices_wp, faces_wp, multibody=False)
+    repaired_single = od.repair.make_volume(vertices_wp, faces_wp, multibody=False)
     ok_a = _body_is_volume(repaired_single, body_a)
     ok_b = _body_is_volume(repaired_single, body_b)
     assert not (ok_a and ok_b)
@@ -1367,7 +1367,7 @@ def test_make_volume_multibody(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
 
 
 _MERGE_TOL = (
-    1e-8  # matches triwarp.constants.TOLERANCE_MERGE used by triangles.face_nondegenerate_mask
+    1e-8  # matches ordito.constants.TOLERANCE_MERGE used by triangles.face_nondegenerate_mask
 )
 
 
@@ -1407,7 +1407,7 @@ def _collapse_small_triangles_ref(
     """
     Return surviving faces of the reference collapse as sorted position triples ``(m, 3, 3)``.
 
-    Mirrors ``triwarp.repair.collapse_small_triangles``: each iteration flags faces with doubled
+    Mirrors ``ordito.repair.collapse_small_triangles``: each iteration flags faces with doubled
     area below ``2 * epsilon * bbd**2``, merges the two endpoints of each flagged triangle's
     shortest edge (union-find, lowest original index as representative), drops faces that become
     degenerate, and repeats to a fixpoint. Comparing surviving triangles as sorted position triples
@@ -1553,7 +1553,7 @@ def _edge_manifold_igl(faces_np: np.ndarray) -> bool:
 
 
 def _edge_manifold_o3d(vertices_np: np.ndarray, faces_np: np.ndarray) -> bool:
-    """Open3D's verdict, which shares triwarp's ``allow_boundary_edges`` switch exactly."""
+    """Open3D's verdict, which shares ordito's ``allow_boundary_edges`` switch exactly."""
     mesh_tm = tm.Trimesh(
         np.asarray(vertices_np, dtype=np.float64), np.asarray(faces_np), process=False
     )
@@ -1568,7 +1568,7 @@ def _edge_manifold_o3d(vertices_np: np.ndarray, faces_np: np.ndarray) -> bool:
     reason="both are used here as the post-condition detector rather than as the repair. libigl "
     "binds no non-manifold face remover at all, so there is nothing on its side to time; Open3D's "
     "remove_non_manifold_edges is a comparable repair and would be its own row. What this claims "
-    "is is_edge_manifold(allow_boundary_edges=True), which both answer identically to triwarp and "
+    "is is_edge_manifold(allow_boundary_edges=True), which both answer identically to ordito and "
     "which is timed in the is_edge_manifold group.",
 )
 @pytest.mark.parametrize(
@@ -1588,10 +1588,10 @@ def test_remove_non_manifold_faces_matches_a_numpy_oracle(
     compare equal.
 
     The numpy oracle pins *which* faces survive; it says nothing about whether the result is
-    actually edge-manifold, because it runs the same rule triwarp does. So that half was asserted
-    with [`is_edge_manifold`][triwarp.validation.is_edge_manifold] -- triwarp's repair checked by
-    triwarp's detector, where a shared bug in the detector passes both sides. igl and open3d both
-    answer the identical question and both flip with triwarp: measured False -> True on all three
+    actually edge-manifold, because it runs the same rule ordito does. So that half was asserted
+    with [`is_edge_manifold`][ordito.validation.is_edge_manifold] -- ordito's repair checked by
+    ordito's detector, where a shared bug in the detector passes both sides. igl and open3d both
+    answer the identical question and both flip with ordito: measured False -> True on all three
     inputs here, and on an ``icosphere(2)`` carrying one extra face (163 V / 321 F -> 162 / 318).
 
     **pyvista is deliberately absent.** Its ``is_manifold`` is ``n_open_edges == 0``, i.e. the
@@ -1608,11 +1608,11 @@ def test_remove_non_manifold_faces_matches_a_numpy_oracle(
     faces_wp = wp.array(np.ascontiguousarray(faces_np).ravel(), dtype=wp.int32, device=device)
     manifold_igl = _edge_manifold_igl(faces_np)
     manifold_o3d = _edge_manifold_o3d(vertices_np, faces_np)
-    assert not tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True)
+    assert not od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=True)
     assert not manifold_igl
     assert not manifold_o3d
 
-    new_vertices_wp, new_faces_wp = tw.repair.remove_non_manifold_faces(
+    new_vertices_wp, new_faces_wp = od.repair.remove_non_manifold_faces(
         points_to_warp(vertices_np, device), faces_wp
     )
     new_faces_np = new_faces_wp.numpy().reshape(-1, 3)
@@ -1624,7 +1624,7 @@ def test_remove_non_manifold_faces_matches_a_numpy_oracle(
     if n_surviving > 0:
         fixed_igl = _edge_manifold_igl(new_faces_np)
         fixed_o3d = _edge_manifold_o3d(new_vertices_wp.numpy(), new_faces_np)
-        assert tw.validation.is_edge_manifold(new_faces_wp, allow_boundary_edges=True)
+        assert od.validation.is_edge_manifold(new_faces_wp, allow_boundary_edges=True)
         assert fixed_igl
         assert fixed_o3d
 
@@ -1635,7 +1635,7 @@ def test_remove_non_manifold_faces_leaves_an_edge_manifold_mesh_alone(
     """Not a library comparison: an edge-manifold mesh is returned untouched, buffers included."""
     mesh_tm, mesh_wp = icosahedron
 
-    new_vertices_wp, new_faces_wp = tw.repair.remove_non_manifold_faces(
+    new_vertices_wp, new_faces_wp = od.repair.remove_non_manifold_faces(
         mesh_wp.points, mesh_wp.indices
     )
 
@@ -1693,7 +1693,7 @@ def test_remove_degenerate_and_non_manifold_faces_matches_trimesh_and_a_numpy_or
     assert expected_faces_np.shape[0] == 18
     assert expected_vertices_np.shape[0] < vertices_np.shape[0]
 
-    new_vertices_wp, new_faces_wp = tw.repair.remove_degenerate_and_non_manifold_faces(
+    new_vertices_wp, new_faces_wp = od.repair.remove_degenerate_and_non_manifold_faces(
         *numpy_to_warp(vertices_np, faces_np, device), max_iter=max_iter
     )
 
@@ -1710,7 +1710,7 @@ def test_remove_degenerate_and_non_manifold_faces_equals_the_two_calls(
     device: str, mesh_kind: str, max_iter: int
 ) -> None:
     """
-    Triwarp against triwarp: the one-compaction path is byte-identical to the two public calls.
+    Ordito against ordito: the one-compaction path is byte-identical to the two public calls.
 
     The two-call sequence carries the oracle (the numpy and trimesh comparisons above and in the
     ``remove_non_manifold_faces`` / ``remove_degenerate_faces`` tests); this pins the combined
@@ -1726,10 +1726,10 @@ def test_remove_degenerate_and_non_manifold_faces_equals_the_two_calls(
     }
     vertices_wp, faces_wp = numpy_to_warp(*builders[mesh_kind](), device)
 
-    staged_vertices_wp, staged_faces_wp = tw.repair.remove_non_manifold_faces(
-        *tw.repair.remove_degenerate_faces(vertices_wp, faces_wp), max_iter=max_iter
+    staged_vertices_wp, staged_faces_wp = od.repair.remove_non_manifold_faces(
+        *od.repair.remove_degenerate_faces(vertices_wp, faces_wp), max_iter=max_iter
     )
-    new_vertices_wp, new_faces_wp = tw.repair.remove_degenerate_and_non_manifold_faces(
+    new_vertices_wp, new_faces_wp = od.repair.remove_degenerate_and_non_manifold_faces(
         vertices_wp, faces_wp, max_iter=max_iter
     )
 
@@ -1742,7 +1742,7 @@ def test_remove_degenerate_and_non_manifold_faces_empty(device: str) -> None:
     vertices_wp = wp.array(np.eye(3, dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
 
-    new_vertices_wp, new_faces_wp = tw.repair.remove_degenerate_and_non_manifold_faces(
+    new_vertices_wp, new_faces_wp = od.repair.remove_degenerate_and_non_manifold_faces(
         vertices_wp, faces_wp
     )
 
@@ -1791,7 +1791,7 @@ def _assert_same_surviving_mesh(
     rather than merely how many.
 
     The distance bound is **scale-relative**, at ``1e-5`` of the scene's bounding-box diagonal,
-    because the floor is triwarp's ``float32`` vertex buffer rather than any disagreement: measured
+    because the floor is ordito's ``float32`` vertex buffer rather than any disagreement: measured
     on the three-shell fixture, whose furthest vertex is 43 units out and whose diagonal is 58.3,
     the two sides differ by **1.87e-06** -- exactly float32 quantization there, and a bound of
     ``1e-6`` absolute would fail on an answer that is correct to the last bit.
@@ -1831,7 +1831,7 @@ def test_remove_small_components_keep_largest_matches_pymeshfix(device: str) -> 
     mesh_tm = _three_shells_tm()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
 
-    kept_wp, kept_faces_wp = tw.repair.remove_small_components(
+    kept_wp, kept_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, keep_largest=True
     )
 
@@ -1867,14 +1867,14 @@ def test_remove_small_components_matches_pymeshlab(
     the bounding-box diagonal, and the fixture's shells are 3.464 across in a scene 58.3 across, so
     a percentage would silently be measuring something else.
 
-    ``removeunref=True`` matches triwarp, which compacts the vertex buffer of any submesh it
+    ``removeunref=True`` matches ordito, which compacts the vertex buffer of any submesh it
     extracts; at ``False`` the reference would keep the deleted components' vertices and the
     position-set comparison would fail on the vertex count alone.
     """
     mesh_tm = _three_shells_tm()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
 
-    kept_wp, kept_faces_wp = tw.repair.remove_small_components(
+    kept_wp, kept_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, **cast("_ComponentCriteria", {criterion: threshold})
     )
 
@@ -1915,7 +1915,7 @@ def test_remove_small_components_min_area_matches_open3d(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     min_area = 12.0
 
-    kept_wp, kept_faces_wp = tw.repair.remove_small_components(
+    kept_wp, kept_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, min_area=min_area
     )
 
@@ -1947,20 +1947,20 @@ def test_remove_small_components_invariants(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     n_faces = mesh_tm.faces.shape[0]
 
-    identity_wp, identity_faces_wp = tw.repair.remove_small_components(
+    identity_wp, identity_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, min_faces=1
     )
     assert identity_faces_wp.size // 3 == n_faces
     assert identity_wp.size == mesh_tm.vertices.shape[0]
 
-    kept_wp, kept_faces_wp = tw.repair.remove_small_components(
+    kept_wp, kept_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, keep_largest=True
     )
     kept_rows = np.round(warp_to_trimesh(kept_wp, kept_faces_wp).triangles, 5).reshape(-1, 9)
     input_rows = np.round(mesh_tm.triangles, 5).reshape(-1, 9)
     assert {tuple(row) for row in kept_rows} <= {tuple(row) for row in input_rows}
 
-    _empty_wp, empty_faces_wp = tw.repair.remove_small_components(
+    _empty_wp, empty_faces_wp = od.repair.remove_small_components(
         vertices_wp, faces_wp, min_faces=n_faces + 1
     )
     assert empty_faces_wp.size == 0
@@ -1978,7 +1978,7 @@ def test_remove_small_components_requires_exactly_one_criterion(
     mesh_tm = _three_shells_tm()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
     with pytest.raises(ValueError, match="exactly one"):
-        tw.repair.remove_small_components(vertices_wp, faces_wp, **kwargs)
+        od.repair.remove_small_components(vertices_wp, faces_wp, **kwargs)
 
 
 # --------------------------------------------------------------------------------------
@@ -1992,7 +1992,7 @@ def _split_nonmanifold_wp(
     """Run ``split_non_manifold_vertices`` on NumPy input and bring all three results back."""
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(np.ascontiguousarray(faces_np).ravel(), dtype=wp.int32, device=device)
-    new_vertices_wp, new_faces_wp, source_wp = tw.repair.split_non_manifold_vertices(
+    new_vertices_wp, new_faces_wp, source_wp = od.repair.split_non_manifold_vertices(
         vertices_wp, faces_wp
     )
     return new_vertices_wp.numpy(), new_faces_wp.numpy().reshape(-1, 3), source_wp.numpy()
@@ -2016,7 +2016,7 @@ def test_split_nonmanifold_matches_igl(
     [`same_partition`][tests.comparisons.same_partition]. That is exact rather than tolerant, and it
     is the whole answer: given the partition, the face table and the source map follow.
 
-    The two implementations are unrelated. triwarp takes connected components of a corner graph in
+    The two implementations are unrelated. ordito takes connected components of a corner graph in
     one parallel pass; ``igl::split_nonmanifold`` explodes the mesh into ``3 * n_faces`` singleton
     vertices and greedily re-merges pairs, re-testing manifoldness after each candidate. They agree
     on every input class here, including the two that a naive implementation gets wrong: a fan of
@@ -2083,15 +2083,15 @@ def test_split_nonmanifold_matches_meshlib(mesh_kind: str, device: str) -> None:
     not the comparable quantity -- the vertex total after both steps is, and it agrees exactly (6
     and 9), as does the face count, which neither side may change.
 
-    That makes this the pair that pins triwarp's promise to keep every face: MeshLib reaches the
+    That makes this the pair that pins ordito's promise to keep every face: MeshLib reaches the
     same manifold vertex set by two different routes and never drops a triangle either.
     """
     builders = {"bowtie": _bowtie_np, "three_faces_on_one_edge": _three_faces_on_one_edge_np}
     vertices_np, faces_np = builders[mesh_kind]()
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    assert not tw.validation.is_vertex_manifold(faces_wp)  # non-vacuity: there is a defect to fix
-    split_wp, split_faces_wp, _source_wp = tw.repair.split_non_manifold_vertices(
+    assert not od.validation.is_vertex_manifold(faces_wp)  # non-vacuity: there is a defect to fix
+    split_wp, split_faces_wp, _source_wp = od.repair.split_non_manifold_vertices(
         vertices_wp, faces_wp
     )
 
@@ -2104,7 +2104,7 @@ def test_split_nonmanifold_matches_meshlib(mesh_kind: str, device: str) -> None:
     assert split_wp.size == mesh_ml.topology.numValidVerts()
     assert split_faces_wp.size // 3 == mesh_ml.topology.numValidFaces()
     assert split_faces_wp.size // 3 == faces_np.shape[0]
-    assert tw.validation.is_vertex_manifold(split_faces_wp)
+    assert od.validation.is_vertex_manifold(split_faces_wp)
 
 
 @pytest.mark.parametrize(
@@ -2139,21 +2139,21 @@ def test_split_nonmanifold_leaves_a_manifold_mesh(
     # Each input violates a *different* precondition, and the guards say which -- a bowtie is
     # edge-manifold with a non-manifold vertex, and a flipped face is manifold but not orientable.
     if mesh_kind in ("three_faces_on_one_edge", "duplicated_face"):
-        assert not tw.validation.is_edge_manifold(faces_wp)
+        assert not od.validation.is_edge_manifold(faces_wp)
     elif mesh_kind == "flipped_face":
-        assert not tw.validation.is_winding_consistent(faces_wp)
+        assert not od.validation.is_winding_consistent(faces_wp)
     else:
-        assert not tw.validation.is_vertex_manifold(faces_wp)
+        assert not od.validation.is_vertex_manifold(faces_wp)
 
-    new_vertices_wp, new_faces_wp, _source_wp = tw.repair.split_non_manifold_vertices(
+    new_vertices_wp, new_faces_wp, _source_wp = od.repair.split_non_manifold_vertices(
         vertices_wp, faces_wp
     )
 
-    assert tw.validation.is_edge_manifold(new_faces_wp)
+    assert od.validation.is_edge_manifold(new_faces_wp)
     assert new_faces_wp.size == faces_wp.size
     assert new_vertices_wp.size >= vertices_wp.size
     # Idempotent: a second pass has nothing left to split.
-    again_vertices_wp, again_faces_wp, _ = tw.repair.split_non_manifold_vertices(
+    again_vertices_wp, again_faces_wp, _ = od.repair.split_non_manifold_vertices(
         new_vertices_wp, new_faces_wp
     )
     assert again_vertices_wp.size == new_vertices_wp.size
@@ -2167,8 +2167,8 @@ def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
     Class D exemption, pinned: the one documented divergence from igl, on a duplicated face.
 
     Where an edge carries one half-edge in one direction and several in the other -- what a
-    duplicated face produces -- igl keeps one arbitrarily chosen pair joined while triwarp
-    splits every copy. Both answers are manifold with the input's face count; triwarp's is
+    duplicated face produces -- igl keeps one arbitrarily chosen pair joined while ordito
+    splits every copy. Both answers are manifold with the input's face count; ordito's is
     order-independent and makes no arbitrary choice.
 
     Asserted as exact counts in both directions, so a change to either library's rule fails here
@@ -2191,13 +2191,13 @@ def test_split_nonmanifold_splits_a_duplicated_face_further_than_igl(
     assert _new_faces_np.shape[0] == faces_np.shape[0] == np.asarray(_faces_igl).shape[0]
     faces_wp = wp.array(np.ascontiguousarray(faces_np).ravel(), dtype=wp.int32, device=device)
     vertices_wp = points_to_warp(vertices_np, device)
-    assert tw.validation.is_edge_manifold(
-        tw.repair.split_non_manifold_vertices(vertices_wp, faces_wp)[1]
+    assert od.validation.is_edge_manifold(
+        od.repair.split_non_manifold_vertices(vertices_wp, faces_wp)[1]
     )
     # And `resolve_duplicated_faces` is *not* the escape hatch here: libigl's cancellation rules
     # cover a +1/-1 imbalance, so a face duplicated in the *same* orientation makes it raise.
     with pytest.raises(ValueError, match="non-orientable duplicate face group"):
-        tw.repair.resolve_duplicated_faces(faces_wp)
+        od.repair.resolve_duplicated_faces(faces_wp)
 
 
 @pytest.mark.parity(
@@ -2221,17 +2221,17 @@ def test_split_non_manifold_vertices_matches_pymeshfix(device: str) -> None:
     than through a call of its own.
 
     The three-faces-on-one-edge input is deliberately **not** compared, and the numbers say why:
-    pymeshfix cuts 5 vertices to **7** and triwarp to **9**, both edge-manifold afterwards. Neither
-    is wrong -- an edge with three faces can be separated into three boundary edges (triwarp, which
+    pymeshfix cuts 5 vertices to **7** and ordito to **9**, both edge-manifold afterwards. Neither
+    is wrong -- an edge with three faces can be separated into three boundary edges (ordito, which
     keeps two corners together only across a manifold consistently-oriented edge) or into a
     manifold pair plus one loose sheet (pymeshfix) -- and there is no canonical answer to compare
     against, so a count assert there would be pinning an arbitrary choice.
     """
     vertices_np, faces_np = _bowtie_np()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    assert not tw.validation.is_vertex_manifold(faces_wp)  # non-vacuity: there is a cut to make
+    assert not od.validation.is_vertex_manifold(faces_wp)  # non-vacuity: there is a cut to make
 
-    split_wp, split_faces_wp, _source_wp = tw.repair.split_non_manifold_vertices(
+    split_wp, split_faces_wp, _source_wp = od.repair.split_non_manifold_vertices(
         vertices_wp, faces_wp
     )
     vertices_pmf, faces_pmf = pymeshfix_to_numpy(numpy_to_pymeshfix(vertices_np, faces_np))
@@ -2240,8 +2240,8 @@ def test_split_non_manifold_vertices_matches_pymeshfix(device: str) -> None:
     assert faces_pmf.shape[0] == faces_np.shape[0]
     assert split_wp.size == vertices_pmf.shape[0]
     assert split_faces_wp.size // 3 == faces_pmf.shape[0]
-    assert tw.validation.is_vertex_manifold(split_faces_wp)
-    assert tw.validation.is_vertex_manifold(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
+    assert od.validation.is_vertex_manifold(split_faces_wp)
+    assert od.validation.is_vertex_manifold(numpy_to_warp(vertices_pmf, faces_pmf, device)[1])
 
 
 @pytest.mark.parity(
@@ -2268,7 +2268,7 @@ def test_remove_degenerate_faces_matches_pymeshfix(device: str, n_degenerate: in
 
     The near-degenerate class is where they part, and it is a *precision* difference rather than a
     tolerance one: TMesh's coordinates are ``double``, so a flat 12-column strip offset by ``1e-9``
-    is **not** degenerate to it and comes back unchanged at 24 v / 22 f, where triwarp's ``float32``
+    is **not** degenerate to it and comes back unchanged at 24 v / 22 f, where ordito's ``float32``
     altitude test removes the whole strip. On the *exactly* collinear version of the same strip both
     reduce it to 0 v / 0 f. So this comparison runs on exact degeneracy on purpose -- a
     near-degenerate fixture would be pinning float32 against float64 and calling it a disagreement.
@@ -2282,7 +2282,7 @@ def test_remove_degenerate_faces_matches_pymeshfix(device: str, n_degenerate: in
     faces_np = np.vstack([mesh_tm.faces, zero_area_np])
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    kept_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(vertices_wp, faces_wp)
+    kept_wp, kept_faces_wp = od.repair.remove_degenerate_faces(vertices_wp, faces_wp)
     kept_tm = warp_to_trimesh(kept_wp, kept_faces_wp)
 
     tin_pmf = numpy_to_pymeshfix(vertices_np, faces_np)
@@ -2309,7 +2309,7 @@ def test_remove_degenerate_faces_near_degenerate_divergence(device: str) -> None
 
     A flat strip 12 columns long, offset by ``1e-9`` in ``y``. TMesh stores coordinates in
     ``double``, where ``1e-9`` is emphatically not zero, so ``strong_degeneracy_removal`` returns
-    ``True`` having changed **nothing** (24 v / 22 f in and out); triwarp's altitude test runs on
+    ``True`` having changed **nothing** (24 v / 22 f in and out); ordito's altitude test runs on
     the ``float32`` vertex buffer and removes the entire strip. Set the offset to exactly zero and
     both reduce it to 0 v / 0 f.
 
@@ -2322,7 +2322,7 @@ def test_remove_degenerate_faces_near_degenerate_divergence(device: str) -> None
         [[2 * i, 2 * i + 2, 2 * i + 1] for i in range(columns - 1)]
         + [[2 * i + 1, 2 * i + 2, 2 * i + 3] for i in range(columns - 1)]
     )
-    for offset, pmf_faces, triwarp_faces in ((1e-9, 22, 0), (0.0, 0, 0)):
+    for offset, pmf_faces, ordito_faces in ((1e-9, 22, 0), (0.0, 0, 0)):
         vertices_np = np.stack(
             [x_np, np.tile([0.0, offset], columns), np.zeros(2 * columns)], axis=1
         )
@@ -2331,8 +2331,8 @@ def test_remove_degenerate_faces_near_degenerate_divergence(device: str) -> None
         assert tin_pmf.n_faces == pmf_faces, offset
 
         vertices_wp, faces_wp = numpy_to_warp(vertices_np, quads_np, device)
-        _kept_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(vertices_wp, faces_wp)
-        assert kept_faces_wp.size // 3 == triwarp_faces, offset
+        _kept_wp, kept_faces_wp = od.repair.remove_degenerate_faces(vertices_wp, faces_wp)
+        assert kept_faces_wp.size // 3 == ordito_faces, offset
 
 
 def test_remove_degenerate_faces_matches_trimesh(device: str) -> None:
@@ -2349,7 +2349,7 @@ def test_remove_degenerate_faces_matches_trimesh(device: str) -> None:
     vertices_np[8] = vertices_np[6]  # face [6, 7, 8] has two coincident vertices -> zero area
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    kept_vertices_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(vertices_wp, faces_wp)
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_degenerate_faces(vertices_wp, faces_wp)
 
     mesh_tm = tm.Trimesh(vertices=vertices_np.astype(np.float64), faces=faces_np, process=False)
     keep_mask_tm = mesh_tm.nondegenerate_faces(height=_MERGE_TOL)
@@ -2370,9 +2370,9 @@ def test_remove_degenerate_faces_matches_meshlib(device: str) -> None:
     comparison makes -- compare the *mask* rather than the output mesh, then check the removal
     against it. MeshLib's ``criticalAspectRatio`` selects additional near-degenerate slivers above
     the truly degenerate ones; at its ``FLT_MAX`` default only the zero-area faces are reported,
-    which is triwarp's criterion, so the default is the setting compared here and is asserted to be
+    which is ordito's criterion, so the default is the setting compared here and is asserted to be
     insensitive over three orders of magnitude on this input. trimesh's ``nondegenerate_faces``
-    returns the mask directly at a ``height`` of 1e-08, the same order as triwarp's own
+    returns the mask directly at a ``height`` of 1e-08, the same order as ordito's own
     ``TOLERANCE_ZERO``; pymeshlab's ``meshing_remove_null_faces`` rebuilds, so its answer is a face
     *count* and the comparison is on that.
 
@@ -2393,8 +2393,8 @@ def test_remove_degenerate_faces_matches_meshlib(device: str) -> None:
     faces_np = np.array([[0, 1, 2], [1, 3, 2], [0, 4, 1]], dtype=np.int32)  # face 2 is collinear
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    keep_wp = tw.triangles.face_nondegenerate_mask(vertices_wp, faces_wp)
-    kept_vertices_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(vertices_wp, faces_wp)
+    keep_wp = od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp)
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_degenerate_faces(vertices_wp, faces_wp)
 
     mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
     degenerate_ml = meshlib_bitset_to_numpy(
@@ -2450,7 +2450,7 @@ def test_remove_degenerate_faces_clean_mesh(icosahedron: tuple[tm.Trimesh, wp.Me
     passing every test that feeds it a genuinely degenerate face.
     """
     mesh_tm, mesh_wp = icosahedron
-    kept_vertices_wp, kept_faces_wp = tw.repair.remove_degenerate_faces(
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_degenerate_faces(
         mesh_wp.points, mesh_wp.indices
     )
     assert kept_faces_wp.size // 3 == mesh_tm.faces.shape[0]
@@ -2467,7 +2467,7 @@ def test_collapse_small_triangles_noop(icosahedron: tuple[tm.Trimesh, wp.Mesh]) 
     """
     mesh_tm, mesh_wp = icosahedron
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, mesh_wp.device)
-    out_vertices_wp, out_faces_wp = tw.repair.collapse_small_triangles(
+    out_vertices_wp, out_faces_wp = od.repair.collapse_small_triangles(
         vertices_wp, faces_wp, epsilon=1e-9
     )
     # A well-shaped mesh has no sub-threshold triangle: faces and vertices are unchanged.
@@ -2485,15 +2485,15 @@ def test_collapse_small_triangles_removes_sliver(icosahedron: tuple[tm.Trimesh, 
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
     epsilon = 1e-6
-    out_vertices_wp, out_faces_wp = tw.repair.collapse_small_triangles(
+    out_vertices_wp, out_faces_wp = od.repair.collapse_small_triangles(
         vertices_wp, faces_wp, epsilon=epsilon
     )
 
     # Sliver is gone.
     assert out_faces_wp.size // 3 < faces_np.shape[0]
     # Invariant (libigl fixpoint guarantee): no surviving triangle is below threshold.
-    bbd = tw.bounds.enclosing_diagonal(out_vertices_wp)
-    _, areas_wp = tw.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
+    bbd = od.bounds.enclosing_diagonal(out_vertices_wp)
+    _, areas_wp = od.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
     assert (2.0 * areas_wp.numpy()).min() >= epsilon * bbd * bbd * (1.0 - 1e-3)
     # Surviving triangle geometry matches the CPU reference.
     ref = _collapse_small_triangles_ref(vertices_np.astype(np.float64), faces_np, epsilon)
@@ -2524,12 +2524,12 @@ def test_collapse_small_triangles_fan_chain(device: str) -> None:
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     epsilon = 1e-3
-    out_vertices_wp, out_faces_wp = tw.repair.collapse_small_triangles(
+    out_vertices_wp, out_faces_wp = od.repair.collapse_small_triangles(
         vertices_wp, faces_wp, epsilon=epsilon
     )
 
-    bbd = tw.bounds.enclosing_diagonal(out_vertices_wp)
-    _, areas_wp = tw.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
+    bbd = od.bounds.enclosing_diagonal(out_vertices_wp)
+    _, areas_wp = od.triangles.face_normals_and_areas(out_vertices_wp, out_faces_wp)
     assert (2.0 * areas_wp.numpy()).min() >= epsilon * bbd * bbd * (1.0 - 1e-3)
     ref = _collapse_small_triangles_ref(vertices_np.astype(np.float64), faces_np, epsilon)
     collapsed_np = _sorted_triangle_positions(
@@ -2549,7 +2549,7 @@ def test_collapse_small_triangles_matches_meshlib(
     ``resolveMeshDegenerations`` -- an edge-collapse pass parameterized by ``tinyEdgeLength``
     rather than by a relative area -- is the only implementation to compare against. There is no
     correspondence between the two outputs: neither the vertex numbering nor which endpoint of a
-    collapsed edge survives is shared (triwarp keeps the component representative, MeshLib solves
+    collapsed edge survives is shared (ordito keeps the component representative, MeshLib solves
     for a position under ``maxDeviation``), so what is asserted is a statistic.
 
     Three of them, on a 320-face sphere with 20 edges shrunk to a thousandth of their length:
@@ -2559,7 +2559,7 @@ def test_collapse_small_triangles_matches_meshlib(
       **17** -- MeshLib's own ``findShortEdges`` is the judge on both sides;
     - the two surfaces stay within **0.0027** of each other, 7.8 % of the critical length.
 
-    Mutation probe and margin: running triwarp's pass an order of magnitude weaker
+    Mutation probe and margin: running ordito's pass an order of magnitude weaker
     (``epsilon=1e-6``) leaves **316** faces and **15** short edges, so every threshold here is at
     least 15 counts clear of the value a mis-scaled implementation produces, and the face-count
     assert is exact rather than a bound.
@@ -2580,7 +2580,7 @@ def test_collapse_small_triangles_matches_meshlib(
         return mm.findShortEdges(part, critical_length).count()
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, mesh_tm.faces, device)
-    collapsed_tm = warp_to_trimesh(*tw.repair.collapse_small_triangles(vertices_wp, faces_wp, 1e-5))
+    collapsed_tm = warp_to_trimesh(*od.repair.collapse_small_triangles(vertices_wp, faces_wp, 1e-5))
 
     mesh_ml = numpy_to_meshlib(vertices_np, mesh_tm.faces)
     settings_ml = mm.ResolveMeshDegenSettings()
@@ -2609,7 +2609,7 @@ def test_collapse_small_triangles_matches_meshlib(
 
 def _worst_aspect(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> float:
     return float(
-        tw.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio").numpy().max()
+        od.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio").numpy().max()
     )
 
 
@@ -2618,13 +2618,13 @@ def test_remove_folded_faces_drops_the_fold(
 ) -> None:
     vertices_np, faces_np = folded_patch
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    kept_vertices_wp, kept_faces_wp = tw.repair.remove_folded_faces(vertices_wp, faces_wp)
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_folded_faces(vertices_wp, faces_wp)
     # Only the fold goes, so the flat quad it folded over survives intact.
     assert kept_faces_wp.size // 3 == 2
     # The folded apex was referenced only by the dropped face, so it is gone too.
     assert kept_vertices_wp.size == vertices_np.shape[0] - 1
     assert (
-        not tw.validation.face_defective_mask(
+        not od.validation.face_defective_mask(
             kept_vertices_wp, kept_faces_wp, min_quality=None, max_fold_angle=160.0
         )
         .numpy()
@@ -2636,7 +2636,7 @@ def test_remove_folded_faces_leaves_a_clean_mesh_alone(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    kept_vertices_wp, kept_faces_wp = tw.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
+    kept_vertices_wp, kept_faces_wp = od.repair.remove_folded_faces(mesh_wp.points, mesh_wp.indices)
     assert kept_faces_wp.size == mesh_wp.indices.size
     assert kept_vertices_wp.size == mesh_wp.points.size
 
@@ -2673,7 +2673,7 @@ def test_fix_self_intersections_local_clears_them(
     torus_self_intersecting: tuple[tm.Trimesh, wp.Mesh], max_expand: int
 ) -> None:
     """
-    Class A on the *post-condition*, through two detectors that are not triwarp's.
+    Class A on the *post-condition*, through two detectors that are not ordito's.
 
     No reference does this **repair** the way this does -- MeshLib's ``localFixSelfIntersections``
     subdivides and relaxes rather than cutting and refilling, and on this very input it makes the
@@ -2687,8 +2687,8 @@ def test_fix_self_intersections_local_clears_them(
     generalizes.
 
     What *is* a library comparison is the contract's own predicate. Asserting it with
-    [`face_self_intersecting_mask`][triwarp.validation.face_self_intersecting_mask] alone would
-    check triwarp's repair against triwarp's detector, so a shared bug in the detector passes both
+    [`face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask] alone would
+    check ordito's repair against ordito's detector, so a shared bug in the detector passes both
     sides -- and that detector is exactly the one MeshLib and pymeshfix are already the oracles for
     one group over. Both are therefore counted here, before and after: all three agree on the
     input's intersecting-face count and on zero after the repair, at both dilation budgets.
@@ -2701,7 +2701,7 @@ def test_fix_self_intersections_local_clears_them(
 
     The two detectors are asked with the conventions they have, which makes them unequally strict
     and is worth knowing if one of them ever fails alone. MeshLib is passed
-    ``touchIsIntersection=False``, triwarp's convention; pymeshfix has no such switch and counts a
+    ``touchIsIntersection=False``, ordito's convention; pymeshfix has no such switch and counts a
     *touching* pair, so its zero is the **stronger** statement -- and where the two conventions
     diverge they differ by a lot rather than a little (elsewhere in this file, dozens of faces
     against zero). The cut-and-refill leaves no touching pair, so they coincide here.
@@ -2716,7 +2716,7 @@ def test_fix_self_intersections_local_clears_them(
     """
     mesh_tm, mesh_wp = torus_self_intersecting
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    before_np = tw.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy()
+    before_np = od.validation.face_self_intersecting_mask(vertices_wp, faces_wp).numpy()
     assert int(before_np.sum()) > 0  # non-vacuity: the fixture really does intersect itself
     # Two independent detectors confirm the input's count, so "0 after" is a repair and not a
     # detector that stopped answering.
@@ -2725,17 +2725,17 @@ def test_fix_self_intersections_local_clears_them(
     assert before_ml == int(before_np.sum())
     assert before_pmf == int(before_np.sum())
 
-    fixed_vertices_wp, fixed_faces_wp = tw.repair.fix_self_intersections(
+    fixed_vertices_wp, fixed_faces_wp = od.repair.fix_self_intersections(
         vertices_wp, faces_wp, max_expand=max_expand
     )
     assert fixed_faces_wp.size > 0
-    after_np = tw.validation.face_self_intersecting_mask(fixed_vertices_wp, fixed_faces_wp).numpy()
+    after_np = od.validation.face_self_intersecting_mask(fixed_vertices_wp, fixed_faces_wp).numpy()
     after_ml = _self_intersecting_count_ml(fixed_vertices_wp, fixed_faces_wp)
     after_pmf = _self_intersecting_count_pmf(fixed_vertices_wp, fixed_faces_wp)
     assert int(after_np.sum()) == 0
     assert after_ml == 0
     assert after_pmf == 0
-    assert tw.validation.is_watertight(fixed_vertices_wp, fixed_faces_wp)
+    assert od.validation.is_watertight(fixed_vertices_wp, fixed_faces_wp)
 
     diagonal = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
     deviation = hausdorff_surface_two_sided(
@@ -2763,7 +2763,7 @@ def test_fix_self_intersections_voxel_rebuilds(
     torus_self_intersecting: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Class A on the residual count, through two detectors that are not triwarp's.
+    Class A on the residual count, through two detectors that are not ordito's.
 
     A level set cannot self-intersect, so this always terminates -- but the *triangulation* of one
     can still carry a touching pair at an ambiguous marching-cubes cell, and that is
@@ -2772,7 +2772,7 @@ def test_fix_self_intersections_voxel_rebuilds(
     had" rather than zero, which is what the function promises.
 
     Because the answer is only *promised* to be small rather than zero, both references are asserted
-    to **agree with triwarp's count** rather than to read zero -- the stronger claim, and the
+    to **agree with ordito's count** rather than to read zero -- the stronger claim, and the
     resolution-independent one. Measured on this fixture at the default lattice, on both devices: 26
     688 faces out, all three detectors reading **0**, and pymeshfix's ``load_array`` leaving the
     face count untouched at 26 688, so its answer is about this mesh and not about a repaired copy
@@ -2783,15 +2783,15 @@ def test_fix_self_intersections_voxel_rebuilds(
     """
     mesh_tm, mesh_wp = torus_self_intersecting
     n_faces = mesh_tm.faces.shape[0]
-    before_np = tw.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
+    before_np = od.validation.face_self_intersecting_mask(mesh_wp.points, mesh_wp.indices).numpy()
     assert int(before_np.sum()) > 0  # non-vacuity: "fewer than before" has to mean something
 
-    rebuilt_vertices_wp, rebuilt_faces_wp = tw.repair.fix_self_intersections(
+    rebuilt_vertices_wp, rebuilt_faces_wp = od.repair.fix_self_intersections(
         mesh_wp.points, mesh_wp.indices, method="voxel"
     )
     assert rebuilt_faces_wp.size // 3 > 10 * n_faces  # everything was resampled
 
-    after_np = tw.validation.face_self_intersecting_mask(
+    after_np = od.validation.face_self_intersecting_mask(
         rebuilt_vertices_wp, rebuilt_faces_wp
     ).numpy()
     after_ml = _self_intersecting_count_ml(rebuilt_vertices_wp, rebuilt_faces_wp)
@@ -2814,22 +2814,22 @@ def test_fix_self_intersections_leaves_a_clean_mesh_alone(
     """
     _, mesh_wp = icosphere_coarse
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    assert not tw.validation.is_self_intersecting(mesh_wp)
+    assert not od.validation.is_self_intersecting(mesh_wp)
 
-    same_vertices_wp, same_faces_wp = tw.repair.fix_self_intersections(vertices_wp, faces_wp)
+    same_vertices_wp, same_faces_wp = od.repair.fix_self_intersections(vertices_wp, faces_wp)
     assert np.array_equal(same_faces_wp.numpy(), faces_wp.numpy())
     assert np.allclose(same_vertices_wp.numpy(), vertices_wp.numpy())
 
     with pytest.raises(ValueError, match="method must be"):
-        tw.repair.fix_self_intersections(
+        od.repair.fix_self_intersections(
             vertices_wp,
             faces_wp,
             method="nonsense",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
         )
     with pytest.raises(ValueError, match="max_expand"):
-        tw.repair.fix_self_intersections(vertices_wp, faces_wp, max_expand=-1)
+        od.repair.fix_self_intersections(vertices_wp, faces_wp, max_expand=-1)
     with pytest.raises(ValueError, match="max_iter"):
-        tw.repair.fix_self_intersections(vertices_wp, faces_wp, max_iter=0)
+        od.repair.fix_self_intersections(vertices_wp, faces_wp, max_iter=0)
 
 
 @pytest.mark.parametrize("hops", [0, 1, 2, 3])
@@ -2837,7 +2837,7 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh], hops: int
 ) -> None:
     """
-    Triwarp against triwarp: the loop's face-ring dilation is ``expand_vertex_mask``'s.
+    Ordito against ordito: the loop's face-ring dilation is ``expand_vertex_mask``'s.
 
     ``fix_self_intersections`` grows its cut region by hopping through faces (any-corner lookup,
     then mark the corners) instead of building a unique-edge table every pass. That is the same
@@ -2855,7 +2855,7 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     seed_np[[0, 101, 222]] = True
     seed_wp = wp.array(seed_np, dtype=wp.bool, device=faces_wp.device)
 
-    grown_wp = tw.repair._dilate_face_mask(  # pyright: ignore[reportPrivateUsage]
+    grown_wp = od.repair._dilate_face_mask(  # pyright: ignore[reportPrivateUsage]
         faces_wp, seed_wp, hops, n_vertices
     )
 
@@ -2863,7 +2863,7 @@ def test_fix_self_intersections_dilation_matches_expand_vertex_mask(
     vertex_seed_np = np.zeros(n_vertices, dtype=bool)
     vertex_seed_np[faces_np[seed_np].ravel()] = True
     vertex_seed_wp = wp.array(vertex_seed_np, dtype=wp.bool, device=faces_wp.device)
-    expanded_np = tw.selection.expand_vertex_mask(faces_wp, vertex_seed_wp, hops).numpy()
+    expanded_np = od.selection.expand_vertex_mask(faces_wp, vertex_seed_wp, hops).numpy()
     reference_np = expanded_np[faces_np].any(axis=1)
     assert np.array_equal(grown_wp.numpy(), reference_np)
     assert int(reference_np.sum()) > (int(seed_np.sum()) if hops == 0 else 3 * (hops + 1))
@@ -2879,9 +2879,9 @@ def _ragged_grid(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp
     the gates rejecting rather than the straightening working. On a plane the notch triangle is
     exactly coplanar with its neighbours and well shaped, and the correct answer is the grid itself.
     """
-    vertices_wp, faces_wp = tw.creation.grid(count=(8, 8), device=device)
+    vertices_wp, faces_wp = od.creation.grid(count=(8, 8), device=device)
     n_faces = faces_wp.size // 3
-    rim = set(tw.boundary.boundary_loops(vertices_wp, faces_wp)[0].list())
+    rim = set(od.boundary.boundary_loops(vertices_wp, faces_wp)[0].list())
     faces_np = faces_wp.numpy().reshape(-1, 3)
     keep_np = np.ones(n_faces, dtype=bool)
     rim_faces = [
@@ -2891,7 +2891,7 @@ def _ragged_grid(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp
     ]
     for index in rim_faces[::3]:
         keep_np[index] = False
-    ragged_vertices_wp, ragged_faces_wp = tw.selection.submesh_from_face_mask(
+    ragged_vertices_wp, ragged_faces_wp = od.selection.submesh_from_face_mask(
         vertices_wp, faces_wp, wp.array(keep_np, dtype=wp.bool, device=device)
     )
     return ragged_vertices_wp, ragged_faces_wp, faces_wp
@@ -2915,7 +2915,7 @@ def test_straighten_boundary_matches_meshlib(device: str) -> None:
     n_ragged = ragged_faces_wp.size // 3
     assert n_ragged < grid_faces_wp.size // 3  # non-vacuity: faces really were removed
 
-    straightened_wp, added = tw.repair.straighten_boundary(
+    straightened_wp, added = od.repair.straighten_boundary(
         ragged_vertices_wp,
         ragged_faces_wp,
         min_normal_dot=0.9,
@@ -2954,21 +2954,21 @@ def test_straighten_boundary_restores_the_grid(device: str) -> None:
     the permissive case would not distinguish the gates from constants.
     """
     ragged_vertices_wp, ragged_faces_wp, grid_faces_wp = _ragged_grid(device)
-    loops_before = tw.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)
+    loops_before = od.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)
     perimeter_before = float(
-        tw.boundary.loop_perimeters(ragged_vertices_wp, loops_before).numpy().sum()
+        od.boundary.loop_perimeters(ragged_vertices_wp, loops_before).numpy().sum()
     )
     assert perimeter_before > 4.0 + 1e-3  # non-vacuity: the rim really is ragged
 
-    straightened_wp, added = tw.repair.straighten_boundary(
+    straightened_wp, added = od.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, min_normal_dot=0.99, iterations=6, return_count=True
     )
     assert added == grid_faces_wp.size // 3 - ragged_faces_wp.size // 3
-    assert tw.validation.is_edge_manifold(straightened_wp)
-    loops_after = tw.boundary.boundary_loops(ragged_vertices_wp, straightened_wp)
+    assert od.validation.is_edge_manifold(straightened_wp)
+    loops_after = od.boundary.boundary_loops(ragged_vertices_wp, straightened_wp)
     assert len(loops_after) == 1
     assert np.isclose(
-        float(tw.boundary.loop_perimeters(ragged_vertices_wp, loops_after).numpy().sum()),
+        float(od.boundary.loop_perimeters(ragged_vertices_wp, loops_after).numpy().sum()),
         4.0,
         rtol=1e-6,
     )
@@ -2978,14 +2978,14 @@ def test_straighten_boundary_restores_the_grid(device: str) -> None:
     )
 
     # The aspect-ratio gate binds: below the notch triangles' own ratio, nothing is accepted.
-    rejected_wp, rejected = tw.repair.straighten_boundary(
+    rejected_wp, rejected = od.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, max_aspect_ratio=1.0, iterations=6, return_count=True
     )
     assert rejected == 0
     assert np.array_equal(rejected_wp.numpy(), ragged_faces_wp.numpy())
 
     with pytest.raises(ValueError, match="iterations must be non-negative"):
-        tw.repair.straighten_boundary(ragged_vertices_wp, ragged_faces_wp, iterations=-1)
+        od.repair.straighten_boundary(ragged_vertices_wp, ragged_faces_wp, iterations=-1)
 
 
 def test_straighten_boundary_return_count_shapes(device: str) -> None:
@@ -3004,12 +3004,12 @@ def test_straighten_boundary_return_count_shapes(device: str) -> None:
     """
     ragged_vertices_wp, ragged_faces_wp, _grid_faces_wp = _ragged_grid(device)
 
-    faces_only_wp = tw.repair.straighten_boundary(
+    faces_only_wp = od.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, min_normal_dot=0.99, iterations=6
     )
     assert isinstance(faces_only_wp, wp.array)
 
-    faces_wp, added = tw.repair.straighten_boundary(
+    faces_wp, added = od.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, min_normal_dot=0.99, iterations=6, return_count=True
     )
     assert added > 0  # non-vacuity: the rim really was straightened
@@ -3047,7 +3047,7 @@ def test_straighten_boundary_closes_an_independent_set(device: str) -> None:
     ragged_vertices_wp, ragged_faces_wp, _grid_faces_wp = _ragged_grid(device)
     n_faces = ragged_faces_wp.size // 3
 
-    out_wp, added = tw.repair.straighten_boundary(
+    out_wp, added = od.repair.straighten_boundary(
         ragged_vertices_wp,
         ragged_faces_wp,
         min_normal_dot=-1.0,
@@ -3055,7 +3055,7 @@ def test_straighten_boundary_closes_an_independent_set(device: str) -> None:
         iterations=1,
         return_count=True,
     )
-    rim_length = len(tw.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)[0].numpy())
+    rim_length = len(od.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)[0].numpy())
     assert 0 < added < rim_length  # non-vacuity: candidates existed and the rule rejected some
 
     used: Counter[frozenset[int]] = Counter()
@@ -3091,7 +3091,7 @@ def test_straighten_boundary_closes_both_loops_at_a_bowtie(device: str) -> None:
     vertices_np = ragged_vertices_wp.numpy()
     faces_np = ragged_faces_wp.numpy().reshape(-1, 3)
     n_vertices = len(vertices_np)
-    loop_np = tw.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)[0].numpy()
+    loop_np = od.boundary.boundary_loops(ragged_vertices_wp, ragged_faces_wp)[0].numpy()
     pinch, welded = int(loop_np[0]), int(loop_np[len(loop_np) // 2])
 
     turned_np = vertices_np.copy()
@@ -3105,13 +3105,13 @@ def test_straighten_boundary_closes_both_loops_at_a_bowtie(device: str) -> None:
         np.vstack([faces_np, np.vectorize(remap.get)(faces_np)]).ravel().astype(np.int32),
         device,
     )
-    assert tw.validation.is_edge_manifold(pinched_faces_wp)  # non-vacuity: the guard accepts it
+    assert od.validation.is_edge_manifold(pinched_faces_wp)  # non-vacuity: the guard accepts it
 
     gates: _StraightenGates = {"min_normal_dot": 0.9, "max_aspect_ratio": 10.0, "iterations": 6}
-    out_wp, added = tw.repair.straighten_boundary(
+    out_wp, added = od.repair.straighten_boundary(
         pinched_vertices_wp, pinched_faces_wp, return_count=True, **gates
     )
-    _clean_wp, clean_added = tw.repair.straighten_boundary(
+    _clean_wp, clean_added = od.repair.straighten_boundary(
         ragged_vertices_wp, ragged_faces_wp, return_count=True, **gates
     )
     assert clean_added == 10  # non-vacuity: one grid on its own really is ragged
@@ -3154,7 +3154,7 @@ def test_flatten_degree3_vertices_moves_an_independent_set(device: str) -> None:
     faces_np = np.array([0, 2, 1, 0, 3, 2, 0, 1, 3, 1, 2, 3], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    flattened_np = tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp).numpy()
+    flattened_np = od.repair.flatten_degree3_vertices(vertices_wp, faces_wp).numpy()
     mesh_ml = trimesh_to_meshlib(tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False))
     mm.hardSmoothTetrahedrons(mesh_ml)
     flattened_ml = mn.toNumpyArray(mesh_ml.points)
@@ -3163,10 +3163,10 @@ def test_flatten_degree3_vertices_moves_an_independent_set(device: str) -> None:
     assert np.allclose(flattened_np, flattened_ml, rtol=1e-5, atol=1e-5)
 
     # One pass is one vertex here, which is what the loop exists for.
-    once_np = tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=1).numpy()
+    once_np = od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=1).numpy()
     assert int((np.linalg.norm(once_np - vertices_np, axis=1) > 1e-6).sum()) == 1
     with pytest.raises(ValueError, match="max_iter must be non-negative"):
-        tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
+        od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
 
     before = tm.Trimesh(vertices_np, faces_np.reshape(-1, 3), process=False).volume
     after = tm.Trimesh(flattened_np, faces_np.reshape(-1, 3), process=False).volume
@@ -3187,10 +3187,10 @@ def test_remove_degree3_vertices_return_count_shapes(device: str) -> None:
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
     )
 
-    pair = tw.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+    pair = od.repair.remove_degree3_vertices(vertices_wp, faces_wp)
     assert len(pair) == 2
 
-    triple = tw.repair.remove_degree3_vertices(vertices_wp, faces_wp, return_count=True)
+    triple = od.repair.remove_degree3_vertices(vertices_wp, faces_wp, return_count=True)
     assert len(triple) == 3
     assert triple[2] == 1  # non-vacuity: the fixture really has one valence-3 vertex
     assert np.allclose(pair[0].numpy(), triple[0].numpy(), rtol=1e-5, atol=1e-5)
@@ -3211,11 +3211,11 @@ def test_remove_tunnels_count_is_unconditional(torus: tuple[tm.Trimesh, wp.Mesh]
     does not sweep it up with the others.
     """
     _mesh_tm, mesh_wp = torus
-    result = tw.repair.remove_tunnels(mesh_wp.points, mesh_wp.indices, 1e-9)
+    result = od.repair.remove_tunnels(mesh_wp.points, mesh_wp.indices, 1e-9)
     assert len(result) == 3
     assert isinstance(result[2], int)
     with pytest.raises(TypeError):
-        tw.repair.remove_tunnels(
+        od.repair.remove_tunnels(
             mesh_wp.points,
             mesh_wp.indices,
             1e-9,
@@ -3283,13 +3283,13 @@ def test_remove_degree3_vertices_mask_matches_meshlib(device: str) -> None:
         )
         assert int(degree3_np.sum()) == expected_removed
 
-        out_vertices_wp, out_faces_wp, removed = tw.repair.remove_degree3_vertices(
+        out_vertices_wp, out_faces_wp, removed = od.repair.remove_degree3_vertices(
             vertices_wp, faces_wp, return_count=True
         )
         assert removed == expected_removed
         assert out_vertices_wp.size == len(mesh_tm.vertices) - expected_removed
         assert out_faces_wp.size // 3 == len(mesh_tm.faces) - 2 * expected_removed
-        assert tw.validation.is_edge_manifold(out_faces_wp)
+        assert od.validation.is_edge_manifold(out_faces_wp)
         assert warp_to_trimesh(out_vertices_wp, out_faces_wp).is_watertight
 
 
@@ -3306,13 +3306,13 @@ def test_remove_degree3_vertices_is_idempotent_and_area_preserving(device: str) 
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
     )
-    out_vertices_wp, out_faces_wp, removed = tw.repair.remove_degree3_vertices(
+    out_vertices_wp, out_faces_wp, removed = od.repair.remove_degree3_vertices(
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == 1  # non-vacuity
     assert np.isclose(warp_to_trimesh(out_vertices_wp, out_faces_wp).area, mesh_tm.area, rtol=1e-6)
 
-    again_vertices_wp, again_faces_wp, again_removed = tw.repair.remove_degree3_vertices(
+    again_vertices_wp, again_faces_wp, again_removed = od.repair.remove_degree3_vertices(
         out_vertices_wp, out_faces_wp, return_count=True
     )
     assert again_removed == 0
@@ -3320,7 +3320,7 @@ def test_remove_degree3_vertices_is_idempotent_and_area_preserving(device: str) 
     assert np.array_equal(again_vertices_wp.numpy(), out_vertices_wp.numpy())
 
     with pytest.raises(ValueError, match="max_iter must be non-negative"):
-        tw.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
+        od.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=-1)
 
 
 def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
@@ -3340,7 +3340,7 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
     fan_vertices_np = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [-1, 0, 0], [0, -1, 0]], float)
     fan_faces_np = np.array([[0, 1, 2], [0, 2, 3], [0, 3, 4]])
     vertices_wp, faces_wp = numpy_to_warp(fan_vertices_np, fan_faces_np.ravel(), device)
-    assert tw.repair.remove_degree3_vertices(vertices_wp, faces_wp, return_count=True)[2] == 0
+    assert od.repair.remove_degree3_vertices(vertices_wp, faces_wp, return_count=True)[2] == 0
 
     icosahedron_tm = tm.creation.icosahedron()
     offset = len(icosahedron_tm.vertices)
@@ -3352,7 +3352,7 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
         np.concatenate([icosahedron_tm.faces, second_np]).ravel(),
         device,
     )
-    out_vertices_wp, out_faces_wp, removed = tw.repair.remove_degree3_vertices(
+    out_vertices_wp, out_faces_wp, removed = od.repair.remove_degree3_vertices(
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == 0
@@ -3362,7 +3362,7 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
     tetrahedron_np = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [0, 0, 1]], float)
     tetrahedron_faces_np = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]])
     vertices_wp, faces_wp = numpy_to_warp(tetrahedron_np, tetrahedron_faces_np.ravel(), device)
-    out_vertices_wp, out_faces_wp, removed = tw.repair.remove_degree3_vertices(
+    out_vertices_wp, out_faces_wp, removed = od.repair.remove_degree3_vertices(
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == 1
@@ -3372,7 +3372,7 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
     fin_faces_np = np.array([[0, 1, 2], [0, 1, 3], [0, 1, 4]])
     vertices_wp, faces_wp = numpy_to_warp(fan_vertices_np, fin_faces_np.ravel(), device)
     with pytest.raises(ValueError, match="edge-manifold mesh: 1 edge"):
-        tw.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+        od.repair.remove_degree3_vertices(vertices_wp, faces_wp)
 
     # The other rejection: the tetrahedron with one face reversed is edge-manifold, but three of
     # its edges are traversed the same way by both faces. Checked before a pass removes anything,
@@ -3381,9 +3381,9 @@ def test_remove_degree3_vertices_reads_only_closed_fans(device: str) -> None:
     flipped_np[3] = flipped_np[3, ::-1]
     vertices_wp, faces_wp = numpy_to_warp(tetrahedron_np, flipped_np.ravel(), device)
     with pytest.raises(ValueError, match="consistently wound mesh: 3 edge"):
-        tw.repair.remove_degree3_vertices(vertices_wp, faces_wp)
+        od.repair.remove_degree3_vertices(vertices_wp, faces_wp)
     # ``max_iter=0`` runs no pass, so it validates nothing and returns the input.
-    assert tw.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=0)[1] is faces_wp
+    assert od.repair.remove_degree3_vertices(vertices_wp, faces_wp, max_iter=0)[1] is faces_wp
 
 
 def _nested_face_splits(
@@ -3450,12 +3450,12 @@ def test_remove_degree3_vertices_runs_a_cascade_to_its_fixpoint(device: str, clo
     assert int(input_degree3_ml.sum()) == len(chains)  # non-vacuity: one per chain
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel().astype(np.int32), device)
-    _, _, short_removed = tw.repair.remove_degree3_vertices(
+    _, _, short_removed = od.repair.remove_degree3_vertices(
         vertices_wp, faces_wp, max_iter=depth - 1, return_count=True
     )
     assert short_removed < n_splits  # non-vacuity: the cascade really needs every pass
 
-    out_vertices_wp, out_faces_wp, removed = tw.repair.remove_degree3_vertices(
+    out_vertices_wp, out_faces_wp, removed = od.repair.remove_degree3_vertices(
         vertices_wp, faces_wp, return_count=True
     )
     assert removed == n_splits
@@ -3466,7 +3466,7 @@ def test_remove_degree3_vertices_runs_a_cascade_to_its_fixpoint(device: str, clo
         mm.findInnerVertsOfDegree(output_ml.topology, 3), out_vertices_wp.size
     )
     assert not output_degree3_ml.any()
-    _, _, again_removed = tw.repair.remove_degree3_vertices(
+    _, _, again_removed = od.repair.remove_degree3_vertices(
         out_vertices_wp, out_faces_wp, return_count=True
     )
     assert again_removed == 0
@@ -3500,7 +3500,7 @@ def test_flatten_degree3_vertices_matches_meshlib(device: str) -> None:
         vertices_wp, faces_wp = numpy_to_warp(
             np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
         )
-        flattened_wp = tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp)
+        flattened_wp = od.repair.flatten_degree3_vertices(vertices_wp, faces_wp)
 
         mesh_ml = trimesh_to_meshlib(mesh_tm)
         mm.hardSmoothTetrahedrons(mesh_ml)
@@ -3540,27 +3540,27 @@ def test_flatten_degree3_vertices_respects_its_region(device: str) -> None:
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
     )
     n_vertices = vertices_wp.size
-    default_np = tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp).numpy()
+    default_np = od.repair.flatten_degree3_vertices(vertices_wp, faces_wp).numpy()
     assert not np.array_equal(default_np, vertices_wp.numpy())  # non-vacuity
 
     none_wp = wp.zeros(n_vertices, dtype=wp.bool, device=device)
     assert np.array_equal(
-        tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp, none_wp).numpy(),
+        od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, none_wp).numpy(),
         vertices_wp.numpy(),
     )
     all_wp = wp.full(n_vertices, True, dtype=wp.bool, device=device)
     assert np.array_equal(
-        tw.repair.flatten_degree3_vertices(vertices_wp, faces_wp, all_wp).numpy(), default_np
+        od.repair.flatten_degree3_vertices(vertices_wp, faces_wp, all_wp).numpy(), default_np
     )
     with pytest.raises(ValueError, match="region must be a length-"):
-        tw.repair.flatten_degree3_vertices(
+        od.repair.flatten_degree3_vertices(
             vertices_wp, faces_wp, wp.zeros(3, dtype=wp.bool, device=device)
         )
 
 
 def _genus(faces_wp: wp.array[wp.int32]) -> int:
     """Genus of a closed connected surface, from its Euler characteristic."""
-    return (2 - tw.measures.euler_characteristic(faces_wp)) // 2
+    return (2 - od.measures.euler_characteristic(faces_wp)) // 2
 
 
 @pytest.fixture
@@ -3611,8 +3611,8 @@ def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     So the *output* has nothing to be compared against, and the invariant carries the claim: cutting
     a surface along a non-separating cycle and sealing the two rims drops the genus by **one**, so
     chi must rise by exactly ``2 * removed``. What the invariant must not do is measure itself.
-    Read only through [`euler_characteristic`][triwarp.measures.euler_characteristic], the assertion
-    is triwarp's cut checked by triwarp's chi, and this group has no other oracle at all -- so chi
+    Read only through [`euler_characteristic`][ordito.measures.euler_characteristic], the assertion
+    is ordito's cut checked by ordito's chi, and this group has no other oracle at all -- so chi
     is read a second time off ``trimesh.Trimesh.euler_number``, and the manifold post-conditions off
     Open3D. Both are independent implementations of the predicates, not of the repair.
 
@@ -3631,7 +3631,7 @@ def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     output faces touch without crossing -- reported by ``findSelfCollidingTrianglesBS`` at
     ``touchIsIntersection=True`` and by pymeshfix's ``select_intersecting_triangles``, and reported
     as **0** by the same MeshLib call at ``touchIsIntersection=False`` and by
-    [`face_self_intersecting_mask`][triwarp.validation.face_self_intersecting_mask]. So the two
+    [`face_self_intersecting_mask`][ordito.validation.face_self_intersecting_mask]. So the two
     manifold clauses are asserted directly, where the two libraries agree exactly, and the third is
     left to the group that owns it.
     """
@@ -3640,25 +3640,25 @@ def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     genus_before = _genus(faces_wp)
     assert genus_before >= 1  # non-vacuity: there has to be a tunnel to eliminate
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == (
-        tw.measures.euler_characteristic(faces_wp)
+        od.measures.euler_characteristic(faces_wp)
     )
 
-    cut_vertices_wp, cut_faces_wp, removed = tw.repair.remove_tunnels(vertices_wp, faces_wp, 1e9)
+    cut_vertices_wp, cut_faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, 1e9)
     assert removed >= 1
-    assert tw.measures.euler_characteristic(cut_faces_wp) == (
-        tw.measures.euler_characteristic(faces_wp) + 2 * removed
+    assert od.measures.euler_characteristic(cut_faces_wp) == (
+        od.measures.euler_characteristic(faces_wp) + 2 * removed
     )
     assert _genus(cut_faces_wp) == genus_before - removed
-    assert tw.validation.is_edge_manifold(cut_faces_wp)
-    assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 0
-    labels_np = tw.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
+    assert od.validation.is_edge_manifold(cut_faces_wp)
+    assert len(od.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 0
+    labels_np = od.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
     assert np.unique(labels_np).size == 1
     # Every output position is an input position: the rims are filled over their own vertices.
     assert cut_vertices_wp.size >= vertices_wp.size
 
     # The genus drop, and the two properties that stop a shattering cut, read by other libraries.
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
-    assert cut_tm.euler_number == tw.measures.euler_characteristic(faces_wp) + 2 * removed
+    assert cut_tm.euler_number == od.measures.euler_characteristic(faces_wp) + 2 * removed
     mesh_o3d = trimesh_to_open3d(cut_tm)
     assert mesh_o3d.is_edge_manifold(allow_boundary_edges=False)
     assert mesh_o3d.is_vertex_manifold()
@@ -3677,14 +3677,14 @@ def test_remove_tunnels_iterates_to_a_sphere(genus_two: tuple[tm.Trimesh, wp.Mes
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     rounds = 0
     while True:
-        vertices_wp, faces_wp, removed = tw.repair.remove_tunnels(vertices_wp, faces_wp, 1e9)
+        vertices_wp, faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, 1e9)
         if removed == 0:
             break
         rounds += 1
         assert rounds <= 4  # it must terminate, and two rounds is what this fixture takes
     assert rounds == 2
     assert _genus(faces_wp) == 0
-    assert tw.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
 
 
 def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
@@ -3698,7 +3698,7 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
     a genus-0 input has no basis at all, so it returns before cutting anything.
     """
     _, torus_wp = torus
-    kept_vertices_wp, kept_faces_wp, removed = tw.repair.remove_tunnels(
+    kept_vertices_wp, kept_faces_wp, removed = od.repair.remove_tunnels(
         torus_wp.points, torus_wp.indices, 0.5
     )
     assert removed == 0
@@ -3707,14 +3707,14 @@ def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(
 
     _, sphere_wp = icosphere
     assert _genus(sphere_wp.indices) == 0
-    _, sphere_faces_wp, sphere_removed = tw.repair.remove_tunnels(
+    _, sphere_faces_wp, sphere_removed = od.repair.remove_tunnels(
         sphere_wp.points, sphere_wp.indices, 1e9
     )
     assert sphere_removed == 0
     assert np.array_equal(sphere_faces_wp.numpy(), sphere_wp.indices.numpy())
 
     with pytest.raises(ValueError, match="max_length must be non-negative"):
-        tw.repair.remove_tunnels(torus_wp.points, torus_wp.indices, -1.0)
+        od.repair.remove_tunnels(torus_wp.points, torus_wp.indices, -1.0)
 
 
 def test_remove_t_vertices_flips_the_sliver(
@@ -3726,11 +3726,11 @@ def test_remove_t_vertices_flips_the_sliver(
     before = _worst_aspect(vertices_wp, faces_wp)
     assert before > 40.0  # the fixture really does carry a T-vertex sliver
 
-    flipped_wp = tw.repair.flip_t_vertices(vertices_wp, faces_wp, threshold=40.0)
+    flipped_wp = od.repair.flip_t_vertices(vertices_wp, faces_wp, threshold=40.0)
     assert _worst_aspect(vertices_wp, flipped_wp) < before
     assert flipped_wp.size == faces_wp.size
-    assert tw.validation.is_winding_consistent(flipped_wp)
-    assert tw.validation.is_edge_manifold(flipped_wp)
+    assert od.validation.is_winding_consistent(flipped_wp)
+    assert od.validation.is_edge_manifold(flipped_wp)
 
 
 @pytest.mark.parametrize("mesh_kind", ["t_vertex_patch", "clean_icosphere"])
@@ -3745,7 +3745,7 @@ def test_remove_t_vertices_matches_pymeshlab(
     buffer, so the transform is reading ``face_matrix()`` back and comparing the two as sorted face
     sets (neither library defines a face or corner order). ``method="Edge Flip"`` selects the
     flip-only mode -- its other modes split edges and would change the vertex count -- and
-    ``repeat=True`` is MeshLab's own iterate-to-convergence, which is what triwarp's ``max_iter``
+    ``repeat=True`` is MeshLab's own iterate-to-convergence, which is what ordito's ``max_iter``
     passes are. Both are what the benchmark passes.
 
     Two-sided by construction, so neither answer can be reached by a constant: on the T-vertex patch
@@ -3767,7 +3767,7 @@ def test_remove_t_vertices_matches_pymeshlab(
     assert meshset_pml.current_mesh().vertex_number() == vertices_np.shape[0]
     faces_pml = np.asarray(meshset_pml.current_mesh().face_matrix())
 
-    flipped_np = tw.repair.flip_t_vertices(vertices_wp, faces_wp, threshold=40.0).numpy()
+    flipped_np = od.repair.flip_t_vertices(vertices_wp, faces_wp, threshold=40.0).numpy()
 
     def face_set(faces: np.ndarray) -> np.ndarray:
         sorted_np = np.sort(np.asarray(faces).reshape(-1, 3), axis=1)
@@ -3785,14 +3785,14 @@ def test_remove_t_vertices_leaves_a_clean_mesh_alone(
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(sphere_tm.vertices), np.asarray(sphere_tm.faces), device
     )
-    flipped_wp = tw.repair.flip_t_vertices(vertices_wp, faces_wp)
+    flipped_wp = od.repair.flip_t_vertices(vertices_wp, faces_wp)
     assert np.array_equal(flipped_wp.numpy(), faces_wp.numpy())
 
 
 def test_remove_t_vertices_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="aspect_threshold must be positive"):
-        tw.repair.flip_t_vertices(mesh_wp.points, mesh_wp.indices, threshold=0.0)
+        od.repair.flip_t_vertices(mesh_wp.points, mesh_wp.indices, threshold=0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -3802,15 +3802,15 @@ def test_remove_t_vertices_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
 # (name, callable) pairs; each callable takes (vertices, faces) and returns the tuple of arrays
 # the wrapper produces, normalized to a tuple even where the wrapper returns a single array.
 _EMPTY_MESH_REPAIR_CASES = [
-    ("make_solid", lambda v, f: tw.repair.make_solid(v, f)),
-    ("reverse_winding", lambda v, f: (tw.repair.reverse_winding(f),)),
-    ("make_winding_consistent", lambda v, f: (tw.repair.make_winding_consistent(f),)),
-    ("make_volume", lambda v, f: (tw.repair.make_volume(v, f),)),
-    ("make_normals_outward", lambda v, f: (tw.repair.make_normals_outward(v, f),)),
-    ("split_non_manifold_vertices", lambda v, f: tw.repair.split_non_manifold_vertices(v, f)),
-    ("collapse_small_triangles", lambda v, f: tw.repair.collapse_small_triangles(v, f)),
-    ("remove_folded_faces", lambda v, f: tw.repair.remove_folded_faces(v, f)),
-    ("flip_t_vertices", lambda v, f: (tw.repair.flip_t_vertices(v, f),)),
+    ("make_solid", lambda v, f: od.repair.make_solid(v, f)),
+    ("reverse_winding", lambda v, f: (od.repair.reverse_winding(f),)),
+    ("make_winding_consistent", lambda v, f: (od.repair.make_winding_consistent(f),)),
+    ("make_volume", lambda v, f: (od.repair.make_volume(v, f),)),
+    ("make_normals_outward", lambda v, f: (od.repair.make_normals_outward(v, f),)),
+    ("split_non_manifold_vertices", lambda v, f: od.repair.split_non_manifold_vertices(v, f)),
+    ("collapse_small_triangles", lambda v, f: od.repair.collapse_small_triangles(v, f)),
+    ("remove_folded_faces", lambda v, f: od.repair.remove_folded_faces(v, f)),
+    ("flip_t_vertices", lambda v, f: (od.repair.flip_t_vertices(v, f),)),
 ]
 
 

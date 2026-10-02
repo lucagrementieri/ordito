@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.holes``.
+Benchmarks for ``ordito.holes``.
 
 Axis: **loops_dp** -- ``rim_short`` (two loops of 512) against ``holes_many`` (512 loops of 3).
 The module has the highest non-``N`` sensitivity in the package and this pair separates its two
@@ -54,7 +54,7 @@ holes and gives up on large ones), so it is timing context rather than an equiva
 assertion only checks that faces were added or preserved.
 
 **open3d**'s ``fill_holes`` lives on the newer tensor API (``open3d.t.geometry.TriangleMesh``) and
-wraps a hole-filling pass over the boundary loops, which is the closest analogue to triwarp's
+wraps a hole-filling pass over the boundary loops, which is the closest analogue to ordito's
 minimum-weight triangulation. It returns a new tensor mesh, but ``from_legacy`` is a full
 conversion, so that conversion is hoisted out of the timed callable and only ``fill_holes`` is
 measured.
@@ -66,7 +66,7 @@ default of 30**, so on the long-rim axis point the filter closes *nothing* and r
 with ``{'closed_holes': 0}``. Lifting it is what makes the axis points comparable at all; the dict
 it returns is what makes that checkable, and the assertion below reads it.
 
-Note what the axis then says: the reference's two axis points are close together where triwarp's
+Note what the axis then says: the reference's two axis points are close together where ordito's
 differ by more than an order of magnitude. That is the ``B^3`` term -- MeshLab's ear clipping is
 quadratic at worst, so it does not pay it, and its rows are the honest price of *not* computing a
 minimum-weight triangulation.
@@ -82,7 +82,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, face_bitset_ml, mesh_ml_from_numpy
 
 if TYPE_CHECKING:
@@ -112,17 +112,17 @@ def _tensor_mesh_o3d(bench_case: BenchCase) -> o3d.t.geometry.TriangleMesh:
 
 @pytest.mark.benchmark(group="fill_fan")
 @pytest.mark.benchaxis("loops")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_fill_fan(bench_case: BenchCase) -> None:
     """The cheapest filler -- one fan per loop, no DP -- so it can take the long-rim axis."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    result = bench_case.run(lambda: tw.holes.fill_fan(vertices, faces))
+    result = bench_case.run(lambda: od.holes.fill_fan(vertices, faces))
     assert result.size >= faces.size
 
 
 @pytest.mark.benchmark(group="fill_cone")
 @pytest.mark.benchaxis("loops")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_fill_cone(bench_case: BenchCase) -> None:
     """
     One centroid vertex and one triangle per boundary edge -- ``fill_fan`` plus an apex.
@@ -147,7 +147,7 @@ def test_fill_cone(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     new_vertices, new_faces = bench_case.run(
-        lambda: tw.holes.fill_cone(vertices, faces), rounds=_ROUNDS
+        lambda: od.holes.fill_cone(vertices, faces), rounds=_ROUNDS
     )
     assert new_faces.size >= faces.size
     assert new_vertices.size >= vertices.size
@@ -163,7 +163,7 @@ def test_fill_cone(bench_case: BenchCase) -> None:
 )
 @pytest.mark.benchmark(group="fill_min_weight")
 @pytest.mark.benchaxis("loops_dp")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
 def test_fill_min_weight(bench_case: BenchCase) -> None:
     """The ``B^3`` DP: few long loops against many short ones, at a comparable total boundary."""
     if bench_case.kind == "meshlib":
@@ -196,9 +196,9 @@ def test_fill_min_weight(bench_case: BenchCase) -> None:
         )
         assert statistics_pml["closed_holes"] > 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: tw.holes.fill_min_weight(vertices, faces), rounds=_ROUNDS)
+        result = bench_case.run(lambda: od.holes.fill_min_weight(vertices, faces), rounds=_ROUNDS)
         assert result.size >= faces.size
     elif bench_case.kind == "trimesh":  # mutates in place: rebuild inside the timed callable
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -219,7 +219,7 @@ def test_fill_min_weight(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="fill_min_weight_chords")
 @pytest.mark.benchaxis("loops_dp")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("resolve_multiple_edges", [False, True], ids=["plain", "chords"])
 def test_fill_min_weight_chords(bench_case: BenchCase, resolve_multiple_edges: bool) -> None:
     """
@@ -232,7 +232,7 @@ def test_fill_min_weight_chords(bench_case: BenchCase, resolve_multiple_edges: b
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(
-        lambda: tw.holes.fill_min_weight(
+        lambda: od.holes.fill_min_weight(
             vertices, faces, resolve_multiple_edges=resolve_multiple_edges
         ),
         rounds=_ROUNDS,
@@ -242,7 +242,7 @@ def test_fill_min_weight_chords(bench_case: BenchCase, resolve_multiple_edges: b
 
 @pytest.mark.benchmark(group="fill_smooth")
 @pytest.mark.benchaxis("loops_dp")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("triangulate_only", [True, False], ids=["dp_only", "refined"])
 def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
     """
@@ -261,11 +261,11 @@ def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
         if triangulate_only:
             pytest.skip("fillHoleNicely has no triangulate-only mode; the refined row is the pair")
 
-        # ``fillHoleNicely`` is the same three stages triwarp's ``fill_smooth`` runs -- DP fill,
+        # ``fillHoleNicely`` is the same three stages ordito's ``fill_smooth`` runs -- DP fill,
         # subdivide the patch, smooth it -- and it is the oracle in
         # tests/test_holes.py::test_fill_smooth_statistics_vs_meshlib, where the comparison is the
         # enclosed volume because the two patches share no vertices. ``maxEdgeLen`` is left at its
-        # own default rather than fed from triwarp's derived target, so the two rows refine to
+        # own default rather than fed from ordito's derived target, so the two rows refine to
         # different densities: read this as the cost of the *stage*, not as a like-for-like
         # subdivision. Rebuilt per round because it mutates.
         def run_ml() -> int:
@@ -279,7 +279,7 @@ def test_fill_smooth(bench_case: BenchCase, triangulate_only: bool) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(
-        lambda: tw.holes.fill_smooth(vertices, faces, triangulate_only=triangulate_only),
+        lambda: od.holes.fill_smooth(vertices, faces, triangulate_only=triangulate_only),
         rounds=_ROUNDS,
     )
     assert result[1].size >= faces.size
@@ -306,7 +306,7 @@ def _cap_region(bench_case: BenchCase) -> tuple[wp.array[wp.bool], np.ndarray]:
 
 
 @pytest.mark.benchmark(group="refill_region")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("triangulate_only", [True, False], ids=["dp_only", "refined"])
 def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
     """
@@ -324,7 +324,7 @@ def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
 
     Both sides are dominated by the rim DP and the refinement here, which is why this row is close
     to meshlib where ``delete_region_keep_boundary``'s is an order of magnitude behind -- that group
-    isolates the extraction, and the extraction is the part triwarp does slowly.
+    isolates the extraction, and the extraction is the part ordito does slowly.
 
     **The launch count grows with the longest rim, not per rim and not per component.** The DP's
     count is ``2 * (max_rim - 2)`` -- one launch per triangulation span across *all* loops
@@ -355,7 +355,7 @@ def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
     mask_wp, _mask_np = _cap_region(bench_case)
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _out_vertices, out_faces = bench_case.run(
-        lambda: tw.holes.refill_region(vertices, faces, mask_wp, triangulate_only=triangulate_only),
+        lambda: od.holes.refill_region(vertices, faces, mask_wp, triangulate_only=triangulate_only),
         rounds=_ROUNDS,
     )
     assert int(out_faces.shape[0]) > 0
@@ -363,7 +363,7 @@ def test_refill_region(bench_case: BenchCase, triangulate_only: bool) -> None:
 
 @pytest.mark.benchmark(group="fill_smooth_target_edge")
 @pytest.mark.benchaxis("loops_dense")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("derive_target", [True, False], ids=["derived", "explicit"])
 def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> None:
     """
@@ -384,7 +384,7 @@ def test_fill_smooth_target_edge(bench_case: BenchCase, derive_target: bool) -> 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     max_edge = None if derive_target else bench_case.mean_edge
     result = bench_case.run(
-        lambda: tw.holes.fill_smooth(vertices, faces, max_edge=max_edge), rounds=_ROUNDS
+        lambda: od.holes.fill_smooth(vertices, faces, max_edge=max_edge), rounds=_ROUNDS
     )
     assert result[1].size >= faces.size
 
@@ -403,7 +403,7 @@ def _face_slice(bench_case: BenchCase, lo: int, hi: int) -> wp.array[wp.int32]:
 
 def _submesh(bench_case: BenchCase, lo: int, hi: int) -> _Submesh:
     """Faces ``[lo, hi)`` of the case mesh as a compact standalone ``(vertices, faces)`` pair."""
-    return tw.selection.submesh_from_face_indices(
+    return od.selection.submesh_from_face_indices(
         bench_case.vertices_wp, bench_case.faces_wp, _face_slice(bench_case, lo, hi)
     )
 
@@ -427,11 +427,11 @@ def _stitch_halves(bench_case: BenchCase) -> tuple[_Submesh, _Submesh]:
 
 @pytest.mark.benchmark(group="stitch")
 @pytest.mark.benchmeshes("rim_short")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_stitch(bench_case: BenchCase) -> None:
     """Greedy band between two rims: O(La + Lb), the cheap counterpart of the DP below."""
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
-    _vertices, faces = bench_case.run(lambda: tw.holes.stitch(va, fa, vb, fb))
+    _vertices, faces = bench_case.run(lambda: od.holes.stitch(va, fa, vb, fb))
     assert faces.size > 0
 
 
@@ -461,7 +461,7 @@ def _stitch_pair_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
 
 @pytest.mark.benchmark(group="stitch_min_weight")
 @pytest.mark.benchmeshes("rim_short")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_stitch_min_weight(bench_case: BenchCase) -> None:
     """
     Grid DP over the two rims: an La x Lb table whose cells are La + Lb sequential steps deep.
@@ -496,13 +496,13 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
     (va, fa), (vb, fb) = _stitch_halves(bench_case)
     up = (0.0, 0.0, 1.0)
     _vertices, faces = bench_case.run(
-        lambda: tw.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
+        lambda: od.holes.stitch_min_weight(va, fa, vb, fb, up_dir=up), rounds=_ROUNDS
     )
     assert faces.size > 0
 
 
 @pytest.mark.benchmark(group="fillable_loop_mask")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_fillable_loop_mask(bench_case: BenchCase) -> None:
     """
     Which rims a min-weight fill can close: one face pass, plus one readback of the rims.
@@ -545,15 +545,15 @@ def test_fillable_loop_mask(bench_case: BenchCase) -> None:
         assert bits_ml.size() >= 0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.boundary.boundary_loops(vertices, faces)
+    loops = od.boundary.boundary_loops(vertices, faces)
     if not loops:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to judge")
-    fillable = bench_case.run(lambda: tw.holes.fillable_loop_mask(vertices, faces, loops))
+    fillable = bench_case.run(lambda: od.holes.fillable_loop_mask(vertices, faces, loops))
     assert int(fillable.shape[0]) == len(loops)
 
 
 @pytest.mark.benchmark(group="extend_hole")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_extend_hole(bench_case: BenchCase) -> None:
     """
     Project every rim to a plane and bridge to it: two launches over the rim, plus two copies.
@@ -590,20 +590,20 @@ def test_extend_hole(bench_case: BenchCase) -> None:
         assert bench_case.run(extend_ml, rounds=3) > 0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.boundary.boundary_loops(vertices, faces)
+    loops = od.boundary.boundary_loops(vertices, faces)
     if not loops:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to extend")
     origin = wp.vec3(0.0, 0.0, height)
     normal = wp.vec3(0.0, 0.0, 1.0)
     extended_vertices, extended_faces = bench_case.run(
-        lambda: tw.holes.extend_hole(vertices, faces, normal, origin, loops), rounds=3
+        lambda: od.holes.extend_hole(vertices, faces, normal, origin, loops), rounds=3
     )
     assert int(extended_faces.shape[0]) > faces.size
     assert int(extended_vertices.shape[0]) > bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="build_bottom")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_build_bottom(bench_case: BenchCase) -> None:
     """
     The same band as ``extend_hole``, with the plane fitted to each rim instead of given.
@@ -614,7 +614,7 @@ def test_build_bottom(bench_case: BenchCase) -> None:
     fit had become the cost rather than the band.
 
     meshlib's ``buildBottom`` takes one hole at a time and mutates, so its mesh is rebuilt per round
-    and every rim is bottomed in a loop -- which is what its row measures against triwarp's single
+    and every rim is bottomed in a loop -- which is what its row measures against ordito's single
     batched launch set. The two agree on the counts and on where each base plane lands
     (``tests/test_holes.py``).
 
@@ -635,19 +635,19 @@ def test_build_bottom(bench_case: BenchCase) -> None:
         assert bench_case.run(bottom_ml, rounds=3) > 0
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.boundary.boundary_loops(vertices, faces)
+    loops = od.boundary.boundary_loops(vertices, faces)
     if not loops:
         pytest.skip(f"{bench_case.mesh_name} is closed: there is no rim to bottom")
     direction = wp.vec3(0.0, 0.0, 1.0)
     bottomed_vertices, bottomed_faces = bench_case.run(
-        lambda: tw.holes.build_bottom(vertices, faces, direction, 0.0, loops), rounds=3
+        lambda: od.holes.build_bottom(vertices, faces, direction, 0.0, loops), rounds=3
     )
     assert int(bottomed_faces.shape[0]) > faces.size
     assert int(bottomed_vertices.shape[0]) > bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="bridge_edges")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_bridge_edges(bench_case: BenchCase) -> None:
     """
     Two triangles, so this times the *validation* and the buffer copy, not the patch.
@@ -666,11 +666,11 @@ def test_bridge_edges(bench_case: BenchCase) -> None:
     meshlib's ``makeBridge`` works on a halfedge structure that already knows which edges are on the
     boundary, so its row is the patch alone and is expected to win by a wide margin at every size;
     the comparable statement is that both produce the same two triangles
-    (``tests/test_holes.py``), and that triwarp's cost is a *choice* the ``validate`` switch turns
+    (``tests/test_holes.py``), and that ordito's cost is a *choice* the ``validate`` switch turns
     off.
     """
     # The rim is derived on the host so both branches see the same two edges; the meshlib branch
-    # has no device to build a triwarp buffer on.
+    # has no device to build a ordito buffer on.
     corners = bench_case.faces_np.reshape(-1, 3)
     directed = np.concatenate([corners[:, [0, 1]], corners[:, [1, 2]], corners[:, [2, 0]]], axis=0)
     undirected = np.sort(directed, axis=1)
@@ -693,13 +693,13 @@ def test_bridge_edges(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     bridged_faces = bench_case.run(
-        lambda: tw.holes.bridge_edges(vertices, faces, edge_a, edge_b), rounds=3
+        lambda: od.holes.bridge_edges(vertices, faces, edge_a, edge_b), rounds=3
     )
     assert int(bridged_faces.shape[0]) > faces.size
 
 
 @pytest.mark.benchmark(group="bridge_edges_smooth")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
     """
     The curved strip: the same validation as ``bridge_edges``, plus a fixed-size spline.
@@ -745,7 +745,7 @@ def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     strip_vertices, strip_faces = bench_case.run(
-        lambda: tw.holes.bridge_edges_smooth(vertices, faces, edge_a, edge_b, sampling_step),
+        lambda: od.holes.bridge_edges_smooth(vertices, faces, edge_a, edge_b, sampling_step),
         rounds=3,
     )
     assert int(strip_faces.shape[0]) > faces.size
@@ -754,13 +754,13 @@ def test_bridge_edges_smooth(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="join_closest_components")
 @pytest.mark.benchaxis("open_components")
-@pytest.mark.benchlibs("triwarp", "pymeshfix")
+@pytest.mark.benchlibs("ordito", "pymeshfix")
 def test_join_closest_components(bench_case: BenchCase) -> None:
     """
     Greedy nearest-link agglomeration over *open* shells: the driver, not the bridge.
 
     **The axis is the join count, and the face count is very nearly free.** At a fixed face count
-    triwarp is linear in the ``k - 1`` joins; holding the components fixed and cutting the mesh
+    ordito is linear in the ``k - 1`` joins; holding the components fixed and cutting the mesh
     instead barely moves it, a 4x face reduction costing a percent. That is the shape the function's
     own Notes predict -- each round rebuilds the component labelling and the rim table from the
     updated face buffer, and each is a fixed chain of wrapper calls whose launch overhead dominates
@@ -775,9 +775,9 @@ def test_join_closest_components(bench_case: BenchCase) -> None:
     boundary has nothing to bridge to and is left alone by design -- so the ``components`` axis
     would time a no-op, which is why ``open_components`` exists and drops one face per shell.
 
-    The ratio *narrows* with the join count because triwarp's per-round chain is the launch-bound
+    The ratio *narrows* with the join count because ordito's per-round chain is the launch-bound
     part while MeshFix's is sequential C++ over a halfedge structure it already holds -- the gap is
-    widest where triwarp's fixed overhead is amortized least.
+    widest where ordito's fixed overhead is amortized least.
 
     pymeshfix's row is timed rather than declared because the operation clears its load by a wide
     margin, which is the ~30 % rule in ``conftest``'s LIBRARIES block -- from half the round at the
@@ -806,5 +806,5 @@ def test_join_closest_components(bench_case: BenchCase) -> None:
         assert bench_case.run(join_pmf, rounds=3) == n_faces + expected
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    joined = bench_case.run(lambda: tw.holes.join_closest_components(vertices, faces), rounds=3)
+    joined = bench_case.run(lambda: od.holes.join_closest_components(vertices, faces), rounds=3)
     assert joined.size // 3 == n_faces + expected

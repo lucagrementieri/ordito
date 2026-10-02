@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.remesh``.
+Benchmarks for ``ordito.remesh``.
 
 Three axes, because the four entry points fail to scale for three different reasons:
 
@@ -36,7 +36,7 @@ collapse, edge-swap, Laplacian relax, reproject), each individually switchable, 
 stage-for-stage. Two differences are left in place — it preserves crease edges above
 ``featuredeg=30`` and its ``checksurfdist`` default rejects any local operation deviating more than
 1 % of the bbox diagonal — because turning them off would measure a filter no MeshLab user runs.
-Triwarp's counterpart to the second (``max_deviation``) is deliberately **not** passed: at
+Ordito's counterpart to the second (``max_deviation``) is deliberately **not** passed: at
 MeshLab's own 1 % default it is byte-identically a no-op on both fixtures, so passing it would buy
 a per-iteration closest-point pass and no change in output.
 
@@ -61,9 +61,9 @@ whose pass count depends on how contested the rings are — exactly what triangl
 three serial references are here (``igl.decimate``, open3d, pymeshlab), the best-referenced port in
 the package. Note MeshLab's filter defaults to ``autoclean=True`` and deletes unreferenced vertices,
 so its MeshSet is rebuilt per round; and the *quality* comparison lives in ``tests/test_remesh.py``,
-where triwarp measures a **lower** Hausdorff error than all three at the same face count.
+where ordito measures a **lower** Hausdorff error than all three at the same face count.
 
-**Triwarp was long the slower one on that group, and the reason is the pass count rather than the
+**Ordito was long the slower one on that group, and the reason is the pass count rather than the
 per-pass work**: one hashed-key independent set commits a small fraction of the candidates, so
 reaching a tenth of the faces takes tens of passes, each paying a full edge/adjacency/quadric
 rebuild plus two radix sorts that a serial queue pays none of. Committing **several** independent
@@ -97,7 +97,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, face_bitset_ml, mesh_ml_from_numpy, skip_larger_than
 
 # MeshLib expresses several gates as *absolute* lengths whose defaults assume a unit-scale mesh
@@ -135,16 +135,16 @@ _ROUNDS = 3
 
 
 @pytest.mark.benchmark(group="subdivide")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pytorch3d")
 def test_subdivide(bench_case: BenchCase) -> None:
     """
     Exactly 4x the faces in one pass: the module's clean throughput baseline.
 
-    Both references differ from triwarp only in the output *ordering*, which is what makes the
+    Both references differ from ordito only in the output *ordering*, which is what makes the
     parity comparison a centroid match rather than an array compare (``tests/test_remesh.py``).
 
     !!! warning "``igl.upsample`` is memory-unsafe on the scan meshes and is deliberately absent"
-        It is midpoint 1:4 subdivision with triwarp's semantics exactly, so it *should* be the
+        It is midpoint 1:4 subdivision with ordito's semantics exactly, so it *should* be the
         widest reference agreement in the module -- but on a scan mesh it corrupts the process heap
         and takes the whole pytest session down with a SIGSEGV, which loses every other row in this
         module because ``--benchmark-json`` is only written at session end.
@@ -152,7 +152,7 @@ def test_subdivide(bench_case: BenchCase) -> None:
         One selection per process: the igl rows crash some of the time with no other library in the
         selection at all and *every* time with the other libraries present, and per mesh almost
         always on the two small meshes and never on the largest. So it is not an interaction with
-        triwarp, and it is not a size limit -- the *smallest* mesh fails most and the largest never
+        ordito, and it is not a size limit -- the *smallest* mesh fails most and the largest never
         does. Compacting the unreferenced vertices away makes it worse, so there is nothing to pass
         it that makes it safe. This is the third memory-unsafe binding in this wheel, alongside
         ``igl.loop`` and ``igl.in_element``; see the libigl hazards in ``.claude/CLAUDE.md`` section
@@ -162,7 +162,7 @@ def test_subdivide(bench_case: BenchCase) -> None:
     **pytorch3d** is the third reference and the only GPU one. ``SubdivideMeshes()`` is constructed
     *inside* the timed callable on purpose: passing a mesh to its constructor caches the subdivision
     topology and every later call reuses it, which would time a gather rather than a subdivision --
-    and triwarp's row rebuilds everything each call. It agrees with triwarp on sorted coordinates
+    and ordito's row rebuilds everything each call. It agrees with ordito on sorted coordinates
     exactly, so like the other two it differs only in output ordering. The row carries its
     ``Meshes`` build, which is cheap next to a 4x face expansion.
     """
@@ -173,9 +173,9 @@ def test_subdivide(bench_case: BenchCase) -> None:
         subdivided_p3d = bench_case.run(lambda: p3d_ops.SubdivideMeshes()(mesh_p3d))
         assert subdivided_p3d.faces_packed().shape[0] == 4 * n_faces
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        _new_vertices, new_faces = bench_case.run(lambda: tw.remesh.subdivide(vertices, faces))
+        _new_vertices, new_faces = bench_case.run(lambda: od.remesh.subdivide(vertices, faces))
         assert int(new_faces.shape[0]) == 4 * faces.size
     elif bench_case.kind == "trimesh":
         vertices, faces = bench_case.vertices_np, bench_case.faces_np
@@ -190,7 +190,7 @@ def test_subdivide(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="subdivide_loop")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d")
+@pytest.mark.benchlibs("ordito", "igl", "open3d")
 def test_subdivide_loop(bench_case: BenchCase) -> None:
     """
     Loop subdivision: the same 1:4 split as ``subdivide``, with smooth stencils not midpoints.
@@ -201,10 +201,10 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
     the midpoint split never visits. The two groups sit on different axes for the reason below, so
     compare per-triangle throughput rather than raw medians.
 
-    ``igl.loop`` and Open3D's ``subdivide_loop`` are the same variant as triwarp -- the two agree
+    ``igl.loop`` and Open3D's ``subdivide_loop`` are the same variant as ordito -- the two agree
     with each other to 2e-16 on the relocated originals, all three using **Warren's** ``beta``
     (``3/(8k)``, ``3/16`` at ``k = 3``). ``igl.loop``'s ``number_of_subdivs`` stays at 1, which is
-    one triwarp call. Both references take ``rounds=3``.
+    one ordito call. Both references take ``rounds=3``.
 
     **This group is on the ``scale`` axis, not the scan sweep, because ``igl.loop`` cannot survive
     the scan meshes.** With no Warp in the process it aborts with ``free(): invalid pointer`` on a
@@ -217,13 +217,13 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
     ``trimesh.remesh.subdivide_loop`` gets no row either, for two independent reasons: it uses
     Loop's *original* trigonometric ``beta``, which agrees with Warren's exactly at valence 6 and
     differs elsewhere, so it could not be a parity oracle; and it divides by the neighbour count, so
-    its own ``assert np.isfinite`` fails on any mesh with an unreferenced vertex. triwarp keeps an
+    its own ``assert np.isfinite`` fails on any mesh with an unreferenced vertex. ordito keeps an
     unreferenced vertex where it is and has no stencil that can divide by zero, which is why its row
     is the one that asserts finiteness.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        new_vertices, new_faces = bench_case.run(lambda: tw.remesh.subdivide_loop(vertices, faces))
+        new_vertices, new_faces = bench_case.run(lambda: od.remesh.subdivide_loop(vertices, faces))
         assert new_faces.size == 4 * faces.size
         assert np.isfinite(new_vertices.numpy()).all()
     elif bench_case.kind == "igl":
@@ -244,7 +244,7 @@ def test_subdivide_loop(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="subdivide_to_size")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("split_fraction", _SPLIT_FRACTIONS)
 def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None:
     """
@@ -252,7 +252,7 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
 
     meshlib's ``subdivideMesh`` takes the same absolute ``maxEdgeLen`` and makes the same guarantee
     -- every edge under the cap -- but it also *flips* as it splits, so it is doing more than the
-    other three rows and lands on a slightly different mesh (3 320 faces against triwarp's 3 200 on
+    other three rows and lands on a slightly different mesh (3 320 faces against ordito's 3 200 on
     a test-size sphere; ``tests/test_remesh.py``). ``maxEdgeSplits`` is raised from its default of
     1 000, which would stop the reference long before the cap on any registry mesh, and
     ``maxDeviationAfterFlip`` from its default of 1.0 -- an *absolute* length, so leaving it would
@@ -286,10 +286,10 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
             rounds=_ROUNDS,
         )
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         _new_vertices, new_faces = bench_case.run(
-            lambda: tw.remesh.subdivide_to_size(vertices, faces, max_edge), rounds=_ROUNDS
+            lambda: od.remesh.subdivide_to_size(vertices, faces, max_edge), rounds=_ROUNDS
         )
         assert new_faces.size >= faces.size
     else:
@@ -304,7 +304,7 @@ def test_subdivide_to_size(bench_case: BenchCase, split_fraction: float) -> None
 
 @pytest.mark.benchmark(group="split_edges")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("split_fraction", [0.25, 1.0], ids=["quarter", "all"])
 def test_split_edges(bench_case: BenchCase, split_fraction: float) -> None:
     """
@@ -323,7 +323,7 @@ def test_split_edges(bench_case: BenchCase, split_fraction: float) -> None:
     edges to split is the caller's job and varies per use.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    unique_edges, inverse = tw.edges.edges_unique(faces)
+    unique_edges, inverse = od.edges.edges_unique(faces)
     n_edges = int(unique_edges.shape[0])
     if split_fraction >= 1.0:
         mask = wp.full(n_edges, True, dtype=wp.bool, device=bench_case.device)
@@ -335,7 +335,7 @@ def test_split_edges(bench_case: BenchCase, split_fraction: float) -> None:
             device=bench_case.device,
         )
     new_vertices, new_faces = bench_case.run(
-        lambda: tw.remesh.split_edges(
+        lambda: od.remesh.split_edges(
             vertices, faces, mask, unique_edges=unique_edges, inverse=inverse
         ),
         rounds=_ROUNDS,
@@ -364,7 +364,7 @@ def _region_half(bench_case: BenchCase) -> wp.array[wp.bool]:
 
 @pytest.mark.benchmark(group="subdivide_region_to_size")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("split_budget", _REGION_SPLIT_BUDGETS)
 def test_subdivide_region_to_size(bench_case: BenchCase, split_budget: float | None) -> None:
     """
@@ -385,7 +385,7 @@ def test_subdivide_region_to_size(bench_case: BenchCase, split_budget: float | N
     *whole* mesh with no region restriction and no split cap, which is why the sibling
     ``subdivide_to_size`` group carries them and this one does not.
 
-    It is doing slightly more than triwarp for the same reason its sibling row is: ``subdivideMesh``
+    It is doing slightly more than ordito for the same reason its sibling row is: ``subdivideMesh``
     flips as it splits, so it lands on a nearby rather than identical mesh -- slightly more faces
     and slightly less area, because a flip moves the surface where a split does not
     (``tests/test_remesh.py``). Two traps in the settings
@@ -416,7 +416,7 @@ def test_subdivide_region_to_size(bench_case: BenchCase, split_budget: float | N
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     region = _region_half(bench_case)
     _new_vertices, new_faces, new_region = bench_case.run(
-        lambda: tw.remesh.subdivide_region_to_size(
+        lambda: od.remesh.subdivide_region_to_size(
             vertices, faces, region, max_edge, max_splits=max_splits
         ),
         rounds=_ROUNDS,
@@ -427,7 +427,7 @@ def test_subdivide_region_to_size(bench_case: BenchCase, split_budget: float | N
 
 @pytest.mark.benchmark(group="refine_region_to_density")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_refine_region_to_density(bench_case: BenchCase) -> None:
     """
     Liepa's density criterion instead of a target edge length, on the axis it exists for.
@@ -453,7 +453,7 @@ def test_refine_region_to_density(bench_case: BenchCase) -> None:
     region = _region_half(bench_case)
 
     _new_vertices, new_faces, new_region = bench_case.run(
-        lambda: tw.remesh.refine_region_to_density(vertices, faces, region), rounds=_ROUNDS
+        lambda: od.remesh.refine_region_to_density(vertices, faces, region), rounds=_ROUNDS
     )
     assert new_faces.size >= faces.size
     assert new_region.size == new_faces.size // 3
@@ -461,17 +461,17 @@ def test_refine_region_to_density(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="flip_to_delaunay")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_flip_to_delaunay(bench_case: BenchCase) -> None:
     """
     Flip rounds until convergence: driven by distance from Delaunay, not by size.
 
     meshlib's ``makeDeloneEdgeFlips`` is the same empty-circumcircle criterion reached by a serial
-    queue where triwarp commits a conflict-free independent set per round, so this pair is the
+    queue where ordito commits a conflict-free independent set per round, so this pair is the
     clearest parallel-against-serial contrast in the module -- and the two reach the *same*
-    fixpoint: after triwarp's pass MeshLib finds zero further flips to make
+    fixpoint: after ordito's pass MeshLib finds zero further flips to make
     (``tests/test_remesh.py``). It mutates, so its mesh is rebuilt inside the timed callable, which
-    is the same thing the triwarp row's ``wp.clone`` is doing and for the same reason: without it,
+    is the same thing the ordito row's ``wp.clone`` is doing and for the same reason: without it,
     rounds 2..n would start from an already-Delaunay mesh.
     """
     if bench_case.kind == "meshlib":
@@ -488,7 +488,7 @@ def test_flip_to_delaunay(bench_case: BenchCase) -> None:
     # ``flip_to_delaunay`` rewrites the winding in place, so each round needs a fresh buffer;
     # without the clone every round after the first would start from an already-Delaunay mesh.
     def run() -> wp.array[wp.int32]:
-        return tw.remesh.flip_to_delaunay(vertices, wp.clone(faces), max_iter=100)
+        return od.remesh.flip_to_delaunay(vertices, wp.clone(faces), max_iter=100)
 
     flipped = bench_case.run(run, rounds=_ROUNDS)
     assert flipped.size == faces.size
@@ -497,11 +497,11 @@ def test_flip_to_delaunay(bench_case: BenchCase) -> None:
 @pytest.mark.noparity(
     "pymeshlab",
     reason="D2 the same five stages under a different stopping rule, with the disagreement "
-    "measured and tabulated in this function's own docstring: triwarp runs a fixed iterations x "
+    "measured and tabulated in this function's own docstring: ordito runs a fixed iterations x "
     "five parallel launches while MeshLab works a serial local-operation queue until the "
     "operations stop paying off, so at iterations=3 and the identical target length the two "
     "return different meshes with no vertex correspondence -- 35 568 faces against 34 946 on "
-    "saddle, and on saddle_graded 41 604 against 31 414 with triwarp missing the target edge "
+    "saddle, and on saddle_graded 41 604 against 31 414 with ordito missing the target edge "
     "length by 15% (0.854 of target against 0.983) and leaving a 99th-percentile aspect ratio of "
     "8.60 against 1.87. That gap is the finding this row exists to report, not a tolerance to "
     "widen; the quality statistics themselves are asserted against MeshLib and against the *input* "
@@ -521,25 +521,25 @@ def test_flip_to_delaunay(bench_case: BenchCase) -> None:
 )
 @pytest.mark.benchmark(group="isotropic_remesh")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "meshlib")
 def test_isotropic_remesh(bench_case: BenchCase) -> None:
     """
     Five stages x ``iterations``, on a nearly-converged mesh and a badly conditioned one.
 
     MeshLab runs the identical five stages, and the pair reads in opposite directions: pymeshlab
-    spreads several-fold across the axis where triwarp is flat, so a modest win on ``saddle``
-    becomes a large one on ``saddle_graded``. MeshLib's own queue is level with triwarp, and its
-    unchanged column is what certifies the triwarp row.
+    spreads several-fold across the axis where ordito is flat, so a modest win on ``saddle``
+    becomes a large one on ``saddle_graded``. MeshLib's own queue is level with ordito, and its
+    unchanged column is what certifies the ordito row.
 
-    **This is not a like-for-like win, and the timing alone is misleading.** triwarp is flat because
+    **This is not a like-for-like win, and the timing alone is misleading.** ordito is flat because
     its loop is a fixed ``iterations`` x five launches whatever the input looks like; MeshLab's
     serial local-operation queue keeps working until the operations stop paying off. Comparing the
     *outputs* at the same iteration count and target length says what the difference buys: on
-    ``saddle`` triwarp is past parity on aspect ratio and within a couple of percent of the
+    ``saddle`` ordito is past parity on aspect ratio and within a couple of percent of the
     requested length, while on the *graded* patch it misses the target by more and leaves a far
     worse 99th-percentile aspect ratio than MeshLab.
 
-    **The two triwarp rows moved together and for one reason, which is worth stating because the
+    **The two ordito rows moved together and for one reason, which is worth stating because the
     graded row got worse.** The collapse stage's parallel independent set locked by the *raw* edge
     index, which ``edges_unique`` orders lexicographically and which is therefore spatially monotone
     on any structured mesh -- so the lock had one local minimum and committed **one** collapse per
@@ -575,7 +575,7 @@ def test_isotropic_remesh(bench_case: BenchCase) -> None:
         # A third stopping rule: MeshLib runs its own local-operation queue to convergence, so like
         # MeshLab's row it is not a fixed-iteration count and the comparison is what the outputs
         # look like rather than what one round costs. ``projectOnOriginalMesh`` is left off, which
-        # is its default and matches triwarp: turning it on adds a closest-point pass per vertex.
+        # is its default and matches ordito: turning it on adds a closest-point pass per vertex.
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
 
         def remesh_ml() -> int:
@@ -599,7 +599,7 @@ def test_isotropic_remesh(bench_case: BenchCase) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _new_vertices, new_faces = bench_case.run(
-        lambda: tw.remesh.isotropic_remesh(
+        lambda: od.remesh.isotropic_remesh(
             vertices, faces, target_length=target, iterations=_REMESH_ITERATIONS
         ),
         rounds=_ROUNDS,
@@ -609,7 +609,7 @@ def test_isotropic_remesh(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="intrinsic_delaunay")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_intrinsic_delaunay(bench_case: BenchCase) -> None:
     """
     The flip loop: rounds of predicate, claim, length update and commit until nothing is left.
@@ -619,10 +619,10 @@ def test_intrinsic_delaunay(bench_case: BenchCase) -> None:
     for the flag being on by default. The meshes that actually flip are the quad grids, and none of
     them is on this axis; ``tests/test_intrinsic.py`` covers those for correctness.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         intrinsic_faces, lengths, _ = bench_case.run(
-            lambda: tw.remesh.intrinsic_delaunay(vertices, faces)
+            lambda: od.remesh.intrinsic_delaunay(vertices, faces)
         )
         assert intrinsic_faces.shape == faces.shape
         assert lengths.shape == (bench_case.n_faces, 3)
@@ -646,7 +646,7 @@ _CLUSTER_FACTORS = [2.0, 6.0]
     reason="D2 a differently anchored grid with a different cell representative, and open3d is "
     "the exact oracle right beside it: meshing_decimation_clustering keeps a per-cell "
     "representative on a grid whose origin is not open3d's min_bound - voxel_size / 2, so at the "
-    "same threshold it returns measurably different meshes -- 2 792 faces against triwarp's 2 768 "
+    "same threshold it returns measurably different meshes -- 2 792 faces against ordito's 2 768 "
     "at a 0.1 cell on icosphere(4), then 656 against 768 at 0.2 and 156 against 252 at 0.4, i.e. "
     "1% to 62% apart and diverging as the cell grows. open3d assigns cells identically and is "
     "asserted to the exact face and vertex count in "
@@ -654,7 +654,7 @@ _CLUSTER_FACTORS = [2.0, 6.0]
     "MeshLab cannot be a second oracle for a quantity open3d already fixes exactly.",
 )
 @pytest.mark.benchmark(group="cluster_decimate")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib")
 @pytest.mark.parametrize("cell_factor", _CLUSTER_FACTORS)
 def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
     """
@@ -697,14 +697,14 @@ def test_cluster_decimate(bench_case: BenchCase, cell_factor: float) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _decimated_vertices, decimated_faces = bench_case.run(
-        lambda: tw.remesh.cluster_decimate(vertices, faces, voxel_size=voxel_size)
+        lambda: od.remesh.cluster_decimate(vertices, faces, voxel_size=voxel_size)
     )
     assert int(decimated_faces.shape[0]) // 3 <= bench_case.n_faces
 
 
 @pytest.mark.benchmark(group="flip_by_objective")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("objective", ["planarity", "curvature"])
 def test_flip_by_objective(
     bench_case: BenchCase, objective: Literal["planarity", "curvature"]
@@ -726,7 +726,7 @@ def test_flip_by_objective(
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     flipped = bench_case.run(
-        lambda: tw.remesh.flip_by_objective(vertices, faces, objective=objective), rounds=_ROUNDS
+        lambda: od.remesh.flip_by_objective(vertices, faces, objective=objective), rounds=_ROUNDS
     )
     assert flipped.size == faces.size
 
@@ -747,7 +747,7 @@ def test_flip_by_objective(
 #
 # What moved it most was **capturing the pass**: the pass body's host readbacks were replaced by the
 # scans they were reading, every buffer was fixed at a bound the mesh cannot exceed, and one graph
-# is replayed for every pass. Several-fold on top, and it makes triwarp the fastest of the five on
+# is replayed for every pass. Several-fold on top, and it makes ordito the fastest of the five on
 # every cell. See ``remesh._DecimationBuffers``.
 #
 # **What is left is the graph itself, not the loop around it** (``saddle_graded`` at 0.1, 44 passes,
@@ -765,7 +765,7 @@ _QUADRIC_RATIOS = [0.5, 0.1]
 
 @pytest.mark.benchmark(group="quadric_decimate")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "igl", "open3d", "pymeshlab", "pyvista", "meshlib")
 @pytest.mark.parametrize("target_ratio", _QUADRIC_RATIOS)
 def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
     """
@@ -773,7 +773,7 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
 
     ``PolyData.decimate`` is ``vtkDecimatePro``, and it is the **best** of the four references on
     output quality rather than merely another queue -- measurably less surface deviation than
-    triwarp at the same face count (``tests/test_remesh.py`` carries the comparison). It takes a
+    ordito at the same face count (``tests/test_remesh.py`` carries the comparison). It takes a
     *reduction fraction* where the other four take a face count, so the ratio is
     converted rather than the count passed.
     """
@@ -832,7 +832,7 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     _decimated_vertices, decimated_faces = bench_case.run(
-        lambda: tw.remesh.quadric_decimate(vertices, faces, target_faces=target_faces),
+        lambda: od.remesh.quadric_decimate(vertices, faces, target_faces=target_faces),
         rounds=_ROUNDS,
     )
     assert decimated_faces.size // 3 <= bench_case.n_faces

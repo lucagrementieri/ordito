@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.metrics``: the differentiable Chamfer loss and the plain metrics.
+Benchmarks for ``ordito.metrics``: the differentiable Chamfer loss and the plain metrics.
 
 Cloud/mesh B is the same mesh translated by 5% of its bbox diagonal (untimed setup), so both
 directions of every symmetric metric do real work.
@@ -8,20 +8,20 @@ Differentiable case
 -------------------
 ``chamfer_mesh_to_mesh_loss`` carries ``requires_grad=True`` on both vertex buffers; each timed
 round records a fresh tape, runs backward and zeroes the gradients, which is the real
-optimization-loop cost. It is triwarp-only: open3d has no autodiff, so timing forward-only against
+optimization-loop cost. It is ordito-only: open3d has no autodiff, so timing forward-only against
 forward-plus-backward would be a misleading ratio rather than a useful baseline.
 
 Non-differentiable cases
 ------------------------
 ``chamfer_points_to_points`` and ``hausdorff_points_to_points`` are each **two**
-[`query_nearest`][triwarp.neighbors.query_nearest] calls at ``k=1`` plus a
+[`query_nearest`][ordito.neighbors.query_nearest] calls at ``k=1`` plus a
 reduction, so they are the direct measurement for a change to the k-NN kernel — the same kernel
 that sits under all twelve of ``distance.py``'s nearest-neighbour call sites.
 
 **open3d** is the reference: ``PointCloud.compute_point_cloud_distance`` returns exactly the forward
 nearest-neighbour Euclidean distances (a serial ``KDTreeFlann`` search), from which both metrics
-follow — Chamfer as the mean of the squares in each direction (the pytorch3d convention triwarp
-uses), Hausdorff as the overall maximum. Both baselines therefore run the same two searches triwarp
+follow — Chamfer as the mean of the squares in each direction (the pytorch3d convention ordito
+uses), Hausdorff as the overall maximum. Both baselines therefore run the same two searches ordito
 does, and the host-side ``numpy`` reduction over the returned vector is inside the timed region
 because open3d has no device-side equivalent to hide it behind.
 
@@ -35,7 +35,7 @@ is not among the statistics it returns -- so it appears in the Hausdorff group a
 
 trimesh and libigl have no point-cloud Chamfer/Hausdorff entry point (``igl.hausdorff`` is
 mesh-to-mesh only and is already the documented reference for
-[`hausdorff_mesh_to_mesh`][triwarp.metrics.hausdorff_mesh_to_mesh] in ``tests/``), so neither
+[`hausdorff_mesh_to_mesh`][ordito.metrics.hausdorff_mesh_to_mesh] in ``tests/``), so neither
 appears here.
 """
 
@@ -51,7 +51,7 @@ import pytorch3d.structures as p3d_structures
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
 
 _TRANSLATION_FRACTION = 0.05
@@ -125,7 +125,7 @@ def _grad_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[wp.
 
 
 @pytest.mark.benchmark(group="chamfer_mesh_to_mesh_loss")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
     skip_larger_than(bench_case, "dragon")
     vertices_a, vertices_b = _grad_inputs(bench_case)
@@ -133,7 +133,7 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
     def run() -> wp.array[wp.float32]:
         tape = wp.Tape()
-        loss = tw.metrics.chamfer_mesh_to_mesh_loss(vertices_a, faces, vertices_b, faces, tape=tape)
+        loss = od.metrics.chamfer_mesh_to_mesh_loss(vertices_a, faces, vertices_b, faces, tape=tape)
         tape.backward(loss=loss)
         tape.zero()
         return loss
@@ -143,7 +143,7 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="chamfer_points_to_points")
-@pytest.mark.benchlibs("triwarp", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "open3d", "pytorch3d")
 @pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])
 def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: bool) -> None:
     """
@@ -159,7 +159,7 @@ def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: boo
     has no spatial structure on either device, which makes this the group where its crossover is
     sharpest: it wins at 20 000 points and loses by nearly two orders of magnitude at 200 000. Read
     the two rows as one curve; see the
-    ``LIBRARIES`` block in [`conftest.py`](conftest.py) for why half of that swing is triwarp's own
+    ``LIBRARIES`` block in [`conftest.py`](conftest.py) for why half of that swing is ordito's own
     search-radius heuristic. ``single_directional=True`` maps onto its ``single_directional=True``
     exactly, so the parametrize axis is shared rather than emulated.
     """
@@ -176,10 +176,10 @@ def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: boo
         )
         assert float(chamfer_p3d) > 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         cloud_a, cloud_b = _clouds_wp(bench_case)
         chamfer = bench_case.run(
-            lambda: tw.metrics.chamfer_points_to_points(
+            lambda: od.metrics.chamfer_points_to_points(
                 cloud_a, cloud_b, single_directional=single_directional
             )
         )
@@ -222,7 +222,7 @@ def _jittered_clouds_wp(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.ar
 
 
 @pytest.mark.benchmark(group="chamfer_points_to_points_coincident")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_chamfer_points_to_points_coincident(bench_case: BenchCase) -> None:
     """
     Symmetric point-cloud Chamfer on a coincident pair, the other end of the displacement axis.
@@ -235,7 +235,7 @@ def test_chamfer_points_to_points_coincident(bench_case: BenchCase) -> None:
     """
     skip_larger_than(bench_case, "dragon")
     cloud_a, cloud_b = _jittered_clouds_wp(bench_case)
-    chamfer = bench_case.run(lambda: tw.metrics.chamfer_points_to_points(cloud_a, cloud_b))
+    chamfer = bench_case.run(lambda: od.metrics.chamfer_points_to_points(cloud_a, cloud_b))
     assert chamfer > 0.0
 
 
@@ -258,7 +258,7 @@ def _clouds_meshset_pml(bench_case: BenchCase) -> tuple[ml.MeshSet, int]:
 
 
 @pytest.mark.benchmark(group="hausdorff_points_to_points")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab")
 def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
     """Symmetric point-cloud Hausdorff: the same two searches, reduced with ``max`` instead."""
     skip_larger_than(bench_case, "dragon")
@@ -280,9 +280,9 @@ def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
 
         assert bench_case.run(hausdorff_pml) > 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         cloud_a, cloud_b = _clouds_wp(bench_case)
-        hausdorff = bench_case.run(lambda: tw.metrics.hausdorff_points_to_points(cloud_a, cloud_b))
+        hausdorff = bench_case.run(lambda: od.metrics.hausdorff_points_to_points(cloud_a, cloud_b))
     else:
         cloud_a, cloud_b = _clouds_o3d(bench_case)
         hausdorff = bench_case.run(
@@ -295,7 +295,7 @@ def test_hausdorff_points_to_points(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="chamfer_points_to_mesh")
-@pytest.mark.benchlibs("triwarp", "igl", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "igl", "meshlib", "pytorch3d")
 def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
     """
     Cloud-to-surface Chamfer: an exact mesh query forward, a ``k=1`` cloud search backward.
@@ -308,22 +308,22 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
     **libigl's row is the forward half only**, and is a *lower* bound rather than a race:
     ``igl.point_mesh_squared_distance`` is exactly the cloud-to-surface query -- it is already the
     oracle for this group in ``tests/test_metrics.py`` -- but it has no cloud-to-cloud counterpart,
-    so the backward ``k=1`` search triwarp also performs has no igl equivalent to pair it with. Read
+    so the backward ``k=1`` search ordito also performs has no igl equivalent to pair it with. Read
     the row as "what the expensive half costs on one core"; the same partial-reference convention as
     ``igl.doublearea`` in [`test_triangles.py`](test_triangles.py).
 
     **MeshLib's row is the forward half too**, and is the multi-threaded one -- so it is the fair
     fight of the two references. Its AABB tree is built and pre-warmed outside the timed callable,
     because the tree is cached on the ``Mesh`` and a cold first query is one to two orders of
-    magnitude above a warm one; that matches the triwarp branch, which is handed a ``wp.Mesh`` it
+    magnitude above a warm one; that matches the ordito branch, which is handed a ``wp.Mesh`` it
     does not rebuild. Its
-    ``distSq`` output is exactly triwarp's ``point_reduction=None`` array, compared element-wise in
+    ``distSq`` output is exactly ordito's ``point_reduction=None`` array, compared element-wise in
     ``tests/test_metrics.py``.
 
     **pytorch3d's row is the whole scalar and the only GPU one**, but it is a *different* pair of
     directions: ``point_mesh_face_distance`` sums point-to-triangle with **face**-to-point where
-    triwarp's backward half is mesh-vertex-to-point. So it is not an upper or lower bound on
-    triwarp's answer, it is a neighbouring quantity of the same cost shape -- two exact
+    ordito's backward half is mesh-vertex-to-point. So it is not an upper or lower bound on
+    ordito's answer, it is a neighbouring quantity of the same cost shape -- two exact
     point-to-triangle sweeps -- which is why it is timed here and why
     ``tests/test_metrics.py::test_chamfer_points_to_mesh_matches_pytorch3d`` compares only the
     forward half, through a hand-ported per-pair table. Its ``Meshes`` and ``Pointclouds`` are
@@ -346,7 +346,7 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         cloud_np = _clouds_np(bench_case)[1]
         # The tree is built lazily on the first query and cached on the Mesh, so it is built and
         # pre-warmed *outside* the timed callable -- the row then prices the query, matching what
-        # the triwarp branch does with a wp.Mesh already in hand. Timing the build instead is one to
+        # the ordito branch does with a wp.Mesh already in hand. Timing the build instead is one to
         # two orders of magnitude different (CLAUDE.md section 7.6).
         mesh_ml = bench_case.new_mesh_ml()
         projector_ml = mm.PointsToMeshProjector()
@@ -379,5 +379,5 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         return
     cloud = _clouds_wp(bench_case)[1]
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    chamfer = bench_case.run(lambda: tw.metrics.chamfer_points_to_mesh(cloud, vertices, faces))
+    chamfer = bench_case.run(lambda: od.metrics.chamfer_points_to_mesh(cloud, vertices, faces))
     assert chamfer > 0.0

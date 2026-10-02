@@ -1,6 +1,6 @@
-# triwarp
+# ordito
 
-**triwarp** is a GPU-first triangular mesh processing library built on
+**ordito** is a GPU-first triangular mesh processing library built on
 [NVIDIA Warp](https://github.com/NVIDIA/warp). It provides mesh geometry, connectivity, queries,
 editing, and solvers as plain array-in / array-out functions backed by Warp kernels, with a
 [trimesh](https://trimesh.org)-inspired API. Every function runs on CUDA when a GPU is available
@@ -25,35 +25,35 @@ and falls back to CPU otherwise — same code, same results.
 ## Install
 
 ```bash
-uv add triwarp
+uv add ordito
 ```
 
 or with `pip`:
 
 ```bash
-pip install triwarp
+pip install ordito
 ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.17. A CUDA-capable GPU is recommended but not required.
 Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
-`pip install triwarp[io]`.
+`pip install ordito[io]`.
 
 ## Quickstart
 
 ```python
-import triwarp as tw
+import ordito as od
 
 # Parametric primitives allocate directly on the default device (CUDA if available).
-vertices, faces = tw.creation.icosphere(subdivisions=4)
+vertices, faces = od.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
-mesh = tw.Trimesh(vertices, faces)
+mesh = od.Trimesh(vertices, faces)
 print(mesh.area)  # 12.551353454589844
 print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
 
 # Feature-preserving isotropic remeshing (split / collapse / flip / smooth / reproject).
-remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
+remeshed_vertices, remeshed_faces = od.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
 ```
 
 Continue with **[Getting started](getting-started.md)** for the full walkthrough (including a
@@ -67,16 +67,16 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here.
 - **[Performance](performance.md)** — why the GPU path is fast, and how to check any number
   yourself.
-- **[Benchmarks](benchmarks.md)** — a curated set of triwarp-vs-reference comparisons, rendered as
+- **[Benchmarks](benchmarks.md)** — a curated set of ordito-vs-reference comparisons, rendered as
   charts, each library named by its own logo.
 
 ## One GPU library instead of nine
 
 Mesh processing in Python has long meant stitching together several excellent — but mostly
-CPU-bound and stylistically different — libraries. triwarp consolidates the functionality it needs
+CPU-bound and stylistically different — libraries. ordito consolidates the functionality it needs
 from each of them behind a single GPU-accelerated API:
 
-| Replaces | For | In triwarp |
+| Replaces | For | In ordito |
 |---|---|---|
 | [trimesh](https://github.com/mikedh/trimesh) | Mesh bookkeeping: edges, adjacency, boundary, validation, primitives, sampling, proximity | `edges`, `adjacency`, `boundary`, `validation`, `creation`, `sample`, `proximity`, the `Trimesh` class |
 | [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, exact/heat geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
@@ -92,28 +92,28 @@ from each of them behind a single GPU-accelerated API:
 `graph` and `proximity`) and NumPy's array primitives (`array`, `reduce`, `grouping`, `linalg`)
 round the set out to the eleven reference implementations the suite measures against.
 
-These libraries are not runtime dependencies — they are **test oracles**. Every triwarp
+These libraries are not runtime dependencies — they are **test oracles**. Every ordito
 function ships with a regression test comparing its output against the corresponding reference
 implementation, and a parity gate in the test suite fails the build if a benchmarked
 implementation pair is neither value-tested nor explicitly exempted with a written reason. The
 benchmark suite spans 351 groups and 587 `(group, library)` pairs: 557 are claimed by a value
-test, 30 carry a written and categorised exemption, and none are left uncovered. When triwarp and
+test, 30 carry a written and categorised exemption, and none are left uncovered. When ordito and
 a reference disagree by definition rather than tolerance, the test says so and documents the
 measured difference.
 
 ## Development
 
 ```bash
-git clone https://github.com/lucagrementieri/triwarp
-cd triwarp
+git clone https://github.com/lucagrementieri/ordito
+cd ordito
 uv sync --all-groups            # runtime + dev + test + docs + bench dependencies
 
 uv run pytest                   # regression tests against the reference libraries
-uv run ruff format triwarp tests && uv run ruff check triwarp tests
+uv run ruff format ordito tests && uv run ruff check ordito tests
 uv run basedpyright             # type checking (0 errors expected)
 
 uv run zensical serve           # preview the docs locally
 ```
 
-See the [source repository](https://github.com/lucagrementieri/triwarp) for contribution
+See the [source repository](https://github.com/lucagrementieri/ordito) for contribution
 guidelines and the full development setup.

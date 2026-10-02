@@ -3,11 +3,11 @@ Regenerate ``benchmarks/_reference_free_cells.json`` from a full benchmark round
 
 A **reference-free cell** is a ``(group, mesh_name, rest)`` cell in which no reference library
 produced a measurement -- every reference was capped off it (``skip_larger_than``, the CPU-bound
-cap on the largest meshes) or never had a branch for it -- so the only rows are triwarp's own. The
+cap on the largest meshes) or never had a branch for it -- so the only rows are ordito's own. The
 ``lucy`` rows of the visibility family are the motivating case: multi-second calls timed ten
 rounds each against nothing.
 
-``benchmarks/conftest.py``'s ``bench_case`` / ``bench_lib`` fixtures run a **triwarp** row of such
+``benchmarks/conftest.py``'s ``bench_case`` / ``bench_lib`` fixtures run a **ordito** row of such
 a cell at ``REFERENCE_FREE_ROUNDS`` (3) rounds instead of the default. The row still measures
 exactly what it measured -- only the sample count drops -- and its ``min`` stays comparable across
 rounds; at three rounds the median is the middle sample, which is what ``aggregate.py --suspect``
@@ -15,7 +15,7 @@ exists to flag (CLAUDE.md section 15.4). No loss-table cell is affected, because
 reference-free cell is not in the loss table.
 
 **Why this cannot be decided at run time.** References are skipped inside each test body, at run
-time, and a reference row may run after the triwarp row of its cell, so the triwarp row has no way
+time, and a reference row may run after the ordito row of its cell, so the ordito row has no way
 to know whether its cell will end up with a comparison. The table answers it from the previous
 round, the same way ``_known_slow_libraries.json`` does. Its policy never skips a cell's fastest
 reference, so a cell with no reference row in a default run really had none.
@@ -37,7 +37,7 @@ import glob
 import json
 import os
 
-TRIWARP = {"triwarp-cuda", "triwarp-cpu"}
+ORDITO = {"ordito-cuda", "ordito-cpu"}
 OUT_PATH = os.path.join(os.path.dirname(__file__), "_reference_free_cells.json")
 
 # ``(group, mesh_name, rest)``, the cell key every benchmark JSON row maps to.
@@ -72,7 +72,7 @@ def main() -> None:
     entries = [
         {"group": group, "mesh_name": mesh_name, "rest": list(rest)}
         for (group, mesh_name, rest), libraries in cells.items()
-        if libraries and libraries <= TRIWARP
+        if libraries and libraries <= ORDITO
     ]
     entries.sort(key=lambda r: (r["group"], r["mesh_name"] or "", r["rest"]))
     with open(OUT_PATH, "w") as f:

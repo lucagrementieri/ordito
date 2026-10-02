@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.intersection``.
+Benchmarks for ``ordito.intersection``.
 
 Four functions on two cost shapes:
 
@@ -7,7 +7,7 @@ Four functions on two cost shapes:
   faces, a per-vertex scalar, then a compaction of the few faces the level set crosses.
   Memory-bound and dominated by the full-mesh sweep rather than the segment count: a plane meets
   ``O(sqrt(n_faces))`` triangles but every face is still classified. The last two run the *same*
-  engine (a plane's signed distance is one such scalar), so their triwarp rows track each other and
+  engine (a plane's signed distance is one such scalar), so their ordito rows track each other and
   a divergence means the shared path changed under one of them. ``clip_mesh_with_field``'s
   ``cap=True`` case is a different shape: the ``O(B ** 3)`` min-weight fill of the section loop
   dominates the clip by orders of magnitude, so read it as a ``holes.fill_min_weight`` measurement
@@ -31,7 +31,7 @@ through the optional ``python-fcl`` collision backend, which reports *whether* p
 than returning the curve, and open3d's booleans need the optional tensor backend with a coupled
 remesh. The two that do answer it: **meshlib**'s ``findIntersectionContours``, which links the
 crossing into ordered contours, and **pyvista**'s ``intersection``
-(``vtkIntersectionPolyDataFilter``), which returns the same unordered segment soup triwarp does and
+(``vtkIntersectionPolyDataFilter``), which returns the same unordered segment soup ordito does and
 therefore pins the value as well as the cost.
 
 **pymeshlab** has the right filter and cannot run it here.
@@ -51,7 +51,7 @@ the identical per-vertex field. ``invert=False`` is passed explicitly: its defau
 *below* the value. Its capped counterpart ``clip_closed_surface`` cannot be timed here at all — it
 validates the mesh first and raises on any open edge, which every scan mesh has — so the capped
 comparison lives in ``tests/test_intersection.py`` on a closed synthetic mesh and the capped
-benchmark case is triwarp-only.
+benchmark case is ordito-only.
 
 Caps
 ----
@@ -79,7 +79,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, mesh_ml_from_numpy, skip_larger_than
 
 # Off-axis so no cut is degenerate w.r.t. the (axis-aligned) scan-mesh geometry.
@@ -188,7 +188,7 @@ def _plane_ml(bench_case: BenchCase) -> mm.Plane3f:
 
 
 @pytest.mark.benchmark(group="mesh_with_plane")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
 def test_mesh_with_plane(bench_case: BenchCase) -> None:
     """
     Cross-section segments of a mid-mesh plane: a full face sweep plus a compaction.
@@ -196,7 +196,7 @@ def test_mesh_with_plane(bench_case: BenchCase) -> None:
     meshlib's ``extractPlaneSections`` does **more** than the other two rows and by a different
     route: it walks the section into ordered closed contours over an AABB tree
     (``UseAABBTree::Yes``, its default) rather than sweeping every face, so its cost tracks the
-    section's length where triwarp's and trimesh's track the face count. Read the pair across mesh
+    section's length where ordito's and trimesh's track the face count. Read the pair across mesh
     sizes rather than at one point. Its output is ``EdgePoint`` contours, which
     ``tests/test_intersection.py`` decodes; the row asserts only that a section came back.
     """
@@ -208,12 +208,12 @@ def test_mesh_with_plane(bench_case: BenchCase) -> None:
         sections_ml = bench_case.run(lambda: mm.extractPlaneSections(mesh_part_ml, plane_ml))
         assert len(sections_ml) > 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         normal = wp.vec3(*_PLANE_NORMAL.tolist())
         plane_origin = wp.vec3(*origin.tolist())
         lines = bench_case.run(
-            lambda: tw.intersection.mesh_with_plane(vertices, faces, normal, plane_origin)
+            lambda: od.intersection.mesh_with_plane(vertices, faces, normal, plane_origin)
         )
         assert lines.shape[1] == 2
     else:  # rebuild inside: triangles / face_normals are cached Trimesh properties
@@ -227,7 +227,7 @@ def test_mesh_with_plane(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="slice_mesh_with_plane")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
 def test_slice_mesh_with_plane(bench_case: BenchCase) -> None:
     """
     Keep the positive-normal half of the mesh: classify every face, then re-triangulate cuts.
@@ -251,12 +251,12 @@ def test_slice_mesh_with_plane(bench_case: BenchCase) -> None:
 
         assert 0 < bench_case.run(trim_ml) < bench_case.n_faces
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         normal = wp.vec3(*_PLANE_NORMAL.tolist())
         plane_origin = wp.vec3(*origin.tolist())
         new_vertices, new_faces = bench_case.run(
-            lambda: tw.intersection.slice_mesh_with_plane(vertices, faces, normal, plane_origin)
+            lambda: od.intersection.slice_mesh_with_plane(vertices, faces, normal, plane_origin)
         )
         assert int(new_faces.shape[0]) % 3 == 0
         assert new_vertices.shape[0] >= 0
@@ -269,7 +269,7 @@ def test_slice_mesh_with_plane(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="split_mesh_with_plane")
-@pytest.mark.benchlibs("triwarp", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pyvista", "meshlib")
 @pytest.mark.parity("split_mesh_with_plane", "pyvista")
 def test_split_mesh_with_plane(bench_case: BenchCase) -> None:
     """
@@ -283,13 +283,13 @@ def test_split_mesh_with_plane(bench_case: BenchCase) -> None:
     count rather than with the number of crossed triangles.
 
     pyvista's counterpart is ``clip(return_clipped=True)``, VTK's both-sides plane clip. Note its
-    ``kept`` output is the *low* side, i.e. triwarp's ``~above``; the values are compared in
+    ``kept`` output is the *low* side, i.e. ordito's ``~above``; the values are compared in
     ``tests/test_intersection.py``, this row only times them.
     """
     origin = _plane_origin(bench_case)
     if bench_case.kind == "meshlib":
         # ``subdivideWithPlane`` is the closest counterpart in the suite: it inserts the section as
-        # real edges and returns the positive side as a FaceBitSet, which is triwarp's
+        # real edges and returns the positive side as a FaceBitSet, which is ordito's
         # ``(vertices, faces, side_mask)`` triple. It mutates, so the mesh is rebuilt per round.
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         plane_ml = _plane_ml(bench_case)
@@ -317,7 +317,7 @@ def test_split_mesh_with_plane(bench_case: BenchCase) -> None:
     normal = wp.vec3(*_PLANE_NORMAL.tolist())
     plane_origin = wp.vec3(*origin.tolist())
     new_vertices, new_faces, above = bench_case.run(
-        lambda: tw.intersection.split_mesh_with_plane(vertices, faces, normal, plane_origin)
+        lambda: od.intersection.split_mesh_with_plane(vertices, faces, normal, plane_origin)
     )
     assert int(new_faces.shape[0]) % 3 == 0
     assert int(above.shape[0]) == int(new_faces.shape[0]) // 3
@@ -339,7 +339,7 @@ def _plane_field(bench_case: BenchCase) -> tuple[wp.array[wp.float32], np.ndarra
 
 
 @pytest.mark.benchmark(group="split_faces_along_field")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 def test_split_faces_along_field(bench_case: BenchCase) -> None:
     """
     The both-sides cut: same classify-and-compact sweep, but every face is kept and relabelled.
@@ -378,14 +378,14 @@ def test_split_faces_along_field(bench_case: BenchCase) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     field_wp = _plane_field(bench_case)[0]
     _new_vertices, new_faces, positive = bench_case.run(
-        lambda: tw.intersection.split_faces_along_field(vertices, faces, field_wp)
+        lambda: od.intersection.split_faces_along_field(vertices, faces, field_wp)
     )
     assert int(new_faces.shape[0]) % 3 == 0
     assert 0 < int(positive.numpy().sum()) < int(new_faces.shape[0]) // 3
 
 
 @pytest.mark.benchmark(group="clip_mesh_with_field")
-@pytest.mark.benchlibs("triwarp", "pyvista")
+@pytest.mark.benchlibs("ordito", "pyvista")
 @pytest.mark.parametrize("cap", [False, True])
 def test_clip_mesh_with_field(bench_case: BenchCase, cap: bool) -> None:
     """
@@ -420,13 +420,13 @@ def test_clip_mesh_with_field(bench_case: BenchCase, cap: bool) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     field_wp = _plane_field(bench_case)[0]
     _new_vertices, new_faces = bench_case.run(
-        lambda: tw.intersection.clip_mesh_with_field(vertices, faces, field_wp, cap=cap)
+        lambda: od.intersection.clip_mesh_with_field(vertices, faces, field_wp, cap=cap)
     )
     assert int(new_faces.shape[0]) % 3 == 0
 
 
 @pytest.mark.benchmark(group="mesh_with_mesh")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
 def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
     """
@@ -437,7 +437,7 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
     the ``grazing`` row barely touches it; the gap is the collision density, and the fixed
     ``max_triangle_collisions`` cap silently truncates once the broad phase saturates.
 
-    pyvista's ``intersection`` returns the same *unordered* segment soup triwarp does, which is what
+    pyvista's ``intersection`` returns the same *unordered* segment soup ordito does, which is what
     makes it the value reference for this group as well as a cost one. Note what its ``grazing`` row
     measures: at 0.60 of the diagonal the two copies do not touch at all, so VTK does its broad
     phase, logs ``No Intersection between objects`` and returns **0** line cells -- at well over
@@ -454,7 +454,7 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
             assert intersection_pv.n_cells > 0  # the deep case really does cross
         return
     if bench_case.kind == "meshlib":
-        # ``findIntersectionContours`` links the crossing into ordered contours where triwarp emits
+        # ``findIntersectionContours`` links the crossing into ordered contours where ordito emits
         # an unordered segment soup, so it does strictly more -- and it takes the second mesh's
         # placement as a rigid transform rather than as moved vertices, which is how the same
         # translation is expressed here. Neither mesh is modified, so both are cached.
@@ -465,7 +465,7 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     shifted = _shifted_vertices_wp(bench_case, offset_fraction)
-    lines = bench_case.run(lambda: tw.intersection.mesh_with_mesh(vertices, faces, shifted, faces))
+    lines = bench_case.run(lambda: od.intersection.mesh_with_mesh(vertices, faces, shifted, faces))
     assert lines.shape[1] == 2
 
 
@@ -480,7 +480,7 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
     "tests/test_intersection.py::test_mesh_collision_pairs_matches_meshlib.",
 )
 @pytest.mark.benchmark(group="mesh_collision_pairs")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
 def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> None:
     """
@@ -498,7 +498,7 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> 
     -- CLAUDE.md section 7.6 records it reporting 2 600 hits for a 320-cell mesh against its own
     copy -- so its row is a cost comparison only, and the noparity entry says so.
 
-    The ``deep`` / ``grazing`` pair is the fixed-width broad phase showing through. triwarp
+    The ``deep`` / ``grazing`` pair is the fixed-width broad phase showing through. ordito
     allocates a fixed number of candidate slots per query triangle whatever the geometry, so its
     cost barely moves between the two offsets; MeshLib descends two trees and exits almost
     immediately when there is nothing to find, then pays for the pairs when there is. So the ratio
@@ -529,13 +529,13 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     shifted = _shifted_vertices_wp(bench_case, offset_fraction)
     pairs = bench_case.run(
-        lambda: tw.intersection.mesh_collision_pairs(vertices, faces, shifted, faces)
+        lambda: od.intersection.mesh_collision_pairs(vertices, faces, shifted, faces)
     )
     assert pairs.shape[1] == 2
 
 
 @pytest.mark.benchmark(group="segments_with_plane")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_segments_with_plane(bench_case: BenchCase) -> None:
     """Batched segment-plane hits over the mesh's directed edges: one ``wp.map``, no adjacency."""
     origin = _plane_origin(bench_case)
@@ -543,7 +543,7 @@ def test_segments_with_plane(bench_case: BenchCase) -> None:
     # One segment per face corner: (v0,v1) of every triangle, so the count scales with the mesh.
     start_np = bench_case.vertices_np[faces_np[:, 0]]
     end_np = bench_case.vertices_np[faces_np[:, 1]]
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         device = bench_case.device
         start = wp.array(
             np.ascontiguousarray(start_np, dtype=np.float32), dtype=wp.vec3, device=device
@@ -552,7 +552,7 @@ def test_segments_with_plane(bench_case: BenchCase) -> None:
         normal = wp.vec3(*_PLANE_NORMAL.tolist())
         plane_origin = wp.vec3(*origin.tolist())
         _points, valid = bench_case.run(
-            lambda: tw.intersection.segments_with_plane(start, end, normal, plane_origin)
+            lambda: od.intersection.segments_with_plane(start, end, normal, plane_origin)
         )
         assert valid.shape[0] == start_np.shape[0]
     else:
@@ -604,9 +604,9 @@ def _field_wp(bench_case: BenchCase, field: str) -> wp.array[wp.float64]:
 
 
 def _run_case(bench_case: BenchCase, field: str) -> None:
-    """Extract one level set, in triwarp, potpourri3d, libigl or meshlib."""
+    """Extract one level set, in ordito, potpourri3d, libigl or meshlib."""
     if bench_case.kind == "meshlib":
-        # ``extractIsolines`` returns linked contours like triwarp and potpourri3d, not igl's
+        # ``extractIsolines`` returns linked contours like ordito and potpourri3d, not igl's
         # segment soup. Its ``VertScalars`` field has no array constructor -- the fill is a
         # per-vertex Python loop -- so it is built once outside the timed callable, as every other
         # row's field is.
@@ -619,7 +619,7 @@ def _run_case(bench_case: BenchCase, field: str) -> None:
         return
     if bench_case.kind == "igl":
         # igl returns a segment *soup* -- (points, segments, segment_values), no curve linkage --
-        # so it does strictly less than triwarp and potpourri3d, both of which return linked
+        # so it does strictly less than ordito and potpourri3d, both of which return linked
         # polylines. Read the row as the floor for the extraction without the linking.
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
         values_np = _field_np(bench_case, field)
@@ -630,11 +630,11 @@ def _run_case(bench_case: BenchCase, field: str) -> None:
         assert points_igl.shape[1] == 3
         assert segments_igl.shape[0] > 0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         values, n_vertices = _field_wp(bench_case, field), bench_case.n_vertices
         curves, _ = bench_case.run(
-            lambda: tw.intersection.marching_triangles(
+            lambda: od.intersection.marching_triangles(
                 vertices, faces, values, _ISOVALUE, n_vertices=n_vertices
             ),
             rounds=_ROUNDS,
@@ -653,7 +653,7 @@ def _run_case(bench_case: BenchCase, field: str) -> None:
 
 @pytest.mark.benchmark(group="marching_triangles")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "potpourri3d", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib")
 def test_marching_triangles(bench_case: BenchCase) -> None:
     """One long closed contour of a coordinate function, over the clean size sweep."""
     _run_case(bench_case, "plane")
@@ -661,7 +661,7 @@ def test_marching_triangles(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="marching_triangles_curves")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "potpourri3d", "igl", "meshlib")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl", "meshlib")
 @pytest.mark.parametrize("field", list(_FIELDS))
 def test_marching_triangles_curves(bench_case: BenchCase, field: str) -> None:
     """One mesh, level sets from 1 to ~1 000 curves, to see whether linking cost shows up."""
@@ -670,19 +670,19 @@ def test_marching_triangles_curves(bench_case: BenchCase, field: str) -> None:
 
 @pytest.mark.benchmark(group="marching_triangles_with_offsets")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("field", list(_FIELDS))
 def test_marching_triangles_with_offsets(bench_case: BenchCase, field: str) -> None:
     """
     The packed form of ``marching_triangles_curves``' level sets: no per-curve object.
 
-    Read against that group's triwarp row: the difference is the list of per-curve views, which is
+    Read against that group's ordito row: the difference is the list of per-curve views, which is
     the whole of what the list form adds.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     values, n_vertices = _field_wp(bench_case, field), bench_case.n_vertices
     points, offsets, closed = bench_case.run(
-        lambda: tw.intersection.marching_triangles_with_offsets(
+        lambda: od.intersection.marching_triangles_with_offsets(
             vertices, faces, values, _ISOVALUE, n_vertices=n_vertices
         ),
         rounds=_ROUNDS,

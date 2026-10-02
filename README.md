@@ -1,16 +1,16 @@
 <picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lucagrementieri/triwarp/main/docs/assets/logo-lockup-dark.svg">
-  <img src="https://raw.githubusercontent.com/lucagrementieri/triwarp/main/docs/assets/logo-lockup.svg" alt="triwarp" height="72">
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/lucagrementieri/ordito/main/docs/assets/logo-lockup-dark.svg">
+  <img src="https://raw.githubusercontent.com/lucagrementieri/ordito/main/docs/assets/logo-lockup.svg" alt="ordito" height="72">
 </picture>
 
-[![PyPI](https://img.shields.io/pypi/v/triwarp)](https://pypi.org/project/triwarp/)
-[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/triwarp/)
-[![Docs](https://img.shields.io/badge/docs-lucagrementieri.github.io%2Ftriwarp-blue)](https://lucagrementieri.github.io/triwarp/)
-[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/lucagrementieri/208b2ea8a3b764ca7c10d82195533738/raw/triwarp-coverage.json)](#development)
+[![PyPI](https://img.shields.io/pypi/v/ordito)](https://pypi.org/project/ordito/)
+[![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://pypi.org/project/ordito/)
+[![Docs](https://img.shields.io/badge/docs-lucagrementieri.github.io%2Fordito-blue)](https://lucagrementieri.github.io/ordito/)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/lucagrementieri/208b2ea8a3b764ca7c10d82195533738/raw/ordito-coverage.json)](#development)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-green)](#license)
 [![Status](https://img.shields.io/badge/status-beta-yellow)](#status)
 
-**triwarp puts mesh processing on the GPU.** Geometry, topology, repair, remeshing, spatial
+**ordito puts mesh processing on the GPU.** Geometry, topology, repair, remeshing, spatial
 queries, discrete differential operators, geodesics, point-cloud reconstruction, and
 registration — as plain array-in / array-out functions backed by
 [NVIDIA Warp](https://github.com/NVIDIA/warp) kernels, with a
@@ -30,30 +30,30 @@ and falls back to CPU otherwise — same code, same results.
   (normals, adjacency, boundary loops, manifoldness and watertightness predicates, BVH) for
   when an object API is more convenient than free functions.
 - **Fully typed** (`py.typed`), documented per module at
-  <https://lucagrementieri.github.io/triwarp/>, and validated function-by-function against eleven
+  <https://lucagrementieri.github.io/ordito/>, and validated function-by-function against eleven
   reference implementations — nine established geometry-processing libraries plus SciPy and
   NumPy (see below).
 
 ## Learn more
 
-- **[Getting started](https://lucagrementieri.github.io/triwarp/getting-started/)** — install, the
+- **[Getting started](https://lucagrementieri.github.io/ordito/getting-started/)** — install, the
   mental model, and a first repair-then-remesh pipeline.
-- **[Cookbook](https://lucagrementieri.github.io/triwarp/cookbook/)** — task-oriented recipes:
+- **[Cookbook](https://lucagrementieri.github.io/ordito/cookbook/)** — task-oriented recipes:
   cleaning a scan, point clouds to watertight surfaces, geodesic distance fields, aligning two
   scans.
-- **[Migrating from another library](https://lucagrementieri.github.io/triwarp/migrating-from/)**
+- **[Migrating from another library](https://lucagrementieri.github.io/ordito/migrating-from/)**
   — already know trimesh, libigl, Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here for a
   function-by-function map.
-- **[Performance](https://lucagrementieri.github.io/triwarp/performance/)** — why the GPU path is
+- **[Performance](https://lucagrementieri.github.io/ordito/performance/)** — why the GPU path is
   fast, and how to check any speed claim yourself.
 
 ## One GPU library instead of nine
 
 Mesh processing in Python has long meant stitching together several excellent — but mostly
-CPU-bound and stylistically different — libraries. triwarp consolidates the functionality it needs
+CPU-bound and stylistically different — libraries. ordito consolidates the functionality it needs
 from each of them behind a single GPU-accelerated API:
 
-| Replaces | For | In triwarp |
+| Replaces | For | In ordito |
 |---|---|---|
 | [trimesh](https://github.com/mikedh/trimesh) | Mesh bookkeeping: edges, adjacency, boundary, validation, primitives, sampling, proximity | `edges`, `adjacency`, `boundary`, `validation`, `creation`, `sample`, `proximity`, the `Trimesh` class |
 | [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, exact/heat geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
@@ -69,45 +69,45 @@ from each of them behind a single GPU-accelerated API:
 `graph` and `proximity`) and NumPy's array primitives (`array`, `reduce`, `grouping`, `linalg`)
 round the set out to the eleven reference implementations the suite measures against.
 
-These libraries are not runtime dependencies — they are **test oracles**. Every triwarp
+These libraries are not runtime dependencies — they are **test oracles**. Every ordito
 function ships with a regression test comparing its output against the corresponding reference
 implementation, and a parity gate in the test suite fails the build if a benchmarked
 implementation pair is neither value-tested nor explicitly exempted with a written reason. The
 benchmark suite spans 351 groups and 587 `(group, library)` pairs: 557 are claimed by a value
-test, 30 carry a written and categorised exemption, and none are left uncovered. When triwarp and
+test, 30 carry a written and categorised exemption, and none are left uncovered. When ordito and
 a reference disagree by definition rather than tolerance, the test says so and documents the
 measured difference.
 
 ## Install
 
 ```bash
-uv add triwarp
+uv add ordito
 ```
 
 or with `pip`:
 
 ```bash
-pip install triwarp
+pip install ordito
 ```
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.17. A CUDA-capable GPU is recommended but not
 required — every function also runs on Warp's CPU backend. Mesh file I/O via
-[meshio](https://github.com/nschloe/meshio) is an optional extra: `pip install triwarp[io]`.
+[meshio](https://github.com/nschloe/meshio) is an optional extra: `pip install ordito[io]`.
 
 Tested on **Linux**, with and without CUDA. The wheel is pure Python and `warp-lang` supports
-macOS and Windows, so triwarp is expected to work there, but neither is verified — see
-[Platform support](https://lucagrementieri.github.io/triwarp/getting-started/#platform-support).
+macOS and Windows, so ordito is expected to work there, but neither is verified — see
+[Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
 ## Quickstart
 
 ```python
-import triwarp as tw
+import ordito as od
 
 # Parametric primitives allocate directly on the default device (CUDA if available).
-vertices, faces = tw.creation.icosphere(subdivisions=4)
+vertices, faces = od.creation.icosphere(subdivisions=4)
 
 # Optional object API: derived quantities are computed on first access and cached.
-mesh = tw.Trimesh(vertices, faces)
+mesh = od.Trimesh(vertices, faces)
 print(mesh.area)  # 12.551...
 print(mesh.is_watertight)  # True
 print(mesh.euler_characteristic)  # 2
@@ -120,26 +120,26 @@ arrays, so pipelines stay on the device end to end:
 import numpy as np
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 
-vertices, faces = tw.creation.icosphere(subdivisions=4)
+vertices, faces = od.creation.icosphere(subdivisions=4)
 
 # Geodesic distance from vertex 0 via the heat method (two sparse CG solves, on-device).
 sources = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices.device)
-distance = tw.heat.heat_geodesic(vertices, faces, sources)
+distance = od.heat.heat_geodesic(vertices, faces, sources)
 
 # Uniform, area-weighted surface sampling.
-points, face_ids = tw.sample.sample_surface(vertices, faces, 10_000, seed=0)
+points, face_ids = od.sample.sample_surface(vertices, faces, 10_000, seed=0)
 
 # Feature-preserving isotropic remeshing (split / collapse / flip / smooth / reproject).
-remeshed_vertices, remeshed_faces = tw.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
+remeshed_vertices, remeshed_faces = od.remesh.isotropic_remesh(vertices, faces, target_length=0.05)
 ```
 
 Interop with NumPy is a `wp.array(...)` / `.numpy()` pair away, and
-`tw.mesh.Trimesh.from_warp_mesh` / `mesh.warp_mesh` bridge to Warp's own `wp.Mesh` BVH for ray
+`od.mesh.Trimesh.from_warp_mesh` / `mesh.warp_mesh` bridge to Warp's own `wp.Mesh` BVH for ray
 and proximity queries. For a pipeline that starts from a realistically messy input — a hole to
 close, stray debris to drop — see the
-[Cookbook](https://lucagrementieri.github.io/triwarp/cookbook/).
+[Cookbook](https://lucagrementieri.github.io/ordito/cookbook/).
 
 ## What's inside
 
@@ -158,7 +158,7 @@ close, stray debris to drop — see the
 | **Arrays & infrastructure** | `array`, `reduce`, `grouping`, `graph`, `typing`, `constants` | GPU sort/scan/unique/group primitives, reductions, graph algorithms (BFS, connected components), typed array aliases |
 
 50 public modules in total — the full API reference, generated per module, lives at
-<https://lucagrementieri.github.io/triwarp/>.
+<https://lucagrementieri.github.io/ordito/>.
 
 ## Design
 
@@ -176,7 +176,7 @@ close, stray debris to drop — see the
 
 ## Status
 
-triwarp is pre-1.0 (`0.x`): the test suite is extensive (over 3,400 tests per device, an
+ordito is pre-1.0 (`0.x`): the test suite is extensive (over 3,400 tests per device, an
 eleven-library parity gate with no uncovered pair) and the library is safe to build on, but a
 public signature may still shift a positional argument to a keyword or gain a required parameter
 between minor versions until 1.0. Released versions are recorded in
@@ -185,21 +185,21 @@ between minor versions until 1.0. Released versions are recorded in
 ## Development
 
 ```bash
-git clone https://github.com/lucagrementieri/triwarp
-cd triwarp
+git clone https://github.com/lucagrementieri/ordito
+cd ordito
 uv sync --all-groups            # runtime + dev + test + docs + bench dependencies
 
 uv run pytest                   # regression tests against the reference libraries
-uv run ruff format triwarp tests && uv run ruff check triwarp tests
+uv run ruff format ordito tests && uv run ruff check ordito tests
 uv run basedpyright             # type checking (0 errors expected)
 
 uv run zensical serve           # preview the docs locally
 
-uv run pytest --device=cpu --cov=triwarp        # coverage, the way CI measures it
+uv run pytest --device=cpu --cov=ordito        # coverage, the way CI measures it
 ```
 
 The coverage badge measures the Python wrapper layer on the CPU backend, which is what CI can
-run, and is refreshed by the `main` build. It deliberately excludes `triwarp/kernels/`: a
+run, and is refreshed by the `main` build. It deliberately excludes `ordito/kernels/`: a
 `@wp.kernel` body is compiled from its AST and executed on the device, never called as Python, so
 coverage.py reports every line of a constantly-running kernel as unexecuted. Device-side behaviour
 is covered instead by running the suite on both backends (`uv run python -m tests.devices`), which
@@ -217,21 +217,21 @@ and where the internal engineering reference lives.
 
 ## Links
 
-- **Documentation:** <https://lucagrementieri.github.io/triwarp/>
-- **Source:** <https://github.com/lucagrementieri/triwarp>
-- **Issues:** <https://github.com/lucagrementieri/triwarp/issues>
+- **Documentation:** <https://lucagrementieri.github.io/ordito/>
+- **Source:** <https://github.com/lucagrementieri/ordito>
+- **Issues:** <https://github.com/lucagrementieri/ordito/issues>
 - **NVIDIA Warp:** <https://nvidia.github.io/warp/>
 
 ## Citation
 
-If triwarp is useful in your research, please cite it:
+If ordito is useful in your research, please cite it:
 
 ```bibtex
-@software{grementieri_triwarp,
+@software{grementieri_ordito,
   author  = {Grementieri, Luca},
-  title   = {{triwarp}: GPU-accelerated triangular mesh processing on NVIDIA Warp},
+  title   = {{ordito}: GPU-accelerated triangular mesh processing on NVIDIA Warp},
   year    = {2026},
-  url     = {https://github.com/lucagrementieri/triwarp},
+  url     = {https://github.com/lucagrementieri/ordito},
   version = {0.1.0}
 }
 ```
@@ -247,5 +247,5 @@ Licensed under either of
 at your option.
 
 Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion
-in triwarp by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
+in ordito by you, as defined in the Apache-2.0 license, shall be dual licensed as above,
 without any additional terms or conditions.

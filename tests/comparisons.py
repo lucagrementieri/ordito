@@ -34,7 +34,7 @@ import trimesh as tm
 import warp as wp
 from scipy.spatial import cKDTree
 
-import triwarp.typing as twt
+import ordito.typing as odt
 
 
 def lexsort_rows(rows_np: np.ndarray) -> np.ndarray:
@@ -42,7 +42,7 @@ def lexsort_rows(rows_np: np.ndarray) -> np.ndarray:
     Sort rows into a canonical order so two unordered row sets can be compared elementwise.
 
     The workhorse transform for index tables -- edge lists, face lists, adjacency pairs -- where
-    triwarp's parallel construction and a reference's serial one both produce the right set in
+    ordito's parallel construction and a reference's serial one both produce the right set in
     different orders. Note this canonicalises the row *order*, not the entries within a row; sort
     those first (``np.sort(edges, axis=1)``) when the pair itself is undirected.
 
@@ -70,7 +70,7 @@ def assert_nonconstant(values: np.ndarray, tol: float) -> None:
     """
     Assert a numeric field actually varies, guarding a comparison against passing vacuously.
 
-    The same shape of bug as an empty answer (section 7.4): a reference or a triwarp field that
+    The same shape of bug as an empty answer (section 7.4): a reference or a ordito field that
     happens to be constant on its fixture makes a permuted result, an off-by-one gather, or a
     query/vertex index swap all pass. ``tol`` is the field's own spread threshold and has no
     universal default -- callers pass what CLAUDE.md's own comment at the original site measured.
@@ -93,7 +93,7 @@ def undirected_edges(faces_np: np.ndarray) -> np.ndarray:
     Parameters
     ----------
     faces_np
-        ``(n_faces, 3)`` vertex indices. A flat triwarp face buffer needs ``.reshape(-1, 3)`` first.
+        ``(n_faces, 3)`` vertex indices. A flat ordito face buffer needs ``.reshape(-1, 3)`` first.
     """
     return np.sort(np.asarray(faces_np)[:, [0, 1, 1, 2, 2, 0]].reshape(-1, 2), axis=1)
 
@@ -144,7 +144,7 @@ def boundary_loop_sizes(faces_np: np.ndarray, min_size: int = 3) -> list[int]:
     The host-side description of a mesh's holes that hole-filling assertions need: how many loops,
     and how many vertices each spans, so a fill can be checked to have added ``size - 2`` faces per
     loop. ``test_combine.py`` and ``test_holes.py`` each carried three private helpers that read the
-    same numbers off [`boundary_loops`][triwarp.boundary.boundary_loops] instead -- byte-identical
+    same numbers off [`boundary_loops`][ordito.boundary.boundary_loops] instead -- byte-identical
     between the two files -- and the counts do not need a device round trip.
 
     Boundary edges are the multiplicity-1 rows of
@@ -159,7 +159,7 @@ def boundary_loop_sizes(faces_np: np.ndarray, min_size: int = 3) -> list[int]:
     Parameters
     ----------
     faces_np
-        ``(n_faces, 3)`` vertex indices. A flat triwarp face buffer needs ``.reshape(-1, 3)`` first.
+        ``(n_faces, 3)`` vertex indices. A flat ordito face buffer needs ``.reshape(-1, 3)`` first.
     min_size
         Drop loops shorter than this. The default matches what the hole fillers call *fillable*: a
         loop of one or two vertices spans no triangle.
@@ -209,7 +209,7 @@ def canonical_labels(labels_np: np.ndarray) -> np.ndarray:
     """
     Relabel a partition by first occurrence, so two labellings of it compare elementwise.
 
-    Component ids are arbitrary names for a partition: triwarp's label-propagation returns a
+    Component ids are arbitrary names for a partition: ordito's label-propagation returns a
     *representative element's* index per component, scipy returns ``0..k-1`` in discovery order and
     ``igl.facet_components`` returns ``0..k-1`` in its own. Renaming each label to the position of
     its first appearance is the transform that makes the three comparable without hiding a genuine
@@ -264,7 +264,7 @@ def assert_same_up_to_sign(
 
     Eigenvector-valued answers -- fitted line and plane normals, principal curvature directions,
     estimated point normals -- have no canonical sign: the reference's solver may return ``-v``
-    where triwarp returns ``v`` and both are correct. ``|dot| == 1`` is the gauge-invariant
+    where ordito returns ``v`` and both are correct. ``|dot| == 1`` is the gauge-invariant
     statement, and it stays a class-B assert at full tolerance because the transform is exact.
 
     Does **not** admit an arbitrary rotation. If the two sides disagree by more than a sign -- a
@@ -316,7 +316,7 @@ def trimesh_outline_loops(mesh_tm: tm.Trimesh) -> list[np.ndarray]:
     entities index into ``Path3D.vertices``, which is the mesh's own vertex array unchanged -- so no
     remapping is needed, and this asserts that rather than assuming it. And a **closed entity
     repeats its first point as its last**, so the trailing duplicate is dropped; leaving it in makes
-    every loop one longer than triwarp's and reads as an off-by-one in triwarp.
+    every loop one longer than ordito's and reads as an off-by-one in ordito.
 
     Neither the loop order within the list nor the starting point and direction within a loop is
     defined by either library, so pair the results by lowest vertex index and compare with
@@ -342,7 +342,7 @@ def assert_same_loop_set(loops_a: list[np.ndarray], loops_b: list[np.ndarray]) -
 
     The list-level counterpart of
     [`assert_cyclic_permutation_equal`][tests.comparisons.assert_cyclic_permutation_equal]: pairs
-    the loops by lowest vertex index (no library defines the order between loops -- triwarp ranks by
+    the loops by lowest vertex index (no library defines the order between loops -- ordito ranks by
     length, trimesh by traversal) and then compares each pair up to starting point and direction.
     """
     assert len(loops_a) == len(loops_b), f"loop counts differ: {len(loops_a)} vs {len(loops_b)}"
@@ -478,8 +478,8 @@ def chamfer_two_sided(points_a: np.ndarray, points_b: np.ndarray) -> float:
     raises inside trimesh rather than doing something sensible.
 
     The sum of the two directions' mean **squared** nearest-neighbour distances, which is what
-    ``pytorch3d.loss.chamfer_distance`` and [`triwarp.metrics.chamfer_points_to_points`]
-    [triwarp.metrics.chamfer_points_to_points] both return, so a threshold calibrated here reads
+    ``pytorch3d.loss.chamfer_distance`` and [`ordito.metrics.chamfer_points_to_points`]
+    [ordito.metrics.chamfer_points_to_points] both return, so a threshold calibrated here reads
     on the same scale as those.
 
     Prefer this over [`hausdorff_two_sided`][tests.comparisons.hausdorff_two_sided] when the claim
@@ -554,7 +554,7 @@ def hausdorff_surface_two_sided(
     ----------
     vertices_a, faces_a, vertices_b, faces_b
         The two meshes, as ``(n, 3)`` positions and ``(n_faces, 3)`` indices. Arrays rather than
-        ``tm.Trimesh`` because every caller holds a raw pair straight out of triwarp, igl, open3d or
+        ``tm.Trimesh`` because every caller holds a raw pair straight out of ordito, igl, open3d or
         pymeshlab, and building a mesh at each call site would be noise.
     n_samples
         Area-uniform samples drawn per mesh, at fixed seeds so the result is reproducible.
@@ -573,7 +573,7 @@ def hausdorff_surface_two_sided(
     return float(max(a_to_b, b_to_a))
 
 
-def bsr_arrays(matrix: twt.SparseMatrix) -> list[np.ndarray]:
+def bsr_arrays(matrix: odt.SparseMatrix) -> list[np.ndarray]:
     """
     Return a BSR matrix as ``[offsets, columns, values]``, sliced to its *true* entry count.
 
@@ -599,7 +599,7 @@ def comparable_arrays(value: object) -> list[np.ndarray]:
     """
     if isinstance(value, wp.array):
         return [value.numpy()]
-    if isinstance(value, twt.BsrMatrix):
+    if isinstance(value, odt.BsrMatrix):
         return bsr_arrays(value)
     if isinstance(value, tuple | list):
         return [array for item in value for array in comparable_arrays(item)]

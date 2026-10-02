@@ -1,5 +1,5 @@
 """
-Regression tests for ``triwarp.geodesic_walk`` against potpourri3d (CPU reference).
+Regression tests for ``ordito.geodesic_walk`` against potpourri3d (CPU reference).
 
 Two things are checked independently of the reference, because they are what "a geodesic" means: the
 traced arc length equals the requested one (the direction's tangential magnitude), and every traced
@@ -20,8 +20,8 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conftest import MESHES
 from tests.conversions import points_to_warp, trimesh_to_meshlib, warp_empty
 
@@ -67,8 +67,8 @@ def test_trace_from_vertex_walks_the_requested_distance(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     start_np, directions_np = _rays(mesh_tm, 24, seed=0)
-    frames_wp = tw.tangent_space.vertex_tangent_frames(mesh_wp.points, mesh_wp.indices)
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_vertex(
+    frames_wp = od.tangent_space.vertex_tangent_frames(mesh_wp.points, mesh_wp.indices)
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
@@ -77,10 +77,10 @@ def test_trace_from_vertex_walks_the_requested_distance(
     )
 
     normals = frames_wp[2].numpy()
-    is_boundary = tw.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))[
+    is_boundary = od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))[
         2
     ].numpy()
-    curves = tw.array.split(points_wp, offsets_wp)
+    curves = od.array.split(points_wp, offsets_wp)
     for ray, (start, direction) in enumerate(zip(start_np, directions_np, strict=True)):
         points = curves[ray].numpy()
         requested = _tangential_length(direction.astype(np.float64), normals[start])
@@ -101,13 +101,13 @@ def test_trace_from_vertex_stays_on_the_surface(
     """
     Class C (a distance bound, not a correspondence): every traced point is on the surface.
 
-    trimesh supplies only the point-to-surface distance, so this asserts a property of triwarp's
+    trimesh supplies only the point-to-surface distance, so this asserts a property of ordito's
     answer rather than comparing two answers. The bug class it excludes is the one unfolding gets
     wrong -- drifting off the surface at a triangle crossing -- which no arc-length check would see.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     start_np, directions_np = _rays(mesh_tm, 24, seed=1)
-    points_wp, _ = tw.geodesic_walk.trace_from_vertex(
+    points_wp, _ = od.geodesic_walk.trace_from_vertex(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
@@ -145,13 +145,13 @@ def test_trace_from_vertex_matches_potpourri3d(
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     start_np, directions_np = _rays(mesh_tm, 12, seed=2)
 
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_vertex(
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
         points_to_warp(directions_np, mesh_wp.device),
     )
-    curves = tw.array.split(points_wp, offsets_wp)
+    curves = od.array.split(points_wp, offsets_wp)
 
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
     edge_length = float(
@@ -181,7 +181,7 @@ def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, w
     mesh_tm, mesh_wp = hemisphere
     # Aim from every boundary vertex along the outward direction with a long reach: each ray must
     # stop at the rim rather than wrap around or leave the surface.
-    _, _, is_boundary_wp = tw.halfedge.vertex_one_rings(
+    _, _, is_boundary_wp = od.halfedge.vertex_one_rings(
         mesh_wp.indices, n_vertices=len(mesh_tm.vertices)
     )
     boundary = np.flatnonzero(is_boundary_wp.numpy()).astype(np.int32)
@@ -189,7 +189,7 @@ def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, w
     outward = np.asarray(mesh_tm.vertices)[boundary] - centroid
     outward *= 100.0 / np.linalg.norm(outward, axis=1, keepdims=True)
 
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_vertex(
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(boundary, dtype=wp.int32, device=mesh_wp.device),
@@ -244,14 +244,14 @@ def test_trace_from_face_matches_potpourri3d(
     directions = rng.normal(size=(n_rays, 3))
     directions *= scale / np.linalg.norm(directions, axis=1, keepdims=True)
 
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_face(
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_face(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(start_faces, dtype=wp.int32, device=mesh_wp.device),
         points_to_warp(barycentric, mesh_wp.device),
         points_to_warp(directions, mesh_wp.device),
     )
-    curves = tw.array.split(points_wp, offsets_wp)
+    curves = od.array.split(points_wp, offsets_wp)
 
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
     for ray in range(n_rays):
@@ -269,7 +269,7 @@ def test_trace_from_face_zero_direction_is_a_single_point(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _, mesh_wp = icosahedron
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_face(
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_face(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
@@ -287,7 +287,7 @@ def test_trace_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     empty_int = warp_empty(0, wp.int32, device)
     empty_vec = warp_empty(0, wp.vec3, device)
-    points_wp, offsets_wp = tw.geodesic_walk.trace_from_vertex(
+    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
         vertices_wp, faces_wp, empty_int, empty_vec
     )
     assert points_wp.shape == (0,)
@@ -305,10 +305,10 @@ def _paths_to_source(mesh_wp: wp.Mesh, targets_np: np.ndarray) -> list[wp.array[
     """Trace every target back to vertex 0 and slice the packed result."""
     device = mesh_wp.points.device
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    points_wp, offsets_wp = tw.geodesic_walk.geodesic_path(
+    points_wp, offsets_wp = od.geodesic_walk.geodesic_path(
         mesh_wp.points, mesh_wp.indices, source_wp, wp.array(targets_np, wp.int32, device=device)
     )
-    return tw.array.split(points_wp, offsets_wp)
+    return od.array.split(points_wp, offsets_wp)
 
 
 @pytest.mark.parametrize("mesh_name", _PATH_MESHES)
@@ -321,7 +321,7 @@ def test_geodesic_path_is_never_shorter_than_the_exact_geodesic(
 
     ``igl.exact_geodesic`` propagates MMP windows and is *globally* exact, so it is a true lower
     bound on the length of any path between the same two vertices -- and the assertion is that
-    triwarp never comes in under it. Measured over three fixtures, the minimum ratio is
+    ordito never comes in under it. Measured over three fixtures, the minimum ratio is
     **1.0000-1.0005** and the median 1.0000-1.0185, with the worst single path 1.08 long on
     ``unit_box``, where a cube's exact geodesics run along flat faces that a first-order field
     resolves poorly.
@@ -343,7 +343,7 @@ def test_geodesic_path_is_never_shorter_than_the_exact_geodesic(
     ).astype(np.int32)
 
     paths = _paths_to_source(mesh_wp, targets_np)
-    lengths_np = np.array([float(tw.polyline.polyline_length(path)) for path in paths])
+    lengths_np = np.array([float(od.polyline.polyline_length(path)) for path in paths])
 
     exact_igl = np.asarray(
         igl.exact_geodesic(
@@ -411,7 +411,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
 
     potpourri3d flips edges until the path is locally shortest, so its length is the exact geodesic
     for that homotopy class -- and on a simply-connected surface that is *the* geodesic. Measured on
-    ``icosphere(3)`` over 24 targets: triwarp is never shorter (minimum ratio **1.0000**), median
+    ``icosphere(3)`` over 24 targets: ordito is never shorter (minimum ratio **1.0000**), median
     **1.0051** and worst **1.0917**. The gap is the heat field's first-order accuracy, which is the
     price of getting every path from one solve.
 
@@ -431,7 +431,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     targets_np = rng.choice(np.arange(1, vertices_np.shape[0]), 24, replace=False).astype(np.int32)
 
     paths = _paths_to_source(mesh_wp, targets_np)
-    lengths_np = np.array([float(tw.polyline.polyline_length(path)) for path in paths])
+    lengths_np = np.array([float(od.polyline.polyline_length(path)) for path in paths])
     exact_pp = np.array(
         [
             float(
@@ -484,7 +484,7 @@ def test_geodesic_path_reaches_the_source_along_the_surface(
         assert np.allclose(path_np[0], vertices_np[target], atol=1e-5)
         assert np.allclose(path_np[-1], vertices_np[0], atol=1e-5)
 
-        _closest_wp, distance_wp, _face_wp = tw.proximity.closest_point_on_mesh(
+        _closest_wp, distance_wp, _face_wp = od.proximity.closest_point_on_mesh(
             vertices_wp, faces_wp, path
         )
         assert float(distance_wp.numpy().max()) < 1e-5 * diagonal
@@ -508,8 +508,8 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
     _, sphere_wp = icosphere
     device = sphere_wp.points.device
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    distance_wp = tw.heat.heat_geodesic(sphere_wp.points, sphere_wp.indices, source_wp)
-    at_source_wp, offsets_wp = tw.geodesic_walk.descend_field(
+    distance_wp = od.heat.heat_geodesic(sphere_wp.points, sphere_wp.indices, source_wp)
+    at_source_wp, offsets_wp = od.geodesic_walk.descend_field(
         sphere_wp.points, sphere_wp.indices, distance_wp, source_wp
     )
     assert at_source_wp.size == 1  # already at the stop value
@@ -518,15 +518,15 @@ def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
     # A boundary: the field's source is a rim vertex, so paths from the far side reach it, but a
     # field with no reachable minimum stops on the rim instead.
     mesh_tm, hemi_wp = hemisphere
-    rim_wp = tw.boundary.boundary_vertex_indices(hemi_wp.points, hemi_wp.indices)
+    rim_wp = od.boundary.boundary_vertex_indices(hemi_wp.points, hemi_wp.indices)
     assert rim_wp.size > 0
-    hemi_distance_wp = tw.heat.heat_geodesic(
-        hemi_wp.points, hemi_wp.indices, twt.as_dense(rim_wp[:1])
+    hemi_distance_wp = od.heat.heat_geodesic(
+        hemi_wp.points, hemi_wp.indices, odt.as_dense(rim_wp[:1])
     )
     interior_np = np.setdiff1d(
         np.arange(mesh_tm.vertices.shape[0], dtype=np.int32), rim_wp.numpy()
     )[:8]
-    points_wp, path_offsets_wp = tw.geodesic_walk.descend_field(
+    points_wp, path_offsets_wp = od.geodesic_walk.descend_field(
         hemi_wp.points,
         hemi_wp.indices,
         hemi_distance_wp,
@@ -540,7 +540,7 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
     icosphere: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: ``vertex_faces=`` takes the pair values first.
+    Ordito against ordito: ``vertex_faces=`` takes the pair values first.
 
     Like every packed pair in the package. The oracle is the default branch -- ``descend_field``
     building the incidence itself -- and this pins the precomputed branch to it. It exists because
@@ -550,23 +550,23 @@ def test_descend_field_accepts_the_precomputed_pair_values_first(
     and (measured while the convention was being fixed) segfaults the CPU backend several launches
     later rather than at the call. So the composition is asserted rather than assumed.
 
-    See [`array.pack_1d_arrays`][triwarp.array.pack_1d_arrays] for the convention itself.
+    See [`array.pack_1d_arrays`][ordito.array.pack_1d_arrays] for the convention itself.
     """
     _, mesh_wp = icosphere
     device = mesh_wp.points.device
     n_vertices = mesh_wp.points.size
     source_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    distance_wp = tw.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp)
+    distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp)
     starts_wp = wp.array(np.arange(1, 9, dtype=np.int32), dtype=wp.int32, device=device)
 
-    derived_points, derived_offsets = tw.geodesic_walk.descend_field(
+    derived_points, derived_offsets = od.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, distance_wp, starts_wp
     )
 
-    incidence = tw.adjacency.vertex_face_adjacency(mesh_wp.indices, n_vertices=n_vertices)
+    incidence = od.adjacency.vertex_face_adjacency(mesh_wp.indices, n_vertices=n_vertices)
     assert incidence[0].size == mesh_wp.indices.size  # values, not offsets
     assert incidence[1].size == n_vertices + 1  # offsets, not values
-    supplied_points, supplied_offsets = tw.geodesic_walk.descend_field(
+    supplied_points, supplied_offsets = od.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, distance_wp, starts_wp, vertex_faces=incidence
     )
 
@@ -581,7 +581,7 @@ def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
     device = mesh_wp.points.device
     values_wp = wp.zeros(3, dtype=wp.float64, device=device)
     with pytest.raises(ValueError, match="one entry per vertex"):
-        tw.geodesic_walk.descend_field(
+        od.geodesic_walk.descend_field(
             mesh_wp.points,
             mesh_wp.indices,
             values_wp,
@@ -589,12 +589,12 @@ def test_descend_field_guards_and_empty(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
         )
 
     field_wp = wp.zeros(mesh_wp.points.size, dtype=wp.float64, device=device)
-    points_wp, offsets_wp = tw.geodesic_walk.descend_field(
+    points_wp, offsets_wp = od.geodesic_walk.descend_field(
         mesh_wp.points, mesh_wp.indices, field_wp, warp_empty(0, wp.int32, device)
     )
     assert points_wp.shape == (0,)
     assert offsets_wp.shape == (1,)
-    assert tw.array.split(points_wp, offsets_wp) == []
+    assert od.array.split(points_wp, offsets_wp) == []
 
 
 def _cycle_length(vertices_np: np.ndarray, loop_np: np.ndarray) -> float:
@@ -628,10 +628,10 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
     """
     mesh_tm, mesh_wp = torus
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so there are two generators to shorten
 
-    shortened_wp, sweeps = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    shortened_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
     assert 0 < sweeps < 100  # it converged rather than being cut off by the cap
 
     solver_pp = pp3d.EdgeFlipGeodesicSolver(
@@ -668,25 +668,25 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
 )
 def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class C: triwarp's edge-path local minimum against a reference minimizing over the same space.
+    Class C: ordito's edge-path local minimum against a reference minimizing over the same space.
 
     The second oracle for this group, and it isolates something
     [`test_shorten_loop_preserves_the_homotopy_class`][tests.test_geodesic_walk.test_shorten_loop_preserves_the_homotopy_class]
     cannot. That test compares against ``potpourri3d.EdgeFlipGeodesicSolver``, which is allowed to
-    leave the edge graph, so its 1.066x-1.578x gap mixes two separate things: how far triwarp's
+    leave the edge graph, so its 1.066x-1.578x gap mixes two separate things: how far ordito's
     sweep is from the best *edge path*, and how far the best edge path is from the true geodesic.
     ``findShortestEquivalentLoops`` stays on mesh edges, so the ratio here is the first of those
     alone -- the local-versus-global gap over one search space.
 
     Two asserts, and the sharp one is not the ratio. Building the reference's input requires walking
-    triwarp's output through ``MeshTopology.findEdge`` pair by pair, which **validates the loop
+    ordito's output through ``MeshTopology.findEdge`` pair by pair, which **validates the loop
     against an independent halfedge structure**: a sweep that ever rerouted through a vertex outside
     the one-ring would emit a consecutive pair that is not a mesh edge, and ``findEdge`` returns an
     invalid ``EdgeId`` rather than an approximation. Every existing validity check on this function
-    goes through triwarp's own adjacency. The ratio then bounds the length gap.
+    goes through ordito's own adjacency. The ratio then bounds the length gap.
 
     The bug class the threshold excludes is a sweep that stalls or lengthens. Measured ratios of
-    triwarp's length to the reference's total: **1.07 and 1.54** on ``torus``, **1.18 / 1.31 /
+    ordito's length to the reference's total: **1.07 and 1.54** on ``torus``, **1.18 / 1.31 /
     1.55 / 1.17** on ``genus_two`` -- so the 2.0 threshold clears the worst by 1.29x. The mutation
     probe is the unshortened tree-cotree loop, which the sweep is what removes: feeding ``torus``'s
     major generator raw takes the ratio to **2.17** and fails. That margin is narrower than a
@@ -702,8 +702,8 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    shortened_wp, _sweeps = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    shortened_wp, _sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     topology_ml = mesh_ml.topology
@@ -735,7 +735,7 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
 
 def test_shorten_loop_accepts_precomputed_connectivity(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the ``twins`` / ``rings`` arguments do not change the sweep.
+    Ordito against ordito: the ``twins`` / ``rings`` arguments do not change the sweep.
 
     Not a parity assert. The call that rebuilds the connectivity itself is the one the reference
     comparison above runs, so it carries the oracle; what this pins is that handing the sweep a
@@ -744,12 +744,12 @@ def test_shorten_loop_accepts_precomputed_connectivity(torus: tuple[tm.Trimesh, 
     """
     _mesh_tm, mesh_wp = torus
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    loops_wp = tw.homology.homology_generators(vertices_wp, faces_wp)
+    loops_wp = od.homology.homology_generators(vertices_wp, faces_wp)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so there are two generators to shorten
 
-    rebuilt_wp, rebuilt_sweeps = tw.geodesic_walk.shorten_loop(vertices_wp, faces_wp, loops_wp)
-    mesh = tw.Trimesh.from_warp_mesh(mesh_wp)
-    cached_wp, cached_sweeps = tw.geodesic_walk.shorten_loop(
+    rebuilt_wp, rebuilt_sweeps = od.geodesic_walk.shorten_loop(vertices_wp, faces_wp, loops_wp)
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    cached_wp, cached_sweeps = od.geodesic_walk.shorten_loop(
         vertices_wp, faces_wp, loops_wp, twins=mesh.halfedge_twins, rings=mesh.vertex_one_rings
     )
 
@@ -773,11 +773,11 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
     """
     _, mesh_wp = torus
     device = mesh_wp.indices.device
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    shortened_wp, _ = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    shortened_wp, _ = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
 
     edges_np = {
-        tuple(sorted(edge)) for edge in tw.edges.faces_to_edges(mesh_wp.indices).numpy().tolist()
+        tuple(sorted(edge)) for edge in od.edges.faces_to_edges(mesh_wp.indices).numpy().tolist()
     }
     for shortened_loop_wp in shortened_wp:
         loop_np = shortened_loop_wp.numpy()
@@ -792,14 +792,14 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
         loop_edges_wp = wp.array(
             np.stack([loop_np, rolled_np], axis=1).astype(np.int32), dtype=wp.int32, device=device
         )
-        cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(
-            mesh_wp.points, mesh_wp.indices, twt.as_array2d(loop_edges_wp, wp.int32)
+        cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(
+            mesh_wp.points, mesh_wp.indices, odt.as_array2d(loop_edges_wp, wp.int32)
         )
-        labels_np = tw.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
+        labels_np = od.adjacency.face_connected_component_labels(cut_faces_wp).numpy()
         assert np.unique(labels_np).size == 1
         assert (
             len(
-                tw.boundary.boundary_loops(cast("wp.array[wp.vec3]", cut_vertices_wp), cut_faces_wp)
+                od.boundary.boundary_loops(cast("wp.array[wp.vec3]", cut_vertices_wp), cut_faces_wp)
             )
             == 2
         )
@@ -807,22 +807,22 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
 
 def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the list form is the packed form, loop by loop.
+    Ordito against ordito: the list form is the packed form, loop by loop.
 
     ``shorten_loop`` carries the potpourri3d homotopy comparison above; this pins
     ``shorten_loop_with_offsets`` to it on a genus-2 basis (four loops), and checks that the packed
     form leaves its input buffer untouched and hands it back as is when no sweep may run.
     """
     _, mesh_wp = genus_two
-    flat_wp, offsets_wp = tw.homology.homology_generators_with_offsets(
+    flat_wp, offsets_wp = od.homology.homology_generators_with_offsets(
         mesh_wp.points, mesh_wp.indices
     )
     flat_before_np = flat_wp.numpy().copy()
-    loops_wp = tw.array.split(flat_wp, offsets_wp)
+    loops_wp = od.array.split(flat_wp, offsets_wp)
     assert len(loops_wp) == 4
 
-    shortened_wp, sweeps = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
-    packed_wp, packed_offsets_wp, packed_sweeps = tw.geodesic_walk.shorten_loop_with_offsets(
+    shortened_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    packed_wp, packed_offsets_wp, packed_sweeps = od.geodesic_walk.shorten_loop_with_offsets(
         mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp
     )
 
@@ -834,7 +834,7 @@ def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.M
     for i, loop_wp in enumerate(shortened_wp):
         assert np.array_equal(loop_wp.numpy(), packed_np[offsets_np[i] : offsets_np[i + 1]])
 
-    unchanged = tw.geodesic_walk.shorten_loop_with_offsets(
+    unchanged = od.geodesic_walk.shorten_loop_with_offsets(
         mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp, max_iter=0
     )
     assert unchanged == (flat_wp, offsets_wp, 0)
@@ -851,20 +851,20 @@ def test_shorten_loop_is_idempotent_and_handles_edge_cases(
     loop too short to have a triple, and an empty list, come back untouched.
     """
     _, mesh_wp = torus
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    once_wp, _ = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
-    twice_wp, sweeps = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, once_wp)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    once_wp, _ = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    twice_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, once_wp)
     assert sweeps == 2  # one sweep per parity, both finding nothing to do
     for first_wp, second_wp in zip(once_wp, twice_wp, strict=True):
         assert np.array_equal(first_wp.numpy(), second_wp.numpy())
 
-    assert tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, []) == ([], 0)
+    assert od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, []) == ([], 0)
     stub_wp = wp.array([0, 1], dtype=wp.int32, device=mesh_wp.indices.device)
-    kept_wp, _ = tw.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, [stub_wp])
+    kept_wp, _ = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, [stub_wp])
     assert np.array_equal(kept_wp[0].numpy(), [0, 1])
 
     with pytest.raises(TypeError, match=r"expected dtype"):
-        tw.geodesic_walk.shorten_loop(
+        od.geodesic_walk.shorten_loop(
             mesh_wp.points,
             mesh_wp.indices,
             [wp.array([0.0, 1.0], dtype=wp.float32, device=mesh_wp.indices.device)],

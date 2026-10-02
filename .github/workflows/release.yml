@@ -63,16 +63,16 @@ jobs:
           /tmp/smoke/bin/pip install --upgrade pip
           /tmp/smoke/bin/pip install dist/*.whl
           /tmp/smoke/bin/python -c "
-          import os, triwarp as tw
+          import os, ordito as od
           # The version the wheel actually reports, checked against the tag being released.
           expected = os.environ['GITHUB_REF_NAME'].lstrip('v')
-          assert tw.__version__ == expected, (tw.__version__, expected)
-          vertices, faces = tw.creation.icosphere(subdivisions=2)
+          assert od.__version__ == expected, (od.__version__, expected)
+          vertices, faces = od.creation.icosphere(subdivisions=2)
           assert faces.shape[0] == 960, faces.shape
-          mesh = tw.Trimesh(vertices, faces)
+          mesh = od.Trimesh(vertices, faces)
           assert mesh.is_watertight
           assert mesh.euler_characteristic == 2
-          print('ok: triwarp', tw.__version__, '--', vertices.shape[0], 'vertices on', vertices.device)
+          print('ok: ordito', od.__version__, '--', vertices.shape[0], 'vertices on', vertices.device)
           "
 
       # The body of the GitHub Release, cut from the changelog section matching this tag, so the
@@ -113,7 +113,7 @@ jobs:
     # and this environment name, before the first tag is pushed.
     environment:
       name: pypi
-      url: https://pypi.org/p/triwarp
+      url: https://pypi.org/p/ordito
     permissions:
       id-token: write
     steps:

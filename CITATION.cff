@@ -2,11 +2,11 @@
 # file, and the BibTeX block in README.md is the same record by hand -- keep the two in step, and
 # bump `version` and `date-released` here as part of the release checklist.
 cff-version: 1.2.0
-message: "If triwarp is useful in your research, please cite it."
+message: "If ordito is useful in your research, please cite it."
 type: software
-title: "triwarp: GPU-accelerated triangular mesh processing on NVIDIA Warp"
+title: "ordito: GPU-accelerated triangular mesh processing on NVIDIA Warp"
 abstract: >-
-  triwarp is a GPU-accelerated triangular mesh processing library built on NVIDIA Warp. It
+  ordito is a GPU-accelerated triangular mesh processing library built on NVIDIA Warp. It
   provides geometry, topology, repair, remeshing, spatial queries, discrete differential
   operators, geodesics, point-cloud reconstruction and registration as array-in / array-out
   functions that keep data resident on the device, with a trimesh-inspired API and a regression
@@ -15,8 +15,8 @@ authors:
   - family-names: "Grementieri"
     given-names: "Luca"
     email: "luca.grementieri@ens-paris-saclay.fr"
-repository-code: "https://github.com/lucagrementieri/triwarp"
-url: "https://lucagrementieri.github.io/triwarp/"
+repository-code: "https://github.com/lucagrementieri/ordito"
+url: "https://lucagrementieri.github.io/ordito/"
 license:
   - MIT
   - Apache-2.0

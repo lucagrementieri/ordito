@@ -1,5 +1,5 @@
 """
-Regression tests for ``triwarp.energies``: the quadratic forms assembled from a Laplacian.
+Regression tests for ``ordito.energies``: the quadratic forms assembled from a Laplacian.
 
 Every comparison here is against libigl, which is the only reference that exposes these operators at
 all -- ``harmonic_integrated_from_laplacian_and_mass``, ``hessian_energy``,
@@ -25,14 +25,14 @@ import trimesh as tm
 import warp as wp
 import warp.sparse as wps
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conversions import bsr_to_csr, mesh_igl, numpy_to_warp, trimesh_to_pytorch3d
 
 
 def _upload_bsr_float64(
     matrix_sp: sp.csc_matrix | sp.csr_matrix, device: wp.DeviceLike
-) -> twt.BsrMatrix[wp.float64]:
+) -> odt.BsrMatrix[wp.float64]:
     """Upload a scipy sparse matrix as a float64 1x1-block BSR on ``device``."""
     coo = matrix_sp.tocoo()
     matrix_wp = wps.bsr_from_triplets(
@@ -43,7 +43,7 @@ def _upload_bsr_float64(
         wp.array(coo.data.astype(np.float64), dtype=wp.float64, device=device),
         prune_numerical_zeros=False,
     )
-    assert twt.has_blocks(matrix_wp, wp.float64)
+    assert odt.has_blocks(matrix_wp, wp.float64)
     return matrix_wp
 
 
@@ -61,13 +61,13 @@ def test_edge_length_loss_matches_pytorch3d(
     0.0899726 and 3.73347e-04 against 3.73347e-04 over 480 unique edges.
 
     pytorch3d's per-mesh ``1 / E`` weighting collapses to a plain mean for a single mesh, which is
-    triwarp's only case -- so this is a direct comparison rather than a class-B one.
+    ordito's only case -- so this is a direct comparison rather than a class-B one.
     """
     mesh_tm, mesh_wp = icosphere_coarse
     loss_p3d = float(
         p3d_loss.mesh_edge_loss(trimesh_to_pytorch3d(mesh_tm), target_length=target_length)
     )
-    loss_wp = tw.energies.edge_length_loss(
+    loss_wp = od.energies.edge_length_loss(
         mesh_wp.points, mesh_wp.indices, target_length=target_length
     )
 
@@ -85,25 +85,25 @@ def test_normal_consistency_loss_matches_pytorch3d(
     ``mesh_normal_consistency`` enumerates every *pair* of faces sharing an edge -- ``C(k, 2)``
     pairs at an edge with ``k`` incident faces, through its own
     ``_C.mesh_normal_consistency_find_verts`` -- where
-    [`face_adjacency_angles`][triwarp.adjacency.face_adjacency_angles] reports one pair per
+    [`face_adjacency_angles`][ordito.adjacency.face_adjacency_angles] reports one pair per
     adjacency. The two coincide exactly wherever every edge has at most two faces, which is what
     the first half measures: 0.0155947 against 0.0155947 over ``icosphere(2)``'s 480 pairs.
 
     The second half is the divergence itself, on three faces sharing one edge, and it is sharper
     than a factor: pytorch3d sees ``C(3, 2) = 3`` pairs there and reports **0.777**, while
-    [`face_adjacency`][triwarp.adjacency.face_adjacency] keeps only edges with *exactly* two
+    [`face_adjacency`][ordito.adjacency.face_adjacency] keeps only edges with *exactly* two
     incident faces and so reports **no pairs at all** and a loss of ``0.0``. The test pins both
     numbers rather than papering over them with a tolerance; without that half the class-A label
     would read as a claim about all input.
     """
     mesh_tm, mesh_wp = icosphere_coarse
     loss_p3d = float(p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(mesh_tm)))
-    loss_wp = tw.energies.normal_consistency_loss(mesh_wp.points, mesh_wp.indices)
+    loss_wp = od.energies.normal_consistency_loss(mesh_wp.points, mesh_wp.indices)
 
     assert loss_p3d > 1e-6
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-4, atol=0.0)
 
-    # Three faces on one edge: 3 reference pairs against triwarp's 2 adjacencies.
+    # Three faces on one edge: 3 reference pairs against ordito's 2 adjacencies.
     vertices_np = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.3], [0.0, 0.2, 1.0]],
         dtype=np.float64,
@@ -113,7 +113,7 @@ def test_normal_consistency_loss_matches_pytorch3d(
         p3d_loss.mesh_normal_consistency(trimesh_to_pytorch3d(tm.Trimesh(vertices_np, faces_np)))
     )
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    fan_wp = tw.energies.normal_consistency_loss(vertices_wp, faces_wp)
+    fan_wp = od.energies.normal_consistency_loss(vertices_wp, faces_wp)
 
     assert np.allclose(fan_p3d, 0.777404, rtol=1e-4, atol=0.0)
     assert fan_wp == 0.0
@@ -133,15 +133,15 @@ def test_laplacian_smoothing_loss_matches_pytorch3d(
     5.27e-07 relative.
 
     Class B rather than A because the reference reads a cotangent Laplacian whose off-diagonal is
-    twice triwarp's half-cotangent table and whose diagonal is identically zero; the two ratios
+    twice ordito's half-cotangent table and whose diagonal is identically zero; the two ratios
     ``(L v) / rowsum`` and ``(L v) / (6 M)`` are invariant to that factor, which is the named
-    transform and is why the wrapper can assemble from triwarp's own ``cotmatrix``.
+    transform and is why the wrapper can assemble from ordito's own ``cotmatrix``.
     """
     mesh_tm, mesh_wp = icosphere_coarse
     loss_p3d = float(
         p3d_loss.mesh_laplacian_smoothing(trimesh_to_pytorch3d(mesh_tm), method=method)
     )
-    loss_wp = tw.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, method)
+    loss_wp = od.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, method)
 
     assert loss_p3d > 1e-3
     assert np.allclose(loss_wp, loss_p3d, rtol=1e-5, atol=0.0)
@@ -151,7 +151,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
     icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
-    Triwarp against triwarp: the three methods are far apart, and an empty mesh is 0.0.
+    Ordito against ordito: the three methods are far apart, and an empty mesh is 0.0.
 
     Not a parity assert -- the reference comparison above carries the oracle. This is the guard
     that keeps the parametrized test above non-vacuous: if two methods ever collapsed onto one
@@ -162,7 +162,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
     mesh_tm, mesh_wp = icosphere_coarse
     del mesh_tm
     losses = [
-        tw.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, method)
+        od.energies.laplacian_smoothing_loss(mesh_wp.points, mesh_wp.indices, method)
         for method in ("uniform", "cot", "cotcurv")
     ]
     assert losses[0] > losses[1] > 0.0
@@ -171,11 +171,11 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
 
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.points.device)
     empty_faces_wp = wp.zeros(0, dtype=wp.int32, device=mesh_wp.points.device)
-    assert tw.energies.laplacian_smoothing_loss(empty_vertices_wp, empty_faces_wp) == 0.0
-    assert tw.energies.edge_length_loss(empty_vertices_wp, empty_faces_wp) == 0.0
-    assert tw.energies.normal_consistency_loss(empty_vertices_wp, empty_faces_wp) == 0.0
+    assert od.energies.laplacian_smoothing_loss(empty_vertices_wp, empty_faces_wp) == 0.0
+    assert od.energies.edge_length_loss(empty_vertices_wp, empty_faces_wp) == 0.0
+    assert od.energies.normal_consistency_loss(empty_vertices_wp, empty_faces_wp) == 0.0
     with pytest.raises(ValueError, match="method must be"):
-        tw.energies.laplacian_smoothing_loss(
+        od.energies.laplacian_smoothing_loss(
             mesh_wp.points,
             mesh_wp.indices,
             "cotan",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
@@ -204,7 +204,7 @@ def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, 
 
     laplacian_wp = _upload_bsr_float64(laplacian_igl, mesh_wp.device)
     mass_wp = wp.array(mass_igl.diagonal(), dtype=wp.float64, device=mesh_wp.device)
-    q_wp = bsr_to_csr(tw.energies.k_harmonic(laplacian_wp, mass_wp, k=k)).toarray()
+    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, mass_wp, k=k)).toarray()
 
     assert q_wp.shape == q_igl.shape
     scale = np.abs(q_igl).max()
@@ -223,12 +223,12 @@ def test_k_harmonic_identity_mass_and_power_guard(hemisphere: tuple[tm.Trimesh, 
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
     laplacian_wp = _upload_bsr_float64(laplacian_igl, mesh_wp.device)
-    q_wp = bsr_to_csr(tw.energies.k_harmonic(laplacian_wp, k=2)).toarray()
+    q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, k=2)).toarray()
     q_sp = (laplacian_igl @ laplacian_igl).toarray()
     assert np.allclose(q_wp, q_sp, rtol=1e-9, atol=1e-9 * np.abs(q_sp).max())
 
     with pytest.raises(ValueError, match="k must be >= 1"):
-        tw.energies.k_harmonic(laplacian_wp, k=0)
+        od.energies.k_harmonic(laplacian_wp, k=0)
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
@@ -237,7 +237,7 @@ def test_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_name: s
     """
     Class A on the assembled ``(n_vertices, n_vertices)`` matrix.
 
-    igl is handed the float32-rounded vertices triwarp actually computes from, so the comparison
+    igl is handed the float32-rounded vertices ordito actually computes from, so the comparison
     isolates the operator assembly (the two-ring contraction, the Voronoi mass, the boundary
     kill) from input precision; entries scale as the inverse fourth power of the mesh size, which
     would otherwise let vertex rounding dominate the tolerance. The open fixtures are the ones
@@ -248,7 +248,7 @@ def test_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_name: s
     faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int64)
 
     q_igl = igl.hessian_energy(vertices_np, faces_np).toarray()
-    q_wp = bsr_to_csr(tw.energies.hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
+    q_wp = bsr_to_csr(od.energies.hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
 
     assert q_wp.shape == q_igl.shape
     assert np.abs(q_igl).max() > 0.0
@@ -266,19 +266,19 @@ def test_hessian_energy_annihilates_linear_fields_where_biharmonic_does_not(devi
     al. 2018 diagnose. The contrast is asserted so the null-space check cannot pass vacuously.
     Flatness matters: on the curved fixtures the piecewise-linear Hessian of ``b.x`` is genuinely
     nonzero across bent edges (measured 5.06 against a 9.0 matrix scale on ``icosahedron``, for
-    igl and triwarp alike), so this property is only testable on a planar patch.
+    igl and ordito alike), so this property is only testable on a planar patch.
     """
-    vertices_wp, faces_wp = tw.creation.grid(count=(7, 7), device=device)
+    vertices_wp, faces_wp = od.creation.grid(count=(7, 7), device=device)
     vertices_np = np.ascontiguousarray(vertices_wp.numpy(), dtype=np.float64)
     n_vertices = len(vertices_np)
     linear_fields = np.c_[np.ones(n_vertices), vertices_np]
 
-    q_hessian = bsr_to_csr(tw.energies.hessian_energy(vertices_wp, faces_wp)).toarray()
+    q_hessian = bsr_to_csr(od.energies.hessian_energy(vertices_wp, faces_wp)).toarray()
     residual_hessian = np.abs(q_hessian @ linear_fields).max()
 
-    laplacian_wp = tw.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
-    mass_wp = tw.laplacian.mass_matrix_entries(vertices_wp, faces_wp, dtype=wp.float64)
-    q_biharmonic = bsr_to_csr(tw.energies.k_harmonic(laplacian_wp, mass_wp, k=2)).toarray()
+    laplacian_wp = od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64)
+    mass_wp = od.laplacian.mass_matrix_entries(vertices_wp, faces_wp, dtype=wp.float64)
+    q_biharmonic = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, mass_wp, k=2)).toarray()
     residual_biharmonic = np.abs(q_biharmonic @ linear_fields).max()
 
     scale = np.abs(q_hessian).max()
@@ -294,7 +294,7 @@ def test_curved_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_
 
     The per-face contraction of ``D^T Mi (L + K) Mi D`` must agree with igl's chained sparse
     products; igl gets the float32-rounded vertices for the same reason as ``hessian_energy``'s
-    test. triwarp numbers and orients its unique edges differently from ``igl::orient_halfedges``
+    test. ordito numbers and orients its unique edges differently from ``igl::orient_halfedges``
     (min-vertex-first instead of first-occurrence-first), and the agreement here is what shows the
     energy is invariant to that gauge. ``torus`` is the curvature-rich closed case where the
     ``K`` correction actually contributes.
@@ -304,7 +304,7 @@ def test_curved_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_
     faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int64)
 
     q_igl = igl.curved_hessian_energy(vertices_np, faces_np).toarray()
-    q_wp = bsr_to_csr(tw.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
+    q_wp = bsr_to_csr(od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
 
     assert q_wp.shape == q_igl.shape
     assert np.abs(q_igl).max() > 0.0
@@ -318,7 +318,7 @@ def test_curved_hessian_energy_annihilates_constants(
 ) -> None:
     """Constants have zero energy by construction: every CR gradient row sums to zero."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    q_wp = bsr_to_csr(tw.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
+    q_wp = bsr_to_csr(od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
     ones = np.ones(q_wp.shape[0])
     assert np.abs(q_wp).max() > 0.0
     assert np.abs(q_wp @ ones).max() < 1e-9 * np.abs(q_wp).max()
@@ -326,13 +326,13 @@ def test_curved_hessian_energy_annihilates_constants(
 
 def _igl_edge_arguments(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
     """
-    Triwarp's ``edges_unique`` numbering in the ``(E, EMAP)`` layout igl's CR bindings take.
+    Ordito's ``edges_unique`` numbering in the ``(E, EMAP)`` layout igl's CR bindings take.
 
     igl's ``EMAP`` is column-major over ``igl::oriented_facets`` — entry ``c * n_faces + f`` is
-    the edge opposite corner ``c`` of face ``f`` — while triwarp's ``inverse`` is row-major over
+    the edge opposite corner ``c`` of face ``f`` — while ordito's ``inverse`` is row-major over
     halfedges ``(f[s], f[s+1])``, where slot ``s`` spans the edge opposite corner ``(s + 2) % 3``.
     """
-    unique_edges_wp, inverse_wp = tw.edges.edges_unique(
+    unique_edges_wp, inverse_wp = od.edges.edges_unique(
         mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
     inverse_np = inverse_wp.numpy().reshape(-1, 3)
@@ -348,7 +348,7 @@ def test_crouzeix_raviart_cotmatrix_matches_igl(
     """
     Class B; the named transform is the edge numbering, handed *to* igl.
 
-    ``igl.crouzeix_raviart_cotmatrix`` accepts an explicit ``(E, EMAP)``, so feeding it triwarp's
+    ``igl.crouzeix_raviart_cotmatrix`` accepts an explicit ``(E, EMAP)``, so feeding it ordito's
     ``edges_unique`` numbering makes the two ``(n_edges, n_edges)`` matrices directly comparable —
     no row permutation is applied to either side's output.
     """
@@ -361,7 +361,7 @@ def test_crouzeix_raviart_cotmatrix_matches_igl(
         vertices_np, faces_np, edges_igl, edge_map_igl
     ).toarray()
     matrix_wp = bsr_to_csr(
-        tw.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
+        od.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
     ).toarray()
 
     assert matrix_wp.shape == matrix_igl.shape == (len(edges_igl), len(edges_igl))
@@ -388,7 +388,7 @@ def test_crouzeix_raviart_massmatrix_matches_igl(
         vertices_np, faces_np, edges_igl, edge_map_igl
     ).toarray()
     matrix_wp = bsr_to_csr(
-        tw.energies.crouzeix_raviart_massmatrix(mesh_wp.points, mesh_wp.indices)
+        od.energies.crouzeix_raviart_massmatrix(mesh_wp.points, mesh_wp.indices)
     ).toarray()
 
     assert matrix_wp.shape == matrix_igl.shape
@@ -398,19 +398,19 @@ def test_crouzeix_raviart_massmatrix_matches_igl(
 def test_crouzeix_raviart_shared_edge_numbering(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Precomputed ``(unique_edges, edge_map)`` must not change the answer; half a pair raises."""
     _mesh_tm, mesh_wp = half_torus
-    unique_edges, edge_map = tw.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    unique_edges, edge_map = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     derived = bsr_to_csr(
-        tw.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
+        od.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
     ).toarray()
     supplied = bsr_to_csr(
-        tw.energies.crouzeix_raviart_cotmatrix(
+        od.energies.crouzeix_raviart_cotmatrix(
             mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges, edge_map=edge_map
         )
     ).toarray()
     assert np.array_equal(derived, supplied)
 
     with pytest.raises(ValueError, match="together"):
-        tw.energies.crouzeix_raviart_massmatrix(
+        od.energies.crouzeix_raviart_massmatrix(
             mesh_wp.points, mesh_wp.indices, unique_edges=unique_edges
         )
 
@@ -420,13 +420,13 @@ def test_operator_family_empty_mesh(device: str) -> None:
     vertices_wp = wp.array(np.zeros((3, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
 
-    hessian = tw.energies.hessian_energy(vertices_wp, faces_wp)
+    hessian = od.energies.hessian_energy(vertices_wp, faces_wp)
     assert (int(hessian.nrow), int(hessian.ncol)) == (3, 3)
-    curved = tw.energies.curved_hessian_energy(vertices_wp, faces_wp)
+    curved = od.energies.curved_hessian_energy(vertices_wp, faces_wp)
     assert (int(curved.nrow), int(curved.ncol)) == (3, 3)
-    cr_cot = tw.energies.crouzeix_raviart_cotmatrix(vertices_wp, faces_wp)
+    cr_cot = od.energies.crouzeix_raviart_cotmatrix(vertices_wp, faces_wp)
     assert (int(cr_cot.nrow), int(cr_cot.ncol)) == (0, 0)
-    cr_mass = tw.energies.crouzeix_raviart_massmatrix(vertices_wp, faces_wp)
+    cr_mass = od.energies.crouzeix_raviart_massmatrix(vertices_wp, faces_wp)
     assert (int(cr_mass.nrow), int(cr_mass.ncol)) == (0, 0)
 
 
@@ -447,9 +447,9 @@ def test_curved_hessian_and_crouzeix_raviart_cotmatrix_reject_non_edge_manifold(
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
     with pytest.raises(ValueError, match="edge-manifold"):
-        tw.energies.curved_hessian_energy(vertices_wp, faces_wp)
+        od.energies.curved_hessian_energy(vertices_wp, faces_wp)
     with pytest.raises(ValueError, match="edge-manifold"):
-        tw.energies.crouzeix_raviart_cotmatrix(vertices_wp, faces_wp)
+        od.energies.crouzeix_raviart_cotmatrix(vertices_wp, faces_wp)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
@@ -458,7 +458,7 @@ def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
     The named transform is the extraction, not a value change: igl's ``Q`` is exactly
-    ``-repdiag(L, 2) - 2A``, the same matrix triwarp assembles, and both are densified before
+    ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, and both are densified before
     comparing because the two builds order their CSR entries differently.
     """
     # No CPU skip: this builds the Hessian only, no conjugate-gradient solve.
@@ -471,7 +471,7 @@ def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str
     pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
     _, hessian_igl = igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
 
-    hessian_wp = tw.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices)
+    hessian_wp = od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices)
     hessian_dense = sp.csr_matrix(
         (hessian_wp.values.numpy(), hessian_wp.columns.numpy(), hessian_wp.offsets.numpy()),
         shape=(2 * n_vertices, 2 * n_vertices),
@@ -486,8 +486,8 @@ def test_vector_area_matrix_matches_igl_derived(request: pytest.FixtureRequest, 
     Class B: ``vector_area_matrix`` is unbound, so it is solved for from two functions that are.
 
     ``A = (-repdiag(L, 2) - Q) / 2`` inverts the definition of the LSCM Hessian, giving an
-    independent reference out of ``igl.cotmatrix`` and ``igl.lscm`` -- both of which triwarp is
-    compared against separately, so the derivation does not smuggle in triwarp's own answer.
+    independent reference out of ``igl.cotmatrix`` and ``igl.lscm`` -- both of which ordito is
+    compared against separately, so the derivation does not smuggle in ordito's own answer.
     Section 6 lists this among the C++ functions with no Python binding.
     """
     # The bindings do not expose vector_area_matrix; derive it from A = (-repdiag(L,2) - Q) / 2.
@@ -503,7 +503,7 @@ def test_vector_area_matrix_matches_igl_derived(request: pytest.FixtureRequest, 
         cast(sp.csr_matrix, -sp.block_diag([laplacian_igl, laplacian_igl]) - hessian_igl) / 2.0
     )
 
-    area_wp = tw.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)
+    area_wp = od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)
     area_dense = sp.csr_matrix(
         (area_wp.values.numpy(), area_wp.columns.numpy(), area_wp.offsets.numpy()),
         shape=(2 * n_vertices, 2 * n_vertices),

@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.curvature`` against ``trimesh.curvature`` (CPU reference)."""
+"""Regression tests for ``ordito.curvature`` against ``trimesh.curvature`` (CPU reference)."""
 
 import igl
 import numpy as np
@@ -6,8 +6,8 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import assert_nonconstant, fraction_within
 from tests.conversions import points_to_warp, trimesh_to_pymeshlab
 
@@ -24,7 +24,7 @@ def test_principal_curvature(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # frame_independent=False reproduces igl::principal_curvature's symmetrized shape operator.
-    _, _, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+    _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         vertices_wp, faces_wp, frame_independent=False
     )
 
@@ -45,7 +45,7 @@ def test_principal_curvature_half_torus(half_torus: tuple[tm.Trimesh, wp.Mesh]) 
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # frame_independent=False reproduces igl::principal_curvature's symmetrized shape operator.
-    pd1_wp, pd2_wp, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         vertices_wp, faces_wp, frame_independent=False
     )
 
@@ -89,7 +89,7 @@ def test_principal_curvature_frame_independent(half_torus: tuple[tm.Trimesh, wp.
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
     # Default (frame_independent=True): true Weingarten map, independent of the tangent frame.
-    _, _, pv1_wp, pv2_wp = tw.curvature.principal_curvature(vertices_wp, faces_wp)
+    _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(vertices_wp, faces_wp)
     pv1_indep = pv1_wp.numpy()
     pv2_indep = pv2_wp.numpy()
 
@@ -125,7 +125,7 @@ def test_principal_curvature_directions_match_pymeshlab(torus: tuple[tm.Trimesh,
     ``vertex_curvature_principal_dir1_matrix()`` entries are **unit vectors** -- measured ``|d1| ==
     1`` at every vertex -- so the curvature *magnitudes* are simply not in them. Its scalar output
     is a mean curvature over a neighbourhood MeshLab derives itself rather than from a radius, and
-    it correlates 0.94 with triwarp's with a systematic offset (max deviation 0.82), so it is not a
+    it correlates 0.94 with ordito's with a systematic offset (max deviation 0.82), so it is not a
     value oracle either. The direction is, and the transform is the usual eigenvector sign freedom:
     an eigenvector is defined up to sign, so the comparison is ``|dot| == 1``.
 
@@ -137,18 +137,18 @@ def test_principal_curvature_directions_match_pymeshlab(torus: tuple[tm.Trimesh,
     0.096, where only 54% of vertices reach ``|dot| > 0.99``.
 
     **Measured, and the mutation probes.** On ``torus`` the worst ``|dot|`` over all 1 024 vertices
-    is **0.9997** against a 0.99 bound -- a 33x margin on the deviation from 1. Pairing triwarp's
+    is **0.9997** against a 0.99 bound -- a 33x margin on the deviation from 1. Pairing ordito's
     first direction with MeshLab's *second* instead collapses it to a mean of 0.058 and only 2.3% of
     vertices above the bound; comparing it against the vertex normal gives a mean of 0.002 and 0%.
     So neither an axis swap nor "return any tangent vector" survives.
 
     MeshLab's second direction is deliberately **not** asserted: 94.8% of vertices agree to 0.99 but
-    the remaining 5% fall to 0.009, i.e. MeshLab and triwarp order the two eigenvectors differently
+    the remaining 5% fall to 0.009, i.e. MeshLab and ordito order the two eigenvectors differently
     at some vertices. That is an ordering convention, and pinning the first direction is the part
     that says the two computed the same shape operator.
 
     ``autoclean=False`` is load-bearing: the filter defaults to deleting unreferenced vertices,
-    which would silently renumber the output against triwarp's.
+    which would silently renumber the output against ordito's.
     """
     mesh_tm, mesh_wp = torus
 
@@ -162,7 +162,7 @@ def test_principal_curvature_directions_match_pymeshlab(torus: tuple[tm.Trimesh,
     )
     direction_pml /= np.linalg.norm(direction_pml, axis=1, keepdims=True)
 
-    direction_wp, _direction2_wp, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+    direction_wp, _direction2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices
     )
     # The fixture must actually have distinct principal curvatures, or the directions are arbitrary.
@@ -194,10 +194,10 @@ def test_discrete_gaussian_curvature(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    gauss_curvature_wp = tw.curvature.discrete_gaussian_curvature(
+    gauss_curvature_wp = od.curvature.discrete_gaussian_curvature(
         points_wp, vertices_wp, faces_wp, face_angles_wp, radius
     )
     assert np.allclose(gauss_curvature_wp.numpy(), gauss_curvature_tm, rtol=1e-5, atol=1e-5)
@@ -230,7 +230,7 @@ def test_discrete_mean_curvature(
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    mean_curvature_wp = tw.curvature.discrete_mean_curvature(
+    mean_curvature_wp = od.curvature.discrete_mean_curvature(
         points_wp, vertices_wp, faces_wp, radius
     )
     # Non-vacuous on the curved fixture: a constant reference would pass any per-vertex bug.
@@ -264,12 +264,12 @@ def test_discrete_gaussian_curvature_ignores_the_current_device(
     points_wp = points_to_warp(points_tm, mesh_wp.device)
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
 
     with wp.ScopedDevice("cpu"):
-        gauss_curvature_wp = tw.curvature.discrete_gaussian_curvature(
+        gauss_curvature_wp = od.curvature.discrete_gaussian_curvature(
             points_wp, vertices_wp, faces_wp, face_angles_wp, radius
         )
 
@@ -318,7 +318,7 @@ def test_principal_directions_stay_orthogonal_on_an_axis_aligned_field(
     """
     _mesh_tm, mesh_wp = parabolic_lattice
 
-    pd1_wp, pd2_wp, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, frame_independent=frame_independent
     )
     pd1_np, pd2_np = pd1_wp.numpy(), pd2_wp.numpy()
@@ -346,7 +346,7 @@ def test_principal_directions_stay_orthogonal_on_an_axis_aligned_field(
     # ``principal_curvature`` builds internally -- not trimesh's, which weights differently and
     # sits 0.010 away on this lattice's boundary vertices. Tangency is a claim about the plane the
     # function fitted in, so it has to be read against that plane.
-    normal_np = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
+    normal_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.allclose(np.linalg.norm(pd1_np, axis=1), 1.0, atol=1e-5)
     assert np.allclose(np.linalg.norm(pd2_np, axis=1), 1.0, atol=1e-5)
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd1_np)).max() < 1e-5
@@ -391,7 +391,7 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     """
     mesh_tm, mesh_wp = icosphere
 
-    pd1_wp, pd2_wp, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+    pd1_wp, pd2_wp, pv1_wp, pv2_wp = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, radius=radius
     )
     pd1_np, pd2_np, pv1_np, pv2_np = (
@@ -411,12 +411,12 @@ def test_principal_directions_are_a_frame_at_an_umbilic_point(
     assert np.allclose(np.linalg.norm(pd2_np, axis=1), 1.0, atol=1e-5)
     assert np.abs(np.einsum("ij,ij->i", pd1_np, pd2_np)).max() < 1e-3
     # ...and tangent to the plane the fit used, which is the area-weighted vertex normal.
-    normal_np = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
+    normal_np = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy()
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd1_np)).max() < 1e-5
     assert np.abs(np.einsum("ij,ij->i", normal_np, pd2_np)).max() < 1e-5
     # The discrete normal is itself the exact radial one on a sphere, to within the tessellation:
     # that is what says the frame sits in the *surface's* tangent plane and not merely in a plane
-    # of triwarp's own choosing.
+    # of ordito's own choosing.
     radial_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     radial_np /= np.linalg.norm(radial_np, axis=1, keepdims=True)
     assert np.abs(np.einsum("ij,ij->i", radial_np, normal_np)).min() > 0.999
@@ -443,7 +443,7 @@ def test_principal_directions_match_the_analytic_torus(
     libraries cover this function unevenly: igl is an oracle for ``frame_independent=False`` only
     (it *is* the symmetrized operator that flag reproduces), and pymeshlab's
     ``vertex_curvature_principal_dir1_matrix`` is asserted for ``PD1`` alone, because its two
-    directions are ordered differently from triwarp's at 5% of vertices. That left ``PD2`` in the
+    directions are ordered differently from ordito's at 5% of vertices. That left ``PD2`` in the
     default ``frame_independent=True`` branch -- the output most sensitive to how the second
     eigenvector is obtained -- with no reference comparison at all. A torus has one.
 
@@ -485,7 +485,7 @@ def test_principal_directions_match_the_analytic_torus(
     )
     assert curvature_gap_np.min() > 1.0, "a torus fixture with an umbilic vertex is the wrong one"
 
-    pd1_wp, pd2_wp, _, _ = tw.curvature.principal_curvature(
+    pd1_wp, pd2_wp, _, _ = od.curvature.principal_curvature(
         mesh_wp.points, mesh_wp.indices, frame_independent=frame_independent
     )
     pd1_np, pd2_np = pd1_wp.numpy(), pd2_wp.numpy()
@@ -505,7 +505,7 @@ def test_principal_directions_match_the_analytic_torus(
 
 def test_principal_curvature_is_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the consumer that made ``vertex_normals``' summation order visible.
+    Ordito against ordito: the consumer that made ``vertex_normals``' summation order visible.
 
     The oracle for the values is ``test_principal_curvature_frame_independent``; this pins
     repeatability. The quadric fit is ill conditioned at a near-flat vertex, so it amplified the
@@ -519,7 +519,7 @@ def test_principal_curvature_is_reproducible(half_torus: tuple[tm.Trimesh, wp.Me
 
     runs = []
     for _ in range(8):
-        _, _, pv1_wp, pv2_wp = tw.curvature.principal_curvature(
+        _, _, pv1_wp, pv2_wp = od.curvature.principal_curvature(
             mesh_wp.points, mesh_wp.indices, radius=2
         )
         runs.append((pv1_wp.numpy().copy(), pv2_wp.numpy().copy()))
@@ -536,7 +536,7 @@ def test_principal_curvature_is_scale_equivariant(
     icosphere: tuple[tm.Trimesh, wp.Mesh], scale: float
 ) -> None:
     """
-    Triwarp against triwarp: curvature has units of 1/length, so scaling the mesh scales it back.
+    Ordito against ordito: curvature has units of 1/length, so scaling the mesh scales it back.
 
     The oracle sits on the unit-scale side, which
     ``test_principal_curvature`` / ``test_principal_curvature_half_torus`` pin against libigl; this
@@ -557,10 +557,10 @@ def test_principal_curvature_is_scale_equivariant(
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)  # pyright: ignore[reportArgumentType]  # the stub omits array `data`
 
-    _, _, pv1_unit_wp, pv2_unit_wp = tw.curvature.principal_curvature(
+    _, _, pv1_unit_wp, pv2_unit_wp = od.curvature.principal_curvature(
         points_to_warp(vertices_np, mesh_wp.device), faces_wp, radius=2
     )
-    _, _, pv1_small_wp, pv2_small_wp = tw.curvature.principal_curvature(
+    _, _, pv1_small_wp, pv2_small_wp = od.curvature.principal_curvature(
         points_to_warp(vertices_np * scale, mesh_wp.device), faces_wp, radius=2
     )
     pv1_unit_np, pv2_unit_np = pv1_unit_wp.numpy(), pv2_unit_wp.numpy()

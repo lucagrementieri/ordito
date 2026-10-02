@@ -1,12 +1,12 @@
 """
-Structural tests for ``triwarp.homology``.
+Structural tests for ``ordito.homology``.
 
 **meshlib is the one reference that computes a basis**, through ``detectBasisTunnels``, and it is
 compared here for the only thing two bases can share: their *count*, forced by the Euler
 characteristic. potpourri3d does not bind geometry-central's homology code and neither trimesh nor
 libigl computes one, so for everything else the invariants stand in for an oracle -- each loop has
 to be a simple closed walk along real mesh edges, and non-contractible. A basis is not unique, so
-nothing checks *which* loops come back: measured on a torus, triwarp returns loops of 32 and 18
+nothing checks *which* loops come back: measured on a torus, ordito returns loops of 32 and 18
 edges where MeshLib returns 72 and 32, both valid.
 """
 
@@ -21,7 +21,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from tests.conversions import numpy_to_warp, trimesh_to_meshlib, warp_empty
 
 
@@ -43,10 +43,10 @@ def test_homology_generator_count_is_twice_the_genus(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
 ) -> None:
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     # The genus the fixture is built for, and the genus the mesh actually has, must agree first.
-    assert tw.measures.euler_characteristic(mesh_wp.indices) == 2 - 2 * genus
+    assert od.measures.euler_characteristic(mesh_wp.indices) == 2 - 2 * genus
     assert len(loops) == 2 * genus
 
 
@@ -60,20 +60,20 @@ def test_homology_generator_count_matches_meshlib(
 
     ``detectBasisTunnels`` returns a vector of ``EdgeId`` paths -- MeshLib's own basis of
     non-contractible cycles -- and both libraries must find ``2 * genus`` of them. Which loops they
-    are is free: on the torus triwarp returns cycles of 32 and 18 edges where MeshLib returns 72 and
+    are is free: on the torus ordito returns cycles of 32 and 18 edges where MeshLib returns 72 and
     32, and both are correct bases of the same first homology group.
 
     So the count is the comparison and the *structure* is what makes it non-vacuous: each of
     MeshLib's paths is checked to be a genuine closed edge walk with no repeated vertex, which is
     the same property [`test_homology_generators_are_simple_closed_edge_cycles`] asserts on
-    triwarp's side. A reference returning ``2 * genus`` arbitrary edge lists would pass a bare count
+    ordito's side. A reference returning ``2 * genus`` arbitrary edge lists would pass a bare count
     and fail this.
 
     The decode is the ``EdgeId`` one this suite uses throughout: ``org`` gives each step's tail and
     the last step's ``dest`` closes the loop.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     tunnels_ml = mm.detectBasisTunnels(mm.MeshPart(mesh_ml))
@@ -101,7 +101,7 @@ def test_homology_generators_are_simple_closed_edge_cycles(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     edges_tm = {tuple(sorted(edge)) for edge in mesh_tm.edges_unique.tolist()}
-    loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     assert len(loops) > 0
     for loop in loops:
@@ -110,7 +110,7 @@ def test_homology_generators_are_simple_closed_edge_cycles(
 
 def test_homology_generators_are_not_contractible(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = torus
-    loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     # A contractible loop bounds a disk, so cutting the *faces* along it would split the mesh in
     # two. Removing a genuine generator's vertices instead leaves the surface in one piece: the
@@ -129,7 +129,7 @@ def test_homology_generators_are_not_contractible(torus: tuple[tm.Trimesh, wp.Me
 
 def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the docstring promises a reproducible basis, so pin it.
+    Ordito against ordito: the docstring promises a reproducible basis, so pin it.
 
     Both spanning trees are built by parallel claims, and a basis that depended on which thread got
     there first would still pass every invariant in this file -- the loops would be simple, closed
@@ -151,7 +151,7 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
     runs = [
         [
             loop.numpy().tolist()
-            for loop in tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+            for loop in od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
         ]
         for _ in range(4)
     ]
@@ -166,7 +166,7 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
 def test_homology_generators_reject_a_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = hemisphere
     with pytest.raises(ValueError, match="closed surface"):
-        tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+        od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
 
 def test_homology_generators_ignore_an_unreferenced_vertex(
@@ -186,12 +186,12 @@ def test_homology_generators_ignore_an_unreferenced_vertex(
     faces_np = np.asarray(mesh_tm.faces) + 1
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    loops = tw.homology.homology_generators(vertices_wp, faces_wp)
+    loops = od.homology.homology_generators(vertices_wp, faces_wp)
 
     # Non-vacuity: the unreferenced vertex really is unreferenced, and the surface really is genus
     # 1 -- ``euler_characteristic`` counts referenced vertices, so it is unmoved by the extra row.
     assert 0 not in set(faces_np.ravel().tolist())
-    assert tw.measures.euler_characteristic(faces_wp) == 0
+    assert od.measures.euler_characteristic(faces_wp) == 0
     assert len(loops) == 2
     edges_tm = {tuple(sorted((int(a) + 1, int(b) + 1))) for a, b in mesh_tm.edges_unique.tolist()}
     for loop in loops:
@@ -217,9 +217,9 @@ def test_homology_generators_reject_a_disconnected_surface(
     vertices_wp, faces_wp = numpy_to_warp(np.asarray(both.vertices), np.asarray(both.faces), device)
 
     # Non-vacuity: the closed-surface guard passes, so connectivity is the only thing left to fail.
-    assert int(tw.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 0
+    assert int(od.boundary.boundary_edges(vertices_wp, faces_wp).shape[0]) == 0
     with pytest.raises(ValueError, match="connected surface"):
-        tw.homology.homology_generators(vertices_wp, faces_wp)
+        od.homology.homology_generators(vertices_wp, faces_wp)
 
 
 def test_homology_generators_without_edges(device: str) -> None:
@@ -235,7 +235,7 @@ def test_homology_generators_without_edges(device: str) -> None:
     vertices_wp = wp.zeros(4, dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
 
-    assert tw.homology.homology_generators(vertices_wp, faces_wp) == []
+    assert od.homology.homology_generators(vertices_wp, faces_wp) == []
 
 
 def test_homology_generators_satisfy_the_tree_cotree_identity(
@@ -252,11 +252,11 @@ def test_homology_generators_satisfy_the_tree_cotree_identity(
     Euler-characteristic count in this file bites on the genus.
     """
     mesh_tm, mesh_wp = torus
-    loops = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     n_vertices = len(mesh_tm.vertices)
     n_faces = len(mesh_tm.faces)
-    n_edges = int(tw.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0])
+    n_edges = int(od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0])
     # Non-vacuity: the fixture really is genus 1, so the identity is not 0 == 0.
     assert len(loops) == 2
     assert len(loops) == n_edges - (n_vertices - 1) - (n_faces - 1)
@@ -265,7 +265,7 @@ def test_homology_generators_satisfy_the_tree_cotree_identity(
 def test_homology_generators_empty(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert tw.homology.homology_generators(vertices_wp, faces_wp) == []
+    assert od.homology.homology_generators(vertices_wp, faces_wp) == []
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "torus", "genus_two"])
@@ -273,15 +273,15 @@ def test_homology_generators_is_its_packed_form_split(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: the list form is the packed form, loop by loop.
+    Ordito against ordito: the list form is the packed form, loop by loop.
 
     ``homology_generators`` carries the MeshLib count comparison and the invariants above; this
     pins ``homology_generators_with_offsets`` to it -- the same basis in the same order, with
     ``[0]`` offsets for the sphere.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    flat_wp, offsets_wp = tw.homology.homology_generators_with_offsets(
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    flat_wp, offsets_wp = od.homology.homology_generators_with_offsets(
         mesh_wp.points, mesh_wp.indices
     )
 

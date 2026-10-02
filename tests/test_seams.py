@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.seams`` against pymeshlab (CPU reference)."""
+"""Regression tests for ``ordito.seams`` against pymeshlab (CPU reference)."""
 
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import lexsort_rows, same_partition
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -48,7 +48,7 @@ def test_crease_edges_finds_a_cube_edges(unit_box: tuple[tm.Trimesh, wp.Mesh]) -
     """A unit cube has exactly 12 crease edges at 90 degrees, and its 6 face diagonals are flat."""
     box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    creases_np = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0).numpy()
+    creases_np = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0).numpy()
     assert creases_np.shape == (12, 2)
 
     # Every selected edge joins two cube corners one unit apart; a face diagonal would be sqrt(2).
@@ -68,10 +68,10 @@ def test_crease_edges_thresholds(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     _box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    assert int(tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.0).shape[0]) == 12
-    assert int(tw.seams.crease_edges(vertices_wp, faces_wp, angle=89.0).shape[0]) == 12
-    assert int(tw.seams.crease_edges(vertices_wp, faces_wp, angle=91.0).shape[0]) == 0
-    assert int(tw.seams.crease_edges(vertices_wp, faces_wp, angle=180.0).shape[0]) == 0
+    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0).shape[0]) == 12
+    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=89.0).shape[0]) == 12
+    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=91.0).shape[0]) == 0
+    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=180.0).shape[0]) == 0
 
 
 @pytest.mark.parity("crease_edges", "pymeshlab")
@@ -89,7 +89,7 @@ def test_crease_edges_matches_pymeshlab(hemisphere: tuple[tm.Trimesh, wp.Mesh]) 
     meshset_pml.compute_selection_crease_per_edge(angledegneg=-angle, angledegpos=angle)
     selected_pml = np.flatnonzero(meshset_pml.current_mesh().vertex_selection_array())
 
-    creases_np = tw.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle).numpy()
+    creases_np = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle).numpy()
     assert set(np.unique(creases_np).tolist()) == set(selected_pml.tolist())
 
 
@@ -111,10 +111,10 @@ def test_crease_edges_matches_meshlib(unit_box: tuple[tm.Trimesh, wp.Mesh], angl
 
     Note the *sign* of the threshold is not shared vocabulary: MeshLab takes a signed pair
     (``angledegneg`` / ``angledegpos``) and this takes ``angleFromPlanar``, one number measured from
-    flat, which is triwarp's ``angle``.
+    flat, which is ordito's ``angle``.
     """
     mesh_tm, mesh_wp = unit_box
-    creases_wp = tw.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle)
+    creases_wp = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=angle)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     crease_bits_ml = mm.findCreaseEdges(mesh_ml.topology, mesh_ml.points, float(np.radians(angle)))
@@ -146,7 +146,7 @@ def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> N
     renumbered subset, so its lines go through
     [`tests.conversions.pyvista_edges_to_indices`][] first; and the three other edge classes
     (``boundary_edges``, ``non_manifold_edges``, ``manifold_edges``) have to be switched **off**,
-    because VTK's default emits all four and triwarp's ``include_boundary=False`` emits only the
+    because VTK's default emits all four and ordito's ``include_boundary=False`` emits only the
     crease.
 
     The fixture is a **box**, not a curved mesh: on a smooth sphere the reference finds nothing at
@@ -168,13 +168,13 @@ def test_crease_edges_matches_pyvista(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> N
     )
     assert len(edges_pv) == 12  # non-vacuous, and the count a cube's creases must have
 
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
     assert np.array_equal(lexsort_rows(np.sort(creases_wp.numpy(), axis=1)), lexsort_rows(edges_pv))
 
 
 def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the flag adds exactly the boundary edges and nothing else.
+    Ordito against ordito: the flag adds exactly the boundary edges and nothing else.
 
     Stated as a set identity against ``boundary.boundary_edges``, which carries its own
     reference comparison. MeshLab's crease filter has no equivalent flag, so this branch has no
@@ -182,11 +182,11 @@ def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -
     trivially.
     """
     mesh_tm, mesh_wp = hemisphere
-    interior_np = tw.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=40.0).numpy()
-    with_boundary_np = tw.seams.crease_edges(
+    interior_np = od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=40.0).numpy()
+    with_boundary_np = od.seams.crease_edges(
         mesh_wp.points, mesh_wp.indices, angle=40.0, include_boundary=True
     ).numpy()
-    boundary_np = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
+    boundary_np = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
     assert len(boundary_np) > 0
     assert _sorted_edge_set(with_boundary_np) == _sorted_edge_set(interior_np) | _sorted_edge_set(
         boundary_np
@@ -197,13 +197,13 @@ def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -
 def test_crease_edges_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match=r"angle must be in \[0, 180\]"):
-        tw.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=-1.0)
+        od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=-1.0)
 
 
 def test_crease_edges_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.seams.crease_edges(vertices_wp, faces_wp).shape == (0, 2)
+    assert od.seams.crease_edges(vertices_wp, faces_wp).shape == (0, 2)
 
 
 def test_cut_along_edges_separates_the_faces_of_a_cube(
@@ -218,21 +218,21 @@ def test_cut_along_edges_separates_the_faces_of_a_cube(
     """
     _box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
 
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
     assert cut_vertices_wp.size == 24
     assert cut_faces_wp.size == faces_wp.size
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
-    assert tw.validation.is_winding_consistent(cut_faces_wp)
+    assert od.validation.is_winding_consistent(cut_faces_wp)
 
 
 def test_cut_along_edges_is_geometrically_a_noop(device: str) -> None:
     """Every output vertex sits exactly where its input did, so the surface is unchanged."""
     box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0])
     vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
 
     before_np = box_tm.vertices[box_tm.faces].astype(np.float32)
     after_np = cut_vertices_wp.numpy()[cut_faces_wp.numpy().reshape(-1, 3)]
@@ -244,8 +244,8 @@ def test_cut_along_edges_with_no_edges_is_the_identity(
 ) -> None:
     _box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(
-        vertices_wp, faces_wp, twt.empty_2d((0, 2), wp.int32, device=device)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(
+        vertices_wp, faces_wp, odt.empty_2d((0, 2), wp.int32, device=device)
     )
     assert cut_vertices_wp.size == vertices_wp.size
     assert np.allclose(
@@ -260,8 +260,8 @@ def test_cut_along_edges_all_interior_edges_gives_a_triangle_soup(
     """Cutting everything leaves one vertex per corner: the definition of a soup."""
     sphere_tm, _sphere_tm_wp = icosphere_coarse
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    all_edges_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, all_edges_wp)
+    all_edges_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, all_edges_wp)
     assert cut_vertices_wp.size == faces_wp.size
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == faces_wp.size // 3
 
@@ -270,7 +270,7 @@ def test_cut_along_edges_ignores_the_winding(
     device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
 ) -> None:
     """
-    Triwarp against triwarp: reversing some faces' winding does not change which corners merge.
+    Ordito against ordito: reversing some faces' winding does not change which corners merge.
 
     The cut is defined on undirected edges, so an edge-manifold but inconsistently wound mesh must
     give the same corner partition as the consistently wound one -- which carries the igl and
@@ -285,15 +285,15 @@ def test_cut_along_edges_ignores_the_winding(
     flipped_faces_np = faces_np.copy()
     flipped_faces_np[flipped] = faces_np[flipped][:, [0, 2, 1]]
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(
-            tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.0).numpy()[::3],
+            od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0).numpy()[::3],
             dtype=wp.int32,
             device=device,
         ),
         wp.int32,
     )
-    _, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, edges_wp)
+    _, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, edges_wp)
     _, flipped_faces_wp = numpy_to_warp(sphere_tm.vertices, flipped_faces_np, device)
     # ``halfedge_twins`` pairs only opposite halfedges and leaves a same-direction edge at ``-1``,
     # so the table that reaches the same-direction branch is a caller's own, pairing the two
@@ -306,7 +306,7 @@ def test_cut_along_edges_ignores_the_winding(
     assert np.array_equal(keys_np[first], keys_np[second])  # closed and edge-manifold
     twins_np[first], twins_np[second] = second, first
     flipped_twins_wp = wp.array(twins_np, dtype=wp.int32, device=device)
-    _, cut_flipped_wp = tw.seams.cut_along_edges(
+    _, cut_flipped_wp = od.seams.cut_along_edges(
         vertices_wp, flipped_faces_wp, edges_wp, twins=flipped_twins_wp
     )
     cut_np = cut_faces_wp.numpy().reshape(-1, 3)
@@ -332,9 +332,9 @@ def test_cut_along_edges_opens_a_boundary(
     """
     box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
 
-    creases_np = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0).numpy()
+    creases_np = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0).numpy()
     on_face_np = (box_tm.vertices[creases_np[:, 0], 0] > 0.0) & (
         box_tm.vertices[creases_np[:, 1], 0] > 0.0
     )
@@ -343,26 +343,26 @@ def test_cut_along_edges_opens_a_boundary(
         np.ascontiguousarray(creases_np[on_face_np], dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(
-        vertices_wp, faces_wp, twt.as_array2d(ring_wp, wp.int32)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(
+        vertices_wp, faces_wp, odt.as_array2d(ring_wp, wp.int32)
     )
     cut_vertices_wp = cast("wp.array[wp.vec3]", cut_vertices_wp)  # a vec3 input cuts to vec3
     # The four corners of that face each split in two; the other four are untouched.
     assert cut_vertices_wp.size == vertices_wp.size + 4
-    assert not tw.validation.is_edge_manifold(cut_faces_wp, allow_boundary_edges=False)
+    assert not od.validation.is_edge_manifold(cut_faces_wp, allow_boundary_edges=False)
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 2
-    assert len(tw.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
+    assert len(od.boundary.boundary_loops(cut_vertices_wp, cut_faces_wp)) == 2
 
 
 def test_cut_along_edges_round_trips_through_a_weld(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Welding coincident positions undoes the cut exactly — the documented inverse."""
     _box_tm, box_wp = unit_box
     vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
     cut_vertices_wp = cast("wp.array[wp.vec3]", cut_vertices_wp)  # a vec3 input cuts to vec3
 
-    welded_vertices_wp, _unique, _inverse, welded_faces_wp = tw.repair.remove_duplicated_vertices(
+    welded_vertices_wp, _unique, _inverse, welded_faces_wp = od.repair.remove_duplicated_vertices(
         cut_vertices_wp, cut_faces_wp, epsilon=1e-6
     )
     assert welded_vertices_wp.size == vertices_wp.size
@@ -373,7 +373,7 @@ def _ordered_loop_np(edges_np: np.ndarray) -> list[int]:
     """
     Walk an unordered set of undirected edge rows into one ordered vertex cycle.
 
-    MeshLib's ``cutAlongEdgeLoop`` takes an *ordered* ``EdgeId`` path where triwarp's
+    MeshLib's ``cutAlongEdgeLoop`` takes an *ordered* ``EdgeId`` path where ordito's
     ``cut_along_edges`` takes unordered ``(v0, v1)`` rows, so this is the named transform the
     comparison needs -- and it is what any caller of the two would have to write.
     """
@@ -429,11 +429,11 @@ def test_cut_along_edges_matches_meshlib(icosphere_coarse: tuple[tm.Trimesh, wp.
         dtype=wp.bool,
         device=vertices_wp.device,
     )
-    edges_wp = tw.selection.region_boundary_edges(faces_wp, region_wp)
+    edges_wp = od.selection.region_boundary_edges(faces_wp, region_wp)
     edges_np = edges_wp.numpy()
     assert edges_wp.shape[0] > 5  # non-vacuity: there is a real seam to cut along
 
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, edges_wp)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, edges_wp)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     loop_np = _ordered_loop_np(edges_np)
@@ -457,10 +457,10 @@ def test_cut_along_edges_matches_pymeshlab_topology(
     Class B (topology only): MeshLab opens the same seams, but re-welds some vertices.
 
     On a cube cut at every crease both sides produce 6 face-connected components, 12 faces and the
-    same surface area — the whole content of the operation. **triwarp emits 24 vertices and MeshLab
+    same surface area — the whole content of the operation. **ordito emits 24 vertices and MeshLab
     32**: 24 is minimal (each of the 8 corners is incident to 3 quads, so it needs exactly 3 copies)
     and MeshLab's 32 carries 8 redundant duplicates, apparently from splitting per face corner and
-    re-welding only some of them. So the count is asserted as an inequality in triwarp's favour
+    re-welding only some of them. So the count is asserted as an inequality in ordito's favour
     rather than as a match; the topology is asserted exactly.
     """
     box_tm, _box_wp = unit_box
@@ -477,8 +477,8 @@ def test_cut_along_edges_matches_pymeshlab_topology(
     )
 
     vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=angle)
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=angle)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
     cut_vertices_wp = cut_vertices_wp  # a vec3 input cuts to vec3
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
 
@@ -496,12 +496,12 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
 
     ``igl.cut_mesh(V, F, C)`` takes ``C`` as a ``(n_faces, 3)`` **bool** per-corner mask rather than
     an edge list, so the named transform is to mark ``C[f, i]`` for every face-corner whose edge is
-    in triwarp's cut set. On the cube cut at every crease igl emits **24 vertices, exactly triwarp's
+    in ordito's cut set. On the cube cut at every crease igl emits **24 vertices, exactly ordito's
     answer**, against MeshLab's 32 -- which is the point of having a third implementation on this
     group: 24 is minimal and now independently confirmed, so MeshLab's extra 8 are its own.
 
     **The corner numbering is ``(i, i + 1)`` here, unlike ``igl.ears``.** ``cut_mesh``'s edge ``i``
-    of face ``f`` is ``(F[f, i], F[f, (i + 1) % 3])`` -- the same convention triwarp uses -- where
+    of face ``f`` is ``(F[f, i], F[f, (i + 1) % 3])`` -- the same convention ordito uses -- where
     ``igl.ears`` inherits ``igl::on_boundary``'s *opposite-vertex* numbering. The two conventions
     coexist inside one library, so the mask is built with the ``(i, i + 1)`` rule and the
     alternative is checked to be wrong rather than assumed: it yields 28 vertices, so a
@@ -512,8 +512,8 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
     faces_np = np.ascontiguousarray(box_tm.faces, dtype=np.int64)
 
     vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
     cut_vertices_wp = cut_vertices_wp  # a vec3 input cuts to vec3
 
     cut_set = {tuple(sorted(pair)) for pair in creases_wp.numpy().tolist()}
@@ -559,16 +559,16 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
 def test_cut_along_edges_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match=r"edges must have shape \(k, 2\)"):
-        tw.seams.cut_along_edges(
-            mesh_wp.points, mesh_wp.indices, twt.empty_2d((3, 3), wp.int32, device=mesh_wp.device)
+        od.seams.cut_along_edges(
+            mesh_wp.points, mesh_wp.indices, odt.empty_2d((3, 3), wp.int32, device=mesh_wp.device)
         )
 
 
 def test_cut_along_edges_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    out_vertices_wp, out_faces_wp = tw.seams.cut_along_edges(
-        vertices_wp, faces_wp, twt.empty_2d((0, 2), wp.int32, device=device)
+    out_vertices_wp, out_faces_wp = od.seams.cut_along_edges(
+        vertices_wp, faces_wp, odt.empty_2d((0, 2), wp.int32, device=device)
     )
     assert out_vertices_wp.size == 0
     assert out_faces_wp.size == 0
@@ -675,7 +675,7 @@ def test_uv_seam_vertex_mask_matches_pymeshlab(
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
 
-    mask_wp = tw.seams.uv_seam_vertex_mask(
+    mask_wp = od.seams.uv_seam_vertex_mask(
         mesh_wp.indices,
         points_to_warp_uv(wedge_uv_np, str(mesh_wp.device)),
         include_boundary=include_boundary,
@@ -700,7 +700,7 @@ def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_nam
     """
     Class B (row-set canonicalization): all three blocks equal the ``igl::seam_edges`` CPU port.
 
-    igl's output order is an ``unordered_set`` walk and triwarp's is halfedge order, so both sides
+    igl's output order is an ``unordered_set`` walk and ordito's is halfedge order, so both sides
     are lexsorted first -- exact on integer rows. Run with an explicit ``FTC`` so the *index*
     predicate, the one MeshLab cannot express, is the thing under test.
 
@@ -717,7 +717,7 @@ def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_nam
     texcoords_np, face_texcoords_np = np.unique(wedge_uv_np, axis=0, return_inverse=True)
     face_texcoords_np = face_texcoords_np.reshape(-1, 3).astype(np.int32)
 
-    seams_wp, boundaries_wp, foldovers_wp = tw.seams.uv_seam_edges(
+    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
         mesh_wp.indices,
         points_to_warp_uv(texcoords_np, str(mesh_wp.device)),
         wp.array(face_texcoords_np.reshape(-1).copy(), dtype=wp.int32, device=str(mesh_wp.device)),
@@ -752,12 +752,12 @@ def test_uv_seam_edges_match_uv_ignores_duplicate_indices(device: str) -> None:
         np.array([0, 1, 2, 4, 3, 5], dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    seams_index_wp, _b, _f = tw.seams.uv_seam_edges(
+    seams_index_wp, _b, _f = od.seams.uv_seam_edges(
         faces_wp, points_to_warp_uv(texcoords_np, device), face_texcoords_wp, n_vertices=4
     )
     assert int(seams_index_wp.shape[0]) == 1
 
-    seams_uv_wp, _b, _f = tw.seams.uv_seam_edges(
+    seams_uv_wp, _b, _f = od.seams.uv_seam_edges(
         faces_wp,
         points_to_warp_uv(texcoords_np, device),
         face_texcoords_wp,
@@ -768,12 +768,12 @@ def test_uv_seam_edges_match_uv_ignores_duplicate_indices(device: str) -> None:
 
     moved_np = texcoords_np.copy()
     moved_np[4] += 0.25
-    seams_moved_wp, _b, _f = tw.seams.uv_seam_edges(
+    seams_moved_wp, _b, _f = od.seams.uv_seam_edges(
         faces_wp, points_to_warp_uv(moved_np, device), face_texcoords_wp, match="uv", n_vertices=4
     )
     assert int(seams_moved_wp.shape[0]) == 1
     # ...and a tolerance wide enough to swallow the move hides it again.
-    seams_tolerant_wp, _b, _f = tw.seams.uv_seam_edges(
+    seams_tolerant_wp, _b, _f = od.seams.uv_seam_edges(
         faces_wp,
         points_to_warp_uv(moved_np, device),
         face_texcoords_wp,
@@ -812,7 +812,7 @@ def test_uv_seam_edges_foldover(
         ],
         dtype=np.float32,
     )
-    seams_wp, boundaries_wp, foldovers_wp = tw.seams.uv_seam_edges(
+    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
         faces_wp, points_to_warp_uv(corner_uv_np, device), n_vertices=4
     )
     assert int(seams_wp.shape[0]) == 0
@@ -828,8 +828,8 @@ def test_uv_seam_edges_corner_uv_matches_explicit_indices(device: str) -> None:
     )
     identity_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
 
-    wedge = tw.seams.uv_seam_edges(faces_wp, points_to_warp_uv(corner_uv_np, device), n_vertices=4)
-    explicit = tw.seams.uv_seam_edges(
+    wedge = od.seams.uv_seam_edges(faces_wp, points_to_warp_uv(corner_uv_np, device), n_vertices=4)
+    explicit = od.seams.uv_seam_edges(
         faces_wp, points_to_warp_uv(corner_uv_np, device), identity_wp, match="uv", n_vertices=4
     )
     assert int(wedge[0].shape[0]) == 1  # corner 2 and corner 5 disagree, so the diagonal tears
@@ -844,13 +844,13 @@ def test_seam_edge_vertices_boundaries_match_oriented_boundary(
     mesh_tm, mesh_wp = hemisphere
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
-    _seams_wp, boundaries_wp, _foldovers_wp = tw.seams.uv_seam_edges(
+    _seams_wp, boundaries_wp, _foldovers_wp = od.seams.uv_seam_edges(
         mesh_wp.indices,
         points_to_warp_uv(wedge_uv_np, str(mesh_wp.device)),
         n_vertices=int(mesh_tm.vertices.shape[0]),
     )
-    pairs_np = tw.seams.seam_edge_vertices(mesh_wp.indices, boundaries_wp).numpy()
-    oriented_np = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
+    pairs_np = od.seams.seam_edge_vertices(mesh_wp.indices, boundaries_wp).numpy()
+    oriented_np = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
 
     assert len(pairs_np) > 0
     assert np.array_equal(lexsort_rows(pairs_np), lexsort_rows(oriented_np))
@@ -867,17 +867,17 @@ def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh,
     mesh_tm, mesh_wp = icosahedron
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     wedge_uv_np = _spherical_wedge_atlas(np.asarray(mesh_tm.vertices, dtype=np.float64), faces_np)
-    seams_wp, _boundaries_wp, _foldovers_wp = tw.seams.uv_seam_edges(
+    seams_wp, _boundaries_wp, _foldovers_wp = od.seams.uv_seam_edges(
         mesh_wp.indices,
         points_to_warp_uv(wedge_uv_np, str(mesh_wp.device)),
         n_vertices=int(mesh_tm.vertices.shape[0]),
     )
-    pairs_np = tw.seams.seam_edge_vertices(mesh_wp.indices, seams_wp).numpy()
+    pairs_np = od.seams.seam_edge_vertices(mesh_wp.indices, seams_wp).numpy()
     assert len(pairs_np) > 0
     assert (pairs_np[:, 0] < pairs_np[:, 1]).all()
 
-    cut_vertices_wp, cut_faces_wp = tw.seams.cut_along_edges(
-        mesh_wp.points, mesh_wp.indices, tw.seams.seam_edge_vertices(mesh_wp.indices, seams_wp)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(
+        mesh_wp.points, mesh_wp.indices, od.seams.seam_edge_vertices(mesh_wp.indices, seams_wp)
     )
     cut_vertices_wp = cast("wp.array[wp.vec3]", cut_vertices_wp)  # a vec3 input cuts to vec3
     cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
@@ -886,13 +886,13 @@ def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh,
     assert np.isclose(cut_tm.area, mesh_tm.area, rtol=1e-5)
     assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 1
     # The cut turned the seam ring into a real boundary.
-    assert int(tw.boundary.boundary_edges(cut_vertices_wp, cut_faces_wp).shape[0]) > 0
+    assert int(od.boundary.boundary_edges(cut_vertices_wp, cut_faces_wp).shape[0]) > 0
 
 
 def test_uv_seam_edges_rejects_index_match_without_face_texcoords(device: str) -> None:
     faces_wp, _faces_np = _quad_mesh(device)
     with pytest.raises(ValueError, match="match='index' needs face_texcoords"):
-        tw.seams.uv_seam_edges(
+        od.seams.uv_seam_edges(
             faces_wp, points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device), match="index"
         )
 
@@ -900,13 +900,13 @@ def test_uv_seam_edges_rejects_index_match_without_face_texcoords(device: str) -
 def test_uv_seam_edges_rejects_mismatched_buffers(device: str) -> None:
     faces_wp, _faces_np = _quad_mesh(device)
     with pytest.raises(ValueError, match="one entry per face corner"):
-        tw.seams.uv_seam_edges(
+        od.seams.uv_seam_edges(
             faces_wp,
             points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
             wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device),
         )
     with pytest.raises(ValueError, match="texcoords must be per-corner"):
-        tw.seams.uv_seam_edges(
+        od.seams.uv_seam_edges(
             faces_wp, points_to_warp_uv(np.zeros((4, 2), dtype=np.float32), device)
         )
 
@@ -917,7 +917,7 @@ def test_uv_seam_edges_nonmanifold_raises(device: str) -> None:
         np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32), dtype=wp.int32, device=device
     )
     with pytest.raises(ValueError, match="edge-manifold"):
-        tw.seams.uv_seam_edges(
+        od.seams.uv_seam_edges(
             faces_wp, points_to_warp_uv(np.zeros((9, 2), dtype=np.float32), device), n_vertices=5
         )
 
@@ -926,13 +926,13 @@ def test_uv_seam_edges_single_triangle(device: str) -> None:
     """Every edge is a boundary, and neither seam nor foldover can exist without a second face."""
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
     corner_uv_np = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
-    seams_wp, boundaries_wp, foldovers_wp = tw.seams.uv_seam_edges(
+    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
         faces_wp, points_to_warp_uv(corner_uv_np, device), n_vertices=3
     )
     assert seams_wp.shape == (0, 4)
     assert foldovers_wp.shape == (0, 4)
     assert np.array_equal(boundaries_wp.numpy(), np.array([[0, 0], [0, 1], [0, 2]], dtype=np.int32))
-    assert _sorted_edge_set(tw.seams.seam_edge_vertices(faces_wp, boundaries_wp).numpy()) == {
+    assert _sorted_edge_set(od.seams.seam_edge_vertices(faces_wp, boundaries_wp).numpy()) == {
         (0, 1),
         (1, 2),
         (0, 2),
@@ -941,14 +941,14 @@ def test_uv_seam_edges_single_triangle(device: str) -> None:
 
 def test_uv_seam_edges_empty_mesh(device: str) -> None:
     faces_wp = warp_empty(0, wp.int32, device)
-    seams_wp, boundaries_wp, foldovers_wp = tw.seams.uv_seam_edges(
+    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
         faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0
     )
     assert seams_wp.shape == (0, 4)
     assert boundaries_wp.shape == (0, 2)
     assert foldovers_wp.shape == (0, 4)
     assert (
-        tw.seams.uv_seam_vertex_mask(faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0).size
+        od.seams.uv_seam_vertex_mask(faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0).size
         == 0
     )
 
@@ -969,11 +969,11 @@ def test_uv_seam_match_rejects_an_off_menu_mode(device: str) -> None:
     )
     for match in ("bogus", "Index", ""):
         with pytest.raises(ValueError, match="match must be one of"):
-            tw.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+            od.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
         with pytest.raises(ValueError, match="match must be one of"):
-            tw.seams.uv_seam_vertex_mask(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+            od.seams.uv_seam_vertex_mask(faces_wp, corner_uv_wp, n_vertices=3, match=match)  # pyright: ignore[reportArgumentType]  # deliberately off-menu
     # Both documented modes still run; ``index`` needs ``face_texcoords`` and is covered above.
-    assert tw.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match="uv")[0].shape == (
+    assert od.seams.uv_seam_edges(faces_wp, corner_uv_wp, n_vertices=3, match="uv")[0].shape == (
         0,
         4,
     )
@@ -993,14 +993,14 @@ def test_cut_along_edges_accepts_a_row_in_either_order(
     """
     _mesh_tm, mesh_wp = unit_box
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=0.5)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=0.5)
     reversed_np = np.ascontiguousarray(creases_wp.numpy()[:, ::-1])
-    reversed_wp = twt.as_array2d(wp.array(reversed_np, dtype=wp.int32, device=device), wp.int32)
+    reversed_wp = odt.as_array2d(wp.array(reversed_np, dtype=wp.int32, device=device), wp.int32)
 
-    ascending_vertices_wp, ascending_faces_wp = tw.seams.cut_along_edges(
+    ascending_vertices_wp, ascending_faces_wp = od.seams.cut_along_edges(
         vertices_wp, faces_wp, creases_wp
     )
-    descending_vertices_wp, descending_faces_wp = tw.seams.cut_along_edges(
+    descending_vertices_wp, descending_faces_wp = od.seams.cut_along_edges(
         vertices_wp, faces_wp, reversed_wp
     )
     # Non-vacuity: the cut has to do something, or both sides agree on having done nothing.

@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.adjacency`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.adjacency`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -12,8 +12,8 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import lexsort_rows, same_partition
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
@@ -41,7 +41,7 @@ def test_face_adjacency(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_tm = mesh_tm.face_adjacency
     adjacency_edges_tm = mesh_tm.face_adjacency_edges
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
 
@@ -57,8 +57,8 @@ def test_face_adjacency_n_vertices_matches_inferred(
 ) -> None:
     """Supplying the hash radix skips a ``reduce.minmax`` readback; the result must not move."""
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    inferred_wp = tw.adjacency.face_adjacency(mesh_wp.indices)
-    supplied_wp = tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=mesh_wp.points.size)
+    inferred_wp = od.adjacency.face_adjacency(mesh_wp.indices)
+    supplied_wp = od.adjacency.face_adjacency(mesh_wp.indices, n_vertices=mesh_wp.points.size)
     assert np.array_equal(inferred_wp.numpy(), supplied_wp.numpy())
 
 
@@ -74,12 +74,12 @@ def test_face_adjacency_radix_is_invariant_to_an_oversized_base(
     ``vertices.shape[0]`` rather than pay the ``reduce.minmax`` that infers ``max(faces) + 1``.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
-    tight = tw.array.index_bound(mesh_wp.indices)
+    tight = od.array.index_bound(mesh_wp.indices)
 
-    baseline_wp = tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=tight)
+    baseline_wp = od.adjacency.face_adjacency(mesh_wp.indices, n_vertices=tight)
     for base in (tight + 1, tight + 1000):
         assert np.array_equal(
-            tw.adjacency.face_adjacency(mesh_wp.indices, n_vertices=base).numpy(),
+            od.adjacency.face_adjacency(mesh_wp.indices, n_vertices=base).numpy(),
             baseline_wp.numpy(),
         )
 
@@ -90,7 +90,7 @@ def test_face_adjacency_edges_paired_matches_the_grouped_path(
     request: pytest.FixtureRequest, mesh_name: str, n_vertices_given: bool
 ) -> None:
     """
-    Triwarp against triwarp: ``edges_paired=True`` is byte-identical to the run-detecting path.
+    Ordito against ordito: ``edges_paired=True`` is byte-identical to the run-detecting path.
 
     The default path carries the oracle (``test_face_adjacency``); this pins the shortcut to it on
     every closed fixture, including the non-orientable ``boy_surface``, over both radix sources.
@@ -99,19 +99,19 @@ def test_face_adjacency_edges_paired_matches_the_grouped_path(
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
-    assert tw.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(faces_wp, allow_boundary_edges=False)
     n_vertices = mesh_wp.points.size if n_vertices_given else None
-    grouped_wp, grouped_edges_wp = tw.adjacency.face_adjacency(
+    grouped_wp, grouped_edges_wp = od.adjacency.face_adjacency(
         faces_wp, return_edges=True, n_vertices=n_vertices
     )
-    paired_wp, paired_edges_wp = tw.adjacency.face_adjacency(
+    paired_wp, paired_edges_wp = od.adjacency.face_adjacency(
         faces_wp, return_edges=True, n_vertices=n_vertices, edges_paired=True
     )
     assert paired_wp.shape == (3 * (faces_wp.size // 3) // 2, 2)
     assert np.array_equal(paired_wp.numpy(), grouped_wp.numpy())
     assert np.array_equal(paired_edges_wp.numpy(), grouped_edges_wp.numpy())
     assert np.array_equal(
-        tw.adjacency.face_adjacency(faces_wp, edges_paired=True).numpy(), grouped_wp.numpy()
+        od.adjacency.face_adjacency(faces_wp, edges_paired=True).numpy(), grouped_wp.numpy()
     )
 
 
@@ -119,12 +119,12 @@ def test_face_adjacency_edges_paired_rejects_an_odd_face_count(device: str) -> N
     """A closed triangle mesh has an even face count, so an odd one cannot keep the promise."""
     faces_wp = wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="even face count"):
-        tw.adjacency.face_adjacency(faces_wp, edges_paired=True)
+        od.adjacency.face_adjacency(faces_wp, edges_paired=True)
 
 
 def test_face_adjacency_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(faces_wp, return_edges=True)
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
     assert adjacency_wp.shape == (0, 2)
     assert adjacency_edges_wp.shape == (0, 2)
 
@@ -132,9 +132,9 @@ def test_face_adjacency_empty(device: str) -> None:
 @pytest.mark.parametrize(
     "function",
     [
-        tw.adjacency.face_adjacency_unshared,
-        tw.adjacency.face_adjacency_projections,
-        tw.adjacency.face_adjacency_convex,
+        od.adjacency.face_adjacency_unshared,
+        od.adjacency.face_adjacency_projections,
+        od.adjacency.face_adjacency_convex,
     ],
 )
 def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
@@ -154,9 +154,9 @@ def test_half_a_precomputed_pair_raises_even_on_an_empty_mesh(
     """
     faces_wp = warp_empty(0, wp.int32, device)
     vertices_wp = warp_empty(0, wp.vec3, device)
-    adjacency_wp = twt.empty_2d((0, 2), wp.int32, device=device)
+    adjacency_wp = odt.empty_2d((0, 2), wp.int32, device=device)
     args = (
-        (faces_wp,) if function is tw.adjacency.face_adjacency_unshared else (vertices_wp, faces_wp)
+        (faces_wp,) if function is od.adjacency.face_adjacency_unshared else (vertices_wp, faces_wp)
     )
     with pytest.raises(ValueError, match="both be provided or both omitted"):
         function(*args, adjacency_wp)
@@ -167,10 +167,10 @@ def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: passing the pair in agrees with letting each wrapper derive it.
+    Ordito against ordito: passing the pair in agrees with letting each wrapper derive it.
 
     The wrappers taking ``(face_adjacency, face_adjacency_edges)`` each derive it inline from
-    [`face_adjacency`][triwarp.adjacency.face_adjacency] when it is omitted, so nothing external
+    [`face_adjacency`][ordito.adjacency.face_adjacency] when it is omitted, so nothing external
     can be the oracle -- the claim is that the two paths are the same computation, and the oracle
     for the derived path is the reference comparison each wrapper carries in its own test.
 
@@ -180,9 +180,9 @@ def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
-    adjacency_wp, edges_wp = tw.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
+    adjacency_wp, edges_wp = od.adjacency.face_adjacency(mesh_wp.indices, return_edges=True)
     assert int(adjacency_wp.shape[0]) > 0
-    tight_wp, tight_edges_wp = tw.adjacency.face_adjacency(
+    tight_wp, tight_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True, n_vertices=n_vertices
     )
     assert np.array_equal(tight_wp.numpy(), adjacency_wp.numpy())
@@ -190,20 +190,20 @@ def test_the_precomputed_pair_reaches_the_same_answer_as_deriving_it(
 
     for supplied_np, derived_np in (
         (
-            tw.adjacency.face_adjacency_unshared(mesh_wp.indices, adjacency_wp, edges_wp).numpy(),
-            tw.adjacency.face_adjacency_unshared(mesh_wp.indices).numpy(),
+            od.adjacency.face_adjacency_unshared(mesh_wp.indices, adjacency_wp, edges_wp).numpy(),
+            od.adjacency.face_adjacency_unshared(mesh_wp.indices).numpy(),
         ),
         (
-            tw.adjacency.face_adjacency_projections(
+            od.adjacency.face_adjacency_projections(
                 mesh_wp.points, mesh_wp.indices, adjacency_wp, edges_wp
             ).numpy(),
-            tw.adjacency.face_adjacency_projections(mesh_wp.points, mesh_wp.indices).numpy(),
+            od.adjacency.face_adjacency_projections(mesh_wp.points, mesh_wp.indices).numpy(),
         ),
         (
-            tw.adjacency.face_adjacency_convex(
+            od.adjacency.face_adjacency_convex(
                 mesh_wp.points, mesh_wp.indices, adjacency_wp, edges_wp
             ).numpy(),
-            tw.adjacency.face_adjacency_convex(mesh_wp.points, mesh_wp.indices).numpy(),
+            od.adjacency.face_adjacency_convex(mesh_wp.points, mesh_wp.indices).numpy(),
         ),
     ):
         assert len(supplied_np) == int(adjacency_wp.shape[0])
@@ -217,12 +217,12 @@ def test_require_paired_adjacency_accepts_both_and_neither(device: str) -> None:
     The two accepting cases as well as the raise, because a validator that rejects everything
     passes a test written around the raise alone.
     """
-    pair_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    tw.adjacency.require_paired_adjacency(None, None)
-    tw.adjacency.require_paired_adjacency(pair_wp, pair_wp)
+    pair_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    od.adjacency.require_paired_adjacency(None, None)
+    od.adjacency.require_paired_adjacency(pair_wp, pair_wp)
     for half in ((pair_wp, None), (None, pair_wp)):
         with pytest.raises(ValueError, match="both be provided or both omitted"):
-            tw.adjacency.require_paired_adjacency(*half)
+            od.adjacency.require_paired_adjacency(*half)
 
 
 @pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
@@ -232,10 +232,10 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     Class B (row order): the same ``(vertex_faces, offsets)`` CSR, arbitrary within a row.
 
     ``igl.vertex_triangle_adjacency(F, n)`` returns ``(VF, NI)`` -- the payload and the offsets, in
-    that order, exactly triwarp's pair reversed -- so the only transform is the unpacking plus
+    that order, exactly ordito's pair reversed -- so the only transform is the unpacking plus
     sorting each row. Both give ``n_vertices + 1`` offsets, so no sentinel has to be appended.
 
-    Row order is genuinely undefined in triwarp's version (a counting-sort scatter, so it is thread
+    Row order is genuinely undefined in ordito's version (a counting-sort scatter, so it is thread
     order) and the docstring says so, which is why the rows are compared as **sets**. The offsets
     are compared exactly: those are not order-dependent, and an off-by-one there is the failure
     mode this function's consumers -- the decimator's normal-flip guard -- see as silent corruption.
@@ -246,7 +246,7 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
 
     payload_igl, offsets_igl = igl.vertex_triangle_adjacency(faces_np, n_vertices)
-    payload_wp, offsets_wp = tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
+    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
 
     assert np.array_equal(offsets_wp.numpy(), np.asarray(offsets_igl).ravel())
     bounds_np = offsets_wp.numpy()
@@ -270,8 +270,8 @@ def test_vertex_face_adjacency_infers_n_vertices(
     which is how this test found its own bug.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    inferred_faces, inferred_offsets = tw.adjacency.vertex_face_adjacency(mesh_wp.indices)
-    supplied_faces, supplied_offsets = tw.adjacency.vertex_face_adjacency(
+    inferred_faces, inferred_offsets = od.adjacency.vertex_face_adjacency(mesh_wp.indices)
+    supplied_faces, supplied_offsets = od.adjacency.vertex_face_adjacency(
         mesh_wp.indices, n_vertices=mesh_wp.points.size
     )
 
@@ -295,7 +295,7 @@ def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
     faces_np = np.array([0, 1, 2], dtype=np.int32)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    payload_wp, offsets_wp = tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=5)
+    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=5)
 
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 1, 2, 3, 3, 3], dtype=np.int32))
     assert np.array_equal(np.sort(payload_wp.numpy()), np.zeros(3, dtype=np.int32))
@@ -303,7 +303,7 @@ def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
 
 def test_vertex_face_adjacency_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    payload_wp, offsets_wp = tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
+    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
     assert offsets_wp.shape == (1,)
     assert payload_wp.shape == (0,)
 
@@ -311,7 +311,7 @@ def test_vertex_face_adjacency_empty(device: str) -> None:
 def test_vertex_face_adjacency_zero_rows_with_faces(device: str) -> None:
     """``n_vertices=0`` on a non-empty mesh returns zeros, not an unwritten buffer."""
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    payload_wp, offsets_wp = tw.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
+    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
     assert offsets_wp.shape == (1,)
     assert np.array_equal(payload_wp.numpy(), np.zeros(3, dtype=np.int32))
 
@@ -324,10 +324,10 @@ def test_face_adjacency_unshared(request: pytest.FixtureRequest, mesh_name: str)
     adjacency_tm = mesh_tm.face_adjacency
     unshared_tm = mesh_tm.face_adjacency_unshared.astype(np.int32)
 
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    unshared_precomputed_wp = tw.adjacency.face_adjacency_unshared(
+    unshared_precomputed_wp = od.adjacency.face_adjacency_unshared(
         mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
     )
     order_tm = _adjacency_order(adjacency_tm)
@@ -337,7 +337,7 @@ def test_face_adjacency_unshared(request: pytest.FixtureRequest, mesh_name: str)
     # The table-free path must agree **row for row**, not merely as a set: callers pair its output
     # with a separately-computed face_adjacency, so a permutation between the two would silently
     # mis-associate every row.
-    unshared_wp = tw.adjacency.face_adjacency_unshared(mesh_wp.indices)
+    unshared_wp = od.adjacency.face_adjacency_unshared(mesh_wp.indices)
     assert np.array_equal(unshared_wp.numpy(), unshared_precomputed_wp.numpy())
 
 
@@ -348,20 +348,20 @@ def test_face_adjacency_and_unshared_match_igl(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B on both: igl's per-corner table decoded into triwarp's pair list and off-edge corners.
+    Class B on both: igl's per-corner table decoded into ordito's pair list and off-edge corners.
 
     ``igl.triangle_triangle_adjacency`` returns ``(TT, TTi)`` in a ``(n_faces, 3)`` **corner**
     layout: ``TT[f, i]`` is the face across edge ``i`` of face ``f`` (``-1`` on a boundary) and
     ``TTi[f, i]`` is that edge's index within the neighbour. Two named transforms turn it into what
-    triwarp returns, and both are exact:
+    ordito returns, and both are exact:
 
     1. **pairs** -- collect ``(f, TT[f, i])`` over every corner with a neighbour, sort each pair and
        deduplicate. Every interior pair appears exactly twice in igl's table (once per side), so the
-       deduplicated count must equal triwarp's row count, which the assert checks by shape before
+       deduplicated count must equal ordito's row count, which the assert checks by shape before
        comparing values.
     2. **unshared corners** -- igl's edge ``i`` of face ``f`` runs ``(F[f, i], F[f, (i + 1) % 3])``,
        so the vertex *off* that edge is ``F[f, (i + 2) % 3]``. Reading that for both sides of a pair
-       gives triwarp's ``face_adjacency_unshared`` row.
+       gives ordito's ``face_adjacency_unshared`` row.
 
     The second transform is the one worth pinning: the ``(i + 2) % 3`` offset depends on igl's edge
     numbering convention, and getting it wrong yields a table that is a *cyclic shift* of the right
@@ -389,10 +389,10 @@ def test_face_adjacency_and_unshared_match_igl(
         if neighbours_igl[f, i] >= 0
     }
 
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    unshared_wp = tw.adjacency.face_adjacency_unshared(
+    unshared_wp = od.adjacency.face_adjacency_unshared(
         mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
     )
     adjacency_np = adjacency_wp.numpy()
@@ -428,11 +428,11 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
     """
     faces_np = np.array([0, 1, 2, 0, 1, 2], dtype=np.int32)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(faces_wp, return_edges=True)
-    unshared_tabled_wp = tw.adjacency.face_adjacency_unshared(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
+    unshared_tabled_wp = od.adjacency.face_adjacency_unshared(
         faces_wp, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
     )
-    unshared_wp = tw.adjacency.face_adjacency_unshared(faces_wp)
+    unshared_wp = od.adjacency.face_adjacency_unshared(faces_wp)
 
     assert adjacency_wp.shape == (3, 2)
     assert np.array_equal(adjacency_wp.numpy(), np.tile(np.array([0, 1], dtype=np.int32), (3, 1)))
@@ -446,7 +446,7 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
 
 def test_face_adjacency_unshared_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    unshared_wp = tw.adjacency.face_adjacency_unshared(faces_wp)
+    unshared_wp = od.adjacency.face_adjacency_unshared(faces_wp)
     assert unshared_wp.shape == (0, 2)
 
 
@@ -464,8 +464,8 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     adjacency_tm = mesh_tm.face_adjacency
     angles_tm = mesh_tm.face_adjacency_angles
 
-    adjacency_wp = tw.adjacency.face_adjacency(mesh_wp.indices)
-    angles_wp = tw.adjacency.face_adjacency_angles(
+    adjacency_wp = od.adjacency.face_adjacency(mesh_wp.indices)
+    angles_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
     )
 
@@ -499,8 +499,8 @@ def test_face_adjacency_angles_matches_meshlib(
     Class B (an absolute value and an edge-to-pair mapping), and the sign is a second claim.
 
     ``dihedralAngle`` is **signed** -- negative where the two faces form a concave surface -- where
-    triwarp splits the quantity in two: ``face_adjacency_angles`` is the unsigned magnitude and
-    [`face_adjacency_convex`][triwarp.adjacency.face_adjacency_convex] carries the side. So the
+    ordito splits the quantity in two: ``face_adjacency_angles`` is the unsigned magnitude and
+    [`face_adjacency_convex`][ordito.adjacency.face_adjacency_convex] carries the side. So the
     named transform is ``abs``, and the test then spends MeshLib's extra information on the *other*
     half
     of the pair, which trimesh cannot check: positive must mean convex, edge for edge.
@@ -512,17 +512,17 @@ def test_face_adjacency_angles_matches_meshlib(
     branch.
 
     The mapping is by face *pair* rather than by index: MeshLib keys the angle by undirected edge,
-    so the loop reads ``left(e)`` and ``right(e)`` and asserts every triwarp row was found, which is
+    so the loop reads ``left(e)`` and ``right(e)`` and asserts every ordito row was found, which is
     what makes a missed pair a failure rather than a silently smaller comparison.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True, n_vertices=mesh_wp.points.size
     )
-    angles_wp = tw.adjacency.face_adjacency_angles(
+    angles_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
     ).numpy()
-    convex_wp = tw.adjacency.face_adjacency_convex(
+    convex_wp = od.adjacency.face_adjacency_convex(
         mesh_wp.points, mesh_wp.indices, adjacency_wp, adjacency_edges_wp
     ).numpy()
 
@@ -544,7 +544,7 @@ def test_face_adjacency_angles_matches_meshlib(
     dihedral_ml = np.array([signed_ml[pair] for pair in pairs_wp])
 
     assert np.allclose(angles_wp, np.abs(dihedral_ml), rtol=1e-5, atol=1e-5)
-    # The sign, which is triwarp's other function: positive dihedral <-> a locally convex pair.
+    # The sign, which is ordito's other function: positive dihedral <-> a locally convex pair.
     creased = angles_wp > 1e-6
     assert np.array_equal(dihedral_ml > 1e-6, convex_wp & creased)
     assert int((dihedral_ml < -1e-6).sum()) > 0  # both branches present, or the sign claim is one
@@ -554,22 +554,22 @@ def test_face_adjacency_angles_matches_meshlib(
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 def test_face_adjacency_angles_precomputed(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Triwarp against triwarp on the precomputed path, then Class B against trimesh's own table.
+    Ordito against ordito on the precomputed path, then Class B against trimesh's own table.
 
-    The first assert is the triwarp-against-triwarp one and carries no oracle: it pins only that
+    The first assert is the ordito-against-ordito one and carries no oracle: it pins only that
     supplying ``face_normals`` takes the same route as deriving them. The trailing loop is the
     reference half, and it is Class B for the reason [`test_face_adjacency_angles`] gives -- the two
     libraries order the adjacency rows differently, so the comparison goes through a
     ``(face_a, face_b)`` dict rather than positionally.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp = tw.adjacency.face_adjacency(mesh_wp.indices)
-    face_normals_wp, _ = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    adjacency_wp = od.adjacency.face_adjacency(mesh_wp.indices)
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
-    angles_all_wp = tw.adjacency.face_adjacency_angles(
+    angles_all_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
     )
-    angles_precomputed_wp = tw.adjacency.face_adjacency_angles(
+    angles_precomputed_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp, face_normals=face_normals_wp
     )
     assert np.allclose(angles_all_wp.numpy(), angles_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5)
@@ -586,7 +586,7 @@ def test_face_adjacency_angles_precomputed(request: pytest.FixtureRequest, mesh_
 def test_face_adjacency_angles_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = warp_empty(0, wp.vec3, device)
-    angles_wp = tw.adjacency.face_adjacency_angles(vertices_wp, faces_wp)
+    angles_wp = od.adjacency.face_adjacency_angles(vertices_wp, faces_wp)
     assert angles_wp.shape == (0,)
 
 
@@ -596,7 +596,7 @@ def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: s
     """
     Class B (dict index): the projection is keyed by its adjacency *pair*, not by row position.
 
-    triwarp and trimesh both return one projection per adjacent face pair, but in different row
+    ordito and trimesh both return one projection per adjacent face pair, but in different row
     orders, and the value only means anything paired with its own row -- so both sides are
     indexed into a dict by ``(face_a, face_b)`` before comparing. The key-set assert is what
     makes that sound: it fails if the two disagree about *which* pairs are adjacent, which a
@@ -606,10 +606,10 @@ def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: s
     adjacency_tm = mesh_tm.face_adjacency
     projections_tm = mesh_tm.face_adjacency_projections
 
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    projections_wp = tw.adjacency.face_adjacency_projections(
+    projections_wp = od.adjacency.face_adjacency_projections(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
@@ -637,28 +637,28 @@ def test_face_adjacency_projections_precomputed(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp on the precomputed path, then Class B against trimesh.
+    Ordito against ordito on the precomputed path, then Class B against trimesh.
 
     The first assert carries no oracle: it pins only that supplying ``face_adjacency_unshared`` and
     ``face_normals`` takes the same route as deriving them. The reference half repeats
     [`test_face_adjacency_projections`]'s comparison, Class B through the same row-order transform.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    unshared_wp = tw.adjacency.face_adjacency_unshared(
+    unshared_wp = od.adjacency.face_adjacency_unshared(
         mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
     )
-    face_normals_wp, _ = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
-    projections_all_wp = tw.adjacency.face_adjacency_projections(
+    projections_all_wp = od.adjacency.face_adjacency_projections(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
     )
-    projections_precomputed_wp = tw.adjacency.face_adjacency_projections(
+    projections_precomputed_wp = od.adjacency.face_adjacency_projections(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
@@ -688,7 +688,7 @@ def test_face_adjacency_projections_precomputed(
 def test_face_adjacency_projections_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = warp_empty(0, wp.vec3, device)
-    projections_wp = tw.adjacency.face_adjacency_projections(vertices_wp, faces_wp)
+    projections_wp = od.adjacency.face_adjacency_projections(vertices_wp, faces_wp)
     assert projections_wp.shape == (0,)
 
 
@@ -705,16 +705,16 @@ def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
         device=device,
     )
     faces_wp = wp.array(np.array([0, 1, 2, 1, 2, 0], dtype=np.int32), dtype=wp.int32, device=device)
-    adjacency_wp = twt.as_array2d(
+    adjacency_wp = odt.as_array2d(
         wp.array(np.array([[0, 1]], dtype=np.int32), device=device), wp.int32
     )
-    adjacency_edges_wp = twt.as_array2d(
+    adjacency_edges_wp = odt.as_array2d(
         wp.array(np.array([[1, 2]], dtype=np.int32), device=device), wp.int32
     )
-    unshared_wp = twt.as_array2d(
+    unshared_wp = odt.as_array2d(
         wp.array(np.array([[0, -1]], dtype=np.int32), device=device), wp.int32
     )
-    projections_wp = tw.adjacency.face_adjacency_projections(
+    projections_wp = od.adjacency.face_adjacency_projections(
         vertices_wp,
         faces_wp,
         face_adjacency=adjacency_wp,
@@ -723,7 +723,7 @@ def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
     )
     assert np.isposinf(projections_wp.numpy()[0])
 
-    convex_wp = tw.adjacency.face_adjacency_convex(
+    convex_wp = od.adjacency.face_adjacency_convex(
         vertices_wp,
         faces_wp,
         face_adjacency=adjacency_wp,
@@ -741,15 +741,15 @@ def test_face_adjacency_projections_unshared_length_mismatch_raises(device: str)
         device=device,
     )
     faces_wp = wp.array(np.array([0, 1, 2, 1, 2, 0], dtype=np.int32), dtype=wp.int32, device=device)
-    adjacency_wp = twt.as_array2d(
+    adjacency_wp = odt.as_array2d(
         wp.array(np.array([[0, 1]], dtype=np.int32), device=device), wp.int32
     )
-    adjacency_edges_wp = twt.as_array2d(
+    adjacency_edges_wp = odt.as_array2d(
         wp.array(np.array([[1, 2]], dtype=np.int32), device=device), wp.int32
     )
-    empty_unshared_wp = twt.empty_2d((0, 2), wp.int32, device=device)
+    empty_unshared_wp = odt.empty_2d((0, 2), wp.int32, device=device)
     with pytest.raises(ValueError, match="row count must match"):
-        tw.adjacency.face_adjacency_projections(
+        od.adjacency.face_adjacency_projections(
             vertices_wp,
             faces_wp,
             face_adjacency=adjacency_wp,
@@ -772,10 +772,10 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
     adjacency_tm = mesh_tm.face_adjacency
     convex_tm = mesh_tm.face_adjacency_convex
 
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    convex_wp = tw.adjacency.face_adjacency_convex(
+    convex_wp = od.adjacency.face_adjacency_convex(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
@@ -798,28 +798,28 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 def test_face_adjacency_convex_precomputed(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Triwarp against triwarp on the precomputed path, then Class B against trimesh.
+    Ordito against ordito on the precomputed path, then Class B against trimesh.
 
     The first assert carries no oracle -- it pins the precomputed-argument route only. The reference
     half repeats [`test_face_adjacency_convex`]'s comparison, Class B through the same row-order
     transform.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp, adjacency_edges_wp = tw.adjacency.face_adjacency(
+    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
         mesh_wp.indices, return_edges=True
     )
-    unshared_wp = tw.adjacency.face_adjacency_unshared(
+    unshared_wp = od.adjacency.face_adjacency_unshared(
         mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
     )
-    face_normals_wp, _ = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
-    convex_all_wp = tw.adjacency.face_adjacency_convex(
+    convex_all_wp = od.adjacency.face_adjacency_convex(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
     )
-    convex_precomputed_wp = tw.adjacency.face_adjacency_convex(
+    convex_precomputed_wp = od.adjacency.face_adjacency_convex(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
@@ -847,7 +847,7 @@ def test_face_adjacency_convex_precomputed(request: pytest.FixtureRequest, mesh_
 def test_face_adjacency_convex_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     vertices_wp = warp_empty(0, wp.vec3, device)
-    convex_wp = tw.adjacency.face_adjacency_convex(vertices_wp, faces_wp)
+    convex_wp = od.adjacency.face_adjacency_convex(vertices_wp, faces_wp)
     assert convex_wp.shape == (0,)
 
 
@@ -858,7 +858,7 @@ def _face_labels_np(faces_np: np.ndarray) -> np.ndarray:
     Written out rather than taken from a library because no reference builds the dual *and* labels
     it in one call except igl's ``facet_components`` -- which is the other half of the comparison
     below, so reusing it would be comparing igl with itself. This is the same two-phase shape
-    triwarp's function has and the same one ``benchmarks/test_graph.py`` times on the scipy row.
+    ordito's function has and the same one ``benchmarks/test_graph.py`` times on the scipy row.
     """
     edges_np = np.sort(
         np.concatenate((faces_np[:, [0, 1]], faces_np[:, [1, 2]], faces_np[:, [2, 0]])), axis=1
@@ -884,7 +884,7 @@ def test_face_connected_component_labels_matches_igl(
     Class B: the same partition under different label *names*, against igl and scipy.
 
     ``igl.facet_components`` numbers components ``0..k-1`` in its own traversal order and returns
-    ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here. triwarp's
+    ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here. ordito's
     label propagation names each component after a representative face instead, so on a
     two-component mesh it returns e.g. ``{0, 12}`` where igl returns ``{0, 1}``. The transform is
     [`canonical_labels`][tests.comparisons.canonical_labels]: relabel by first appearance, which is
@@ -892,7 +892,7 @@ def test_face_connected_component_labels_matches_igl(
 
     scipy is the second reference and is a genuinely different decomposition of the work: it builds
     the dual graph explicitly (see [`_face_labels_np`]) and then labels it, where igl does both
-    internally and triwarp does both on the device. That is why the ``*_depth`` group -- whose
+    internally and ordito does both on the device. That is why the ``*_depth`` group -- whose
     benchmark rows are all build-included -- claims both libraries here.
 
     Both a single-component fixture and a two-component union are checked, because a labelling that
@@ -903,7 +903,7 @@ def test_face_connected_component_labels_matches_igl(
     faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
 
     n_components_igl, labels_igl = igl.facet_components(faces_np)
-    labels_wp = tw.adjacency.face_connected_component_labels(faces_wp)
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
 
     assert n_components_igl == np.unique(labels_wp.numpy()).size
     assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
@@ -917,7 +917,7 @@ def test_face_connected_component_labels_matches_igl(
         device=faces_wp.device,
     )
     n_doubled_igl, labels_doubled_igl = igl.facet_components(doubled_np)
-    labels_doubled_wp = tw.adjacency.face_connected_component_labels(doubled_wp)
+    labels_doubled_wp = od.adjacency.face_connected_component_labels(doubled_wp)
 
     assert n_doubled_igl == 2 * n_components_igl
     assert same_partition(labels_doubled_wp.numpy(), np.asarray(labels_doubled_igl).ravel())
@@ -938,12 +938,12 @@ def test_face_connected_component_labels_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class B, and the pair that pins *which* incidence rule triwarp implements.
+    Class B, and the pair that pins *which* incidence rule ordito implements.
 
     ``getAllComponents`` takes a ``FaceIncidence`` and the two settings are different operations,
-    not two tunings: ``PerEdge`` connects faces sharing an edge, which is triwarp's rule, and
+    not two tunings: ``PerEdge`` connects faces sharing an edge, which is ordito's rule, and
     ``PerVertex`` connects faces sharing a single vertex. On a bowtie -- two triangles meeting at
-    one vertex -- they read **2** components and **1**, and triwarp reads 2. No other reference in
+    one vertex -- they read **2** components and **1**, and ordito reads 2. No other reference in
     this module exposes that choice, so this is the only test that can fail if the convention ever
     drifts.
 
@@ -959,7 +959,7 @@ def test_face_connected_component_labels_matches_meshlib(
     components_ml = mm.getAllComponents(
         mm.MeshPart(trimesh_to_meshlib(mesh_tm)), mm.MeshComponents.FaceIncidence.PerEdge
     )
-    labels_wp = tw.adjacency.face_connected_component_labels(faces_wp)
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
     assert len(components_ml) == np.unique(labels_wp.numpy()).size
     assert same_partition(labels_wp.numpy(), _face_labels_ml(components_ml, n_faces))
 
@@ -976,7 +976,7 @@ def test_face_connected_component_labels_matches_meshlib(
     )
     assert len(doubled_ml) == 2 * len(components_ml)
     assert same_partition(
-        tw.adjacency.face_connected_component_labels(doubled_wp).numpy(),
+        od.adjacency.face_connected_component_labels(doubled_wp).numpy(),
         _face_labels_ml(doubled_ml, doubled_tm.faces.shape[0]),
     )
 
@@ -992,7 +992,7 @@ def test_face_connected_component_labels_matches_meshlib(
     per_edge_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerEdge)
     per_vertex_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerVertex)
     assert (len(per_edge_ml), len(per_vertex_ml)) == (2, 1)
-    assert np.unique(tw.adjacency.face_connected_component_labels(bowtie_wp).numpy()).size == 2
+    assert np.unique(od.adjacency.face_connected_component_labels(bowtie_wp).numpy()).size == 2
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
@@ -1000,14 +1000,14 @@ def test_face_connected_component_labels_compressed_forest(
     request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: compressing the pre-hooked forest changes no label.
+    Ordito against ordito: compressing the pre-hooked forest changes no label.
 
     ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
     ``ECL_COMPRESS_FROM`` faces, which no fixture reaches, so the threshold is lowered to force it;
     the uncompressed path carries the oracles (igl, scipy and meshlib, above). Two disjoint copies,
     so the labels name more than one component.
     """
-    from triwarp.kernels.algorithms import connected_components as kernel_cc
+    from ordito.kernels.algorithms import connected_components as kernel_cc
 
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = mesh_wp.indices.numpy()
@@ -1016,9 +1016,9 @@ def test_face_connected_component_labels_compressed_forest(
         dtype=wp.int32,
         device=mesh_wp.indices.device,
     )
-    plain = tw.adjacency.face_connected_component_labels(doubled_wp).numpy()
+    plain = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
-    compressed = tw.adjacency.face_connected_component_labels(doubled_wp).numpy()
+    compressed = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
     assert np.unique(plain).size >= 2
     assert np.array_equal(compressed, plain)
 
@@ -1032,7 +1032,7 @@ def test_face_connected_component_labels_matches_pyvista(
     Class B, the same relabelling as the igl row: VTK's ``RegionId`` names the components its way.
 
     ``connectivity('all')`` writes a ``RegionId`` **cell** array numbered ``0..k-1``, and the
-    numbering is neither triwarp's representative-face id nor igl's traversal order -- measured on
+    numbering is neither ordito's representative-face id nor igl's traversal order -- measured on
     two disjoint spheres it labels the *first* component ``1``, so even a pack-by-first-appearance
     comparison fails and only the partition is shared. That is what
     [`same_partition`][tests.comparisons.same_partition] compares; pyvista ships its own
@@ -1045,7 +1045,7 @@ def test_face_connected_component_labels_matches_pyvista(
     faces_wp = mesh_wp.indices
 
     labels_pv = np.asarray(trimesh_to_pyvista(mesh_tm).connectivity("all").cell_data["RegionId"])
-    labels_wp = tw.adjacency.face_connected_component_labels(faces_wp)
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
     assert same_partition(labels_wp.numpy(), labels_pv)
 
     doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
@@ -1058,7 +1058,7 @@ def test_face_connected_component_labels_matches_pyvista(
     labels_doubled_pv = np.asarray(
         trimesh_to_pyvista(doubled_tm).connectivity("all").cell_data["RegionId"]
     )
-    labels_doubled_wp = tw.adjacency.face_connected_component_labels(doubled_wp)
+    labels_doubled_wp = od.adjacency.face_connected_component_labels(doubled_wp)
 
     assert np.unique(labels_doubled_pv).size == 2
     assert same_partition(labels_doubled_wp.numpy(), labels_doubled_pv)
@@ -1085,7 +1085,7 @@ def test_sorted_face_edge_keys(
     order_np = np.argsort(keys_np, kind="stable")
     assert np.unique(keys_np).size < keys_np.size
 
-    sorted_wp, order_wp = tw.adjacency.sorted_face_edge_keys(
+    sorted_wp, order_wp = od.adjacency.sorted_face_edge_keys(
         mesh_wp.indices, n_vertices=n_vertices if bounded else None
     )
     assert np.array_equal(order_wp.numpy(), order_np)

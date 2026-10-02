@@ -1,13 +1,13 @@
 # Changelog
 
-All notable changes to triwarp are recorded here.
+All notable changes to ordito are recorded here.
 
-The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and triwarp adheres
+The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and ordito adheres
 to [Semantic Versioning](https://semver.org/spec/v2.0.0.html) with a pre-1.0 caveat: while the
 version is `0.x`, a **minor** bump may change a public signature, add or remove a public module,
 or raise the `warp-lang` floor, and a **patch** bump is limited to bug fixes and documentation.
 
-triwarp is pre-1.0. The public API is safe to build on — it is covered by an extensive regression
+ordito is pre-1.0. The public API is safe to build on — it is covered by an extensive regression
 suite and an eleven-library parity gate — but until 1.0 a public signature may move a positional
 argument to a keyword or gain a required parameter between minor versions. 1.0 will be the point
 at which public function signatures become a commitment: module, name and positional argument
@@ -64,7 +64,7 @@ The first public release. Everything below is new, because there is no prior tag
 - An optional `Trimesh` object API with lazily cached derived quantities, over the same free
   functions.
 - Inline type information (`py.typed`) for the whole public surface.
-- `triwarp.__version__`, read from the installed distribution metadata and resolved lazily, so it
+- `ordito.__version__`, read from the installed distribution metadata and resolved lazily, so it
   costs nothing for a caller who never asks for it.
 
 ### Notes
@@ -76,6 +76,6 @@ The first public release. Everything below is new, because there is no prior tag
   since `warp-lang` already requires it unconditionally.
 - Every function runs on CUDA when a GPU is present and on Warp's CPU backend otherwise. The
   documented performance figures are measured on Linux with CUDA; see
-  [Platform support](https://lucagrementieri.github.io/triwarp/getting-started/#platform-support).
+  [Platform support](https://lucagrementieri.github.io/ordito/getting-started/#platform-support).
 
-[Unreleased]: https://github.com/lucagrementieri/triwarp/commits/main
+[Unreleased]: https://github.com/lucagrementieri/ordito/commits/main

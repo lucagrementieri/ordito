@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.triangles`` against ``trimesh.triangles`` (CPU reference)."""
+"""Regression tests for ``ordito.triangles`` against ``trimesh.triangles`` (CPU reference)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito.triangles import CornerNormalWeighting, FaceQualityMetric
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     faces_igl,
@@ -30,7 +31,6 @@ from tests.conversions import (
     trimesh_to_pyvista,
     warp_empty,
 )
-from triwarp.triangles import CornerNormalWeighting, FaceQualityMetric
 
 
 @pytest.mark.parity("face_normals_and_areas", "trimesh")
@@ -42,7 +42,7 @@ def test_face_normals_and_areas(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     bug from a winding one -- a flipped face has the right area and the wrong normal.
     """
     mesh_tm, mesh_wp = icosahedron
-    normal_wp, area_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normal_wp, area_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(normal_wp.numpy(), mesh_tm.face_normals, rtol=1e-5, atol=1e-5)
     assert np.allclose(area_wp.numpy(), mesh_tm.area_faces, rtol=1e-5, atol=1e-5)
 
@@ -50,7 +50,7 @@ def test_face_normals_and_areas(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 @pytest.mark.parity("face_normals_and_areas", "pytorch3d")
 def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A: ``mesh_face_areas_normals`` is bit-identical to triwarp's, on both outputs.
+    Class A: ``mesh_face_areas_normals`` is bit-identical to ordito's, on both outputs.
 
     Not merely within tolerance -- **exactly** 0.0 on this fixture, because the two implementations
     are the same three lines: ``(v1 - v0) x (v2 - v0)``, its norm halved for the area, and the same
@@ -61,9 +61,9 @@ def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, w
     Note the areas come back **float32** whatever the ``Meshes`` was built from -- the C++ kernel
     casts -- so a float64 comparison here would be measuring pytorch3d's own downcast.
 
-    The ``Meshes`` is built on the **triwarp side's own device**, which is what makes the exact
+    The ``Meshes`` is built on the **ordito side's own device**, which is what makes the exact
     claim hold on both: pytorch3d has separate CPU and CUDA kernels, and each agrees bit-for-bit
-    with triwarp's on the same device while a ``pytorch3d``-on-host against ``triwarp``-on-CUDA
+    with ordito's on the same device while a ``pytorch3d``-on-host against ``ordito``-on-CUDA
     comparison lands at 1.86e-09 on the areas and 1.19e-07 on the normals. So this is also one of
     the tests section 6's device rule asks for -- it exercises the reference's *own* two backends
     rather than trusting the CPU pass.
@@ -73,7 +73,7 @@ def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, w
     areas_p3d, normals_p3d = p3d_ops.mesh_face_areas_normals(
         mesh_p3d.verts_packed(), mesh_p3d.faces_packed()
     )
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     assert areas_p3d.shape == (mesh_tm.faces.shape[0],)
     assert_nonconstant(areas_p3d.cpu().numpy(), tol=1e-5)
@@ -101,18 +101,18 @@ def test_face_normals_and_areas_against_the_partial_references(
       its magnitude is ``2 * area`` to within 1e-15 across every face, and its direction matches
       trimesh's unit normals exactly. So dividing by the magnitude gives the normal and halving the
       magnitude gives the area, and this row is a full oracle rather than a partial one. Do not
-      "fix" a failure here by normalising triwarp's side -- triwarp's normals are already unit, and
+      "fix" a failure here by normalising ordito's side -- ordito's normals are already unit, and
       the magnitude is the area check.
 
     Uses ``half_torus`` rather than ``icosahedron`` so the areas actually vary across faces: on a
     mesh of 20 congruent triangles a factor-of-two error in one reference and a wrong *constant* in
-    triwarp are indistinguishable.
+    ordito are indistinguishable.
     """
     mesh_tm, mesh_wp = half_torus
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = faces_igl(mesh_tm)
 
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     areas_igl = np.asarray(igl.doublearea(vertices_np, faces_np)) / 2.0
     assert np.allclose(areas_wp.numpy(), areas_igl, rtol=1e-5, atol=1e-5)
@@ -165,7 +165,7 @@ def test_corner_normals_matches_meshlib(
     creases_wp = None
     creases_ml = mm.UndirectedEdgeBitSet()
     if crease_angle is not None:
-        creases_wp = tw.seams.crease_edges(vertices_wp, faces_wp, angle=crease_angle)
+        creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=crease_angle)
         # Non-vacuity: at this angle the fixture must actually have hard edges, or the case below
         # is the no-crease one again under a different name.
         assert int(creases_wp.shape[0]) > 0
@@ -174,7 +174,7 @@ def test_corner_normals_matches_meshlib(
     normals_ml = meshlib_corner_normals_to_numpy(
         mm.computePerCornerNormals(mesh_ml, creases_ml), n_faces
     )
-    normals_wp = tw.triangles.corner_normals(vertices_wp, faces_wp, creases_wp, weighting="area")
+    normals_wp = od.triangles.corner_normals(vertices_wp, faces_wp, creases_wp, weighting="area")
     assert normals_wp.shape == (n_faces, 3)
     assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
 
@@ -185,13 +185,13 @@ def test_corner_normals_degenerate_crease_sets_are_exact(
     request: pytest.FixtureRequest, mesh_name: str, weighting: CornerNormalWeighting
 ) -> None:
     """
-    Not a library comparison: the two crease sets whose answer is another triwarp function, exactly.
+    Not a library comparison: the two crease sets whose answer is another ordito function, exactly.
 
     These are the strongest available checks on the rotation walk, because both sides are computed
     by different code and must agree to float32 and not to a tolerance:
 
     * **no creases** -- every rotation completes, so each corner gets its *vertex's* normal under
-      the same weighting, compared against ``triwarp.vertices``' own function;
+      the same weighting, compared against ``ordito.vertices``' own function;
     * **every edge a crease** -- no rotation moves at all, so each corner gets its own *face's*
       normal, whatever the weighting.
 
@@ -203,19 +203,19 @@ def test_corner_normals_degenerate_crease_sets_are_exact(
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     faces_np = faces_wp.numpy().reshape(-1, 3)
 
-    smooth_np = tw.triangles.corner_normals(vertices_wp, faces_wp, weighting=weighting).numpy()
+    smooth_np = od.triangles.corner_normals(vertices_wp, faces_wp, weighting=weighting).numpy()
     vertex_normals_wp = (
-        tw.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
+        od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
         if weighting == "angle"
-        else tw.vertices.vertex_normals(vertices_wp, faces_wp)
+        else od.vertices.vertex_normals(vertices_wp, faces_wp)
     )
     assert np.allclose(smooth_np, vertex_normals_wp.numpy()[faces_np], rtol=1e-5, atol=1e-5)
 
-    every_edge_wp = tw.edges.faces_to_edges(faces_wp, sorted=True)
-    hard_np = tw.triangles.corner_normals(
+    every_edge_wp = od.edges.faces_to_edges(faces_wp, sorted=True)
+    hard_np = od.triangles.corner_normals(
         vertices_wp, faces_wp, every_edge_wp, weighting=weighting
     ).numpy()
-    face_normals_np = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)[0].numpy()
+    face_normals_np = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)[0].numpy()
     assert np.allclose(hard_np, face_normals_np[:, None, :], rtol=1e-5, atol=1e-5)
     # And the two extremes must differ, or neither comparison above is testing the walk.
     assert not np.allclose(smooth_np, hard_np, rtol=1e-3, atol=1e-3)
@@ -250,11 +250,11 @@ def test_corner_normals_ccw_first_step_crease_does_not_skip_clockwise_walk(devic
     # corner within face i is flat index 3*i, and F3's own ``halfedge_prev`` edge is {p0, v}.
     faces_np = np.array([0, 1, 2, 0, 2, 3, 0, 3, 4, 0, 4, 1], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
-    crease_wp = twt.as_array2d(
+    crease_wp = odt.as_array2d(
         wp.array(np.array([[0, 1]], dtype=np.int32), device=device), wp.int32
     )
 
-    normals_wp = tw.triangles.corner_normals(
+    normals_wp = od.triangles.corner_normals(
         vertices_wp, faces_wp, crease_wp, weighting="area"
     ).numpy()
     # All four faces are wound the same way in the xy-plane, so every one of them has the flat
@@ -268,18 +268,18 @@ def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.M
     """Not a library comparison: an empty mesh, and the two argument errors."""
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     empty_faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.triangles.corner_normals(empty_vertices_wp, empty_faces_wp).shape == (0, 3)
+    assert od.triangles.corner_normals(empty_vertices_wp, empty_faces_wp).shape == (0, 3)
 
     _mesh_tm, mesh_wp = unit_box
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     with pytest.raises(ValueError, match=r"shape \(k, 2\)"):
-        tw.triangles.corner_normals(
+        od.triangles.corner_normals(
             vertices_wp,
             faces_wp,
-            twt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
+            odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32),
         )
     with pytest.raises(ValueError, match="weighting must be"):
-        tw.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        od.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parity("face_normals_and_areas", "open3d")
@@ -293,7 +293,7 @@ def test_face_normals_matches_open3d(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     ``half_torus`` for the same varying-area reason as the partial-references test.
     """
     mesh_tm, mesh_wp = half_torus
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     mesh_o3d = trimesh_to_open3d(mesh_tm)
     mesh_o3d.compute_triangle_normals()
@@ -310,11 +310,11 @@ def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     normal (float32, per this module's dtype note) and ``compute_cell_sizes`` the area. The three
     ``compute_normals`` flags matter and are passed explicitly: ``consistent_normals`` and
     ``auto_orient_normals`` would let VTK re-wind the mesh before differentiating it, which would
-    compare triwarp's normals against a *different* orientation, and ``split_vertices`` would change
+    compare ordito's normals against a *different* orientation, and ``split_vertices`` would change
     the point count. ``half_torus`` for the varying-area reason the partial-references test gives.
     """
     mesh_tm, mesh_wp = half_torus
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     mesh_pv = trimesh_to_pyvista(mesh_tm)
     normals_pv = mesh_pv.compute_normals(
@@ -341,7 +341,7 @@ def test_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     cotangent Laplacian and the angle defect both index it that way.
     """
     mesh_tm, mesh_wp = half_torus
-    angles_wp = tw.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
+    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(angles_wp.numpy(), mesh_tm.face_angles, rtol=1e-5, atol=1e-5)
 
 
@@ -364,7 +364,7 @@ def test_face_quality_against_pymeshlab(
     meshset_pml.compute_scalar_by_aspect_ratio_per_face(metric=filter_metric)
     quality_pml = meshset_pml.current_mesh().face_scalar_array()
 
-    quality_wp = tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric=metric)
+    quality_wp = od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric=metric)
     assert np.allclose(quality_wp.numpy(), quality_pml, rtol=1e-5, atol=1e-5)
 
 
@@ -385,20 +385,20 @@ def test_face_quality_against_the_verdict_measures(
     reciprocal: bool,
 ):
     """
-    Decode VTK's Verdict measure names onto triwarp's, three Class A and one Class B.
+    Decode VTK's Verdict measure names onto ordito's, three Class A and one Class B.
 
     The mapping is the trap, not the arithmetic, and the two inversions in it will mislead anyone
     reading pyvista's docs instead of this table:
 
-    - Verdict's ``radius_ratio`` is ``R / (2 r_in)``, which is triwarp's **aspect_ratio**;
-    - triwarp's own ``radius_ratio`` is its *reciprocal* (asserted below so the inversion is pinned
+    - Verdict's ``radius_ratio`` is ``R / (2 r_in)``, which is ordito's **aspect_ratio**;
+    - ordito's own ``radius_ratio`` is its *reciprocal* (asserted below so the inversion is pinned
       rather than described);
-    - ``shape`` is ``4 sqrt(3) A / (a^2 + b^2 + c^2)``, triwarp's **mean_ratio**;
+    - ``shape`` is ``4 sqrt(3) A / (a^2 + b^2 + c^2)``, ordito's **mean_ratio**;
     - ``aspect_frobenius`` is one over that -- the Class B row, one named reciprocal -- and
       ``condition`` duplicates it exactly, so it gets no row of its own.
 
     ``area_max_side`` has no Verdict counterpart at all, and Verdict's ``aspect_ratio``
-    (``max_edge / (2 sqrt(3) r_in)``) has no triwarp counterpart; neither is compared.
+    (``max_edge / (2 sqrt(3) r_in)``) has no ordito counterpart; neither is compared.
 
     Anti-vacuity, which this comparison is unusually exposed to: of ``cell_quality``'s 28 measures
     only 12 are defined on a triangle and the other 16 come back as the constant ``-1.0`` null
@@ -411,12 +411,12 @@ def test_face_quality_against_the_verdict_measures(
     assert quality_pv.min() > 0.0
     assert_nonconstant(quality_pv, tol=1e-3)
 
-    quality_wp = tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric=metric)
+    quality_wp = od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric=metric)
     expected_pv = 1.0 / quality_pv if reciprocal else quality_pv
     assert np.allclose(quality_wp.numpy(), expected_pv, rtol=1e-5, atol=1e-5)
 
-    if measure == "radius_ratio":  # triwarp's like-named metric is the other way up
-        radius_ratio_wp = tw.triangles.face_quality(
+    if measure == "radius_ratio":  # ordito's like-named metric is the other way up
+        radius_ratio_wp = od.triangles.face_quality(
             mesh_wp.points, mesh_wp.indices, metric="radius_ratio"
         )
         assert np.allclose(radius_ratio_wp.numpy() * quality_pv, 1.0, rtol=1e-4, atol=1e-4)
@@ -441,7 +441,7 @@ def test_face_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)
     )
 
-    angles_wp = tw.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
+    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(angles_wp.numpy(), mesh_tm.face_angles, rtol=1e-5, atol=1e-5)
     assert np.allclose(angles_wp.numpy(), angles_igl, rtol=1e-5, atol=1e-5)
@@ -462,7 +462,7 @@ def test_face_angles_extremes_against_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     mesh_tm, mesh_wp = half_torus
     quality_pv = trimesh_to_pyvista(mesh_tm).cell_quality(["min_angle", "max_angle"])
 
-    angles_np = np.degrees(tw.triangles.face_angles(mesh_wp.points, mesh_wp.indices).numpy())
+    angles_np = np.degrees(od.triangles.face_angles(mesh_wp.points, mesh_wp.indices).numpy())
 
     assert np.allclose(
         angles_np.min(axis=1), np.asarray(quality_pv.cell_data["min_angle"]), rtol=1e-5, atol=1e-4
@@ -512,7 +512,7 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     conventions the others leave open. Its ``computePerFaceNormals`` is **normalized** (|n| = 1 to
     6e-08 measured), unlike pymeshlab's ``face_normal_matrix()``, which is the raw cross product at
     magnitude ``2 * area``; and its ``triangleAspectRatio`` is exactly the measure
-    [`face_quality`][triwarp.triangles.face_quality] calls ``aspect_ratio`` -- **0.0** difference,
+    [`face_quality`][ordito.triangles.face_quality] calls ``aspect_ratio`` -- **0.0** difference,
     where pyvista names the same quantity ``radius_ratio`` and igl gives it only as a ratio of two
     other arrays.
 
@@ -538,7 +538,7 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     n_faces = mesh_wp.indices.size // 3
     assert topology_ml.numValidFaces() == n_faces > 0  # non-vacuity, and the converter's own check
 
-    normals_wp, areas_wp = tw.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
+    normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
     normals_ml = mn.toNumpyArray(mm.computePerFaceNormals(mesh_ml))
     assert np.allclose(np.linalg.norm(normals_ml, axis=1), 1.0, atol=1e-6)
     assert np.allclose(normals_wp.numpy(), normals_ml, rtol=1e-5, atol=1e-5)
@@ -548,11 +548,11 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     assert np.allclose(areas_wp.numpy(), areas_ml, rtol=1e-5, atol=1e-5)
 
     centroids_ml = np.array([[*mm.triCenter(topology_ml, points_ml, f)] for f in faces_ml])
-    centroids_wp = tw.triangles.face_centroids(mesh_wp.points, mesh_wp.indices)
+    centroids_wp = od.triangles.face_centroids(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(centroids_wp.numpy(), centroids_ml, rtol=1e-5, atol=1e-5)
 
     aspect_ml = np.array([mm.triangleAspectRatio(topology_ml, points_ml, f) for f in faces_ml])
-    aspect_wp = tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="aspect_ratio")
+    aspect_wp = od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="aspect_ratio")
     assert_nonconstant(aspect_ml, tol=0.1)  # non-vacuity: a constant would pass any tolerance
     assert np.allclose(aspect_wp.numpy(), aspect_ml, rtol=1e-5, atol=1e-5)
 
@@ -570,7 +570,7 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
             for row in faces_np
         ]
     )
-    angles_wp = tw.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
+    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
     # non-vacuity: equilateral faces would read 60 degrees flat
     assert_nonconstant(corner_ml, tol=0.5)
     assert np.allclose(angles_wp.numpy(), corner_ml, rtol=1e-5, atol=1e-5)
@@ -595,7 +595,7 @@ def test_face_quality_aspect_ratio_against_igl(half_torus: tuple[tm.Trimesh, wp.
         2.0 * np.asarray(igl.inradius(vertices_np, faces_np))
     )
 
-    quality_wp = tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="aspect_ratio")
+    quality_wp = od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="aspect_ratio")
     assert np.allclose(quality_wp.numpy(), aspect_igl, rtol=1e-4, atol=1e-5)
 
 
@@ -607,17 +607,17 @@ def test_face_quality_radius_ratio_equilateral(device: str):
     vertices_wp = points_to_warp(side, device)
     faces_wp = wp.array([0, 1, 2], dtype=wp.int32, device=device)
     assert np.allclose(
-        tw.triangles.face_quality(vertices_wp, faces_wp, metric="radius_ratio").numpy(), 1.0
+        od.triangles.face_quality(vertices_wp, faces_wp, metric="radius_ratio").numpy(), 1.0
     )
     assert np.allclose(
-        tw.triangles.face_quality(vertices_wp, faces_wp, metric="mean_ratio").numpy(), 1.0
+        od.triangles.face_quality(vertices_wp, faces_wp, metric="mean_ratio").numpy(), 1.0
     )
     assert np.allclose(
-        tw.triangles.face_quality(vertices_wp, faces_wp, metric="area_max_side").numpy(),
+        od.triangles.face_quality(vertices_wp, faces_wp, metric="area_max_side").numpy(),
         np.sqrt(3.0) / 2.0,
     )
     assert np.allclose(
-        tw.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio").numpy(), 1.0
+        od.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio").numpy(), 1.0
     )
 
 
@@ -626,17 +626,17 @@ def test_face_quality_degenerate(
 ):
     """The sliver reads ``+inf`` under ``aspect_ratio`` and ~0 under the bounded measures."""
     _vertices_np, _faces_np, vertices_wp, faces_wp = sliver_patch
-    aspect_wp = tw.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio")
+    aspect_wp = od.triangles.face_quality(vertices_wp, faces_wp, metric="aspect_ratio")
     assert np.isinf(aspect_wp.numpy()[0])
     for metric in ("radius_ratio", "area_max_side", "mean_ratio"):
-        quality_wp = tw.triangles.face_quality(vertices_wp, faces_wp, metric=metric)
+        quality_wp = od.triangles.face_quality(vertices_wp, faces_wp, metric=metric)
         assert quality_wp.numpy()[0] < 1e-5
 
 
 def test_face_quality_unknown_metric(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match="unknown metric"):
-        tw.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="skewness")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 @pytest.mark.parametrize("with_degenerate", [False, True], ids=["clean", "with_degenerate"])
@@ -677,7 +677,7 @@ def test_face_nondegenerate_mask(hemisphere: tuple[tm.Trimesh, wp.Mesh], with_de
     nondegenerate_tm = tm.triangles.nondegenerate(triangles_np)
     assert np.count_nonzero(~nondegenerate_tm) == (2 if with_degenerate else 0)
 
-    nondegenerate_wp = tw.triangles.face_nondegenerate_mask(vertices_wp, faces_wp)
+    nondegenerate_wp = od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp)
     assert np.array_equal(nondegenerate_wp.numpy().astype(bool), nondegenerate_tm)
 
 
@@ -693,7 +693,7 @@ def test_barycentric_to_points(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     points_tm = tm.triangles.barycentric_to_points(mesh_tm.triangles, barycentric_np)
 
     barycentric_wp = points_to_warp(barycentric_np, mesh_wp.points.device)
-    points_wp = tw.triangles.barycentric_to_points(mesh_wp.points, mesh_wp.indices, barycentric_wp)
+    points_wp = od.triangles.barycentric_to_points(mesh_wp.points, mesh_wp.indices, barycentric_wp)
     assert np.allclose(points_wp.numpy(), points_tm, rtol=1e-5, atol=1e-5)
 
 
@@ -703,9 +703,9 @@ def test_points_to_barycentric(hemisphere: tuple[tm.Trimesh, wp.Mesh], method: s
     """
     Class A on both references, against *both* of trimesh's solver methods.
 
-    triwarp exposes one formulation where trimesh exposes two, so the parametrize now varies the
+    ordito exposes one formulation where trimesh exposes two, so the parametrize now varies the
     **reference** rather than the code under test -- which is the stronger comparison, since it
-    asserts the single triwarp answer against both of the alternatives a caller might have expected.
+    asserts the single ordito answer against both of the alternatives a caller might have expected.
     They agree here because this fixture's triangles are well shaped; the formulations part company
     on slivers, which the sweep below covers.
 
@@ -731,7 +731,7 @@ def test_points_to_barycentric(hemisphere: tuple[tm.Trimesh, wp.Mesh], method: s
     )
 
     points_wp = points_to_warp(points_np, mesh_wp.points.device)
-    barycentric_wp = tw.triangles.points_to_barycentric(mesh_wp.points, mesh_wp.indices, points_wp)
+    barycentric_wp = od.triangles.points_to_barycentric(mesh_wp.points, mesh_wp.indices, points_wp)
     assert np.allclose(barycentric_wp.numpy(), barycentric_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(barycentric_wp.numpy(), barycentric_igl, rtol=1e-5, atol=1e-5)
 
@@ -744,12 +744,12 @@ def test_points_to_barycentric_survives_slivers(device: str, height: float) -> N
 
     The named transform is the precision: trimesh promotes its input to ``float64`` whatever it is
     handed (measured), so its cross-product formulation is exact over this whole sweep and cannot
-    exhibit the failure itself. The question is whether triwarp's ``float32`` solve tracks it, and
+    exhibit the failure itself. The question is whether ordito's ``float32`` solve tracks it, and
     the sweep is the test -- it pins the formulation's accuracy across five decades of degeneracy,
     so a change that reintroduced the Gram-determinant form would fail the lower cells rather than
     a tolerance. ``method="cross"`` is named explicitly on the reference side because trimesh's
     *other* formulation is not exact here either: it disagrees with its own cross-product form by
-    5.6e-06 at ``height = 1e-6``, in ``float64``, which is why triwarp ships one formulation and not
+    5.6e-06 at ``height = 1e-6``, in ``float64``, which is why ordito ships one formulation and not
     two (the measured table is in ``kernels.triangles.point_barycentric``).
 
     ``test_points_to_barycentric`` covers the same comparison on well-shaped triangles; this covers
@@ -766,16 +766,16 @@ def test_points_to_barycentric_survives_slivers(device: str, height: float) -> N
 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     point_wp = points_to_warp(point_np, device)
-    barycentric_wp = tw.triangles.points_to_barycentric(vertices_wp, faces_wp, point_wp)
+    barycentric_wp = od.triangles.points_to_barycentric(vertices_wp, faces_wp, point_wp)
     assert np.allclose(barycentric_wp.numpy(), barycentric_tm, rtol=1e-4, atol=1e-4)
 
 
 def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     """
-    Triwarp against triwarp: a triangle with exactly zero area has no barycentric frame.
+    Ordito against ordito: a triangle with exactly zero area has no barycentric frame.
 
     Not a library comparison: trimesh and igl both divide by zero here and return a non-finite row,
-    so there is no reference answer to compare against -- triwarp deliberately differs, answering
+    so there is no reference answer to compare against -- ordito deliberately differs, answering
     along the triangle's longest edge, which is not an approximation because a zero-area triangle
     *is* that segment. The invariants are what pin it: the coordinates stay finite, sum to one, and
     reconstruct the query point when it lies on the segment.
@@ -786,7 +786,7 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     point_wp = points_to_warp(point_np, device)
 
-    barycentric_np = tw.triangles.points_to_barycentric(vertices_wp, faces_wp, point_wp).numpy()[0]
+    barycentric_np = od.triangles.points_to_barycentric(vertices_wp, faces_wp, point_wp).numpy()[0]
     assert np.all(np.isfinite(barycentric_np))
     assert np.isclose(barycentric_np.sum(), 1.0, rtol=1e-5, atol=1e-5)
     rebuilt_np = barycentric_np @ vertices_np.astype(np.float64)
@@ -814,7 +814,7 @@ def test_closest_point(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     closest_points_tm = tm.triangles.closest_point(mesh_tm.triangles, points_np)
 
     points_wp = points_to_warp(points_np, mesh_wp.points.device)
-    closest_points_wp = tw.triangles.closest_point(mesh_wp.points, mesh_wp.indices, points_wp)
+    closest_points_wp = od.triangles.closest_point(mesh_wp.points, mesh_wp.indices, points_wp)
     assert np.allclose(closest_points_wp.numpy(), closest_points_tm, rtol=1e-5, atol=1e-5)
 
 
@@ -872,7 +872,7 @@ def test_soup_quantities_match_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
         mesh_tm.triangles.mean(axis=1) + rng.standard_normal((n_faces, 3)) * 0.35, dtype=np.float32
     )
     queries_wp = points_to_warp(queries_np, mesh_wp.points.device)
-    closest_wp = tw.triangles.closest_point(mesh_wp.points, mesh_wp.indices, queries_wp)
+    closest_wp = od.triangles.closest_point(mesh_wp.points, mesh_wp.indices, queries_wp)
     closest_ml = np.array(
         [
             [
@@ -894,7 +894,7 @@ def test_soup_quantities_match_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     barycentric_np = rng.random((n_faces, 3)) + 0.05
     barycentric_np /= barycentric_np.sum(axis=1, keepdims=True)
     barycentric_wp = points_to_warp(barycentric_np, mesh_wp.points.device)
-    points_wp = tw.triangles.barycentric_to_points(mesh_wp.points, mesh_wp.indices, barycentric_wp)
+    points_wp = od.triangles.barycentric_to_points(mesh_wp.points, mesh_wp.indices, barycentric_wp)
     interpolated_ml = np.empty((n_faces, 3))
     for f in range(n_faces):
         edge_ml = topology_ml.edgeWithLeft(mm.FaceId(f))
@@ -932,11 +932,11 @@ def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     )
     centroids_pv = np.asarray(trimesh_to_pyvista(mesh_tm).cell_centers().points)
 
-    centroids_wp = tw.triangles.face_centroids(mesh_wp.points, mesh_wp.indices)
+    centroids_wp = od.triangles.face_centroids(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(centroids_wp.numpy(), centroids_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(centroids_wp.numpy(), centroids_pv, rtol=1e-5, atol=1e-5)
-    barycentric_wp = tw.triangles.points_to_barycentric(
+    barycentric_wp = od.triangles.points_to_barycentric(
         mesh_wp.points, mesh_wp.indices, centroids_wp
     )
     assert np.allclose(barycentric_wp.numpy(), 1.0 / 3.0, rtol=1e-4, atol=1e-4)
@@ -959,7 +959,7 @@ def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
     v0, v1, v2 = triangles_np[:, 0], triangles_np[:, 1], triangles_np[:, 2]
     volumes_np = np.einsum("ij,ij->i", v0, np.cross(v1, v2)) / 6.0
 
-    volumes_wp = tw.triangles.face_signed_volumes(mesh_wp.points, mesh_wp.indices)
+    volumes_wp = od.triangles.face_signed_volumes(mesh_wp.points, mesh_wp.indices)
 
     scale = float(np.abs(volumes_np).max())
     assert np.allclose(volumes_wp.numpy(), volumes_np, rtol=1e-5, atol=1e-5 * scale)
@@ -986,8 +986,8 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
         device=device,
     )
 
-    at_origin_np = tw.triangles.face_signed_volumes(vertices_wp, faces_wp).numpy()
-    shifted_np = tw.triangles.face_signed_volumes(
+    at_origin_np = od.triangles.face_signed_volumes(vertices_wp, faces_wp).numpy()
+    shifted_np = od.triangles.face_signed_volumes(
         vertices_wp, faces_wp, wp.vec3(2.0, -1.0, 0.5)
     ).numpy()
 
@@ -1010,8 +1010,8 @@ def test_face_signed_volumes_follows_the_input_dtype(
     )
     vertices_f32_wp = points_to_warp(mesh_tm.vertices, device)
 
-    volumes_f64_wp = tw.triangles.face_signed_volumes(vertices_f64_wp, faces_wp)
-    volumes_f32_wp = tw.triangles.face_signed_volumes(vertices_f32_wp, faces_wp)
+    volumes_f64_wp = od.triangles.face_signed_volumes(vertices_f64_wp, faces_wp)
+    volumes_f32_wp = od.triangles.face_signed_volumes(vertices_f32_wp, faces_wp)
 
     assert volumes_f64_wp.dtype is wp.float64
     assert volumes_f32_wp.dtype is wp.float32
@@ -1021,4 +1021,4 @@ def test_face_signed_volumes_follows_the_input_dtype(
 def test_face_signed_volumes_empty(device: str):
     vertices_wp = wp.zeros(1, dtype=wp.vec3, device=device)
     faces_wp = wp.array([], dtype=wp.int32, device=device)
-    assert tw.triangles.face_signed_volumes(vertices_wp, faces_wp).shape == (0,)
+    assert od.triangles.face_signed_volumes(vertices_wp, faces_wp).shape == (0,)

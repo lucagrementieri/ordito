@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.boundary`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.boundary`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from tests.comparisons import (
     assert_same_loop_set,
     boundary_loop_sizes,
@@ -47,7 +47,7 @@ def test_boundary_edges(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
-    boundary_edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
 
     assert np.array_equal(lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(boundary_edges_tm))
 
@@ -64,7 +64,7 @@ def test_oriented_boundary_edges(request: pytest.FixtureRequest, mesh_name: str)
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     oriented_edges_tm = mesh_tm.edges[_boundary_indices_tm(mesh_tm)]
-    oriented_edges_wp = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
+    oriented_edges_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
     # Directed edges: compare as a set without sorting within each row.
     assert np.array_equal(lexsort_rows(oriented_edges_wp.numpy()), lexsort_rows(oriented_edges_tm))
@@ -74,29 +74,29 @@ def test_oriented_boundary_edges(request: pytest.FixtureRequest, mesh_name: str)
 @pytest.mark.parity("boundary_edges", "pymeshlab", "meshlib")
 def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B: two references mark the boundary *vertices* where triwarp returns the edge pairs.
+    Class B: two references mark the boundary *vertices* where ordito returns the edge pairs.
 
     MeshLab's ``compute_selection_from_mesh_border`` and MeshLib's ``getBoundaryVerts`` both do the
-    same find-the-boundary pass and stop one step earlier, giving a per-vertex bool where triwarp
+    same find-the-boundary pass and stop one step earlier, giving a per-vertex bool where ordito
     gives edges. Two named transforms make them comparable: each reference is read as a mask (off
     ``vertex_selection_array()``, which the MeshLab filter returns nothing from, and off
-    ``mn.getNumpyBitSet``, which is already domain-sized), and triwarp's edge pairs are projected
+    ``mn.getNumpyBitSet``, which is already domain-sized), and ordito's edge pairs are projected
     down with ``np.unique`` -- which is exactly what
-    [`boundary_vertex_indices`][triwarp.boundary.boundary_vertex_indices] computes, so the
+    [`boundary_vertex_indices`][ordito.boundary.boundary_vertex_indices] computes, so the
     projection is a function under test rather than test-side glue.
 
     MeshLib is *not* also the oracle for the edges themselves. Its
     ``findRegionBoundaryUndirectedEdgesInsideMesh`` looks like the counterpart and is not: the
     "InsideMesh" is load-bearing, and handed an all-``True`` region it returns **zero** edges
     because it excludes the mesh's own boundary by construction. It is the oracle for
-    [`region_boundary_edges`][triwarp.selection.region_boundary_edges] instead, where
+    [`region_boundary_edges`][ordito.selection.region_boundary_edges] instead, where
     tests/test_selection.py pins it.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
     vertex_indices_tm = np.unique(boundary_edges_tm)
-    vertex_indices_wp = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices)
+    vertex_indices_wp = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices)
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_selection_from_mesh_border()
@@ -110,7 +110,7 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     assert np.array_equal(np.flatnonzero(selection_pml), vertex_indices_wp.numpy())
     assert np.array_equal(np.flatnonzero(selection_ml), vertex_indices_wp.numpy())
     # And the edges themselves project onto the same vertex set.
-    edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(np.unique(edges_wp.numpy()), np.flatnonzero(selection_pml))
 
 
@@ -126,7 +126,7 @@ def test_boundary_edges_match_pyvista(request: pytest.FixtureRequest, mesh_name:
 
     **Do not map ``PolyData.n_open_edges`` to this quantity**: it is ``vtkFeatureEdges`` with
     boundary **and non-manifold** edges on, so on three faces sharing one edge it reads 7 where
-    triwarp counts 6 boundary edges. Only ``is_manifold`` (``n_open_edges == 0``) maps cleanly, and
+    ordito counts 6 boundary edges. Only ``is_manifold`` (``n_open_edges == 0``) maps cleanly, and
     that is ``tests/test_validation.py``'s row.
 
     Both fixtures are open, so the reference is non-empty by construction -- asserted anyway, since
@@ -141,7 +141,7 @@ def test_boundary_edges_match_pyvista(request: pytest.FixtureRequest, mesh_name:
     )
     assert len(edges_pv) > 0
 
-    boundary_edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(edges_pv))
 
 
@@ -151,34 +151,34 @@ def test_boundary_vertices(request: pytest.FixtureRequest, mesh_name: str) -> No
     Class B: the *positions* of the boundary vertices, gathered on the reference side.
 
     trimesh returns boundary *edges*, so the named transform is ``vertices[unique(edges)]`` --
-    which also fixes the order, since ``np.unique`` sorts and triwarp returns ascending indices
+    which also fixes the order, since ``np.unique`` sorts and ordito returns ascending indices
     too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
     vertices_tm = mesh_tm.vertices[np.unique(boundary_edges_tm)]
-    vertices_wp = tw.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices)
+    vertices_wp = od.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(vertices_wp.numpy(), vertices_tm, rtol=1e-4, atol=1e-4)
 
 
 def test_boundary_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    assert tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
-    assert tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
-    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).shape == (0,)
-    assert tw.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices).shape == (0,)
+    assert od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
+    assert od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
+    assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).shape == (0,)
+    assert od.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices).shape == (0,)
 
 
 def test_boundary_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
 
-    assert tw.boundary.boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
-    assert tw.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
-    assert tw.boundary.boundary_vertex_indices(vertices_wp, faces_wp).shape == (0,)
-    assert tw.boundary.boundary_vertices(vertices_wp, faces_wp).shape == (0,)
+    assert od.boundary.boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
+    assert od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
+    assert od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).shape == (0,)
+    assert od.boundary.boundary_vertices(vertices_wp, faces_wp).shape == (0,)
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
@@ -187,7 +187,7 @@ def test_boundary_loops(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A, and unusually strong for a loop comparison: same count, order and start vertex.
 
-    ``igl.boundary_loop_all`` happens to agree with triwarp on all three -- loops ranked by
+    ``igl.boundary_loop_all`` happens to agree with ordito on all three -- loops ranked by
     length, each starting at its lowest vertex index and walked the same way round -- so no
     canonicalization is needed at all. [`test_boundary_loops_matches_trimesh_outline`] is the
     class-B version of the same claim, against a reference that fixes none of those
@@ -196,7 +196,7 @@ def test_boundary_loops(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     loops_igl = igl.boundary_loop_all(mesh_tm.faces.astype(np.int64))
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
 
     assert len(loops_wp) == len(loops_igl)
     for loop_wp, loop_igl in zip(loops_wp, loops_igl, strict=True):
@@ -222,7 +222,7 @@ def test_boundary_loops_matches_trimesh_outline(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     loops_tm = trimesh_outline_loops(mesh_tm)
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
 
     assert len(loops_tm) > 0  # non-vacuous: these fixtures have rims
     assert_same_loop_set([loop.numpy() for loop in loops_wp], loops_tm)
@@ -262,7 +262,7 @@ def test_boundary_loops_count_matches_pymeshfix(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     tin_pmf = trimesh_to_pymeshfix(mesh_tm)
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
 
     assert tin_pmf.n_points == mesh_tm.vertices.shape[0]  # the loader left the mesh alone
     assert tin_pmf.n_faces == mesh_tm.faces.shape[0]
@@ -300,23 +300,23 @@ def test_boundary_loops_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     ``org()`` per edge -> vertex loop. That decoding is what every other MeshLib boundary and
     hole-filling comparison depends on, which is why this test asserts it in three separate pieces
     instead of trusting it -- the ring chains (``dest(e_i) == org(e_{i+1})``), the undirected edge
-    sets agree, and the *directed* pairs are exactly triwarp's reversed.
+    sets agree, and the *directed* pairs are exactly ordito's reversed.
 
     That reversal is the transform, and it is pinned rather than canonicalised away:
     ``getLeftRing`` walks the **hole**, whose left face is the missing one, where
-    [`oriented_boundary_edges`][triwarp.boundary.oriented_boundary_edges] follows the surface's own
+    [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] follows the surface's own
     face winding. The two therefore run opposite by construction on every rim, and asserting that
     -- rather than comparing direction-agnostically the way
     [`test_boundary_loops_matches_trimesh_outline`] must -- is what would catch MeshLib changing
     the convention under us.
 
-    Not run on ``mobius``, though it is the suite's other open fixture, and not because triwarp
+    Not run on ``mobius``, though it is the suite's other open fixture, and not because ordito
     cannot answer there -- [`test_boundary_loops_mobius_is_one_cycle`] shows it returns the correct
     single 78-cycle. It is that **no reference agrees with the truth**: MeshLib's hole ring reads
     156 and igl cuts the one cycle into three open chains. There is nothing to compare against.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     rings_ml = _meshlib_hole_rings(trimesh_to_meshlib(mesh_tm))
 
     # Non-vacuity, and the fixture check section 6 asks for: a raw ``slice_plane`` surface reports
@@ -329,7 +329,7 @@ def test_boundary_loops_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
         assert all(ring_ml[i][1] == ring_ml[(i + 1) % len(ring_ml)][0] for i in range(len(ring_ml)))
 
     # Directed pairs: MeshLib's hole ring runs against the surface winding, edge for edge.
-    edges_wp = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
+    edges_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).numpy()
     pairs_ml = np.array([pair for ring_ml in rings_ml for pair in ring_ml], dtype=np.int32)
     assert np.array_equal(lexsort_rows(edges_wp), lexsort_rows(pairs_ml[:, ::-1]))
 
@@ -339,7 +339,7 @@ def test_boundary_loops_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
         strict=True,
     ):
         loop_ml = np.array([org for org, _ in ring_ml], dtype=np.int32)
-        # Reversed, then rotated onto triwarp's start vertex -- an exact cyclic match, not the
+        # Reversed, then rotated onto ordito's start vertex -- an exact cyclic match, not the
         # direction-agnostic one, so the convention itself stays under test.
         reversed_ml = loop_ml[::-1]
         rotated_ml = np.roll(reversed_ml, -int(np.flatnonzero(reversed_ml == loop_wp[0])[0]))
@@ -363,7 +363,7 @@ def test_boundary_loops_mobius_is_one_cycle(mobius: tuple[tm.Trimesh, wp.Mesh]) 
       and one of them is a single vertex. ``igl.boundary_loop`` then reports the longest, 39.
     - MeshLib's ``findHoleRepresentiveEdges`` + ``getLeftRing`` gives a 156-edge ring.
 
-    triwarp was wrong too until the undirected fallback landed: the directed boundary edges are not
+    ordito was wrong too until the undirected fallback landed: the directed boundary edges are not
     a successor graph here (one seam vertex has out-degree 2), so ``succ[tail] = head`` dropped an
     edge and the walk returned 78 entries over 40 distinct vertices. That is the regression this
     pins -- the distinctness assert is the one that failed before, not the length.
@@ -372,17 +372,17 @@ def test_boundary_loops_mobius_is_one_cycle(mobius: tuple[tm.Trimesh, wp.Mesh]) 
     direction to be right about, only a reproducible one.
     """
     mesh_tm, mesh_wp = mobius
-    assert not tw.validation.is_orientable(mesh_wp.indices)  # the fixture's whole point here
+    assert not od.validation.is_orientable(mesh_wp.indices)  # the fixture's whole point here
 
     boundary_pairs = {
         tuple(sorted(pair))
-        for pair in tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy().tolist()
+        for pair in od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).numpy().tolist()
     }
     degree = Counter(vertex for pair in boundary_pairs for vertex in pair)
     assert len(boundary_pairs) == 78
     assert set(degree.values()) == {2}, "2-regular is what makes the single-cycle claim meaningful"
 
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     assert len(loops_wp) == 1
     loop_np = loops_wp[0].numpy()
 
@@ -420,8 +420,8 @@ def test_boundary_loops_two_mobius_bands_keep_one_direction_each(
     faces_np = np.concatenate([mesh_tm.faces, mesh_tm.faces + n])
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, mesh_wp.device)
 
-    single_np = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)[0].numpy()
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    single_np = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)[0].numpy()
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
 
     assert [loop_wp.size for loop_wp in loops_wp] == [78, 78]
     assert np.array_equal(loops_wp[0].numpy(), single_np)
@@ -445,7 +445,7 @@ def test_boundary_loop_sizes_helper_agrees_with_boundary_loops(
 
     sizes_np = boundary_loop_sizes(np.asarray(mesh_tm.faces))
 
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     expected = sorted((loop_wp.size for loop_wp in loops_wp if loop_wp.size >= 3), reverse=True)
     assert sizes_np == expected
     assert (len(expected) == 0) == bool(mesh_tm.is_watertight)
@@ -474,11 +474,11 @@ def test_boundary_loop_sizes_refuses_a_pinched_rim() -> None:
 def test_boundary_loops_with_offsets_matches_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
-    """Triwarp against triwarp: the list form is the packed form split, loop for loop."""
+    """Ordito against ordito: the list form is the packed form split, loop for loop."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    loops_wp = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
-    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(mesh_wp.points, mesh_wp.indices)
+    loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(mesh_wp.points, mesh_wp.indices)
 
     offsets_np = offsets_wp.numpy()
     assert len(loops_wp) == offsets_np.size - 1
@@ -495,8 +495,8 @@ def test_boundary_loops_copy_detaches_from_packed_buffer(
 ) -> None:
     # The default is a view into one shared buffer; ``copy=True`` must give independent storage.
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    views = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
-    copies = tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices, copy=True)
+    views = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    copies = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices, copy=True)
 
     assert len(views) == len(copies)
     for view_wp, copy_wp in zip(views, copies, strict=True):
@@ -528,7 +528,7 @@ def test_boundary_loops_rank_across_jump_round_boundaries(device: str, rim: int)
     positions[ring] = np.stack([np.cos(angle), np.sin(angle), np.zeros(rim)], axis=1)
     vertices_wp, faces_wp = numpy_to_warp(positions, faces_np, device)
 
-    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
 
     assert np.array_equal(flat_wp.numpy(), np.roll(ring, -int(np.argmin(ring))))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, rim], dtype=np.int32))
@@ -553,7 +553,7 @@ def test_boundary_loops_non_manifold_terminates(device: str) -> None:
     )
     faces_wp = wp.array(np.array([0, 1, 2, 2, 3, 4], dtype=np.int32), dtype=wp.int32, device=device)
 
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
 
     def rotated_to_minimum(loop_np: np.ndarray) -> tuple[int, ...]:
         return tuple(int(v) for v in np.roll(loop_np, -int(np.argmin(loop_np))))
@@ -587,7 +587,7 @@ def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
     assert np.bincount(boundary_np.ravel()).max() > 2
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
 
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
 
     walked_np = np.concatenate(
         [
@@ -639,7 +639,7 @@ def test_boundary_loops_never_invent_an_edge(device: str, extra_faces: list[list
     boundary = set(map(tuple, boundary_np.tolist()))
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
 
     pairs = [
         tuple(sorted((int(a), int(b))))
@@ -662,23 +662,23 @@ def test_boundary_loop(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     loop_igl = igl.boundary_loop(mesh_tm.faces.astype(np.int64))
-    loop_wp = tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
+    loop_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
 
     assert np.array_equal(loop_wp.numpy(), loop_igl)
 
 
 def test_boundary_loops_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    assert tw.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices) == []
-    assert tw.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).shape == (0,)
+    assert od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices) == []
+    assert od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).shape == (0,)
 
 
 def test_boundary_loops_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
 
-    assert tw.boundary.boundary_loops(vertices_wp, faces_wp) == []
-    assert tw.boundary.longest_boundary_loop(vertices_wp, faces_wp).shape == (0,)
+    assert od.boundary.boundary_loops(vertices_wp, faces_wp) == []
+    assert od.boundary.longest_boundary_loop(vertices_wp, faces_wp).shape == (0,)
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
@@ -688,21 +688,21 @@ def test_boundary_edges_match_igl(request: pytest.FixtureRequest, mesh_name: str
     Class B (row order): ``igl.boundary_facets`` returns the same edge set plus two extra columns.
 
     Its three returns are the ``(n_boundary, 2)`` edge list, the incident face of each edge and that
-    edge's corner index within the face -- so it computes strictly more than triwarp's two columns,
+    edge's corner index within the face -- so it computes strictly more than ordito's two columns,
     and the benchmark reads its row that way. Only the first return is compared here, after a
     canonical row sort, since neither side defines an order over boundary edges.
 
     igl's edges come out **oriented** (they carry the incident face's winding), so the rows are
     sorted within themselves before the set comparison -- the same transform the trimesh test
-    above applies. ``oriented_boundary_edges`` is the triwarp function whose *direction* is
+    above applies. ``oriented_boundary_edges`` is the ordito function whose *direction* is
     comparable, and it agrees with igl's orientation vertex for vertex, which the second assert
     pins.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     edges_igl, _face_igl, _corner_igl = igl.boundary_facets(mesh_tm.faces.astype(np.int64))
 
-    boundary_edges_wp = tw.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
-    oriented_wp = tw.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
+    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
     assert np.array_equal(
         lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(np.sort(edges_igl, axis=1))
@@ -730,13 +730,13 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     Both report an ear as ``(face, index of the non-boundary edge)`` and both find the same faces,
     but the *edge numbering* differs and the difference is exactly a cyclic shift:
 
-    - triwarp numbers local edge ``i`` as ``(faces[f, i], faces[f, (i + 1) % 3])``;
+    - ordito numbers local edge ``i`` as ``(faces[f, i], faces[f, (i + 1) % 3])``;
     - libigl's ``ears`` reads its mask from ``on_boundary``, whose column ``i`` is documented as
       "whether **opposite** facet is on boundary" -- edge ``i`` is the one *opposite vertex* ``i``,
       i.e. ``(faces[f, (i + 1) % 3], faces[f, (i + 2) % 3])``.
 
-    So ``triwarp_opp == (igl_opp + 1) % 3``, and that is the named transform. Neither convention is
-    wrong; ``boundary.ears``'s docstring states triwarp's.
+    So ``ordito_opp == (igl_opp + 1) % 3``, and that is the named transform. Neither convention is
+    wrong; ``boundary.ears``'s docstring states ordito's.
 
     **This test replaces a vacuous one.** The previous version compared the two libraries on
     ``hemisphere`` and ``half_torus``, where *neither* returns any ear at all -- the assert was
@@ -746,7 +746,7 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
 
     The last assert is the one that does not lean on igl: for every reported ear it checks against
     ``oriented_boundary_edges`` that the two edges *other* than ``ear_opp`` really are boundary
-    edges, under triwarp's own numbering.
+    edges, under ordito's own numbering.
     """
     faces_wp = wp.array(np.ascontiguousarray(faces_np.reshape(-1)), dtype=wp.int32, device=device)
     # Positions are irrelevant to ears (pure connectivity) but boundary_edges wants a vertex buffer.
@@ -761,7 +761,7 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     )
 
     ear_igl, ear_opp_igl = igl.ears(np.ascontiguousarray(faces_np, dtype=np.int64))
-    ear_wp, ear_opp_wp = tw.boundary.ears(faces_wp)
+    ear_wp, ear_opp_wp = od.boundary.ears(faces_wp)
 
     assert ear_wp.size == expected_ears
     assert np.asarray(ear_igl).size == expected_ears
@@ -770,9 +770,9 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
     pairs_wp = np.stack([ear_wp.numpy(), ear_opp_wp.numpy()], axis=1)
     assert np.array_equal(lexsort_rows(pairs_wp), lexsort_rows(pairs_igl))
 
-    oriented_boundary = tw.boundary.oriented_boundary_edges(vertices_wp, faces_wp)
+    oriented_boundary = od.boundary.oriented_boundary_edges(vertices_wp, faces_wp)
     boundary_set = {tuple(row) for row in oriented_boundary.numpy()}
-    directed_edges = tw.edges.faces_to_edges(faces_wp).numpy()
+    directed_edges = od.edges.faces_to_edges(faces_wp).numpy()
     for face_idx, opp in zip(ear_wp.numpy(), ear_opp_wp.numpy(), strict=True):
         f = int(face_idx)
         for local_edge in ((int(opp) + 1) % 3, (int(opp) + 2) % 3):
@@ -792,7 +792,7 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
     faces_np = mesh_tm.faces.astype(np.int64)
 
     ear_igl, _ear_opp_igl = igl.ears(faces_np)
-    ear_wp, ear_opp_wp = tw.boundary.ears(mesh_wp.indices)
+    ear_wp, ear_opp_wp = od.boundary.ears(mesh_wp.indices)
 
     assert np.asarray(ear_igl).size == 0
     assert ear_wp.shape == (0,)
@@ -801,14 +801,14 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
 
 def test_ears_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _, mesh_wp = icosahedron
-    ear_wp, ear_opp_wp = tw.boundary.ears(mesh_wp.indices)
+    ear_wp, ear_opp_wp = od.boundary.ears(mesh_wp.indices)
     assert ear_wp.shape == (0,)
     assert ear_opp_wp.shape == (0,)
 
 
 def test_ears_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    ear_wp, ear_opp_wp = tw.boundary.ears(faces_wp)
+    ear_wp, ear_opp_wp = od.boundary.ears(faces_wp)
     assert ear_wp.shape == (0,)
     assert ear_opp_wp.shape == (0,)
 
@@ -840,11 +840,11 @@ def test_loop_perimeters_and_directed_areas_match_meshlib(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops_wp) > 0  # non-vacuity: an open fixture, so there is a rim to measure
 
-    perimeters_np = tw.boundary.loop_perimeters(vertices_wp, loops_wp).numpy()
-    areas_np = tw.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
+    perimeters_np = od.boundary.loop_perimeters(vertices_wp, loops_wp).numpy()
+    areas_np = od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
     assert perimeters_np.min() > 0.0
     assert np.linalg.norm(areas_np, axis=1).min() > 0.0
 
@@ -882,7 +882,7 @@ def test_loop_measures_agree_with_the_single_loop_forms(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Not a parity assert: it pins the batched measures to ``triwarp.polyline``, which has an oracle.
+    Not a parity assert: it pins the batched measures to ``ordito.polyline``, which has an oracle.
 
     ``loop_perimeters`` is a segmented ``polyline_length(closed=True)`` and must equal it loop for
     loop; ``loop_directed_areas`` must point along ``polyline_normal``, which is the same quantity
@@ -896,16 +896,16 @@ def test_loop_measures_agree_with_the_single_loop_forms(
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
-    perimeters_np = tw.boundary.loop_perimeters(vertices_wp, loops_wp).numpy()
-    areas_np = tw.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
+    perimeters_np = od.boundary.loop_perimeters(vertices_wp, loops_wp).numpy()
+    areas_np = od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
 
     for index, loop_wp in enumerate(loops_wp):
-        points_wp = tw.array.gather(vertices_wp, loop_wp)
+        points_wp = od.array.gather(vertices_wp, loop_wp)
         assert np.isclose(
-            perimeters_np[index], tw.polyline.polyline_length(points_wp, closed=True), rtol=1e-5
+            perimeters_np[index], od.polyline.polyline_length(points_wp, closed=True), rtol=1e-5
         )
-        normal_wp = tw.polyline.polyline_normal(points_wp)
+        normal_wp = od.polyline.polyline_normal(points_wp)
         direction_np = areas_np[index] / np.linalg.norm(areas_np[index])
         assert np.allclose(direction_np, np.array(list(normal_wp)), rtol=1e-4, atol=1e-4)
 
@@ -913,7 +913,7 @@ def test_loop_measures_agree_with_the_single_loop_forms(
         vertices_wp.numpy() + np.array([3.0, -7.0, 11.0], dtype=np.float32), vertices_wp.device
     )
     assert np.allclose(
-        tw.boundary.loop_directed_areas(shifted_wp, loops_wp).numpy(),
+        od.boundary.loop_directed_areas(shifted_wp, loops_wp).numpy(),
         areas_np,
         rtol=1e-4,
         atol=1e-4,
@@ -925,7 +925,7 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Triwarp against triwarp: the packed entry points against the list ones, which carry the oracle.
+    Ordito against ordito: the packed entry points against the list ones, which carry the oracle.
 
     ``loop_perimeters_from_offsets`` and ``loop_directed_areas_from_offsets`` exist so that a caller
     holding ``boundary_loops_with_offsets``' output can measure it without splitting it back into a
@@ -940,23 +940,23 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     ``array_equal`` here would fail on CUDA for a correct implementation.
 
     Also asserted: passing the precomputed ``loop_id`` gives the same answer as letting the function
-    derive it, which is the keyword ``triwarp.holes`` uses to keep its own cost.
+    derive it, which is the keyword ``ordito.holes`` uses to keep its own cost.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    loops_wp = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops_wp) > 0  # non-vacuity: an empty comparison would pass and test nothing
-    flat_wp, offsets_wp = tw.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
+    flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(vertices_wp, faces_wp)
 
     assert np.allclose(
-        tw.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
-        tw.boundary.loop_perimeters(vertices_wp, loops_wp).numpy(),
+        od.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
+        od.boundary.loop_perimeters(vertices_wp, loops_wp).numpy(),
         rtol=1e-5,
         atol=1e-5,
     )
-    areas_np = tw.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
+    areas_np = od.boundary.loop_directed_areas(vertices_wp, loops_wp).numpy()
     assert np.allclose(
-        tw.boundary.loop_directed_areas_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
+        od.boundary.loop_directed_areas_from_offsets(vertices_wp, flat_wp, offsets_wp).numpy(),
         areas_np,
         rtol=1e-5,
         atol=1e-5,
@@ -966,7 +966,7 @@ def test_batched_loop_measures_agree_with_the_list_forms(
     owner_np = np.repeat(np.arange(sizes_np.size, dtype=np.int32), sizes_np)
     owner_wp = wp.array(owner_np, dtype=wp.int32, device=vertices_wp.device)
     assert np.allclose(
-        tw.boundary.loop_directed_areas_from_offsets(
+        od.boundary.loop_directed_areas_from_offsets(
             vertices_wp, flat_wp, offsets_wp, loop_id=owner_wp
         ).numpy(),
         areas_np,
@@ -991,29 +991,29 @@ def test_packed_loop_measures_reject_malformed_offsets(device: str, offsets: lis
     flat_wp = wp.array(np.arange(6, dtype=np.int32), dtype=wp.int32, device=device)
     offsets_wp = wp.array(np.array(offsets, dtype=np.int32), dtype=wp.int32, device=device)
     for measure in (
-        tw.boundary.loop_perimeters_from_offsets,
-        tw.boundary.loop_directed_areas_from_offsets,
+        od.boundary.loop_perimeters_from_offsets,
+        od.boundary.loop_directed_areas_from_offsets,
     ):
         with pytest.raises(ValueError, match="offsets must run non-decreasing"):
             measure(vertices_wp, flat_wp, offsets_wp)
     good_wp = wp.array(np.array([0, 2, 6], dtype=np.int32), dtype=wp.int32, device=device)
-    assert tw.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, good_wp).shape == (2,)
+    assert od.boundary.loop_perimeters_from_offsets(vertices_wp, flat_wp, good_wp).shape == (2,)
 
 
 def test_loop_measures_empty(device: str) -> None:
     """Not a library comparison: no loops, and a loop of zero length, both measure to nothing."""
     vertices_wp = wp.zeros(4, dtype=wp.vec3, device=device)
-    assert tw.boundary.loop_perimeters(vertices_wp, []).shape == (0,)
-    assert tw.boundary.loop_directed_areas(vertices_wp, []).shape == (0,)
+    assert od.boundary.loop_perimeters(vertices_wp, []).shape == (0,)
+    assert od.boundary.loop_directed_areas(vertices_wp, []).shape == (0,)
     empty_loop_wp = warp_empty(0, wp.int32, device)
-    assert tw.boundary.loop_perimeters(vertices_wp, [empty_loop_wp]).shape == (0,)
-    # Both halves of the loop guard, which is ``twt.ensure_ndim`` at one call rather than the
+    assert od.boundary.loop_perimeters(vertices_wp, [empty_loop_wp]).shape == (0,)
+    # Both halves of the loop guard, which is ``odt.ensure_ndim`` at one call rather than the
     # hand-written rank-and-dtype test it replaced. Only the dtype half was ever reached before, so
     # the rank half is here to pin that the single call still covers what the two-clause ``if`` did.
     with pytest.raises(TypeError, match=r"expected dtype"):
-        tw.boundary.loop_perimeters(vertices_wp, [wp.zeros(3, dtype=wp.float32, device=device)])
+        od.boundary.loop_perimeters(vertices_wp, [wp.zeros(3, dtype=wp.float32, device=device)])
     with pytest.raises(TypeError, match=r"expected 1D array"):
-        tw.boundary.loop_perimeters(vertices_wp, [wp.zeros((3, 2), dtype=wp.int32, device=device)])
+        od.boundary.loop_perimeters(vertices_wp, [wp.zeros((3, 2), dtype=wp.int32, device=device)])
 
 
 def _boundary_indices_tm(mesh_tm: tm.Trimesh) -> np.ndarray:

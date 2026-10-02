@@ -5,7 +5,7 @@ search:
 
 | Library | Median |
 |---|---|
-| triwarp (CUDA) | 2.68 ms |
+| ordito (CUDA) | 2.68 ms |
 | MeshLib | 13.73 ms |
 | Open3D | 30.98 ms |
 | libigl | 103.81 ms |

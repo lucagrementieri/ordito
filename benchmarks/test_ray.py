@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.ray``: the three ray-cast entry points over the mesh BVH.
+Benchmarks for ``ordito.ray``: the three ray-cast entry points over the mesh BVH.
 
 Axis: **depth**, the registry's name for the number of times a ray pierces the surface
 (``sphere_med`` at 2 against ``shells_8``'s 8 concentric shells at 16). It is the axis that
@@ -15,7 +15,7 @@ that does not when it should.
 
 This file exists because meshlib is the first reference in the suite with a batched ray query --
 until it landed, every ray function was timed only indirectly through ``test_proximity.py``'s BVH
-groups, which is what ``tests/api_conventions.py`` recorded as the reason ``triwarp/ray.py`` had no
+groups, which is what ``tests/api_conventions.py`` recorded as the reason ``ordito/ray.py`` had no
 benchmark file.
 
 References
@@ -26,11 +26,11 @@ AABB tree, so the same call backs all three groups here and the only difference 
 it is also the hazard: ``MultiRayMeshIntersectResult`` starts with every field ``None`` and the call
 fills only the fields already holding a container, so a row that forgets to attach one is timing a
 query that computes nothing and asserting on ``None``. Each row attaches exactly the outputs its
-triwarp counterpart returns, which is what makes the three rows comparable to each other.
+ordito counterpart returns, which is what makes the three rows comparable to each other.
 
 Its tree is built lazily and cached on the ``Mesh``, so the mesh is constructed and pre-warmed with
 one throwaway query outside the timed callable -- the ``BenchCase.new_mesh_ml`` rule for a query
-row, and the same thing triwarp's rows do by holding a ``wp.Mesh``. The ray cloud is likewise an
+row, and the same thing ordito's rows do by holding a ``wp.Mesh``. The ray cloud is likewise an
 *input*: filling a ``std_vector_Vector3_float`` is a Python loop over 10 000 ``Vector3f``
 constructions, comparable to the query itself, so it is cached per mesh.
 
@@ -43,16 +43,16 @@ methods:
   ``intersects_any`` is for and what MeshLib's row is only an upper bound on
   (``closestIntersect`` stays on there);
 - ``cast_rays`` returns ``t_hit`` and ``primitive_ids`` densely -- ``intersects_first``'s answer,
-  with ``INVALID_ID`` where triwarp writes ``-1``;
+  with ``INVALID_ID`` where ordito writes ``-1``;
 - ``cast_rays`` again for ``intersects_location``, where the hit points are ``origin + t_hit *
-  dir`` and triwarp compacts, so open3d's row is the lower bound of the same work exactly as
+  dir`` and ordito compacts, so open3d's row is the lower bound of the same work exactly as
   MeshLib's is.
 
 ``count_intersections`` is a **fourth** question -- the crossing count, which is the axis this file
-is built on -- and there is no row for it because triwarp exposes no crossing-count entry point.
+is built on -- and there is no row for it because ordito exposes no crossing-count entry point.
 ``list_intersections`` is a fifth (every hit along every ray).
 
-The scene is built and pre-warmed outside the timed callable, like the MeshLib tree and triwarp's
+The scene is built and pre-warmed outside the timed callable, like the MeshLib tree and ordito's
 ``wp.Mesh``, and the rays are uploaded as one ``float32`` ``(n, 6)`` tensor once per mesh -- also an
 input. Note ``add_triangles`` accepts ``uint32`` faces where the vtkutils-backed filters elsewhere
 in open3d demand ``Int32``/``Int64``; two conventions inside one API.
@@ -73,7 +73,7 @@ import pytest
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 if TYPE_CHECKING:
@@ -251,18 +251,18 @@ def _multi_ray_query_ml(
 
 @pytest.mark.benchmark(group="intersects_first")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("triwarp", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
 def test_intersects_first(bench_case: BenchCase) -> None:
     """
     Nearest-hit face per ray: the traversal that cannot stop early.
 
     meshlib's row requests ``isectFaces`` alone, which is the same dense ``(n_rays,)`` answer
-    triwarp returns -- with an invalid ``FaceId`` where triwarp writes ``-1``
-    (``tests/test_ray.py``). ``closestIntersect`` defaults to ``True``, which is triwarp's rule, so
+    ordito returns -- with an invalid ``FaceId`` where ordito writes ``-1``
+    (``tests/test_ray.py``). ``closestIntersect`` defaults to ``True``, which is ordito's rule, so
     it is left alone here and the ``intersects_any`` row below is what shows the other setting.
 
     open3d's ``cast_rays`` is Embree's nearest-hit query and returns ``primitive_ids`` densely,
-    matching triwarp's shape with ``INVALID_ID`` for a miss.
+    matching ordito's shape with ``INVALID_ID`` for a miss.
     """
     if bench_case.kind == "open3d":
         scene_o3d, rays_o3d = _scene_o3d(bench_case), _rays_o3d(bench_case)
@@ -274,26 +274,26 @@ def test_intersects_first(bench_case: BenchCase) -> None:
         assert len(bench_case.run(first_ml).isectFaces) == _N_RAYS
         return
     mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
-    faces_hit = bench_case.run(lambda: tw.ray.intersects_first(mesh, origins, directions))
+    faces_hit = bench_case.run(lambda: od.ray.intersects_first(mesh, origins, directions))
     assert faces_hit.shape == (_N_RAYS,)
 
 
 @pytest.mark.benchmark(group="intersects_any")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("triwarp", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
 def test_intersects_any(bench_case: BenchCase) -> None:
     """
     Any-hit per ray: the one group here that is allowed to stop at the first triangle it finds.
 
     Read against ``intersects_first`` on the same rays and the same mesh -- the gap between the two
-    groups is what "nearest" costs over "any", and it is the reason both exist. triwarp uses
+    groups is what "nearest" costs over "any", and it is the reason both exist. ordito uses
     ``wp.mesh_query_ray_anyhit``; meshlib's row asks only for ``intersectingRays``, the bitset of
     rays that hit anything. Note that requesting fewer outputs does *not* make MeshLib's traversal
     any-hit -- ``closestIntersect`` governs that, and this row leaves it at its default, so the row
     is an upper bound on the question rather than the matching algorithm.
 
     **open3d's ``test_occlusions`` is the one reference here that is genuinely any-hit**, so this is
-    the group where the three rows answer three different amounts of work: triwarp and open3d may
+    the group where the three rows answer three different amounts of work: ordito and open3d may
     stop at the first triangle, MeshLib may not.
     """
     if bench_case.kind == "open3d":
@@ -306,18 +306,18 @@ def test_intersects_any(bench_case: BenchCase) -> None:
         assert 0 < bench_case.run(any_ml).intersectingRays.count() <= _N_RAYS
         return
     mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
-    hit = bench_case.run(lambda: tw.ray.intersects_any(mesh, origins, directions))
+    hit = bench_case.run(lambda: od.ray.intersects_any(mesh, origins, directions))
     assert hit.shape == (_N_RAYS,)
 
 
 @pytest.mark.benchmark(group="intersects_location")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("triwarp", "meshlib", "open3d")
+@pytest.mark.benchlibs("ordito", "meshlib", "open3d")
 def test_intersects_location(bench_case: BenchCase) -> None:
     """
     The hit positions, compacted: ``intersects_first``'s traversal plus a scan and a gather.
 
-    triwarp returns only the rays that hit, as three sparse arrays, so its row carries a prefix sum
+    ordito returns only the rays that hit, as three sparse arrays, so its row carries a prefix sum
     and a compaction the other two groups do not -- which is the cost this group isolates. meshlib
     returns its hits *densely* and asks for ``isectPts`` plus the hit bitset, leaving the selection
     to the caller, so its row is the lower bound of the same work. open3d is denser still: its
@@ -337,7 +337,7 @@ def test_intersects_location(bench_case: BenchCase) -> None:
         return
     mesh, (origins, directions) = _mesh_wp(bench_case), _rays_wp(bench_case)
     locations, rays, faces_hit = bench_case.run(
-        lambda: tw.ray.intersects_location(mesh, origins, directions)
+        lambda: od.ray.intersects_location(mesh, origins, directions)
     )
     assert locations.shape == rays.shape == faces_hit.shape
     assert rays.size <= _N_RAYS

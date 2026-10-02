@@ -1,6 +1,6 @@
 # Role: NVIDIA Warp Expert
 
-You are an expert in NVIDIA Warp (`wp`) working on **triwarp**, a GPU geometry-processing library.
+You are an expert in NVIDIA Warp (`wp`) working on **ordito**, a GPU geometry-processing library.
 Follow every rule below when writing kernels, `@wp.func` helpers, Python-scope wrappers, tests and
 benchmarks.
 
@@ -45,7 +45,7 @@ Part I with a cross-reference.
 13. [The cost model (RTX 5090)](#13-the-cost-model-rtx-5090)
 14. [Kernel-shape verdicts](#14-kernel-shape-verdicts)
 15. [Benchmark and measurement traps](#15-benchmark-and-measurement-traps)
-16. [triwarp component status](#16-triwarp-component-status) (open defects, refuted plans and
+16. [ordito component status](#16-ordito-component-status) (open defects, refuted plans and
     rules, by component)
 
 ---
@@ -73,8 +73,8 @@ Part I with a cross-reference.
 
 - Subscript-style array annotations: `wp.array[wp.vec3]`, `wp.array[wp.int32]`. Check 14 scans the
   whole package, because only in an *annotation* position is `wp.array(dtype=T)` stale.
-- In **`triwarp/kernels/` only**: `wp.array2d[T]` / `wp.array3d[T]` / `wp.array4d[T]` with
-  matching multi-index `wp.tid()` unpacking. Python wrappers use `triwarp.typing` aliases (§3.2).
+- In **`ordito/kernels/` only**: `wp.array2d[T]` / `wp.array3d[T]` / `wp.array4d[T]` with
+  matching multi-index `wp.tid()` unpacking. Python wrappers use `ordito.typing` aliases (§3.2).
 - Vector/matrix types: `wp.vec2/3/4`, `wp.mat22/33/44`, `wp.quat`; `wp.indexedarray[...]` for
   indexed access.
 - **No bare `bool` / `int` / `float` annotation** in a kernel or `@wp.func` signature (check 18).
@@ -82,7 +82,7 @@ Part I with a cross-reference.
 - **`wp.constant()` is not what makes a module-level value visible in kernel scope.** On
   Warp 1.17 it is `return x` after an `is_value(x)` check (§12.6): any module-level global that
   evaluates to a scalar/vector/matrix resolves from kernel scope, wrapped or not.
-  `triwarp/constants.py` carries no `wp.constant()` calls; do not add one. What is load-bearing is
+  `ordito/constants.py` carries no `wp.constant()` calls; do not add one. What is load-bearing is
   the typed constructor: `TOLERANCE_MERGE = wp.float32(1e-8)`. A plain Python float is treated as
   `wp.float32` in kernel arithmetic, and mixing it with a `float64` variable is a parse error; use
   `wp.float64(...)` where 64-bit precision is required.
@@ -330,7 +330,7 @@ registration; one test file went from ~9 minutes to 1.4 s).
 - **Keep the `wp.Kernel` that `wp.overload` returns and launch through it.** Every generic launch
   otherwise runs ~12 µs of `infer_argument_types` (§13.1; 2.17x on one launch, 1.09-1.58x end to end
   across 20 wrappers). A module's registration builds a dtype-keyed
-  [`OverloadTable`][triwarp.kernels.array.OverloadTable] and the wrapper writes
+  [`OverloadTable`][ordito.kernels.array.OverloadTable] and the wrapper writes
   `kernel_laplacian.COTMATRIX_TRIPLETS[cot_entries.dtype, dtype]`. All generic launch sites are
   converted; a new generic kernel adds a table, not a bare `wp.overload` call. A dtype the table
   lacks raises a `KeyError` naming the kernel. `kernels/reduce.py` has **no** generic kernels:
@@ -344,7 +344,7 @@ elements, struct fields), e.g. `update_argmin` in `kernels/array.py`.
 - **Any kernel calling a `wp.ref` helper must be `@wp.kernel(enable_backward=False)`** — the
   per-kernel flag. A module-level `wp.set_module_options({"enable_backward": False})` is NOT
   consulted at kernel-parse time and the module still fails to compile. Inference-neutral.
-- **Never use `wp.ref` in `triwarp/kernels/metrics.py`**: the chamfer kernels are differentiated
+- **Never use `wp.ref` in `ordito/kernels/metrics.py`**: the chamfer kernels are differentiated
   via `wp.Tape`.
 - **`wp.ref[T]` requires a concrete `T`**; generics do not instantiate inside it (§12.3).
 
@@ -436,9 +436,9 @@ kernels.
 ### 3.1 Module layout and imports
 
 - Every kernel lives in a `kernels/` sub-module, imported with an alias:
-  `from triwarp.kernels import triangles as kernel_triangles`.
+  `from ordito.kernels import triangles as kernel_triangles`.
 - **A top-level kernel module is named exactly for the public module it backs**:
-  `triwarp/kernels/<module>.py` ↔ `triwarp/<module>.py`, one-to-one (check 7). Exceptions are the
+  `ordito/kernels/<module>.py` ↔ `ordito/<module>.py`, one-to-one (check 7). Exceptions are the
   kernel-side libraries that back no single public module — `kernels/predicates.py` and
   `kernels/scatter.py`. Sub-packages (`kernels/algorithms/`) mirror a folder and are exempt. A
   kernel module with no public counterpart, or a public module whose kernels live under another
@@ -456,8 +456,8 @@ kernels.
   The defect is placement: a general geometric predicate living in a module that owns an
   **algorithm**, so unrelated modules import the algorithm to reach the geometry. When a helper is
   reached from a second module, ask which of the four it belongs in before adding the import.
-- **`triwarp/__init__.py` is lazy (PEP 562 `__getattr__`) and must stay that way.** `@wp.kernel`
-  builds an `Adjoint` at import time, so an eager `__init__` makes `import triwarp as tw` a
+- **`ordito/__init__.py` is lazy (PEP 562 `__getattr__`) and must stay that way.** `@wp.kernel`
+  builds an `Adjoint` at import time, so an eager `__init__` makes `import ordito as od` a
   whole-package pull (§16.2).
 - **Three searches in `kernels/array.py` are not interchangeable**, and picking wrong is silent:
   `binary_search_index` is `searchsorted(side="right")` (returns `slot + 1` on an exact hit),
@@ -472,10 +472,10 @@ kernels.
   `unique_faces(max_index=)` carry the bound; the pair radix (`INDEX_RADIX_PAIR`) needs all 64 bits
   and gains nothing.
 
-### 3.2 Typing (`triwarp.typing`)
+### 3.2 Typing (`ordito.typing`)
 
-Import once per wrapper module as `import triwarp.typing as twt`. Do not re-export typing symbols
-from `triwarp/__init__.py`.
+Import once per wrapper module as `import ordito.typing as odt`. Do not re-export typing symbols
+from `ordito/__init__.py`.
 
 **Why not `wp.array2d` in wrappers?** At runtime every buffer is `warp.array`; `wp.array2d[dtype]`
 is a static helper that type checkers do not treat as a real array (missing `.shape`, bad
@@ -484,31 +484,31 @@ assignability from `wp.empty`), and `isinstance(x, wp.array2d)` is always `False
 
 | Alias | Meaning |
 |-------|---------|
-| `twt.Array2dInt32` | `(rows, cols)` `int32` |
-| `twt.Array2dFloat32`, `twt.Array2dFloat64` | `(rows, cols)` `float32` / `float64` |
-| `twt.Array1dInt32` | 1D `int32` |
-| `twt.IntArray`, `twt.FloatArray`, `twt.ScalarArray` | 1D or 2D unions (e.g. `reduce.py`) |
+| `odt.Array2dInt32` | `(rows, cols)` `int32` |
+| `odt.Array2dFloat32`, `odt.Array2dFloat64` | `(rows, cols)` `float32` / `float64` |
+| `odt.Array1dInt32` | 1D `int32` |
+| `odt.IntArray`, `odt.FloatArray`, `odt.ScalarArray` | 1D or 2D unions (e.g. `reduce.py`) |
 
-Kernels in `triwarp/kernels/` keep `wp.array2d[dtype]`. Optional 2D arguments:
-`edges_sorted_wp: twt.Array2dInt32 | None = None`.
+Kernels in `ordito/kernels/` keep `wp.array2d[dtype]`. Optional 2D arguments:
+`edges_sorted_wp: odt.Array2dInt32 | None = None`.
 
 **Runtime checks, not `isinstance`:**
 
-- `twt.ensure_ndim(arr_wp, 2, dtype=wp.int32)` validates rank and dtype on inputs.
-- `twt.as_array2d(arr_wp, wp.int32)` checks, then narrows the return type for Pyright (overloaded
-  for `wp.int32` / `wp.float32` / `wp.float64`); `twt.as_array3d` covers `wp.float32` / `wp.bool`.
+- `odt.ensure_ndim(arr_wp, 2, dtype=wp.int32)` validates rank and dtype on inputs.
+- `odt.as_array2d(arr_wp, wp.int32)` checks, then narrows the return type for Pyright (overloaded
+  for `wp.int32` / `wp.float32` / `wp.float64`); `odt.as_array3d` covers `wp.float32` / `wp.bool`.
 
 ### 3.3 Allocation and returns
 
-- Wrappers accept `wp.array[T]` for 1D buffers; use `twt.Array2dInt32`, `twt.Array2dFloat32`, etc.
-  for rank-2 results, returned as `twt.as_array2d(arr, wp.int32)`.
-- **2D outputs**: `twt.empty_2d((rows, cols), wp.int32, device=...)`; `twt.empty_3d` at rank 3.
+- Wrappers accept `wp.array[T]` for 1D buffers; use `odt.Array2dInt32`, `odt.Array2dFloat32`, etc.
+  for rank-2 results, returned as `odt.as_array2d(arr, wp.int32)`.
+- **2D outputs**: `odt.empty_2d((rows, cols), wp.int32, device=...)`; `odt.empty_3d` at rank 3.
   `empty_1d` / `empty_2d` / `empty_3d` are one allocator at three ranks: each carries `dtype` into
   its return type through a `TypeVar`, so every Warp element type works at every rank (same for
   `as_array2d` / `as_array3d`). **Do not add an overload for "my dtype is not accepted"**; a real
   need would be a runtime restriction and belongs in the shared `_empty_ranked` body.
 - **1D outputs**: `wp.empty(n, dtype=..., device=input.device)` when the kernel writes every
-  element. `twt.empty_1d(n, dtype, device=...)` is for the modules whose signatures carry the rank
+  element. `odt.empty_1d(n, dtype, device=...)` is for the modules whose signatures carry the rank
   (`reduce`, `metrics`, `neighbors`, where `k=1` or `axis=` collapses a rank). Elsewhere it buys
   nothing and, because `NDim` is **invariant**, breaks assignment to `wp.array[dtype]` (§8).
 - **A rank-1 array's length is `.size`, not `.shape[0]` — at Python scope only.** `wp.array.size`
@@ -518,13 +518,13 @@ Kernels in `triwarp/kernels/` keep `wp.array2d[dtype]`. Optional 2D arguments:
     - **On a rank-2 array `.size` is rows × cols**; a wrong swap type-checks and runs. A table's
       row count stays `.shape[0]`.
     - **`torch.Tensor.size` is a method**; the rule is for Warp and NumPy arrays.
-    - A parameter annotated rank-free (`twt.ArrayNd*`, `wp.array[Any]`) or reached at both ranks
+    - A parameter annotated rank-free (`odt.ArrayNd*`, `wp.array[Any]`) or reached at both ranks
       keeps `.shape[0]`; so do sites whose operand type is `Any` / `Unknown` / rank-2.
 - **Always pass `device=` to every allocation** (`wp.zeros` / `empty` / `ones` / `full` / `array`)
-  — check 10, scanning all of `triwarp/` including `_*.py`. Without it the buffer lands on Warp's
+  — check 10, scanning all of `ordito/` including `_*.py`. Without it the buffer lands on Warp's
   *current* device, which the suite cannot see because a test runs with its arrays' device
   current.
-- Empty-mesh early return: `return twt.empty_2d((0, 2), wp.int32, device=faces_wp.device)`.
+- Empty-mesh early return: `return odt.empty_2d((0, 2), wp.int32, device=faces_wp.device)`.
 - **Size buffers for their final use at allocation time.** No allocate-then-grow. A consumer
   needing an `n + 1` sentinel-terminated form gets it from the *producer*, which allocates `n + 1`
   and returns a view (`counts_to_offsets`); a helper that only patches another function's output
@@ -533,13 +533,13 @@ Kernels in `triwarp/kernels/` keep `wp.array2d[dtype]`. Optional 2D arguments:
   trailing-mask `fill_` needs an `if stop > start` guard where NumPy silently no-ops.
 - **A buffer whose initial value matters is allocated holding it — never `wp.empty` then
   `fill_` / `zero_`.** Use `wp.zeros`, `wp.full(n, value, dtype=..., device=...)`, and at rank 2
-  `twt.as_array2d(wp.full((rows, cols), value, ...), dtype)` (deliberately no `twt.full_2d`, §4.2).
+  `odt.as_array2d(wp.full((rows, cols), value, ...), dtype)` (deliberately no `odt.full_2d`, §4.2).
   This is legibility, not speed: the two-call form measures 0.96-1.00x.
     - `wp.empty` is the rule where **every** element is written before it is read.
     - Where branches initialize differently, allocate inside each branch.
     - A *partial* write into a buffer another writer already filled (running counter, padded
       triplet index, mask head written by a kernel) is not this pattern. The scan keys on a
-      whole-buffer `fill_` / `zero_` on a name assigned from `wp.empty` / `twt.empty_*` within a
+      whole-buffer `fill_` / `zero_` on a name assigned from `wp.empty` / `odt.empty_*` within a
       few lines; run a second pass keyed on a *slice* target too.
     - There is no Python-scope scalar write to pair with `_device.read_scalar`: `arr[k] = v` raises
       `TypeError`, and `arr[k : k + 1].fill_(v)` is the primitive. Usually the *allocation* should
@@ -613,7 +613,7 @@ disk) with GPU time identical to a hand-written one; a cached call costs ~11 µs
   over a suite run and recording Warp's own key. Check 23 fails when a module needs a table and
   has none; the completeness gate is the load census (one `map_*` load per `(module, device,
   block_dim)` is the floor). Zero-length **CPU** arrays suffice to declare a CUDA overload.
-- Never declare map kernels in `triwarp/__init__.py` (§3.1), and never via `wp.load_module` /
+- Never declare map kernels in `ordito/__init__.py` (§3.1), and never via `wp.load_module` /
   `wp.force_load` (eager compile).
 - Still a real kernel: ops needing the thread index as *data* (`init_range`, `seed_orientation`),
   whole arrays as uniform arguments (binary-search tables), scatters, multi-element/row-indexed
@@ -629,16 +629,16 @@ kernel such as `kernels/array.bool_flags`.)
 
 ### 3.7 Sparse: assemble from keys, never through `bsr_from_triplets`; and `nnz` is a stale capacity
 
-**No `triwarp/` module calls `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets`
+**No `ordito/` module calls `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets`
 (check 27).** It sorts every triplet on a full-width key and allocates scratch several times the
 matrix (9.4 GB per `cotmatrix` call at `lucy` for a matrix under 1 GB; a drained mempool makes
-those bytes a cost, §13.1, §16.9). CSR is built two ways, both in `triwarp/array.py`, both with no
+those bytes a cost, §13.1, §16.9). CSR is built two ways, both in `ordito/array.py`, both with no
 host readback:
 
 - **The sparsity follows from the mesh: write keys, not triplets.** A producer writes one
   `kernels/array.csr_key(row, col, n_rows, n_cols)` per contribution (sentinel `n_rows * n_cols`
-  for an empty slot) into [`csr_key_buffers`][triwarp.array.csr_key_buffers] with a payload that
-  locates the value; [`csr_from_keys`][triwarp.array.csr_from_keys] sorts only the bits the shape
+  for an empty slot) into [`csr_key_buffers`][ordito.array.csr_key_buffers] with a payload that
+  locates the value; [`csr_from_keys`][ordito.array.csr_from_keys] sorts only the bits the shape
   needs and returns `offsets`, `columns` and each entry's first sorted position; a per-row value
   kernel forms each entry from its contributors in producer order and may write the diagonal from
   the row it just formed. `laplacian._mesh_operator_pattern` is the model, shared by `cotmatrix`,
@@ -651,7 +651,7 @@ host readback:
   `pattern=` (`filter_implicit_fairing`, `filter_taubin(recompute=True)`,
   `vector_heat_operators`; §16.9).
 - **The input is genuinely an unordered coordinate list:
-  [`csr_from_triplets`][triwarp.array.csr_from_triplets].** Unpruned it equals
+  [`csr_from_triplets`][ordito.array.csr_from_triplets].** Unpruned it equals
   `bsr_from_triplets` (summed in triplet order, out-of-range triplets dropped; bit-identical on
   CUDA, equal to rounding on CPU). **Pruning differs on purpose**: `prune_numerical_zeros` drops
   every entry whose *sum* is zero, where Warp drops zero-valued triplets before summing and keeps
@@ -661,7 +661,7 @@ host readback:
   the implicit smoothing system. The generic builder is only at parity with Warp (0.96-1.13x);
   the wins are the structural builds.
 - **A CSR the producer can write directly is written directly** and wrapped by
-  [`bsr_from_csr`][triwarp.array.bsr_from_csr] (multigrid tentative prolongator; the empty matrix).
+  [`bsr_from_csr`][ordito.array.bsr_from_csr] (multigrid tentative prolongator; the empty matrix).
 
 **Never size a buffer, slice or launch dim off `matrix.nnz`.** After a triplet build the `nnz`
 field holds the *triplet count it was handed*, duplicates included: an upper bound (1.85x the true
@@ -688,7 +688,7 @@ count on `laplacian.cotmatrix`). Use **`matrix.nnz_sync()`** (one host readback)
   of range instead.
 - **A Warp object's `*_count` / `.nnz` field is a *capacity* until proven otherwise.**
   `wp.Volume.get_voxel_count()` and `wp.volume_voxel_count` report allocated capacity, so
-  `triwarp.voxels` uses `Volume.get_active_stats().voxel_count`. Before sizing a buffer, slice or
+  `ordito.voxels` uses `Volume.get_active_stats().voxel_count`. Before sizing a buffer, slice or
   `dim` off such a field, probe it against a construction with a known true count. The wrong
   reading is an *upper* bound, so nothing raises and the tail is garbage.
 
@@ -700,7 +700,7 @@ the stale `nnz` field): §12.7.
 `warp-lang` carries an unconditional `Requires-Dist: numpy`, `import warp` loads it eagerly, and
 `wp.array(list, dtype=...)` ends in `np.asarray`. NumPy is a declared core dependency; deleting
 `import numpy as np` from a wrapper only moves the call into Warp. **Do not open a "remove NumPy"
-pass.** A census of 488 host-side sites under `triwarp/` found only lattice/template index
+pass.** A census of 488 host-side sites under `ordito/` found only lattice/template index
 arithmetic convertible (`parametric_surface`, §16.4); the rest is settled by one measurement: a
 minimum device round trip (`wp.launch(dim=1)` plus one readback) is ~43 µs against 0.7-6 µs of
 host arithmetic for a 4x4 matmul, 3x3 determinant or 3x3 SVD (a 26-60x loss).
@@ -746,7 +746,7 @@ Three things are still defects:
 - **A public signature or return that names `np.ndarray`**, which forces the dependency on the
   caller. Return `wp.mat33d` / `wp.vec3` (`measures.moments` returns `wp.mat33d`; `wp.mat33` would
   discard the `float64` digits); annotate duck-typed `np.asanyarray` inputs
-  `Sequence[Sequence[float]]`. The one exception is `triwarp/io.py` (meshio hands back
+  `Sequence[Sequence[float]]`. The one exception is `ordito/io.py` (meshio hands back
   `np.ndarray`; NumPy-in is `mesh_from_numpy`'s purpose).
 - **NumPy standing in for a Warp Python-scope equivalent that exists — but price it first.** A
   Warp builtin at Python scope is a builtin *dispatch* (§13.1): `wp.length` is 13-14x
@@ -760,7 +760,7 @@ Three things are still defects:
   (`creation._align_vectors` takes the SVD of a `(3, 1)`; its free rotation about the axis is a
   gauge the trimesh comparison pins element-wise).
 - **NumPy reducing a full `.numpy()` readback** (`.min()`, `.max()`, `.any()`, `.sum(axis=0)`) is
-  a §9 defect: the whole array crossed the bus for one scalar. Use `triwarp.reduce` (or
+  a §9 defect: the whole array crossed the bus for one scalar. Use `ordito.reduce` (or
   `wp.utils.array_sum`, which reduces a `wp.vec3d` array componentwise) and check whether a kernel
   already exists (`holes._mean_rim_edge_length` read back the whole vertex buffer while
   `_loop_perimeters` already computed the answer). **Decide on the CUDA measurement and accept the
@@ -776,7 +776,7 @@ Two redundancies that are not defects to "fix" the other way:
   contiguous and non-contiguous views); `math.dist` likewise takes raw arrays. **Keep** a
   `.tolist()` that *is* the return value of a `list[...]`-typed public signature, and one used for
   plain-Python bookkeeping such as a dict key. `tests/` keeps the `wp.vec3(*array_np.tolist())`
-  spelling (§7.1); do not carry it into `triwarp/`.
+  spelling (§7.1); do not carry it into `ordito/`.
 - **`arr.numpy().tolist()` is `arr.list()` only for a rank-1 array** (same cost; `.list()` calls
   `.numpy()`). **`.list()` unconditionally flattens**, so an `(n, 2)` output becomes one flat
   `2n` list and silently breaks row iteration. Restrict the swap to a genuinely `ndim == 1`
@@ -834,10 +834,10 @@ Root-cause detail and the bisection techniques: §12.1.
   escape hatch nothing uses is not an optimization.
 - **A readback costs ~0.1 ms queued; an extra device pass costs 0.9-2.4 ms.** Trading one readback
   for an extra pass is usually a loss (§13.1, §14.6).
-- **Several adjacent small values: `triwarp._device.read_values(arr, start, count)`** (cached
+- **Several adjacent small values: `ordito._device.read_values(arr, start, count)`** (cached
   pageable scratch, one offset copy). A slice view plus `.numpy()` of three `int32`s measured
   26 µs against 10 for `read_scalar`.
-- **A tail read uses `triwarp._device.read_scalar(arr, index=-1)`**, not a hand-rolled spelling:
+- **A tail read uses `ordito._device.read_scalar(arr, index=-1)`**, not a hand-rolled spelling:
   the fast path is device-split and a pinned scratch is a **race** (§12.1). It takes any index and
   dtype, so `arr[k : k + 1].numpy()[0]` and `arr.numpy()[k]` are both it, spelled slower.
 - **That is a single-value rule and it inverts at two.** A readback's cost is almost all fixed, so
@@ -854,7 +854,7 @@ Root-cause detail and the bisection techniques: §12.1.
 
 - **Name a function after what it returns, in NumPy vocabulary — never after the Warp call it
   wraps** (`sort_pairs` became `sort_and_argsort`: it is a sort *and* an argsort).
-- **A mask is named `<element>_<property>_mask`, element first**, so typing `tw.validation.face_`
+- **A mask is named `<element>_<property>_mask`, element first**, so typing `od.validation.face_`
   lists every per-face predicate. A convention followed regardless of fit is not worth having:
   `radius_outlier_mask` / `statistical_outlier_mask`, `half_space_mask`, `uv_seam_vertex_mask` and
   `convex_subset_mask` / `convex_superset_mask` deliberately keep their names. Check 2 scans the
@@ -879,7 +879,7 @@ Root-cause detail and the bisection techniques: §12.1.
       `hashgrid` without an `accelerator`); only an *explicit* mismatch raises.
     - **Keep the discriminator in the benchmark group name** (`query_ball_bvh`); the group name is
       the parity key, so all markers move in the same commit.
-    - **A merge needs a triwarp-against-triwarp test that the paths agree**
+    - **A merge needs a ordito-against-ordito test that the paths agree**
       (`test_the_two_backends_agree`).
     - Stays split: `query_bvh_ball` / `query_bvh_box` (BVH-only), and `metrics.chamfer_*` /
       `hausdorff_*` (different algorithms over different inputs, not one algorithm with a knob).
@@ -911,7 +911,7 @@ Root-cause detail and the bisection techniques: §12.1.
   `array.split`; call it rather than wrapping it (`geodesic_walk`'s tracers return the packed
   form only). `_batched` is not a suffix in this package. `array.split` also accepts host-sequence
   offsets.
-- **No public signature or return type may name `np.ndarray`**, outside `triwarp/io.py` (§3.8).
+- **No public signature or return type may name `np.ndarray`**, outside `ordito/io.py` (§3.8).
 - **A guard must encode a real limitation.** Where the implementation is rank- or dtype-agnostic,
   drop the `ensure_ndim` cap and widen the annotation.
 - **A `Literal`-typed menu argument is validated at the public boundary and raises `ValueError`
@@ -928,7 +928,7 @@ Root-cause detail and the bisection techniques: §12.1.
 - **When a function mirrors a NumPy one, mirror its positional signature and make `device`
   keyword-only** (`array.arange(start, stop=None, step=1, dtype=wp.int32, *, device)`).
     - A required keyword-only `device` breaks every positional call site; **re-derive the residual
-      set from the new name** (§4.4) — imports via `from triwarp.array import arange` fail at
+      set from the new name** (§4.4) — imports via `from ordito.array import arange` fail at
       runtime, not at lint time.
     - Keep the specialised kernel for the common case: `arange` dispatches to the zero-argument
       kernel when `start == 0 and step == 1`, `arange_affine` otherwise (two fewer launch args).
@@ -940,7 +940,7 @@ Root-cause detail and the bisection techniques: §12.1.
 - **Inverse and dual pairs cross-reference each other and have a round-trip test**
   (`flatnonzero` / `indices_to_mask`). Bidirectional `See Also` is required for inverse pairs and
   simple/advanced variants, not for hub→spoke references.
-- **Coverage is per module.** Every public `triwarp/<module>.py` has `tests/test_<module>.py` and
+- **Coverage is per module.** Every public `ordito/<module>.py` has `tests/test_<module>.py` and
   `benchmarks/test_<module>.py` (check 4); a function's tests live in the file mirroring *its*
   module (§5).
 
@@ -979,7 +979,7 @@ Five artifacts, every time:
 4. **Its `benchmark(group=...)` name**, when named after the function or old module. The group name
    is the parity key: update every `parity` / `noparity` marker citing it in the same commit, and
    `uv run python -m tests.parity` must show the same pair count before and after.
-5. **Its docs entry** in `docs/SUMMARY.md` (check 28) and every `[`name`][triwarp.old.path]`
+5. **Its docs entry** in `docs/SUMMARY.md` (check 28) and every `[`name`][ordito.old.path]`
    cross-reference — `zensical build --strict` finds the missed ones.
 
 **Renaming a *keyword argument* has its own artifact list; a call-site scan sees none of it:**
@@ -1000,7 +1000,7 @@ done until the whole suite has run.
 read the reason before adding an entry, and prefer fixing the code. The gate does not replace
 review: it cannot tell whether a *new* name is a good one.
 
-**Public surface of `triwarp/` (excluding `kernels/`):**
+**Public surface of `ordito/` (excluding `kernels/`):**
 
 1. A module/function summary line naming a reference library (§6). Allowlist: `mesh.py`'s
    "mirrors `trimesh.Trimesh`" alone.
@@ -1008,16 +1008,16 @@ review: it cannot tell whether a *new* name is a good one.
 3. A module summary ending in `(Warp)` / `on NVIDIA Warp`.
 4. A module without both a `tests/` and a `benchmarks/` file named for it.
 5. A private name reached across a module boundary. It reads only public wrapper modules and
-   `_`-prefixed *names*, so a plain-named helper in `triwarp/_thing.py` (like `_device.py`) is
+   `_`-prefixed *names*, so a plain-named helper in `ordito/_thing.py` (like `_device.py`) is
    invisible — **but a new `_*.py` holding one helper is a module created to dodge the check**: a
    shared operation wants a home. When a private cross-module helper must stop being public, ask
    whether it is really one operation (`adjacency.require_paired_adjacency` is the shared *rule*;
    the *derivation* is an inline `face_adjacency(return_edges=True)` per caller). A name moved into
-   a `_*.py` breaks every `[`x`][triwarp.mod.x]` reference under `--strict` (private modules
+   a `_*.py` breaks every `[`x`][ordito.mod.x]` reference under `--strict` (private modules
    generate no page), and a newly public validator needs its own `Raises` block and accepting-case
    tests.
 6. One public name exported by two modules.
-7. A top-level `kernels/<name>.py` without `triwarp/<name>.py`, or the reverse.
+7. A top-level `kernels/<name>.py` without `ordito/<name>.py`, or the reverse.
 8. A private helper defined above its first caller (§5).
 
 **Cross-tree:**
@@ -1027,7 +1027,7 @@ review: it cannot tell whether a *new* name is a good one.
    `_WARP_VERSION_ALLOWLIST` holds deliberate history and the next upgrade's re-verification
    notes. **A stale `pytest.skip` is worse than a stale comment**: it deletes a branch, and on a
    CUDA box that is the branch nobody runs.
-10. An allocation with no `device=` (§3.3); scans all of `triwarp/` including `_*.py`.
+10. An allocation with no `device=` (§3.3); scans all of `ordito/` including `_*.py`.
 11. A public function that raises with no `Raises` block (§4.3).
 12. A fenced ```python docstring example that does not run: `tests/test_api_conventions.py`
     `exec`s the extracted blocks against a mesh fixture (both motivating defects were runtime
@@ -1045,7 +1045,7 @@ review: it cannot tell whether a *new* name is a good one.
     **all four** label phrases, leaves `_np` out of its suffix list, checks only that a label is
     *present*, and also closes "comparison with no docstring" (ruff ignores `D103`).
 20. Kernel-scope ternary instead of `wp.where` (§1.5).
-21. A MeshLib **or promesh** name anywhere under `triwarp/` — a licensing guard (§7.6).
+21. A MeshLib **or promesh** name anywhere under `ordito/` — a licensing guard (§7.6).
 22. A bare single-index `wp.tid()` (§1.3); multi-index unpacks are not read.
 23. A kernel module whose `@wp.func` is `wp.map`'d from several sites with no declaration table
     (§3.5). It asserts a table *exists*, not that it is complete; completeness is the load
@@ -1054,7 +1054,7 @@ review: it cannot tell whether a *new* name is a good one.
     where that chapter is subdivided** (a staleness rule: one number can stand for several
     sections). Chapters 5, 6, 8, 9, 10 and 11 carry no numbered `###` heading, so a bare number is
     accepted for them; the check reads this from the file's headings, keeping
-    `_CLAUDE_CHAPTER_ALLOWLIST` empty. Scans `triwarp/`, `tests/`, `benchmarks/`; matches
+    `_CLAUDE_CHAPTER_ALLOWLIST` empty. Scans `ordito/`, `tests/`, `benchmarks/`; matches
     `AGENTS.md` (a symlink); abstains if the file is absent. Cannot see a reference split across
     sentences, nor a bare `section N` belonging to a paper (`kernels/remesh.py` cites "Liepa 2003,
     section 3").
@@ -1067,7 +1067,7 @@ review: it cannot tell whether a *new* name is a good one.
     (`wp.constant(7)` is a plain `int`; only `wp.constant(wp.int32(7))` is Warp-typed). Empty
     allowlist; a constant forwarded to `wp.launch(inputs=[...])` or wrapped in `int(CONST)` is
     fine. Vector arithmetic and explicit builtins are covered by the runtime census (§15.11).
-27. A call to `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` under `triwarp/` (§3.7).
+27. A call to `warp.sparse.bsr_from_triplets` / `bsr_set_from_triplets` under `ordito/` (§3.7).
     Empty allowlist; tests may call it to build an independent input.
 28. A public module missing from `docs/SUMMARY.md`, listed twice, or listed after removal (§6).
     Abstains when `docs/` is absent.
@@ -1098,7 +1098,7 @@ held only by a scan.
 
 `mkdocstrings` uses `members_order: source`, so **source order is the rendered docs order**.
 
-### Python wrapper modules (`triwarp/*.py`)
+### Python wrapper modules (`ordito/*.py`)
 
 - Layout: module docstring → imports → module constants / type aliases → functions.
 - **Group public functions thematically, then order groups by importance and expected frequency
@@ -1112,7 +1112,7 @@ held only by a scan.
   one below a callee it uses strands the callee), and verify a "pure move" by comparing the
   multiset of definitions, since `@overload` stubs repeat names.
 
-### Kernel modules (`triwarp/kernels/*.py`)
+### Kernel modules (`ordito/kernels/*.py`)
 
 The stepdown rule **inverts**: Warp resolves `@wp.func` references at decoration time, so a
 `@wp.func` **must textually precede** every kernel or `@wp.func` calling it. Order kernels to
@@ -1136,7 +1136,7 @@ uv run zensical serve                   # preview locally
 ```
 
 **API pages come from Zensical's native `api-autonav` (0.0.66+)** configured in `mkdocs.yml`: one
-page per public module at `api/triwarp/<module>/`, with `triwarp.kernels`, the `_*.py` modules and
+page per public module at `api/ordito/<module>/`, with `ordito.kernels`, the `_*.py` modules and
 the package root excluded. No pre-build step; never use `mkdocs-gen-files`. **The nav is the
 committed `docs/SUMMARY.md`**, which shelves pages by theme; the plugin adds no page the nav does
 not name, so a new module needs a line there (check 28). Runtime facts, each of which fails
@@ -1145,11 +1145,11 @@ quietly:
 - **Zensical ignores an unsupported plugin entry silently.** Never register `gen-files`: the build
   exits 0 and generates nothing; only `--strict` reports the unresolved cross-references.
 - **Backlinks are on (`backlinks: tree`)**: each cross-linked object gets a "Referenced by" block,
-  which is the consumer list a hub's `See Also` should not carry by hand. `triwarp.typing` opts
+  which is the consumer list a hub's `See Also` should not carry by hand. `ordito.typing` opts
   out via `api-autonav`'s `module_options` (its aliases are linked from every return annotation).
 - **`--strict` is the cross-reference backstop** §4.4 leans on; the four external inventories
   still resolve under it.
-- **`zensical serve` watches `docs/` but not `triwarp/*.py`**, and mkdocstrings caches the module
+- **`zensical serve` watches `docs/` but not `ordito/*.py`**, and mkdocstrings caches the module
   in-process: restart `serve` to see a docstring change.
 - **There is no `exclude_docs:` equivalent.** The `assets/benchmarks/*.md` sidecar tables are kept
   out of search by `search: exclude: true` front matter (emitted by
@@ -1212,7 +1212,7 @@ ratio, launch or byte count: they are facts about one box, Warp version and mesh
 *claim* in caller terms ("roughly doubles the call", "a host readback serialises the device
 pipeline").
 
-**No development-history narrative in `triwarp/*.py`, in a docstring or a comment**: "measured X,
+**No development-history narrative in `ordito/*.py`, in a docstring or a comment**: "measured X,
 declined Y", "reverted", "round N", "probe"/"sweep" as methodology, cross-references to internal
 doc sections. The public wrapper layer documents behaviour for a caller; keep the behavioural or
 correctness fact (convention, sign rule, aliasing warning, what raises and when) and cut the
@@ -1227,7 +1227,7 @@ the one place for a raw cost model. Prose narrating how a change came about ("an
 of this docstring", "round N") is development log; a regression test's "X used to be a bug, this
 pins it" is the legitimate exception.
 
-The docstring scan is an `ast` walk over `triwarp/`'s public functions matching
+The docstring scan is an `ast` walk over `ordito/`'s public functions matching
 `\d[\d.,]*\s*(ms|us|µs|ns|GB|MB|kB)\b` or `\b\d+(\.\d+)?x\b`; key on the *quantity*, not on prose
 words like `measured` or `faster`. There is no comment-scanning counterpart; review catches
 comments.
@@ -1240,7 +1240,7 @@ Docstrings are **NumPy-style** (`Parameters`/`Returns`/`Raises`/`See Also`); cro
 
 | Target | Syntax | Example |
 |---|---|---|
-| Internal (`triwarp.*`) | `` [`short_name`][fully.qualified.path] `` | `` [`face_adjacency`][triwarp.graph.face_adjacency] `` |
+| Internal (`ordito.*`) | `` [`short_name`][fully.qualified.path] `` | `` [`face_adjacency`][ordito.graph.face_adjacency] `` |
 | External **with** inventory (`trimesh`, `numpy`, `scipy`, stdlib) | `` [`fully.qualified.name`][] `` | `` [`trimesh.grouping.group_rows`][] `` |
 | External **without** inventory (`warp`, `igl`) | double-backtick code span, no link | ``` ``warp.sparse.BsrMatrix`` ``` |
 | Shapes, literals, C++ names, paths | plain code span | ``` ``(n_vertices,)`` ``` |
@@ -1253,10 +1253,10 @@ Docstrings are **NumPy-style** (`Parameters`/`Returns`/`Raises`/`See Also`); cro
   `See Also` or any item-list section** (check 25): griffe reads each entry's first line as a
   *name*, so it renders as an exception type; `--strict` cannot see it.
 - Module-level constants / type aliases without a docstring are linkable only because
-  `show_if_no_docstring: true` is set; re-check `triwarp/constants.py` and `triwarp/typing.py`
+  `show_if_no_docstring: true` is set; re-check `ordito/constants.py` and `ordito/typing.py`
   cross-refs before removing it.
 - Every public function has a docstring (an undocumented one renders with an empty description).
-- After editing docstrings run `grep -rnE ':(func|attr|meth|class|data|mod):\`' triwarp/` — it
+- After editing docstrings run `grep -rnE ':(func|attr|meth|class|data|mod):\`' ordito/` — it
   must return nothing (`kernels/` counts too).
 
 ---
@@ -1270,7 +1270,7 @@ implementation. `trimesh` is the default; §7.6 lists the eight others and what 
 - Test file `tests/test_<module>.py`; import pattern:
   ```python
   import trimesh.<module> as tm
-  import triwarp.<module> as tw
+  import ordito.<module> as od
   ```
 - Use the `device` fixture from `tests/conftest.py`. **A test takes `device` only if it touches
   the device directly** (builds device data itself); a test that reaches it through a mesh fixture
@@ -1283,7 +1283,7 @@ implementation. `trimesh` is the default; §7.6 lists the eight others and what 
   `monkeypatch` undoes every patch at teardown even when the test fails, and one spelling keeps a
   patch findable by one grep. Ruff's `TID251` bans `unittest` (`pyproject.toml`,
   `flake8-tidy-imports.banned-api`). **A test that counts or intercepts launches or allocations
-  patches both paths**: the wrapper layer calls `triwarp._launch.*`, which falls back to the `wp.*`
+  patches both paths**: the wrapper layer calls `ordito._launch.*`, which falls back to the `wp.*`
   function (and whose `launch_tiled` routes through its own `launch`), so patching `wp.launch`
   alone sees only the fallback (`test_successor_cycles_validates_before_launching`).
 - Reproducible random data: `np.random.default_rng(seed)` with a fixed integer seed per test.
@@ -1302,7 +1302,7 @@ implementation. `trimesh` is the default; §7.6 lists the eight others and what 
   (potpourri3d), `_pml` (pymeshlab), `_o3d` (open3d), `_pv` (pyvista), `_ml` (meshlib), `_pmf`
   (pymeshfix), `_p3d` (pytorch3d). Avoid `got` / `exp`; use clear names.
 - NumPy 1D vector to a `wp.vec3` argument at Python scope: `wp.vec3(*array_np.tolist())`. (This
-  is the test-side spelling only; `triwarp/` production code drops the `.tolist()`, §3.8.)
+  is the test-side spelling only; `ordito/` production code drops the `.tolist()`, §3.8.)
 
 ### 7.2 Devices and the two-process runner
 
@@ -1378,7 +1378,7 @@ benchmark's `benchmark(group=...)` name is the key (a cross-suite API: renaming 
 `parity` marker citing it). Both markers are stackable and take string **literals** only.
 
 ```python
-# tests/test_edges.py -- "this test proves triwarp agrees with trimesh for that group"
+# tests/test_edges.py -- "this test proves ordito agrees with trimesh for that group"
 @pytest.mark.parity("faces_to_edges", "trimesh")
 
 # benchmarks/test_curvature.py -- "timed, but the results are not comparable"
@@ -1414,23 +1414,23 @@ a label beside A-D, not a class-D exemption (D is for a *benchmarked* pair that 
   agreement). `fraction_within` bounds must be shown to fail under shuffling one side.
 - **D** — exemption. Only for: not an independent implementation (`oracle=` required); a
   different algorithm with a measured disagreement; a parameter the reference lacks; an answer not
-  observable in isolation; stochastic with no invariant; input classes where triwarp is undefined.
+  observable in isolation; stochastic with no invariant; input classes where ordito is undefined.
   **Not** admissible: "awkward", "tolerance would be loose", any class-B situation.
 
 **Write the label as `Class A`** (capital). Check 19 gates it. **Four phrases are labels in good
-standing**: `Class [ABCD]`, `Not a library comparison`, `Triwarp against triwarp`,
+standing**: `Class [ABCD]`, `Not a library comparison`, `Ordito against ordito`,
 `Not a parity assert`; do not reword them to fit a narrower grep.
 
-**Never a parity assert:** shape-only or `isfinite`-only; triwarp compared with itself; a
+**Never a parity assert:** shape-only or `isfinite`-only; ordito compared with itself; a
 threshold a constant output would pass. A boolean assert must be parametrized over inputs
-producing both answers. **Triwarp-against-triwarp** is a legitimate test for one job: pinning two
+producing both answers. **Ordito-against-ordito** is a legitimate test for one job: pinning two
 entry points where only one has an oracle (mask vs index form, precomputed vs deriving path, CPU
 vs CUDA); say which carries the oracle.
 
 **Check the comparison is not vacuous on its fixture** (the gate cannot):
 
 - **An empty answer**: `test_ears` compared `igl.ears` with `boundary.ears` where both found
-  none (`[] == []`); making it non-vacuous exposed `triwarp_opp == (igl_opp + 1) % 3`.
+  none (`[] == []`); making it non-vacuous exposed `ordito_opp == (igl_opp + 1) % 3`.
 - **A constant answer is as vacuous**, and the docstring asserted the non-vacuity that was absent:
   a connected-component test said "several components" and produced 1; a curvature test "over
   every vertex" ran on a regular icosahedron (one value, spread 0.0), so a permutation or index
@@ -1445,13 +1445,13 @@ vs CUDA); say which carries the oracle.
 **A guard test "bites" only if you identify WHICH assertion fails under the mutation.** A k-NN
 tie-break test "verified" by deleting a carry flag failed only its index assert (distances stayed
 identical, and the docstring disclaims tied-neighbour identity), so it pinned a disclaimed
-convention. If a test compares triwarp with itself, ask what an external oracle would say;
+convention. If a test compares ordito with itself, ask what an external oracle would say;
 **reproduce a plan's failure-mode claim before building a test around it.**
 
 **A Class C threshold with large headroom does not bite.** The ≥ 3x rule is a floor against
 flakiness, not a ceiling; four probed tests sat ≥ 10x above their own agreement. The probe that
 measures what a threshold distinguishes re-runs the *reference* on a deliberately wrong input,
-not a perturbed triwarp side. Some cannot tighten (`heat_geodesic`'s 5 % bar: a third is genuine
+not a perturbed ordito side. Some cannot tighten (`heat_geodesic`'s 5 % bar: a third is genuine
 discretization error in both methods; the two `heat_signed_distance` correlations have 1.19x
 error-bound headroom on `hemisphere`).
 
@@ -1492,7 +1492,7 @@ And `tests/conversions.py`: `numpy_to_warp`, `numpy_to_warp_uv`, `points_to_warp
 - **`points_to_warp` and `warp_to_trimesh` are the most re-rolled** (the bare-cloud upload was
   written 403 times in four spellings). Authors reach for the shared helper when *building* the
   reference and hand-write the readback; use the helper both ways.
-- **`canonical_labels`** is the label-packing transform every component comparison needs: triwarp
+- **`canonical_labels`** is the label-packing transform every component comparison needs: ordito
   names a component by a representative element, igl/scipy number `0..k-1` in their own orders,
   VTK's `RegionId` in a third; only the *partition* is shared.
 - **`symmetric_chamfer(mesh_a, mesh_b)` takes two meshes** and samples them itself;
@@ -1520,14 +1520,14 @@ Aliases (pinned in ruff): `import trimesh as tm`, `import igl`, `import potpourr
 
 **Threading decides how a ratio reads.** Single-threaded: trimesh, igl, pyvista, pymeshfix.
 Multi-threaded: `meshlib` (100+ OS threads), `pytorch3d-cpu`. GPU: `pytorch3d-cuda` only. A
-`triwarp-cpu` row loses to a threaded reference on any parallel op regardless of algorithm (§9:
+`ordito-cpu` row loses to a threaded reference on any parallel op regardless of algorithm (§9:
 decide on the CUDA number).
 
 There are nine libraries and ten subsections: `promesh` is not a reference (nothing installs it).
 
 #### libigl (`igl`)
 
-Input convention matches triwarp's (`float64` `(n, 3)` vertices, `int64` faces); bound functions
+Input convention matches ordito's (`float64` `(n, 3)` vertices, `int64` faces); bound functions
 are pure except the stateful solver objects (`HeatGeodesicsData`, `ARAPData`,
 `min_quad_with_fixed_data`, `AABB`), which cache a factorization and must be constructed
 **inside** a timed callable.
@@ -1562,7 +1562,7 @@ are pure except the stateful solver objects (`HeatGeodesicsData`, `ARAPData`,
 
 **Licensing:** libigl's core is MPL2, but everything under `reference/libigl/include/igl/copyleft/`
 is **GPL** (CGAL booleans, `progressive_hulls`, `quadprog`, tetgen, `copyleft/marching_cubes`). No
-triwarp code may derive from that subtree; read the MPL2 top-level `marching_cubes.h`.
+ordito code may derive from that subtree; read the MPL2 top-level `marching_cubes.h`.
 
 #### potpourri3d (`pp3d`)
 
@@ -1603,7 +1603,7 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
 - **Length parameters take a wrapper**: `ml.PercentageValue(1)` = 1 % of bbox diagonal;
   `ml.PureValue(x)` = absolute length (no `AbsoluteValue`).
 - **`harm_function` is a no-op** (`compute_texcoord_parametrization_harmonic` is bit-identical at
-  1, 2, 3): never map triwarp's `k` onto it.
+  1, 2, 3): never map ordito's `k` onto it.
 - **Four defaults silently measure nothing**: `meshing_close_holes(maxholesize=30)` closes zero
   512-edge rims; `get_hausdorff_distance(samplenum=8)`; `generate_sampling_poisson_disk(radius=0%)`
   autoguesses; `generate_surface_reconstruction_ball_pivoting(clustering=0)` reconstructs nothing
@@ -1638,7 +1638,7 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
   reconstructor print anyway (pytest fd capture absorbs it).
 - **`face_normal_matrix()` after `compute_normal_per_face()` is unnormalised** (`2 * area`): it
   checks normals *and* areas.
-- **Pass counts are conventions**: Taubin `stepsmoothnum` counts lambda-mu *pairs* (triwarp /
+- **Pass counts are conventions**: Taubin `stepsmoothnum` counts lambda-mu *pairs* (ordito /
   trimesh do one half-step per iteration: `2 * stepsmoothnum`); `get_scalar_statistics_per_vertex`
   `"med"` is the element at `n // 2 - 1`, one below the middle, for both parities.
 - **Two undocumented uniform umbrellas**: `apply_coord_laplacian_smoothing` and
@@ -1649,7 +1649,7 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
 - **MeshLab writes a layer transform, not vertices**: `compute_matrix_by_icp_between_meshes`
   leaves `vertex_matrix()` unchanged; read `transform_matrix()` / `transformed_vertex_matrix()`.
 
-**Licensing:** pymeshlab is GPL. `triwarp/` may name it in prose; no triwarp code may derive from
+**Licensing:** pymeshlab is GPL. `ordito/` may name it in prose; no ordito code may derive from
 its source.
 
 #### open3d (`o3d`)
@@ -1670,19 +1670,19 @@ CPU-only; only `open3d.t` has GPU kernels.
 - **k-NN distances come back squared** from `KDTreeFlann` and `o3d.core.nns`. Use
   `o3d.core.nns.NearestNeighborSearch` for batches (indices match `scipy.spatial.KDTree` on a
   tie-free cloud); the legacy tree is a per-point Python loop. `KDTreeFlann` radius search is
-  **exclusive at exactly `r`**, triwarp's ball queries are inclusive: only a constructed fixture
+  **exclusive at exactly `r`**, ordito's ball queries are inclusive: only a constructed fixture
   exposes it.
 - **`is_vertex_manifold` tests connectivity, not a fan**: three faces on one edge pass it and fail
-  triwarp's and igl's definition. Agreement is exact on edge-manifold input: restrict to that class
+  ordito's and igl's definition. Agreement is exact on edge-manifold input: restrict to that class
   and pin the divergence. `is_edge_manifold` shares `allow_boundary_edges` semantics.
 - **Smoothing filters re-derive inverse-distance weights every pass** (`filter_smooth_laplacian`,
-  `filter_smooth_taubin`): they match triwarp's fixed assembled operator at one iteration and
+  `filter_smooth_taubin`): they match ordito's fixed assembled operator at one iteration and
   diverge by ten; Taubin's count is lambda-mu *pairs*. `filter_sharpen` adds the *unnormalized*
-  residual (displacement is triwarp's times the degree). All three are D exemptions.
+  residual (displacement is ordito's times the degree). All three are D exemptions.
 - **Platonic solids come in rotated frames and odd scales**: octahedron matches exactly,
   tetrahedron is rotated, icosahedron is the raw `(0, ±1, ±φ)` table; compare rigid-motion
   invariants at unit circumradius. No `create_dodecahedron`.
-- **`RaycastingScene.compute_signed_distance` shares triwarp's convention** (negative inside, no
+- **`RaycastingScene.compute_signed_distance` shares ordito's convention** (negative inside, no
   negation, unlike trimesh). `compute_closest_points` diverges at equidistant-face ties: compare
   *distances*.
 - **`get_oriented_bounding_box` is PCA of the hull** (minimizes nothing); comparable is
@@ -1714,7 +1714,7 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
   exact. `compute_normals`' `Normals`, `ray_trace` hits, `fit_plane_to_points(return_meta=True)`
   and `texture_map_to_*` are **float32**; `multi_ray_trace`, `principal_axes`, `curvature`,
   `compute_implicit_distance` are float64. Check dtype per row; use `atol` for differences of
-  large numbers (the residual is triwarp's float32 vertex buffer).
+  large numbers (the residual is ordito's float32 vertex buffer).
 - **One filter of twelve mutates**: `edge_mask` writes `point_ind` into its input. Filters with
   `inplace` default `False`; never pass `True`.
 - **An extraction renumbers its points**: `extract_feature_edges` returns only touched points in
@@ -1725,8 +1725,8 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
   `as_composite=False`; `remove_points` / `collision` / `ray_trace` / `contour_banded` return
   **tuples**.
 - **`cell_quality`: 12 usable measures of 28 on triangles, two naming inversions, one constant.**
-  pyvista `radius_ratio` = triwarp `aspect_ratio` (triwarp's `radius_ratio` is its reciprocal);
-  `shape` = triwarp `mean_ratio`, `aspect_frobenius` = 1 / it; `condition` duplicates
+  pyvista `radius_ratio` = ordito `aspect_ratio` (ordito's `radius_ratio` is its reciprocal);
+  `shape` = ordito `mean_ratio`, `aspect_frobenius` = 1 / it; `condition` duplicates
   `aspect_frobenius`; `min_angle` / `max_angle` are **degrees**; `distortion` is constant **1.0**
   (a threshold test passes on anything); the 16 inapplicable measures return `-1.0` rather than
   raising. Decoding is in `tests/test_triangles.py`.
@@ -1761,7 +1761,7 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
   and *does* move points (unlike MeshLab); `geodesic` puts the ordered path in
   `vtkOriginalPointIds` (Euclidean length = `geodesic_distance`); `sample` marks misses with
   `vtkValidPointMask` and `vtkGhostType`; `voxelize_binary_mask` writes a **point** array `mask` on
-  a cell-centred grid (*solid*: its set is contained in triwarp's `mode="solid"`). Deprecated in
+  a cell-centred grid (*solid*: its set is contained in ordito's `mode="solid"`). Deprecated in
   0.48.4: module-level `pv.voxelize` / `pv.voxelize_volume` (hard `DeprecationError`),
   `select_enclosed_points` (→ `select_interior_points`, array `selected_points`),
   `extract_geometry` (→ `extract_surface(algorithm=None)`), `n_faces_strict` (→ `n_faces`).
@@ -1773,7 +1773,7 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
   `bohemian_dome`); `inverted_faces` reads 0 with ten reversed faces. The firing field is
   **`zero_size`**, and `clean()` **keeps** those faces at every tolerance (detector, no filter).
   A degeneracy comparison needs a *scale-aware* input (an exactly collinear float64 face survives
-  triwarp's float32 altitude test, §12.4). `collision` is two-mesh and cannot see a
+  ordito's float32 altitude test, §12.4). `collision` is two-mesh and cannot see a
   self-intersection (thousands of hits for a mesh against its own copy).
 - **`compute_implicit_distance` needs polygons**: on a line-set VTK logs *"No polygons to evaluate
   function!"* per query and returns a far-off field. Polyline distance goes through
@@ -1802,7 +1802,7 @@ virtualenv. Licences MIT / BSD-3 (no subtree to avoid).
 
 Build with `trimesh_to_meshlib` / `numpy_to_meshlib` / `warp_to_meshlib`, clouds with
 `points_to_meshlib`, read back with `meshlib_to_trimesh`; never hand-roll `mn.meshFromFacesVerts`.
-It is the **only multi-threaded CPU reference** (a fair fight for `triwarp-cuda`), binds a real
+It is the **only multi-threaded CPU reference** (a fair fight for `ordito-cuda`), binds a real
 Liepa/Klincsek `fillHole` with a 12-metric family and a two-loop `stitchHoles`, and is the only
 oracle for `repair.collapse_small_triangles`. `meshlib.mrcudapy` is deliberately **not** used (it
 would make rows incomparable).
@@ -1901,10 +1901,10 @@ would make rows incomparable).
 
 **Licensing: MeshLib is not open source.** The wheel and `reference/MeshLib` are under AMV
 Consulting's *"NON-COMMERCIAL & education"* agreement (terminable, non-transferable, commercial
-licence required otherwise, bar on modifying or transferring), which restricts *use*, while triwarp
+licence required otherwise, bar on modifying or transferring), which restricts *use*, while ordito
 ships `MIT OR Apache-2.0`.
 
-**Nothing under `triwarp/` may name MeshLib at all**: not the library, a function (`fillHole`,
+**Nothing under `ordito/` may name MeshLib at all**: not the library, a function (`fillHole`,
 `positionVertsSmoothly`, `triangleAspectRatio`) or a source file (`MRMeshDelone.cpp`,
 `MRTriMath.h`). Describe what the code **computes** or name the algorithm in the literature's
 vocabulary ("the Liepa/Klincsek interval DP", "the Delone empty-circumcircle test", "circum-radius
@@ -1947,7 +1947,7 @@ proximity or signed-distance entry point; `cutAndStitch`, `iterativeEdgeSwaps`, 
   the `n` indices in the **flat** prefix and `2n` entries of heap garbage. The only defined read is
   `out.ravel()[: out.shape[0]]`.
 - **`tris_per_cell` and `justproper` are no-ops**: pass both explicitly so a wheel honouring either
-  fails a test; build no triwarp flag around `justproper`.
+  fails a test; build no ordito flag around `justproper`.
 - **`nbe` is inclusive, both docstrings say otherwise, pymeshlab's is exclusive**:
   `fill_small_boundaries(nbe, ...)` fills loops of **at most** `nbe` edges (`nbe = 0` = all);
   pymeshlab fills the same rim at `maxholesize = nbe + 1`. `holes.fill_small(max_edges=...)`
@@ -1962,11 +1962,11 @@ proximity or signed-distance entry point; `cutAndStitch`, `iterativeEdgeSwaps`, 
   and starting corners differ. Never compare face buffers positionally.
 - **`n_boundaries` is a property in 0.18.1 and `boundaries()` raises** (`n_points` / `n_faces`
   too); pre-0.17 examples fail with `TypeError: 'int' object is not callable`.
-- **`strong_degeneracy_removal` measures in `double`, stricter than triwarp's `float32`**: exactly
-  collinear vertices are removed by both; the same strip offset by `1e-9` is removed by triwarp,
+- **`strong_degeneracy_removal` measures in `double`, stricter than ordito's `float32`**: exactly
+  collinear vertices are removed by both; the same strip offset by `1e-9` is removed by ordito,
   kept by pymeshfix. Compare on an *exactly* degenerate fixture and pin the near-degenerate class.
 - **`strong_intersection_removal` is a different algorithm from
-  `repair.fix_self_intersections(method="local")`**: on a self-intersecting torus triwarp cuts and
+  `repair.fix_self_intersections(method="local")`**: on a self-intersecting torus ordito cuts and
   refills each sheet (two closed components) where pymeshfix removes far more (one). Neither
   benchmarked nor a parity claim. The comparable level is `repair.make_solid` vs
   `clean_from_arrays` (float32 rounding, identical counts on `bunny_decimated`).
@@ -1990,18 +1990,18 @@ GPLv3 *or* a commercial agreement with IMATI-GE/CNR. Different from MeshLib:
 
 | | MeshLib | pymeshfix |
 |---|---|---|
-| May `triwarp/` name it? | **No** | **Yes**, in `Notes` / `See Also` |
-| May `triwarp/` derive from its source? | No | **No** |
+| May `ordito/` name it? | **No** | **Yes**, in `Notes` / `See Also` |
+| May `ordito/` derive from its source? | No | **No** |
 | May `tests/` and `benchmarks/` import it? | Yes | Yes |
 | Why | proprietary, restricts *use* | copyleft, restricts *distribution of derivatives* |
 
 Read `reference/pymeshfix/src/` for interface and parameters, never the body; cite the **paper**
 (Attene, *"A lightweight approach to repairing digitized polygon meshes"*, Visual Computer 26,
 2010; Liepa, *"Filling holes in meshes"*, SGP 2003 §3; Barequet & Sharir 1995). Keep
-`grep -rnE 'MeshFix|Basic_TMesh|TMesh|_meshfix' triwarp/` empty (prose `pymeshfix` is allowed, C++
+`grep -rnE 'MeshFix|Basic_TMesh|TMesh|_meshfix' ordito/` empty (prose `pymeshfix` is allowed, C++
 symbols are not).
 
-> **Precedence rule: where pymeshfix and MeshLib both answer a question and differ, triwarp's
+> **Precedence rule: where pymeshfix and MeshLib both answer a question and differ, ordito's
 > default is pymeshfix's answer and MeshLib's is reachable by a flag** — not the reverse. Where
 > only MeshLib answers, nothing changes.
 
@@ -2035,12 +2035,12 @@ package may import torch (a 2.5 GB install).
   a *benchmark* row naming one must build the container **inside** the timed callable. The answer
   lives on the `*_packed()` accessors.
 - **It does not cast for you, and one entry point casts anyway**: a float64 `Meshes` stays float64
-  (hence float32 in the converters, else triwarp looks ~1e-7 wrong);
+  (hence float32 in the converters, else ordito looks ~1e-7 wrong);
   `ops.mesh_face_areas_normals` returns **float32** regardless. Faces are int64.
 - **`corresponding_points_alignment` / `iterative_closest_point` are row-vector** (`s·X·R + T =
   Y`): `R` is the transpose of `registration.procrustes`' linear block divided by scale (2.5e-07);
   `T` needs no transform. Compare the converged transform and rmse, never iteration count.
-- **`ops.cot_laplacian` mixes conventions**: off-diagonal is **twice** triwarp's half-cotangent
+- **`ops.cot_laplacian` mixes conventions**: off-diagonal is **twice** ordito's half-cotangent
   table, diagonal identically **0.0** (`laplacian.cotmatrix` assembles the row sum); its second
   return is `1 / inv_areas == 3 * M_ii`. Both cancel in `mesh_laplacian_smoothing`'s ratios.
   `ops.laplacian` writes **-1** on the diagonal (`laplacian.laplacian(equal_weight=True)` writes 0);
@@ -2062,7 +2062,7 @@ package may import torch (a 2.5 GB install).
   `lucy`'s 28 055 742 raise `RuntimeError`; `happy_buddha`'s 1 087 716 are fine.
 - **`add_points_features_to_volume_densities_features` is `[-1, 1]` local space, `[z, y, x]`
   storage, `rescale_features=True`**: lattice is the **transpose** of `voxels.splat_onto_grid`'s,
-  `align_corners=True` is triwarp's `bounds`, and the default divides by `density.clamp(min_weight)`
+  `align_corners=True` is ordito's `bounds`, and the default divides by `density.clamp(min_weight)`
   (average, not accumulation). Lined up, 0.0 on host, 4.8e-07 on CUDA.
 - **`mesh_normal_consistency` counts pairs**: an edge with `k` faces contributes `C(k, 2)` terms;
   `adjacency.face_adjacency` keeps only exactly-two-face edges. Equal on edge-manifold input
@@ -2089,25 +2089,25 @@ package may import torch (a 2.5 GB install).
 10 k / 20 k / 40 k self-queries (3.84-4.16x per doubling; ~3.5 s per `knn` round on `bunny`, ~9
 minutes on `dragon`): a `pytorch3d-cpu` neighbour or chamfer row is capped at a feature mesh.
 **The GPU ratio is a crossover, not a bar**: brute force with perfect coalescing beats a BVH
-descent while the problem fits the bandwidth (2.31 vs triwarp 3.29 ms at 20 000 points,
+descent while the problem fits the bandwidth (2.31 vs ordito 3.29 ms at 20 000 points,
 `knn_points`, 0.70x; 74.65 vs 0.87 at 200 000, 85x), so neighbour and chamfer groups need the
 point count as an **axis**.
 
 **Every CUDA row must synchronize torch's stream** (`wp.synchronize_device` syncs Warp's only):
 `BenchCase.run` branches on `kind == "pytorch3d"`. Put `torch.cuda.empty_cache()` in that teardown
-(torch never frees device memory; 16 triwarp rows once failed to allocate 65 368 bytes on a 32 GB
+(torch never frees device memory; 16 ordito rows once failed to allocate 65 368 bytes on a 32 GB
 card after an uncapped pytorch3d row, §15.4).
 
-**Licensing:** pytorch3d and torch are BSD-3: `triwarp/` may name it and derive from it with
+**Licensing:** pytorch3d and torch are BSD-3: `ordito/` may name it and derive from it with
 attribution; it stays a test/benchmark dependency.
 
-#### promesh — not a reference library, not citable from `triwarp/`
+#### promesh — not a reference library, not citable from `ordito/`
 
 `reference/promesh/` is a bare source drop with **no `LICENSE`, `COPYING` or `pyproject.toml`**,
 not a published package (`import promesh` fails); it can never be tested or benchmarked. Treat it
 as a design mirror only, like reading MeshLib for an *interface*.
 
-**Nothing under `triwarp/` may name it**, the mirror image of MeshLib's rule: its terms are
+**Nothing under `ordito/` may name it**, the mirror image of MeshLib's rule: its terms are
 unknown, so a "port of" comment cites terms nobody has checked. Describe the algorithm instead
 (the gap-bridging problem of **Barequet & Sharir (1995)**, minimal-perimeter heuristic with a
 longest-increasing-subsequence monotonicity correction). **Check 21 covers both libraries in one
@@ -2137,15 +2137,15 @@ was handed something other than what you thought.
 
 Ruff and basedpyright are configured in `pyproject.toml` and are the authority for style and
 typing — do not hand-roll equivalents or add competing tools. Run them and the tests after any
-change to `triwarp/` and before considering work done.
+change to `ordito/` and before considering work done.
 
 ### Ruff — lint + format
 
 Ruff is the **only** linter and formatter. Config lives in `[tool.ruff]`; do not override it inline.
 
 ```bash
-uv run ruff format triwarp tests      # format (100-col, skip-magic-trailing-comma)
-uv run ruff check --fix triwarp tests # lint + autofix
+uv run ruff format ordito tests      # format (100-col, skip-magic-trailing-comma)
+uv run ruff check --fix ordito tests # lint + autofix
 ```
 
 - Respect `[tool.ruff.lint]` rule families and per-file ignores; no blanket `# noqa` for a selected
@@ -2169,46 +2169,46 @@ basedpyright is the configured type checker (what the IDE runs). Config: `[tool.
 uv run basedpyright
 ```
 
-- **`triwarp/kernels/` is excluded**: the kernel DSL is not modelled by any stubs. Do not make
+- **`ordito/kernels/` is excluded**: the kernel DSL is not modelled by any stubs. Do not make
   kernels type-clean or add `# pyright: ignore` there.
 - **`strict`, less the five `reportUnknown*` rules.** Warp's Python-scope stubs leave most of
   `wp.array` untyped (`.device`, `.shape`, `.numpy()`, slicing), so every expression over an
-  array is partially `Unknown`: 4 844 of strict's 4 967 errors on `triwarp/` when it was adopted
+  array is partially `Unknown`: 4 844 of strict's 4 967 errors on `ordito/` when it was adopted
   (`arr.device` alone ~2 000). Every other strict rule is on, including `reportArgumentType`,
-  `reportAttributeAccessIssue`, `reportOperatorIssue` and `reportPrivateUsage` on `triwarp/`.
+  `reportAttributeAccessIssue`, `reportOperatorIssue` and `reportPrivateUsage` on `ordito/`.
   Read the config, not this prose; it carries the counts.
 - **No local Warp stubs — decided, not overlooked.** A generated `typings/warp/_src` stub set was
   built and removed. A `stubPath` never reaches a derived library (its checker reads Warp's own
-  stubs), so triwarp would be checked against types its users do not see. Shipping it as a PEP 561
+  stubs), so ordito would be checked against types its users do not see. Shipping it as a PEP 561
   partial `warp-stubs` package works only with Warp's `__init__.pyi` copied in verbatim (without it
   every Warp name reads `Unknown`), needs a second PyPI distribution, and pins private `warp._src`
   internals to one Warp minor. The gaps that can be closed in one place are closed in
-  `triwarp/typing.py`; the rest take a `cast` at the site.
-- **`triwarp/typing.py` is where Warp's typing gaps are closed**, so a call site does not need
+  `ordito/typing.py`; the rest take a `cast` at the site.
+- **`ordito/typing.py` is where Warp's typing gaps are closed**, so a call site does not need
   `Any`:
-    - `twt.Kernel` (`wp.Kernel | Callable[..., None]`): `wp.kernel` has no return annotation, so
+    - `odt.Kernel` (`wp.Kernel | Callable[..., None]`): `wp.kernel` has no return annotation, so
       a decorated kernel reads as the Python function it wraps.
-    - `twt.BsrMatrix[Block]`, a `TYPE_CHECKING`-only subclass of `wps.BsrMatrix` declaring the
+    - `odt.BsrMatrix[Block]`, a `TYPE_CHECKING`-only subclass of `wps.BsrMatrix` declaring the
       storage fields `bsr_matrix_t` generates at runtime (`nrow`, `offsets`, `values`, ...), with
       `Block` the element dtype of `values`. Warp parameterizes by a phantom
-      `BlockType[Rows, Cols, Scalar]` no function returns. `twt.CsrMatrix` (`float32 | float64`)
-      and `twt.SparseMatrix` (`CsrMatrix | BsrMatrix[mat22d]`) are the solver-facing unions;
-      `twt.has_blocks(matrix, dtype)` is a `TypeIs` narrowing both branches.
-    - **Typed views of Warp functions** (`twt.bsr_mm`, `bsr_mv`, `bsr_axpy`, `bsr_diag`, ...,
+      `BlockType[Rows, Cols, Scalar]` no function returns. `odt.CsrMatrix` (`float32 | float64`)
+      and `odt.SparseMatrix` (`CsrMatrix | BsrMatrix[mat22d]`) are the solver-facing unions;
+      `odt.has_blocks(matrix, dtype)` is a `TypeIs` narrowing both branches.
+    - **Typed views of Warp functions** (`odt.bsr_mm`, `bsr_mv`, `bsr_axpy`, `bsr_diag`, ...,
       `normalize`, `cross`, `dot`, `transform_point`): the Warp function itself bound once through
       `cast` to a `Protocol` spelling its signature over concrete types (zero call cost). Protocol
       `__call__` parameters are exempt from `reportUnusedParameter`, which a `TYPE_CHECKING` `def`
-      redeclaration is not. Call `twt.bsr_*`, never `wps.bsr_*`, on a triwarp-typed matrix.
-    - `twt.as_dense` (slice narrowing, below) and `twt.vec3_floats` (Warp types `vec3[i]` as
+      redeclaration is not. Call `odt.bsr_*`, never `wps.bsr_*`, on a ordito-typed matrix.
+    - `odt.as_dense` (slice narrowing, below) and `odt.vec3_floats` (Warp types `vec3[i]` as
       `vec_t | bool | float32 | int32`; at Python scope it is a `float`).
 - **Type variables versus unions — measured, and the root of most remaining casts.**
     - A **union argument solves neither a plain nor a constrained `TypeVar`**
       (`BsrMatrix[float32] | BsrMatrix[float64]` into `BsrMatrix[B]` is an error). A function
       accepting "any of these" takes the union alias; one that returns its argument's own type
-      uses a **`TypeVar` bounded by `wp.array`** (`ArrayT` in `_launch.clone`, `twt.ensure_ndim`),
+      uses a **`TypeVar` bounded by `wp.array`** (`ArrayT` in `_launch.clone`, `odt.ensure_ndim`),
       which does accept a union and returns it; or it is an **overload set**, across whose arms a
       union argument expands (`linalg._owned_copy`).
-    - **A dtype parameter is `dtype: type[twt.Block] = wp.float32`** returning `BsrMatrix[Block]`
+    - **A dtype parameter is `dtype: type[odt.Block] = wp.float32`** returning `BsrMatrix[Block]`
       / `wp.array[Block]`: the checker solves from the default when omitted, exactly when given,
       and to `Unknown` (assignable) for a runtime `type`. The constrained `wp.Float` would bind a
       runtime `type` to `float`.
@@ -2220,24 +2220,24 @@ uv run basedpyright
       (`require_same_device(**named: object)`, cache keys `tuple[object, ...]`); a sequence
       parameter is `Sequence[object]` (a `list` is invariant).
 - **Rank `Any` is the one deliberate `Any`.** `NDim` is invariant, so `wp.array[wp.float32]`
-  (`array[float32, int]`) and `twt.Array1dFloat32` are not assignable in either direction, and a
+  (`array[float32, int]`) and `odt.Array1dFloat32` are not assignable in either direction, and a
   `TypeVar` used once in a signature is itself an error. Convention: **accept wide, return
-  narrow** — a *parameter* takes the `Any`-ranked `twt.ArrayNd*` family, a *return* keeps the
-  `Literal`-ranked `twt.Array1d*` / `Array2d*` aliases; the dtype still discriminates.
+  narrow** — a *parameter* takes the `Any`-ranked `odt.ArrayNd*` family, a *return* keeps the
+  `Literal`-ranked `odt.Array1d*` / `Array2d*` aliases; the dtype still discriminates.
     - **`wp.empty` binds silently to an overload's first arm** (`Unknown` satisfies every arm).
-      Allocate through `_launch.empty` / `twt.empty_1d`, which carry the dtype.
+      Allocate through `_launch.empty` / `odt.empty_1d`, which carry the dtype.
     - **Narrowings are two shapes.** A Python-scope *slice* is always a dense `wp.array`:
-      `twt.as_dense` narrows it with a real `isinstance` (`wp.indexedarray` is not a subclass). A
+      `odt.as_dense` narrows it with a real `isinstance` (`wp.indexedarray` is not a subclass). A
       gather (`src[indices]`) *is* an `indexedarray` (§3.4) and is materialized with `wp.copy`.
       `reportUnnecessaryCast` is every cast's staleness check.
-- **Order of preference:** a correct annotation or helper in `twt` > `cast` > a scoped
+- **Order of preference:** a correct annotation or helper in `odt` > `cast` > a scoped
   `# pyright: ignore[rule]` with its reason. In `_launch.py`'s hot path an ignore beats a `cast`
   (a `cast` is a function call per launch); that module also carries one file-level
   `reportPrivateUsage=false`, since driving Warp internals is its purpose. Cross-module private
   uses that api_conventions check 5 allowlists carry the matching scoped ignore.
 - **`reportPossiblyUnboundVariable` is an error** — it catches §1.4's conditional-scope gotcha. On a
   *correlated* condition initialize to `None` before the branch and `assert x is not None` at the
-  use (`triwarp/registration.py`). Never suppress it.
+  use (`ordito/registration.py`). Never suppress it.
 - **Two rules above strict are ON:** `reportUnnecessaryTypeIgnoreComment` and
   `reportUnusedParameter` (which covers `tests/` and `benchmarks/`, enforcing §7.1's `device`
   rule). A protocol-signature parameter is `_`-prefixed (`matvec`'s `_y`); a `parametrize` value
@@ -2251,7 +2251,7 @@ uv run basedpyright
 ### Full environment
 
 Test/reference dependencies live under `[dependency-groups] test`, **not** `[project]
-dependencies` (triwarp itself needs only `warp-lang`). There is no `[tool.uv] default-groups`, so a
+dependencies` (ordito itself needs only `warp-lang`). There is no `[tool.uv] default-groups`, so a
 bare `uv sync` does **not** install them and uninstalls trimesh/pytest:
 
 ```bash
@@ -2260,14 +2260,14 @@ uv sync --all-groups
 
 - `uv add <pkg>` targets main `dependencies`; use `uv add --group test <pkg>`. Prerelease pins need
   `--prerelease allow`; trimesh is pinned `>=5.0.0rc1` because the crack-free
-  `trimesh.remesh.subdivide_to_size` (the reference for `triwarp.remesh.subdivide_to_size`) exists
+  `trimesh.remesh.subdivide_to_size` (the reference for `ordito.remesh.subdivide_to_size`) exists
   only in the 5.0.0rc prereleases (stable 4.x is the T-junction "soup" variant).
-- **basedpyright's `include` covers `triwarp`, `tests` and `benchmarks`, so a dev-only env is
+- **basedpyright's `include` covers `ordito`, `tests` and `benchmarks`, so a dev-only env is
   unusable** (hundreds of `reportMissingImports`). Run `uv sync --all-groups` first, or
-  `uv run basedpyright triwarp` (an explicit path overrides `include`; this is CI's fast
+  `uv run basedpyright ordito` (an explicit path overrides `include`; this is CI's fast
   `typecheck` job). The wide gate runs in `pytest-cpu`, the only job with all nine reference
   libraries.
-- `tests/` and `benchmarks/` are checked **at the same bar as `triwarp/`**, conceding only
+- `tests/` and `benchmarks/` are checked **at the same bar as `ordito/`**, conceding only
   `reportMissingTypeStubs` (no reference library ships stubs) through a per-directory
   `executionEnvironments` block. **An execution environment's `root` re-bases import resolution**,
   so each entry needs `extraPaths = ["."]`. Test-side typing gaps have one home each:
@@ -2276,8 +2276,8 @@ uv sync --all-groups
     - `tests/typings/pymeshlab/__init__.pyi` (the top-level `stubPath`, so it serves `benchmarks/`
       too): pymeshlab's names come from a compiled `import *` and its filters are bound at runtime,
       so the stub declares the four classes with dynamic members.
-    - A matrix a test builds with `warp.sparse` directly is `wps.BsrMatrix`, not `twt.BsrMatrix`:
-      narrow with `assert twt.has_blocks(matrix, dtype)` or `isinstance(matrix, twt.BsrMatrix)`.
+    - A matrix a test builds with `warp.sparse` directly is `wps.BsrMatrix`, not `odt.BsrMatrix`:
+      narrow with `assert odt.has_blocks(matrix, dtype)` or `isinstance(matrix, odt.BsrMatrix)`.
     - A private helper exercised on purpose takes a scoped `# pyright: ignore[reportPrivateUsage]`;
       a file whose purpose is testing a module's internals carries one file-level
       `# pyright: reportPrivateUsage=false` with its reason.
@@ -2301,7 +2301,7 @@ and never a branch checkout in the live tree (§15.6).
 publishes the figure to the README badge, *then* enforces the floor (gating first would abort a
 regressing `main` build before the badge updated).
 
-- **`triwarp/kernels/` is omitted**: a `@wp.kernel` / `@wp.func` body is never called as Python, so
+- **`ordito/kernels/` is omitted**: a `@wp.kernel` / `@wp.func` body is never called as Python, so
   coverage.py reports a kernel that runs on every test as unexecuted (§12.6). Never "fix" a low
   kernel-module figure by writing tests at it.
 - **The badge is the CPU wrapper layer.** No GPU on a runner, so every `device.is_cuda` branch and
@@ -2334,7 +2334,7 @@ The methodology is here; the *numbers* are Part II (§13 cost model, §14 kernel
 - **Read device time before diagnosing** — most big losses are 92-99 % host-side launch and
   allocation cost (§16.1) — **but first ask whether the function graph-captures**:
   `wp.timing_begin` cannot see replayed kernels and reports a device-bound function as ~100 % host
-  (§15.10). That covers triwarp's own capture sites and every CG solve (`warp.optim.linear`
+  (§15.10). That covers ordito's own capture sites and every CG solve (`warp.optim.linear`
   captures by default). Disable capture, measure there, carry the device total back.
 - **Before proposing an optimization, read what *calls* the thing**: the decline may already be
   written at the call site, in a constant's comment or in the benchmark's docstring (§15.5). Grep
@@ -2477,7 +2477,7 @@ re-deriving a number.
   succeeds; the *next* unrelated CUDA allocation fails with a spurious OOM and cascades into `CUDA
   error 700`. Only `indices.shape[0] == 0` matters. Safe on `cpu`. Never construct one on CUDA,
   **including in tests** (use a single-triangle mesh to reach an `n_faces < 2` guard).
-  `triwarp.mesh.Trimesh.warp_mesh` would hit this for a zero-face mesh — a known latent issue.
+  `ordito.mesh.Trimesh.warp_mesh` would hit this for a zero-face mesh — a known latent issue.
 - **Python-scope gather silently ignores a non-contiguous index view's stride** (rule and
   measurement: §3.4); a `wp.map` over the same view inherits the corruption while reading faster.
 - **`wp.copy(dst, src, count=0)` copies the *whole* source**, and `wp.utils.array_cast` inherits it
@@ -2486,7 +2486,7 @@ re-deriving a number.
   §3.7's capacity-versus-count rule.
 - **`wp.copy` into a *pinned* host buffer is an async memcpy with no event**, so reading right after
   races and returns the *previous* value (CUDA blocks the host only on a *pageable* destination).
-  `triwarp._device.read_scalar` is the safe, device-split spelling. **It caches one scratch buffer
+  `ordito._device.read_scalar` is the safe, device-split spelling. **It caches one scratch buffer
   per dtype, safe only for scalars**: for a vector/matrix dtype `.numpy()[0]` is a view onto the
   shared scratch, so sequential reads alias; copy before returning.
 - **Warp's CPU work runs ~36x slower in a process where CUDA has been initialised** (CUDA's mere
@@ -2533,7 +2533,7 @@ thread per block** on the CPU backend; `wp.tid()`'s lane index is always 0.
     - **Bound-check the index at every `tile_bvh_query_next` site**, `candidate >= 0 and candidate
       < n` (output-neutral: an out-of-range index is never a BVH primitive).
     - The guard stops the corruption but **cannot restore the dropped primitives**; a guarded walk
-      may return an incomplete candidate set (upstream's half). Both triwarp callers survive
+      may return an incomplete candidate set (upstream's half). Both ordito callers survive
       because each has a second sound bound (the global running minimum; the pivot's acceptance
       test).
 - **Warp exposes no node-by-node BVH traversal** (only `bvh_query_aabb` / `_ray` / `_sphere` /
@@ -2655,11 +2655,11 @@ Rules: §1.3, §1.5, §1.6.
 - **A generic kernel's lazy overload instantiation rebuilds its whole module** (§2.5: 206 → 87
   module loads, suite 1 033 s → 29 s). **`wp.map` forks its generated module per call *signature***
   on axes wider than the dtype (§3.5: 182 → 143 loads, cold cache 2.1x).
-- **`import triwarp` is expensive because `@wp.kernel` builds an `Adjoint` at import time for every
+- **`import ordito` is expensive because `@wp.kernel` builds an `Adjoint` at import time for every
   decorated kernel**, and importing one submodule imports the parent package first. Fixed by a
   PEP 562 lazy `__init__` (§16.2).
 - **A deferral one module makes can be silently cancelled by another module's top-level import —
-  check `sys.modules`, not the comment.** `triwarp/reconstruction.py` defers `import warp.fem`, but
+  check `sys.modules`, not the comment.** `ordito/reconstruction.py` defers `import warp.fem`, but
   two kernel modules loaded the package eagerly for two `@wp.func`s. `warp.fem`'s public shim pulls
   in `adaptivity`, `dirichlet`, `domain`, `field.*`, `geometry.*`; the tree imports
   `warp._src.fem.linalg` directly, with a comment naming the probed Warp version (an upgrade moving
@@ -2678,12 +2678,12 @@ Rules: §1.3, §1.5, §1.6.
 - **`wp.config.verbose = True` is deprecated in Warp 1.17** (stderr noise); use
   `wp.config.log_level = wp.LOG_DEBUG`.
 - **coverage.py cannot see a kernel body** (the Python function is never called; the tracer
-  reports kernels as unexecuted), so `triwarp/kernels/` is omitted (§8). Over the whole CPU suite
+  reports kernels as unexecuted), so `ordito/kernels/` is omitted (§8). Over the whole CPU suite
   (Warp 1.17), line coverage: wrapper layer 96.02 % vs `kernels/` 24.29 % (including kernels would
   publish a meaningless 59.40 %). With branch coverage, which ships, the wrapper layer is 93.79 %,
   against CI's `coverage report --fail-under=90` (a regression alarm, not a target).
 - **`wp.map` leaves unparseable filenames**: `warp._src.utils.map` `exec`s its kernel and names the
-  module `f"{basename}:{lineno}"` (e.g. `triwarp/points.py:153`), so coverage.py emits one
+  module `f"{basename}:{lineno}"` (e.g. `ordito/points.py:153`), so coverage.py emits one
   `couldnt-parse` warning per generated module (72 over a full run, no lines). Omitting `*.py:*`
   removes them and changes no count. It reproduces only on a whole-suite run. Configured in
   `pyproject.toml`.
@@ -2715,7 +2715,7 @@ Rules: §1.3, §1.5, §1.6.
   sentinel, not a boolean** (`voxels.cell_slot` / `point_slot`).
 - **`wp.constant(x)` is `return x` after an `is_value(x)` check on Warp 1.17**: an identity, not a
   declaration. Any module-level global evaluating to a static value resolves from kernel scope;
-  `triwarp/constants.py` does not call it (§1.2). It fixes no dtype; it only raises `TypeError` at
+  `ordito/constants.py` does not call it (§1.2). It fixes no dtype; it only raises `TypeError` at
   the definition site for a non-scalar/vector/matrix value.
 - **A tile `shape=` must be a plain integer**: `wp.constant(256)` works for `wp.tile_load` /
   `wp.tile_zeros`; `wp.constant(wp.int32(n))` fails at parse time (`AttributeError` naming the
@@ -2755,7 +2755,7 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`warp.optim.linear.cg` resolves an omitted `atol` to `atol := tol`**, turning a relative
   tolerance into an absolute floor (criterion `max(atol, tol * ‖b‖)`); once `‖b‖` falls below the
   floor the solve returns **zero iterations** and the initial guess as "converged" (`heat.log_map`
-  at extreme mesh scale). Every triwarp direct `wpl.cg` call passes `atol=0.0` explicitly alongside
+  at extreme mesh scale). Every ordito direct `wpl.cg` call passes `atol=0.0` explicitly alongside
   `tol=`; `_BatchedCg` computes its threshold with `atol_sq = 0.0` already.
 
 ### 12.8 Warp builtins: adoption verdicts
@@ -2808,7 +2808,7 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 
 ### 12.9 `wp.Volume` as a voxel-set container
 
-`triwarp/voxels.py` carries the detail. On Warp 1.16+, `allocate_by_voxels` and `fem.Nanogrid` work
+`ordito/voxels.py` carries the detail. On Warp 1.16+, `allocate_by_voxels` and `fem.Nanogrid` work
 on **CPU** with identical counts and byte-identical `get_voxels()` row order across devices, so a
 volume-backed module need not be CUDA-only. An empty point set raises `RuntimeError` (still guard).
 
@@ -2833,7 +2833,7 @@ volume-backed module need not be CUDA-only. An empty point set raises `RuntimeEr
   *capacity* (use `get_active_stats().voxel_count`, §3.7); the four `max_*` capacities **cascade**
   (passing only `max_active_voxels` under-reserves the others, runs out of device memory and leaves
   the CUDA context throwing illegal-memory-access): pass all four.
-- **`warp.fem.Nanogrid(volume)` derives topology triwarp would hand-write** (verified exact):
+- **`warp.fem.Nanogrid(volume)` derives topology ordito would hand-write** (verified exact):
   `.vertex_grid` is the deduplicated corner lattice; `boundary_side_index()` + `side_position` +
   `side_normal` enumerate outward faces; `side_inner_cell_index` over boundary sides is the
   6-connected surface-voxel set. Import `warp.fem` **inside the function** (§12.6).
@@ -2875,7 +2875,7 @@ noted):
 **Gates for an upgrade**, all four: the full suite, `basedpyright` 0 errors, `zensical build
 --strict` clean, `tests.parity` with an unchanged pair count. The `pyproject.toml` specifier stays
 `warp-lang>=1.15` where no newer-only API is used (the pin lives in `uv.lock`). **Also re-probe any
-tuning constant** (§9). mkdocstrings renders triwarp's source-level annotations, so Warp's 1.16
+tuning constant** (§9). mkdocstrings renders ordito's source-level annotations, so Warp's 1.16
 change to `repr()` of array annotations never reached the docs.
 
 **Two probe-fixture traps that faked a "DIFFERS" for a whole family:** drawing random input
@@ -2893,7 +2893,7 @@ loop is up to 14x wrong: Warp leaves the CUDA mempool release threshold at 0, so
 the pool and the next allocation is cold. A drained pool's cost grows with the allocation's size:
 raising the threshold is 1.00-1.02x at small sizes and 1.4-1.7x on every multi-allocation call
 from `dragon` (0.87 M faces) up (`face_adjacency`, `edges_unique`, `cotmatrix`, `crease_edges`),
-2.9x on the two-allocation `face_normals_and_areas` at `lucy`. triwarp keeps Warp's default
+2.9x on the two-allocation `face_normals_and_areas` at `lucy`. ordito keeps Warp's default
 (the setting is process-wide; re-decided on those numbers); the lever is allocating less (§16.9).
 
 | primitive (correct regime) | cost |
@@ -3021,7 +3021,7 @@ trip or naming `np.ndarray` in a public signature; `wp.cross` is the genuine cas
   segment lives, the opposite of `copy=True` (`copy=False` exists for views). It fills the
   allocations with one `unpack_segment_words` launch from 32 segments (2.5x). Declined spellings
   (raw-pointer view, shared output buffer, dropping `src_offset=` / `count=`) are at their sites in
-  `triwarp/array.py`. **The NumPy crossover is a segment SIZE (~98 kB), independent of the
+  `ordito/array.py`. **The NumPy crossover is a segment SIZE (~98 kB), independent of the
   segment count.**
 - `state.assign([0, 1, 0])` is a third of the cost of three `wp.zeros(1)` / `wp.ones(1)` buffers,
   so packing a loop's state into one word is a saving as well as a convention. A seed launch takes
@@ -3274,7 +3274,7 @@ floor (~14 µs) subtracted:
 | 32 | 1024 | 585.6 | 15.6 | tiles 38x faster |
 | 64 | 1024 | 3989 | 85 | tiles 47x faster |
 
-Tiles win only when **occupancy-starved** (few systems, large matrix). triwarp's only dense solves
+Tiles win only when **occupancy-starved** (few systems, large matrix). ordito's only dense solves
 are K=6 (N=1) and K=5 (N=n_vertices), both on the wrong side: **"rewrite the small dense solves as
 tiles" is refuted.**
 
@@ -3326,7 +3326,7 @@ to expose parallelism, so a backend running a launch grid as one serial loop get
     - **Exactness is the claim**: the successor search evaluates the same float32 predicate the
       walk does (`cum[mid] - step` would not), so masks agree bit for bit. No large-`n` NumPy
       oracle exists (float64 sequential `cumsum` vs Warp's float32 tree scan differ by the order of
-      the gaps between decisions); exactness is pinned triwarp-against-triwarp and the large-`n`
+      the gaps between decisions); exactness is pinned ordito-against-ordito and the large-`n`
       test is invariants only.
 
 ### 14.8 Solvers: the cycle is launch-bound
@@ -3368,7 +3368,7 @@ The distinguishing variable is whether the grid stays full.
       ~`B/C` and multiplies work by ~`C/2`, so it pays only where the unmerged levels were
       themselves under-occupied.** Apply that test before citing §14.11 for a new DP. What removed
       the fill sweep's launch cost was making launches cheaper (§14.3).
-- **Tile solves at triwarp's problem size** (§14.4). **A Chebyshev smoother** (§14.8).
+- **Tile solves at ordito's problem size** (§14.4). **A Chebyshev smoother** (§14.8).
 - **Voxel aggregation for the multigrid hierarchy**: the geometric aggregation blows operator
   complexity up far more than the algebraic one, and a cheaper unsmoothed variant does not fix the
   convergence-rate dependence on mesh resolution.
@@ -3555,7 +3555,7 @@ uv run python -c "import warp as wp; wp.config.log_level = wp.LOG_DEBUG; ..." 2>
     | grep -E "Module hash changed, recompiling|took .* ms  \(compiled\)"
 ```
 
-Any `Module hash changed, recompiling: <module>` line for a `triwarp.kernels.*` or `map_*` module is
+Any `Module hash changed, recompiling: <module>` line for a `ordito.kernels.*` or `map_*` module is
 the defect; a *second* line for the same module in one run means the chain is still forking. Do not
 read it as "this test is inherently slow" and cap its input or delete it.
 
@@ -3627,7 +3627,7 @@ not just the call.
   allocation step with and without a fresh copy of its input** before suspecting the code.
 - **A median at low sample count (`rounds=3`) can misrepresent its samples**: a one-off cost (a Warp
   module load) in two of three samples inflates the median while the floor never moved. Run the
-  aggregate script's "suspect" check (median far above its own minimum, on triwarp's and the
+  aggregate script's "suspect" check (median far above its own minimum, on ordito's and the
   reference's cells alike) and re-measure a flagged cell before building against it.
 
 ### 15.5 A plan item may be refuted by its own target
@@ -3661,7 +3661,7 @@ cycle can revert in-flight edits from outside the session. Use a detached worktr
 git worktree add -q --detach $SCRATCH/baseline HEAD
 ```
 
-**`uv sync` installs triwarp through a MetaPathFinder that outranks `sys.path` and
+**`uv sync` installs ordito through a MetaPathFinder that outranks `sys.path` and
 `PYTHONPATH`**, so `PYTHONPATH=$SCRATCH/baseline python probe.py` silently imports the
 working tree. Drop the finder:
 
@@ -3671,7 +3671,7 @@ sys.path.insert(0, BASELINE)
 ```
 
 - **Verify which tree loaded** before trusting a number: assert the *submodule's* `__file__` (the
-  lazy `__init__` makes `triwarp.__file__` prove nothing). Do not `uv run` from inside the worktree
+  lazy `__init__` makes `ordito.__file__` prove nothing). Do not `uv run` from inside the worktree
   (it builds a second virtualenv); use `.venv/bin/python`.
 - **A `sed`-based in-place sweep of a tuning constant is the same hazard as `git stash`.** A
   constant baked into a kernel cannot be swept in one process anyway (fixed at codegen); put each
@@ -3698,7 +3698,7 @@ sys.path.insert(0, BASELINE)
 - **Saved baselines drift +-10 % (+-30 % under 100 µs) between sessions**; flagged deltas in that
   range appear on unchanged code. Re-run both arms back-to-back.
 - **A reference library's own column is the control that licenses a cross-session comparison**
-  (unchanged within noise proves the drift belongs to triwarp's side). Re-run the whole group
+  (unchanged within noise proves the drift belongs to ordito's side). Re-run the whole group
   including reference rows; rewrite a stale table rather than annotate it.
 - **Do not `wp.synchronize_device` around each launch** of a microsecond kernel (measures sync
   latency). Batch K launches, sync once, divide.
@@ -3739,7 +3739,7 @@ hides its dominant kernels.
 
 - **Measure correctly by re-running with capture disabled** and reading `timing_begin` there: the
   kernel set is unchanged, so the device total transfers back (only the wall does not).
-  `warp.optim.linear` takes `use_cuda_graph=False`; triwarp's `wp.capture_while` sites fall back to
+  `warp.optim.linear` takes `use_cuda_graph=False`; ordito's `wp.capture_while` sites fall back to
   direct execution when `wp.is_conditional_graph_supported` returns `False`, so monkeypatch that.
   Instrument both arms identically (§9); the uncaptured arm is the measurement, not the baseline.
 - **When a device/wall split contradicts a tolerance or input-size sweep on the same function, trust
@@ -3756,7 +3756,7 @@ is invisible to a static scan. Two monkeypatch censuses answer both without a be
 produced §13.1's dispatch table.
 
 - **Census 1, Python-scope builtin dispatch**: patch `warp._src.context.Function.__call__`, walk out
-  of `/warp/_src/` frames to the first triwarp frame, count by `file:line`. Record the operator
+  of `/warp/_src/` frames to the first ordito frame, count by `file:line`. Record the operator
   dunder (the first `/warp/_src/types.py` frame's `co_name`): `via=__mul__` is arithmetic on a
   Warp-typed value (a defect), `via=None` is an explicit `wp.length(...)` call (a judgement).
   Run under `pytest tests -q`.
@@ -3771,9 +3771,9 @@ produced §13.1's dispatch table.
 - **Caveats, each of which produced a wrong reading**:
     - **A census only sees what runs: a two-device job** (§7.2); a slice inside
       `if not device.is_cuda:` is visible only on the CPU pass.
-    - **It can misattribute a Warp-internal call to the triwarp caller** (the frame walk stops at
+    - **It can misattribute a Warp-internal call to the ordito caller** (the frame walk stops at
       the first non-Warp frame; `wp.MarchingCubes.extract_*` internals are charged to the
-      `triwarp/levelset.py` line). Read the source line before believing a hit.
+      `ordito/levelset.py` line). Read the source line before believing a hit.
     - **Vector arithmetic is invisible to census 1** (§13.1): a clean census does not mean no
       Warp-typed arithmetic.
     - **A capture hides a loop from census 2 as it hides kernels from `wp.timing_begin`** (§15.10):
@@ -3781,7 +3781,7 @@ produced §13.1's dispatch table.
       are per *solve*. Take the slope on the path you mean to price.
 
 ---
-## 16. triwarp component status
+## 16. ordito component status
 
 Open defects, refuted plans, open leads and per-component constants, by area. **Check here before
 opening work on a component.** What shipped is in the code; what is recorded here is what a reader
@@ -3841,10 +3841,10 @@ to.
 - **Bulk edits**: `ast.parse` every changed file after a bulk docstring edit (a rewrap folded
   function bodies into docstrings); name files explicitly in `ruff format`; give concurrent
   probe helpers unique names and assert the *submodule's* `__file__` (the lazy `__init__` makes
-  `triwarp.__file__` meaningless); `pkill -f <probe>` kills the shell running it (§11); re-run
+  `ordito.__file__` meaningless); `pkill -f <probe>` kills the shell running it (§11); re-run
   every gate against the final tree after an interrupted pass.
 
-### 16.1 Where triwarp's time goes (losses, floors, wins)
+### 16.1 Where ordito's time goes (losses, floors, wins)
 
 **The whole mid-level surface is host-bound.** 44 public functions timed over a 256x face range
 came out flat within 1.25x and none above 3x. Two consequences:
@@ -3890,20 +3890,20 @@ launch floor; only launch elimination can.** Device-bound exceptions (`ambient_o
 - **A published attribution can outlive its fix**: `combine.split`'s "needs batching" is stale;
   it issues the same launch count as `split_batched` and what remains is the per-view cost of
   the returned arrays, which is the return value.
-- **Where triwarp wins big (context for reading a loss)**: `screened_poisson` 15-25x over
+- **Where ordito wins big (context for reading a loss)**: `screened_poisson` 15-25x over
   open3d, `combine.split` on few-component meshes 34-120x, `winding_number` 13-18x over igl,
   `cluster_decimate` 9x at `dragon`, `polyline_simplify` two orders at `rim_long`, `procrustes`
   ~7x over trimesh (launch-latency bound; only even with open3d). Small-input fixed overhead of
   reductions and scans costs tens of us; large meshes win 10-260x. A third implementation makes
   an outlier legible: trimesh alone is slow enough that a 3x regression still looks like a win.
 
-### 16.2 `import triwarp`
+### 16.2 `import ordito`
 
-`triwarp/__init__.py` resolves each submodule (and `Trimesh`, a class) through a PEP 562
+`ordito/__init__.py` resolves each submodule (and `Trimesh`, a class) through a PEP 562
 `__getattr__` and caches it. Cause: `@wp.kernel` builds an `Adjoint` at import time for every
 decorated kernel and importing a submodule imports the parent package first (§12.6).
 
-**The guarding test runs `import triwarp` in a subprocess and asserts zero kernel modules are
+**The guarding test runs `import ordito` in a subprocess and asserts zero kernel modules are
 pulled in** — in-process the answer is always "all of them". Do not simplify it. The laziness
 deliberately changes nothing else: overload registration still runs before the first launch
 through its module, and nothing calls `wp.load_module` / `wp.force_load` at import.
@@ -4408,7 +4408,7 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   doubles the on-surface call (the benchmarked point) and at large displacement the wide cell is
   a 1.6-2.2x loss (the linear scan is then right). **Bar: a probe under ~0.05 ms ships.** Method
   note: `knn_sorted_insert` binary-searches its row's **whole length**, so a probe handing it a
-  row wider than `k` gets silent garbage that reads like a triwarp defect. The block-cooperative
+  row wider than `k` gets silent garbage that reads like a ordito defect. The block-cooperative
   lead is refuted twice (the grid walk cannot be lane-split, §12.2; the linear-scan fallback is
   uniformly expensive where it costs).
 - **`grid_bins=None` default**: the smallest multiple of 32 whose cube holds two bins a point,
@@ -4519,7 +4519,7 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   half). Metrics compute the forward maximum once and reuse it for `"max"` Chamfer.
 - **DECLINED: the `cotmatrix` loss to pytorch3d is a scope mismatch** (`cot_laplacian` returns an
   uncoalesced COO tensor with duplicates unsummed and no diagonal; coalesced to the same job
-  triwarp is ahead at every size). The timing is incomparable, not the result, so it stays a live
+  ordito is ahead at every size). The timing is incomparable, not the result, so it stays a live
   parity comparison.
 - **Apply the same detector to *both* sides' output before comparing costs**: the suite's largest
   reported loss for several rounds was a reference call that no-opped on that fixture.
@@ -4596,9 +4596,9 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   `saddle_graded` (§9's fixture-pair rule).
   `test_two_column_solve_costs_no_more_iterations_than_its_worst_column` is the deterministic
   guard (well- and ill-conditioned shift); `_BatchedCg` satisfies it by construction.
-- **Every direct-factorization reference is flat across the conditioning axis and triwarp's CG is
+- **Every direct-factorization reference is flat across the conditioning axis and ordito's CG is
   not**: a conditioning regression is an iteration-count problem, not an assembly problem.
-  `isotropic_remesh` inverts it (triwarp flat, reference tripling) because it runs a fixed
+  `isotropic_remesh` inverts it (ordito flat, reference tripling) because it runs a fixed
   `iterations` x five launches: flatness is a fixed work budget, not insensitivity.
 - **A readback census parametrized by the loop count is the tell for a per-pass host sync**
   (patch `wp.array.numpy`, call at two iteration counts; a fixed base plus one per pass is the
@@ -4684,7 +4684,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 - **A drained mempool is a size-proportional cost** (§13.1): few-launch rows on large meshes
   (`crease_edges[lucy]` 19.0 ms wall vs 2.5 ms device; `cotmatrix[dragon]` 2.95 vs 0.41) pay it
   per allocation; raising the release threshold was 1.5-1.6x at `dragon` / `lucy`, flat at
-  `bunny`. triwarp does not set it (process-wide); the lever is fewer and smaller allocations.
+  `bunny`. ordito does not set it (process-wide); the lever is fewer and smaller allocations.
 - **`cotmatrix` allocated 9.4 GB a call at `lucy`** for a matrix under 1 GB (three 1.28 GB
   12-triplet buffers and 5.2 GB of `bsr_from_triplets` scratch). It now emits six off-diagonal
   triplets per face plus one diagonal slot per vertex (the tail's rows prefilled with
@@ -4765,7 +4765,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `log_map`'s radius 0.8 % / 2.8 % (`icosphere(5)` / `bunny`) where it was 30 % / 26 %. The
   correctness cost is rounds: `extend_scalar` 0.33-0.35x, `transport_tangent_vectors` 0.17-0.42x
   vs the unsettled version.
-- **igl averages a Neumann and a Dirichlet heat solve on a boundary mesh; triwarp keeps Neumann
+- **igl averages a Neumann and a Dirichlet heat solve on a boundary mesh; ordito keeps Neumann
   only, on the measurement** (vs `igl.exact_geodesic` on `half_torus`: Neumann 0.93 % mean / 3.1 %
   max, igl's average 1.15 % / 4.9 %; tied on `hemisphere`; potpourri3d and pymeshlab are Neumann
   too and the averaged field read *below* the Euclidean distance).
@@ -4880,7 +4880,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   answers unchanged (`Trimesh`, `make_solid` and `make_normals_outward` pass it).
   **`face_flip_mask` on a non-orientable mesh is not reproducible on CUDA** (the parity hooks race:
   31-68 of a few thousand bits differ between two unbounded runs on `boy` / `mobius` with half the
-  faces flipped; CPU is byte-identical), so a triwarp-against-triwarp gate compares the flip mask
+  faces flipped; CPU is byte-identical), so a ordito-against-ordito gate compares the flip mask
   on orientable input only.
 - **`adjacency.sorted_face_edge_keys(faces, *, n_vertices=None)`** names the run four modules
   repeated: pack straight into the sort's double-width buffer (no staging copy, 670 MB at `lucy`)
@@ -4929,7 +4929,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 
 ### 16.12 `holes`
 
-- **A packed engine fed by the split form pays the loop count twice**: `triwarp.holes` builds every
+- **A packed engine fed by the split form pays the loop count twice**: `ordito.holes` builds every
   stage on `_PackedLoops`; two of the three places deriving rims from a mesh took `boundary_loops`
   (`split` over the batched buffer) then concatenated the views back (37.3 ms vs `_hole_loops`'
   2.15 ms on an 8 192-rim sphere). Both go through `_boundary_loops_packed` (2.0-2.1x at 512 rims,
@@ -5237,7 +5237,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   both columns): per-iteration solves are 1.5-2.8x faster than the batched CG (0.25-0.32 vs
   0.47-0.70 ms), but plan plus factorization is 25-90 ms against a whole default 10-iteration
   `arap` of 2-9 ms (0.04-0.23x on `saddle_small` / `saddle` / `hemisphere`), break-even ~150
-  iterations; and it would make triwarp depend on more than `warp-lang`. Traps if opened: AMD reordering beats the defaults without the
+  iterations; and it would make ordito depend on more than `warp-lang`. Traps if opened: AMD reordering beats the defaults without the
   MT layer; a one-shot `direct_solver` re-creates the handle; `reset_operands(a=new)` drops the
   plan; `libcudss.so` is not on the loader path (preload it with `ctypes.CDLL(...,
   RTLD_GLOBAL)` from the wheel's `nvidia/cu12/lib`, found through `importlib.metadata`); systems with **empty rows** (unreferenced free

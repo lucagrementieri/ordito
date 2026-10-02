@@ -1,10 +1,10 @@
 """
 Regenerate ``benchmarks/_known_slow_libraries.json`` from a full benchmark round's JSON output.
 
-The full suite spends most of its wall clock on reference libraries, not on triwarp: measured, the
+The full suite spends most of its wall clock on reference libraries, not on ordito: measured, the
 overwhelming majority of pytest-benchmark's own timed regions across the suite is reference-library
-rows rather than triwarp's own. Most of that buys nothing -- a library that is already orders of
-magnitude slower than triwarp on one cell does not become more informative by being timed again on
+rows rather than ordito's own. Most of that buys nothing -- a library that is already orders of
+magnitude slower than ordito on one cell does not become more informative by being timed again on
 the next mesh size. ``benchmarks/conftest.py``'s
 ``bench_case`` / ``bench_lib`` fixtures skip a reference-library row outright when this table says
 so, the same way ``skip_larger_than`` skips one by hand at a handful of call sites -- except this
@@ -14,14 +14,14 @@ individually.
 **The policy, and why it is shaped this way.** A reference library is skipped for one exact
 ``(group, mesh_name, rest, library)`` cell when, in the source round's data:
 
-1. it is **not** one of the two fastest entries overall for that cell (i.e. it is not triwarp
+1. it is **not** one of the two fastest entries overall for that cell (i.e. it is not ordito
    itself and not the single fastest reference library) -- so every benchmarked cell always keeps
    at least one reference comparison, and
-2. its own median exceeded ``--ratio`` (default 2.0) times triwarp-cuda's median.
+2. its own median exceeded ``--ratio`` (default 2.0) times ordito-cuda's median.
 
 This is deliberately **per-library, not per-cell**: a cell with three references where only the
 third is a decisive loss keeps the other two. A stronger, per-*cell* policy -- if even the single
-fastest reference already loses to triwarp by a wide margin, skip every reference for that cell
+fastest reference already loses to ordito by a wide margin, skip every reference for that cell
 outright -- was measured to save a comparable amount, precisely because it also catches the
 single-reference cells this per-library policy cannot touch, but it is not the default here: it was
 still being evaluated, not adopted, when this table was cut. Re-run that analysis before raising
@@ -53,7 +53,7 @@ import json
 import os
 from typing import Any
 
-TRIWARP = {"triwarp-cuda", "triwarp-cpu"}
+ORDITO = {"ordito-cuda", "ordito-cpu"}
 OUT_PATH = os.path.join(os.path.dirname(__file__), "_known_slow_libraries.json")
 
 # ``(group, mesh_name, rest)``, the cell key every benchmark JSON row maps to.
@@ -84,21 +84,21 @@ def _known_slow_entries(
 ) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for (group, mesh_name, rest), libs in cells.items():
-        triwarp_median = libs.get("triwarp-cuda") or libs.get("triwarp-cpu")
-        refs = {lib: median for lib, median in libs.items() if lib not in TRIWARP}
-        if triwarp_median is None or not refs:
+        ordito_median = libs.get("ordito-cuda") or libs.get("ordito-cpu")
+        refs = {lib: median for lib, median in libs.items() if lib not in ORDITO}
+        if ordito_median is None or not refs:
             continue
-        ranked = sorted([("triwarp", triwarp_median), *refs.items()], key=lambda kv: kv[1])
+        ranked = sorted([("ordito", ordito_median), *refs.items()], key=lambda kv: kv[1])
         rank = {lib: position + 1 for position, (lib, _) in enumerate(ranked)}
         for library, median in refs.items():
-            if rank[library] >= min_rank and median > ratio * triwarp_median:
+            if rank[library] >= min_rank and median > ratio * ordito_median:
                 records.append(
                     {
                         "group": group,
                         "mesh_name": mesh_name,
                         "rest": list(rest),
                         "library": library,
-                        "ratio": round(median / triwarp_median, 1),
+                        "ratio": round(median / ordito_median, 1),
                     }
                 )
     records.sort(key=lambda r: (r["group"], r["mesh_name"] or "", r["library"]))

@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.array``: the packing, sorting and compaction primitives.
+Benchmarks for ``ordito.array``: the packing, sorting and compaction primitives.
 
 Every group here sweeps **segment or selection count**, not mesh size, because that is the axis
 these primitives actually respond to. ``pack_1d_arrays`` and ``concatenate`` issue one ``wp.copy``
@@ -57,8 +57,8 @@ import pytorch3d.ops as p3d_ops
 import torch
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase
 
 # Segment counts at a fixed total length: few large pieces against many small ones. The element
@@ -145,18 +145,18 @@ def _gather_inputs(bench_case: BenchCase) -> tuple[wp.array[wp.vec3], wp.array[w
 
 
 @pytest.mark.benchmark(group="concatenate_arrays")
-@pytest.mark.benchlibs("triwarp", "numpy", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "numpy", "pytorch3d")
 @pytest.mark.parametrize("n_segments", _SEGMENT_COUNTS, ids=["few", "many"])
 def test_concatenate(bench_case: BenchCase, n_segments: int) -> None:
     """
     One buffer from many, at two segment counts with the total element count held fixed.
 
-    **triwarp charges per segment below the kernel threshold, NumPy charges per byte, and that
+    **ordito charges per segment below the kernel threshold, NumPy charges per byte, and that
     predicts every row here.** Under ``array.PACK_SEGMENTS_KERNEL_FROM`` the pack is one ``wp.copy``
     per segment at a few microseconds each, so its cost is **flat over four orders of magnitude of
     bytes** and the data movement is a percent of the row. NumPy's column is a host ``memcpy`` and
     rises with the bytes, so the break-even is a **segment size of about 100 kB and it does not move
-    with the segment count**: ``few`` on ``dragon`` is megabytes a segment and triwarp wins by an
+    with the segment count**: ``few`` on ``dragon`` is megabytes a segment and ordito wins by an
     order of magnitude, ``many`` on ``bunny_decimated`` is under a kilobyte a segment.
 
     Above that threshold the loop is replaced by **one segmented-copy launch** over a ``@wp.struct``
@@ -199,12 +199,12 @@ def test_concatenate(bench_case: BenchCase, n_segments: int) -> None:
         assert flat_np.size == bench_case.faces_np.size
         return
     segments = _segments(bench_case, n_segments)
-    flat = bench_case.run(lambda: tw.array.concatenate(segments))
+    flat = bench_case.run(lambda: od.array.concatenate(segments))
     assert int(flat.shape[0]) == bench_case.faces_np.size
 
 
 @pytest.mark.benchmark(group="pack_1d_arrays")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 @pytest.mark.parametrize("n_segments", _SEGMENT_COUNTS, ids=["few", "many"])
 def test_pack_1d_arrays(bench_case: BenchCase, n_segments: int) -> None:
     """
@@ -238,13 +238,13 @@ def test_pack_1d_arrays(bench_case: BenchCase, n_segments: int) -> None:
         assert offsets_np.size == n_segments + 1
         return
     segments = _segments(bench_case, n_segments)
-    flat, offsets = bench_case.run(lambda: tw.array.pack_1d_arrays(segments))
+    flat, offsets = bench_case.run(lambda: od.array.pack_1d_arrays(segments))
     assert int(flat.shape[0]) == bench_case.faces_np.size
     assert int(offsets.shape[0]) == n_segments + 1
 
 
 @pytest.mark.benchmark(group="split_array")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 @pytest.mark.parametrize("n_segments", _SEGMENT_COUNTS, ids=["few", "many"])
 @pytest.mark.parametrize("copy", [False, True], ids=["views", "copies"])
 def test_split(bench_case: BenchCase, n_segments: int, copy: bool) -> None:
@@ -257,7 +257,7 @@ def test_split(bench_case: BenchCase, n_segments: int, copy: bool) -> None:
 
     NumPy's ``split`` has the same two modes and the same names for them -- its result is views, and
     a copy is one ``np.copy`` per piece -- so the ``views`` / ``copies`` pair reads across both
-    libraries and the ratio between the pairs is the readback triwarp cannot avoid.
+    libraries and the ratio between the pairs is the readback ordito cannot avoid.
 
     **Both modes are per-segment constants, and the readback is not one of them** -- it is a couple
     of percent of the ``views`` row. The views are stamped from one template slice's state rather
@@ -283,13 +283,13 @@ def test_split(bench_case: BenchCase, n_segments: int, copy: bool) -> None:
 
         assert len(bench_case.run(split_np)) == n_segments
         return
-    flat, offsets = tw.array.pack_1d_arrays(_segments(bench_case, n_segments))
-    parts = bench_case.run(lambda: tw.array.split(flat, offsets, copy=copy))
+    flat, offsets = od.array.pack_1d_arrays(_segments(bench_case, n_segments))
+    parts = bench_case.run(lambda: od.array.split(flat, offsets, copy=copy))
     assert len(parts) == n_segments
 
 
 @pytest.mark.benchmark(group="sort_and_argsort")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_sort_and_argsort(bench_case: BenchCase) -> None:
     """
     Radix sort plus its permutation: the primitive under ``group`` and every dedup here.
@@ -311,13 +311,13 @@ def test_sort_and_argsort(bench_case: BenchCase) -> None:
         assert order_np.size == keys_np.size
         return
     keys = _keys(bench_case)
-    sorted_keys, order = bench_case.run(lambda: tw.array.sort_and_argsort(keys))
+    sorted_keys, order = bench_case.run(lambda: od.array.sort_and_argsort(keys))
     assert int(sorted_keys.shape[0]) == keys.size
     assert int(order.shape[0]) == keys.size
 
 
 @pytest.mark.benchmark(group="flatnonzero")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 @pytest.mark.parametrize("selectivity", _SELECTIVITIES, ids=["half", "sparse"])
 def test_flatnonzero(bench_case: BenchCase, selectivity: float) -> None:
     """
@@ -333,12 +333,12 @@ def test_flatnonzero(bench_case: BenchCase, selectivity: float) -> None:
         assert bench_case.run(lambda: np.flatnonzero(mask_np)).size > 0
         return
     mask = _mask(bench_case, selectivity)
-    indices = bench_case.run(lambda: tw.array.flatnonzero(mask))
+    indices = bench_case.run(lambda: od.array.flatnonzero(mask))
     assert int(indices.shape[0]) > 0
 
 
 @pytest.mark.benchmark(group="gather")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_gather(bench_case: BenchCase) -> None:
     """
     Dense materialization of a fancy-index view: one ``wp.copy`` out of an ``indexedarray``.
@@ -352,12 +352,12 @@ def test_gather(bench_case: BenchCase) -> None:
         assert bench_case.run(lambda: src_np[indices_np]).shape[0] == indices_np.size
         return
     src, indices = _gather_inputs(bench_case)
-    out = bench_case.run(lambda: tw.array.gather(src, indices))
+    out = bench_case.run(lambda: od.array.gather(src, indices))
     assert int(out.shape[0]) == int(indices.shape[0])
 
 
 @pytest.mark.benchmark(group="index_bound")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_index_bound(bench_case: BenchCase) -> None:
     """
     A max-reduce over ``3F`` indices; the scan sweep is here for ``lucy``'s 84M of them.
@@ -368,9 +368,9 @@ def test_index_bound(bench_case: BenchCase) -> None:
     point: the
     crossover, not either endpoint, is what this group establishes.
     """
-    if bench_case.kind == "triwarp":
-        faces = cast(twt.Array1dInt32, bench_case.faces_wp)
-        result = bench_case.run(lambda: tw.array.index_bound(faces))
+    if bench_case.kind == "ordito":
+        faces = cast(odt.Array1dInt32, bench_case.faces_wp)
+        result = bench_case.run(lambda: od.array.index_bound(faces))
         assert result == bench_case.n_vertices
     else:  # numpy reference: what trimesh-style code does on host arrays
         faces_np = bench_case.faces_np

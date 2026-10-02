@@ -1,5 +1,5 @@
 """
-Tests for point-cloud surface reconstruction, in ``triwarp.reconstruction``'s own order.
+Tests for point-cloud surface reconstruction, in ``ordito.reconstruction``'s own order.
 
 Each of the six entry points has its own section below, and each names its reference there --
 ``scipy.spatial.Delaunay``, MeshLib's ``triangulatePointCloud``, open3d and pymeshlab for Poisson,
@@ -25,7 +25,9 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
+from ordito.kernels import reconstruction as kernel_reconstruction
+from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from tests.comparisons import (
     assert_unordered_rows_equal,
     canonical_winding,
@@ -51,8 +53,6 @@ from tests.conversions import (
     warp_empty,
     warp_to_trimesh,
 )
-from triwarp.kernels import reconstruction as kernel_reconstruction
-from triwarp.kernels.algorithms import ball_pivoting as kernel_bpa
 
 
 def _meshlib_triangulate(
@@ -134,7 +134,7 @@ def test_delaunay_matches_scipy_random(device: str):
     points_np = rng.random((200, 2)).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy()
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy()
     faces_sp = Delaunay(points_np.astype(np.float64)).simplices
 
     assert np.array_equal(_edge_set(faces_wp), _edge_set(faces_sp.reshape(-1)))
@@ -143,11 +143,11 @@ def test_delaunay_matches_scipy_random(device: str):
 @pytest.mark.parity("delaunay_triangulation", "pyvista")
 def test_delaunay_contains_the_pyvista_triangulation(device: str):
     """
-    Class B: ``delaunay_2d``'s triangles are a strict **subset** of triwarp's; the gap is hull.
+    Class B: ``delaunay_2d``'s triangles are a strict **subset** of ordito's; the gap is hull.
 
     Both are Delaunay triangulations of the same cloud, so on the interior they agree face for face;
     they differ on how much of the convex hull they keep. Measured on 200 uniform points: pyvista
-    returns **374** triangles, every one of them present in triwarp's **384**, so the 10 extra are
+    returns **374** triangles, every one of them present in ordito's **384**, so the 10 extra are
     hull slivers ``vtkDelaunay2D`` drops. The comparison is therefore containment plus a bound on
     the excess, not equality -- and stating it that way is the point, since an equality assert would
     fail on a correct implementation.
@@ -167,12 +167,12 @@ def test_delaunay_contains_the_pyvista_triangulation(device: str):
     }
     assert len(faces_pv) > 300, "the reference triangulated the cloud before it is compared to"
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
-    faces_tw = {tuple(row) for row in np.sort(faces_wp, axis=1).tolist()}
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    faces_od = {tuple(row) for row in np.sort(faces_wp, axis=1).tolist()}
 
-    assert faces_pv <= faces_tw
+    assert faces_pv <= faces_od
     # The excess is hull slivers only: a few triangles, not a different triangulation.
-    assert len(faces_tw - faces_pv) < 0.05 * len(faces_tw)
+    assert len(faces_od - faces_pv) < 0.05 * len(faces_od)
 
 
 def test_delaunay_no_violations(device: str):
@@ -180,7 +180,7 @@ def test_delaunay_no_violations(device: str):
     points_np = rng.random((150, 2)).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
 
     # All triangles counter-clockwise.
     tris = points_np.astype(np.float64)[faces_wp]
@@ -196,7 +196,7 @@ def test_delaunay_covers_hull(device: str):
     points_np = rng.random((120, 2)).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
     tris = points_np.astype(np.float64)[faces_wp]
     area = float(np.abs(_cross2(tris[:, 1] - tris[:, 0], tris[:, 2] - tris[:, 0])).sum() * 0.5)
     hull_area = float(ConvexHull(points_np.astype(np.float64)).volume)
@@ -210,7 +210,7 @@ def test_delaunay_cocircular(device: str):
     points_np = np.vstack([ring, [[0.0, 0.0]]]).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
     assert _incircle_violations(points_np.astype(np.float64), faces_wp) == 0
 
     from scipy.spatial import ConvexHull
@@ -228,7 +228,7 @@ def test_delaunay_grid_perturbed(device: str):
     points_np = (grid + rng.normal(0.0, 0.05, grid.shape)).astype(np.float32)
     points_wp = points_to_warp_uv(points_np, device)
 
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp).numpy()
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp).numpy()
     faces_sp = Delaunay(points_np.astype(np.float64)).simplices
     assert np.array_equal(_edge_set(faces_wp), _edge_set(faces_sp.reshape(-1)))
 
@@ -236,14 +236,14 @@ def test_delaunay_grid_perturbed(device: str):
 def test_delaunay_collinear(device: str):
     points_np = np.array([[float(i), 0.0] for i in range(5)], dtype=np.float32)
     points_wp = points_to_warp_uv(points_np, device)
-    faces_wp = tw.reconstruction.delaunay_triangulation(points_wp)
+    faces_wp = od.reconstruction.delaunay_triangulation(points_wp)
     assert faces_wp.size == 0
 
 
 def test_delaunay_too_few(device: str):
     points_wp = wp.array(np.zeros((2, 2), dtype=np.float32), dtype=wp.vec2, device=device)
     with pytest.raises(ValueError, match="at least 3 points"):
-        tw.reconstruction.delaunay_triangulation(points_wp)
+        od.reconstruction.delaunay_triangulation(points_wp)
 
 
 # ---------------------------------------------------------------------------
@@ -256,7 +256,7 @@ def test_sphere_is_closed_manifold(device: str, subdivisions: int):
     points_np, normals_np = _sphere_cloud(subdivisions)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=18
     )
     faces_np = faces_wp.numpy()
@@ -264,9 +264,9 @@ def test_sphere_is_closed_manifold(device: str, subdivisions: int):
 
     # A closed genus-0 triangulation of n points has exactly 2n - 4 faces (Euler).
     assert faces_np.size // 3 == 2 * n_points - 4
-    assert tw.validation.is_watertight(vertices_wp, faces_wp)
-    assert tw.validation.is_edge_manifold(faces_wp)
-    assert tw.measures.euler_characteristic(faces_wp) == 2
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
+    assert od.measures.euler_characteristic(faces_wp) == 2
     # every input point is referenced
     assert np.unique(faces_np).size == n_points
 
@@ -283,13 +283,13 @@ def test_torus_is_genus_one(device: str):
     normals_np = torus_tm.vertex_normals.astype(np.float64)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=16
     )
-    assert tw.validation.is_watertight(vertices_wp, faces_wp)
-    assert tw.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
     # genus-1 closed surface: V - E + F = 0
-    assert tw.measures.euler_characteristic(faces_wp) == 0
+    assert od.measures.euler_characteristic(faces_wp) == 0
 
 
 @pytest.mark.parametrize("subdivisions", [3])
@@ -314,7 +314,7 @@ def test_matches_meshlib_reference(device: str, subdivisions: int):
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
     vertices_ml, faces_ml = _meshlib_triangulate(points_np, normals_np, 18)
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=18
     )
     faces_wp_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
@@ -341,7 +341,7 @@ def test_torus_matches_meshlib_reference(device: str):
     surface, to a two-sided Hausdorff distance of **5.1e-08** against a mean edge length of 0.128,
     i.e. seven orders of magnitude below the triangle scale.
 
-    Mutation probe and margin: dropping ``num_neighbours`` to 4 leaves triwarp with 240 faces of
+    Mutation probe and margin: dropping ``num_neighbours`` to 4 leaves ordito with 240 faces of
     1 280 on the sphere cloud and a Hausdorff distance of **0.348**, 2.3x the mean edge -- so the
     threshold used here (1 % of the mean edge) is seven orders of magnitude clear of a
     reconstruction that has genuinely gone wrong, and the assert is not tolerating the diagonal
@@ -362,7 +362,7 @@ def test_torus_matches_meshlib_reference(device: str):
     )
 
     vertices_ml, faces_ml = _meshlib_triangulate(points_np, normals_np, 16)
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=16
     )
     faces_wp_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
@@ -388,12 +388,12 @@ def test_open_hemisphere_keeps_single_boundary(device: str):
     normals_np = sphere_tm.vertex_normals[upper].astype(np.float64)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=18
     )
-    assert tw.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
     # The intended equator rim is a single large boundary loop, not filled and not fragmented.
-    loops = tw.boundary.boundary_loops(vertices_wp, faces_wp)
+    loops = od.boundary.boundary_loops(vertices_wp, faces_wp)
     assert len(loops) == 1
 
 
@@ -404,9 +404,9 @@ def test_estimated_normals_path_runs(device: str):
     points_np, _ = _sphere_cloud(3)
     points_wp = points_to_warp(points_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=18)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=18)
     assert faces_wp.numpy().size > 0
-    assert tw.validation.is_edge_manifold(faces_wp)
+    assert od.validation.is_edge_manifold(faces_wp)
     radii = np.linalg.norm(vertices_wp.numpy(), axis=1)
     assert np.allclose(radii, 1.0, rtol=1e-5, atol=1e-5)
 
@@ -516,22 +516,22 @@ def test_holes_seal_small_hole(device: str):
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
     # No filling: the punctured region stays an open boundary.
-    vertices_open, faces_open = tw.reconstruction.triangulate_point_cloud(
+    vertices_open, faces_open = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=18, crit_hole_length=0.0
     )
-    assert not tw.validation.is_watertight(vertices_open, faces_open)
+    assert not od.validation.is_watertight(vertices_open, faces_open)
 
     # Large threshold: the hole is sealed into a watertight, manifold mesh.
-    vertices_filled, faces_filled = tw.reconstruction.triangulate_point_cloud(
+    vertices_filled, faces_filled = od.reconstruction.triangulate_point_cloud(
         points_wp, normals_wp, num_neighbours=18, crit_hole_length=10.0
     )
-    assert tw.validation.is_edge_manifold(faces_filled)
-    assert tw.validation.is_watertight(vertices_filled, faces_filled)
+    assert od.validation.is_edge_manifold(faces_filled)
+    assert od.validation.is_watertight(vertices_filled, faces_filled)
 
 
 def test_empty_cloud(device: str):
     points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp)
     assert vertices_wp.size == 0
     assert faces_wp.size == 0
 
@@ -547,7 +547,7 @@ def test_too_few_points(device: str):
     """
     points_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float64)
     points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
-    vertices_wp, faces_wp = tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=4)
+    vertices_wp, faces_wp = od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=4)
     assert faces_wp.size == 0
 
     assert np.allclose(vertices_wp.numpy(), points_np, rtol=1e-5, atol=1e-5)
@@ -558,9 +558,9 @@ def test_too_few_points(device: str):
 def test_invalid_parameters(device: str):
     points_wp = wp.zeros(4, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="pass at most one of num_neighbours and radius"):
-        tw.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=8, radius=1.0)
+        od.reconstruction.triangulate_point_cloud(points_wp, num_neighbours=8, radius=1.0)
     with pytest.raises(ValueError, match="max_neighbours must be <="):
-        tw.reconstruction.triangulate_point_cloud(
+        od.reconstruction.triangulate_point_cloud(
             points_wp, max_neighbours=kernel_reconstruction.MAX_NEIGHBOURS + 1
         )
 
@@ -570,7 +570,7 @@ def test_invalid_parameters(device: str):
 #
 # References: open3d ``create_from_point_cloud_poisson`` (``_o3d``) and PyMeshLab
 # ``generate_surface_reconstruction_screened_poisson`` (``_pml``). Both reconstruct a different
-# vertex set than triwarp, so every comparison is metric/topological, never vertex-for-vertex.
+# vertex set than ordito, so every comparison is metric/topological, never vertex-for-vertex.
 # ======================================================================================
 
 
@@ -663,7 +663,7 @@ def test_poisson_outward_orientation(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4
     )
     # Outward normals => positive enclosed volume.
@@ -686,12 +686,12 @@ def test_poisson_dense_solve_converges_in_few_iterations(device: str) -> None:
     depth = _poisson_depth(device)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+        vertices_wp, faces_wp = od.reconstruction.screened_poisson(
             points_wp, normals_wp, depth=depth, full_depth=4, solver_iterations=30
         )
     assert warp_to_trimesh(vertices_wp, faces_wp).volume > 0.0
     with pytest.warns(UserWarning, match="iteration cap"):
-        tw.reconstruction.screened_poisson(
+        od.reconstruction.screened_poisson(
             points_wp, normals_wp, depth=depth, full_depth=4, solver_iterations=2
         )
 
@@ -716,7 +716,7 @@ def test_poisson_matches_open3d_metric(device: str):
     radius error, a sign flip on the indicator, a mislocated level set.
 
     Measured agreement is **0.0044** and the threshold is 0.015, a **3.4x** margin. Mutation
-    probe, run against this assert: scaling triwarp's answer by 0.98 makes it read 0.0190 and the
+    probe, run against this assert: scaling ordito's answer by 0.98 makes it read 0.0190 and the
     assert fails, so a 2% radius error on a unit sphere is caught. A mesh against itself scores
     exactly 0.0, which is the whole point of the metric -- see the warning below.
 
@@ -737,23 +737,23 @@ def test_poisson_matches_open3d_metric(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=6, full_depth=4
     )
-    mesh_tw = warp_to_trimesh(vertices_wp, faces_wp)
+    mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
     # depth=5 on the reference side, not 6: on this 642-point cloud open3d returns the *same*
     # 7 976 faces at both depths (measured) at a third of the cost, so the extra octree level is
-    # cost without an answer. Only the reference drops -- triwarp stays at depth 6, pinned on both
+    # cost without an answer. Only the reference drops -- ordito stays at depth 6, pinned on both
     # devices per the docstring, where it resolves 32 552 faces either way.
     mesh_o3d = _open3d_poisson(points_np, normals_np, depth=5)
-    mean_distance, _ = symmetric_surface_distance(mesh_tw, mesh_o3d)
+    mean_distance, _ = symmetric_surface_distance(mesh_od, mesh_o3d)
     assert mean_distance < 0.015
 
 
 @pytest.mark.slow_cpu(18.5)
 def test_poisson_screening_improves_fit(device: str):
     """
-    Triwarp against triwarp: screening ties the surface to the samples, so the fit cannot worsen.
+    Ordito against ordito: screening ties the surface to the samples, so the fit cannot worsen.
 
     Also the only test that reconstructs at ``point_weight=0``, which is why the no-degenerate-face
     invariant is asserted here rather than in a test of its own (CLAUDE.md section 7.4). That config
@@ -768,10 +768,10 @@ def test_poisson_screening_improves_fit(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_screened, faces_screened = tw.reconstruction.screened_poisson(
+    vertices_screened, faces_screened = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, point_weight=4.0
     )
-    vertices_unscreened, faces_unscreened = tw.reconstruction.screened_poisson(
+    vertices_unscreened, faces_unscreened = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, point_weight=0.0
     )
     fit_screened = _points_to_surface(points_np, warp_to_trimesh(vertices_screened, faces_screened))
@@ -786,7 +786,7 @@ def test_poisson_screening_improves_fit(device: str):
         (vertices_screened, faces_screened),
         (vertices_unscreened, faces_unscreened),
     ):
-        assert np.all(tw.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
+        assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
 
 
 @pytest.mark.parity(
@@ -794,7 +794,7 @@ def test_poisson_screening_improves_fit(device: str):
     "pymeshlab",
     benchmarked=False,
     reason="pymeshlab wraps the same Kazhdan CPU solver open3d does, and the two rows together "
-    "were 6 322 s -- 73 % of the whole benchmark suite -- for a reference triwarp already beats "
+    "were 6 322 s -- 73 % of the whole benchmark suite -- for a reference ordito already beats "
     "15-25x. Removed from benchmarks/test_reconstruction.py rather than capped; the comparison "
     "lives here instead.",
 )
@@ -808,16 +808,16 @@ def test_poisson_matches_pymeshlab_metric(device: str):
     unchanged. **Pinned to depth 6 on both devices** for the reason given there: at depth 5 the
     agreement widens to **0.0062**, a 2.44x margin, below the 3x floor. Worth having
     both: open3d and pymeshlab agree with each other to 0.0015, a quarter of either one's distance
-    to triwarp, so they are not independent enough for one to stand in for the other -- but that
-    also means a triwarp regression would have to move past *both* to stay unnoticed.
+    to ordito, so they are not independent enough for one to stand in for the other -- but that
+    also means a ordito regression would have to move past *both* to stay unnoticed.
     """
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=6, full_depth=4
     )
-    mesh_tw = warp_to_trimesh(vertices_wp, faces_wp)
+    mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
 
     # An oriented point cloud, so this is one of the few places a MeshSet is built from vertices
     # alone rather than through ``conversions.trimesh_to_pymeshlab``.
@@ -839,7 +839,7 @@ def test_poisson_matches_pymeshlab_metric(device: str):
     # break-even, so the wall clock grows monotonically with the thread count while the answer does
     # not move (7 976 faces at every setting) -- roughly fiftyfold from one thread to the 48
     # default. Unpinned, this test also doubled between two runs twenty minutes apart, against a
-    # triwarp solve four orders of magnitude cheaper, so its cost was a function of how busy the
+    # ordito solve four orders of magnitude cheaper, so its cost was a function of how busy the
     # machine was rather than of anything either implementation does. One thread's CPU time bounds
     # the worst case; a global ``OMP_NUM_THREADS`` cap does *not* help, because MeshLab's filter
     # sets its own thread count from this parameter and overrides the environment (measured).
@@ -848,7 +848,7 @@ def test_poisson_matches_pymeshlab_metric(device: str):
     mesh_pml = tm.Trimesh(
         vertices=mesh_current.vertex_matrix(), faces=mesh_current.face_matrix(), process=False
     )
-    mean_distance, _ = symmetric_surface_distance(mesh_tw, mesh_pml)
+    mean_distance, _ = symmetric_surface_distance(mesh_od, mesh_pml)
     assert mean_distance < 0.015
 
 
@@ -856,18 +856,18 @@ def test_poisson_requires_normals_and_valid_params(device: str):
     points_np, normals_np = _sphere_cloud(2)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     with pytest.raises(ValueError, match="full_depth"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, depth=6, full_depth=8)
+        od.reconstruction.screened_poisson(points_wp, normals_wp, depth=6, full_depth=8)
     with pytest.raises(ValueError, match="full_depth"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, depth=11)
+        od.reconstruction.screened_poisson(points_wp, normals_wp, depth=11)
     with pytest.raises(ValueError, match="scale"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, scale=0.0)
+        od.reconstruction.screened_poisson(points_wp, normals_wp, scale=0.0)
 
 
 def test_poisson_too_few_points(device: str):
     points_wp = wp.array(np.zeros((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     normals_wp = wp.array(np.ones((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="at least 3 points"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, depth=4, full_depth=3)
+        od.reconstruction.screened_poisson(points_wp, normals_wp, depth=4, full_depth=3)
 
 
 def test_poisson_cpu_matches_cuda():
@@ -879,7 +879,7 @@ def test_poisson_cpu_matches_cuda():
     surfaces = {}
     for device in ("cpu", "cuda:0"):
         points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-        vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+        vertices_wp, faces_wp = od.reconstruction.screened_poisson(
             points_wp, normals_wp, depth=4, full_depth=3
         )
         surfaces[device] = (vertices_wp.numpy(), faces_wp.numpy())
@@ -936,32 +936,32 @@ def test_poisson_watertight_manifold(
         depth = _poisson_depth(device)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=depth, full_depth=4, method=method
     )
-    mesh_tw = warp_to_trimesh(vertices_wp, faces_wp)
+    mesh_od = warp_to_trimesh(vertices_wp, faces_wp)
 
-    assert tw.validation.is_watertight(vertices_wp, faces_wp)
-    assert mesh_tw.euler_number == (2 if shape == "sphere" else 0)
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+    assert mesh_od.euler_number == (2 if shape == "sphere" else 0)
 
     if shape != "sphere":
         return
     if method == "adaptive":
-        assert mesh_tw.volume > 0.0  # outward orientation
-    radius_tw = np.linalg.norm(mesh_tw.vertices, axis=1)
+        assert mesh_od.volume > 0.0  # outward orientation
+    radius_od = np.linalg.norm(mesh_od.vertices, axis=1)
     mean_tol, max_tol = (0.02, 0.06) if method == "dense" else (0.03, 0.08)
-    assert abs(radius_tw.mean() - 1.0) < mean_tol
-    assert np.abs(radius_tw - 1.0).max() < max_tol
+    assert abs(radius_od.mean() - 1.0) < mean_tol
+    assert np.abs(radius_od - 1.0).max() < max_tol
 
 
 def test_poisson_adaptive_matches_dense(device: str):
     points_np, normals_np = _sphere_cloud(4)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_dense, faces_dense = tw.reconstruction.screened_poisson(
+    vertices_dense, faces_dense = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="dense"
     )
-    vertices_adaptive, faces_adaptive = tw.reconstruction.screened_poisson(
+    vertices_adaptive, faces_adaptive = od.reconstruction.screened_poisson(
         points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="adaptive"
     )
     # Same iso-surface on two different grids, so a surface metric rather than a correspondence.
@@ -978,7 +978,7 @@ def test_poisson_adaptive_screening_improves_fit(device: str):
     points_np, normals_np = _sphere_cloud(4)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_screened, faces_screened = tw.reconstruction.screened_poisson(
+    vertices_screened, faces_screened = od.reconstruction.screened_poisson(
         points_wp,
         normals_wp,
         depth=_poisson_depth(device),
@@ -986,7 +986,7 @@ def test_poisson_adaptive_screening_improves_fit(device: str):
         point_weight=4.0,
         method="adaptive",
     )
-    vertices_unscreened, faces_unscreened = tw.reconstruction.screened_poisson(
+    vertices_unscreened, faces_unscreened = od.reconstruction.screened_poisson(
         points_wp,
         normals_wp,
         depth=_poisson_depth(device),
@@ -1005,7 +1005,7 @@ def test_poisson_adaptive_confidence_runs(device: str):
     points_np, normals_np = _sphere_cloud(4)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.screened_poisson(
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
         points_wp,
         normals_wp,
         depth=_poisson_depth(device),
@@ -1013,7 +1013,7 @@ def test_poisson_adaptive_confidence_runs(device: str):
         confidence=True,
         method="adaptive",
     )
-    assert tw.validation.is_watertight(vertices_wp, faces_wp)
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
@@ -1021,7 +1021,7 @@ def test_poisson_invalid_method(device: str):
     points_np, normals_np = _sphere_cloud(2)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     with pytest.raises(ValueError, match="method"):
-        tw.reconstruction.screened_poisson(points_wp, normals_wp, method="bogus")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        od.reconstruction.screened_poisson(points_wp, normals_wp, method="bogus")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 # ---------------------------------------------------------------------------
@@ -1043,7 +1043,7 @@ def test_resample_uniform_offsets_a_sphere(
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     voxel_size = 0.05
 
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=voxel_size, offset=offset
     )
     radii_np = np.linalg.norm(out_vertices_wp.numpy(), axis=1)
@@ -1063,7 +1063,7 @@ def test_resample_uniform_repairs_a_broken_mesh(
     Not a library comparison: the topology comes from the grid, so the input's cannot leak.
 
     The input here has duplicated faces, an inverted one and a non-manifold edge — three defects
-    that each need their own function in [`triwarp.repair`][triwarp.repair] — and the resampled
+    that each need their own function in [`ordito.repair`][ordito.repair] — and the resampled
     result is a clean watertight sphere regardless.
     """
     sphere_tm, _sphere_tm_wp = icosphere
@@ -1073,12 +1073,12 @@ def test_resample_uniform_repairs_a_broken_mesh(
     faces_wp = wp.array(
         np.ascontiguousarray(broken_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    assert not tw.validation.is_edge_manifold(faces_wp)
+    assert not od.validation.is_edge_manifold(faces_wp)
 
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=0.06
     )
-    assert tw.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
+    assert od.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
     assert out_tm.is_watertight
     assert np.isclose(np.abs(out_tm.volume), 4.0 / 3.0 * np.pi, rtol=0.1)
@@ -1123,7 +1123,7 @@ def test_resample_uniform_matches_pymeshlab(
     pml_tm = tm.Trimesh(mesh_pml.vertex_matrix(), mesh_pml.face_matrix(), process=False)
 
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=voxel_size
     )
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
@@ -1144,13 +1144,13 @@ def test_resample_uniform_matches_igl(device: str, icosphere: tuple[tm.Trimesh, 
 
     ``igl.offset_surface(V, F, isolevel, s, sign_type)`` samples the same signed distance field on a
     grid and marches it. Two named parameter transforms put the two on one lattice: ``isolevel=0``
-    is triwarp's zero offset, and ``s`` is a *cell count along the longest axis* rather than a
+    is ordito's zero offset, and ``s`` is a *cell count along the longest axis* rather than a
     length, so it gets ``round(longest_extent / voxel_size)``. The sign mode is ``PSEUDONORMAL``,
     which ``tests/test_proximity.py::test_signed_distance_on_mesh_matches_igl`` establishes agrees
-    with triwarp's default to 8e-8 -- the winding modes would scale the field by ``1 - 2w`` and move
+    with ordito's default to 8e-8 -- the winding modes would scale the field by ``1 - 2w`` and move
     the isosurface.
 
-    No correspondence exists between the outputs (4 186 vertices against triwarp's 5 310 on this
+    No correspondence exists between the outputs (4 186 vertices against ordito's 5 310 on this
     fixture, since the two march the lattice into different triangle sets), so the comparison is the
     surface: both watertight, enclosed volumes within 5%, and a two-sided Hausdorff distance under a
     quarter of a voxel.
@@ -1178,7 +1178,7 @@ def test_resample_uniform_matches_igl(device: str, icosphere: tuple[tm.Trimesh, 
     mesh_igl = tm.Trimesh(vertices_igl, faces_igl, process=False)
 
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=voxel_size
     )
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
@@ -1201,9 +1201,9 @@ def test_resample_uniform_matches_meshlib(
     Class C (no correspondence, and a different amount of work): both land on the same surface.
 
     ``rebuildMesh`` samples the same signed distance field on a grid of the same ``voxelSize`` and
-    marches it, then -- unlike triwarp, igl and MeshLab -- **decimates** the result at its own
+    marches it, then -- unlike ordito, igl and MeshLab -- **decimates** the result at its own
     defaults (``decimate`` and ``preSubdivide`` are both on). So the face counts are not comparable
-    at all: measured 1 332 faces against triwarp's 7 772 at a 2 % voxel on ``icosphere(3)``. What is
+    at all: measured 1 332 faces against ordito's 7 772 at a 2 % voxel on ``icosphere(3)``. What is
     comparable is the surface, and the two agree to a two-sided Hausdorff distance of **0.084 of a
     voxel**, each sitting within 0.11 voxels of the input.
 
@@ -1211,7 +1211,7 @@ def test_resample_uniform_matches_meshlib(
     the isosurface -- the same risk the igl pair above is written against, checked here against an
     independent implementation of the whole pipeline rather than of the field alone. **Mutation
     probe, measured:** running MeshLib at 4x the voxel size moves the distance to **0.43 voxels**
-    and asking triwarp for ``offset=0.1`` moves it to **1.53 voxels**, against 0.084 when the two
+    and asking ordito for ``offset=0.1`` moves it to **1.53 voxels**, against 0.084 when the two
     agree -- so the 0.25-voxel bound is 3x above the measured agreement and fails on either
     mismatch.
     """
@@ -1222,7 +1222,7 @@ def test_resample_uniform_matches_meshlib(
     voxel_size = 0.02 * diagonal
 
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
         vertices_wp, faces_wp, voxel_size=voxel_size
     )
     out_tm = warp_to_trimesh(out_vertices_wp, out_faces_wp)
@@ -1260,11 +1260,11 @@ def test_resample_uniform_coarser_is_smaller(
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     counts = []
     for voxel_size in (0.05, 0.1, 0.2):
-        _out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(
+        _out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(
             vertices_wp, faces_wp, voxel_size=voxel_size
         )
         counts.append(out_faces_wp.size // 3)
-        assert tw.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
+        assert od.validation.is_edge_manifold(out_faces_wp, allow_boundary_edges=False)
     assert counts == sorted(counts, reverse=True)
 
 
@@ -1272,13 +1272,13 @@ def test_resample_uniform_invalid(device: str) -> None:
     sphere_tm = tm.creation.icosphere(subdivisions=1, radius=1.0)
     vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
     with pytest.raises(ValueError, match="voxel_size > 0"):
-        tw.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=0.0)
+        od.reconstruction.resample_uniform(vertices_wp, faces_wp, voxel_size=0.0)
 
 
 def test_resample_uniform_empty(device: str) -> None:
     vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     faces_wp = warp_empty(0, wp.int32, device)
-    out_vertices_wp, out_faces_wp = tw.reconstruction.resample_uniform(vertices_wp, faces_wp)
+    out_vertices_wp, out_faces_wp = od.reconstruction.resample_uniform(vertices_wp, faces_wp)
     assert out_vertices_wp.size == 0
     assert out_faces_wp.size == 0
 
@@ -1297,7 +1297,7 @@ def test_ball_pivoting_interpolates_input(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     vertices_np = vertices_wp.numpy().astype(np.float64)
     assert faces_wp.size > 0
 
@@ -1314,7 +1314,7 @@ def test_ball_pivoting_edge_manifold(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
+    _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     # The cleanup tail removes non-manifold faces, so no edge is shared by more than two faces.
     assert edge_multiplicity(faces_wp.numpy().reshape(-1, 3)).max() <= 2
 
@@ -1335,7 +1335,7 @@ def test_ball_pivoting_closes_a_dense_sphere(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    vertices_wp, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     faces_np = faces_wp.numpy().reshape(-1, 3)
     multiplicity = edge_multiplicity(faces_np)
 
@@ -1371,7 +1371,7 @@ def test_ball_pivoting_is_reproducible(device: str):
       winding, which is the property the key buys. Not compared buffer-to-buffer: ``CNT_FACE`` is a
       ``wp.atomic_add``, so the row order is deliberately still arrival-ordered;
     * the public function, compared as an **unoriented** triangle set, because its cleanup tail
-      runs [`repair.make_winding_consistent`][triwarp.repair.make_winding_consistent], whose
+      runs [`repair.make_winding_consistent`][ordito.repair.make_winding_consistent], whose
       arbitrary per-component seed face is still chosen nondeterministically (measured on this same
       fixture). That is a separate defect in that module, and it is why the second assertion sorts
       within the row rather than using ``canonical_winding``.
@@ -1386,25 +1386,25 @@ def test_ball_pivoting_is_reproducible(device: str):
     # `radius <= 0` guess averages the spacings with a device reduction whose summation order is not
     # fixed, so it lands a few ULP apart between calls and tips a borderline pivot. Dropping
     # `radius=` from either public call makes this test flaky rather than stricter.
-    spacing = tw.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")[1].numpy()[:, 1:]
+    spacing = od.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")[1].numpy()[:, 1:]
     radius = 1.5 * float(spacing[np.isfinite(spacing) & (spacing > 0.0)].mean())
 
-    grid = tw.neighbors.hashgrid_from_points(points_wp, radius)
-    bvh = tw.neighbors.bvh_from_points(points_wp)
+    grid = od.neighbors.hashgrid_from_points(points_wp, radius)
+    bvh = od.neighbors.bvh_from_points(points_wp)
     raw_runs = []
     for _ in range(2):
-        state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+        state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
         )
-        tw.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
+        od.reconstruction._bpa_run(state, 16 * n_points)  # pyright: ignore[reportPrivateUsage]
         n_faces = int(state.counters.numpy()[kernel_bpa.CNT_FACE])
         raw_runs.append(state.all_faces.numpy()[: n_faces * 3].reshape(-1, 3))
 
     assert raw_runs[0].shape[0] > 0
     assert_unordered_rows_equal(canonical_winding(raw_runs[0]), canonical_winding(raw_runs[1]))
 
-    _vertices, first_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
-    _vertices, second_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
     assert_unordered_rows_equal(
         np.sort(first_wp.numpy().reshape(-1, 3), axis=1),
         np.sort(second_wp.numpy().reshape(-1, 3), axis=1),
@@ -1420,15 +1420,15 @@ def test_ball_pivoting_grows_the_triangle_budget(device: str):
     """
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    grid = tw.neighbors.hashgrid_from_points(points_wp, 2.0 * 0.2)
-    bvh = tw.neighbors.bvh_from_points(points_wp)
+    grid = od.neighbors.hashgrid_from_points(points_wp, 2.0 * 0.2)
+    bvh = od.neighbors.bvh_from_points(points_wp)
 
     faces_per_budget = []
     for start_budget in (64, 4 * points_np.shape[0] + 16):
-        state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+        state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
             points_wp, normals_wp, grid, bvh, 0.2, 0.2, math.cos(math.pi / 2.0), start_budget
         )
-        tw.reconstruction._bpa_run(state, 16 * points_np.shape[0])  # pyright: ignore[reportPrivateUsage]
+        od.reconstruction._bpa_run(state, 16 * points_np.shape[0])  # pyright: ignore[reportPrivateUsage]
         counters_np = state.counters.numpy()
         assert counters_np[kernel_bpa.CNT_DONE] == 1
         faces_per_budget.append(int(counters_np[kernel_bpa.CNT_FACE]))
@@ -1442,7 +1442,7 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     device: str, max_waves: int, monkeypatch: pytest.MonkeyPatch
 ):
     """
-    Triwarp against triwarp: ``front_in`` must hold the buffer the last wave that *ran* wrote.
+    Ordito against ordito: ``front_in`` must hold the buffer the last wave that *ran* wrote.
 
     ``_bpa_run`` queues ``_BPA_WAVES_PER_BATCH`` waves before it looks at the counters, and swaps
     ``front_in`` / ``front_out`` after each queued one -- but every wave kernel opens with
@@ -1475,25 +1475,25 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
     n_points = points_wp.size
     radius = 0.2
-    grid = tw.neighbors.hashgrid_from_points(points_wp, radius)
-    bvh = tw.neighbors.bvh_from_points(points_wp)
-    state = tw.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
+    grid = od.neighbors.hashgrid_from_points(points_wp, radius)
+    bvh = od.neighbors.bvh_from_points(points_wp)
+    state = od.reconstruction._BpaState(  # pyright: ignore[reportPrivateUsage]
         points_wp, normals_wp, grid, bvh, radius, 0.2, -1.0, 4 * n_points + 16
     )
 
     # The buffer that should be live, appended to by whatever last established it.
     live: list[int] = []
     resyncs = 0
-    unpatched_wave = tw.reconstruction._bpa_wave  # pyright: ignore[reportPrivateUsage]
-    unpatched = {name: getattr(tw.reconstruction._BpaState, name) for name in ("compact", "grow")}  # pyright: ignore[reportPrivateUsage]
+    unpatched_wave = od.reconstruction._bpa_wave  # pyright: ignore[reportPrivateUsage]
+    unpatched = {name: getattr(od.reconstruction._BpaState, name) for name in ("compact", "grow")}  # pyright: ignore[reportPrivateUsage]
 
-    def recording_wave(tracked: tw.reconstruction._BpaState, waves: int, *, begin: bool) -> None:  # pyright: ignore[reportPrivateUsage]
+    def recording_wave(tracked: od.reconstruction._BpaState, waves: int, *, begin: bool) -> None:  # pyright: ignore[reportPrivateUsage]
         if int(tracked.counters.numpy()[kernel_bpa.CNT_CONTINUE]):
             live.append(id(tracked.front_out))
         unpatched_wave(tracked, waves, begin=begin)
 
     def checked(name: str):
-        def wrapper(tracked: tw.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]
+        def wrapper(tracked: od.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]
             nonlocal resyncs
             resyncs += 1
             if name == "compact":
@@ -1506,10 +1506,10 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
 
         return wrapper
 
-    monkeypatch.setattr(tw.reconstruction, "_bpa_wave", recording_wave)
+    monkeypatch.setattr(od.reconstruction, "_bpa_wave", recording_wave)
     for name in unpatched:
-        monkeypatch.setattr(tw.reconstruction._BpaState, name, checked(name))  # pyright: ignore[reportPrivateUsage]
-    tw.reconstruction._bpa_run(state, max_waves)  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(od.reconstruction._BpaState, name, checked(name))  # pyright: ignore[reportPrivateUsage]
+    od.reconstruction._bpa_run(state, max_waves)  # pyright: ignore[reportPrivateUsage]
 
     counters_np = state.counters.numpy()
     waves_run = int(counters_np[kernel_bpa.CNT_WAVE])
@@ -1535,12 +1535,12 @@ def test_ball_pivoting_face_count_near_open3d(device: str):
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
     # Auto-guessed radius roughly matches the mean spacing; use it for open3d too.
-    _idx, dist = tw.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")
+    _idx, dist = od.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")
     spacing = float(np.mean(dist.numpy()[:, 1:][np.isfinite(dist.numpy()[:, 1:])]))
     radius = 1.5 * spacing
 
-    _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
-    n_faces_tw = faces_wp.size // 3
+    _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    n_faces_od = faces_wp.size // 3
 
     pcd = points_to_open3d(points_np, normals_np)
     mesh_o3d = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
@@ -1548,7 +1548,7 @@ def test_ball_pivoting_face_count_near_open3d(device: str):
     )
     n_faces_o3d = np.asarray(mesh_o3d.triangles).shape[0]
     # Same order of magnitude as open3d (both reconstruct ~2n triangles on a closed sphere).
-    assert 0.5 * n_faces_o3d <= n_faces_tw <= 2.0 * n_faces_o3d
+    assert 0.5 * n_faces_o3d <= n_faces_od <= 2.0 * n_faces_o3d
 
 
 @pytest.mark.parity("ball_pivoting", "pymeshlab")
@@ -1570,25 +1570,25 @@ def test_ball_pivoting_matches_pymeshlab(device: str):
     **Bug class excluded:** a front that closes the surface at the wrong scale or drifts off the
     samples. **Mutation probe** on the chamfer, normalized by the reference's own sampling floor
     (0.0196 at 8 000 samples, essentially the whole signal, so the raw number is not usable):
-    measured ratio **0.99**, against **1.47** for a 2% scale of triwarp's output, **2.76** for 5%
+    measured ratio **0.99**, against **1.47** for a 2% scale of ordito's output, **2.76** for 5%
     and
     **3.57** for a half-spacing translation. The 1.3 bound therefore sits 1.3x above the measured
     agreement and 1.13x below the smallest probe -- deliberately recorded as the weakest link here,
     because two BPA meshes over one point set cannot differ by more than the sampling density. The
     face-count and vertex-set asserts are the ones with real margin (21x and exact).
 
-    One genuine difference, asserted rather than smoothed over: triwarp's result is watertight and
+    One genuine difference, asserted rather than smoothed over: ordito's result is watertight and
     MeshLab's is not, because those 3 missing faces are unclosed holes.
     """
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    _index_wp, distance_wp = tw.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")
+    _index_wp, distance_wp = od.neighbors.query_nearest(points_wp, points_wp, k=7, backend="bvh")
     neighbor_distance_np = distance_wp.numpy()[:, 1:]
     spacing = float(np.mean(neighbor_distance_np[np.isfinite(neighbor_distance_np)]))
     radius = 1.5 * spacing
 
-    vertices_wp, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
     mesh_wp = warp_to_trimesh(vertices_wp, faces_wp)
 
     meshset_pml = points_to_pymeshlab(points_np, normals_np)
@@ -1610,7 +1610,7 @@ def test_ball_pivoting_matches_pymeshlab(device: str):
     floor = symmetric_chamfer(mesh_pml, mesh_pml, n_samples=8000)
     assert symmetric_chamfer(mesh_wp, mesh_pml, n_samples=8000) < 1.3 * floor
 
-    # triwarp closes the surface; MeshLab leaves those three faces as holes.
+    # ordito closes the surface; MeshLab leaves those three faces as holes.
     assert mesh_wp.is_watertight
     assert not mesh_pml.is_watertight
 
@@ -1619,13 +1619,13 @@ def test_ball_pivoting_small_radius_leaves_holes(device: str):
     points_np, normals_np = _sphere_cloud(3)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
 
-    _idx, dist = tw.neighbors.query_nearest(points_wp, points_wp, k=2, backend="bvh")
+    _idx, dist = od.neighbors.query_nearest(points_wp, points_wp, k=2, backend="bvh")
     spacing = float(np.mean(dist.numpy()[:, 1][np.isfinite(dist.numpy()[:, 1])]))
 
-    _v_small, faces_small = tw.reconstruction.ball_pivoting(
+    _v_small, faces_small = od.reconstruction.ball_pivoting(
         points_wp, normals_wp, radius=0.2 * spacing
     )
-    _v_ok, faces_ok = tw.reconstruction.ball_pivoting(points_wp, normals_wp, radius=1.5 * spacing)
+    _v_ok, faces_ok = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=1.5 * spacing)
     # A ball far smaller than the sampling never rests on three points: far fewer (or no) faces.
     assert faces_small.size < faces_ok.size
 
@@ -1634,12 +1634,12 @@ def test_ball_pivoting_estimated_normals(device: str):
     points_np, _normals = _sphere_cloud(3)
     points_wp = points_to_warp(points_np, device)
     # normals=None triggers PCA normal estimation (valid for this star-shaped cloud).
-    _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, None)
+    _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, None)
     assert faces_wp.size > 0
 
 
 def test_ball_pivoting_too_few_points(device: str):
     points_wp = wp.array(np.zeros((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
     normals_wp = wp.array(np.ones((2, 3), dtype=np.float64), dtype=wp.vec3, device=device)
-    _vertices, faces_wp = tw.reconstruction.ball_pivoting(points_wp, normals_wp)
+    _vertices, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp)
     assert faces_wp.size == 0

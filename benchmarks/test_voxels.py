@@ -1,8 +1,8 @@
 """
-Benchmarks for ``triwarp.voxels``.
+Benchmarks for ``ordito.voxels``.
 
 Every group here is really a race between **one hash table and one NanoVDB grid**. open3d keeps a
-``std::unordered_map<Eigen::Vector3i>`` and walks it on one core; triwarp keeps a NanoVDB index grid
+``std::unordered_map<Eigen::Vector3i>`` and walks it on one core; ordito keeps a NanoVDB index grid
 whose build deduplicates as it goes and whose membership query is an ``O(1)`` probe from a kernel.
 So the interesting reading is not any single row but the *slope*: how each side responds to the
 cubic axis when the cell shrinks.
@@ -60,7 +60,7 @@ already does.
 
 ``closing`` and ``opening`` are ``dilate`` and ``erode`` composed in the two orders, so their rows
 would be the sum of two rows that already exist. ``union`` / ``intersection`` / ``difference`` and
-``revoxelize`` have no row for the reference half rather than the triwarp half: MeshLib answers the
+``revoxelize`` have no row for the reference half rather than the ordito half: MeshLib answers the
 set algebra as a bitwise fold over a dense ``VoxelBitSet``, so a ratio against a sparse rebuild
 reports the fixture's density, and trimesh's ``ops.boolean_sparse`` needs the optional ``sparse``
 package, which is not a dependency here. ``revoxelize`` is one occupancy probe per new cell over a
@@ -83,8 +83,8 @@ import trimesh.voxel.ops as tm_ops
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, BenchLibrary, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -121,7 +121,7 @@ def _voxel_size(bench_case: BenchCase, divisor: int) -> float:
     "cell-for-cell in tests/test_voxels.py::test_voxelize_mesh_matches_open3d.",
 )
 @pytest.mark.benchmark(group="voxelize_mesh")
-@pytest.mark.benchlibs("triwarp", "open3d", "trimesh", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "trimesh", "pyvista", "meshlib")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)
 def test_voxelize_mesh(bench_case: BenchCase, divisor: int) -> None:
     """
@@ -138,7 +138,7 @@ def test_voxelize_mesh(bench_case: BenchCase, divisor: int) -> None:
 
     **pyvista's row is the solid mask**, ``voxelize_binary_mask``, which is why it takes the same
     ``dimensions`` the divisor implies rather than a cell width: it is sized by grid extent, not by
-    pitch. It fills the interior, so read it against triwarp's ``mode="solid"`` cost rather than the
+    pitch. It fills the interior, so read it against ordito's ``mode="solid"`` cost rather than the
     surface row timed here -- the containment relation between the two answers is pinned in
     ``tests/test_voxels.py``. It runs to hundreds of milliseconds at the coarse lattice, so it is
     capped at ``bunny``.
@@ -204,14 +204,14 @@ def test_voxelize_mesh(bench_case: BenchCase, divisor: int) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     origin_wp = wp.vec3(*origin.tolist())
     grid = bench_case.run(
-        lambda: tw.voxels.voxelize_mesh(vertices, faces, voxel_size, origin=origin_wp),
+        lambda: od.voxels.voxelize_mesh(vertices, faces, voxel_size, origin=origin_wp),
         rounds=_HEAVY_ROUNDS,
     )
     assert int(grid.get_active_stats().voxel_count) > 0
 
 
 @pytest.mark.benchmark(group="voxelize_points")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_voxelize_points(bench_case: BenchCase) -> None:
     """
     Pure ``N``: bin a cloud and deduplicate, with the pitch pinned so only the point count moves.
@@ -233,18 +233,18 @@ def test_voxelize_points(bench_case: BenchCase) -> None:
         return
 
     points = bench_case.vertices_wp
-    grid = bench_case.run(lambda: tw.voxels.voxelize_points(points, voxel_size))
+    grid = bench_case.run(lambda: od.voxels.voxelize_points(points, voxel_size))
     assert int(grid.get_active_stats().voxel_count) > 0
 
 
 @pytest.mark.benchmark(group="voxel_down_sample")
-@pytest.mark.benchlibs("triwarp", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 @pytest.mark.parametrize("divisor", _CELL_DIVISORS)
 def test_voxel_down_sample(bench_case: BenchCase, divisor: int) -> None:
     """
     The inverse map plus a deterministic segment reduce, against open3d's hash-map accumulation.
 
-    triwarp pays a radix sort over the point count that open3d does not, in exchange for a bitwise
+    ordito pays a radix sort over the point count that open3d does not, in exchange for a bitwise
     reproducible mean; the pitch axis is what shows whether that sort or the grid build dominates.
     A finer pitch means more voxels and shorter segments, so the sort's share rises while the sort
     itself — one pass over the point count — does not move at all.
@@ -275,12 +275,12 @@ def test_voxel_down_sample(bench_case: BenchCase, divisor: int) -> None:
         return
 
     points = bench_case.vertices_wp
-    pooled = bench_case.run(lambda: tw.voxels.voxel_down_sample(points, voxel_size))
+    pooled = bench_case.run(lambda: od.voxels.voxel_down_sample(points, voxel_size))
     assert int(pooled.shape[0]) > 0
 
 
 @pytest.mark.benchmark(group="cells")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("order", ["grid", "sorted"])
 def test_cells(bench_case: BenchCase, order: Literal["grid", "sorted"]) -> None:
     """
@@ -297,8 +297,8 @@ def test_cells(bench_case: BenchCase, order: Literal["grid", "sorted"]) -> None:
     group exists at all: it is where a wrapper-floor change shows up.
     """
     voxel_size = _voxel_size(bench_case, _MORPHOLOGY_DIVISOR)
-    grid = tw.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
-    rows = bench_case.run(lambda: tw.voxels.cells(grid, order=order))
+    grid = od.voxels.voxelize_points(bench_case.vertices_wp, voxel_size)
+    rows = bench_case.run(lambda: od.voxels.cells(grid, order=order))
     assert int(rows.shape[1]) == 3
 
 
@@ -309,7 +309,7 @@ _QUERY_COUNTS = [10_000, 1_000_000]
 
 
 @pytest.mark.benchmark(group="occupancy_at_points")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 @pytest.mark.parametrize("n_queries", _QUERY_COUNTS)
 def test_occupancy_at_points(bench_case: BenchCase, n_queries: int) -> None:
     """
@@ -342,9 +342,9 @@ def test_occupancy_at_points(bench_case: BenchCase, n_queries: int) -> None:
         return
 
     points = bench_case.vertices_wp
-    grid = tw.voxels.voxelize_points(points, voxel_size)
+    grid = od.voxels.voxelize_points(points, voxel_size)
     queries = wp.array(queries_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
-    mask = bench_case.run(lambda: tw.voxels.occupancy_at_points(grid, queries))
+    mask = bench_case.run(lambda: od.voxels.occupancy_at_points(grid, queries))
     assert int(mask.shape[0]) == n_queries
 
 
@@ -377,7 +377,7 @@ def _expand_ml(mask_ml: mm.VoxelBitSet, indexer_ml: mm.VolumeIndexer) -> mm.Voxe
 
 
 @pytest.mark.benchmark(group="dilate")
-@pytest.mark.benchlibs("triwarp", "trimesh", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "meshlib")
 def test_dilate(bench_case: BenchCase) -> None:
     """
     Grow the set by one shell: a ``(k + 1) * n_voxels`` candidate buffer against dense ndimage.
@@ -415,18 +415,18 @@ def test_dilate(bench_case: BenchCase) -> None:
         assert dilated_ml.count() > int(occupancy_np.sum())
         return
 
-    grid = tw.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
-    dilated = bench_case.run(lambda: tw.voxels.dilate(grid))
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    dilated = bench_case.run(lambda: od.voxels.dilate(grid))
     assert int(dilated.get_active_stats().voxel_count) > 0
 
 
 @pytest.mark.benchmark(group="fill_cavities")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_fill_cavities(bench_case: BenchCase) -> None:
     """
     The one group whose cost is *not* the grid: it is the empty complement, which grows cubically.
 
-    triwarp labels the empty cells' 6-connected components with an ECL-CC union-find driven from an
+    ordito labels the empty cells' 6-connected components with an ECL-CC union-find driven from an
     implicit stencil — three backward probes per cell, one launch, zero edge memory — where
     ``scipy.ndimage.binary_fill_holes`` runs a serial binary propagation over the same dense box.
     A regression to an explicit edge list would show up here first, as memory before time.
@@ -443,13 +443,13 @@ def test_fill_cavities(bench_case: BenchCase) -> None:
         assert filled_tm.sum > 0
         return
 
-    grid = tw.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
-    filled = bench_case.run(lambda: tw.voxels.fill_cavities(grid), rounds=_HEAVY_ROUNDS)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    filled = bench_case.run(lambda: od.voxels.fill_cavities(grid), rounds=_HEAVY_ROUNDS)
     assert int(filled.get_active_stats().voxel_count) > 0
 
 
 @pytest.mark.benchmark(group="fill_orthographic")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_fill_orthographic(bench_case: BenchCase) -> None:
     """
     The cheap fill: three axis sweeps and an intersection, against three dense NumPy reductions.
@@ -470,19 +470,19 @@ def test_fill_orthographic(bench_case: BenchCase) -> None:
         assert filled_tm.sum() > 0
         return
 
-    grid = tw.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
-    filled = bench_case.run(lambda: tw.voxels.fill_orthographic(grid), rounds=_HEAVY_ROUNDS)
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    filled = bench_case.run(lambda: od.voxels.fill_orthographic(grid), rounds=_HEAVY_ROUNDS)
     assert int(filled.get_active_stats().voxel_count) > 0
 
 
 @pytest.mark.benchmark(group="to_boxes")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista")
 def test_to_boxes(bench_case: BenchCase) -> None:
     """
     Mesh the voxel set as cubes: shared nanogrid corners against ``12 n`` unshared triangles.
 
     ``multibox`` tiles a template cube per centre and never welds, so it always emits ``8 n``
-    vertices; triwarp's corners come deduplicated out of ``warp.fem``'s vertex grid, which is a
+    vertices; ordito's corners come deduplicated out of ``warp.fem``'s vertex grid, which is a
     smaller output *and* skips a welding pass. Both rows emit every face (``cull_internal=False``)
     so the comparison is like for like.
 
@@ -517,19 +517,19 @@ def test_to_boxes(bench_case: BenchCase) -> None:
         assert boxes_tm.faces.shape[0] > 0
         return
 
-    grid = tw.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
-    _vertices, faces = bench_case.run(lambda: tw.voxels.to_boxes(grid, cull_internal=False))
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    _vertices, faces = bench_case.run(lambda: od.voxels.to_boxes(grid, cull_internal=False))
     assert int(faces.shape[0]) > 0
 
 
 @pytest.mark.benchmark(group="voxel_corners")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_voxel_corners(bench_case: BenchCase) -> None:
     """
     The deduplicated corner lattice, from ``warp.fem``'s vertex grid against igl's own hash.
 
     igl's ``unique_sparse_voxel_corners`` builds all ``8 n`` candidate subscripts, packs each into
-    an ``int64`` code and runs ``igl::unique`` over them. triwarp builds none of that: the nanogrid
+    an ``int64`` code and runs ``igl::unique`` over them. ordito builds none of that: the nanogrid
     geometry derives its vertex grid from the cell grid, and the per-cell indices are eight ``O(1)``
     probes. The geometry construction is the fixed cost on this row.
     """
@@ -550,8 +550,8 @@ def test_voxel_corners(bench_case: BenchCase) -> None:
         assert corners_igl.shape[0] > 0
         return
 
-    grid = tw.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
-    corners, _cell_corners = bench_case.run(lambda: tw.voxels.voxel_corners(grid))
+    grid = od.voxels.voxelize_mesh(bench_case.vertices_wp, bench_case.faces_wp, voxel_size)
+    corners, _cell_corners = bench_case.run(lambda: od.voxels.voxel_corners(grid))
     assert int(corners.shape[0]) > 0
 
 
@@ -575,9 +575,9 @@ def _normalized_points_np(bench_case: BenchCase) -> np.ndarray:
     """
     Map the mesh's vertices into the ``[-1, 1]`` cube pytorch3d's local space wants.
 
-    An *input* rather than part of the work, so it is cached and built on the host: the triwarp row
+    An *input* rather than part of the work, so it is cached and built on the host: the ordito row
     reads the raw positions and a ``bounds`` pair instead, which is the same affine map expressed
-    where triwarp expresses it. Handing pytorch3d unnormalized coordinates would put every point
+    where ordito expresses it. Handing pytorch3d unnormalized coordinates would put every point
     outside its volume and time a clamp.
     """
     if bench_case.mesh_name not in _normalized_np_cache:
@@ -601,7 +601,7 @@ def _splat_field_np(resolution: int) -> np.ndarray:
 
 @pytest.mark.benchmark(group="splat_onto_grid")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "pytorch3d")
 def test_splat_onto_grid(bench_case: BenchCase) -> None:
     """
     Scatter a per-point vector onto a dense lattice: eight atomic adds per point, then a divide.
@@ -613,11 +613,11 @@ def test_splat_onto_grid(bench_case: BenchCase) -> None:
     **pytorch3d** is the only reference and it is the same algorithm at the same weights, pinned
     bit-for-bit on the host in ``tests/test_voxels.py::test_splat_onto_grid_matches_pytorch3d``. It
     has CUDA kernels of its own, so both its rows are real: read the ``-cuda`` one against
-    ``triwarp-cuda``. Its lattice is transposed relative to triwarp's and its coordinates are the
+    ``ordito-cuda``. Its lattice is transposed relative to ordito's and its coordinates are the
     ``[-1, 1]`` cube, so the row hands it the equivalent box rather than the same numbers; neither
     difference is work. Its ``volume_densities`` / ``volume_features`` are *inputs* it accumulates
     into, so they are zeroed outside the timed callable -- allocating them inside would price two
-    ``64^3`` allocations, which is what triwarp's row pays and states below.
+    ``64^3`` allocations, which is what ordito's row pays and states below.
     """
     resolution = 64
     if bench_case.kind == "pytorch3d":
@@ -650,7 +650,7 @@ def test_splat_onto_grid(bench_case: BenchCase) -> None:
     points = bench_case.vertices_wp
     bounds = _splat_bounds(bench_case)
     field, density = bench_case.run(
-        lambda: tw.voxels.splat_onto_grid(
+        lambda: od.voxels.splat_onto_grid(
             points, points, (resolution, resolution, resolution), bounds=bounds
         )
     )
@@ -660,7 +660,7 @@ def test_splat_onto_grid(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="sample_grid_trilinear")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "pytorch3d")
 def test_sample_grid_trilinear(bench_case: BenchCase) -> None:
     """
     The gather half: eight coalesced lattice reads per query against the same eight atomics.
@@ -673,7 +673,7 @@ def test_sample_grid_trilinear(bench_case: BenchCase) -> None:
     what this row times: that is torch's own trilinear sampler and the independent implementation
     ``tests/test_voxels.py::test_sample_grid_trilinear_matches_pytorch3d`` compares against
     (4.77e-07). ``align_corners=True`` and ``padding_mode="border"`` are the settings that match
-    triwarp's ``bounds`` and its clamped stencil; both are non-default and both change the answer
+    ordito's ``bounds`` and its clamped stencil; both are non-default and both change the answer
     rather than the cost.
     """
     resolution = 64
@@ -694,17 +694,17 @@ def test_sample_grid_trilinear(bench_case: BenchCase) -> None:
         )
         assert sampled_p3d.numel() == bench_case.n_vertices
         return
-    field = twt.as_array3d(
+    field = odt.as_array3d(
         wp.array(field_np, dtype=wp.float32, device=bench_case.device), wp.float32
     )
     points = bench_case.vertices_wp
     bounds = _splat_bounds(bench_case)
-    sampled = bench_case.run(lambda: tw.voxels.sample_grid_trilinear(field, points, bounds=bounds))
+    sampled = bench_case.run(lambda: od.voxels.sample_grid_trilinear(field, points, bounds=bounds))
     assert sampled.size == bench_case.n_vertices
 
 
 @pytest.mark.benchmark(group="grid_points")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista")
 @pytest.mark.parametrize("resolution", _LATTICE_RESOLUTIONS)
 def test_grid_points(bench_lib: BenchLibrary, resolution: int) -> None:
     """
@@ -716,7 +716,7 @@ def test_grid_points(bench_lib: BenchLibrary, resolution: int) -> None:
 
     pyvista's ``ImageData(...).points`` is VTK's lattice generation and nothing else, which is the
     honest caveat and also the point: it is a *constructor*, so the row measures the same allocate-
-    and-fill this group exists to price. Its ordering is **x fastest** where triwarp's is z fastest,
+    and-fill this group exists to price. Its ordering is **x fastest** where ordito's is z fastest,
     so the two differ by a permutation and not by a value (``tests/test_voxels.py`` names it).
     """
     shape = (resolution, resolution, resolution)
@@ -744,5 +744,5 @@ def test_grid_points(bench_lib: BenchLibrary, resolution: int) -> None:
 
     device = bench_lib.device
     bounds = (wp.vec3(0.0, 0.0, 0.0), wp.vec3(1.0, 1.0, 1.0))
-    lattice = bench_lib.run(lambda: tw.voxels.grid_points(shape, bounds=bounds, device=device))
+    lattice = bench_lib.run(lambda: od.voxels.grid_points(shape, bounds=bounds, device=device))
     assert lattice.size == resolution**3

@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.geodesic_walk``: batched straightest-geodesic geodesic_walk.
+Benchmarks for ``ordito.geodesic_walk``: batched straightest-geodesic geodesic_walk.
 
 Two axes, and the parameter is the interesting one:
 
@@ -21,7 +21,7 @@ References
 entry points this module splits, so every axis here has a second implementation rather than just the
 ray-count one. Two things to keep in mind when reading its rows: it traces a single ray per call
 (the API takes one start point), and its construction -- building geometry-central's halfedge mesh
--- is inside the timed callable, matching this suite's convention for reference setup. triwarp's row
+-- is inside the timed callable, matching this suite's convention for reference setup. ordito's row
 likewise includes its own ``halfedge_twins`` and one-ring prologue.
 
 That construction is the *dominant* term once the mesh is large -- an order of magnitude or more
@@ -46,7 +46,7 @@ import potpourri3d as pp3d
 import pytest
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, skip_larger_than
 
 # The reference traces one ray per Python call, so the largest ray count is slow on its side.
@@ -72,16 +72,16 @@ def _rays(bench_case: BenchCase, n_rays: int) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _run_case(bench_case: BenchCase, n_rays: int) -> None:
-    """Trace ``n_rays`` geodesics, in triwarp or potpourri3d."""
+    """Trace ``n_rays`` geodesics, in ordito or potpourri3d."""
     start_np, directions_np = _rays(bench_case, n_rays)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         start = wp.array(start_np, dtype=wp.int32, device=bench_case.device)
         directions = wp.array(
             directions_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device
         )
         _, offsets = bench_case.run(
-            lambda: tw.geodesic_walk.trace_from_vertex(vertices, faces, start, directions),
+            lambda: od.geodesic_walk.trace_from_vertex(vertices, faces, start, directions),
             rounds=_ROUNDS,
         )
         assert offsets.shape == (n_rays + 1,)
@@ -101,7 +101,7 @@ def _run_case(bench_case: BenchCase, n_rays: int) -> None:
 
 @pytest.mark.benchmark(group="trace_rays")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 @pytest.mark.parametrize("n_rays", _RAY_COUNTS)
 def test_trace_ray_count(bench_case: BenchCase, n_rays: int) -> None:
     """One mesh, 1 to 4 096 rays: the axis batching exists for."""
@@ -110,7 +110,7 @@ def test_trace_ray_count(bench_case: BenchCase, n_rays: int) -> None:
 
 @pytest.mark.benchmark(group="trace_locality")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_trace_locality(bench_case: BenchCase) -> None:
     """
     The same 1 024 rays on meshes of equal size but very different shape.
@@ -120,7 +120,7 @@ def test_trace_locality(bench_case: BenchCase) -> None:
     which is what geometry-central requires; probed before the row landed.
 
     The reference is per-ray and its halfedge build is inside the timed callable, so its row barely
-    moves across this axis while triwarp's is the one carrying the locality signal. That asymmetry
+    moves across this axis while ordito's is the one carrying the locality signal. That asymmetry
     is the row's content: it says the diameter axis is a *GPU* locality question, not a property of
     the algorithm.
     """
@@ -129,7 +129,7 @@ def test_trace_locality(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="trace_from_face")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_trace_from_face(bench_case: BenchCase) -> None:
     """
     The walk without the wedge search, from face-interior start points.
@@ -174,7 +174,7 @@ def test_trace_from_face(bench_case: BenchCase) -> None:
     )
     directions = wp.array(directions_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
     _, offsets = bench_case.run(
-        lambda: tw.geodesic_walk.trace_from_face(
+        lambda: od.geodesic_walk.trace_from_face(
             vertices, faces, start_faces, barycentric, directions
         ),
         rounds=_ROUNDS,
@@ -187,7 +187,7 @@ _PATH_COUNTS = [1, 64, 4096]
 
 @pytest.mark.benchmark(group="geodesic_path")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "potpourri3d", "igl")
+@pytest.mark.benchlibs("ordito", "potpourri3d", "igl")
 @pytest.mark.parametrize("n_paths", _PATH_COUNTS)
 def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     """
@@ -203,7 +203,7 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     shortest path) and ``igl.exact_geodesic`` the exact geodesic **distance** by MMP window
     propagation, so neither is doing the same amount of work as an approximate descent. They are
     here for scale and because they bound the answer: ``tests/test_geodesic_walk.py`` asserts
-    triwarp's path is never shorter than igl's exact distance and measures how much longer it is.
+    ordito's path is never shorter than igl's exact distance and measures how much longer it is.
     Both take one query per call, so their rows include a Python loop -- read them as the cost of
     *that* API shape.
 
@@ -212,7 +212,7 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     count and igl is flat but far off, since MMP propagates windows over the whole surface whatever
     is asked of it.
 
-    triwarp's cost at *one* path is almost entirely the factorization, not the walk -- which is the
+    ordito's cost at *one* path is almost entirely the factorization, not the walk -- which is the
     honest caveat on the left column and the reason ``operators=`` exists on the wrapper.
     """
     device = bench_case.device
@@ -259,14 +259,14 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     source = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     targets = wp.array(targets_np, dtype=wp.int32, device=device)
     _points, offsets = bench_case.run(
-        lambda: tw.geodesic_walk.geodesic_path(vertices, faces, source, targets), rounds=_ROUNDS
+        lambda: od.geodesic_walk.geodesic_path(vertices, faces, source, targets), rounds=_ROUNDS
     )
     assert offsets.shape == (n_paths + 1,)
 
 
 @pytest.mark.benchmark(group="shorten_loop")
 @pytest.mark.benchaxis("genus")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_shorten_loop(bench_case: BenchCase) -> None:
     """
     Shortening a homology basis, on the one axis in either registry that has a genus.
@@ -277,14 +277,14 @@ def test_shorten_loop(bench_case: BenchCase) -> None:
 
     potpourri3d's ``find_geodesic_loop`` is the reference and answers **one loop per call**, so its
     row is linear in the genus by construction; the solver build is inside its callable, matching
-    this suite's convention for reference setup, and triwarp's row likewise carries its own
+    this suite's convention for reference setup, and ordito's row likewise carries its own
     ``halfedge_twins`` and one-ring prologue. The two do not compute the same curve -- this one
     stays on mesh edges, that one flips its way into face interiors -- so read the row against the
     length gap ``tests/test_geodesic_walk.py`` pins, not as a like-for-like.
 
     Both columns are dominated by their fixed cost at genus 1 and by the loops at genus 64, so the
-    *marginal* per-loop cost is the number worth keeping; triwarp is well ahead on it. This is the
-    first row in this family where triwarp is ahead -- ``homology_generators``, which produces the
+    *marginal* per-loop cost is the number worth keeping; ordito is well ahead on it. This is the
+    first row in this family where ordito is ahead -- ``homology_generators``, which produces the
     input, is behind meshlib -- so the two groups together say the basis is the module's bottleneck
     and shortening it is not.
     """
@@ -294,11 +294,11 @@ def test_shorten_loop(bench_case: BenchCase) -> None:
     if bench_case.kind == "potpourri3d":
         vertices_np = np.ascontiguousarray(bench_case.vertices_np, dtype=np.float64)
         faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
-        # The basis is triwarp's either way, and a reference case has no device -- so build it on
+        # The basis is ordito's either way, and a reference case has no device -- so build it on
         # the host, outside the timed callable, and hand both sides the same loops.
         loops_np = [
             loop.numpy().astype(np.int64)
-            for loop in tw.homology.homology_generators(
+            for loop in od.homology.homology_generators(
                 wp.array(vertices_np.astype(np.float32), dtype=wp.vec3, device="cpu"),
                 wp.array(faces_np.ravel().astype(np.int32), dtype=wp.int32, device="cpu"),
             )
@@ -312,9 +312,9 @@ def test_shorten_loop(bench_case: BenchCase) -> None:
         return
 
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops = tw.homology.homology_generators(vertices, faces)
+    loops = od.homology.homology_generators(vertices, faces)
     shortened, sweeps = bench_case.run(
-        lambda: tw.geodesic_walk.shorten_loop(vertices, faces, loops), rounds=_ROUNDS
+        lambda: od.geodesic_walk.shorten_loop(vertices, faces, loops), rounds=_ROUNDS
     )
     assert len(shortened) == len(loops)
     assert sweeps > 0
@@ -322,19 +322,19 @@ def test_shorten_loop(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="shorten_loop_with_offsets")
 @pytest.mark.benchaxis("genus")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_shorten_loop_with_offsets(bench_case: BenchCase) -> None:
     """
     ``shorten_loop``'s row on the packed basis: no pack of the input, no split of the output.
 
-    Read against that group's triwarp row, from the same basis built outside the timed callable.
+    Read against that group's ordito row, from the same basis built outside the timed callable.
     """
     if _GENERATORS[bench_case.mesh_name] == 0:
         pytest.skip(f"{bench_case.mesh_name} is genus 0: there is no loop to shorten")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    loops, offsets = tw.homology.homology_generators_with_offsets(vertices, faces)
+    loops, offsets = od.homology.homology_generators_with_offsets(vertices, faces)
     _shortened, shortened_offsets, sweeps = bench_case.run(
-        lambda: tw.geodesic_walk.shorten_loop_with_offsets(vertices, faces, loops, offsets),
+        lambda: od.geodesic_walk.shorten_loop_with_offsets(vertices, faces, loops, offsets),
         rounds=_ROUNDS,
     )
     assert shortened_offsets.size == offsets.size

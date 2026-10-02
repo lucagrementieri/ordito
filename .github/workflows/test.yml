@@ -34,9 +34,9 @@ jobs:
       # `dev` carries ruff; nothing else is imported to lint.
       - run: uv sync --group dev
       - name: ruff format
-        run: uv run ruff format --check triwarp tests benchmarks
+        run: uv run ruff format --check ordito tests benchmarks
       - name: ruff check
-        run: uv run ruff check triwarp tests benchmarks
+        run: uv run ruff check ordito tests benchmarks
 
   typecheck:
     runs-on: ubuntu-latest
@@ -46,7 +46,7 @@ jobs:
         with:
           enable-cache: true
       - run: uv python install
-      # `--extra io` is load-bearing, not tidiness: `triwarp/io.py` imports `meshio` under
+      # `--extra io` is load-bearing, not tidiness: `ordito/io.py` imports `meshio` under
       # `if TYPE_CHECKING:`, which basedpyright resolves even though the runtime import is lazy.
       # Without it the gate reports a spurious `reportMissingImports` and fails green-looking
       # code -- the failure mode section 8 already warns about for a dev-only environment.
@@ -54,14 +54,14 @@ jobs:
       # basedpyright reads `venv = ".venv"` / `venvPath = "."` from pyproject.toml, which is
       # where `uv sync` puts the environment, so no interpreter flag is needed here.
       #
-      # The explicit `triwarp` path is load-bearing: `include` in pyproject.toml also covers
+      # The explicit `ordito` path is load-bearing: `include` in pyproject.toml also covers
       # `tests` and `benchmarks`, and checking those needs all nine reference libraries of
       # section 7.6 resolvable -- which is the disk reclaim, the apt install and the from-source
       # pytorch3d build that `pytest-cpu` below spends minutes on. An explicit path overrides
       # `include`, so this job stays seconds long and still gates the shipped package. The wide
       # gate runs in `pytest-cpu`, where that environment already exists.
       - name: basedpyright (shipped package)
-        run: uv run basedpyright triwarp
+        run: uv run basedpyright ordito
 
   docs:
     runs-on: ubuntu-latest
@@ -73,7 +73,7 @@ jobs:
       - run: uv python install
       - run: uv sync --group docs
       # The mechanical backstop for the five artifacts a moved or renamed public function has to
-      # take with it (section 4.4): `--strict` exits 1 on a dangling `[name][triwarp.old.path]`.
+      # take with it (section 4.4): `--strict` exits 1 on a dangling `[name][ordito.old.path]`.
       - name: Build docs
         run: uv run zensical build --strict
 
@@ -82,8 +82,8 @@ jobs:
   #
   # This is the one thing a `uv sync --all-groups` environment never exercises: an end user
   # installs a wheel into a bare interpreter with no CUDA, no reference libraries and no dev
-  # tooling. `import triwarp` has been found to regress in exactly that configuration before
-  # (section 16.2 -- the lazy `__init__` guard runs `import triwarp` in a subprocess for the
+  # tooling. `import ordito` has been found to regress in exactly that configuration before
+  # (section 16.2 -- the lazy `__init__` guard runs `import ordito` in a subprocess for the
   # same reason), so it is checked on every push rather than only at release time.
   # ---------------------------------------------------------------------------
   wheel:
@@ -114,19 +114,19 @@ jobs:
       - name: Smoke-test the installed wheel
         run: |
           /tmp/smoke/bin/python -c "
-          import triwarp as tw
+          import ordito as od
           # Reads the installed distribution metadata, so it can only be checked from a real
           # install -- in a source tree it falls back to a sentinel.
-          assert tw.__version__ != '0.0.0+unknown', tw.__version__
-          vertices, faces = tw.creation.icosphere(subdivisions=2)
+          assert od.__version__ != '0.0.0+unknown', od.__version__
+          vertices, faces = od.creation.icosphere(subdivisions=2)
           assert faces.shape[0] == 960, faces.shape
-          mesh = tw.Trimesh(vertices, faces)
+          mesh = od.Trimesh(vertices, faces)
           assert mesh.is_watertight
           assert mesh.euler_characteristic == 2
-          print('ok: triwarp', tw.__version__, '--', vertices.shape[0], 'vertices on', vertices.device)
+          print('ok: ordito', od.__version__, '--', vertices.shape[0], 'vertices on', vertices.device)
           "
       - name: Check py.typed shipped
-        run: unzip -l dist/*.whl | grep -q 'triwarp/py.typed'
+        run: unzip -l dist/*.whl | grep -q 'ordito/py.typed'
 
   # ---------------------------------------------------------------------------
   # The CPU regression suite.
@@ -221,7 +221,7 @@ jobs:
       #
       # Two things this number is not, both worth knowing before reading the badge:
       #
-      #   * It is not kernel coverage. `triwarp/kernels/` is omitted in `pyproject.toml`'s
+      #   * It is not kernel coverage. `ordito/kernels/` is omitted in `pyproject.toml`'s
       #     `[tool.coverage.run]`, because a `@wp.kernel` body executes on the device and never
       #     under coverage.py's tracer -- measured at 35 % for a kernel module whose every line
       #     ran on all 53 of its tests. The gate is over the Python wrapper layer, which is where
@@ -238,7 +238,7 @@ jobs:
       - name: pytest (CPU device, with coverage)
         run: >
           uv run pytest --device=cpu -q
-          --cov=triwarp
+          --cov=ordito
           --cov-report=term
           --cov-report=json
 
@@ -260,7 +260,7 @@ jobs:
       # The badge, written to a Gist that shields.io renders through its `endpoint` API. Free, and
       # nothing leaves GitHub.
       #
-      # Setup, once: create a secret Gist containing a file named `triwarp-coverage.json` (any
+      # Setup, once: create a secret Gist containing a file named `ordito-coverage.json` (any
       # placeholder content), put its id in `gistID` below, then create a personal access token
       # with the single `gist` scope and add it as the `GIST_TOKEN` repository secret.
       #
@@ -277,7 +277,7 @@ jobs:
         with:
           auth: ${{ secrets.GIST_TOKEN }}
           gistID: 208b2ea8a3b764ca7c10d82195533738
-          filename: triwarp-coverage.json
+          filename: ordito-coverage.json
           label: coverage
           message: ${{ steps.coverage.outputs.percent }}%
           valColorRange: ${{ steps.coverage.outputs.percent }}
@@ -299,7 +299,7 @@ jobs:
       # does: `include` covers `tests` and `benchmarks`, and this is the only job whose
       # environment resolves every reference library -- but failing it earlier would abort the
       # job before the badge published, freezing the badge exactly as a coverage regression
-      # would. The `typecheck` job already gated `triwarp/` on its own, seconds after push.
+      # would. The `typecheck` job already gated `ordito/` on its own, seconds after push.
       - name: basedpyright (tests and benchmarks)
         run: uv run basedpyright
 

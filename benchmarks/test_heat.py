@@ -1,5 +1,5 @@
 """
-Benchmarks for the three heat-diffusion solvers of ``triwarp.heat``.
+Benchmarks for the three heat-diffusion solvers of ``ordito.heat``.
 
 One module because they are one family and share the property this suite really measures: each is
 two or three conjugate-gradient solves against a cotangent or connection Laplacian, so each is
@@ -22,7 +22,7 @@ heat decays exponentially and underflows ``float32``, collapsing the far field �
 GPU means the solves run at the device's much lower double-precision rate. Inherent to the method,
 not a tuning choice.
 
-``geodesic_ball`` is **not** here: it lives in ``triwarp.neighbors`` and is timed as
+``geodesic_ball`` is **not** here: it lives in ``ordito.neighbors`` and is timed as
 ``query_geodesic_ball`` in [`test_proximity.py`](test_proximity.py).
 
 Four references, three of them the same method a different way. **libigl**'s ``heat_geodesics``
@@ -31,7 +31,7 @@ comparison; on a scan mesh ``heat_geodesics_precompute`` raises ``Precomputation
 factors the cotangent and Poisson systems directly. **potpourri3d** (geometry-central) is
 constructed with ``use_robust=False`` so all three sides discretize the same triangulation — its
 default mollifies and flips to an intrinsic Delaunay triangulation first, which is more work and a
-different operator — and it also ships **fast marching**, timed as its own group, which triwarp has
+different operator — and it also ships **fast marching**, timed as its own group, which ordito has
 no equivalent of by design. **pymeshlab**'s
 ``compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex`` states the two properties
 this module is built around in its own documentation ("very sensitive to triangulation", "first run
@@ -46,7 +46,7 @@ All three libraries split this into mesh-dependent setup (assembly, and for the 
 factorization) and a per-source solve, and the ``heat_geodesic`` group reports both points:
 ``setup=full`` puts the setup **inside** the timed callable, which is what a caller computing one
 field pays — timing a back-substitution against a full iterative solve would compare nothing — and
-``setup=amortized`` hoists it out. On triwarp's side that is a real API path (``heat_operators`` fed
+``setup=amortized`` hoists it out. On ordito's side that is a real API path (``heat_operators`` fed
 back through ``heat_geodesic(..., operators=...)``), not a benchmark-only shortcut. The other groups
 report ``full`` only. A single source vertex throughout: the method's cost is essentially
 independent of the number of sources, which change only the right-hand side.
@@ -83,7 +83,7 @@ two scalar solves, ``transport_tangent_vectors`` one ``2 x 2``-block vector solv
 ``extend_scalar``, and ``log_map`` a vector solve plus a full ``heat_geodesic`` plus a gradient
 pass.
 
-**The comparison against the reference flips sign between the two amortized rows** — triwarp far
+**The comparison against the reference flips sign between the two amortized rows** — ordito far
 ahead at ``full`` and behind at ``amortized`` — for the reason the ``heat_geodesic`` rows show: a
 factorization is expensive once and cheap thereafter, conjugate gradient is neither. Transport
 barely feels the quality axis where ``log_map`` feels it several times over, the difference being
@@ -97,7 +97,7 @@ operator, so they are one batched two-column solve rather than two independent C
 ``transport_tangent_vectors`` inherits and ``log_map`` does not (it calls ``heat_geodesic``).
 
 Assembly alone is measured as ``connection_laplacian`` in
-[`test_laplacian.py`](test_laplacian.py), since the operator lives in ``triwarp.laplacian``.
+[`test_laplacian.py`](test_laplacian.py), since the operator lives in ``ordito.laplacian``.
 
 **potpourri3d** is again the only reference, constructed inside the timed callable — which for
 ``MeshVectorHeatSolver`` means a halfedge mesh and factoring both Laplacians — with
@@ -118,7 +118,7 @@ import pytest
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, skip_larger_than
 
 # --------------------------------------------------------------------------
@@ -155,7 +155,7 @@ def _run_case_pml(bench_case: BenchCase, *, amortized: bool) -> None:
 
     The filter caches its factorization on the mesh, so ``amortized=True`` is a *warm* MeshSet --
     the cache primed by one untimed call outside -- and ``amortized=False`` rebuilds the MeshSet per
-    round so every round pays the factorization. That is the same distinction the triwarp and
+    round so every round pays the factorization. That is the same distinction the ordito and
     reference rows draw, expressed in the one API where it needs no special path.
     """
     if amortized:
@@ -178,7 +178,7 @@ def _run_case_pml(bench_case: BenchCase, *, amortized: bool) -> None:
 
 def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
     """
-    Time one heat-geodesic field from vertex 0, in triwarp, libigl or potpourri3d.
+    Time one heat-geodesic field from vertex 0, in ordito, libigl or potpourri3d.
 
     With ``amortized=False`` the mesh-dependent setup is inside the timed callable for all three
     libraries; with ``amortized=True`` it is hoisted out and only the solve is timed. See the module
@@ -206,12 +206,12 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
     if bench_case.kind == "pymeshlab":
         _run_case_pml(bench_case, amortized=amortized)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         sources = _sources_wp(bench_case)
-        operators = tw.heat.heat_operators(vertices, faces) if amortized else None
+        operators = od.heat.heat_operators(vertices, faces) if amortized else None
         distance = bench_case.run(
-            lambda: tw.heat.heat_geodesic(vertices, faces, sources, operators=operators),
+            lambda: od.heat.heat_geodesic(vertices, faces, sources, operators=operators),
             rounds=_GEODESIC_ROUNDS,
         )
         assert distance.shape == (n_vertices,)
@@ -221,7 +221,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
     faces_np = np.ascontiguousarray(bench_case.faces_np, dtype=np.int32)
 
     if bench_case.kind == "potpourri3d":
-        # ``use_robust=False`` matches triwarp's discretization: potpourri3d otherwise mollifies and
+        # ``use_robust=False`` matches ordito's discretization: potpourri3d otherwise mollifies and
         # flips to an intrinsic Delaunay triangulation first (that path arrives with the plan's P5).
         if amortized:
             solver = pp3d.MeshHeatMethodDistanceSolver(vertices_np, faces_np, use_robust=False)
@@ -251,7 +251,7 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
 
 @pytest.mark.benchmark(group="heat_geodesic")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "igl", "potpourri3d", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "potpourri3d", "pymeshlab", "pyvista")
 @pytest.mark.parametrize("setup", ["full", "amortized"])
 def test_heat_geodesic(bench_case: BenchCase, setup: str) -> None:
     """
@@ -267,7 +267,7 @@ def test_heat_geodesic(bench_case: BenchCase, setup: str) -> None:
 
 @pytest.mark.benchmark(group="heat_geodesic_conditioning")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "igl", "potpourri3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "potpourri3d", "pymeshlab")
 def test_heat_geodesic_conditioning(bench_case: BenchCase) -> None:
     """The same field and connectivity, well- and ill-conditioned: several times the cost."""
     _run_case(bench_case)
@@ -290,20 +290,20 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
     """
     The serial single-source geodesics, for scale against the heat solvers on the same meshes.
 
-    triwarp deliberately has no equivalent -- fast marching advances a priority queue one vertex at
+    ordito deliberately has no equivalent -- fast marching advances a priority queue one vertex at
     a time and has no parallel formulation -- so it has no row here. It is here to price that
     decision: the non-PDE alternatives for the same task, on the same axis and the same meshes, so
     the numbers can be read next to the ``heat_geodesic`` table. This group therefore contributes no
-    ``parity`` pairs by construction (see ``tests/parity.py``): "triwarp agrees" is not a statement
-    about a row triwarp does not have.
+    ``parity`` pairs by construction (see ``tests/parity.py``): "ordito agrees" is not a statement
+    about a row ordito does not have.
 
     Four rows, four serial fronts: potpourri3d's fast marching solves the local Eikonal update per
     triangle, MeshLab's ``compute_scalar_by_geodesic_distance_from_given_point_per_vertex`` advances
     a Dijkstra-style front over the edge graph, **libigl's ``exact_geodesic``** propagates the MMP
     exact windows -- the only one that is exact rather than first-order -- and **meshlib's
     ``computeSurfaceDistances``** is a fourth Eikonal front, the only one of the four that is
-    multi-threaded. Its accuracy is measured against triwarp's heat method and against the exact
-    great-circle field in ``tests/test_heat_distance.py``, where it matches triwarp's own worst
+    multi-threaded. Its accuracy is measured against ordito's heat method and against the exact
+    great-circle field in ``tests/test_heat_distance.py``, where it matches ordito's own worst
     deviation, so this row is a like-for-like cost for a like-for-like answer.
 
     **igl is capped at ``sphere_small`` with ``rounds=1``, and the slope says why.** At one source
@@ -376,7 +376,7 @@ def test_fast_marching_distance(bench_case: BenchCase) -> None:
 # heat_signed_distance
 # --------------------------------------------------------------------------
 
-# Three float64 solves per case on triwarp's side; two factorizations on the reference's.
+# Three float64 solves per case on ordito's side; two factorizations on the reference's.
 _SIGNED_DISTANCE_ROUNDS = 3
 
 _curve_cache: dict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = {}
@@ -395,7 +395,7 @@ def _curve(bench_case: BenchCase, kind: str) -> tuple[np.ndarray, np.ndarray]:
     if key not in _curve_cache:
         ring, offsets, is_boundary = (
             array.numpy()
-            for array in tw.halfedge.vertex_one_rings(
+            for array in od.halfedge.vertex_one_rings(
                 bench_case.faces_wp, n_vertices=bench_case.n_vertices
             )
         )
@@ -421,17 +421,17 @@ def _curve(bench_case: BenchCase, kind: str) -> tuple[np.ndarray, np.ndarray]:
 
 @pytest.mark.benchmark(group="heat_signed_distance")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 @pytest.mark.parametrize("curve_kind", ["ring", "band"])
 def test_heat_signed_distance(bench_case: BenchCase, curve_kind: str) -> None:
     """One mesh, a 6-segment curve against a ~370-segment one, to price the source splat."""
     curve_np, bounds_np = _curve(bench_case, curve_kind)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         curve = wp.array(curve_np, dtype=wp.int32, device=bench_case.device)
         offsets = wp.array(bounds_np, dtype=wp.int32, device=bench_case.device)
         distance = bench_case.run(
-            lambda: tw.heat.heat_signed_distance(vertices, faces, curve, offsets),
+            lambda: od.heat.heat_signed_distance(vertices, faces, curve, offsets),
             rounds=_SIGNED_DISTANCE_ROUNDS,
         )
         assert distance.shape == (bench_case.n_vertices,)
@@ -454,14 +454,14 @@ def test_heat_signed_distance(bench_case: BenchCase, curve_kind: str) -> None:
 
 @pytest.mark.benchmark(group="heat_signed_distance_constraint")
 @pytest.mark.benchmeshes("sphere_med")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("level_set_constraint", ["zero_set", "none"])
 def test_heat_signed_distance_constraint(bench_case: BenchCase, level_set_constraint: str) -> None:
     """Pinning the curve to zero against solving unconstrained and shifting afterwards."""
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     curve = wp.array(_curve(bench_case, "ring")[0], dtype=wp.int32, device=bench_case.device)
     distance = bench_case.run(
-        lambda: tw.heat.heat_signed_distance(
+        lambda: od.heat.heat_signed_distance(
             vertices, faces, curve, level_set_constraint=level_set_constraint
         ),
         rounds=_SIGNED_DISTANCE_ROUNDS,
@@ -471,7 +471,7 @@ def test_heat_signed_distance_constraint(bench_case: BenchCase, level_set_constr
 
 @pytest.mark.benchmark(group="heat_signed_distance_conditioning")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_heat_signed_distance_conditioning(bench_case: BenchCase) -> None:
     """The same curve on well- and ill-conditioned connectivity: three CG solves feel it thrice."""
     test_heat_signed_distance(bench_case, "ring")
@@ -495,16 +495,16 @@ def _solver_pp(bench_case: BenchCase) -> pp3d.MeshVectorHeatSolver:
 
 @pytest.mark.benchmark(group="extend_scalar")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_extend_scalar(bench_case: BenchCase) -> None:
     """Two scalar diffusions and a division, on the conditioning axis."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         sources = _sources_wp(bench_case)
         values = wp.array(np.array([1.0]), dtype=wp.float64, device=bench_case.device)
         extended = bench_case.run(
-            lambda: tw.heat.extend_scalar(vertices, faces, sources, values),
+            lambda: od.heat.extend_scalar(vertices, faces, sources, values),
             rounds=_VECTOR_HEAT_ROUNDS,
         )
         assert extended.shape == (n_vertices,)
@@ -519,15 +519,15 @@ def test_extend_scalar(bench_case: BenchCase) -> None:
 def _run_transport(bench_case: BenchCase, *, amortized: bool) -> None:
     """Time one parallel transport, with the operators either rebuilt or reused."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         sources = _sources_wp(bench_case)
         vectors = wp.array(
             np.array([[1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=bench_case.device
         )
-        operators = tw.heat.vector_heat_operators(vertices, faces) if amortized else None
+        operators = od.heat.vector_heat_operators(vertices, faces) if amortized else None
         transported, resolved = bench_case.run(
-            lambda: tw.heat.transport_tangent_vectors(
+            lambda: od.heat.transport_tangent_vectors(
                 vertices, faces, sources, vectors, operators=operators
             ),
             rounds=_VECTOR_HEAT_ROUNDS,
@@ -554,7 +554,7 @@ def _run_transport(bench_case: BenchCase, *, amortized: bool) -> None:
 
 @pytest.mark.benchmark(group="transport_tangent_vectors")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 @pytest.mark.parametrize("setup", ["full", "amortized"])
 def test_transport_tangent_vectors(bench_case: BenchCase, setup: str) -> None:
     """A 2x2-block vector solve plus a scalar extension for the magnitude."""
@@ -563,14 +563,14 @@ def test_transport_tangent_vectors(bench_case: BenchCase, setup: str) -> None:
 
 @pytest.mark.benchmark(group="log_map")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_log_map(bench_case: BenchCase) -> None:
     """The most expensive of the three: a vector solve, a distance field and a gradient pass."""
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         logarithm = bench_case.run(
-            lambda: tw.heat.log_map(vertices, faces, 0), rounds=_VECTOR_HEAT_ROUNDS
+            lambda: od.heat.log_map(vertices, faces, 0), rounds=_VECTOR_HEAT_ROUNDS
         )
         assert logarithm.shape == (n_vertices,)
     else:
@@ -585,7 +585,7 @@ def test_log_map(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vector_heat_scale")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "potpourri3d")
+@pytest.mark.benchlibs("ordito", "potpourri3d")
 def test_transport_tangent_vectors_scale(bench_case: BenchCase) -> None:
     """The same transport over the size sweep, for the assembly-versus-solve split."""
     skip_larger_than(bench_case, "sphere_large")

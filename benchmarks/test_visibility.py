@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.visibility``: how far the surface is from a point.
+Benchmarks for ``ordito.visibility``: how far the surface is from a point.
 
 Five functions, three shapes of work, and the split is what the rows are for.
 
@@ -62,7 +62,7 @@ import trimesh.proximity as tm_proximity
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, skip_larger_than
 
 _QUERY_SEED = 42
@@ -101,7 +101,7 @@ _N_RAYS_SWEEP = [64, 256]
 
 # Queries for the trimesh rows. ``trimesh.proximity`` takes a query set and its own normals, and
 # both are single-threaded Python-plus-embree, so the subsample is cut hard: the rows below run at
-# ``_N_QUERIES_TM`` where triwarp runs at 10 000, and the per-query cost is what to compare, not
+# ``_N_QUERIES_TM`` where ordito runs at 10 000, and the per-query cost is what to compare, not
 # the row totals. 256 keeps every trimesh row inside a couple of seconds on ``bunny``.
 _N_QUERIES_TM = 256
 
@@ -113,7 +113,7 @@ def _surface_points_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
     ``(points, normals)`` for the trimesh rows: a vertex subsample with angle-weighted normals.
 
     Vertices rather than ``sample_surface`` points so the query set is the same *kind* of input
-    triwarp's rows use, and angle-weighted normals because that is the convention section 6 records
+    ordito's rows use, and angle-weighted normals because that is the convention section 6 records
     as the one the ray methods pair on. Cached per mesh, since building it is not what is timed.
     """
     if bench_case.mesh_name not in _surface_np_cache:
@@ -133,14 +133,14 @@ def _vertex_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     """Smooth outward normals over the mesh's own vertices -- an *input* of the bundle queries."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_cache:
-        _normals_cache[key] = tw.vertices.vertex_normals(
+        _normals_cache[key] = od.vertices.vertex_normals(
             bench_case.vertices_wp, bench_case.faces_wp
         )
     return _normals_cache[key]
 
 
 @pytest.mark.benchmark(group="ambient_occlusion")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("n_rays", _N_RAYS_SWEEP)
 def test_ambient_occlusion(bench_case: BenchCase, n_rays: int) -> None:
     """A hemisphere ray bundle per vertex: the embarrassingly parallel case, against one core."""
@@ -154,13 +154,13 @@ def test_ambient_occlusion(bench_case: BenchCase, n_rays: int) -> None:
     mesh, points = _mesh_wp(bench_case), bench_case.vertices_wp
     normals = _vertex_normals_wp(bench_case)
     occlusion = bench_case.run(
-        lambda: tw.visibility.ambient_occlusion(mesh, points, normals=normals, n_rays=n_rays)
+        lambda: od.visibility.ambient_occlusion(mesh, points, normals=normals, n_rays=n_rays)
     )
     assert occlusion.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="shape_diameter")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 @pytest.mark.parametrize("n_rays", _N_RAYS_SWEEP)
 def test_shape_diameter(bench_case: BenchCase, n_rays: int) -> None:
     """
@@ -183,14 +183,14 @@ def test_shape_diameter(bench_case: BenchCase, n_rays: int) -> None:
     mesh, points = _mesh_wp(bench_case), bench_case.vertices_wp
     normals = _vertex_normals_wp(bench_case)
     diameter = bench_case.run(
-        lambda: tw.visibility.shape_diameter(mesh, points, normals=normals, n_rays=n_rays)
+        lambda: od.visibility.shape_diameter(mesh, points, normals=normals, n_rays=n_rays)
     )
     assert diameter.shape == (n_vertices,)
 
 
 @pytest.mark.benchmark(group="thickness_interior")
 @pytest.mark.benchaxis("depth")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("method", ["ray", "max_sphere"])
 def test_thickness_interior(bench_case: BenchCase, method: Literal["ray", "max_sphere"]) -> None:
     """
@@ -209,7 +209,7 @@ def test_thickness_interior(bench_case: BenchCase, method: Literal["ray", "max_s
     both branches; trimesh is the oracle for two of the five functions here.
 
     **Read the per-query cost, not the row.** trimesh runs at ``_N_QUERIES_TM`` queries against
-    triwarp's 10 000, because its ``max_sphere`` branch is a Python loop over closest-point queries;
+    ordito's 10 000, because its ``max_sphere`` branch is a Python loop over closest-point queries;
     dividing each row by its own query count is the only fair reading.
     """
     if bench_case.kind == "trimesh":
@@ -223,7 +223,7 @@ def test_thickness_interior(bench_case: BenchCase, method: Literal["ray", "max_s
         return
     mesh = _mesh_wp(bench_case)
     points = _surface_points_wp(bench_case)
-    result = bench_case.run(lambda: tw.visibility.thickness(mesh, points, method=method))
+    result = bench_case.run(lambda: od.visibility.thickness(mesh, points, method=method))
     assert result.shape == points.shape
 
 
@@ -246,7 +246,7 @@ def _mesh_ml(bench_case: BenchCase) -> mm.Mesh:
 
 
 @pytest.mark.benchmark(group="thickness_at_vertices")
-@pytest.mark.benchlibs("triwarp", "meshlib", "trimesh")
+@pytest.mark.benchlibs("ordito", "meshlib", "trimesh")
 def test_thickness_at_vertices(bench_case: BenchCase) -> None:
     """
     Interior thickness at **every** vertex by one inward ray: the module's fair MeshLib row.
@@ -259,7 +259,7 @@ def test_thickness_at_vertices(bench_case: BenchCase) -> None:
     they agree (5.96e-07) and that the normal convention is the angle-weighted one.
 
     MeshLib is the only multi-threaded CPU reference in the suite (section 6), so this is a fair
-    fight rather than a GPU against one core -- and the ``triwarp-cpu`` row will lose to it for that
+    fight rather than a GPU against one core -- and the ``ordito-cpu`` row will lose to it for that
     reason regardless of algorithm, which is section 13's "decide on the CUDA number".
 
     **trimesh is the third row, and unlike the other two it is timed on both groups.** It takes a
@@ -287,17 +287,17 @@ def test_thickness_at_vertices(bench_case: BenchCase) -> None:
         assert thickness_ml is not None
         return
     mesh, points = _mesh_wp(bench_case), bench_case.vertices_wp
-    normals = tw.vertices.vertex_normals(
+    normals = od.vertices.vertex_normals(
         bench_case.vertices_wp, bench_case.faces_wp, weighting="angle"
     )
     thickness = bench_case.run(
-        lambda: tw.visibility.thickness(mesh, points, method="ray", normals=normals)
+        lambda: od.visibility.thickness(mesh, points, method="ray", normals=normals)
     )
     assert thickness.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="max_tangent_sphere_reach")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_max_tangent_sphere_reach(bench_case: BenchCase) -> None:
     """
     Exterior tangent spheres: exercises the ``init_sphere_radii`` inf-distance branch.
@@ -315,7 +315,7 @@ def test_max_tangent_sphere_reach(bench_case: BenchCase) -> None:
     on ``cave_cube`` for the same reason.
 
     Per-query, like the ``thickness_interior`` trimesh row: trimesh runs at ``_N_QUERIES_TM``
-    queries against triwarp's 10 000, since its iteration is a Python loop.
+    queries against ordito's 10 000, since its iteration is a Python loop.
     """
     skip_larger_than(bench_case, "dragon")
     if bench_case.kind == "trimesh":
@@ -331,5 +331,5 @@ def test_max_tangent_sphere_reach(bench_case: BenchCase) -> None:
         return
     mesh = _mesh_wp(bench_case)
     points = _surface_points_wp(bench_case)
-    _, radii = bench_case.run(lambda: tw.visibility.max_tangent_sphere(mesh, points, inwards=False))
+    _, radii = bench_case.run(lambda: od.visibility.max_tangent_sphere(mesh, points, inwards=False))
     assert radii.shape == points.shape

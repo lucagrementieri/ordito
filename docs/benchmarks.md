@@ -5,9 +5,9 @@ Every chart on this page is generated, not hand-drawn: `benchmarks/plot_comparis
 that produces the plain-text loss tables used during development) and renders one pair of PNGs per
 comparison, each competing library named by its own logo.
 
-**How to read one of these:** bars are sorted fastest-to-slowest, top to bottom; triwarp's own bar
+**How to read one of these:** bars are sorted fastest-to-slowest, top to bottom; ordito's own bar
 is the accent color, every reference library is the same muted gray (the logo and label carry
-which library it is — color is reserved for "is this triwarp"); the axis switches to a log scale
+which library it is — color is reserved for "is this ordito"); the axis switches to a log scale
 whenever the fastest and slowest library in that cell differ by more than 15x, stated in the
 chart's own subtitle so it is never ambiguous; and every bar carries its exact value as a direct
 label, so nothing depends on reading the axis precisely.
@@ -17,7 +17,7 @@ sweep skips any reference already measured losing by more than 2x and ranking th
 given cell — it recovers about 43 of the suite's 50 minutes of timed regions and costs nothing a
 loss table cares about, since a library already 100x behind does not become more informative on
 the next mesh size. But it is exactly the wrong input for these charts, because the rows it drops
-are the ones triwarp beats most widely: in the current run the default sweep has **15** cells with
+are the ones ordito beats most widely: in the current run the default sweep has **15** cells with
 three or more reference libraries, while the same suite with `--bench-all-libs` has **206**. The
 charts below come from the full run, so a chart with five bars means five libraries really do
 compute that quantity.
@@ -30,8 +30,8 @@ crossover is.
 **Reproduce any of these yourself:**
 
 ```bash
-git clone https://github.com/lucagrementieri/triwarp
-cd triwarp
+git clone https://github.com/lucagrementieri/ordito
+cd ordito
 uv sync --group bench
 
 # One JSON per module into a directory; --bench-all-libs is what makes the charts multi-library.
@@ -49,7 +49,7 @@ uv run python benchmarks/plot_comparison.py /tmp/bench-json --out /tmp/charts --
 `--hero` renders the ten curated cells on this page; drop it to render every comparable cell, or
 pass `--group <name>` for one group across every mesh.
 
-See [`benchmarks/README.md`](https://github.com/lucagrementieri/triwarp/tree/main/benchmarks) for
+See [`benchmarks/README.md`](https://github.com/lucagrementieri/ordito/tree/main/benchmarks) for
 the full methodology — which axis each group sweeps, which libraries are compared for which
 operation, and why a handful of comparisons are excluded.
 
@@ -67,16 +67,16 @@ is for.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 2.68 ms |
+    | ordito (CUDA) | 2.68 ms |
     | MeshLib | 13.73 ms |
     | Open3D | 30.98 ms |
     | libigl | 103.81 ms |
     | PyVista | 276.93 ms |
     | MeshLab | 658.63 ms |
 
-This is `sign_mode="parity"`, the default. triwarp also offers `sign_mode="winding"`, which is
+This is `sign_mode="parity"`, the default. ordito also offers `sign_mode="winding"`, which is
 exact on meshes with holes where ray parity misclassifies; there the only comparable reference is
-libigl, and triwarp is 44x ahead of it.
+libigl, and ordito is 44x ahead of it.
 
 ## Inside / outside: `winding_number`
 
@@ -86,7 +86,7 @@ libigl, and triwarp is 44x ahead of it.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 1.24 ms |
+    | ordito (CUDA) | 1.24 ms |
     | MeshLib | 54.54 ms |
     | libigl | 60.12 ms |
     | PyVista | 150.50 ms |
@@ -103,7 +103,7 @@ CPU tree, a GPU brute-force kernel and two spatial indices.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 769.9 µs |
+    | ordito (CUDA) | 769.9 µs |
     | Open3D | 8.11 ms |
     | PyTorch3D (CUDA) | 134.22 ms |
     | SciPy | 134.31 ms |
@@ -119,17 +119,17 @@ implementations, including the one other GPU library in the suite.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 595.7 µs |
+    | ordito (CUDA) | 595.7 µs |
     | PyTorch3D (CUDA) | 3.79 ms |
     | Open3D | 12.96 ms |
     | SciPy | 27.10 ms |
     | libigl | 240.78 ms |
 
-## The same query at k = 1, where triwarp does *not* win
+## The same query at k = 1, where ordito does *not* win
 
 Drop `k` from 7 to 1 and MeshLib's projector edges ahead. This is the most useful chart on the
 page: the two cells differ only in `k`, so the comparison isolates one variable, and it shows that
-triwarp's advantage here comes from amortizing a traversal across many neighbours rather than from
+ordito's advantage here comes from amortizing a traversal across many neighbours rather than from
 the traversal being faster per se. At `k=1` there is almost nothing to amortize and a good serial
 C++ projector is the better tool.
 
@@ -140,7 +140,7 @@ C++ projector is the better tool.
     | Library | Median |
     |---|---|
     | MeshLib | 377.4 µs |
-    | triwarp (CUDA) | 419.5 µs |
+    | ordito (CUDA) | 419.5 µs |
     | PyTorch3D (CUDA) | 2.80 ms |
     | Open3D | 11.70 ms |
     | SciPy | 17.63 ms |
@@ -158,7 +158,7 @@ a ranking.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 45.77 ms |
+    | ordito (CUDA) | 45.77 ms |
     | MeshLab | 136.25 ms |
     | Open3D | 458.55 ms |
 
@@ -170,12 +170,12 @@ a ranking.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 20.42 ms |
+    | ordito (CUDA) | 20.42 ms |
     | MeshLib | 120.45 ms |
 
 Only two bars, and the reason is worth stating. Open3D and MeshLab both wrap Kazhdan's CPU
 solver, and their rows were deliberately removed from the benchmark: between them they accounted
-for **73 % of the entire suite's runtime** while measuring a reference triwarp had already beaten
+for **73 % of the entire suite's runtime** while measuring a reference ordito had already beaten
 by 15-25x, and at `dragon` scale they ran 93 minutes without completing a single round. The
 correctness comparison against them is still made, in `tests/test_reconstruction.py`, at a size a
 test can afford. MeshLib is kept here because it is a genuinely *different* implicit
@@ -193,7 +193,7 @@ useful reminder that "the reference implementation" is rarely one thing.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 2.41 ms |
+    | ordito (CUDA) | 2.41 ms |
     | PyVista | 40.16 ms |
     | Open3D | 113.89 ms |
     | trimesh | 161.41 ms |
@@ -214,7 +214,7 @@ Poisson-disk / blue-noise surface sampling, against four references.
 ??? note "Exact values"
     | Library | Median |
     |---|---|
-    | triwarp (CUDA) | 4.08 ms |
+    | ordito (CUDA) | 4.08 ms |
     | MeshLib | 41.92 ms |
     | MeshLab | 271.63 ms |
     | Open3D | 1.048 s |
@@ -229,17 +229,17 @@ Poisson-disk / blue-noise surface sampling, against four references.
     | Library | Median |
     |---|---|
     | MeshLib | 31.36 ms |
-    | triwarp (CUDA) | 46.06 ms |
+    | ordito (CUDA) | 46.06 ms |
     | PyVista | 55.12 ms |
     | libigl | 75.98 ms |
     | Open3D | 84.58 ms |
     | MeshLab | 506.60 ms |
 
-MeshLib's serial C++ decimator is faster than triwarp's on this particular mesh — a small, badly
+MeshLib's serial C++ decimator is faster than ordito's on this particular mesh — a small, badly
 graded saddle, which is deliberately the worst-conditioned input in the suite. The crossover is
 real and this chart doesn't hide which side of it a small input lands on: at the gentler
 `target_ratio=0.5` on this same mesh the two are level (16.74 ms against MeshLib's 17.14), and
-triwarp's GPU decimator pulls ahead at larger mesh sizes, where there is enough parallelism to
+ordito's GPU decimator pulls ahead at larger mesh sizes, where there is enough parallelism to
 fill the device.
 
 ---

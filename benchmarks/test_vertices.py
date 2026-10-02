@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.vertices``: the vertex-normal weightings and the angle defect.
+Benchmarks for ``ordito.vertices``: the vertex-normal weightings and the angle defect.
 
 Two axes, because the module has two different kinds of function:
 
@@ -12,7 +12,7 @@ Two axes, because the module has two different kinds of function:
   ``sphere_med``, but its cone apex and base centre have valence 40 960 against a uniform 6.
 
 ``average_onto_vertices`` and ``transfer_onto_vertices`` live in
-[`test_interpolation.py`](test_interpolation.py), where ``triwarp.interpolation`` does, under group
+[`test_interpolation.py`](test_interpolation.py), where ``ordito.interpolation`` does, under group
 names that name *this* module — the group name is the cross-suite key every ``parity`` marker cites,
 so it does not move with the file.
 
@@ -25,17 +25,17 @@ sort-and-segment-reduce, say, would show up as a large swing), not because it cu
 References
 ----------
 **trimesh**'s area-weighted ``vertex_normals``, rebuilt inside the timed callable because trimesh
-caches it. **open3d**'s ``compute_vertex_normals`` is also area-weighted and is triwarp's closest
+caches it. **open3d**'s ``compute_vertex_normals`` is also area-weighted and is ordito's closest
 analogue; it writes the result into the mesh but recomputes on every call rather than caching, so
 the shared mesh stays honest across rounds. ``igl.per_vertex_normals`` was dropped: it segfaults
 flakily when invoked late in a session that mixes Warp CUDA/CPU JIT with the other native
 libraries.
 
 ``n_vertices`` has no open3d equivalent worth timing: open3d stores the vertex count explicitly, so
-``len(mesh.vertices)`` is O(1) and does not measure the max-reduce triwarp performs.
+``len(mesh.vertices)`` is O(1) and does not measure the max-reduce ordito performs.
 
 **pymeshlab**'s ``weightmode`` enum is what makes it useful here: ``compute_normal_per_vertex``
-implements four weighting schemes behind one filter, two of which are exactly triwarp's --
+implements four weighting schemes behind one filter, two of which are exactly ordito's --
 ``'Simple Average'`` is ``mean_vertex_normals`` and ``'By Area'`` is
 ``vertex_normals``, so the pair also isolates what the area weight costs on the reference's side.
 Both write only the vertex-normal attribute and are idempotent,
@@ -48,7 +48,7 @@ module's only three-way one.
 The reference **agrees with this module's headline result independently**: across the valence axis
 it is also flat, and if anything marginally *faster* on the hub mesh. Two implementations with
 nothing in common both saying valence is not a cost driver here is a stronger statement than
-triwarp's own under-2x spread on its own.
+ordito's own under-2x spread on its own.
 """
 
 from __future__ import annotations
@@ -63,7 +63,7 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 _face_data_cache: dict[tuple[str, str], tuple[wp.array[wp.vec3], wp.array[wp.float32]]] = {}
@@ -75,20 +75,20 @@ def _face_normals_and_areas(
     """Precomputed per-face normals and areas -- optional *inputs*, not part of the operation."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _face_data_cache:
-        _face_data_cache[key] = tw.triangles.face_normals_and_areas(
+        _face_data_cache[key] = od.triangles.face_normals_and_areas(
             bench_case.vertices_wp, bench_case.faces_wp
         )
     return _face_data_cache[key]
 
 
 @pytest.mark.benchmark(group="mean_vertex_normals")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
 def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     """
     The unweighted scatter, on the scan sweep: the throughput baseline for the group below.
 
     VTK's ``compute_normals`` is the unweighted scheme too, but it computes the *face* normals in
-    the same pass where triwarp is handed them, so its row carries the cross products as well --
+    the same pass where ordito is handed them, so its row carries the cross products as well --
     read the pair against ``face_normals_and_areas`` in
     [`test_triangles.py`](test_triangles.py) to separate the two halves.
     """
@@ -114,7 +114,7 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     n_vertices = bench_case.n_vertices
     faces = bench_case.faces_wp
     result = bench_case.run(
-        lambda: tw.vertices.mean_vertex_normals(n_vertices, faces, face_normals)
+        lambda: od.vertices.mean_vertex_normals(n_vertices, faces, face_normals)
     )
     assert result.shape == (n_vertices,)
 
@@ -123,7 +123,7 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
     "trimesh",
     oracle="open3d",
     reason="D2 a different weighting: Trimesh.vertex_normals is *angle*-weighted, not "
-    "area-weighted -- it matches triwarp's vertex_normals(weighting='angle') to 4.3e-7 and "
+    "area-weighted -- it matches ordito's vertex_normals(weighting='angle') to 4.3e-7 and "
     "differs from the area-weighted answer by up to 0.072 on half_torus. trimesh has no "
     "area-weighted vertex "
     "normal, so this row prices 'compute vertex normals' generally; open3d and pymeshlab compute "
@@ -136,7 +136,7 @@ def test_mean_vertex_normals(bench_case: BenchCase) -> None:
 )
 @pytest.mark.benchmark(group="vertex_normals")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib", "pytorch3d")
 def test_vertex_normals(bench_case: BenchCase) -> None:
     """
     Area-weighted scatter, uniform valence 6 against two 40 960-valence hubs.
@@ -144,8 +144,8 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
     meshlib's ``computePerVertNormals`` is this weighting exactly -- 1.19e-07, and its
     angle-weighted sibling ``computePerVertPseudoNormals`` is 6.8e-03 away, which is what
     tests/test_vertices.py::test_vertex_normal_weightings_match_meshlib pins. It is also the only
-    **multi-threaded** row in this group, so read the ratio against ``triwarp-cuda`` and not against
-    ``triwarp-cpu``. Pure, so the mesh is built once outside the timed callable.
+    **multi-threaded** row in this group, so read the ratio against ``ordito-cuda`` and not against
+    ``ordito-cpu``. Pure, so the mesh is built once outside the timed callable.
 
     **pytorch3d**'s ``verts_normals_packed`` is the same area weighting (1.19e-07, pinned in
     tests/test_vertices.py::test_vertex_normals_match_pytorch3d), but it is a **memoized accessor
@@ -177,14 +177,14 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
         normals_ml = bench_case.run(lambda: mm.computePerVertNormals(mesh_ml))
         assert normals_ml.size() == n_vertices
         return
-    if bench_case.kind == "pymeshlab":  # 'By Area' is triwarp's weighting exactly
+    if bench_case.kind == "pymeshlab":  # 'By Area' is ordito's weighting exactly
         meshset_pml = bench_case.meshset_pml
         bench_case.run(lambda: meshset_pml.compute_normal_per_vertex(weightmode="By Area"))
         assert meshset_pml.current_mesh().vertex_normal_matrix().shape == (n_vertices, 3)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        result = bench_case.run(lambda: tw.vertices.vertex_normals(vertices, faces))
+        result = bench_case.run(lambda: od.vertices.vertex_normals(vertices, faces))
         assert result.shape == (n_vertices,)
     elif bench_case.kind == "trimesh":
         # trimesh vertex_normals are area-weighted; rebuild inside (cached property)
@@ -202,14 +202,14 @@ def test_vertex_normals(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vertex_defects")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista", "meshlib")
 def test_vertex_defects(bench_case: BenchCase) -> None:
     """
     The angle defect ``2π - Σθ``: the accumulation axis's cheapest member.
 
     The same ``3F``-into-``V`` scatter as the normals above, over scalars instead of vectors.
 
-    triwarp takes the per-face angles as an *argument*, so the row includes computing them (the
+    ordito takes the per-face angles as an *argument*, so the row includes computing them (the
     references do the same internally and there is no way to hand them either one). All three
     agree element-wise including at boundary vertices -- ``igl.gaussian_curvature`` is the
     pointwise angle defect, **not** the ball-integrated Cohen-Steiner/Morvan measure
@@ -217,7 +217,7 @@ def test_vertex_defects(bench_case: BenchCase) -> None:
     group's name is chosen against.
 
     ``igl.gaussian_curvature`` is one of the ``(V, F)``-family functions, so it returns ``len(V)``
-    rows rather than ``F.max() + 1`` and lines up with triwarp on a mesh with unreferenced
+    rows rather than ``F.max() + 1`` and lines up with ordito on a mesh with unreferenced
     vertices. That is why it can be a row here where ``igl.adjacency_matrix``-family functions need
     a padding transform.
 
@@ -241,11 +241,11 @@ def test_vertex_defects(bench_case: BenchCase) -> None:
         gaussian_pv = bench_case.run(lambda: mesh_pv.curvature("gaussian"))
         assert np.asarray(gaussian_pv).shape == (n_vertices,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         defects = bench_case.run(
-            lambda: tw.vertices.vertex_defects(
-                n_vertices, faces, tw.triangles.face_angles(vertices, faces)
+            lambda: od.vertices.vertex_defects(
+                n_vertices, faces, od.triangles.face_angles(vertices, faces)
             )
         )
         assert defects.shape == (n_vertices,)
@@ -263,20 +263,20 @@ def test_vertex_defects(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="vertex_normals_precomputed")
 @pytest.mark.benchaxis("valence")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_vertex_normals_precomputed(bench_case: BenchCase) -> None:
     """
     The same scatter with ``face_normals`` / ``face_areas`` supplied: the warm half of the cost.
 
     Passing ``None`` for either makes the function recompute a full per-face pass first. Neither
-    reference library has an equivalent -- both always recompute -- so this is triwarp-only, and
+    reference library has an equivalent -- both always recompute -- so this is ordito-only, and
     its gap against the group above is what a caller saves by keeping the face data around.
     """
     face_normals, face_areas = _face_normals_and_areas(bench_case)
     n_vertices = bench_case.n_vertices
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     result = bench_case.run(
-        lambda: tw.vertices.vertex_normals(
+        lambda: od.vertices.vertex_normals(
             vertices, faces, face_normals=face_normals, face_weights=face_areas
         )
     )

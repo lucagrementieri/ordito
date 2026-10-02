@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.triangles``: per-face arithmetic, one triangle at a time.
+Benchmarks for ``ordito.triangles``: per-face arithmetic, one triangle at a time.
 
 Nothing here reads connectivity, so the scan sweep (pure ``N``) is the right axis throughout and
 every reference is doing the same cross products. The whole-mesh reductions these feed -- the
@@ -10,7 +10,7 @@ centroid, the volume and the moments -- are timed in
 consumers in the library want (the heat method, the gradient operators, area-weighted normals). The
 references split them up: ``igl.doublearea`` and ``potpourri3d.face_areas`` return areas only, and
 ``trimesh.triangles.normals`` returns unit normals plus a validity mask. The reference rows
-therefore do strictly less work than triwarp's — read this group as a floor for them rather than as
+therefore do strictly less work than ordito's — read this group as a floor for them rather than as
 a fair race.
 
 **pymeshlab** splits them the other way: ``compute_normal_per_face`` is normals only, so it belongs
@@ -41,7 +41,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 _NON_EDGE_MANIFOLD = frozenset({"bunny_decimated", "lucy"})
@@ -64,7 +64,7 @@ def _barycentres_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 @pytest.mark.benchmark(group="face_normals_and_areas")
 @pytest.mark.benchlibs(
-    "triwarp",
+    "ordito",
     "trimesh",
     "igl",
     "open3d",
@@ -85,7 +85,7 @@ def test_face_normals_and_areas(bench_case: BenchCase) -> None:
     tests/test_triangles.py::test_per_face_quantities_match_meshlib. Pure, so the mesh is built once
     outside the timed callable.
 
-    **pytorch3d** is the one reference here that answers both halves in one call, like triwarp --
+    **pytorch3d** is the one reference here that answers both halves in one call, like ordito --
     ``mesh_face_areas_normals`` is the same cross product, its norm halved and normalized, and
     ``tests/test_triangles.py::test_face_normals_and_areas_matches_pytorch3d`` pins the two to
     **byte equality** on a shared device. So this is the fair race the partial rows above are not,
@@ -133,10 +133,10 @@ def test_face_normals_and_areas(bench_case: BenchCase) -> None:
         bench_case.run(mesh_o3d.compute_triangle_normals)
         assert np.asarray(mesh_o3d.triangle_normals).shape == (n_faces, 3)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         normals, areas = bench_case.run(
-            lambda: tw.triangles.face_normals_and_areas(vertices, faces)
+            lambda: od.triangles.face_normals_and_areas(vertices, faces)
         )
         assert normals.shape == (n_faces,)
         assert areas.shape == (n_faces,)
@@ -156,7 +156,7 @@ def test_face_normals_and_areas(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="face_angles")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl", "pyvista")
 def test_face_angles(bench_case: BenchCase) -> None:
     """
     The three interior angles per face, and the group with the widest margin in the module.
@@ -164,7 +164,7 @@ def test_face_angles(bench_case: BenchCase) -> None:
     They are the input to ``vertex_defects`` and to the angle-weighted normals.
 
     Nothing has to be matched up here -- ``igl.internal_angles``, ``trimesh``'s ``face_angles``
-    property and triwarp all return ``(n_faces, 3)`` angles aligned with the corners
+    property and ordito all return ``(n_faces, 3)`` angles aligned with the corners
     ``(i0, i1, i2)``, agreeing element-wise with no transform (verified in
     ``tests/test_triangles.py``). trimesh rebuilds its ``tm.Trimesh`` inside the callable because
     ``face_angles`` is a cached property; a shared mesh would time the cache lookup.
@@ -177,9 +177,9 @@ def test_face_angles(bench_case: BenchCase) -> None:
         quality_pv = bench_case.run(lambda: mesh_pv.cell_quality(["min_angle", "max_angle"]))
         assert np.asarray(quality_pv.cell_data["min_angle"]).shape == (bench_case.n_faces,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        angles = bench_case.run(lambda: tw.triangles.face_angles(vertices, faces))
+        angles = bench_case.run(lambda: od.triangles.face_angles(vertices, faces))
         assert angles.shape == (bench_case.n_faces, 3)
     elif bench_case.kind == "igl":
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -195,13 +195,13 @@ def test_face_angles(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_quality")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab", "pyvista")
 def test_face_quality(bench_case: BenchCase) -> None:
     """
     Per-face shape measure, on the axis it defines: bad triangles must not cost more.
 
     pyvista's ``cell_quality`` is VTK's Verdict library, whose measure names invert against
-    triwarp's: its ``radius_ratio`` is triwarp's ``aspect_ratio`` (and triwarp's ``radius_ratio`` is
+    ordito's: its ``radius_ratio`` is ordito's ``aspect_ratio`` (and ordito's ``radius_ratio`` is
     its reciprocal), which ``tests/test_triangles.py`` decodes in full. One measure is requested, so
     the row prices the same single ratio per face the other three do.
     """
@@ -218,10 +218,10 @@ def test_face_quality(bench_case: BenchCase) -> None:
             )
         )
         assert meshset_pml.current_mesh().face_scalar_array().shape == (n_faces,)
-    elif bench_case.kind == "triwarp":
+    elif bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         quality = bench_case.run(
-            lambda: tw.triangles.face_quality(vertices, faces, metric="radius_ratio")
+            lambda: od.triangles.face_quality(vertices, faces, metric="radius_ratio")
         )
         assert quality.shape == (n_faces,)
     else:  # igl: the same ratio, but as two separate passes over the faces
@@ -237,7 +237,7 @@ def test_face_quality(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="points_to_barycentric")
-@pytest.mark.benchlibs("triwarp", "trimesh", "igl")
+@pytest.mark.benchlibs("ordito", "trimesh", "igl")
 def test_points_to_barycentric(bench_case: BenchCase) -> None:
     """
     One point per triangle, back to barycentric coordinates: the module's other soup operation.
@@ -252,11 +252,11 @@ def test_points_to_barycentric(bench_case: BenchCase) -> None:
     The query points are the face barycentres, so every one lies in its triangle's plane: this
     measures the in-plane solve rather than a projection.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         points = _barycentres_wp(bench_case)
         barycentric = bench_case.run(
-            lambda: tw.triangles.points_to_barycentric(vertices, faces, points)
+            lambda: od.triangles.points_to_barycentric(vertices, faces, points)
         )
         assert barycentric.shape == (bench_case.n_faces,)
         return
@@ -280,7 +280,7 @@ def test_points_to_barycentric(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="face_centroids")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista")
 def test_face_centroids(bench_case: BenchCase) -> None:
     """
     One barycentre per face: a ``3F`` gather and a divide, the module's cheapest kernel.
@@ -296,9 +296,9 @@ def test_face_centroids(bench_case: BenchCase) -> None:
         centres_pv = bench_case.run(lambda: mesh_pv.cell_centers())
         assert np.asarray(centres_pv.points).shape == (bench_case.n_faces, 3)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        centroids = bench_case.run(lambda: tw.triangles.face_centroids(vertices, faces))
+        centroids = bench_case.run(lambda: od.triangles.face_centroids(vertices, faces))
         assert centroids.shape == (bench_case.n_faces,)
         return
     vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -307,7 +307,7 @@ def test_face_centroids(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="corner_normals")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 @pytest.mark.parametrize("creased", [False, True])
 def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     """
@@ -322,12 +322,12 @@ def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     is built **outside** the timed callable on both sides, since ``crease_edges`` has its own group.
 
     meshlib's ``computePerCornerNormals`` is the only reference and uses the **area** weighting, so
-    that is what triwarp is asked for here -- pinned in ``tests/test_triangles.py``. Note the row
+    that is what ordito is asked for here -- pinned in ``tests/test_triangles.py``. Note the row
     times the computation only: its ``Vector_std_array_Vector3f_3_FaceId`` result has no bulk
     readback (indexing it is a double Python loop), which is a test-side cost, not a timed one.
 
     The crossover is the point: meshlib wins at the small end and loses by several times at the
-    large one, because its row is a single-threaded per-corner walk while triwarp's is a fixed
+    large one, because its row is a single-threaded per-corner walk while ordito's is a fixed
     wrapper cost (``halfedge_twins``, the face normals and the angles) plus a walk that barely
     shows. Below the
     crossover this group is measuring the prologue, not the walk -- which is also why the creased
@@ -351,8 +351,8 @@ def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
         assert normals_ml is not None
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    creases = tw.seams.crease_edges(vertices, faces, angle=crease_angle) if creased else None
+    creases = od.seams.crease_edges(vertices, faces, angle=crease_angle) if creased else None
     normals = bench_case.run(
-        lambda: tw.triangles.corner_normals(vertices, faces, creases, weighting="area")
+        lambda: od.triangles.corner_normals(vertices, faces, creases, weighting="area")
     )
     assert normals.shape == (bench_case.n_faces, 3)

@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.polyline``.
+Benchmarks for ``ordito.polyline``.
 
 The module has 27 public functions over one data shape — an ordered ``(n,)`` array of ``wp.vec3`` —
 falling into four cost classes. One representative of each is timed rather than all 27, because
@@ -67,7 +67,7 @@ operations through a single-cell ``PolyData``. Two hazards decide every row:
   passes unpacked while a *point-count* one silently reads the input's count and reads as a no-op.
   CLAUDE.md section 7.6's ``getNumpyFaces``-without-``pack()`` rule, in a class it does not name.
 
-Three groups stay triwarp-only, per function rather than blanket: **``polyline_radius``** (no
+Three groups stay ordito-only, per function rather than blanket: **``polyline_radius``** (no
 reference computes it — ``findCenterFromPoints`` is a centroid and ``findMaxProjectionOnPolyline``
 is ``polyline_point_distance``'s question, which already carries its rows); **``polyline_angles``**
 (MeshLib has ``edgeVector`` only, so a reference row would time a Python loop); and
@@ -90,7 +90,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, BenchLibrary, skip_larger_than
 
 # MeshLib expresses several gates as *absolute* lengths whose defaults assume a unit-scale input
@@ -120,7 +120,7 @@ def _polyline_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _polyline_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        loops = tw.boundary.boundary_loops(vertices, faces)
+        loops = od.boundary.boundary_loops(vertices, faces)
         if not loops:
             pytest.skip(f"{bench_case.mesh_name} has no boundary loop to use as a polyline")
         longest = max(loops, key=lambda loop: loop.size)
@@ -183,7 +183,7 @@ def _polyline_np(bench_case: BenchCase) -> np.ndarray:
             dtype=wp.int32,
             device="cpu",
         )
-        loops = tw.boundary.boundary_loops(vertices, faces)
+        loops = od.boundary.boundary_loops(vertices, faces)
         if not loops:
             pytest.skip(f"{bench_case.mesh_name} has no boundary loop to use as a polyline")
         longest = max(loops, key=lambda loop: loop.size)
@@ -264,14 +264,14 @@ def _polyline_pv(bench_case: BenchCase) -> pv.PolyData:
 
 @pytest.mark.benchmark(group="polyline_length")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 def test_polyline_length(bench_case: BenchCase) -> None:
     """
     Summed segment length: the cheapest whole-polyline reduction, launch-latency bound.
 
     meshlib's ``calcLength`` sums the same segments and returns a **bit-identical** float32
     (``tests/test_polyline.py``), so this pair is a pure host-against-device reading of the same
-    arithmetic -- and on a reduction this cheap triwarp's row is its launch latency, which is what
+    arithmetic -- and on a reduction this cheap ordito's row is its launch latency, which is what
     makes the comparison worth having. The contour is the input and is cached.
 
     pyvista's ``compute_arc_length`` **does more**: it writes the *cumulative* length at every
@@ -289,18 +289,18 @@ def test_polyline_length(bench_case: BenchCase) -> None:
         assert bench_case.run(lambda: mm.calcLength(contour_ml)) > 0.0
         return
     polyline = _polyline_wp(bench_case)
-    length = bench_case.run(lambda: tw.polyline.polyline_length(polyline))
+    length = bench_case.run(lambda: od.polyline.polyline_length(polyline))
     assert length > 0.0
 
 
 @pytest.mark.benchmark(group="polyline_normal")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_polyline_normal(bench_case: BenchCase) -> None:
     """
     Newell's loop normal: a ``wp.cross`` accumulated over the closing segments.
 
-    triwarp-only, and it is an absence rather than a cost objection -- no registered library
+    ordito-only, and it is an absence rather than a cost objection -- no registered library
     computes a polyline's Newell normal. meshlib's ``Polyline3`` offers a centroid
     (``findCenterFromPoints``) and a projection but no loop normal, and pyvista's line filters read
     an arc length rather than an orientation.
@@ -308,7 +308,7 @@ def test_polyline_normal(bench_case: BenchCase) -> None:
     **A second row in the whole-polyline-reduction class**, which the module docstring above
     otherwise times through one representative. The rule held while the class really did differ
     "only in the per-segment expression", and it stopped holding: ``polyline_length`` maps
-    ``segment_length`` and reduces through ``triwarp.reduce``, so it was always a proper block
+    ``segment_length`` and reduces through ``ordito.reduce``, so it was always a proper block
     reduction, while this one accumulated one ``wp.atomic_add`` per thread into a single
     ``wp.vec3`` slot -- every thread in the launch contending for one address, and the reduction
     serialized. Converting it to the lane-strided form
@@ -317,46 +317,46 @@ def test_polyline_normal(bench_case: BenchCase) -> None:
     orders of magnitude more accurate against a float64 reference. So the representative had the
     *good* shape and the class member it stood in for did not, which is what a one-row class cannot
     show.
-    ``polyline_centroid`` stays unrepresented: it reaches ``triwarp.reduce`` the way
+    ``polyline_centroid`` stays unrepresented: it reaches ``ordito.reduce`` the way
     ``polyline_length`` does.
 
     ``rim_long`` is the row that matters here -- 65 536 vertices, the axis's asymptotic point.
     """
     polyline = _polyline_wp(bench_case)
-    normal = bench_case.run(lambda: tw.polyline.polyline_normal(polyline))
+    normal = bench_case.run(lambda: od.polyline.polyline_normal(polyline))
     assert float(np.linalg.norm(np.asarray(list(normal), dtype=np.float64))) > 0.0
 
 
 @pytest.mark.benchmark(group="polyline_radius")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_polyline_radius(bench_case: BenchCase) -> None:
     """
     Per-segment plane projection and closest-point search, then a reduction.
 
-    triwarp-only, and it is an absence rather than a cost objection: no registered library computes
+    ordito-only, and it is an absence rather than a cost objection: no registered library computes
     a polyline's radius about a centre and normal. ``Polyline3.findCenterFromPoints`` is a centroid
     and ``findMaxProjectionOnPolyline`` projects points *onto* a polyline, which is
     ``polyline_point_distance``'s question and already carries its rows. See the module docstring.
     """
     polyline = _polyline_wp(bench_case)
-    radius = bench_case.run(lambda: tw.polyline.polyline_radius(polyline, reduction="min"))
+    radius = bench_case.run(lambda: od.polyline.polyline_radius(polyline, reduction="min"))
     assert radius >= 0.0
 
 
 @pytest.mark.benchmark(group="polyline_angles")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_polyline_angles(bench_case: BenchCase) -> None:
     """
     Per-vertex turning angle: the ``wp.acos`` path, one angle per point.
 
-    triwarp-only. MeshLib has ``edgeVector`` and nothing above it, so a reference row would time a
+    ordito-only. MeshLib has ``edgeVector`` and nothing above it, so a reference row would time a
     Python loop over the segments rather than MeshLib -- the per-element rule. See the module
     docstring.
     """
     polyline = _polyline_wp(bench_case)
-    angles = bench_case.run(lambda: tw.polyline.polyline_angles(polyline))
+    angles = bench_case.run(lambda: od.polyline.polyline_angles(polyline))
     assert angles.size == polyline.size
 
 
@@ -365,8 +365,8 @@ def _polyline_cpu(bench_case: BenchCase) -> wp.array[wp.vec3]:
     Build the benchmark's polyline as a ``wp.vec3`` array on the **cpu** device, cached per mesh.
 
     The reference rows for ``polyline_downsample`` and ``polyline_simplify`` are driven by the
-    *count* triwarp reaches rather than by their own error parameter (each row says why), so they
-    have to call triwarp once to learn it. That call is outside the timed callable and is not the
+    *count* ordito reaches rather than by their own error parameter (each row says why), so they
+    have to call ordito once to learn it. That call is outside the timed callable and is not the
     measurement, so it runs on the cpu -- a ``cpu_bound`` case has no Warp device of its own.
     """
     key = (bench_case.mesh_name, "cpu-polyline")
@@ -379,13 +379,13 @@ def _polyline_cpu(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 @pytest.mark.benchmark(group="polyline_upsample")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_upsample_polyline(bench_case: BenchCase) -> None:
     """
     Arc-length upsampling at half the mean segment length: scan, readback, then a lerp pass.
 
     meshlib's ``subdividePolyline`` takes the same ``maxEdgeLen`` and makes the same guarantee, but
-    it **bisects** where triwarp splits each segment into equal pieces, so at a target that is not
+    it **bisects** where ordito splits each segment into equal pieces, so at a target that is not
     a power-of-two fraction of the input spacing it overshoots -- roughly doubling the point count,
     because one halving leaves it a hair over the cap and forces a second. Both satisfy the cap;
     read the row as a cost at a *shared
@@ -413,25 +413,25 @@ def test_upsample_polyline(bench_case: BenchCase) -> None:
         return
 
     polyline = _polyline_wp(bench_case)
-    dense = bench_case.run(lambda: tw.polyline.polyline_upsample(polyline, step))
+    dense = bench_case.run(lambda: od.polyline.polyline_upsample(polyline, step))
     assert dense.size >= polyline.size
 
 
 @pytest.mark.benchmark(group="polyline_downsample")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp", "meshlib")
+@pytest.mark.benchlibs("ordito", "meshlib")
 def test_downsample_polyline(bench_case: BenchCase) -> None:
     """
     Arc-length downsampling at four times the mean segment length.
 
     meshlib's ``decimatePolyline`` reaches a *count* rather than a step, so its row is given the
-    count triwarp's step produces (``maxDeletedVertices``) and its ``maxError`` is opened up so the
+    count ordito's step produces (``maxDeletedVertices``) and its ``maxError`` is opened up so the
     count is what binds -- otherwise the two rows would stop for different reasons and the ratio
     would mean nothing. That makes this the module's clearest structural contrast: an arc-length
     resample is one scan and one gather where a decimator is a priority queue of collapses.
 
     ``optimizeVertexPos`` is turned **off**. It defaults on and moves each surviving vertex to a
-    fitted position, which is work triwarp does not do and which would additionally leave the output
+    fitted position, which is work ordito does not do and which would additionally leave the output
     off the input point set.
     """
     step = _DOWNSAMPLE_FRACTION * _segment_scale(bench_case)[0]
@@ -440,7 +440,7 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
         contour_ml = _contour_ml(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
         n_points = cpu_polyline.size
-        n_kept = tw.polyline.polyline_downsample(cpu_polyline, step).size
+        n_kept = od.polyline.polyline_downsample(cpu_polyline, step).size
 
         def downsample_ml() -> int:
             polyline_ml = mm.Polyline3(contour_ml)
@@ -454,13 +454,13 @@ def test_downsample_polyline(bench_case: BenchCase) -> None:
         return
 
     polyline = _polyline_wp(bench_case)
-    sparse = bench_case.run(lambda: tw.polyline.polyline_downsample(polyline, step))
+    sparse = bench_case.run(lambda: od.polyline.polyline_downsample(polyline, step))
     assert sparse.size >= 2
 
 
 @pytest.mark.benchmark(group="polyline_simplify")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("tolerance_fraction", _SIMPLIFY_FRACTIONS)
 def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> None:
     """
@@ -471,17 +471,17 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
     longest rim. Read the two ``saddle`` rows as floor rows, the graph capture being a large share
     of a sub-millisecond call, rather than as outliers.
 
-    Neither reference is Ramer-Douglas-Peucker, and **neither is driven by triwarp's tolerance**,
-    which is the thing to know before reading the ratio: both are given the *reduction* triwarp's
+    Neither reference is Ramer-Douglas-Peucker, and **neither is driven by ordito's tolerance**,
+    which is the thing to know before reading the ratio: both are given the *reduction* ordito's
     tolerance produces, so the rows price three ways of removing the same number of points.
 
     Driving them by their own error parameter was rejected on a measurement.
     ``decimatePolyline``'s ``maxError`` is a collapse cost, **not** a deviation bound: on a random
     walk its output sits several times further from the input than the tolerance it was given, where
-    triwarp's and pyvista's stay well inside it. So a tolerance-matched pair would be two different
+    ordito's and pyvista's stay well inside it. So a tolerance-matched pair would be two different
     amounts of work under one parameter name.
 
-    * **meshlib** ``decimatePolyline`` at ``maxDeletedVertices`` = triwarp's deletion count, with
+    * **meshlib** ``decimatePolyline`` at ``maxDeletedVertices`` = ordito's deletion count, with
       ``maxError`` opened up so the count is what binds. ``optimizeVertexPos`` is turned off for the
       reason the ``downsample`` row records; it mutates, so the ``Polyline3`` is rebuilt per round.
     * **pyvista** ``decimate_polyline`` takes a reduction *fraction*, handed the same count. It
@@ -495,7 +495,7 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
         contour_ml = _contour_ml(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
         n_points = cpu_polyline.size
-        n_kept = tw.polyline.polyline_simplify(cpu_polyline, tol)[0].size
+        n_kept = od.polyline.polyline_simplify(cpu_polyline, tol)[0].size
 
         def simplify_ml() -> int:
             polyline_ml = mm.Polyline3(contour_ml)
@@ -511,26 +511,26 @@ def test_simplify_polyline(bench_case: BenchCase, tolerance_fraction: float) -> 
         line_pv = _polyline_pv(bench_case)
         cpu_polyline = _polyline_cpu(bench_case)
         n_points = cpu_polyline.size
-        n_kept = tw.polyline.polyline_simplify(cpu_polyline, tol)[0].size
+        n_kept = od.polyline.polyline_simplify(cpu_polyline, tol)[0].size
         reduction = min(max(1.0 - n_kept / n_points, 0.0), 0.999)
         assert bench_case.run(lambda: line_pv.decimate_polyline(reduction)).n_points >= 2
         return
 
     polyline = _polyline_wp(bench_case)
-    simplified, kept = bench_case.run(lambda: tw.polyline.polyline_simplify(polyline, tol))
+    simplified, kept = bench_case.run(lambda: od.polyline.polyline_simplify(polyline, tol))
     assert simplified.size == kept.size
 
 
 @pytest.mark.benchmark(group="polyline_point_distance")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("n_queries", _N_QUERIES)
 def test_distance_to_polyline(bench_case: BenchCase, n_queries: int) -> None:
     """
     Brute-force point-to-segment distance: the one case whose cost is points x segments.
 
     That is the contrast meshlib's row is here for: ``findProjectionOnPolyline`` walks an **AABB
-    tree** over the segments, so its cost is ``points x log(segments)`` where triwarp's is the full
+    tree** over the segments, so its cost is ``points x log(segments)`` where ordito's is the full
     product -- read the gap across the ``polyline`` axis rather than at one point. It has no
     batched form, so the row loops in Python and prices that loop along with the queries; the tree
     is built lazily and is pre-warmed outside the timed callable.
@@ -573,42 +573,42 @@ def test_distance_to_polyline(bench_case: BenchCase, n_queries: int) -> None:
         return
     polyline = _polyline_wp(bench_case)
     points = _query_points_wp(bench_case, n_queries)
-    distance = bench_case.run(lambda: tw.polyline.polyline_point_distance(points, polyline))
+    distance = bench_case.run(lambda: od.polyline.polyline_point_distance(points, polyline))
     assert distance.size == n_queries
 
 
 # The ``closed=True`` rows. A boundary loop does not repeat its first vertex, so every one of these
 # takes the closing segment the flag adds -- the path that used to go through ``polyline_close``'s
-# closure readback and full-buffer copy. triwarp-only: what they price is the closure handling
+# closure readback and full-buffer copy. ordito-only: what they price is the closure handling
 # around an algorithm the open rows above already compare against the references, so a reference
 # row here would re-time the same comparison with one more segment.
 
 
 @pytest.mark.benchmark(group="polyline_upsample_closed")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_upsample_closed_polyline(bench_case: BenchCase) -> None:
     """``polyline_upsample(closed=True)`` at the open row's step: one more segment, as a ring."""
     step = _UPSAMPLE_FRACTION * _segment_scale(bench_case)[0]
     polyline = _polyline_wp(bench_case)
-    dense = bench_case.run(lambda: tw.polyline.polyline_upsample(polyline, step, closed=True))
+    dense = bench_case.run(lambda: od.polyline.polyline_upsample(polyline, step, closed=True))
     assert dense.size >= polyline.size
 
 
 @pytest.mark.benchmark(group="polyline_downsample_closed")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_downsample_closed_polyline(bench_case: BenchCase) -> None:
     """``polyline_downsample(closed=True)`` at the open row's step, the closing edge counted."""
     step = _DOWNSAMPLE_FRACTION * _segment_scale(bench_case)[0]
     polyline = _polyline_wp(bench_case)
-    sparse = bench_case.run(lambda: tw.polyline.polyline_downsample(polyline, step, closed=True))
+    sparse = bench_case.run(lambda: od.polyline.polyline_downsample(polyline, step, closed=True))
     assert sparse.size >= 2
 
 
 @pytest.mark.benchmark(group="polyline_resample_closed")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     """
     ``polyline_resample(closed=True)`` to the input's own point count.
@@ -618,13 +618,13 @@ def test_resample_closed_polyline(bench_case: BenchCase) -> None:
     """
     polyline = _polyline_wp(bench_case)
     n_points = polyline.size
-    ring = bench_case.run(lambda: tw.polyline.polyline_resample(polyline, n_points, closed=True))
+    ring = bench_case.run(lambda: od.polyline.polyline_resample(polyline, n_points, closed=True))
     assert ring.size == n_points
 
 
 @pytest.mark.benchmark(group="polyline_point_distance_closed")
 @pytest.mark.benchaxis("polyline")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_distance_to_closed_polyline(bench_case: BenchCase) -> None:
     """
     ``polyline_point_distance(closed=True)`` at the smaller query count.
@@ -635,7 +635,7 @@ def test_distance_to_closed_polyline(bench_case: BenchCase) -> None:
     polyline = _polyline_wp(bench_case)
     points = _query_points_wp(bench_case, _N_QUERIES[0])
     distance = bench_case.run(
-        lambda: tw.polyline.polyline_point_distance(points, polyline, closed=True)
+        lambda: od.polyline.polyline_point_distance(points, polyline, closed=True)
     )
     assert distance.size == _N_QUERIES[0]
 
@@ -661,7 +661,7 @@ def _polygon_np(n_vertices: int) -> np.ndarray:
 
 @pytest.mark.benchmark(group="polyline_triangulate")
 @pytest.mark.benchmeshes("sphere_small")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("n_vertices", _POLYGON_SIZES)
 def test_triangulate_polyline(bench_case: BenchCase, n_vertices: int) -> None:
     """
@@ -674,7 +674,7 @@ def test_triangulate_polyline(bench_case: BenchCase, n_vertices: int) -> None:
     nothing.
 
     meshlib's ``triangulateContours`` takes 2-D **closed** contours (the first point repeated) and
-    returns a whole ``Mesh``, so its row carries that construction where triwarp's returns an index
+    returns a whole ``Mesh``, so its row carries that construction where ordito's returns an index
     buffer -- it is doing more, and the two agree on the triangle count and total area
     (``tests/test_polyline.py``). Both build their input contour outside the timed callable.
 
@@ -707,7 +707,7 @@ def test_triangulate_polyline(bench_case: BenchCase, n_vertices: int) -> None:
         dtype=wp.vec3,
         device=bench_case.device,
     )
-    faces = bench_case.run(lambda: tw.polyline.polyline_triangulate(points_wp))
+    faces = bench_case.run(lambda: od.polyline.polyline_triangulate(points_wp))
     assert int(faces.shape[0]) == n_vertices - 2
 
 
@@ -728,7 +728,7 @@ def _star_wp(n: int, device: str) -> wp.array[wp.vec2]:
 
 
 @pytest.mark.benchmark(group="triangulate_polygon")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 @pytest.mark.parametrize("ring_size", _STAR_RINGS)
 def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     """
@@ -742,9 +742,9 @@ def test_triangulate_polygon(bench_lib: BenchLibrary, ring_size: int) -> None:
     hash. The small point is close to the floor of one launch and two readbacks. No open3d
     counterpart.
     """
-    if bench_lib.kind == "triwarp":
+    if bench_lib.kind == "ordito":
         ring_wp = _star_wp(ring_size, str(bench_lib.device))
-        _vertices, faces_wp = bench_lib.run(lambda: tw.polyline.triangulate_polygon(ring_wp))
+        _vertices, faces_wp = bench_lib.run(lambda: od.polyline.triangulate_polygon(ring_wp))
         assert faces_wp.size // 3 == ring_size - 2
     else:
         polygon = sg.Polygon(_star_np(ring_size))

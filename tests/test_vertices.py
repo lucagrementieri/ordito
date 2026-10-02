@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.vertices`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.vertices`` against Trimesh (CPU reference)."""
 
 import igl
 import numpy as np
@@ -8,8 +8,8 @@ import warp as wp
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.conversions import (
     faces_igl,
     points_to_warp,
@@ -31,7 +31,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
 
     Class A for all three, and they agree to **3.5e-7**, tighter than the 1e-5 tolerance, because
     ``compute_vertex_normals`` and ``compute_normal_per_vertex(weightmode="By Area")`` are the
-    same scheme triwarp implements, and ``"Simple Average"`` is the unweighted one.
+    same scheme ordito implements, and ``"Simple Average"`` is the unweighted one.
 
     **trimesh is deliberately absent**, and that is the finding worth recording:
     ``Trimesh.vertex_normals`` is *angle*-weighted, not area-weighted. It matches
@@ -43,7 +43,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     mesh_tm, mesh_wp = half_torus
     n_vertices = mesh_wp.points.size
 
-    area_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    area_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
 
     mesh_o3d = trimesh_to_open3d(mesh_tm)
     mesh_o3d.compute_vertex_normals()
@@ -55,10 +55,10 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     assert np.allclose(area_wp.numpy(), normals_pml, rtol=1e-5, atol=1e-5)
 
     # The unweighted scheme, from the same filter under a different weightmode.
-    face_normals_wp, _areas_wp = tw.triangles.face_normals_and_areas(
+    face_normals_wp, _areas_wp = od.triangles.face_normals_and_areas(
         mesh_wp.points, mesh_wp.indices
     )
-    mean_wp = tw.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
+    mean_wp = od.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
     mean_meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     mean_meshset_pml.compute_normal_per_vertex(weightmode="Simple Average")
     mean_pml = mean_meshset_pml.current_mesh().vertex_normal_matrix()
@@ -81,14 +81,14 @@ def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh
 
     The flags are the ones ``tests/test_triangles.py`` explains: no re-winding, no vertex splitting.
     The array comes back **float32**, which is the tolerance floor on VTK's side rather than
-    triwarp's.
+    ordito's.
     """
     mesh_tm, mesh_wp = half_torus
     n_vertices = mesh_wp.points.size
-    face_normals_wp, _areas_wp = tw.triangles.face_normals_and_areas(
+    face_normals_wp, _areas_wp = od.triangles.face_normals_and_areas(
         mesh_wp.points, mesh_wp.indices
     )
-    mean_wp = tw.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
+    mean_wp = od.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
 
     normals_pv = trimesh_to_pyvista(mesh_tm).compute_normals(
         cell_normals=False,
@@ -100,7 +100,7 @@ def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh
     normals_pv_np = np.asarray(normals_pv.point_data["Normals"])
     assert np.allclose(mean_wp.numpy(), normals_pv_np, rtol=1e-5, atol=1e-5)
 
-    area_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    area_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     assert not np.allclose(area_wp.numpy(), normals_pv_np, atol=1e-4)
 
 
@@ -118,7 +118,7 @@ def test_mean_vertex_normals(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     vertex_normals_tm = tm.geometry.mean_vertex_normals(n_vertices, mesh_tm.faces, face_normals_tm)
 
     face_normals_wp = points_to_warp(face_normals_tm, mesh_wp.device)
-    vertex_normals_wp = tw.vertices.mean_vertex_normals(
+    vertex_normals_wp = od.vertices.mean_vertex_normals(
         n_vertices, mesh_wp.indices, face_normals_wp
     )
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_tm, rtol=1e-5, atol=1e-5)
@@ -142,10 +142,10 @@ def test_weighted_vertex_normals(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     )
 
     face_normals_wp = points_to_warp(face_normals_tm, mesh_wp.device)
-    face_weights_wp = twt.as_array2d(
+    face_weights_wp = odt.as_array2d(
         wp.array(face_angles_tm, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    vertex_normals_wp = tw.vertices.weighted_vertex_normals(
+    vertex_normals_wp = od.vertices.weighted_vertex_normals(
         n_vertices, mesh_wp.indices, face_normals_wp, face_weights_wp
     )
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_tm, rtol=1e-5, atol=1e-5)
@@ -167,14 +167,14 @@ def test_vertex_normals_area(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     )
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    vertex_normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
+    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_igl, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("vertex_normals", "pytorch3d")
 def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Class A: ``Meshes.verts_normals_packed`` is triwarp's **area**-weighted vertex normal.
+    Class A: ``Meshes.verts_normals_packed`` is ordito's **area**-weighted vertex normal.
 
     pytorch3d sums the *unnormalized* face cross products into each incident vertex and normalizes
     once at the end, which is area weighting by construction -- so this pins the default
@@ -184,15 +184,15 @@ def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
 
     A closed, fully-referenced fixture on purpose. pytorch3d does not drop unreferenced vertices
     and leaves their normals at the ``torch.zeros`` initial value rather than ``NaN``, so on a mesh
-    with spares this would be comparing zeros with whatever triwarp writes.
+    with spares this would be comparing zeros with whatever ordito writes.
     """
     mesh_tm, mesh_wp = icosphere
     device = str(mesh_wp.points.device)
     normals_t = trimesh_to_pytorch3d(mesh_tm, device).verts_normals_packed()
     assert normals_t is not None
     normals_p3d = normals_t.cpu().numpy()
-    normals_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
-    angle_wp = tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices, weighting="angle")
+    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
+    angle_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices, weighting="angle")
 
     assert normals_p3d.shape == mesh_tm.vertices.shape
     assert np.allclose(normals_wp.numpy(), normals_p3d, rtol=1e-5, atol=1e-6)
@@ -206,7 +206,7 @@ def test_vertex_normal_weightings_match_meshlib(half_torus: tuple[tm.Trimesh, wp
 
     The pairing is not guessable from the names and was found by measuring all six combinations.
     ``computePerVertNormals`` is the **area**-weighted sum and ``computePerVertPseudoNormals`` is
-    the **angle**-weighted one; each matches its triwarp partner to **1.19e-07** and sits
+    the **angle**-weighted one; each matches its ordito partner to **1.19e-07** and sits
     **6.8e-03** from the other's, which is four orders of magnitude of separation and far more than
     any tolerance argument. ``mean_vertex_normals`` matches neither (4.5e-03 from the nearer), so
     it keeps its own oracles and is asserted here only to be *different* -- without that, a
@@ -223,10 +223,10 @@ def test_vertex_normal_weightings_match_meshlib(half_torus: tuple[tm.Trimesh, wp
     area_ml = mn.toNumpyArray(mm.computePerVertNormals(mesh_ml))
     angle_ml = mn.toNumpyArray(mm.computePerVertPseudoNormals(mesh_ml))
 
-    area_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
-    angle_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
-    face_normals_wp, _ = tw.triangles.face_normals_and_areas(vertices_wp, mesh_wp.indices)
-    mean_wp = tw.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
+    area_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
+    angle_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(vertices_wp, mesh_wp.indices)
+    mean_wp = od.vertices.mean_vertex_normals(n_vertices, mesh_wp.indices, face_normals_wp)
 
     assert area_ml.shape == (n_vertices, 3)  # non-vacuity: the converter kept every vertex
     assert np.allclose(area_wp.numpy(), area_ml, rtol=1e-5, atol=1e-5)
@@ -243,13 +243,13 @@ def test_vertex_normals_area_precomputed(half_torus: tuple[tm.Trimesh, wp.Mesh])
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
 
-    face_normals_wp, face_areas_wp = tw.triangles.face_normals_and_areas(
+    face_normals_wp, face_areas_wp = od.triangles.face_normals_and_areas(
         vertices_wp, mesh_wp.indices
     )
-    vertex_normals_precomputed_wp = tw.vertices.vertex_normals(
+    vertex_normals_precomputed_wp = od.vertices.vertex_normals(
         vertices_wp, mesh_wp.indices, face_normals=face_normals_wp, face_weights=face_areas_wp
     )
-    vertex_normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
+    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
     assert np.allclose(
         vertex_normals_precomputed_wp.numpy(), vertex_normals_wp.numpy(), rtol=1e-5, atol=1e-5
     )
@@ -270,7 +270,7 @@ def test_vertex_normals_angle(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     )
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
-    vertex_normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
+    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_tm, rtol=1e-5, atol=1e-5)
 
 
@@ -279,16 +279,16 @@ def test_vertex_normals_angle_precomputed(half_torus: tuple[tm.Trimesh, wp.Mesh]
 
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
 
-    face_normals_wp, _ = tw.triangles.face_normals_and_areas(vertices_wp, mesh_wp.indices)
-    face_angles_wp = tw.triangles.face_angles(vertices_wp, mesh_wp.indices)
-    vertex_normals_precomputed_wp = tw.vertices.vertex_normals(
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(vertices_wp, mesh_wp.indices)
+    face_angles_wp = od.triangles.face_angles(vertices_wp, mesh_wp.indices)
+    vertex_normals_precomputed_wp = od.vertices.vertex_normals(
         vertices_wp,
         mesh_wp.indices,
         weighting="angle",
         face_normals=face_normals_wp,
         face_weights=face_angles_wp,
     )
-    vertex_normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
+    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="angle")
     assert np.allclose(
         vertex_normals_precomputed_wp.numpy(), vertex_normals_wp.numpy(), rtol=1e-5, atol=1e-5
     )
@@ -342,12 +342,12 @@ def test_vertex_normals_mwselr(scale: float, half_torus: tuple[tm.Trimesh, wp.Me
     assert np.allclose(np.linalg.norm(vertex_normals_np, axis=1), 1.0)
 
     vertices_wp = points_to_warp(vertices_np, mesh_wp.device)
-    vertex_normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="mwselr")
+    vertex_normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices, weighting="mwselr")
     assert np.allclose(vertex_normals_wp.numpy(), vertex_normals_np, rtol=1e-5, atol=1e-5)
 
     # Face normals are unit vectors, so they are the same buffer at every scale.
     face_normals_wp = points_to_warp(mesh_tm.face_normals, mesh_wp.device)
-    vertex_normals_explicit_wp = tw.vertices.vertex_normals(
+    vertex_normals_explicit_wp = od.vertices.vertex_normals(
         vertices_wp, mesh_wp.indices, weighting="mwselr", face_normals=face_normals_wp
     )
     assert np.allclose(vertex_normals_explicit_wp.numpy(), vertex_normals_np, rtol=1e-5, atol=1e-5)
@@ -355,7 +355,7 @@ def test_vertex_normals_mwselr(scale: float, half_torus: tuple[tm.Trimesh, wp.Me
 
 def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
-    Triwarp against triwarp: the identical call, eight times, must return the identical buffer.
+    Ordito against ordito: the identical call, eight times, must return the identical buffer.
 
     No reference library can carry this -- it is a claim about *this* implementation's summation
     order, not about the quantity -- so the oracle for the values themselves is
@@ -373,7 +373,7 @@ def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh])
     _, mesh_wp = half_torus
 
     runs = [
-        tw.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy().copy() for _ in range(8)
+        od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices).numpy().copy() for _ in range(8)
     ]
 
     # Non-vacuity: an all-zero or constant buffer would compare equal to itself for free.
@@ -408,7 +408,7 @@ def test_vertex_normals_survive_a_small_mesh_scale(
     )
     vertices_wp = points_to_warp(vertices_np * scale, mesh_wp.device)
 
-    normals_wp = tw.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
+    normals_wp = od.vertices.vertex_normals(vertices_wp, mesh_wp.indices)
 
     # Non-vacuity: the reference is unit everywhere, so nothing here is comparing two zeros.
     assert np.allclose(np.linalg.norm(normals_igl, axis=1), 1.0)
@@ -449,10 +449,10 @@ def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str):
         )
     ).ravel()
 
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    vertex_defects_wp = tw.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
+    vertex_defects_wp = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
 
     vertex_defects_ml = mn.getNumpyGaussianCurvature(trimesh_to_meshlib(mesh_tm))
 
@@ -480,7 +480,7 @@ def test_vertex_defects_against_pyvista_gaussian_curvature(
     element-wise agreement 2.7e-07 / 1.2e-06 / 5.1e-07 on the three fixtures.
 
     ``atol`` carries the comparison rather than ``rtol``: a flat vertex has zero defect, so a
-    relative tolerance is meaningless there. The residual is triwarp's ``float32`` vertex buffer and
+    relative tolerance is meaningless there. The residual is ordito's ``float32`` vertex buffer and
     not the reference's -- pyvista's curvature comes back float64, and the same comparison against
     vedo's float32 points measures the same 5e-05 on a larger mesh.
     """
@@ -495,10 +495,10 @@ def test_vertex_defects_against_pyvista_gaussian_curvature(
     lumped_pv = np.zeros(n_vertices)
     np.add.at(lumped_pv, mesh_tm.faces.ravel(), np.repeat(areas_pv / 3.0, 3))
 
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    vertex_defects_wp = tw.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
+    vertex_defects_wp = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
 
     assert np.allclose(vertex_defects_wp.numpy(), gaussian_pv * lumped_pv, rtol=1e-4, atol=1e-4)
     # Non-vacuous on every fixture: a mesh whose defects were all zero would pass trivially.
@@ -522,12 +522,12 @@ def test_vertex_defects_satisfy_gauss_bonnet(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     assert mesh_tm.is_watertight
-    assert tw.measures.euler_characteristic(mesh_wp.indices) == chi
+    assert od.measures.euler_characteristic(mesh_wp.indices) == chi
 
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
-    defects_wp = tw.vertices.vertex_defects(
+    defects_wp = od.vertices.vertex_defects(
         mesh_tm.vertices.shape[0], mesh_wp.indices, face_angles_wp
     )
     assert np.isclose(defects_wp.numpy().sum(), 2.0 * np.pi * chi, rtol=1e-4, atol=1e-3)
@@ -550,7 +550,7 @@ def test_scatter_wrappers_ignore_the_current_device(half_torus: tuple[tm.Trimesh
     n_vertices = mesh_tm.vertices.shape[0]
 
     face_normals_wp = points_to_warp(mesh_tm.face_normals, mesh_wp.device)
-    face_angles_wp = twt.as_array2d(
+    face_angles_wp = odt.as_array2d(
         wp.array(mesh_tm.face_angles, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
 
@@ -563,13 +563,13 @@ def test_scatter_wrappers_ignore_the_current_device(half_torus: tuple[tm.Trimesh
     defects_tm = tm.curvature.vertex_defects(mesh_tm)
 
     with wp.ScopedDevice("cpu"):
-        mean_normals_wp = tw.vertices.mean_vertex_normals(
+        mean_normals_wp = od.vertices.mean_vertex_normals(
             n_vertices, mesh_wp.indices, face_normals_wp
         )
-        weighted_normals_wp = tw.vertices.weighted_vertex_normals(
+        weighted_normals_wp = od.vertices.weighted_vertex_normals(
             n_vertices, mesh_wp.indices, face_normals_wp, face_angles_wp
         )
-        defects_wp = tw.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
+        defects_wp = od.vertices.vertex_defects(n_vertices, mesh_wp.indices, face_angles_wp)
 
     assert str(mean_normals_wp.device) == str(mesh_wp.device)
     assert str(weighted_normals_wp.device) == str(mesh_wp.device)

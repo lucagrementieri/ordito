@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.seams``: crease detection and the topological cut along a seam set.
+Benchmarks for ``ordito.seams``: crease detection and the topological cut along a seam set.
 
 Two groups, on two different mesh sets, because they have two different preconditions:
 
@@ -9,7 +9,7 @@ Two groups, on two different mesh sets, because they have two different precondi
 * ``cut_along_edges`` runs on the synthetic **icospheres** instead, and the reason is a hard
   precondition rather than a preference: the cut is defined through halfedge twins, so it needs an
   edge-manifold mesh, and ``bunny_decimated`` has **150 edges shared by three or more faces**.
-  triwarp raises there and so does MeshLab (``this filter require manifoldness``), so neither side
+  ordito raises there and so does MeshLab (``this filter require manifoldness``), so neither side
   has a number to report — the same boundary the midpoint-subdivision references run into (see the
   benchmarks README hazard table).
 
@@ -23,14 +23,14 @@ References
 **pymeshlab** covers both: ``compute_selection_crease_per_edge`` is the same dihedral threshold
 (reported as a vertex selection, so it is selection-only and shares the MeshSet) and
 ``meshing_cut_along_crease_edges`` is the cut — which finds the creases *and* cuts them in one call,
-so that row is an upper bound on triwarp's cut alone and should be read against the sum of the two
-triwarp rows. It rewrites the topology, so its MeshSet is rebuilt inside the timed callable. Its cut
+so that row is an upper bound on ordito's cut alone and should be read against the sum of the two
+ordito rows. It rewrites the topology, so its MeshSet is rebuilt inside the timed callable. Its cut
 row exists only at ``cut_fraction=1.0``: the filter takes a dihedral threshold rather than an edge
-set, so ``angledeg=0`` (cut everything non-coplanar) is the only setting comparable to a triwarp
+set, so ``angledeg=0`` (cut everything non-coplanar) is the only setting comparable to a ordito
 fraction.
 
 One structural difference is worth knowing before comparing outputs rather than times: on a cube cut
-at every crease, triwarp emits the **minimal** 24 vertices and MeshLab 32 (see
+at every crease, ordito emits the **minimal** 24 vertices and MeshLab 32 (see
 ``tests/test_seams.py``). Both give 6 components and the same area, so the extra copies are
 redundant rather than wrong — but they are extra memory in every downstream pass.
 
@@ -48,20 +48,20 @@ import pytest
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
 # Crease threshold in degrees. 30 is MeshLab's own documentation default for a "hard" edge and picks
 # out a real feature set on every scan mesh rather than everything or nothing.
 _CREASE_ANGLE = 30.0
 
-_cut_cache: dict[tuple[str, str, float], twt.Array2dInt32] = {}
+_cut_cache: dict[tuple[str, str, float], odt.Array2dInt32] = {}
 _atlas_cache: dict[str, np.ndarray] = {}
 _seam_meshset_cache: dict[str, ml.MeshSet] = {}
 
 
-def _cut_edges(bench_case: BenchCase, fraction: float) -> twt.Array2dInt32:
+def _cut_edges(bench_case: BenchCase, fraction: float) -> odt.Array2dInt32:
     """
     Take a deterministic ``fraction`` of the mesh's interior edges -- an *input* of the cut.
 
@@ -72,11 +72,11 @@ def _cut_edges(bench_case: BenchCase, fraction: float) -> twt.Array2dInt32:
     if key not in _cut_cache:
         # ``angle=0`` on an icosphere is every interior edge, since no two of its faces are
         # coplanar.
-        all_edges = tw.seams.crease_edges(
+        all_edges = od.seams.crease_edges(
             bench_case.vertices_wp, bench_case.faces_wp, angle=0.0
         ).numpy()
         stride = max(1, round(1.0 / fraction))
-        _cut_cache[key] = twt.as_array2d(
+        _cut_cache[key] = odt.as_array2d(
             wp.array(
                 np.ascontiguousarray(all_edges[::stride], dtype=np.int32),
                 dtype=wp.int32,
@@ -88,7 +88,7 @@ def _cut_edges(bench_case: BenchCase, fraction: float) -> twt.Array2dInt32:
 
 
 @pytest.mark.benchmark(group="crease_edges")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista", "meshlib")
 def test_crease_edges(bench_case: BenchCase) -> None:
     """
     Face adjacency plus a dihedral threshold: the cheap half of the seam workflow.
@@ -98,7 +98,7 @@ def test_crease_edges(bench_case: BenchCase) -> None:
     rather than as a selection.
 
     meshlib's ``findCreaseEdges`` is the closest of the three in output shape -- an
-    ``UndirectedEdgeBitSet``, one bit per edge, which is triwarp's answer without the pair decode --
+    ``UndirectedEdgeBitSet``, one bit per edge, which is ordito's answer without the pair decode --
     and the tightest in result: the same 12 edges on a unit box at both thresholds tested
     (``tests/test_seams.py``). Its angle is in **radians** and is measured from planar, so the
     module's degree constant is converted rather than passed. It reads the topology and mutates
@@ -137,13 +137,13 @@ def test_crease_edges(bench_case: BenchCase) -> None:
         assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    creases = bench_case.run(lambda: tw.seams.crease_edges(vertices, faces, angle=_CREASE_ANGLE))
+    creases = bench_case.run(lambda: od.seams.crease_edges(vertices, faces, angle=_CREASE_ANGLE))
     assert int(creases.shape[1]) == 2
 
 
 @pytest.mark.benchmark(group="cut_along_edges")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 @pytest.mark.parametrize("cut_fraction", [0.25, 1.0])
 def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
     """
@@ -155,11 +155,11 @@ def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
     readbacks -- the corner graph is formed in the union-find's own threads, never materialised or
     compacted -- so any gap between them is the hooks' device work.
 
-    ``igl.cut_mesh`` is the reference that takes the same *edge set* triwarp does, once it is
+    ``igl.cut_mesh`` is the reference that takes the same *edge set* ordito does, once it is
     rewritten as the ``(n_faces, 3)`` per-corner bool mask the binding wants -- that rewrite is an
     input transform and is cached outside the timed callable, like ``_cut_edges`` itself. It is the
     only reference here that can run at both fractions, since MeshLab takes a dihedral threshold
-    instead of a set. It also **agrees with triwarp on the output size** where MeshLab does not (24
+    instead of a set. It also **agrees with ordito on the output size** where MeshLab does not (24
     vertices against 32 on a cut cube; see ``tests/test_seams.py``), which is what makes the third
     row worth having.
 
@@ -180,7 +180,7 @@ def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
             pytest.skip("MeshLab's cut takes a dihedral threshold, not an edge set")
         skip_larger_than(bench_case, "sphere_med", "MeshLab's cut is a serial per-face rewrite")
         # Rewrites the topology, so the MeshSet is rebuilt inside the timed callable. This filter
-        # also *finds* the creases, so read it against both triwarp rows summed.
+        # also *finds* the creases, so read it against both ordito rows summed.
         new_meshset_pml = bench_case.new_meshset_pml
 
         def cut_pml() -> int:
@@ -193,7 +193,7 @@ def test_cut_along_edges(bench_case: BenchCase, cut_fraction: float) -> None:
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     edges = _cut_edges(bench_case, cut_fraction)
     cut_vertices, cut_faces = bench_case.run(
-        lambda: tw.seams.cut_along_edges(vertices, faces, edges), rounds=3
+        lambda: od.seams.cut_along_edges(vertices, faces, edges), rounds=3
     )
     assert cut_faces.size == faces.size
     assert np.isfinite(cut_vertices.numpy()[:1]).all()
@@ -227,7 +227,7 @@ def _cut_corner_mask_np(bench_case: BenchCase, fraction: float) -> np.ndarray:
         faces_cpu = wp.array(
             np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device="cpu"
         )
-        all_edges_np = tw.seams.crease_edges(vertices_cpu, faces_cpu, angle=0.0).numpy()
+        all_edges_np = od.seams.crease_edges(vertices_cpu, faces_cpu, angle=0.0).numpy()
         edges_np = all_edges_np[:: max(1, round(1.0 / fraction))]
         cut_keys = np.sort(edges_np.astype(np.int64), axis=1)
         cut_hashes = cut_keys[:, 0] * (int(faces_np.max()) + 1) + cut_keys[:, 1]
@@ -264,7 +264,7 @@ def _wedge_atlas_np(bench_case: BenchCase) -> np.ndarray:
 
 @pytest.mark.benchmark(group="uv_seam_edges")
 @pytest.mark.benchmeshes("sphere_small", "sphere_med", "sphere_large")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_uv_seam_edges(bench_case: BenchCase) -> None:
     """
     Halfedge twins plus a per-edge texcoord comparison and three compactions.
@@ -293,7 +293,7 @@ def test_uv_seam_edges(bench_case: BenchCase) -> None:
         meshset_pml = _seam_meshset_cache[bench_case.mesh_name]
         bench_case.run(meshset_pml.compute_selection_by_texture_seams_per_vertex)
         # MeshLab reports only the vertex set, and unions boundaries into it -- so it does strictly
-        # less than the triwarp row, which also splits boundaries out and finds foldovers.
+        # less than the ordito row, which also splits boundaries out and finds foldovers.
         assert meshset_pml.current_mesh().vertex_selection_array().shape == (bench_case.n_vertices,)
         return
     faces = bench_case.faces_wp
@@ -304,7 +304,7 @@ def test_uv_seam_edges(bench_case: BenchCase) -> None:
     )
     n_vertices = bench_case.n_vertices
     seams, boundaries, foldovers = bench_case.run(
-        lambda: tw.seams.uv_seam_edges(faces, texcoords, n_vertices=n_vertices)
+        lambda: od.seams.uv_seam_edges(faces, texcoords, n_vertices=n_vertices)
     )
     assert int(seams.shape[0]) > 0
     assert int(seams.shape[1]) == 4

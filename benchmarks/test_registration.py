@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.registration``.
+Benchmarks for ``ordito.registration``.
 
 Times the Procrustes fit and the ICP variants against a source cloud built from the mesh itself:
 20k subsampled vertices pushed through a fixed rotation plus a 2%-of-diagonal translation and
@@ -19,7 +19,7 @@ pure throughput case and cheap everywhere.
 References
 ----------
 libigl exposes no Python binding for ``iterative_closest_point``, so **open3d** is the reference
-here: ``open3d.pipelines.registration`` is what triwarp's point-to-plane path is ported from
+here: ``open3d.pipelines.registration`` is what ordito's point-to-plane path is ported from
 (``TransformationEstimationPointToPlane`` with an optional ``RobustKernel``), and it is the only
 CPU library in the test group that implements the point-to-plane metric at all.
 
@@ -30,19 +30,19 @@ CPU library in the test group that implements the point-to-plane metric at all.
   (KDTreeFlann).
 * Point-to-plane ICP — open3d only, on a point-cloud target so both sides consume the *same*
   per-vertex normals (computed once with trimesh from the shared float64 source). The robust variant
-  has no reference and is timed for triwarp alone.
+  has no reference and is timed for ordito alone.
 * Mesh-target ICP — **pymeshlab**'s ``compute_matrix_by_icp_between_meshes``, which correspondences
   against the reference *mesh* rather than a point cloud and so is the equivalent of ``icp`` rather
   than of ``icp_point_cloud``. It is the only reference that group has. One constraint shapes it:
   **both layers must carry faces** -- a face-less source raises ``Failed to apply filter`` -- so its
   source is the whole mesh under the same rotation, translation and noise the point sample gets,
-  with ``samplenum`` matched to triwarp's point count so both minimize over the same number of
+  with ``samplenum`` matched to ordito's point count so both minimize over the same number of
   correspondences.
 
-Both sides are pinned to exactly ``_ICP_ITERATIONS`` iterations — triwarp with ``threshold=-inf``
+Both sides are pinned to exactly ``_ICP_ITERATIONS`` iterations — ordito with ``threshold=-inf``
 and open3d with ``relative_fitness=relative_rmse=0`` — otherwise a library that early-exits after
 three iterations would look fast for the wrong reason. ``max_correspondence_distance`` is set to the
-bbox diagonal so open3d rejects nothing, matching triwarp's ``max_distance=None`` default.
+bbox diagonal so open3d rejects nothing, matching ordito's ``max_distance=None`` default.
 
 The ``scale`` fixtures are spheres, and a sphere's point-to-plane cost does not change under a
 rotation about its centre, so only the translation has anything to converge to: it reaches the
@@ -54,8 +54,8 @@ on the rotation here, and the cost-change rule fires on noise.
 
 What is inside the timed callable
 ---------------------------------
-Everything the public function does, including the spatial index build: triwarp's ``wp.Mesh`` BVH
-for a mesh target, and open3d's ``KDTreeFlann`` for a point-cloud target. triwarp's public functions
+Everything the public function does, including the spatial index build: ordito's ``wp.Mesh`` BVH
+for a mesh target, and open3d's ``KDTreeFlann`` for a point-cloud target. ordito's public functions
 take raw buffers, so there is no way to hoist that without benchmarking something other than the
 API. Point-cloud construction (``Vector3dVector`` copies) and the shared vertex normals *are* setup
 and cached outside the timed region.
@@ -67,7 +67,7 @@ delta on a *fixed* mesh, not the absolute time. Two things the two targets do sa
 * The **mesh** target is the faster of the two, because it rides Warp's built-in
   ``wp.mesh_query_point_no_sign`` and never touches the k-NN path at all.
 * The **point-cloud** target searches the target's
-  [`mesh_from_points`][triwarp.neighbors.mesh_from_points] -- a ``wp.Mesh`` whose triangles each
+  [`mesh_from_points`][ordito.neighbors.mesh_from_points] -- a ``wp.Mesh`` whose triangles each
   collapse onto one target point -- with the same closest-point descent, built once per call and
   hoisted out of the loop. Its cost does not grow with how far the source sits off the target,
   which the radius-deepening BVH walk it replaced did: that walk was most of every iteration at
@@ -92,7 +92,7 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -112,7 +112,7 @@ _TRANSLATION_FRACTION = 0.02
 _NOISE_FRACTION = 0.002
 
 # Tukey cut-off for the robust point-to-plane fit, in fractions of the bbox diagonal. Passed
-# explicitly (rather than letting triwarp derive it from the residual MAD) so triwarp and open3d
+# explicitly (rather than letting ordito derive it from the residual MAD) so ordito and open3d
 # minimize the same objective.
 _TUKEY_FRACTION = 0.01
 
@@ -240,7 +240,7 @@ def _o3d_criteria() -> o3d.pipelines.registration.ICPConvergenceCriteria:
 
 
 @pytest.mark.benchmark(group="procrustes")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib", "pytorch3d")
 def test_procrustes(bench_case: BenchCase) -> None:
     """
     Procrustes fit on exact correspondences: tiled reductions plus the SVD kernel.
@@ -249,14 +249,14 @@ def test_procrustes(bench_case: BenchCase) -> None:
     time** through ``add``, so its row is a Python loop over the pairs plus the solve, and the loop
     is the honest cost of driving that API from Python -- there is no batched form. Read it as an
     upper bound on the solver and against the other three rows' array interfaces rather than as a
-    like-for-like fit; the transform it returns agrees with triwarp's to 1e-06
+    like-for-like fit; the transform it returns agrees with ordito's to 1e-06
     (``tests/test_registration.py``).
 
     **pytorch3d**'s ``corresponding_points_alignment`` is the same closed-form fit on the same
     exact correspondences -- the fifth engine here and the only one with GPU kernels. Its
-    convention is the row-vector one (``s * X @ R + T = Y``), so its ``R`` is triwarp's linear
+    convention is the row-vector one (``s * X @ R + T = Y``), so its ``R`` is ordito's linear
     block transposed; that is a naming difference and not work, which is what makes the ratio
-    readable. ``estimate_scale=False`` matches the ``scale=False`` triwarp's row passes, and
+    readable. ``estimate_scale=False`` matches the ``scale=False`` ordito's row passes, and
     ``allow_reflection`` is left at its default ``False`` to match ``reflection=False``.
     """
     if bench_case.kind == "pytorch3d":
@@ -291,7 +291,7 @@ def test_procrustes(bench_case: BenchCase) -> None:
 
         assert abs(bench_case.run(procrustes_ml).A.x.length() - 1.0) < 1e-5
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         source = _source_wp(bench_case)
         target = wp.array(
             np.ascontiguousarray(bench_case.vertices_np[indices], dtype=np.float32),
@@ -299,7 +299,7 @@ def test_procrustes(bench_case: BenchCase) -> None:
             device=bench_case.device,
         )
         matrix, _transformed, _cost = bench_case.run(
-            lambda: tw.registration.procrustes(source, target, reflection=False, scale=False)
+            lambda: od.registration.procrustes(source, target, reflection=False, scale=False)
         )
         assert matrix.shape == (1,)
     elif bench_case.kind == "trimesh":
@@ -324,14 +324,14 @@ def test_procrustes(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="icp_point_cloud")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "meshlib", "pytorch3d")
 def test_icp_point_cloud(bench_case: BenchCase) -> None:
     """
     Point-to-point ICP against a point-cloud target: BVH versus cKDTree versus KDTreeFlann.
 
     meshlib is the fourth engine and the only multi-threaded one. Three of its settings are set
     rather than accepted, and each changes what is being timed: ``ICPMethod.PointToPoint``, since
-    its default is point-to-plane and that is triwarp's other function; ``iterLimit`` matched to the
+    its default is point-to-plane and that is ordito's other function; ``iterLimit`` matched to the
     other rows' iteration count; and a small ``samplingVoxelSize``, because that constructor
     overload *subsamples* both clouds and a coarse value would register fewer points than everyone
     else. The solver object is stateful and caches its trees, so it is built inside the timed
@@ -342,7 +342,7 @@ def test_icp_point_cloud(bench_case: BenchCase) -> None:
     ``knn_points`` -- no tree, no grid -- so its cost is quadratic in the cloud size per iteration
     on either device, and only the CUDA row is registered (see ``LIBRARIES`` in
     [`conftest.py`](conftest.py)); the host row was retired after it failed to finish a
-    ``sphere_large`` ICP at all. ``estimate_scale=False`` matches triwarp's default;
+    ``sphere_large`` ICP at all. ``estimate_scale=False`` matches ordito's default;
     ``max_iterations`` is matched to the other rows, but note the *actual* count is each library's
     own convergence rule, so a row that converges early is reporting fewer iterations rather than a
     faster one -- the same caveat this group's rotation axis exists to expose.
@@ -392,10 +392,10 @@ def test_icp_point_cloud(bench_case: BenchCase) -> None:
 
         assert abs(bench_case.run(icp_ml).A.x.length() - 1.0) < 1e-4
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         source, target = _source_wp(bench_case), bench_case.vertices_wp
         matrix, _transformed, _cost = bench_case.run(
-            lambda: tw.registration.icp(
+            lambda: od.registration.icp(
                 source, target, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
             )
         )
@@ -431,7 +431,7 @@ def test_icp_point_cloud(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="icp_convergence")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("degrees", _ROTATION_SWEEP, ids=["near5deg", "far45deg"])
 def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
     """
@@ -443,8 +443,8 @@ def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
     makes the timing report the *iteration count*. That is the number a caller actually pays, and
     it is a function of the initial misalignment, not of the mesh.
 
-    triwarp-only, and that follows from what the group measures rather than from a missing binding.
-    The timing here *is* triwarp's own stopping rule -- an absolute cost threshold -- and every
+    ordito-only, and that follows from what the group measures rather than from a missing binding.
+    The timing here *is* ordito's own stopping rule -- an absolute cost threshold -- and every
     reference stops on a different criterion (open3d on relative fitness and RMSE change, trimesh on
     a mean-cost delta), so an iteration count from any of them is a measurement of its convergence
     test and not of this one. The comparable quantity is per-iteration cost, which every other ICP
@@ -452,14 +452,14 @@ def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
     """
     source, target = _source_wp(bench_case, degrees), bench_case.vertices_wp
     matrix, _transformed, _cost = bench_case.run(
-        lambda: tw.registration.icp(source, target, max_iterations=_ICP_ITERATIONS)
+        lambda: od.registration.icp(source, target, max_iterations=_ICP_ITERATIONS)
     )
     assert matrix.shape == (1,)
 
 
 @pytest.mark.benchmark(group="icp_mesh")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "pyvista")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
 def test_icp_mesh(bench_case: BenchCase) -> None:
     """
     Point-to-point ICP against the triangle surface (closest-point-on-mesh correspondences).
@@ -490,7 +490,7 @@ def test_icp_mesh(bench_case: BenchCase) -> None:
         # than of ``icp_point_cloud``. Both layers must carry faces: handing it a face-less source
         # raises ``Failed to apply filter``, so the source is the whole mesh under the same
         # rotation / translation / noise the point sample gets rather than the sample itself.
-        # ``samplenum`` is matched to triwarp's point count so both sides minimize over the same
+        # ``samplenum`` is matched to ordito's point count so both sides minimize over the same
         # number of correspondences. It writes the source layer's transform, so the set is rebuilt.
         source_mesh_np = _source_mesh_np(bench_case)
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -510,7 +510,7 @@ def test_icp_mesh(bench_case: BenchCase) -> None:
         return
     source, vertices, faces = _source_wp(bench_case), bench_case.vertices_wp, bench_case.faces_wp
     matrix, _transformed, _cost = bench_case.run(
-        lambda: tw.registration.icp(
+        lambda: od.registration.icp(
             source, vertices, faces, max_iterations=_ICP_ITERATIONS, threshold=-math.inf
         )
     )
@@ -519,7 +519,7 @@ def test_icp_mesh(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="icp_point_to_plane_cloud")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
     """
     Gauss-Newton point-to-plane ICP against a point-cloud target, on shared vertex normals.
@@ -527,7 +527,7 @@ def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
     meshlib runs at its **default** ``ICPMethod.PointToPlane`` here -- the one setting the
     ``icp_point_cloud`` row above has to override -- so the only parameters set are ``iterLimit``
     and the ``samplingVoxelSize`` that constructor overload subsamples by. Its reference cloud
-    carries the same vertex normals triwarp's row is given, since that is where it reads them from.
+    carries the same vertex normals ordito's row is given, since that is where it reads them from.
     Stateful and tree-caching, so it is built inside the timed callable; the two clouds are the
     input and are not.
     """
@@ -562,11 +562,11 @@ def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
 
         assert abs(bench_case.run(icp_ml).A.x.length() - 1.0) < 1e-4
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         source, target = _source_wp(bench_case), bench_case.vertices_wp
         normals = _vertex_normals_wp(bench_case)
         matrix, _transformed, _cost = bench_case.run(
-            lambda: tw.registration.icp_point_to_plane(
+            lambda: od.registration.icp_point_to_plane(
                 source,
                 target,
                 target_normals=normals,
@@ -589,15 +589,15 @@ def test_icp_point_to_plane_cloud(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="icp_point_to_plane_tukey")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_icp_point_to_plane_tukey(bench_case: BenchCase) -> None:
-    """Robust point-to-plane ICP: triwarp's Tukey weight dispatch against open3d's ``TukeyLoss``."""
+    """Robust point-to-plane ICP: ordito's Tukey weight dispatch against open3d's ``TukeyLoss``."""
     tukey_k = _TUKEY_FRACTION * _diagonal(bench_case)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         source, target = _source_wp(bench_case), bench_case.vertices_wp
         normals = _vertex_normals_wp(bench_case)
         matrix, _transformed, _cost = bench_case.run(
-            lambda: tw.registration.icp_point_to_plane(
+            lambda: od.registration.icp_point_to_plane(
                 source,
                 target,
                 target_normals=normals,
@@ -624,7 +624,7 @@ def test_icp_point_to_plane_tukey(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="icp_point_to_plane_mesh")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_icp_point_to_plane_mesh(bench_case: BenchCase) -> None:
     """
     Point-to-plane ICP against the triangle surface: closest-face normals, no CPU equivalent.
@@ -635,7 +635,7 @@ def test_icp_point_to_plane_mesh(bench_case: BenchCase) -> None:
     skip_larger_than(bench_case, "happy_buddha", "per-iteration mesh queries scale with face count")
     source, vertices, faces = _source_wp(bench_case), bench_case.vertices_wp, bench_case.faces_wp
     matrix, _transformed, _cost = bench_case.run(
-        lambda: tw.registration.icp_point_to_plane(
+        lambda: od.registration.icp_point_to_plane(
             source,
             vertices,
             faces,

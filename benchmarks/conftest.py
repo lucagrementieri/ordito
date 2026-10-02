@@ -14,24 +14,24 @@ face count to a shared control. A benchmark picks whichever is relevant:
 - neither runs the scan sweep, filtered by ``--size`` / ``--cpu-max-size``.
 
 The rule the suite follows is **one group measures one axis, at 2-3 points**. A group that has no
-mesh axis at all (``triwarp.creation``) takes ``bench_lib`` instead of ``bench_case`` and sizes its
+mesh axis at all (``ordito.creation``) takes ``bench_lib`` instead of ``bench_case`` and sizes its
 work with a plain ``pytest.mark.parametrize``.
 
 Flags
 -----
 ``--device={auto,cpu,cuda,both}``
-    Which ``triwarp`` targets to time. ``auto`` (default) uses cuda when CUDA is available,
-    else falls back to cpu — ``triwarp-cpu`` is not timed alongside cuda by default. Pass
-    ``cpu`` for cpu only or ``both`` to time both triwarp targets. The ``trimesh`` / ``igl`` /
+    Which ``ordito`` targets to time. ``auto`` (default) uses cuda when CUDA is available,
+    else falls back to cpu — ``ordito-cpu`` is not timed alongside cuda by default. Pass
+    ``cpu`` for cpu only or ``both`` to time both ordito targets. The ``trimesh`` / ``igl`` /
     ``open3d`` / ``scipy`` / ``numpy`` / ``potpourri3d`` / ``pymeshlab`` / ``pyvista`` /
     ``meshlib`` / ``pymeshfix`` CPU baselines are always included, and
     ``pytorch3d-cuda`` whenever the installed pytorch3d carries a working CUDA extension --
     ``pytorch3d`` is the one reference with GPU kernels of its own, so it is *not* selected by
-    ``--device``, which chooses among triwarp's targets.
+    ``--device``, which chooses among ordito's targets.
 ``--size=<comma list | all>``
     Restrict meshes to these size categories (``small,medium,large,extralarge,huge``).
 ``--cpu-max-size=<category>``
-    CPU-bound libraries (``triwarp-cpu``, ``trimesh``, ``igl``, ``open3d``, ``scipy``,
+    CPU-bound libraries (``ordito-cpu``, ``trimesh``, ``igl``, ``open3d``, ``scipy``,
     ``numpy``, ``potpourri3d``, ``pymeshlab``, ``pyvista``, ``meshlib``, ``pymeshfix``) skip
     meshes larger than this unless the size was named explicitly in ``--size``. Default ``large``
     — so
@@ -39,7 +39,7 @@ Flags
     ``bunny_decimated``/``bunny``/``dragon`` run on CPU.
 ``--bench-all-libs``
     Run every reference library regardless of ``_known_slow_libraries.json``. Off by default: a
-    library already measured losing to triwarp by more than 2x, and ranking 3rd-or-worse overall
+    library already measured losing to ordito by more than 2x, and ranking 3rd-or-worse overall
     for that exact cell, is skipped rather than re-timed (``skip_known_slow``, below). Reference
     rows dominate the suite's timed regions and a library already far slower does not become more
     informative on the next mesh size. Pass this flag before regenerating the table with
@@ -88,7 +88,7 @@ if TYPE_CHECKING:
 # hundreds of milliseconds pass a smaller ``rounds`` to ``run`` instead.
 _ROUNDS = 10
 _WARMUP_ROUNDS = 1
-# Rounds for a triwarp row of a *reference-free* cell -- one no reference library measures, such as
+# Rounds for a ordito row of a *reference-free* cell -- one no reference library measures, such as
 # the visibility family at ``lucy`` -- read from ``_reference_free_cells.json``. Ten rounds of a
 # multi-second call timed against nothing were most of ``test_visibility``'s wall clock.
 REFERENCE_FREE_ROUNDS = 3
@@ -166,7 +166,7 @@ def skip_known_slow(
     """
     Skip a reference-library row already measured losing badly enough to be uninformative.
 
-    ``library`` beginning with ``triwarp`` is never skipped — it is the subject, not a reference.
+    ``library`` beginning with ``ordito`` is never skipped — it is the subject, not a reference.
     Matching is exact on ``(group, mesh_name, rest, library)``, ``rest`` being every other
     parametrize value for this exact test case (read off ``request.node.callspec.params``, the
     same dict ``pytest-benchmark`` itself writes into ``--benchmark-json``'s ``params`` field) —
@@ -175,7 +175,7 @@ def skip_known_slow(
     bypasses this entirely, for regenerating the table or for a one-off run that wants every
     comparison back.
     """
-    if library.startswith("triwarp") or request.config.getoption("--bench-all-libs"):
+    if library.startswith("ordito") or request.config.getoption("--bench-all-libs"):
         return
     table = _known_slow_libraries()
     if not table:
@@ -187,7 +187,7 @@ def skip_known_slow(
     ratio = table.get((group, mesh_name, rest, library))
     if ratio is not None:
         pytest.skip(
-            f"known slow: {library} measured {ratio}x triwarp-cuda's time and ranked "
+            f"known slow: {library} measured {ratio}x ordito-cuda's time and ranked "
             f"3rd-or-worse for this cell in the source round (see "
             f"benchmarks/_known_slow_libraries.json); pass --bench-all-libs to run it anyway"
         )
@@ -221,12 +221,12 @@ def reference_free_rounds(
     request: pytest.FixtureRequest, group: str | None, mesh_name: str | None, library: str
 ) -> int | None:
     """
-    Return ``REFERENCE_FREE_ROUNDS`` for a triwarp row of a reference-free cell, else ``None``.
+    Return ``REFERENCE_FREE_ROUNDS`` for a ordito row of a reference-free cell, else ``None``.
 
     Keyed exactly as ``skip_known_slow`` keys its table, so the two agree on what a cell is. Only a
-    ``triwarp`` row is capped: a reference row of a listed cell does not exist in the source round.
+    ``ordito`` row is capped: a reference row of a listed cell does not exist in the source round.
     """
-    if not library.startswith("triwarp"):
+    if not library.startswith("ordito"):
         return None
     cells = _reference_free_cells()
     if not cells:
@@ -249,7 +249,7 @@ def reference_free_rounds(
 #
 # ``potpourri3d`` (geometry-central) is CPU-only and the only reference for the heat-method family.
 # Its solver objects cache their factorizations, so a benchmark must construct the solver *inside*
-# the timed callable to measure the work triwarp does per call.
+# the timed callable to measure the work ordito does per call.
 #
 # ``pymeshlab`` (MeshLab / VCGlib) is CPU-only and the broadest reference here. Two things shape
 # every row: almost every filter *mutates* ``current_mesh()`` in place, and building the ``MeshSet``
@@ -265,9 +265,9 @@ def reference_free_rounds(
 # build is cheap enough that ``mesh_pv`` is a shared cached property.
 #
 # ``meshlib`` (MeshLib's C++ core) is CPU-bound but, uniquely here, **multi-threaded**, where
-# trimesh / igl / pymeshlab / pyvista are all effectively single-threaded. So a ``triwarp-cuda`` vs
+# trimesh / igl / pymeshlab / pyvista are all effectively single-threaded. So a ``ordito-cuda`` vs
 # ``meshlib`` ratio is a fair fight in a way the other CPU ratios are not, and the other edge of the
-# same knife is that a ``triwarp-cpu`` row loses to it on any parallel op regardless of algorithm.
+# same knife is that a ``ordito-cpu`` row loses to it on any parallel op regardless of algorithm.
 # ``meshlib.mrcudapy`` is deliberately **not** used -- the plain ``mrmeshpy`` free functions are the
 # reference, and a CUDA module would make the row incomparable with the others. Almost all of those
 # mutate their ``Mesh`` in place, so the accessor is ``BenchCase.new_mesh_ml()`` and there is no
@@ -287,14 +287,14 @@ def reference_free_rounds(
 # clears the bar on cost and is the counter-example: most of a round doing provably nothing, since
 # ``load_array`` already ran it, so a row would price a no-op. ``clean`` and
 # ``strong_intersection_removal`` are real work whose *result* is not comparable with any single
-# triwarp function. ``strong_degeneracy_removal`` is under the bar outright.
+# ordito function. ``strong_degeneracy_removal`` is under the bar outright.
 #
 # ``numpy`` is the narrowest baseline of all: only a reference for the *array primitives*
-# (``triwarp.reduce``), where a host reduction over an already-resident buffer is the honest CPU
+# (``ordito.reduce``), where a host reduction over an already-resident buffer is the honest CPU
 # floor. Deliberately not a geometry reference -- every other CPU baseline is built on NumPy.
 #
 # ``pytorch3d`` is the **only** reference with CUDA kernels of its own, so it takes *two* rows the
-# way triwarp does. The ``-cuda`` row is the point: the one GPU-against-GPU comparison in the suite,
+# way ordito does. The ``-cuda`` row is the point: the one GPU-against-GPU comparison in the suite,
 # and not a foregone conclusion. pytorch3d's ``_C`` carries **no spatial structure on either
 # device** -- no tree, no grid, just the pairwise loop -- so the ratio is a crossover rather than a
 # constant: brute force with perfect coalescing beats a BVH descent while the problem still fits the
@@ -302,9 +302,9 @@ def reference_free_rounds(
 # chamfer groups need the point count as an *axis*; a one-size row reports whichever side of the
 # crossover it landed on.
 #
-# **Half of that crossover is triwarp's, and the row must not be read as a statement about brute
-# force.** pytorch3d is a clean quadratic; triwarp's ``query_nearest`` is **non-monotonic** over the
-# same sweep at ``k >= 8``, so the honest reading of the small-cloud row is "triwarp is well off its
+# **Half of that crossover is ordito's, and the row must not be read as a statement about brute
+# force.** pytorch3d is a clean quadratic; ordito's ``query_nearest`` is **non-monotonic** over the
+# same sweep at ``k >= 8``, so the honest reading of the small-cloud row is "ordito is well off its
 # own large-cloud cost here", not "pytorch3d is faster". Two qualifications: the effect **does not
 # exist at k = 1**, so it must not be read onto the ``*_k1`` rows, and it is **hash-grid specific**
 # -- the ``bvh`` backend is monotonic over the identical sweep. Mechanism: the grid's cell width
@@ -326,8 +326,8 @@ def reference_free_rounds(
 # the batched ``[None]`` wrap plus the ``Meshes`` construction and its cached ``*_packed()``
 # derivations, and on a ``-cuda`` row also the host-to-device copy.
 LIBRARIES: list[LibrarySpec] = [
-    {"id": "triwarp-cpu", "kind": "triwarp", "device": "cpu", "cpu_bound": True},
-    {"id": "triwarp-cuda", "kind": "triwarp", "device": "cuda:0", "cpu_bound": False},
+    {"id": "ordito-cpu", "kind": "ordito", "device": "cpu", "cpu_bound": True},
+    {"id": "ordito-cuda", "kind": "ordito", "device": "cuda:0", "cpu_bound": False},
     {"id": "trimesh", "kind": "trimesh", "device": None, "cpu_bound": True},
     {"id": "igl", "kind": "igl", "device": None, "cpu_bound": True},
     {"id": "open3d", "kind": "open3d", "device": None, "cpu_bound": True},
@@ -361,7 +361,7 @@ def _load_numpy(name: str) -> tuple[np.ndarray, np.ndarray]:
     """
     Read ``(vertices_f64, faces_i64)`` once with meshio, cached across the session.
 
-    Uses the same ``meshio.read`` path as ``triwarp.io.load_mesh_data``; kept at NumPy level
+    Uses the same ``meshio.read`` path as ``ordito.io.load_mesh_data``; kept at NumPy level
     (float64 vertices / int64 faces) so igl and trimesh get their arrays directly and the warp
     buffers are built from the same source. Feature meshes are generated by ``meshes.BUILDERS``
     instead of read.
@@ -403,7 +403,7 @@ def _mean_edge(name: str) -> float:
     Mean undirected edge length of a mesh, from the shared NumPy source.
 
     Computed on the host so every library variant of a case gets the *same* value: benchmarks that
-    size their work by edge length (remeshing targets, ball-pivoting radii) must not hand triwarp
+    size their work by edge length (remeshing targets, ball-pivoting radii) must not hand ordito
     and its reference slightly different parameters.
     """
     if name not in _mean_edge_cache:
@@ -470,7 +470,7 @@ def _new_mesh_p3d(name: str, device: str) -> p3d_structures.Meshes:
     """
     Build a ``pytorch3d.structures.Meshes`` on ``device`` from the shared NumPy source.
 
-    Positions land as **float32** and faces as int64, which is what triwarp's ``wp.vec3`` /
+    Positions land as **float32** and faces as int64, which is what ordito's ``wp.vec3`` /
     ``wp.int32`` buffers hold and what pytorch3d's own kernels want; a float64 ``Meshes`` keeps
     float64 through ``verts_packed()``, so matching the storage keeps a ratio comparing the same
     arithmetic on both sides.
@@ -617,7 +617,7 @@ def pytest_addoption(parser: pytest.Parser) -> None:
     # string, and tests/conftest.py reads the same flag. See that file for why both suites' ``auto``
     # selects one device. Registering it here too made ``pytest tests benchmarks`` die with
     # ``conflicting option string: --device`` before collecting anything.
-    group = parser.getgroup("triwarp-bench")
+    group = parser.getgroup("ordito-bench")
     group.addoption(
         "--size",
         action="store",
@@ -686,7 +686,7 @@ def _selected_libraries(config: pytest.Config) -> list[LibrarySpec]:
     device = str(config.getoption("--device"))
     cuda_available = wp.is_cuda_available()
     if device == "auto":
-        # triwarp-cpu is disabled by default: run it only as a fallback when there is no CUDA
+        # ordito-cpu is disabled by default: run it only as a fallback when there is no CUDA
         # device. Pass --device=cpu or --device=both to time it explicitly.
         include_cpu, include_cuda = not cuda_available, cuda_available
     elif device == "cpu":
@@ -697,17 +697,17 @@ def _selected_libraries(config: pytest.Config) -> list[LibrarySpec]:
         include_cpu, include_cuda = True, True
 
     if include_cpu and cuda_available:
-        # A ``triwarp-cpu`` row timed in a process where CUDA has been initialised is *inflated*, so
-        # it is not merely a slow row -- it is a wrong one, and it reads as triwarp losing to the
+        # A ``ordito-cpu`` row timed in a process where CUDA has been initialised is *inflated*, so
+        # it is not merely a slow row -- it is a wrong one, and it reads as ordito losing to the
         # CPU references. The cost behaves like a per-launch charge, so the factor scales with
         # launch count rather than with work: a launch-light row barely notices, an iterative solver
         # pays an order of magnitude. Unchanged by ``warp.config.launch_array_access_mode``, so it
         # is CUDA presence and not the launch guard. This is why the
-        # default ``auto`` picks ``triwarp-cpu`` only when there is no CUDA device. A *warning*
+        # default ``auto`` picks ``ordito-cpu`` only when there is no CUDA device. A *warning*
         # rather than a refusal: a deliberate same-process CPU-vs-CUDA comparison is still a
         # legitimate thing to ask for, as long as the asker knows the CPU side is not publishable.
         warnings.warn(
-            "triwarp-cpu rows are being timed in a CUDA-initialised process, which inflates them "
+            "ordito-cpu rows are being timed in a CUDA-initialised process, which inflates them "
             "(measured 1.0-1.4x on launch-light ops, ~20x on an iterative solver) and makes them "
             "incomparable with the CPU references. Run 'uv run python benchmarks/devices.py' "
             "instead, which times the CPU target in a separate process with "
@@ -718,13 +718,13 @@ def _selected_libraries(config: pytest.Config) -> list[LibrarySpec]:
 
     selected = []
     for lib in LIBRARIES:
-        if lib["id"] == "triwarp-cpu" and not include_cpu:
+        if lib["id"] == "ordito-cpu" and not include_cpu:
             continue
-        if lib["id"] == "triwarp-cuda" and not (include_cuda and cuda_available):
+        if lib["id"] == "ordito-cuda" and not (include_cuda and cuda_available):
             continue
         if lib["id"] == "pytorch3d-cuda" and not _pytorch3d_cuda_available():
             continue
-        # Every other baseline is always included: --device selects among triwarp's targets, and
+        # Every other baseline is always included: --device selects among ordito's targets, and
         # pytorch3d-cuda is gated on its own extension rather than on that flag.
         selected.append(lib)
     return selected
@@ -813,7 +813,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "benchlibs(*kinds): library kinds "
-        "(triwarp/trimesh/igl/open3d/scipy/numpy/potpourri3d/pymeshlab/pyvista/meshlib/"
+        "(ordito/trimesh/igl/open3d/scipy/numpy/potpourri3d/pymeshlab/pyvista/meshlib/"
         "pymeshfix/pytorch3d) a "
         "benchmark supports.",
     )
@@ -832,7 +832,7 @@ def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers",
         "noparity(kind, reason=..., oracle=...): a reference this benchmark times whose *result* "
-        "is not comparable with triwarp's. reason= is required prose; oracle= names the library "
+        "is not comparable with ordito's. reason= is required prose; oracle= names the library "
         "that is the correctness oracle instead, and must itself be covered. See tests/parity.py.",
     )
     # Default to one comparison table per (function, mesh): the ``group`` marker is the function
@@ -899,7 +899,7 @@ class BenchLibrary:
         """
         Bind a library variant and the pytest-benchmark fixture.
 
-        ``max_rounds`` caps every ``run`` of this case -- ``REFERENCE_FREE_ROUNDS`` for a triwarp
+        ``max_rounds`` caps every ``run`` of this case -- ``REFERENCE_FREE_ROUNDS`` for a ordito
         row of a reference-free cell, ``None`` otherwise.
         """
         self.library: LibrarySpec = LIBRARIES_BY_ID[library]
@@ -913,7 +913,7 @@ class BenchLibrary:
 
     @property
     def device(self) -> str | None:
-        """Warp device for triwarp targets; ``None`` for CPU-only references."""
+        """Warp device for ordito targets; ``None`` for CPU-only references."""
         return self.library["device"]
 
     @property
@@ -965,8 +965,8 @@ class BenchLibrary:
         **And a ``pytorch3d-cuda`` row releases torch's cached blocks when it finishes**, outside
         the timed region. torch's ``CUDACachingAllocator`` reserves device memory and returns it
         only on ``torch.cuda.empty_cache()``, so a large row can leave nothing for the Warp
-        allocator that runs next and every ``triwarp-cuda`` row after it in the module dies with it
-        -- and because the failures are all triwarp's, the surviving cells *understate* the loss
+        allocator that runs next and every ``ordito-cuda`` row after it in the module dies with it
+        -- and because the failures are all ordito's, the surviving cells *understate* the loss
         table. The release is per-row rather than per-module because the two allocators interleave
         at row granularity. It is also the *whole* fix: the largest pytorch3d rows run uncapped with
         it in place, so the size cap that was going to accompany it was dropped rather than shipped.
@@ -977,7 +977,7 @@ class BenchLibrary:
         while leaving the row timing exactly what it timed before. Out rather than in because the
         checks cost a few percent of a sparse construction and ``ops.laplacian`` / ``cot_laplacian``
         / ``norm_laplacian`` / ``mesh_laplacian_smoothing`` all build a COO tensor inside the call
-        being timed -- so leaving them on would charge the reference for validation triwarp's row
+        being timed -- so leaving them on would charge the reference for validation ordito's row
         does not perform, in the one module (``test_laplacian``) whose whole point is a
         like-for-like race between two sparse assemblies. ``tests/conftest.py`` opts *in*, where
         there is no clock to bias and a malformed tensor should raise rather than segfault.
@@ -1047,13 +1047,13 @@ class BenchCase(BenchLibrary):
 
     @property
     def faces_wp(self) -> wp.array[wp.int32]:
-        """Flat ``wp.int32`` face buffer on this case's device (triwarp only)."""
+        """Flat ``wp.int32`` face buffer on this case's device (ordito only)."""
         assert self.device is not None
         return _faces_wp(self.mesh_name, self.device)
 
     @property
     def vertices_wp(self) -> wp.array[wp.vec3]:
-        """``wp.vec3`` vertex buffer on this case's device (triwarp only)."""
+        """``wp.vec3`` vertex buffer on this case's device (ordito only)."""
         assert self.device is not None
         return _vertices_wp(self.mesh_name, self.device)
 
@@ -1219,7 +1219,7 @@ class BenchCase(BenchLibrary):
           magnitude** between a mesh's first ``findProjection`` and its second.
           A query row should therefore build the mesh *outside* the timed callable and pre-warm it
           with one throwaway query, so the row times the query rather than the tree -- which is
-          what triwarp's ``wp.Mesh``-in-hand rows already do with their BVH. A row that rebuilds per
+          what ordito's ``wp.Mesh``-in-hand rows already do with their BVH. A row that rebuilds per
           round is timing the build.
         - A mutating call **invalidates** that tree, so the two decisions are not independent.
         """
@@ -1258,10 +1258,10 @@ def bench_lib(
     benchmark: BenchmarkFixture, library: str, request: pytest.FixtureRequest
 ) -> BenchLibrary:
     """
-    Time a benchmark that has no input mesh, e.g. the ``triwarp.creation`` generators.
+    Time a benchmark that has no input mesh, e.g. the ``ordito.creation`` generators.
 
     Requesting this instead of ``bench_case`` parametrizes over libraries alone: ``--device`` still
-    selects the triwarp targets, but ``--size`` / ``--cpu-max-size`` and the ``benchmeshes`` marker
+    selects the ordito targets, but ``--size`` / ``--cpu-max-size`` and the ``benchmeshes`` marker
     have nothing to act on. Size the work with a plain ``pytest.mark.parametrize`` instead.
     """
     skip_known_slow(request, benchmark.group, None, library)

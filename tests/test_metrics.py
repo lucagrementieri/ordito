@@ -1,5 +1,5 @@
 """
-Regression tests for ``triwarp.metrics`` Chamfer and Hausdorff metrics.
+Regression tests for ``ordito.metrics`` Chamfer and Hausdorff metrics.
 
 Point-cloud metrics compare against SciPy (``KDTree`` for Chamfer,
 ``scipy.spatial.distance.directed_hausdorff`` for Hausdorff). Mesh-surface metrics
@@ -27,7 +27,8 @@ from pytorch3d.loss import point_mesh_distance as p3d_point_mesh_distance
 from scipy.spatial import KDTree
 from scipy.spatial.distance import directed_hausdorff
 
-import triwarp as tw
+import ordito as od
+from ordito.kernels import metrics as kernel_metrics
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     numpy_to_warp,
@@ -41,7 +42,6 @@ from tests.conversions import (
     trimesh_to_warp,
     warp_empty,
 )
-from triwarp.kernels import metrics as kernel_metrics
 
 _DiffReduction = Literal["mean", "sum"]
 
@@ -76,7 +76,7 @@ def test_chamfer_points_to_points_mean(device: str) -> None:
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     chamfer_np = np.mean(distance_xy_np**2) + np.mean(distance_yx_np**2)
 
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device)
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
@@ -91,7 +91,7 @@ def test_chamfer_points_to_points_sum(device: str) -> None:
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     chamfer_np = np.sum(distance_xy_np**2) + np.sum(distance_yx_np**2)
 
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction="sum"
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-4)
@@ -106,7 +106,7 @@ def test_chamfer_points_to_points_max(device: str) -> None:
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     chamfer_np = max(np.max(distance_xy_np**2), np.max(distance_yx_np**2))
 
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction="max"
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
@@ -119,7 +119,7 @@ def test_chamfer_points_to_points_single_directional(device: str) -> None:
 
     chamfer_np = np.mean(KDTree(y_np).query(x_np)[0] ** 2)
 
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), single_directional=True
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
@@ -133,7 +133,7 @@ def test_chamfer_points_to_points_unreduced(device: str) -> None:
     squared_xy_np = KDTree(y_np).query(x_np)[0] ** 2
     squared_yx_np = KDTree(x_np).query(y_np)[0] ** 2
 
-    forward_wp, backward_wp = tw.metrics.chamfer_points_to_points(
+    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction=None
     )
     assert np.allclose(forward_wp.numpy(), squared_xy_np, rtol=1e-5, atol=1e-5)
@@ -147,7 +147,7 @@ def test_chamfer_points_to_points_matches_open3d(device: str, single_directional
     Class B: Open3D returns the per-point nearest distances, not the Chamfer scalar.
 
     ``PointCloud.compute_point_cloud_distance`` is the *unsquared, unreduced* one-way answer, so the
-    named transform is triwarp's own reduction applied to it -- square, then mean, and add the
+    named transform is ordito's own reduction applied to it -- square, then mean, and add the
     reverse direction when ``single_directional=False``. That is exactly what the benchmark's open3d
     branch does, so this asserts the two sides of that row compute the same number.
     """
@@ -164,7 +164,7 @@ def test_chamfer_points_to_points_matches_open3d(device: str, single_directional
             np.asarray(cloud_y_o3d.compute_point_cloud_distance(cloud_x_o3d))
         ).mean()
 
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device),
         points_to_warp(y_np, device),
         single_directional=single_directional,
@@ -175,14 +175,14 @@ def test_chamfer_points_to_points_matches_open3d(device: str, single_directional
 @pytest.mark.parity("chamfer_points_to_points", "pytorch3d")
 def test_chamfer_points_to_points_matches_pytorch3d(device: str) -> None:
     """
-    Class A: ``loss.chamfer_distance`` is the convention ``triwarp.metrics`` documents.
+    Class A: ``loss.chamfer_distance`` is the convention ``ordito.metrics`` documents.
 
     This is the pair the module's own prose has been asserting since it was written -- *"Chamfer
     distances follow the ``pytorch3d`` convention and are built on squared distances"* -- with
     nothing running pytorch3d. Measured 7.02e-08 relative on two seeded clouds of 300 and 400
     points, which is the number those docstrings now carry.
 
-    Two **different** clouds, deliberately: ``chamfer_distance(x, x)`` is 0.0 and so is triwarp's,
+    Two **different** clouds, deliberately: ``chamfer_distance(x, x)`` is 0.0 and so is ordito's,
     so a self-comparison passes while testing nothing.
     """
     rng = np.random.default_rng(7)
@@ -192,7 +192,7 @@ def test_chamfer_points_to_points_matches_pytorch3d(device: str) -> None:
         "tuple[torch.Tensor, object]",
         p3d_loss.chamfer_distance(points_to_torch(a_np, device), points_to_torch(b_np, device)),
     )
-    chamfer_wp = tw.metrics.chamfer_points_to_points(
+    chamfer_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(a_np, device), points_to_warp(b_np, device)
     )
 
@@ -240,21 +240,21 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     is never made.
     """
     if not size_gate:
-        monkeypatch.setattr(tw.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
+        monkeypatch.setattr(od.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
     x_np, y_np = _pairing(icosphere, pairing)
     distance_xy_np = KDTree(y_np).query(x_np)[0]
     distance_yx_np = KDTree(x_np).query(y_np)[0]
     assert np.ptp(distance_yx_np) > 1e-5  # not a constant answer (7.4)
 
     backends: list[object] = []
-    query_nearest = cast("Callable[..., object]", tw.neighbors.query_nearest)
+    query_nearest = cast("Callable[..., object]", od.neighbors.query_nearest)
 
     def spy(*args: object, **kwargs: object):
         backends.append(kwargs.get("backend"))
         return query_nearest(*args, **kwargs)
 
-    monkeypatch.setattr(tw.neighbors, "query_nearest", spy)
-    forward_wp, backward_wp = tw.metrics.chamfer_points_to_points(
+    monkeypatch.setattr(od.neighbors, "query_nearest", spy)
+    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction=None
     )
     chooses = not size_gate and wp.get_device(device).is_cuda
@@ -262,7 +262,7 @@ def test_chamfer_points_to_points_matches_kdtree_on_either_backward_search(
     assert np.allclose(np.sqrt(forward_wp.numpy()), distance_xy_np, rtol=1e-5, atol=1e-6)
     assert np.allclose(np.sqrt(backward_wp.numpy()), distance_yx_np, rtol=1e-5, atol=1e-6)
 
-    hausdorff_wp = tw.metrics.hausdorff_points_to_points(
+    hausdorff_wp = od.metrics.hausdorff_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device)
     )
     expected = max(np.max(distance_xy_np), np.max(distance_yx_np))
@@ -283,7 +283,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
     grid arm hands the tape the same assignment the descent would -- on a jittered pair, where no
     two candidates tie. The size threshold is lowered so the fixture reaches the choice.
     """
-    monkeypatch.setattr(tw.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
+    monkeypatch.setattr(od.metrics, "_GRID_BACKWARD_MIN_POINTS", 0)
     x_np, y_np = (a.astype(np.float64) for a in _pairing(icosphere, pairing))
     n, m = len(x_np), len(y_np)
     nn_xy = KDTree(y_np).query(x_np)[1]
@@ -299,7 +299,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
     x_wp = wp.array(x_np, dtype=wp.vec3, device=device, requires_grad=True)
     y_wp = wp.array(y_np, dtype=wp.vec3, device=device, requires_grad=True)
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp, tape=tape)
+    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, tape=tape)
     tape.backward(loss=loss_wp)
 
     assert x_wp.grad is not None
@@ -326,7 +326,7 @@ def test_chamfer_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) ->
     chamfer_np = np.mean(sqr_a_to_b_np) + np.mean(sqr_b_to_a_np)
 
     vertices_b_wp = points_to_warp(vertices_b_np, mesh_wp.device)
-    chamfer_wp = tw.metrics.chamfer_mesh_to_mesh(
+    chamfer_wp = od.metrics.chamfer_mesh_to_mesh(
         mesh_wp.points, mesh_wp.indices, vertices_b_wp, mesh_wp.indices
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
@@ -334,7 +334,7 @@ def test_chamfer_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) ->
 
 def test_chamfer_mesh_to_mesh_identical_is_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    chamfer_wp = tw.metrics.chamfer_mesh_to_mesh(
+    chamfer_wp = od.metrics.chamfer_mesh_to_mesh(
         mesh_wp.points, mesh_wp.indices, mesh_wp.points, mesh_wp.indices
     )
     assert np.allclose(chamfer_wp, 0.0, atol=1e-6)
@@ -362,9 +362,9 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     and compares it **element-wise** rather than through a mean, which is strictly stronger: a mean
     hides a permutation and a pair of compensating errors, and MeshLib reports one
     ``MeshProjectionResult`` per query point so the correspondence is available. `distSq` is already
-    squared, matching triwarp's ``point_reduction=None`` output with no transform.
+    squared, matching ordito's ``point_reduction=None`` output with no transform.
 
-    Measured 2.4e-07 max absolute difference over 500 points (1.1e-07 relative), which is triwarp's
+    Measured 2.4e-07 max absolute difference over 500 points (1.1e-07 relative), which is ordito's
     float32 vertex storage against MeshLib's float32 -- see the `getNumpyVerts` note in CLAUDE.md
     section 7.6.
 
@@ -380,7 +380,7 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     center = np.asarray(mesh_tm.vertices, dtype=np.float64).mean(axis=0)
     points_np = (center + rng.normal(scale=0.6, size=(500, 3))).astype(np.float32)
 
-    forward_wp = tw.metrics.chamfer_points_to_mesh(
+    forward_wp = od.metrics.chamfer_points_to_mesh(
         points_to_warp(points_np, mesh_wp.device),
         mesh_wp.points,
         mesh_wp.indices,
@@ -415,7 +415,7 @@ def _point_triangle_squared(points_np: np.ndarray, triangles_np: np.ndarray) -> 
     Collision Detection*, section 5.1.5), which is the algorithm ``point_mesh_face_distance``'s
     CUDA/C++ kernel implements. Section 6 sanctions a hand port as a *test* oracle, and it is
     needed here rather than optional: pytorch3d returns only the **sum of two directions**, so
-    without an independent per-pair table there is no way to isolate the forward half that triwarp
+    without an independent per-pair table there is no way to isolate the forward half that ordito
     computes. Validated in ``test_chamfer_points_to_mesh_matches_pytorch3d`` both ways -- its
     forward column reproduces ``trimesh.proximity.closest_point`` to 1e-16 and its two columns
     summed reproduce pytorch3d's whole scalar to 1.3e-07.
@@ -470,19 +470,19 @@ def _point_triangle_squared(points_np: np.ndarray, triangles_np: np.ndarray) -> 
 @pytest.mark.parity("chamfer_points_to_mesh", "pytorch3d")
 def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
     """
-    Class B: pytorch3d's scalar **minus** its face-to-point half is triwarp's forward mean.
+    Class B: pytorch3d's scalar **minus** its face-to-point half is ordito's forward mean.
 
     A measured restriction rather than a caution. ``point_mesh_face_distance`` is the sum of two
-    squared means: point-to-*triangle*, which is triwarp's forward direction, and
+    squared means: point-to-*triangle*, which is ordito's forward direction, and
     **face-to-point** -- the minimum over the cloud of the point-to-triangle distance, one per
-    face. triwarp's backward direction is mesh-**vertex** to nearest query, a different quantity:
+    face. ordito's backward direction is mesh-**vertex** to nearest query, a different quantity:
     measured 0.606 against pytorch3d's 0.586 here, so the two whole scalars are not comparable and
     the backward direction is deliberately not compared.
 
     The decomposition is what licenses the subtraction, and it is checked rather than assumed: the
     hand-ported per-pair table's two columns summed reproduce pytorch3d's scalar to 1.3e-07, and
     its forward column reproduces ``trimesh.proximity.closest_point`` to 1e-16. Only then is
-    ``scalar - backward`` a quantity triwarp can be held to; measured 1.02e-07 against it.
+    ``scalar - backward`` a quantity ordito can be held to; measured 1.02e-07 against it.
 
     ``min_triangle_area`` is left at its default and ``icosphere`` clears it, so no face is
     silently dropped from pytorch3d's side.
@@ -506,10 +506,10 @@ def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
     assert np.allclose(forward_np, (reference_np**2).mean(), rtol=1e-12, atol=0.0)
 
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    forward_wp = tw.metrics.chamfer_points_to_mesh(
+    forward_wp = od.metrics.chamfer_points_to_mesh(
         points_to_warp(queries_np, device), vertices_wp, faces_wp, single_directional=True
     )
-    both_wp = tw.metrics.chamfer_points_to_mesh(
+    both_wp = od.metrics.chamfer_points_to_mesh(
         points_to_warp(queries_np, device), vertices_wp, faces_wp
     )
 
@@ -526,7 +526,7 @@ def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
 
     ``igl.point_mesh_squared_distance`` *is* the cloud-to-surface query and is exact, but there is
     no igl cloud-to-cloud counterpart, so the reference Chamfer is assembled from it plus a
-    ``KDTree`` ``k=1`` search back from the mesh vertices -- the same two halves triwarp computes,
+    ``KDTree`` ``k=1`` search back from the mesh vertices -- the same two halves ordito computes,
     in the same order, each from an independent implementation. That composition is why the
     benchmark's igl row is the forward half alone and reads as a lower bound.
 
@@ -545,7 +545,7 @@ def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
     backward_sqr_np = KDTree(points_np.astype(np.float64)).query(vertices_np)[0] ** 2
     chamfer_np = np.mean(forward_sqr_igl) + np.mean(backward_sqr_np)
 
-    chamfer_wp = tw.metrics.chamfer_points_to_mesh(
+    chamfer_wp = od.metrics.chamfer_points_to_mesh(
         points_to_warp(points_np, mesh_wp.device), mesh_wp.points, mesh_wp.indices
     )
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
@@ -563,7 +563,7 @@ def test_hausdorff_points_to_points(device: str) -> None:
 
     hausdorff_np = max(directed_hausdorff(x_np, y_np)[0], directed_hausdorff(y_np, x_np)[0])
 
-    hausdorff_wp = tw.metrics.hausdorff_points_to_points(
+    hausdorff_wp = od.metrics.hausdorff_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device)
     )
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=1e-5, atol=1e-5)
@@ -576,7 +576,7 @@ def test_hausdorff_points_to_points_single_directional(device: str) -> None:
 
     hausdorff_np = directed_hausdorff(x_np, y_np)[0]
 
-    hausdorff_wp = tw.metrics.hausdorff_points_to_points(
+    hausdorff_wp = od.metrics.hausdorff_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device), single_directional=True
     )
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=1e-5, atol=1e-5)
@@ -624,7 +624,7 @@ def test_hausdorff_points_to_points_matches_open3d_and_pymeshlab(device: str) ->
         ),
     )
 
-    hausdorff_wp = tw.metrics.hausdorff_points_to_points(
+    hausdorff_wp = od.metrics.hausdorff_points_to_points(
         points_to_warp(x_np, device), points_to_warp(y_np, device)
     )
     assert np.allclose(hausdorff_wp, hausdorff_o3d, rtol=1e-5, atol=1e-5)
@@ -648,7 +648,7 @@ def test_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
     hausdorff_np = np.sqrt(max(sqr_a_to_b_np.max(), sqr_b_to_a_np.max()))
 
     vertices_b_wp = points_to_warp(vertices_b_np, mesh_wp.device)
-    hausdorff_wp = tw.metrics.hausdorff_mesh_to_mesh(
+    hausdorff_wp = od.metrics.hausdorff_mesh_to_mesh(
         mesh_wp.points, mesh_wp.indices, vertices_b_wp, mesh_wp.indices
     )
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
@@ -673,7 +673,7 @@ def test_hausdorff_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str
     backward_np = np.max(KDTree(points_np.astype(np.float64)).query(vertices_np)[0])
     hausdorff_np = max(forward_np, backward_np)
 
-    hausdorff_wp = tw.metrics.hausdorff_points_to_mesh(
+    hausdorff_wp = od.metrics.hausdorff_points_to_mesh(
         points_to_warp(points_np, mesh_wp.device), mesh_wp.points, mesh_wp.indices
     )
     assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
@@ -687,13 +687,13 @@ def test_hausdorff_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str
 def test_chamfer_points_to_points_empty(device: str) -> None:
     x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
-    assert tw.metrics.chamfer_points_to_points(x_wp, y_wp) == 0.0
+    assert od.metrics.chamfer_points_to_points(x_wp, y_wp) == 0.0
 
 
 def test_chamfer_points_to_points_empty_unreduced(device: str) -> None:
     x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
-    forward_wp, backward_wp = tw.metrics.chamfer_points_to_points(x_wp, y_wp, point_reduction=None)
+    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(x_wp, y_wp, point_reduction=None)
     assert forward_wp.shape == (0,)
     assert backward_wp.shape == (0,)
 
@@ -702,14 +702,14 @@ def test_hausdorff_points_to_mesh_empty_faces(device: str) -> None:
     points_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
     vertices_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.metrics.hausdorff_points_to_mesh(points_wp, vertices_wp, faces_wp) == 0.0
+    assert od.metrics.hausdorff_points_to_mesh(points_wp, vertices_wp, faces_wp) == 0.0
 
 
 def test_hausdorff_points_to_points_identical_is_zero(device: str) -> None:
     rng = np.random.default_rng(9)
     x_np = (rng.random((30, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
     x_wp = points_to_warp(x_np, device)
-    assert tw.metrics.hausdorff_points_to_points(x_wp, x_wp) == 0.0
+    assert od.metrics.hausdorff_points_to_points(x_wp, x_wp) == 0.0
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +722,7 @@ def test_hausdorff_points_to_points_identical_is_zero(device: str) -> None:
 # the squared-distance chamfer; mesh-surface gradients use central finite differences of
 # the numpy point-triangle distance (there is no simple closed form across the
 # face/edge/vertex regions). The assignment fed to each reference is the exact one
-# triwarp used, isolating the gradient computation from float32 argmin tie-breaking.
+# ordito used, isolating the gradient computation from float32 argmin tie-breaking.
 
 _GRAD_RTOL = 1e-4
 _GRAD_ATOL = 1e-4
@@ -822,7 +822,7 @@ def test_chamfer_points_to_points_loss_grad(
     x_wp = wp.array(x_np, dtype=wp.vec3, device=device, requires_grad=True)
     y_wp = wp.array(y_np, dtype=wp.vec3, device=device, requires_grad=True)
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(
+    loss_wp = od.metrics.chamfer_points_to_points_loss(
         x_wp, y_wp, tape=tape, point_reduction=reduction, single_directional=single_directional
     )
     tape.backward(loss=loss_wp)
@@ -875,7 +875,7 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
     x_wp = wp.array(x_np, dtype=wp.vec3, device=device, requires_grad=True)
     y_wp = wp.array(y_np, dtype=wp.vec3, device=device, requires_grad=True)
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(
+    loss_wp = od.metrics.chamfer_points_to_points_loss(
         x_wp, y_wp, tape=tape, point_reduction=reduction, single_directional=single_directional
     )
     tape.backward(loss=loss_wp)
@@ -908,8 +908,8 @@ def test_chamfer_points_to_mesh_loss_grad(
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
     # Fixed assignments exactly as the loss function computes them.
-    face_id = tw.proximity.closest_point_on_mesh(verts_wp, faces_wp, points_wp)[2].numpy()
-    nn_vp = tw.neighbors.query_nearest(points_wp, verts_wp, k=1)[0].numpy()
+    face_id = od.proximity.closest_point_on_mesh(verts_wp, faces_wp, points_wp)[2].numpy()
+    nn_vp = od.neighbors.query_nearest(points_wp, verts_wp, k=1)[0].numpy()
 
     def evaluate_loss_np() -> float:
         total = _reduce_np(_surface_sq_np(points_np, verts_np, faces_np, face_id), reduction)
@@ -922,7 +922,7 @@ def test_chamfer_points_to_mesh_loss_grad(
     grad_verts_np = _fd_grad(evaluate_loss_np, verts_np)
 
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_points_to_mesh_loss(
+    loss_wp = od.metrics.chamfer_points_to_mesh_loss(
         points_wp,
         verts_wp,
         faces_wp,
@@ -946,7 +946,7 @@ def test_chamfer_points_to_mesh_loss_grad(
     reason="chamfer_points_to_mesh_loss carries no benchmark group of its own (only its "
     "non-differentiable sibling chamfer_points_to_mesh does), so this is correctness-only, and "
     "single_directional=True only: pytorch3d's point_mesh_face_distance sums point-to-face with "
-    "face-to-point (see test_chamfer_points_to_mesh_matches_pytorch3d), where triwarp's backward "
+    "face-to-point (see test_chamfer_points_to_mesh_matches_pytorch3d), where ordito's backward "
     "direction is vertex-to-nearest-point, so the two-sided loss and its gradient are not "
     "comparable. The forward-only case needs no numpy subtraction trick to isolate, unlike the "
     "value-only comparison above: pytorch3d's own point_face_distance primitive already returns "
@@ -961,7 +961,7 @@ def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(
     Class B, forward-only: pytorch3d's ``point_mesh_distance.point_face_distance`` autograd.
 
     ``point_mesh_face_distance`` (used by the value-only comparison above) always sums this term
-    with its face-to-point half, which has no triwarp counterpart -- see that test's own docstring.
+    with its face-to-point half, which has no ordito counterpart -- see that test's own docstring.
     Its lower-level primitive, ``point_face_distance``, returns only the per-point squared
     point-to-triangle distance the sum is built from, still differentiable w.r.t. both the query
     points and the mesh vertices (through ``verts_packed()[faces_packed()]``), which is exactly
@@ -1001,7 +1001,7 @@ def test_chamfer_points_to_mesh_loss_grad_matches_pytorch3d(
     faces_wp = wp.array(faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=device)
     points_wp = wp.array(points_np, dtype=wp.vec3, device=device, requires_grad=True)
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_points_to_mesh_loss(
+    loss_wp = od.metrics.chamfer_points_to_mesh_loss(
         points_wp, verts_wp, faces_wp, tape=tape, point_reduction=reduction, single_directional=True
     )
     tape.backward(loss=loss_wp)
@@ -1039,8 +1039,8 @@ def test_chamfer_mesh_to_mesh_loss_grad(
     verts_b_wp = wp.array(verts_b_np, dtype=wp.vec3, device=device, requires_grad=True)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    face_id_ab = tw.proximity.closest_point_on_mesh(verts_b_wp, faces_wp, verts_a_wp)[2].numpy()
-    face_id_ba = tw.proximity.closest_point_on_mesh(verts_a_wp, faces_wp, verts_b_wp)[2].numpy()
+    face_id_ab = od.proximity.closest_point_on_mesh(verts_b_wp, faces_wp, verts_a_wp)[2].numpy()
+    face_id_ba = od.proximity.closest_point_on_mesh(verts_a_wp, faces_wp, verts_b_wp)[2].numpy()
 
     def evaluate_loss_np() -> float:
         total = _reduce_np(_surface_sq_np(verts_a_np, verts_b_np, faces_np, face_id_ab), reduction)
@@ -1055,7 +1055,7 @@ def test_chamfer_mesh_to_mesh_loss_grad(
     grad_b_np = _fd_grad(evaluate_loss_np, verts_b_np)
 
     tape = wp.Tape()
-    loss_wp = tw.metrics.chamfer_mesh_to_mesh_loss(
+    loss_wp = od.metrics.chamfer_mesh_to_mesh_loss(
         verts_a_wp,
         faces_wp,
         verts_b_wp,
@@ -1097,14 +1097,14 @@ def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
     # Bidirectional mean-reduced squared chamfer, exactly what the default arguments compute.
     squared_np = ((x_np[:, None, :] - y_np[None, :, :]) ** 2).sum(-1)
     loss_np = squared_np.min(1).mean() + squared_np.min(0).mean()
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
+    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
     assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=1e-4, atol=1e-4)
 
     # Single-directional points-to-mesh: the reference is the distance to the nearest triangle,
     # which for a convex mesh sampled outside it is the distance to its surface.
     mesh_tm = tm.creation.icosphere(subdivisions=3)
     mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
-    surface_loss_wp = tw.metrics.chamfer_points_to_mesh_loss(
+    surface_loss_wp = od.metrics.chamfer_points_to_mesh_loss(
         x_wp, mesh_wp.points, mesh_wp.indices, single_directional=True
     )
     _closest_np, distance_np, _face_np = tm_proximity.closest_point(mesh_tm, x_np)
@@ -1118,8 +1118,8 @@ def test_chamfer_loss_no_tape_has_value_but_no_grad(device: str) -> None:
     x_wp = points_to_warp(x_np, device)
     y_wp = points_to_warp(y_np, device)
 
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
-    reduced = tw.metrics.chamfer_points_to_points(x_wp, y_wp)
+    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
+    reduced = od.metrics.chamfer_points_to_points(x_wp, y_wp)
     assert np.allclose(loss_wp.numpy()[0], reduced, rtol=1e-5, atol=1e-5)
 
 
@@ -1127,13 +1127,13 @@ def test_chamfer_loss_rejects_max_reduction(device: str) -> None:
     x_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
     y_wp = points_to_warp(np.ones((3, 3), dtype=np.float32), device)
     with pytest.raises(ValueError, match="mean"):
-        tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp, point_reduction="max")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
+        od.metrics.chamfer_points_to_points_loss(x_wp, y_wp, point_reduction="max")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
 def test_chamfer_points_to_points_loss_empty(device: str) -> None:
     x_wp = warp_empty(0, wp.vec3, device)
     y_wp = points_to_warp(np.zeros((4, 3), dtype=np.float32), device)
-    loss_wp = tw.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
+    loss_wp = od.metrics.chamfer_points_to_points_loss(x_wp, y_wp)
     assert loss_wp.shape == (1,)
     assert float(loss_wp.numpy()[0]) == 0.0
 
@@ -1283,7 +1283,7 @@ def _sliced_term_gradients(device: str, term: str, n_slices: int) -> tuple[float
 @pytest.mark.parametrize("term", ["nn", "surface"])
 def test_sliced_chamfer_terms_grad_with_more_slices_than_points(device: str, term: str) -> None:
     """
-    Triwarp against triwarp: a sliced term launched with empty slices against one serial slice.
+    Ordito against ordito: a sliced term launched with empty slices against one serial slice.
 
     Five points over 45 slices leaves 40 threads with no element. Warp's backward pass reverses a
     dynamic ``range`` through ``iter_reverse``, which turns such an empty range into one iteration

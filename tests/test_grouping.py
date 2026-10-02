@@ -6,11 +6,11 @@ import pytest
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito.kernels.grouping import VEC3_PACK_PRECISION, VEC3_PACK_SHIFT
 from tests.comparisons import lexsort_rows, same_partition
 from tests.conversions import points_to_warp, warp_empty
-from triwarp.kernels.grouping import VEC3_PACK_PRECISION, VEC3_PACK_SHIFT
 
 # Host data, uploaded per test onto the fixture's device -- not ``wp.array`` at module scope. A
 # module-level ``wp.array`` with no ``device=`` lands on Warp's *current* device, which is
@@ -39,7 +39,7 @@ def test_group(
     groups_np = np.array(expected_rows, dtype=np.int32).reshape(-1, length)
 
     values_wp = wp.array(values_np, device=device)
-    groups_wp = tw.grouping.group(values_wp, length)
+    groups_wp = od.grouping.group(values_wp, length)
     assert values_wp.dtype.__name__ == values_np.dtype.name  # the dtype under test really landed
     assert np.array_equal(groups_wp.numpy(), groups_np)
 
@@ -52,7 +52,7 @@ def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -
 
     Both sides answer "which index sets share a value, at exactly this multiplicity", and on a
     mesh's unique-edge inverse the ``length=2`` groups are the adjacent face pairs -- the workload
-    the benchmark row times. Neither library promises an order: triwarp emits groups in
+    the benchmark row times. Neither library promises an order: ordito emits groups in
     radix-sorted key order and trimesh in ``argsort`` order, and within a group neither fixes
     which member comes first, so the named transform is a sort along both axes. The count assert
     is what makes that sound -- a sort cannot rescue two answers that disagree about *how many*
@@ -63,10 +63,10 @@ def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    inverse_wp = tw.edges.edges_unique_inverse(mesh_wp.indices, n_vertices=n_vertices)
+    inverse_wp = od.edges.edges_unique_inverse(mesh_wp.indices, n_vertices=n_vertices)
     inverse_np = inverse_wp.numpy()
 
-    groups_wp = tw.grouping.group(inverse_wp, 2).numpy()
+    groups_wp = od.grouping.group(inverse_wp, 2).numpy()
     groups_tm = np.asarray(tm.grouping.group(inverse_np, min_len=2, max_len=2))
 
     # Non-vacuity, and the invariant that fixes the expected count: every interior edge is shared by
@@ -85,8 +85,8 @@ def test_group_int_rows(device: str) -> None:
     length = 2
     groups_np = np.sort(tm.grouping.group_rows(data_np, require_count=length), axis=1)
 
-    data_wp = twt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
-    groups_wp = tw.grouping.group_int_rows(data_wp, length)
+    data_wp = odt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
+    groups_wp = od.grouping.group_int_rows(data_wp, length)
     assert np.array_equal(np.sort(groups_wp.numpy(), axis=1), groups_np)
 
 
@@ -95,7 +95,7 @@ def test_unique_1d(device: str):
     unique_np = np.unique(data_np)
 
     data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp = tw.grouping.unique_1d(data_wp)
+    unique_wp = od.grouping.unique_1d(data_wp)
     assert np.array_equal(unique_wp.numpy(), unique_np)
 
 
@@ -104,7 +104,7 @@ def test_unique_1d_counts(device: str):
     unique_np, counts_np = np.unique(data_np, return_counts=True)
 
     data_wp = wp.array(data_np, dtype=wp.float32, device=device)
-    unique_wp, counts_wp = tw.grouping.unique_1d(data_wp, return_counts=True)
+    unique_wp, counts_wp = od.grouping.unique_1d(data_wp, return_counts=True)
     assert np.array_equal(unique_wp.numpy(), unique_np)
     assert np.array_equal(counts_wp.numpy(), counts_np)
 
@@ -114,7 +114,7 @@ def test_unique_1d_inverse(device: str):
     unique_np, inverse_np = np.unique(data_np, return_inverse=True)
 
     data_wp = wp.array(data_np, dtype=wp.int64, device=device)
-    unique_wp, inverse_wp = tw.grouping.unique_1d(data_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_1d(data_wp, return_inverse=True)
     assert np.array_equal(unique_wp.numpy(), unique_np)
     assert np.array_equal(inverse_wp.numpy(), inverse_np)
 
@@ -135,7 +135,7 @@ def test_unique_1d_inverse_float_with_nan(device: str):
     assert np.unique(inverse_np).size == 3
 
     data_wp = wp.array(data_np, dtype=wp.float32, device=device)
-    unique_wp, inverse_wp = tw.grouping.unique_1d(data_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_1d(data_wp, return_inverse=True)
     assert np.array_equal(unique_wp.numpy(), unique_np, equal_nan=True)
     assert np.array_equal(inverse_wp.numpy(), inverse_np.ravel())
 
@@ -145,7 +145,7 @@ def test_unique_1d_inverse_counts(device: str):
     unique_np, inverse_np, counts_np = np.unique(data_np, return_inverse=True, return_counts=True)
 
     data_wp = wp.array(data_np, dtype=wp.uint64, device=device)
-    unique_wp, inverse_wp, counts_wp = tw.grouping.unique_1d(
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_1d(
         data_wp, return_inverse=True, return_counts=True
     )
     assert np.array_equal(unique_wp.numpy(), unique_np)
@@ -169,7 +169,7 @@ def test_unique_1d_max_value(device: str, dtype: type) -> None:
     assert int(unique_np.max()).bit_length() == 13
 
     data_wp = wp.array(data_np, dtype=dtype, device=device)
-    unique_wp, inverse_wp, counts_wp = tw.grouping.unique_1d(
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_1d(
         data_wp, return_inverse=True, return_counts=True, max_value=int(unique_np.max())
     )
     assert np.array_equal(unique_wp.numpy(), unique_np)
@@ -182,15 +182,15 @@ def test_unique_1d_max_value_invalid(device: str) -> None:
     ints_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
     floats_wp = wp.array(np.arange(4, dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="non-negative"):
-        tw.grouping.unique_1d(ints_wp, max_value=-1)
+        od.grouping.unique_1d(ints_wp, max_value=-1)
     with pytest.raises(ValueError, match="integer data only"):
-        tw.grouping.unique_1d(floats_wp, max_value=3)
+        od.grouping.unique_1d(floats_wp, max_value=3)
 
 
 def test_unique_rows_int32(device: str):
     data_np = np.array([[1, 2, 3], [4, 5, 6], [1, 2, 3], [4, 5, 7]], dtype=np.int32)
     data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = tw.grouping.unique_rows(data_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_rows(data_wp, return_inverse=True)
 
     unique_np = np.unique(data_np, axis=0)
     assert np.array_equal(lexsort_rows(unique_wp.numpy()), lexsort_rows(unique_np))
@@ -201,7 +201,7 @@ def test_unique_rows_int32(device: str):
 def test_unique_rows_inverse_counts(device: str):
     data_np = np.array([[0, 1], [2, 3], [0, 1], [2, 3], [4, 5]], dtype=np.int32)
     data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp, inverse_wp, counts_wp = tw.grouping.unique_rows(
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_rows(
         data_wp, return_inverse=True, return_counts=True
     )
     _, _inverse_np, counts_np = np.unique(data_np, axis=0, return_inverse=True, return_counts=True)
@@ -216,7 +216,7 @@ def test_unique_rows_matches_trimesh(
     icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str, unique_fraction: float
 ) -> None:
     """
-    Class B: ``trimesh.grouping.unique_rows`` returns row *indices*, triwarp returns the rows.
+    Class B: ``trimesh.grouping.unique_rows`` returns row *indices*, ordito returns the rows.
 
     Two named transforms. ``unique_rows_tm[0]`` indexes back into the input to get the rows
     themselves, and neither library defines the output order, so both sides go through
@@ -234,7 +234,7 @@ def test_unique_rows_matches_trimesh(
     rows_wp = wp.array(rows_np.reshape(-1), dtype=wp.int32, device=device).reshape(rows_np.shape)
 
     unique_tm, inverse_tm = tm.grouping.unique_rows(rows_np)
-    unique_wp, inverse_wp = tw.grouping.unique_rows(rows_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_rows(rows_wp, return_inverse=True)
 
     assert np.array_equal(lexsort_rows(unique_wp.numpy()), lexsort_rows(rows_np[unique_tm]))
     assert np.array_equal(unique_wp.numpy()[inverse_wp.numpy()], rows_np[unique_tm][inverse_tm])
@@ -243,7 +243,7 @@ def test_unique_rows_matches_trimesh(
 def test_unique_rows_vec3(device: str):
     data_np = np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32)
     data_wp = points_to_warp(data_np, device)
-    unique_wp, inverse_wp = tw.grouping.unique_rows(data_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_rows(data_wp, return_inverse=True)
     assert unique_wp.size == 2
     for i in range(data_np.shape[0]):
         assert np.allclose(
@@ -261,9 +261,9 @@ def test_unique_rows_empty_unsupported_dtype_raises(device: str) -> None:
     empty_wp = warp_empty((0, 3), wp.int64, device)
     non_empty_wp = wp.array([[1, 2, 3]], dtype=wp.int64, device=device)
     with pytest.raises(ValueError, match="unsupported dtype"):
-        tw.grouping.unique_rows(empty_wp)  # pyright: ignore[reportArgumentType, reportCallIssue]
+        od.grouping.unique_rows(empty_wp)  # pyright: ignore[reportArgumentType, reportCallIssue]
     with pytest.raises(ValueError, match="unsupported dtype"):
-        tw.grouping.unique_rows(non_empty_wp)
+        od.grouping.unique_rows(non_empty_wp)
 
 
 def test_unique_rows_empty_wrong_rank_raises(device: str) -> None:
@@ -271,20 +271,20 @@ def test_unique_rows_empty_wrong_rank_raises(device: str) -> None:
     empty_wp = warp_empty(0, wp.int32, device)
     non_empty_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
     with pytest.raises(TypeError):
-        tw.grouping.unique_rows(empty_wp)
+        od.grouping.unique_rows(empty_wp)
     with pytest.raises(TypeError):
-        tw.grouping.unique_rows(non_empty_wp)
+        od.grouping.unique_rows(non_empty_wp)
 
 
 @pytest.mark.parity("unique_faces", "igl", "trimesh")
 def test_unique_faces(device: str):
     """
-    Class B twice: igl returns the sorted rows and trimesh returns a mask; triwarp the winding.
+    Class B twice: igl returns the sorted rows and trimesh returns a mask; ordito the winding.
 
     Both dedup faces up to vertex permutation and both return the inverse map. The difference is the
     *representative*: igl documents ``FF == sort(F(IA, :), 2)``, so its rows come out ascending,
-    while triwarp keeps the first occurrence's original winding -- the property the last two asserts
-    below pin, and the reason the igl comparison sorts triwarp's rows first.
+    while ordito keeps the first occurrence's original winding -- the property the last two asserts
+    below pin, and the reason the igl comparison sorts ordito's rows first.
 
     ``Trimesh.unique_faces`` is the third implementation and does strictly less: it returns a
     per-face **bool mask** marking the survivors rather than rebuilding the buffer, so its transform
@@ -302,7 +302,7 @@ def test_unique_faces(device: str):
         [[0, 1, 2], [2, 0, 1], [3, 4, 5], [2, 1, 0], [3, 5, 4], [6, 7, 8]], dtype=np.int32
     )
     faces_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = tw.grouping.unique_faces(faces_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_faces(faces_wp, return_inverse=True)
 
     unique_faces_np = unique_wp.numpy().reshape(-1, 3)
     inverse = inverse_wp.numpy()
@@ -338,7 +338,7 @@ def test_unique_faces(device: str):
 
 def test_unique_faces_empty(device: str):
     faces_wp = warp_empty(0, wp.int32, device)
-    unique_wp, inverse_wp = tw.grouping.unique_faces(faces_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_faces(faces_wp, return_inverse=True)
     assert unique_wp.size == 0
     assert inverse_wp.size == 0
 
@@ -353,20 +353,20 @@ def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> Non
     explicit one, and an oversized ``n_unique`` is checked to fill the documented ``n`` sentinel.
     """
     values_np = np.array([5, 3, 5, 1, 3, 3, 9], dtype=np.int32)
-    unique_wp, inverse_wp = tw.grouping.unique_1d(
+    unique_wp, inverse_wp = od.grouping.unique_1d(
         wp.array(values_np, dtype=wp.int32, device=device), return_inverse=True
     )
     n_unique = unique_wp.size
 
-    first_wp = tw.grouping.first_occurrence_indices(inverse_wp, n_unique)
+    first_wp = od.grouping.first_occurrence_indices(inverse_wp, n_unique)
 
     _classes_np, expected_np = np.unique(inverse_wp.numpy(), return_index=True)
     assert expected_np.size == n_unique
     assert np.array_equal(first_wp.numpy(), expected_np)
     # Deriving n_unique from the inverse costs a reduction and a sync, and must give the same map.
-    assert np.array_equal(tw.grouping.first_occurrence_indices(inverse_wp).numpy(), expected_np)
+    assert np.array_equal(od.grouping.first_occurrence_indices(inverse_wp).numpy(), expected_np)
 
-    padded_wp = tw.grouping.first_occurrence_indices(inverse_wp, n_unique + 2)
+    padded_wp = od.grouping.first_occurrence_indices(inverse_wp, n_unique + 2)
     assert np.array_equal(padded_wp.numpy()[:n_unique], expected_np)
     assert np.array_equal(padded_wp.numpy()[n_unique:], np.full(2, values_np.size, dtype=np.int32))
 
@@ -375,9 +375,9 @@ def test_first_occurrence_indices_picks_representatives_of_duplicate_rows(device
     """Gathering by the result reproduces the unique array that came back beside the inverse."""
     rows_np = np.array([[1, 2], [3, 4], [1, 2], [5, 6], [3, 4]], dtype=np.int32)
     rows_wp = wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = tw.grouping.unique_rows(rows_wp, return_inverse=True)
+    unique_wp, inverse_wp = od.grouping.unique_rows(rows_wp, return_inverse=True)
 
-    first_wp = tw.grouping.first_occurrence_indices(inverse_wp, int(unique_wp.shape[0]))
+    first_wp = od.grouping.first_occurrence_indices(inverse_wp, int(unique_wp.shape[0]))
 
     assert int(unique_wp.shape[0]) == 3
     assert np.array_equal(rows_np[first_wp.numpy()], unique_wp.numpy())
@@ -389,18 +389,18 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
     positions_np = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [0.0, 1.0, 2.0]], dtype=np.float32)
     if kind == "vec3":
         data_wp = points_to_warp(positions_np, device)
-        expected_wp = tw.grouping.hash_vector_rows(data_wp)
+        expected_wp = od.grouping.hash_vector_rows(data_wp)
     elif kind == "int32_rows":
         rows_np = np.array([[1, 2], [3, 4], [1, 2]], dtype=np.int32)
-        data_wp = twt.as_array2d(
+        data_wp = odt.as_array2d(
             wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device), wp.int32
         )
-        expected_wp = tw.grouping.hash_indices_rows(data_wp)
+        expected_wp = od.grouping.hash_indices_rows(data_wp)
     else:
         data_wp = wp.array(np.ascontiguousarray(positions_np), dtype=wp.float32, device=device)
-        expected_wp = tw.grouping.hash_vector_rows(points_to_warp(positions_np, device))
+        expected_wp = od.grouping.hash_vector_rows(points_to_warp(positions_np, device))
 
-    keys_np = tw.grouping.hash_rows(data_wp).numpy()
+    keys_np = od.grouping.hash_rows(data_wp).numpy()
 
     assert np.array_equal(keys_np, expected_wp.numpy())
     # Equal rows must collide and unequal ones must not, or the dispatch proves nothing.
@@ -411,9 +411,9 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
 def test_hash_rows_rejects_a_dtype_and_a_width_it_cannot_pack(device: str) -> None:
     """The two documented ``ValueError`` paths: an unsupported dtype and a non-width-3 float32."""
     with pytest.raises(ValueError, match="unsupported dtype"):
-        tw.grouping.hash_rows(wp.zeros((2, 3), dtype=wp.float64, device=device))
+        od.grouping.hash_rows(wp.zeros((2, 3), dtype=wp.float64, device=device))
     with pytest.raises(ValueError, match="width 3"):
-        tw.grouping.hash_rows(wp.zeros((2, 2), dtype=wp.float32, device=device))
+        od.grouping.hash_rows(wp.zeros((2, 2), dtype=wp.float32, device=device))
 
 
 def test_hash_vector_rows(device: str) -> None:
@@ -423,14 +423,14 @@ def test_hash_vector_rows(device: str) -> None:
     packed_np = _pack_vec3_np(vectors_np)
 
     vectors_wp = points_to_warp(vectors_np, device)
-    packed_wp = tw.grouping.hash_vector_rows(vectors_wp)
+    packed_wp = od.grouping.hash_vector_rows(vectors_wp)
     packed = packed_wp.numpy()
 
     assert np.array_equal(packed, packed_np)
 
     vectors_double_wp = wp.array(vectors_np, dtype=wp.vec3d, device=device)
     with pytest.raises(ValueError, match=r"data must be a wp\.array\[wp\.vec3\]"):
-        _ = tw.grouping.hash_vector_rows(vectors_double_wp)
+        _ = od.grouping.hash_vector_rows(vectors_double_wp)
 
 
 def test_hash_vector_rows_folds_signed_zero(device: str) -> None:
@@ -442,7 +442,7 @@ def test_hash_vector_rows_folds_signed_zero(device: str) -> None:
         dtype=wp.vec3,
         device=device,
     )
-    assert len(set(tw.grouping.hash_vector_rows(vectors_wp).list())) == 1
+    assert len(set(od.grouping.hash_vector_rows(vectors_wp).list())) == 1
 
 
 def test_hash_vector_rows_epsilon_allows_negative_coordinates(device: str) -> None:
@@ -454,14 +454,14 @@ def test_hash_vector_rows_epsilon_allows_negative_coordinates(device: str) -> No
         dtype=np.float32,
     )
     vertices_wp = points_to_warp(vertices_np, device)
-    keys_np = tw.grouping.hash_vector_rows(vertices_wp, epsilon=1e-6).numpy()
+    keys_np = od.grouping.hash_vector_rows(vertices_wp, epsilon=1e-6).numpy()
     assert keys_np[0] == keys_np[1]
     assert keys_np[2] == keys_np[3]
     assert keys_np[0] != keys_np[2]
 
     # Translating the input must not change how the rows group, only the keys themselves.
     shifted_wp = points_to_warp(vertices_np + np.float32(100.0), device)
-    shifted_np = tw.grouping.hash_vector_rows(shifted_wp, epsilon=1e-6).numpy()
+    shifted_np = od.grouping.hash_vector_rows(shifted_wp, epsilon=1e-6).numpy()
     assert shifted_np[0] == shifted_np[1]
     assert shifted_np[2] == shifted_np[3]
     assert shifted_np[0] != shifted_np[2]
@@ -477,7 +477,7 @@ def test_hash_vector_rows_epsilon_far_from_origin(device: str) -> None:
     sites_np = (rng.random((64, 3)).astype(np.float32) + offset_np).astype(np.float32)
     # Each site duplicated exactly, so the 128 rows must collapse to 64 distinct keys.
     vertices_wp = points_to_warp(np.vstack((sites_np, sites_np)), device)
-    keys_np = tw.grouping.hash_vector_rows(vertices_wp, epsilon=1e-6).numpy()
+    keys_np = od.grouping.hash_vector_rows(vertices_wp, epsilon=1e-6).numpy()
     assert np.array_equal(keys_np[:64], keys_np[64:])
     assert len(set(keys_np.tolist())) == 64
 
@@ -491,37 +491,37 @@ def test_hash_indices_rows_valid(device: str) -> None:
     packed_np = _pack_indices_rows_np(indices_np, max_index)
     packed_default_np = _pack_indices_rows_np(indices_np)
 
-    indices_wp = twt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
-    packed_wp = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
-    packed_default_wp = tw.grouping.hash_indices_rows(indices_wp)
+    indices_wp = odt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
+    packed_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
+    packed_default_wp = od.grouping.hash_indices_rows(indices_wp)
     assert np.array_equal(packed_wp.numpy(), packed_np)
     assert np.array_equal(packed_default_wp.numpy(), packed_default_np)
 
 
 def test_hash_indices_rows_invalid(device: str) -> None:
     max_index = 8
-    indices_wp = twt.as_array2d(
+    indices_wp = odt.as_array2d(
         wp.array([[0, 1, 2], [-3, 4, 1]], dtype=wp.int32, device=device), wp.int32
     )
 
     with pytest.raises(ValueError, match="data must be non-negative, got a minimum of -3"):
-        _ = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
+        _ = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
 
-    indices_oob = twt.as_array2d(
+    indices_oob = odt.as_array2d(
         wp.array([[0, 1, 2], [3, 8, 1]], dtype=wp.int32, device=device), wp.int32
     )
     with pytest.raises(ValueError, match="data must be less than max_index 8, got a maximum of 8"):
-        _ = tw.grouping.hash_indices_rows(indices_oob, max_index=max_index)
+        _ = od.grouping.hash_indices_rows(indices_oob, max_index=max_index)
 
     with pytest.raises(ValueError, match="max_index must be positive, got 0"):
-        _ = tw.grouping.hash_indices_rows(indices_wp, max_index=0)
+        _ = od.grouping.hash_indices_rows(indices_wp, max_index=0)
 
-    indices_ok = twt.as_array2d(
+    indices_ok = odt.as_array2d(
         wp.array([[0, 1, 2], [3, 4, 5]], dtype=wp.int32, device=device), wp.int32
     )
     indices_np_ok = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int32)
     packed_np = _pack_indices_rows_np(indices_np_ok, max_index)
-    packed_wp = tw.grouping.hash_indices_rows(indices_ok, max_index=max_index)
+    packed_wp = od.grouping.hash_indices_rows(indices_ok, max_index=max_index)
     assert np.array_equal(packed_wp.numpy(), packed_np)
 
 
@@ -529,11 +529,11 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     rng = np.random.default_rng(11)
     max_index = 23
     indices_np = rng.integers(0, max_index, size=(64, 2), dtype=np.int32)
-    indices_wp = twt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
+    indices_wp = odt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
 
     # Skipping validation must not change the keys, only the range check that produces them.
-    validated_wp = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index)
-    unvalidated_wp = tw.grouping.hash_indices_rows(indices_wp, max_index=max_index, validate=False)
+    validated_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
+    unvalidated_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index, validate=False)
     assert np.array_equal(unvalidated_wp.numpy(), validated_wp.numpy())
     assert np.array_equal(unvalidated_wp.numpy(), _pack_indices_rows_np(indices_np, max_index))
 
@@ -541,9 +541,9 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     # INDEX_RADIX_PAIR, so packing against it is injective without reducing the rows. The keys are
     # different numbers from the tight radix's, but they have to induce the same *order* -- both
     # are monotone lexicographic in (row[1], row[0]) -- which is what every caller relies on.
-    pair_wp = tw.grouping.hash_indices_rows(indices_wp, validate=False)
+    pair_wp = od.grouping.hash_indices_rows(indices_wp, validate=False)
     assert np.array_equal(
-        pair_wp.numpy(), _pack_indices_rows_np(indices_np, tw.constants.INDEX_RADIX_PAIR)
+        pair_wp.numpy(), _pack_indices_rows_np(indices_np, od.constants.INDEX_RADIX_PAIR)
     )
     assert np.array_equal(
         np.argsort(pair_wp.numpy(), kind="stable"), np.argsort(validated_wp.numpy(), kind="stable")
@@ -553,29 +553,29 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     assert len(np.unique(indices_np[:, 1])) > 1
 
     # A wider row still needs one, because its radix has to keep ``radix ** w`` inside a uint64.
-    wide_wp = twt.as_array2d(
+    wide_wp = odt.as_array2d(
         wp.array(rng.integers(0, max_index, size=(64, 3), dtype=np.int32), device=device), wp.int32
     )
     with pytest.raises(ValueError, match="validate=False requires an explicit max_index"):
-        _ = tw.grouping.hash_indices_rows(wide_wp, validate=False)
+        _ = od.grouping.hash_indices_rows(wide_wp, validate=False)
 
 
 def test_hash_indices_rows_empty(device: str) -> None:
     """An empty ``data`` must not reach ``reduce.minmax``, which raises on an empty array."""
-    empty_wp = twt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
-    packed_wp = tw.grouping.hash_indices_rows(empty_wp)
+    empty_wp = odt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
+    packed_wp = od.grouping.hash_indices_rows(empty_wp)
     assert packed_wp.shape == (0,)
     assert packed_wp.dtype == wp.uint64
 
-    packed_unvalidated_wp = tw.grouping.hash_indices_rows(empty_wp, max_index=5, validate=False)
+    packed_unvalidated_wp = od.grouping.hash_indices_rows(empty_wp, max_index=5, validate=False)
     assert packed_unvalidated_wp.shape == (0,)
 
 
 def test_group_int_rows_unvalidated(device: str) -> None:
     data_np = np.array([[1, 2], [3, 4], [1, 2], [3, 4], [5, 6]], dtype=np.int32)
-    data_wp = twt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
-    groups_wp = tw.grouping.group_int_rows(data_wp, 2, max_value=7)
-    groups_unvalidated_wp = tw.grouping.group_int_rows(data_wp, 2, max_value=7, validate=False)
+    data_wp = odt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
+    groups_wp = od.grouping.group_int_rows(data_wp, 2, max_value=7)
+    groups_unvalidated_wp = od.grouping.group_int_rows(data_wp, 2, max_value=7, validate=False)
     assert np.array_equal(groups_unvalidated_wp.numpy(), groups_wp.numpy())
 
 
@@ -585,8 +585,8 @@ def test_group_int_rows_empty(device: str) -> None:
 
     Not crash inside ``hash_indices_rows``'s default validation on the way there.
     """
-    empty_wp = twt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
-    groups_wp = tw.grouping.group_int_rows(empty_wp, 2)
+    empty_wp = odt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
+    groups_wp = od.grouping.group_int_rows(empty_wp, 2)
     assert groups_wp.shape == (0, 2)
 
 

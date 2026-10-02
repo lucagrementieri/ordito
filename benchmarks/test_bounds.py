@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.bounds``: the axis-aligned box, its diagonal, and the oriented box.
+Benchmarks for ``ordito.bounds``: the axis-aligned box, its diagonal, and the oriented box.
 
 Axis: the **scan sweep**, the only thing the axis-aligned groups can be driven by — a component-wise
 min/max over ``V`` has no topology and no parameters. ``oriented_bounding_box`` has a second axis of
@@ -12,7 +12,7 @@ of a row that is **host-latency-bound at the small end and bandwidth-bound at th
 roughly ``10 ** 3`` vertices it reports the wrapper floor rather than the reduction, so a NumPy
 ``min``/``max`` pair wins by orders of magnitude there and loses at ``lucy``. The row is here for
 the crossover; neither endpoint means anything alone. That is also why ``aabb`` does not use the
-generic [`reduce.minmax`][triwarp.reduce.minmax] path — it writes both corners into one six-element
+generic [`reduce.minmax`][ordito.reduce.minmax] path — it writes both corners into one six-element
 buffer so the host pays a single readback.
 
 References
@@ -23,17 +23,17 @@ the uncached formula behind it rather than timing a cache lookup. **open3d**'s
 
 **libigl** answers both groups and in both returns *more* than was asked for: ``igl.bounding_box``
 builds the box as geometry (8 corners and 12 triangles), so its row includes constructing a mesh
-triwarp never materialises, and ``igl.bounding_box_diagonal`` computes the box internally. Read both
+ordito never materialises, and ``igl.bounding_box_diagonal`` computes the box internally. Read both
 as upper bounds.
 
 For the **oriented** box the references answer it a different way. ``igl.oriented_bounding_box``
-searches the *same* global candidate set triwarp's first phase does (Super-Fibonacci over ``SO(3)``,
-identity appended) but has no refinement phase, so triwarp's row carries trust-region rounds igl's
+searches the *same* global candidate set ordito's first phase does (Super-Fibonacci over ``SO(3)``,
+identity appended) but has no refinement phase, so ordito's row carries trust-region rounds igl's
 does not — rounds that buy the quality the ``tests/test_bounds.py`` bands pin, and that are several
 times the sampled-only phase reachable with ``refine_iterations=0``.
 ``trimesh.bounds.oriented_bounds`` and open3d's ``get_minimal_oriented_bounding_box`` are the
 *other* algorithm family — convex hull, then the minimal box flush with each hull face — so their
-rows price a hull triwarp never builds and their cost does not scale with the candidate count at
+rows price a hull ordito never builds and their cost does not scale with the candidate count at
 all. Read them as the cost of that approach rather than the same work done slower: trimesh is dearer
 than igl on a scan mesh even though the hull collapses the cloud by an order of magnitude, because
 the caliper search then runs over every hull face serially.
@@ -47,10 +47,10 @@ quote the in-harness median and nothing else.
 device work, so a row would time the interpreter.
 
 The module's other half runs the opposite way — points against a box that already exists — and its
-three groups (``points_in_aabb``, ``crop_points``, ``crop_mesh``) share one shape: triwarp is
+three groups (``points_in_aabb``, ``crop_points``, ``crop_mesh``) share one shape: ordito is
 **flat** in the input and open3d **linear**, so each row is a *crossover* and not a ratio. The flat
 readings are the host launch floor (three to five launches plus the one readback that sizes the
-output), so nothing on triwarp's side is bandwidth-bound anywhere in this sweep and a change will
+output), so nothing on ordito's side is bandwidth-bound anywhere in this sweep and a change will
 show up as a slope long before it shows up as a level. The crossover sits near 40 000 vertices for
 the two point groups and below 2 562 for the mesh crop, which is the one row worth reading as a win.
 Every row here is sub-10 ms and therefore clock-state bimodal (see ``benchmarks/README.md``), so
@@ -59,7 +59,7 @@ treat the *crossover* as the finding and not any single ratio.
 ``crop_points`` is the ``points_in_aabb`` row plus a gather, kept rather than declined because
 open3d answers it through a *different* entry point (``PointCloud.crop`` rather than
 ``get_point_indices_within_bounding_box``) whose extra work — materializing the survivors — is the
-same extra work triwarp does, so the two rows bracket it on both sides. Check a change against the
+same extra work ordito does, so the two rows bracket it on both sides. Check a change against the
 gather's own cost, timed **interleaved** in one process, rather than against the difference of two
 medians from separate rows: it is one ``wp.copy`` launch and flat over the whole size range.
 
@@ -84,12 +84,12 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
-# Candidate orientations scored by every ``oriented_bounding_box`` row, triwarp's and igl's alike.
+# Candidate orientations scored by every ``oriented_bounding_box`` row, ordito's and igl's alike.
 # Fixed and shared: the two libraries search the identical candidate set, so a row that let them
-# score different counts would compare quality against cost. It is also triwarp's own default.
+# score different counts would compare quality against cost. It is also ordito's own default.
 _ROTATIONS = 4096
 
 # Query points for the ``enclosing_diagonal`` row. Fixed count and seed: the cost is two box
@@ -121,7 +121,7 @@ def _queries_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
 
 
 @pytest.mark.benchmark(group="aabb")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "igl", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "igl", "pyvista", "meshlib")
 def test_aabb(bench_case: BenchCase) -> None:
     """
     A min/max reduce over the vertices, and the suite's clearest host-latency floor.
@@ -131,7 +131,7 @@ def test_aabb(bench_case: BenchCase) -> None:
 
     meshlib's ``computeBoundingBox`` returns the two corners directly and is the only row here that
     is **multi-threaded**, which on a reduce this cheap mostly prices its own fork-join -- read it
-    against ``triwarp-cuda``, not ``triwarp-cpu``.
+    against ``ordito-cuda``, not ``ordito-cpu``.
     """
     if bench_case.kind == "meshlib":
         mesh_ml = bench_case.new_mesh_ml()
@@ -146,9 +146,9 @@ def test_aabb(bench_case: BenchCase) -> None:
         bounds_pv = bench_case.run(lambda: np.asarray(mesh_pv.bounds))
         assert bounds_pv.shape == (6,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
-        lower, upper = bench_case.run(lambda: tw.bounds.aabb(vertices))
+        lower, upper = bench_case.run(lambda: od.bounds.aabb(vertices))
         assert lower[0] <= upper[0]
     elif bench_case.kind == "trimesh":
         # what an uncached ``trimesh.Trimesh.bounds`` computes: numpy min/max per axis
@@ -168,7 +168,7 @@ def test_aabb(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="enclosing_diagonal")
-@pytest.mark.benchlibs("triwarp", "igl", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "pyvista")
 def test_enclosing_diagonal(bench_case: BenchCase) -> None:
     """
     The default search radius every mesh query derives, over the mesh *and* the query points.
@@ -184,7 +184,7 @@ def test_enclosing_diagonal(bench_case: BenchCase) -> None:
 
     igl's ``bounding_box_diagonal`` takes one point set, so its side is fed the stacked cloud --
     which makes its row also price the ``vstack`` a caller would need, and that copy is the point:
-    triwarp never materializes the union.
+    ordito never materializes the union.
     """
     if bench_case.kind == "pyvista":
         # ``DataSet.length`` is the *single*-cloud diagonal -- VTK has no two-cloud form -- so this
@@ -192,9 +192,9 @@ def test_enclosing_diagonal(bench_case: BenchCase) -> None:
         mesh_pv = bench_case.mesh_pv
         assert bench_case.run(lambda: float(mesh_pv.length)) > 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, queries = bench_case.vertices_wp, _queries_wp(bench_case)
-        diagonal = bench_case.run(lambda: tw.bounds.enclosing_diagonal(vertices, queries))
+        diagonal = bench_case.run(lambda: od.bounds.enclosing_diagonal(vertices, queries))
         assert diagonal > 0.0
         return
     vertices_np, queries_np = bench_case.vertices_np, _queries_np(bench_case)
@@ -225,7 +225,7 @@ def _box_np(bench_case: BenchCase) -> np.ndarray:
 
 
 def _corners_wp(box_np: np.ndarray) -> tuple[wp.vec3, wp.vec3]:
-    """Return the same box as the two ``wp.vec3`` corners triwarp takes."""
+    """Return the same box as the two ``wp.vec3`` corners ordito takes."""
     return wp.vec3(*box_np[0].tolist()), wp.vec3(*box_np[1].tolist())
 
 
@@ -253,12 +253,12 @@ def _cloud_o3d(bench_case: BenchCase) -> o3d.geometry.PointCloud:
 
 @pytest.mark.benchmark(group="points_in_aabb")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_points_in_aabb(bench_case: BenchCase) -> None:
     """
     Six comparisons per point, then the scan that compacts them: the module's cheapest group.
 
-    Read this row as a **crossover, not a ratio**. triwarp is flat -- one ``wp.map``, one
+    Read this row as a **crossover, not a ratio**. ordito is flat -- one ``wp.map``, one
     ``array_cast``, one scan, one 4-byte readback and one scatter, none of which the vertex count
     moves at these sizes -- while open3d walks the cloud once on one core and grows linearly, so
     open3d wins by an order of magnitude at the small end and loses by several times at the large
@@ -269,11 +269,11 @@ def test_points_in_aabb(bench_case: BenchCase) -> None:
     query takes is built in setup, so the row prices the query and not the conversion.
     """
     box_np = _box_np(bench_case)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices_wp = bench_case.vertices_wp
         lower_wp, upper_wp = _corners_wp(box_np)
         indices_wp = bench_case.run(
-            lambda: tw.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
+            lambda: od.bounds.points_in_aabb(vertices_wp, lower_wp, upper_wp)
         )
         assert 0 < indices_wp.size < bench_case.n_vertices
         return
@@ -285,7 +285,7 @@ def test_points_in_aabb(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="crop_points")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_crop_points(bench_case: BenchCase) -> None:
     """
     The selection plus the gather that materializes it -- ``points_in_aabb`` with the copy included.
@@ -293,15 +293,15 @@ def test_crop_points(bench_case: BenchCase) -> None:
     The gather is flat over the whole size range (one ``wp.copy`` launch), so this row
     should track the ``points_in_aabb`` row at a constant offset and any *slope* appearing here is
     the finding. Both sides materialize: open3d's ``PointCloud.crop`` runs the same index query as
-    the group above and then copies the survivors through ``SelectByIndex``, and triwarp returns
+    the group above and then copies the survivors through ``SelectByIndex``, and ordito returns
     the indices alongside the points so a caller never pays the query twice.
     """
     box_np = _box_np(bench_case)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices_wp = bench_case.vertices_wp
         lower_wp, upper_wp = _corners_wp(box_np)
         kept_wp, indices_wp = bench_case.run(
-            lambda: tw.bounds.crop_points(vertices_wp, lower_wp, upper_wp)
+            lambda: od.bounds.crop_points(vertices_wp, lower_wp, upper_wp)
         )
         assert kept_wp.size == indices_wp.size
         assert 0 < kept_wp.size < bench_case.n_vertices
@@ -314,7 +314,7 @@ def test_crop_points(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="crop_mesh")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_crop_mesh(bench_case: BenchCase) -> None:
     """
     The vertex query, the all-corners face reduction, and the compaction that reindexes from zero.
@@ -322,12 +322,12 @@ def test_crop_mesh(bench_case: BenchCase) -> None:
     The module's widest gap and the one worth watching: an order of magnitude at the top of the
     sweep, where the two point groups manage a few times, because the mesh crop is where the
     work stops being one comparison per point -- the face reduction and the vertex compaction both
-    scale, and open3d does them serially. It is also flat on triwarp's side across the whole sweep,
+    scale, and open3d does them serially. It is also flat on ordito's side across the whole sweep,
     which says the four-launch chain is still host-bound at 327 680 faces and that a change here
     will show up as a *slope* long before it shows up as a level.
 
     This is the row that pins the mask-input route through
-    [`triwarp.selection.submesh_from_vertex_mask`][triwarp.selection.submesh_from_vertex_mask]:
+    [`ordito.selection.submesh_from_vertex_mask`][ordito.selection.submesh_from_vertex_mask]:
     the crop hands it a mask, which reduces onto faces directly rather than going back through
     ``isin``, and that route is about 2x on CUDA in isolation. Reading this row against the
     ``submesh`` groups in ``benchmarks/test_selection.py`` is how a regression in either is
@@ -338,11 +338,11 @@ def test_crop_mesh(bench_case: BenchCase) -> None:
     input mesh stays valid across rounds.
     """
     box_np = _box_np(bench_case)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices_wp, faces_wp = bench_case.vertices_wp, bench_case.faces_wp
         lower_wp, upper_wp = _corners_wp(box_np)
         sub_vertices_wp, sub_faces_wp = bench_case.run(
-            lambda: tw.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
+            lambda: od.bounds.crop_mesh(vertices_wp, faces_wp, lower_wp, upper_wp)
         )
         assert 0 < sub_faces_wp.size // 3 < bench_case.n_faces
         assert 0 < sub_vertices_wp.size < bench_case.n_vertices
@@ -354,7 +354,7 @@ def test_crop_mesh(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="oriented_bounding_box")
-@pytest.mark.benchlibs("triwarp", "igl", "trimesh", "open3d", "pyvista")
+@pytest.mark.benchlibs("ordito", "igl", "trimesh", "open3d", "pyvista")
 def test_oriented_bounding_box(bench_case: BenchCase) -> None:
     """
     The sampled-plus-refined minimum-volume box: ``_ROTATIONS`` global frames, then eight rounds.
@@ -371,12 +371,12 @@ def test_oriented_bounding_box(bench_case: BenchCase) -> None:
     the same allowance the other second-scale rows in the suite use.
 
     **pyvista's row is PCA of the points**, a single fixed orientation rather than a search -- so it
-    is the floor of this group by construction and the only reference here that triwarp should beat
+    is the floor of this group by construction and the only reference here that ordito should beat
     on *quality* as well.
 
     open3d times ``get_minimal_oriented_bounding_box`` -- its hull-based approximate minimizer,
     the same algorithm family as trimesh's row -- not ``get_oriented_bounding_box``, whose PCA box
-    does not minimize anything and sits measurably above triwarp's volume on a tilted fixture where
+    does not minimize anything and sits measurably above ordito's volume on a tilted fixture where
     the minimal box is close to it. Like both other references it is insensitive to
     ``_ROTATIONS`` by construction.
     """
@@ -396,16 +396,16 @@ def test_oriented_bounding_box(bench_case: BenchCase) -> None:
 
         assert bench_case.run(minimal_box_o3d, rounds=3).volume() > 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
         rotation, lower, upper = bench_case.run(
-            lambda: tw.bounds.oriented_bounding_box(vertices, _ROTATIONS)
+            lambda: od.bounds.oriented_bounding_box(vertices, _ROTATIONS)
         )
         assert lower[0] <= upper[0]
         assert np.isfinite(rotation[0, 0])
     elif bench_case.kind == "igl":
         # The same candidate set at the same count; igl returns the frame alone, transposed relative
-        # to triwarp's because it multiplies row vectors on the right.
+        # to ordito's because it multiplies row vectors on the right.
         vertices_np = bench_case.vertices_np
         frame_igl = bench_case.run(
             lambda: igl.oriented_bounding_box(vertices_np, _ROTATIONS), rounds=3

@@ -1,8 +1,8 @@
 """
-Benchmarks for ``triwarp.neighbors``: the k-nearest-neighbour queries.
+Benchmarks for ``ordito.neighbors``: the k-nearest-neighbour queries.
 
-This is the direct gate for the k-NN search radius. Twelve call sites in ``triwarp.metrics``, the
-point-cloud ICP path in ``triwarp.registration`` and three sites in ``triwarp.reconstruction`` all
+This is the direct gate for the k-NN search radius. Twelve call sites in ``ordito.metrics``, the
+point-cloud ICP path in ``ordito.registration`` and three sites in ``ordito.reconstruction`` all
 bottom out here, and until this module existed none of them had a measurement isolating the query
 kernel from the surrounding algorithm.
 
@@ -44,7 +44,7 @@ Reference
 **Every reference here is index-agnostic, so the BVH and hash-grid groups carry the same rows.**
 None of the four exposes a structure choice, and the cloud, the queries and ``k`` are identical
 between the two group families, so a ``query_*_bvh`` / ``query_*_hashgrid`` pair reads as **one**
-comparison with triwarp's own index as the axis. The backend is a keyword, not a second entry
+comparison with ordito's own index as the axis. The backend is a keyword, not a second entry
 point, so the suffix is that keyword's value and the two rows are the same function timed twice;
 ``tests/test_neighbors.py`` parametrizes every comparison over ``backend`` and
 ``test_the_two_backends_agree`` pins that the pair returns identical answers, which is what makes
@@ -52,7 +52,7 @@ it a cost comparison rather than two measurements of two things.
 
 **scipy** ``spatial.KDTree`` — the same reference the tests validate against, and the only exact
 k-NN in the group with a matching signature. Its construction is inside the timed region for the
-same reason triwarp's index build is.
+same reason ordito's index build is.
 
 **libigl** ``igl.knn`` is the second exact k-NN, byte-identical to ``KDTree``'s indices on a
 tie-free cloud. Three things shape its rows:
@@ -80,8 +80,8 @@ scipy; note ``fixed_radius_index(radius)`` bakes the radius in, so each radius p
 ``nearest_neighbor_distance`` is the one group whose queries are the cloud *itself* rather than the
 subsample, because that is how its callers use it — once over the whole input, before
 ``reconstruction`` can pick a ball radius or an octree depth. open3d's counterpart searches point by
-point in C++, serial but not a Python loop; triwarp goes from level with it to more than an order of
-magnitude ahead across the ``scale`` axis, the ratio growing because triwarp's cost is nearly flat.
+point in C++, serial but not a Python loop; ordito goes from level with it to more than an order of
+magnitude ahead across the ``scale`` axis, the ratio growing because ordito's cost is nearly flat.
 """
 
 from __future__ import annotations
@@ -96,7 +96,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -200,7 +200,7 @@ def _bvh(bench_case: BenchCase) -> wp.Bvh:
     """Prebuilt BVH over the cloud -- an *input* for the ball group, timed on its own elsewhere."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _bvh_cache:
-        _bvh_cache[key] = tw.neighbors.bvh_from_points(bench_case.vertices_wp)
+        _bvh_cache[key] = od.neighbors.bvh_from_points(bench_case.vertices_wp)
     return _bvh_cache[key]
 
 
@@ -265,7 +265,7 @@ def _run_pytorch3d_knn(bench_case: BenchCase, k: int) -> None:
     That is the whole reason the row is comparable at all: every other reference in this module
     times a structure build plus a traversal, and this one times ``n_points x n_queries`` distance
     evaluations. The upload is hoisted out, a small share of the query at these sizes, which matches
-    what the triwarp branches do with their ``wp.array`` buffers.
+    what the ordito branches do with their ``wp.array`` buffers.
 
     There is no CPU row to cap: pytorch3d is registered for its CUDA kernels alone (see the
     ``LIBRARIES`` block in [`conftest.py`](conftest.py)). Its host path is Theta(N x Q) with no
@@ -301,7 +301,7 @@ def _run_meshlib_projector(bench_case: BenchCase) -> None:
     ``PointsProjector`` over the query cloud: meshlib's only batched ``k=1``, tree pre-warmed.
 
     Shared by both ``k=1`` groups because meshlib has no spatial-index choice to make -- the
-    reference call is identical whichever structure triwarp uses on its side, which is the whole
+    reference call is identical whichever structure ordito uses on its side, which is the whole
     reason the BVH and hash-grid groups are comparable at all.
 
     The point cloud is held in a name because ``setPointCloud`` stores a raw pointer and a temporary
@@ -324,20 +324,20 @@ def _run_meshlib_projector(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_nearest_bvh_k1")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d", "meshlib", "pytorch3d")
 def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
     """
     ``k=1`` BVH k-NN — the exact call ICP and the Chamfer family make.
 
     At ``k = 1`` with no prebuilt ``accelerator`` this is not a radius search but one
-    closest-point descent over [`mesh_from_points`][triwarp.neighbors.mesh_from_points], so the
+    closest-point descent over [`mesh_from_points`][ordito.neighbors.mesh_from_points], so the
     row times that tree's build plus the query, and needs neither the bounding box nor the density
     estimate the deepening search reads back.
 
     meshlib's ``PointsProjector`` is the only batched form it has that takes a *query* cloud, and
     it answers ``k=1`` only -- which is why meshlib appears in this group and not in the ``k7`` or
     ``k64`` ones (``tests/test_neighbors.py`` records that as a ``benchmarked=False`` claim). It is
-    exact against triwarp on both indices and distances.
+    exact against ordito on both indices and distances.
 
     **pytorch3d** is the fifth exact k-NN and the only reference with GPU kernels, so its
     ``-cuda`` row is the one GPU-against-GPU comparison in the module. It has no spatial structure
@@ -345,10 +345,10 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
     pytorch3d wins at a small point count and loses by nearly two orders of magnitude at a large
     one. The ``LIBRARIES`` block in [`conftest.py`](conftest.py) carries a sweep of the radius
     walk, half of whose swing is its search-radius heuristic; this row answers through a pruned
-    closest-point descent over [`mesh_from_points`][triwarp.neighbors.mesh_from_points] instead,
+    closest-point descent over [`mesh_from_points`][ordito.neighbors.mesh_from_points] instead,
     which has no radius, so that split does not describe it. Its ``dists`` are **squared**, which
     is the named transform ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d``
-    applies; its indices are exactly triwarp's. Absent from ``k64`` for the same reason meshlib is
+    applies; its indices are exactly ordito's. Absent from ``k64`` for the same reason meshlib is
     absent from ``k7``: there is no ``query_nearest_hashgrid_k64`` group to pair with, so two
     BVH-only markers would read as a different claim than the four here.
     """
@@ -359,10 +359,10 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
     if bench_case.kind == "pytorch3d":
         _run_pytorch3d_knn(bench_case, 1)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: tw.neighbors.query_nearest(points, queries, k=1, backend="bvh")
+            lambda: od.neighbors.query_nearest(points, queries, k=1, backend="bvh")
         )
         assert indices.shape == (queries.size,)
     elif bench_case.kind == "igl":
@@ -374,26 +374,26 @@ def test_query_nearest_bvh_k1(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_nearest_hashgrid_k1")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d", "meshlib", "pytorch3d")
 def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
     """
     ``k=1`` hash-grid k-NN — the backend ``distance.py`` picks.
 
     The reference rows are the *same four calls* ``query_nearest_bvh_k1`` times, because none of the
     four references has a spatial-index choice to expose: the cloud, the 20 000 displaced queries
-    and ``k`` are identical between the two groups and only triwarp's structure differs. So the pair
-    of groups reads as one comparison with triwarp's index as the axis, which is what
+    and ``k`` are identical between the two groups and only ordito's structure differs. So the pair
+    of groups reads as one comparison with ordito's index as the axis, which is what
     ``tests/test_neighbors.py`` asserts by parametrizing every k-NN comparison over both backends.
 
     **pytorch3d** is the fifth exact k-NN and the only reference with GPU kernels, so its
     ``-cuda`` row is the one GPU-against-GPU comparison in the module. It has no spatial structure
     on either device -- just the pairwise loop -- which makes it a *crossover* rather than a bar:
     pytorch3d wins at a small point count and loses by nearly two orders of magnitude at a large
-    one. Half of that swing is triwarp's own search-radius heuristic and not brute force scaling;
+    one. Half of that swing is ordito's own search-radius heuristic and not brute force scaling;
     the ``LIBRARIES`` block in [`conftest.py`](conftest.py)
     carries the sweep and the reading. Its ``dists`` are **squared**, which is the named transform
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` applies; its indices are
-    exactly triwarp's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
+    exactly ordito's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
     is no ``query_nearest_hashgrid_k64`` group to pair with, so two BVH-only markers would read as
     a different claim than the four here.
     """
@@ -401,10 +401,10 @@ def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
     if bench_case.kind == "meshlib":
         _run_meshlib_projector(bench_case)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: tw.neighbors.query_nearest(points, queries, k=1)
+            lambda: od.neighbors.query_nearest(points, queries, k=1)
         )
         assert indices.shape == (queries.size,)
     elif bench_case.kind == "igl":
@@ -416,7 +416,7 @@ def test_query_nearest_hashgrid_k1(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_nearest_bvh_k7")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d", "pytorch3d")
 def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
     """
     ``k=7`` BVH k-NN: the tree side of the backend pair ``query_nearest_hashgrid_k7`` completes.
@@ -428,11 +428,11 @@ def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
     ``-cuda`` row is the one GPU-against-GPU comparison in the module. It has no spatial structure
     on either device -- just the pairwise loop -- which makes it a *crossover* rather than a bar:
     pytorch3d wins at a small point count and loses by nearly two orders of magnitude at a large
-    one. Half of that swing is triwarp's own search-radius heuristic and not brute force scaling;
+    one. Half of that swing is ordito's own search-radius heuristic and not brute force scaling;
     the ``LIBRARIES`` block in [`conftest.py`](conftest.py)
     carries the sweep and the reading. Its ``dists`` are **squared**, which is the named transform
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` applies; its indices are
-    exactly triwarp's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
+    exactly ordito's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
     is no ``query_nearest_hashgrid_k64`` group to pair with, so two BVH-only markers would read as
     a different claim than the four here.
     """
@@ -440,10 +440,10 @@ def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
     if bench_case.kind == "pytorch3d":
         _run_pytorch3d_knn(bench_case, 7)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: tw.neighbors.query_nearest(points, queries, k=7, backend="bvh")
+            lambda: od.neighbors.query_nearest(points, queries, k=7, backend="bvh")
         )
         assert indices.shape == (queries.size, 7)
     elif bench_case.kind == "igl":
@@ -455,7 +455,7 @@ def test_query_nearest_bvh_k7(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_nearest_bvh_k64")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d")
 def test_query_nearest_bvh_k64(bench_case: BenchCase) -> None:
     """
     ``k=64`` BVH k-NN — the largest register-row bucket, and the k axis's far end.
@@ -466,10 +466,10 @@ def test_query_nearest_bvh_k64(bench_case: BenchCase) -> None:
     without it the suite's k axis stops at 7 and the regime the row storage governs is unmeasured.
     """
     skip_larger_than(bench_case, "dragon")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: tw.neighbors.query_nearest(points, queries, k=64, backend="bvh")
+            lambda: od.neighbors.query_nearest(points, queries, k=64, backend="bvh")
         )
         assert indices.shape == (queries.size, 64)
     elif bench_case.kind == "igl":
@@ -481,32 +481,32 @@ def test_query_nearest_bvh_k64(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_nearest_hashgrid_k7")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "open3d", "pytorch3d")
 def test_query_nearest_hashgrid_k7(bench_case: BenchCase) -> None:
     """
     ``k=7`` hash-grid k-NN.
 
     Same three references as ``query_nearest_bvh_k7``, and for the reason given on the ``k1`` group:
-    the reference call does not change with triwarp's index. meshlib is absent here rather than
+    the reference call does not change with ordito's index. meshlib is absent here rather than
     exempt -- its only batched query-cloud form is ``k=1`` (see ``query_nearest_bvh_k1``).
 
     **pytorch3d** is the fifth exact k-NN and the only reference with GPU kernels, so its
     ``-cuda`` row is the one GPU-against-GPU comparison in the module. It has no spatial structure
     on either device -- just the pairwise loop -- which makes it a *crossover* rather than a bar:
     pytorch3d wins at a small point count and loses by nearly two orders of magnitude at a large
-    one. Half of that swing is triwarp's own search-radius heuristic and not brute force scaling;
+    one. Half of that swing is ordito's own search-radius heuristic and not brute force scaling;
     the ``LIBRARIES`` block in [`conftest.py`](conftest.py)
     carries the sweep and the reading. Its ``dists`` are **squared**, which is the named transform
     ``tests/test_neighbors.py::test_query_nearest_matches_pytorch3d`` applies; its indices are
-    exactly triwarp's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
+    exactly ordito's. Absent from ``k64`` for the same reason meshlib is absent from ``k7``: there
     is no ``query_nearest_hashgrid_k64`` group to pair with, so two BVH-only markers would read as
     a different claim than the four here.
     """
     skip_larger_than(bench_case, "dragon")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         indices, _distances = bench_case.run(
-            lambda: tw.neighbors.query_nearest(points, queries, k=7)
+            lambda: od.neighbors.query_nearest(points, queries, k=7)
         )
         assert indices.shape == (queries.size, 7)
     elif bench_case.kind == "igl":
@@ -518,7 +518,7 @@ def test_query_nearest_hashgrid_k7(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="query_weighted_nearest")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("weight_spread", _WEIGHT_SPREADS)
 def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> None:
     """
@@ -559,7 +559,7 @@ def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> 
     bvh = _bvh(bench_case)
     max_weight = float(weight_spread * bench_case.mean_edge)
     indices, distances = bench_case.run(
-        lambda: tw.neighbors.query_weighted_nearest(
+        lambda: od.neighbors.query_weighted_nearest(
             points, weights, queries, max_weight=max_weight, accelerator=bvh
         )
     )
@@ -568,7 +568,7 @@ def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> 
 
 
 @pytest.mark.benchmark(group="bvh_from_points")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl")
+@pytest.mark.benchlibs("ordito", "scipy", "igl")
 @pytest.mark.parametrize("leaf_size", _LEAF_SIZES)
 def test_bvh_from_points(bench_case: BenchCase, leaf_size: int) -> None:
     """
@@ -576,16 +576,16 @@ def test_bvh_from_points(bench_case: BenchCase, leaf_size: int) -> None:
 
     Subtract this from ``query_nearest_bvh_k1`` to get the query in isolation. Neither reference
     takes a leaf-size parameter, so each one's two rows are identical by construction and are there
-    as fixed bars; triwarp's own slope is the other half of the ``leaf_size`` trade-off.
+    as fixed bars; ordito's own slope is the other half of the ``leaf_size`` trade-off.
 
     ``igl.octree`` is the structure ``igl.knn`` consumes, so this row is also what the k-NN groups'
     build-included numbers carry -- nearly all of them -- and most of *that* is the Python lists it
     returns rather than the tree; see the module docstring.
     """
     skip_larger_than(bench_case, "dragon", "the scipy reference builds single-threaded")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        bvh = bench_case.run(lambda: tw.neighbors.bvh_from_points(points, leaf_size=leaf_size))
+        bvh = bench_case.run(lambda: od.neighbors.bvh_from_points(points, leaf_size=leaf_size))
         assert bvh is not None
     elif bench_case.kind == "igl":
         skip_larger_than(bench_case, "bunny", "igl.octree is superlinear in the point count")
@@ -598,7 +598,7 @@ def test_bvh_from_points(bench_case: BenchCase, leaf_size: int) -> None:
 
 
 @pytest.mark.benchmark(group="hashgrid_from_points")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl")
+@pytest.mark.benchlibs("ordito", "scipy", "igl")
 @pytest.mark.parametrize("grid_bins", _GRID_BINS)
 def test_hashgrid_from_points(bench_case: BenchCase, grid_bins: int) -> None:
     """
@@ -608,7 +608,7 @@ def test_hashgrid_from_points(bench_case: BenchCase, grid_bins: int) -> None:
     the index its library's k-NN query consumes, so subtracting this group from
     ``query_nearest_hashgrid_k1`` isolates the query on both sides of the ratio. Neither reference
     has a bin-count parameter, so each one's two rows are identical by construction and stand as
-    fixed bars against triwarp's slope -- the convention ``bvh_from_points`` already uses for
+    fixed bars against ordito's slope -- the convention ``bvh_from_points`` already uses for
     ``leaf_size``.
     """
     skip_larger_than(bench_case, "dragon", "the scipy reference builds single-threaded")
@@ -625,26 +625,26 @@ def test_hashgrid_from_points(bench_case: BenchCase, grid_bins: int) -> None:
     points = bench_case.vertices_wp
     radius = _RADIUS_SCALES[0] * bench_case.mean_edge
     grid = bench_case.run(
-        lambda: tw.neighbors.hashgrid_from_points(points, radius, grid_bins=grid_bins)
+        lambda: od.neighbors.hashgrid_from_points(points, radius, grid_bins=grid_bins)
     )
     assert grid is not None
 
 
 @pytest.mark.benchmark(group="query_ball_bvh")
-@pytest.mark.benchlibs("triwarp", "scipy", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "open3d", "pytorch3d")
 @pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
 def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
     """
     Radius query over a prebuilt BVH: cost is the neighbour count, so ~8x between the radii.
 
-    All three structures are prebuilt: triwarp's BVH, scipy's cached ``KDTree``, and open3d's
+    All three structures are prebuilt: ordito's BVH, scipy's cached ``KDTree``, and open3d's
     ``fixed_radius_index`` -- the last per radius, because that index bakes the radius in.
     ``fixed_radius_search`` returns a CSR-like triple, which is exactly the ``*_with_offsets``
-    layout triwarp's row times, so neither side pays per-query host slicing.
+    layout ordito's row times, so neither side pays per-query host slicing.
 
     **pytorch3d**'s ``ball_query`` is the fourth structure-free row and the only GPU one, and it is
     the group where the absence of an index costs most: one to two orders of magnitude behind
-    triwarp with no crossover at either end -- unlike its k-NN, which triwarp loses at the small
+    ordito with no crossover at either end -- unlike its k-NN, which ordito loses at the small
     end. Two conventions shape the row and both
     are asserted rather than assumed: it takes a fixed ``K`` and pads with ``-1`` rather than
     returning a ragged CSR, so ``K`` is passed above the largest true neighbour count and a smaller
@@ -653,11 +653,11 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
     """
     skip_larger_than(bench_case, "bunny", "the neighbour count grows cubically with the radius")
     radius = radius_scale * bench_case.mean_edge
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
         bvh = _bvh(bench_case)
         neighbors, _distances, offsets = bench_case.run(
-            lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=bvh)
+            lambda: od.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=bvh)
         )
         assert offsets.shape[0] == queries.size + 1
         assert neighbors.shape[0] >= 0
@@ -679,7 +679,7 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
 
 
 @pytest.mark.benchmark(group="query_bvh_box")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_query_bvh_box(bench_case: BenchCase) -> None:
     """
     Per-query axis-aligned box over a prebuilt BVH -- an indexed batch against an unindexed scan.
@@ -695,7 +695,7 @@ def test_query_bvh_box(bench_case: BenchCase) -> None:
     read this as the cube query with a different name: the corners are per query and the two sides
     of each axis differ.
 
-    triwarp's two rows being *identical* while open3d's move with the point count is the whole
+    ordito's two rows being *identical* while open3d's move with the point count is the whole
     content of the row -- the BVH descent does not see the cloud size at this box count, and the
     scan does.
     """
@@ -725,13 +725,13 @@ def test_query_bvh_box(bench_case: BenchCase) -> None:
     bvh = _bvh(bench_case)
     lower_wp = wp.array(lower_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
     upper_wp = wp.array(upper_np.astype(np.float32), dtype=wp.vec3, device=bench_case.device)
-    indices, offsets = bench_case.run(lambda: tw.neighbors.query_bvh_box(bvh, lower_wp, upper_wp))
+    indices, offsets = bench_case.run(lambda: od.neighbors.query_bvh_box(bvh, lower_wp, upper_wp))
     assert offsets.shape == (centers_np.shape[0] + 1,)
     assert indices.shape[0] >= 0
 
 
 @pytest.mark.benchmark(group="query_ball_hashgrid")
-@pytest.mark.benchlibs("triwarp", "scipy", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "scipy", "open3d", "pytorch3d")
 @pytest.mark.parametrize("grid_bins", _GRID_BINS)
 def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     """
@@ -744,11 +744,11 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
     Both references are the ones ``query_ball_bvh`` times, at the same radius over the same cloud --
     scipy's cached ``KDTree`` and open3d's ``fixed_radius_index``, each prebuilt so no row pays for
     a structure. Neither has a bin count, so their two rows per mesh are identical bars and only
-    triwarp's move; that is the axis this group exists for.
+    ordito's move; that is the axis this group exists for.
 
     **pytorch3d**'s ``ball_query`` is the fourth structure-free row and the only GPU one, and it is
     the group where the absence of an index costs most: one to two orders of magnitude behind
-    triwarp with no crossover at either end -- unlike its k-NN, which triwarp loses at the small
+    ordito with no crossover at either end -- unlike its k-NN, which ordito loses at the small
     end. Two conventions shape the row and both
     are asserted rather than assumed: it takes a fixed ``K`` and pads with ``-1`` rather than
     returning a ragged CSR, so ``K`` is passed above the largest true neighbour count and a smaller
@@ -778,16 +778,16 @@ def test_query_ball_hashgrid(bench_case: BenchCase, grid_bins: int) -> None:
         assert len(found) == queries_np.shape[0]
         return
     points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
-    grid = tw.neighbors.hashgrid_from_points(points, radius, grid_bins=grid_bins)
+    grid = od.neighbors.hashgrid_from_points(points, radius, grid_bins=grid_bins)
     neighbors, _distances, offsets = bench_case.run(
-        lambda: tw.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=grid)
+        lambda: od.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=grid)
     )
     assert offsets.shape[0] == queries.size + 1
     assert neighbors.shape[0] >= 0
 
 
 @pytest.mark.benchmark(group="query_geodesic_ball")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 def test_query_geodesic_ball(bench_case: BenchCase) -> None:
     """
     The mesh-graph ball: a BFS that enqueues a neighbour only when it is inside the radius.
@@ -807,14 +807,14 @@ def test_query_geodesic_ball(bench_case: BenchCase) -> None:
     """
     skip_larger_than(bench_case, "happy_buddha")
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    radius = 5.0 * float(tw.edges.mean_edge_length(vertices, faces))
-    _, offsets, _ = bench_case.run(lambda: tw.neighbors.geodesic_ball(vertices, faces, radius))
+    radius = 5.0 * float(od.edges.mean_edge_length(vertices, faces))
+    _, offsets, _ = bench_case.run(lambda: od.neighbors.geodesic_ball(vertices, faces, radius))
     assert offsets.shape == (vertices.size + 1,)
 
 
 @pytest.mark.benchmark(group="closest_pair")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "meshlib", "scipy")
+@pytest.mark.benchlibs("ordito", "meshlib", "scipy")
 def test_closest_pair(bench_case: BenchCase) -> None:
     """
     The cloud's *minimum* spacing: the same ``k=2`` self-query, reduced to one pair.
@@ -827,17 +827,17 @@ def test_closest_pair(bench_case: BenchCase) -> None:
     meshlib's ``findTwoClosestPoints`` is the same answer and is batched and callback-free. Its
     point tree is cached on the cloud, so the row drops it per round exactly as the
     ``nearest_neighbor_distance`` row does -- otherwise the second round onward would time a query
-    against a warm tree while triwarp rebuilds its BVH inside every call.
+    against a warm tree while ordito rebuilds its BVH inside every call.
 
     scipy reaches the same answer through the ``k=2`` self-query its sibling
     ``nearest_neighbor_distance`` row already times, plus an ``argmin`` over the second column. So
     the two groups share a reference *and* an input, and the difference between their scipy rows is
-    exactly that reduction -- which is the same thing the triwarp pair measures, on the other side
-    of the host/device line. Its ``KDTree`` build is inside the timed callable, like triwarp's BVH.
+    exactly that reduction -- which is the same thing the ordito pair measures, on the other side
+    of the host/device line. Its ``KDTree`` build is inside the timed callable, like ordito's BVH.
 
     Unlike most reductions in this suite the GPU row wins at every size, and the reason is that the
     query dominates rather than the reduce. Read meshlib's *medians* rather than its minima:
-    dropping the cached tree per round leaves it with an order-of-magnitude spread where triwarp's
+    dropping the cached tree per round leaves it with an order-of-magnitude spread where ordito's
     is a few percent.
     """
     if bench_case.kind == "scipy":
@@ -862,7 +862,7 @@ def test_closest_pair(bench_case: BenchCase) -> None:
         assert len(pair_ml) == 2
         return
     points = bench_case.vertices_wp
-    index_a, index_b, distance = bench_case.run(lambda: tw.neighbors.closest_pair(points))
+    index_a, index_b, distance = bench_case.run(lambda: od.neighbors.closest_pair(points))
     assert 0 <= index_a < bench_case.n_vertices
     assert 0 <= index_b < bench_case.n_vertices
     assert distance >= 0.0
@@ -870,7 +870,7 @@ def test_closest_pair(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="nearest_neighbor_distance")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 def test_nearest_neighbor_distance(bench_case: BenchCase) -> None:
     """
     The cloud's own spacing: a ``k=2`` self-query, keeping the second column.
@@ -887,12 +887,12 @@ def test_nearest_neighbor_distance(bench_case: BenchCase) -> None:
     meshlib's ``findNClosestPointsPerPoint(cloud, 1)`` is the batched, multi-threaded form of the
     same self-query and returns the neighbour *index*; the distance is one subtraction away and is
     not timed on either side. **Its point tree is cached on the cloud and the row drops it per
-    round**, which is worth several-fold and is what makes the three rows comparable: triwarp builds
+    round**, which is worth several-fold and is what makes the three rows comparable: ordito builds
     a BVH and open3d a ``KDTreeFlann`` inside their own calls, where meshlib would otherwise reuse a
     cached one. ``invalidateCaches`` is the lever rather than a fresh ``PointCloud`` per round,
     because rebuilding the cloud itself adds the whole point allocation and with it a spread that
     swamps what is being measured.
-    At the large end triwarp leads the multi-threaded reference by several times and the serial one
+    At the large end ordito leads the multi-threaded reference by several times and the serial one
     by an order of magnitude. At the small end all three land within noise of each other -- the
     cloud is too small to fill the GPU or to pay for a thread pool, which is where a ratio here
     stops meaning anything.
@@ -916,5 +916,5 @@ def test_nearest_neighbor_distance(bench_case: BenchCase) -> None:
         assert len(distance_o3d) == bench_case.n_vertices
         return
     points = bench_case.vertices_wp
-    distance = bench_case.run(lambda: tw.neighbors.nearest_neighbor_distance(points))
+    distance = bench_case.run(lambda: od.neighbors.nearest_neighbor_distance(points))
     assert distance.shape == (bench_case.n_vertices,)

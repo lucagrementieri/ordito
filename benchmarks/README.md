@@ -1,6 +1,6 @@
-# triwarp benchmarks
+# ordito benchmarks
 
-Performance benchmarks comparing `triwarp` against the ten CPU references **trimesh**, **libigl
+Performance benchmarks comparing `ordito` against the ten CPU references **trimesh**, **libigl
 (`igl`)**, **open3d**, **scipy**, **numpy**, **potpourri3d** (geometry-central), **pymeshlab**
 (MeshLab / VCGlib), **pyvista** (VTK), **meshlib** and **pymeshfix** (MeshFix / TMesh) — plus
 **pytorch3d**, the one reference with CUDA kernels of its own, which therefore takes two rows and
@@ -74,7 +74,7 @@ Two registries, in [`meshes.py`](meshes.py), for two different questions.
 
 ### Scan meshes — the pure-`N` axis
 
-Real scan meshes, read once with `meshio` (the same loader `triwarp.io` uses). Place the files in
+Real scan meshes, read once with `meshio` (the same loader `ordito.io` uses). Place the files in
 `benchmarks/data/` (gitignored, local-only). Used **only** by the throughput groups: `triangles`,
 `edges`, `reduce`, `grouping`, the `laplacian` entry kernels, `array.index_bound` /
 `mean_vertex_normals`, and the parts of `remesh` / `proximity` / `texture` / `neighbors` that
@@ -90,7 +90,7 @@ genuinely scale with size.
 
 ### Feature meshes — one control, one property each
 
-Generated with `trimesh.creation` (never with `triwarp.creation`: a benchmark input must not depend
+Generated with `trimesh.creation` (never with `ordito.creation`: a benchmark input must not depend
 on the code under test). `sphere_med` = `icosphere(6)` is the control — **V = 40 962, F = 81 920**,
 one watertight component, uniform valence 6, graph diameter ≈ 130, no boundary, aspect ratio ≈ 1.4.
 Every other mesh perturbs exactly one of those while pinning `V` and/or `F` to it.
@@ -156,7 +156,7 @@ grid_bins)`, and the defect counts in `test_repair`.
 
 ### Mesh-free benchmarks
 
-`triwarp.creation` has no input mesh, so [`test_creation.py`](test_creation.py) takes the
+`ordito.creation` has no input mesh, so [`test_creation.py`](test_creation.py) takes the
 `bench_lib` fixture instead of `bench_case` and is parametrized over libraries alone; its axis is
 `resolution`, expressed as a plain `pytest.mark.parametrize` on `sections` / `subdivisions` /
 `face_count`. Supporting that needed two harness changes: `BenchCase` derives from a mesh-free
@@ -167,27 +167,27 @@ case is collected under the default `group,param:mesh_name` grouping.
 ## Run
 
 ```bash
-# Default: triwarp-cuda on all meshes; CPU references on scan meshes up to 'large'.
-# triwarp-cpu is off by default when CUDA is available (pass --device=both to add it).
+# Default: ordito-cuda on all meshes; CPU references on scan meshes up to 'large'.
+# ordito-cpu is off by default when CUDA is available (pass --device=both to add it).
 uv run pytest benchmarks/
 
 # One module, GPU only:
 uv run pytest benchmarks/test_combine.py --device=cuda
 
 # Quick CPU-only smoke on the medium scan meshes -- but see the warning below: on a box with a
-# GPU this inflates the triwarp-cpu rows, and the harness says so.
+# GPU this inflates the ordito-cpu rows, and the harness says so.
 CUDA_VISIBLE_DEVICES="" uv run pytest benchmarks/test_edges.py --device=cpu --size=medium
 
-# Both triwarp targets, correctly: two processes, the CPU one with CUDA hidden.
+# Both ordito targets, correctly: two processes, the CPU one with CUDA hidden.
 uv run python benchmarks/devices.py
 ```
 
-### Never time `triwarp-cpu` in a CUDA-initialised process
+### Never time `ordito-cpu` in a CUDA-initialised process
 
 **Warp's CPU work costs more once CUDA has been initialised in the process**, and the charge behaves
 like a per-launch one, so the factor scales with launch count rather than with work:
 
-| measured (`triwarp-cpu`) | CUDA visible | `CUDA_VISIBLE_DEVICES=""` | ratio |
+| measured (`ordito-cpu`) | CUDA visible | `CUDA_VISIBLE_DEVICES=""` | ratio |
 |---|---|---|---|
 | `marching_cubes` 64 / 128 | 41.67 / 351.78 ms | 34.64 / 338.34 ms | **1.20x / 1.04x** |
 | `edges_unique` [bunny_decimated] | 11.22 ms | 8.76 ms | 1.28x |
@@ -198,18 +198,18 @@ like a per-launch one, so the factor scales with launch count rather than with w
 The spread is the point: **a launch-light row can be inside its own noise** (`marching_cubes`'s 1.04x
 sits under the 1.64x that `meshlib-128` itself moved between those two runs), while an iterative
 solver pays the whole factor. So the groups to distrust are the solver-heavy ones — heat, laplacian,
-linalg, smoothing, parametrization — not every `triwarp-cpu` row ever recorded.
+linalg, smoothing, parametrization — not every `ordito-cpu` row ever recorded.
 
 Unchanged by `warp.config.launch_array_access_mode` (`RELAXED` 50.34 s, `CHECKED` 49.77 s on the
-solver), so it is CUDA *presence* and not the launch guard. So a `triwarp-cpu` row taken this way is
-not a slow number, it is a **wrong** one — and it reads as triwarp losing to CPU references it
+solver), so it is CUDA *presence* and not the launch guard. So a `ordito-cpu` row taken this way is
+not a slow number, it is a **wrong** one — and it reads as ordito losing to CPU references it
 actually beats. `--device=cpu` and `--device=both` on a GPU box both emit a `UserWarning` saying so.
-The default `--device=auto` is unaffected: it selects `triwarp-cpu` only when there is no CUDA
+The default `--device=auto` is unaffected: it selects `ordito-cpu` only when there is no CUDA
 device.
 
 `CUDA_VISIBLE_DEVICES` must be set before the process starts, so this can only be fixed by a second
 process — `benchmarks/devices.py` runs the CUDA pass (with every reference) and then a CUDA-hidden
-`-k triwarp-cpu` pass. The narrowing matters: the CPU references are included in *every* pass, so an
+`-k ordito-cpu` pass. The narrowing matters: the CPU references are included in *every* pass, so an
 unnarrowed second pass would time them twice and duplicate the rows. `tests/devices.py` is the same
 idea for the test suite.
 
@@ -233,12 +233,12 @@ per case, and traces one ray per call); `test_heat_signed` adds ~15 s, most of i
 `test_heat_distance`, now 74 s for the module with its `heat_geodesic` group carrying three libraries at two
 setup points each.
 
-Only the first of those was not measuring triwarp, and it has since been **removed**: **190 of
+Only the first of those was not measuring ordito, and it has since been **removed**: **190 of
 `test_reconstruction`'s 199 timed seconds were open3d's CPU `create_from_point_cloud_poisson`**
-(7.5 s a call at depth 9 on `bunny`), against 9.0 s for every triwarp case in the module combined,
+(7.5 s a call at depth 9 on `bunny`), against 9.0 s for every ordito case in the module combined,
 and across the whole suite the two CPU screened-Poisson references cost **6 322 s — 73 % of the
-run** — to re-establish a ratio triwarp had already won 15–25×. `screened_poisson` is now a
-**triwarp-only** group; the correctness comparison against open3d and pymeshlab lives in
+run** — to re-establish a ratio ordito had already won 15–25×. `screened_poisson` is now a
+**ordito-only** group; the correctness comparison against open3d and pymeshlab lives in
 `tests/test_reconstruction.py`, where it runs at a size a test can afford. The module now costs
 ~107 s. That episode is also the general lesson: before trimming anything in a slow module, read the
 per-library split rather than the module total.
@@ -251,9 +251,9 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
 
 | flag | default | meaning |
 |---|---|---|
-| `--device` | `auto` | `triwarp` target(s): `auto`/`cpu`/`cuda`/`both`. `auto` = cuda if available, else cpu. The CPU references (trimesh / igl / open3d / scipy / numpy / potpourri3d / pymeshlab / pyvista / meshlib / pymeshfix) always run, and so does `pytorch3d-cuda` whenever the installed pytorch3d has a working CUDA extension (pytorch3d has no host row at all) — this flag selects among *triwarp's* targets, not the references'. **`cpu`/`both` on a GPU box inflate the `triwarp-cpu` rows and warn** — use `benchmarks/devices.py`. Registered in the repo-root `conftest.py`, shared with `tests/`. |
+| `--device` | `auto` | `ordito` target(s): `auto`/`cpu`/`cuda`/`both`. `auto` = cuda if available, else cpu. The CPU references (trimesh / igl / open3d / scipy / numpy / potpourri3d / pymeshlab / pyvista / meshlib / pymeshfix) always run, and so does `pytorch3d-cuda` whenever the installed pytorch3d has a working CUDA extension (pytorch3d has no host row at all) — this flag selects among *ordito's* targets, not the references'. **`cpu`/`both` on a GPU box inflate the `ordito-cpu` rows and warn** — use `benchmarks/devices.py`. Registered in the repo-root `conftest.py`, shared with `tests/`. |
 | `--size` | `all` | comma-separated size categories for the **scan** sweep (`small,medium,large,extralarge,huge`). Naming a size also lifts the CPU cap for it. Has no effect on axis-driven groups. |
-| `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `triwarp-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
+| `--cpu-max-size` | `large` | CPU-bound libraries (every reference, plus `ordito-cpu`) skip scan meshes larger than this unless the size is named in `--size`. |
 
 ## Notes
 
@@ -280,12 +280,12 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
   components, an isotropic remesh, a Poisson reconstruction, the float64 CG solves. Ten rounds of
   those would dominate the suite's wall clock and their spread is wide enough that the extra samples
   buy nothing.
-- **There is a ~340 µs host-side floor on every triwarp wrapper call** (allocation plus Warp's
+- **There is a ~340 µs host-side floor on every ordito wrapper call** (allocation plus Warp's
   launch path; ~75 µs of it is the NumPy prologue). `test_creation::test_box` is the probe that
   measures it — `box` is a 12-triangle constant table, so it measures nothing else. Read absolute
   numbers against that floor: a group sitting at it across its whole axis is reporting launch
   overhead, not an algorithm. **Read the floor from a full-suite run**: whichever group runs first
-  in a module absorbs that library's one-time initialization (52 ms for triwarp, 102 ms for trimesh,
+  in a module absorbs that library's one-time initialization (52 ms for ordito, 102 ms for trimesh,
   measured on `test_creation.py` alone).
 
   **A full-suite ratio matrix (605 comparisons) found 24 rows that are entirely this floor**, and
@@ -332,7 +332,7 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
   header. Cross-group ratios quoted in this repo's docstrings come from direct measurement scripts
   for exactly that reason.
 - **A `--device=cpu` crash in unrelated code used to mean "run one module per process".** It was
-  never the Warp CPU backend, which is what that advice claimed: the two causes were triwarp's own
+  never the Warp CPU backend, which is what that advice claimed: the two causes were ordito's own
   out-of-bounds scatter in `successor_cycles` and a `wp.launch` missing `device=`, which ran a CUDA
   kernel over host arrays and corrupted the heap when they were freed. Both are fixed and both now
   have a standing guard — `tests/conftest.py`'s `STRICT` launch mode and `api_conventions` check 15
@@ -344,7 +344,7 @@ set automatically. Pass your own `--benchmark-group-by=...` to override.
   reference reads a cached property, so every round measures real work. open3d references that
   mutate idempotently do the same; `BenchCase.mesh_o3d` is only shared where the reference either
   does not touch its input or recomputes unconditionally.
-- `edges_unique*` triwarp calls pass `n_vertices=` to avoid a host sync skewing GPU numbers.
+- `edges_unique*` ordito calls pass `n_vertices=` to avoid a host sync skewing GPU numbers.
 - Every benchmark carries an explicit `benchlibs` marker, so adding a library kind to `LIBRARIES`
   never silently generates cases for modules that have no branch for it.
 - **pymeshlab rows build their `MeshSet` inside the timed callable** unless the filter is verified
@@ -389,7 +389,7 @@ vertex-ring walk assumes manifoldness — a hard crash, not an exception) but ru
 0.48 s; `igl.heat_geodesics_precompute` raises `Precomputation failed.` on every scan mesh but
 succeeds on all sixteen feature meshes; `igl.harmonic` / `igl.lscm` cannot factor the scan meshes'
 cotangent systems but handle every mesh on the `patch` axis. So those three comparisons are now
-drawn on the same meshes triwarp is measured on rather than on two tiny saddle patches.
+drawn on the same meshes ordito is measured on rather than on two tiny saddle patches.
 
 `potpourri3d` needs the same treatment for a different reason, and the boundary is not
 manifoldness but *which* geometry-central mesh class a call builds. Measured:
@@ -437,7 +437,7 @@ VCGlib) and is the **broadest** — it reaches 26 modules, more than any other s
 modules (see its section below). **A group carries `pyvista` or `vedo`, never both** — they wrap the
 same VTK, so two rows would double-count one implementation; where a group would take both, `vedo`
 gets `noparity(..., oracle="pyvista")`. `meshlib` is the only **multi-threaded** CPU reference, so a
-`triwarp-cuda` vs `meshlib` ratio is a fair fight where the other CPU ratios are not; `pymeshfix` is
+`ordito-cuda` vs `meshlib` ratio is a fair fight where the other CPU ratios are not; `pymeshfix` is
 the narrowest and deepest — nine bound algorithms, all repair — and every one of its rows prices its
 loader, which is why rows exist only where the operation is ≥ ~30 % of the round. `pytorch3d` is the
 only reference with **CUDA kernels of its own**, and it is registered for those alone — one
@@ -451,7 +451,7 @@ public and tested, only untimed.
 
 | function | reference that exists | why there is no group yet |
 |---|---|---|
-| `visibility.volumetric_obscurance` | `compute_scalar_by_volumetric_obscurance` | it shares `ambient_occlusion`'s kernel and differs only in a per-hit `exp(-tau * t)` factor, so a triwarp-only group would re-measure that group's axis. MeshLab's filter *is* a real second reference, so the row is worth adding — with `tau` as its axis, not `rays`. |
+| `visibility.volumetric_obscurance` | `compute_scalar_by_volumetric_obscurance` | it shares `ambient_occlusion`'s kernel and differs only in a per-hit `exp(-tau * t)` factor, so a ordito-only group would re-measure that group's axis. MeshLab's filter *is* a real second reference, so the row is worth adding — with `tau` as its axis, not `rays`. |
 | `measures.volume` | `get_geometric_measures["mesh_volume"]`, `trimesh.Trimesh.volume`, `igl.moments[0]` | untimed since before it moved out of `triangles.py`. Its device pass is now `triangles.face_signed_volumes` plus one `reduce.sum`, and the `moments` row already prices the same integrals at three readbacks against this one's — so the row would isolate the readback count, which is the axis this module is about. Worth adding. |
 | `measures.euler_characteristic` | `get_geometric_measures["genus"]`, `trimesh.Trimesh.euler_number` | untimed since before it moved out of `validation.py`. It is a `unique_1d` plus an `edges_unique`, so it prices the grouping machinery rather than anything of its own, which is the argument against — but it is also the only whole-mesh integer with no row at all. |
 | `triangles.face_signed_volumes` | none | deliberately none: it is the per-face primitive `measures.volume` reduces, and a group over it would measure the same launch twice. Time it through a `volume` row instead. |
@@ -495,16 +495,16 @@ less", "the output shape differs" and "the ordering differs" are transforms, not
 
 ### pymeshlab
 
-MeshLab exposes 281 filters. 61 of them map onto something triwarp already has, and they are what
+MeshLab exposes 281 filters. 61 of them map onto something ordito already has, and they are what
 these rows are drawn from. Eight of the groups they land in **had no reference of any kind** before:
 
 | module | group | filter | what it settled |
 |---|---|---|---|
-| `test_linalg` | `min_quad_with_fixed` | `compute_scalar_by_scalar_harmonic_field_per_vertex` | its direct solve is **flat** (39.0 / 39.6 ms) across the `quality` axis where triwarp's CG goes 33.7 → 83.5, so the whole spread is iteration count |
+| `test_linalg` | `min_quad_with_fixed` | `compute_scalar_by_scalar_harmonic_field_per_vertex` | its direct solve is **flat** (39.0 / 39.6 ms) across the `quality` axis where ordito's CG goes 33.7 → 83.5, so the whole spread is iteration count |
 | `test_selection` | `expand_vertex_mask` / `shrink_vertex_mask` | `apply_selection_dilatation` / `..._erosion` | slopes of 7.3× and 8.0× over 1 → 8 hops, confirming a hop is constant work |
-| `test_proximity` | `signed_distance_on_mesh` | `compute_scalar_by_distance_from_another_mesh_per_vertex` | its per-query cost **grows** with the face count (20 / 63 / 768 µs) where triwarp's BVH does not |
-| `test_smoothing` | `filter_taubin`, `filter_humphrey` (new groups) | `apply_coord_taubin_smoothing`, `apply_coord_hc_laplacian_smoothing` | two triwarp filters that were unbenchmarked |
-| `test_remesh` | `isotropic_remesh` | `meshing_isotropic_explicit_remeshing` | 3.3× across `quality` against triwarp's **flat** 123 ms — the fixed-pass loop is not adapting |
+| `test_proximity` | `signed_distance_on_mesh` | `compute_scalar_by_distance_from_another_mesh_per_vertex` | its per-query cost **grows** with the face count (20 / 63 / 768 µs) where ordito's BVH does not |
+| `test_smoothing` | `filter_taubin`, `filter_humphrey` (new groups) | `apply_coord_taubin_smoothing`, `apply_coord_hc_laplacian_smoothing` | two ordito filters that were unbenchmarked |
+| `test_remesh` | `isotropic_remesh` | `meshing_isotropic_explicit_remeshing` | 3.3× across `quality` against ordito's **flat** 123 ms — the fixed-pass loop is not adapting |
 | `test_reduce` | `median` | `get_scalar_statistics_per_vertex` | six statistics in one call, 2.5 / 11 / 110× |
 | `test_vertices` | `average_onto_vertices` | `compute_scalar_transfer_face_to_vertex` | also *faster* on `fan_hub` — valence is not a hot spot, independently |
 | `test_repair` | `remove_non_manifold_faces` | `meshing_repair_non_manifold_edges` | nothing else in the set removes non-manifold faces at all |
@@ -514,7 +514,7 @@ The rest are second or third independent implementations:
 | module | pymeshlab reference |
 |---|---|
 | `test_boundary` | `compute_selection_from_mesh_border` (`boundary_edges` only — no loop ordering) |
-| `test_combine` | `generate_splitting_by_connected_components` — one call for label *and* compaction, and a **39× spread** across the `components` axis against triwarp's 3.7× |
+| `test_combine` | `generate_splitting_by_connected_components` — one call for label *and* compaction, and a **39× spread** across the `components` axis against ordito's 3.7× |
 | `test_convex` | `generate_convex_hull` (qhull a third time, so it prices the wrapper rather than the algorithm) |
 | `test_creation` | `create_cube`, `create_sphere` (an *icosphere*, so it pairs with `icosphere` where open3d's pairs with `uv_sphere`), `create_torus`, `create_annulus`, `create_cone` |
 | `test_curvature` | `compute_curvature_principal_directions_per_vertex(method='Quadric Fitting')` and `compute_scalar_by_discrete_curvature_per_vertex` — the only reference that survives the whole `scale` axis, where trimesh is capped at `sphere_small` |
@@ -522,7 +522,7 @@ The rest are second or third independent implementations:
 | `test_edges` | `get_geometric_measures()['avg_edge_length']` |
 | `test_heat_distance` | `compute_scalar_by_heat_geodesic_distance_from_selection_per_vertex` — the fourth heat-method implementation, and the only one whose amortized path is just "call it twice"; plus `..._geodesic_distance_from_given_point_...` as a non-PDE alternative |
 | `test_graph` | `compute_selection_by_small_disconnected_components_per_face(nbfaceratio=0.0)` |
-| `test_holes` | `meshing_close_holes` (ear clipping, so **1.7×** across `loops_dp` against triwarp's 37× — the price of *not* running a `B³` DP) |
+| `test_holes` | `meshing_close_holes` (ear clipping, so **1.7×** across `loops_dp` against ordito's 37× — the price of *not* running a `B³` DP) |
 | `test_parametrization` | `compute_texcoord_parametrization_harmonic` / `..._least_squares_conformal_maps` — both wrap **libigl's own code**, so they price MeshLab's wrapper rather than a third algorithm |
 | `test_points` | `compute_normal_for_point_clouds(k=)`, `compute_matrix_by_fitting_to_plane` |
 | `test_reconstruction` | `generate_surface_reconstruction_ball_pivoting` (VCGlib's original BPA). `..._screened_poisson` was timed here too and is **removed** — see the wall-clock note above |
@@ -537,7 +537,7 @@ The rest are second or third independent implementations:
 
 #### Ported gaps: rows where pymeshlab is the *source*, not the reference
 
-The 24 filters MeshLab exposed that triwarp did not have were ported. Their benchmark rows read
+The 24 filters MeshLab exposed that ordito did not have were ported. Their benchmark rows read
 the other way round — the pymeshlab filter is the thing being caught up with, and in every case
 the port is the newer code:
 
@@ -554,7 +554,7 @@ the port is the newer code:
 | `flip_by_objective` | `test_remesh` | `meshing_edge_flip_by_planar_optimization` | 2.0 ms against 28.6 ms on `saddle_graded` |
 | `face_defective_mask`, `flip_t_vertices` | `test_validation`, `test_repair` | `compute_selection_bad_faces`, `meshing_remove_t_vertices` | 8.9 ms against 24.2 ms on `saddle_graded` |
 | `crease_edges`, `cut_along_edges` | `test_seams` | `compute_selection_crease_per_edge`, `meshing_cut_along_crease_edges` | 1.3 ms against 51.6 ms on `sphere_med`, and **24 output vertices against 32** on a cut cube |
-| `uv_seam_edges` | `test_seams` | `compute_selection_by_texture_seams_per_vertex` | **0.94 ms against 300 ms** on `sphere_large`; the filter returns only the seam *vertex set*, unioned with the boundary, so it does strictly less than the triwarp row (which also splits boundaries out and finds foldovers) |
+| `uv_seam_edges` | `test_seams` | `compute_selection_by_texture_seams_per_vertex` | **0.94 ms against 300 ms** on `sphere_large`; the filter returns only the seam *vertex set*, unioned with the boundary, so it does strictly less than the ordito row (which also splits boundaries out and finds foldovers) |
 | `filter_normals`, `filter_two_step`, `filter_sharpen` | `test_smoothing` | `apply_normal_smoothing_per_face`, `apply_coord_two_steps_smoothing`, `apply_coord_unsharp_mask` | 8.3 ms against 124 ms; 0.34 ms against 51.8 ms |
 | `resample_uniform` | `test_reconstruction` | `generate_resampled_uniform_mesh` | 13.5 ms against 292 ms on `bunny` at a 1% cell |
 | `quadric_decimate` | `test_remesh` | `meshing_decimation_quadric_edge_collapse` | **the one port that is slower**: ~253 ms on `saddle_graded` at `target_ratio=0.1` against igl's 80 — see below |
@@ -600,12 +600,12 @@ Two of those rows are worth reading as findings rather than ratios:
   `generate_sampling_poisson_disk(radius=0%)` autoguesses a radius instead of using yours. And
   `generate_surface_reconstruction_ball_pivoting(clustering=0)` reconstructs **nothing** — 0 faces
   against 1 277 at MeshLab's 20% default, returning *faster* for it (9.6 ms against 2.7 ms), so the
-  row read as a triwarp win while timing a failure. The clustering fraction is a seed-triangle
+  row read as a ordito win while timing a failure. The clustering fraction is a seed-triangle
   spacing floor, not the optional merge-nearby-vertices post-pass it looks like. Each row overrides
   these and asserts the reference produced output. **Probe a parameter's zero before assuming it means
   "off".**
 - **Pass counts are conventions, and mismatching them silently doubles a row's work.** MeshLab's
-  `apply_coord_taubin_smoothing(stepsmoothnum=n)` runs `n` lambda-mu **pairs** where triwarp and
+  `apply_coord_taubin_smoothing(stepsmoothnum=n)` runs `n` lambda-mu **pairs** where ordito and
   trimesh do one half-step per `iterations` and alternate, so the row passes `_ITERATIONS // 2`;
   passing `_ITERATIONS` to both timed MeshLab doing twice the passes. The mapping is pinned exactly
   (5e-08) in `tests/test_smoothing.py::test_filter_taubin_matches_pymeshlab`.
@@ -633,7 +633,7 @@ Two of those rows are worth reading as findings rather than ratios:
 - **`harm_function` is a no-op in pymeshlab 2025.7.** `compute_texcoord_parametrization_harmonic`
   returns **bit-identical** texture coordinates at `harm_function=1`, `2` and `3` (max deviation
   exactly 0.0) and identical timings, where libigl's own `k=2` costs 4.3× its `k=1`. So the harmonic
-  order axis does not map and the pymeshlab row appears at `k=1` only — a row tracking triwarp's
+  order axis does not map and the pymeshlab row appears at `k=1` only — a row tracking ordito's
   `k=2` would be silently reporting the `k=1` solve.
 - **Selection morphology is face-based.** `apply_selection_dilatation` / `..._erosion` dilate the
   *face* set (VCGlib's loose vertex-from-face / face-from-vertex pair); handing them a vertex
@@ -650,7 +650,7 @@ Two of those rows are worth reading as findings rather than ratios:
   `PercentageValue` runs from *full erosion* at 0% to full dilation at 100%, so its own 50% default is
   the **zero** offset and `PercentageValue(0)` erodes a unit sphere to radius 0.30 — pass
   `PureValue(0.0)` for an absolute zero. And `apply_normal_smoothing_per_face` exposes no parameters at
-  all, so its row is a single pass against triwarp's twenty.
+  all, so its row is a single pass against ordito's twenty.
 - **Two filters disagree with the port in ways that are not tolerances.**
   `apply_scalar_smoothing_per_vertex` smooths a *boundary* vertex along the boundary curve alone
   (dividing by 2 rather than by its degree), so the oracle in `tests/test_smoothing.py` runs on closed
@@ -660,7 +660,7 @@ Two of those rows are worth reading as findings rather than ratios:
   RMS bound.
 - **`bunny_decimated` is not edge-manifold** (150 edges with three or more faces), which is why
   `test_seams`' cut *and* `uv_seam_edges` groups run on the synthetic icospheres: both are defined
-  through halfedge twins, and triwarp and MeshLab's `meshing_cut_along_crease_edges` alike reject
+  through halfedge twins, and ordito and MeshLab's `meshing_cut_along_crease_edges` alike reject
   such a mesh outright rather than degrading.
 - **The registry meshes carry no UVs at all**, so `uv_seam_edges` synthesizes a per-corner spherical
   atlas (seamed at the `±π` longitude wrap) and feeds the *same* array to both sides through
@@ -669,7 +669,7 @@ Two of those rows are worth reading as findings rather than ratios:
 - **Several filters print to stdout regardless of `verbose=False`** (ICP's `Found N pairs`, the point-
   cloud normal estimator's `UG 34 34 34`, the VCG reconstructor's whole volume report). pytest's
   fd-level capture absorbs it; a bare script will not.
-- **Three groups are capped** because the reference, not triwarp, is the cost:
+- **Three groups are capped** because the reference, not ordito, is the cost:
   `signed_distance_on_mesh` at `bunny` (768 µs/query on dragon = 85 s a row),
   `get_geometric_measures` at `bunny` (1.12 s a call on dragon, in *two* modules), and the
   `apply_coord_*` smoothers at `bunny` alongside the trimesh rows.
@@ -687,7 +687,7 @@ callable, for the same reason potpourri3d's solvers do.
 
 Only **150** of the ~493 top-level C++ headers are bound, so confirm a name exists in the installed
 wheel before planning a row around it. Two that do not, and will be looked for because
-`triwarp.repair` carries functions named after them: **`collapse_small_triangles` and
+`ordito.repair` carries functions named after them: **`collapse_small_triangles` and
 `resolve_duplicated_faces` are not bound** (`AttributeError`), so neither group can have an igl row.
 
 #### Coverage: 74 pairs over 25 modules
@@ -711,7 +711,7 @@ of which are named transforms in the parity test.
 
 Where the margins sit, on medians:
 
-| group | igl | triwarp-cuda | ratio |
+| group | igl | ordito-cuda | ratio |
 |---|---|---|---|
 | `face_angles` | 12.5 ms | 0.044 ms | **282x** |
 | `ears` | 161–399 ms | 0.72–0.84 ms | **200–500x** |
@@ -735,20 +735,20 @@ Where the margins sit, on medians:
 
 † Operator-family rows are the `scale` axis (`sphere_small` → `sphere_med` → `sphere_large`); the
 ranges span it, and the ratio grows with size on every one of them because igl's side is Eigen
-sparse products where triwarp's is a fixed number of launches.
+sparse products where ordito's is a fixed number of launches.
 
 **One igl row now loses one axis point**: `crouzeix_raviart_massmatrix` at `sphere_small` reads igl
-0.150 ms against triwarp 0.206 ms (1.37x). triwarp's side is flat at 0.18–0.21 ms across the axis's
+0.150 ms against ordito 0.206 ms (1.37x). ordito's side is flat at 0.18–0.21 ms across the axis's
 16x size range — a pure host launch/alloc floor (one scatter kernel plus `bsr_diag`), not kernel
-time — and the same row is a 72x win at `sphere_large`. Every other igl row triwarp wins, and one of
+time — and the same row is a 72x win at `sphere_large`. Every other igl row ordito wins, and one of
 them used to be the exception: `blue_noise`
 was a **0.80x loss** (igl 78.4 ms against 98.5) while `sample_surface_blue_noise` ran Bridson
 active-list dart throwing, the algorithm `igl.blue_noise` implements. After the rewrite to
 randomized-priority selection the same pair reads 4.1x at that radius, and the margin *grows as the
 radius falls* — 5.4x at the 2k-sample radius, 9.0x at half of it, 24x on `bunny_decimated` — because
-igl's serial cost is per accepted sample where triwarp's is per round. igl also returns 2–7% *fewer*
+igl's serial cost is per accepted sample where ordito's is per round. igl also returns 2–7% *fewer*
 samples at the same radius and has the tightest coverage of the three references (1.073 r against
-triwarp's 1.103), so neither side is trading quality for speed. That row is the clearest argument in
+ordito's 1.103), so neither side is trading quality for speed. That row is the clearest argument in
 the suite for keeping a reference that a port was originally written from.
 
 Two rows read the other way round and are worth knowing before quoting them: `face_adjacency_unshared`
@@ -767,7 +767,7 @@ both in one pass — so the `unshared` row is an upper bound rather than like-fo
   `icosphere(2)` padded with five unreferenced trailing vertices (167 V, 162 referenced):
   `igl.adjacency_matrix`, `igl.vertex_components` and `igl.is_vertex_manifold` return **162** rows
   where `igl.cotmatrix` and `igl.gaussian_curvature` return **167**. The two families disagree with
-  each other and only the `(V, F)` family matches triwarp. This is not academic: **`bunny` has 1 113
+  each other and only the `(V, F)` family matches ordito. This is not academic: **`bunny` has 1 113
   unreferenced vertices** (`igl.remove_unreferenced` returns 34 834 of 35 947), so
   `igl.connected_components(igl.adjacency_matrix(F))` reports **1 114 components** on it — 1 113
   isolated vertices plus the mesh. Every F-only parity assert is therefore class B with the transform
@@ -812,16 +812,16 @@ The first two fail *silently* rather than raising:
   (`tests.conversions.trimesh_to_open3d_t` exists so the binding is structural).
 - **`fill_holes` winds its cap against the rest of the mesh.** A raw signed volume of its output is
   therefore meaningless: −1.06 on a hemisphere whose true sealed volume is 2.02. Run
-  `trimesh.repair.fix_winding` (or triwarp's `make_winding_consistent`) before any volume or
+  `trimesh.repair.fix_winding` (or ordito's `make_winding_consistent`) before any volume or
   orientation read. Its cap triangulation is otherwise a valid `B − 2` fill over the existing
-  vertices, matching triwarp's and MeshLab's counts exactly.
+  vertices, matching ordito's and MeshLab's counts exactly.
 - **k-NN distances come back squared**, from both the legacy `KDTreeFlann` and the batched
   `o3d.core.nns` searches — take the square root before any `allclose`. And use `o3d.core.nns`
   for anything batched: the legacy tree's only query is per-point Python (62 ms against 10 ms at
   20 000 queries on a 36k cloud), while `nns.knn_search` matches `scipy.spatial.KDTree` indices
   byte-for-byte on a tie-free cloud.
 - **`KDTreeFlann.search_radius_vector_3d` is exclusive at exactly `r`** (a point at distance
-  exactly 1.0 is not returned at radius 1.0) where triwarp's ball queries are inclusive. Random
+  exactly 1.0 is not returned at radius 1.0) where ordito's ball queries are inclusive. Random
   clouds never tie, so only constructed fixtures can see the difference — construct accordingly.
 - **`get_volume` validates before it integrates**, and the validation is the full brute-force
   `IsWatertight` composition: 13.8 s on a watertight 82k-face sphere whose divergence integral is
@@ -831,7 +831,7 @@ The first two fail *silently* rather than raising:
 
 VTK through pyvista 0.48 / VTK 9.6, and the registration cost nothing: `pyvista>=0.48` was already in
 the `test` dependency group. `PolyData`'s callable surface is **142 distinct filter names** across its
-three mixins; 28 of them map onto something triwarp already has, and those 28 carry **47 group rows**
+three mixins; 28 of them map onto something ordito already has, and those 28 carry **47 group rows**
 across 26 modules (one filter often answers several groups — `cell_quality` alone covers
 `face_quality` and `face_angles`, and `find_closest_cell` answers both `closest_point_on_mesh` and
 `polyline_point_distance`). Every one is single-threaded CPU VTK, so `pyvista` is `cpu_bound` and the
@@ -880,11 +880,11 @@ Two mechanics that differ from the other references:
 | `test_intersection` / `test_interpolation` / `test_creation` | `clip_mesh_with_field`, `interpolate_from_points`, `parametric_surface`, `super_ellipsoid`, `super_toroid`, `random_hills` (exempt) | `clip_scalar`, `DataSet.interpolate`, the 21 `Parametric*` surfaces |
 
 **Where pyvista is the strongest reference in the set**, which is what the registration was for:
-`compute_implicit_distance` is an exact SDF sharing triwarp's sign convention (correlation
+`compute_implicit_distance` is an exact SDF sharing ordito's sign convention (correlation
 1.0000000, max abs difference 1.29e-07, sign agreement 1.000 — vedo's `signed_distance` is a
 point-cloud estimator at 0.956 / 0.375 by comparison); `select_interior_points` agrees with
 `ray.contains_points` on 1.000 of 2 000 queries; and `decimate` is the **best** of the four
-decimation references on sphere deviation, ahead of triwarp by 1.14–1.53× (`tests/test_remesh.py`
+decimation references on sphere deviation, ahead of ordito by 1.14–1.53× (`tests/test_remesh.py`
 carries the numbers). Three more from the 2026-08-21 pass: `find_closest_cell` agrees with
 `igl.point_mesh_squared_distance` to **4.4e-16** on both distance and point, making it the most
 accurate closest-point reference registered; `find_containing_cell` is the **only** working
@@ -920,7 +920,7 @@ against them: `multi_ray_trace` is **trimesh + embree**, not VTK (it imports tri
 `intersects_location`), so a `pyvista` row on the `intersects_*` groups would be a trimesh row under
 another name — VTK's own `ray_trace` is independent and exact (face agreement 1.0000, hit point
 2.80e-07) but costs 398.6 µs *per ray*, so it stays a test oracle; `validate_mesh().intersecting_faces`
-is an **intra-cell** check and reads 0 on two interpenetrating spheres where triwarp flags 92 faces
+is an **intra-cell** check and reads 0 on two interpenetrating spheres where ordito flags 92 faces
 (`inverted_faces` likewise reads 0 on ten reversed faces, and the degeneracy field that fires is
 `zero_size`); `collision` is a two-mesh filter and reports 2 600 hits for a 320-cell mesh against its
 own copy, so it cannot see a self-intersection; and `sample()` validates only 476 of 2 562 probes
@@ -939,7 +939,7 @@ and all of `pyvista.plotting`.
 
 | module | potpourri3d reference |
 |---|---|
-| `test_heat_distance` | `MeshHeatMethodDistanceSolver` (`use_robust=False`, the same discretization as triwarp's), and `MeshFastMarchingDistanceSolver` as a different algorithm for the same task |
+| `test_heat_distance` | `MeshHeatMethodDistanceSolver` (`use_robust=False`, the same discretization as ordito's), and `MeshFastMarchingDistanceSolver` as a different algorithm for the same task |
 | `test_intersection` | `marching_triangles` — the only reference for isocontours of an arbitrary vertex field |
 | `test_geodesic_walk` | `GeodesicTracer.trace_geodesic_from_vertex` — one ray per call, so its row is linear in the ray count by construction |
 | `test_heat_signed` | `MeshSignedHeatSolver.compute_distance` — requires every curve segment inside one face, which is why the source curves are edge paths |
@@ -956,19 +956,19 @@ reference anywhere.
 Two things shape every potpourri3d row:
 
 - **Its solvers cache their factorizations**, so the solver is constructed **inside** the timed
-  callable — that is where geometry-central does the work triwarp's per-call assembly does. Timing
-  only `compute_*` would compare a back-substitution against a full iterative solve. Where triwarp
+  callable — that is where geometry-central does the work ordito's per-call assembly does. Timing
+  only `compute_*` would compare a back-substitution against a full iterative solve. Where ordito
   has its own reusable precompute the amortized case is measured explicitly instead of argued about:
-  `heat_geodesic` carries a `setup=full`/`setup=amortized` parameter layer, and on triwarp's side the
+  `heat_geodesic` carries a `setup=full`/`setup=amortized` parameter layer, and on ordito's side the
   amortized row is a real API path (`heat_operators` passed back through `heat_geodesic`).
-- **Its defaults do more work than triwarp's.** `MeshHeatMethodDistanceSolver(use_robust=True)` and
+- **Its defaults do more work than ordito's.** `MeshHeatMethodDistanceSolver(use_robust=True)` and
   `MeshVectorHeatSolver(use_intrinsic_delaunay=True)` mollify and flip to an intrinsic Delaunay
   triangulation first. Every row here passes `False` so both sides discretize the same triangulation;
-  the robust path becomes a parameter layer when triwarp grows one.
+  the robust path becomes a parameter layer when ordito grows one.
 
 Measured against it on an RTX 5090: `marching_triangles` is **25x** faster at `sphere_med` and 59x at
 `sphere_large`; `heat_geodesic` is 2.8x faster at `saddle` but **1.2x slower** at `saddle_graded`,
-where triwarp's CG pays for the conditioning and geometry-central's direct solve does not; the
+where ordito's CG pays for the conditioning and geometry-central's direct solve does not; the
 amortized solve is **19x slower** than potpourri3d's back-substitution at `sphere_small`, which is
 the clearest statement in the suite of what an iterative solver costs per extra source set.
 
@@ -981,7 +981,7 @@ fewer conjugate-gradient iterations. Pinning the level set costs 4.7x an unconst
 The tangent-space and geodesic-walk groups repeat both halves of that story. `trace_rays` is **flat
 at 1.15 ms from 1 to 4 096 rays** against potpourri3d's 63 → 77 ms (55x → 67x), because one thread
 traces one ray and the reference's API traces one ray per call. `log_map` is 6.8x faster at `saddle`
-and only 2.6x at `saddle_graded` — triwarp's vector solve pays **2.7x** for the aspect ratio there,
+and only 2.6x at `saddle_graded` — ordito's vector solve pays **2.7x** for the aspect ratio there,
 the reference's factorization nothing. `heat_signed_distance_conditioning` shows the same at **3.1x**
 (40.3 → 125.8 ms against a flat 525 → 519), which is the worst of the three because that method runs
 three solves. `robust_laplacian` runs 9.5-22x faster than
@@ -1003,7 +1003,7 @@ millisecond.
 | `test_combine` | `cluster_connected_triangles` + `select_by_index` (`split` only) |
 | `test_holes` | `open3d.t.geometry.TriangleMesh.fill_holes` |
 | `test_repair` | `remove_duplicated_triangles`, `remove_duplicated_vertices`, `remove_unreferenced_vertices` |
-| `test_validation` | `is_watertight`, `is_edge_manifold` (same `allow_boundary_edges` switch), `is_vertex_manifold` (connectivity-based: agrees with triwarp exactly on edge-manifold input, passes vertices on a non-manifold edge that the fan definition fails) |
+| `test_validation` | `is_watertight`, `is_edge_manifold` (same `allow_boundary_edges` switch), `is_vertex_manifold` (connectivity-based: agrees with ordito exactly on edge-manifold input, passes vertices on a non-manifold edge that the fan definition fails) |
 | `test_vertices` | `compute_vertex_normals` |
 | `test_bounds` | `get_axis_aligned_bounding_box` (`aabb`), `get_minimal_oriented_bounding_box` (hull-based, trimesh's algorithm family — not the PCA `get_oriented_bounding_box`, which minimizes nothing), `AxisAlignedBoundingBox.get_point_indices_within_bounding_box` (`points_in_aabb`), `PointCloud.crop` (`crop_points`) and `TriangleMesh.crop` (`crop_mesh`) — the three query rows, all of them crossovers rather than ratios, and the only reference of the ten that answers the query half at all |
 | `test_points` | `PointCloud.estimate_normals` (`KDTreeSearchParamKNN`), `remove_statistical_outlier`, `remove_radius_outlier` (**nondeterministic** — a shared `KDTreeFlann` across an OpenMP loop; three keep sets over eight reps, so the correctness comparison queries that tree serially instead), `remove_duplicated_points`, `farthest_point_down_sample` (its `SelectByIndex` sorts, so only the selected *set* is comparable) |
@@ -1011,7 +1011,7 @@ millisecond.
 | `test_convex` | `compute_convex_hull` (exact qhull vs the approximate support sweep) |
 | `test_voxels` | `VoxelGrid.create_from_triangle_mesh_within_bounds`, `create_from_point_cloud`, `PointCloud.voxel_down_sample`, `check_if_included` — the same four answers, from a `std::unordered_map<Eigen::Vector3i>` on one core |
 | `test_neighbors` | `o3d.core.nns.NearestNeighborSearch.knn_search` / `fixed_radius_search` — the batched tensor queries, **not** the legacy `KDTreeFlann` per-query Python loop (62 ms against 10 ms at 20k queries); plus `PointCloud.compute_nearest_neighbor_distance`, which is serial C++ rather than a Python loop |
-| `test_proximity` | `o3d.t.geometry.RaycastingScene.compute_signed_distance` (Embree; parity-ray sign, same convention as triwarp's `"parity"` mode to 1.8e-7) |
+| `test_proximity` | `o3d.t.geometry.RaycastingScene.compute_signed_distance` (Embree; parity-ray sign, same convention as ordito's `"parity"` mode to 1.8e-7) |
 | `test_triangles` | `compute_triangle_normals` (unit normals, unlike MeshLab's raw cross product) |
 
 Modules with **no** open3d equivalent, and why, are documented in each module's docstring:
@@ -1075,13 +1075,13 @@ Where the reference is not algorithmically identical, the module docstring says 
 | module | pytorch3d reference |
 |---|---|
 | `test_neighbors` | `ops.knn_points` (`k1` / `k7`, both backends), `ops.ball_query` (both backends) |
-| `test_metrics` | `loss.chamfer_distance` (the convention `triwarp.metrics` documents), `loss.point_mesh_face_distance` |
+| `test_metrics` | `loss.chamfer_distance` (the convention `ordito.metrics` documents), `loss.point_mesh_face_distance` |
 | `test_registration` | `ops.corresponding_points_alignment`, `ops.iterative_closest_point` |
 | `test_laplacian` | `ops.laplacian`, `ops.norm_laplacian`, `ops.cot_laplacian` (which carries `mass_matrix`'s row from the same call) |
-| `test_energies` | `loss.mesh_edge_loss`, `loss.mesh_normal_consistency`, `loss.mesh_laplacian_smoothing` — the three regularizers `triwarp.energies` grew for it |
+| `test_energies` | `loss.mesh_edge_loss`, `loss.mesh_normal_consistency`, `loss.mesh_laplacian_smoothing` — the three regularizers `ordito.energies` grew for it |
 | `test_points` | `ops.sample_farthest_points`, `ops.estimate_pointcloud_normals` |
 | `test_voxels` | `ops.add_points_features_to_volume_densities_features`, and `torch.nn.functional.grid_sample` for the gather half |
-| `test_triangles` | `ops.mesh_face_areas_normals` — the only reference in that group that answers *both* halves in one call, like triwarp |
+| `test_triangles` | `ops.mesh_face_areas_normals` — the only reference in that group that answers *both* halves in one call, like ordito |
 | `test_vertices` | `Meshes.verts_normals_packed` |
 | `test_edges` | `Meshes.edges_packed`, `Meshes.faces_packed_to_edges_packed` |
 | `test_remesh` | `ops.SubdivideMeshes` |
@@ -1110,7 +1110,7 @@ branches on `kind == "pytorch3d"`.
 not a bar. Measured on this box, min of 12 interleaved reps on a uniform cloud, each side building
 whatever index it builds inside the timed call:
 
-| (p3d / triwarp-cuda) | 20 000 points | 200 000 points |
+| (p3d / ordito-cuda) | 20 000 points | 200 000 points |
 |---|---|---|
 | `knn_points(K=8)` | 2.31 / 3.29 ms **0.70x** | 74.65 / 0.87 ms **85.5x** |
 | `chamfer_distance` | 3.39 / 5.36 ms **0.63x** | 108.12 / 1.19 ms **90.5x** |
@@ -1122,11 +1122,11 @@ beats a BVH descent while the whole problem still fits the device's bandwidth. S
 the point count as an *axis*; a one-size row reports whichever side of the crossover it happened to
 land on.
 
-**Half of that swing is triwarp's, and the row must not be read as a statement about brute force.**
+**Half of that swing is ordito's, and the row must not be read as a statement about brute force.**
 pytorch3d is a clean quadratic over the sweep — 0.63, 2.26, 5.59, 20.18, 73.82 ms at 5 k / 20 k /
 50 k / 100 k / 200 k — while `query_nearest` is **non-monotonic**: 0.837, 3.262, 7.567, **0.472**,
 0.801 ms, a **16x drop** between 50 k and 100 k on the same box and the same extent. So the honest
-reading of the 20 000-point row is "triwarp is 7x off its own 100 000-point cost here", not
+reading of the 20 000-point row is "ordito is 7x off its own 100 000-point cost here", not
 "pytorch3d is faster".
 
 Two things about that claim were wrong for a long time and are corrected here, both by re-running
@@ -1202,6 +1202,6 @@ Each of the four carries a `benchmarked=False` parity claim with its measured re
   `cull_internal=False` so trimesh's `multibox` and VTK's glyph filter are like-for-like unwelded
   rows. The comparable pair was measured anyway and is not interesting: 2.238 ms against
   `to_boxes(cull_internal=True)`'s 1.850 on 63 568 voxels.
-- **`load_mesh`**: `triwarp.io` has no benchmark group at all and deliberately so — it is a meshio
+- **`load_mesh`**: `ordito.io` has no benchmark group at all and deliberately so — it is a meshio
   round trip, so a row would time meshio's PLY parser against pytorch3d's, neither of which is
-  triwarp code.
+  ordito code.

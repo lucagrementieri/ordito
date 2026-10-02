@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.selection`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.selection`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from meshlib import mrmeshpy as mm
 from scipy.sparse import csgraph
 from scipy.spatial import KDTree
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import lexsort_rows, undirected_edges
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -65,11 +65,11 @@ def test_region_boundary_edges(device: str):
     Class A against the function this one ports, plus the hand-written rule it is meant to encode.
 
     ``findRegionBoundaryUndirectedEdgesInsideMesh`` is the operation
-    [`region_boundary_edges`][triwarp.selection.region_boundary_edges] is named after, and the
+    [`region_boundary_edges`][ordito.selection.region_boundary_edges] is named after, and the
     "InsideMesh" half of that name is the whole content: it returns the edges separating the region
     from the rest of the *interior*, excluding the mesh's own boundary. Handed an all-``True``
     region it therefore returns **zero** edges, which is why it is not an oracle for
-    [`boundary_edges`][triwarp.boundary.boundary_edges] however much the name suggests otherwise.
+    [`boundary_edges`][ordito.boundary.boundary_edges] however much the name suggests otherwise.
 
     The named transform is only the decoding: MeshLib answers with an ``UndirectedEdgeBitSet``, so
     each set bit becomes an ``EdgeId`` and then an ``(org, dest)`` pair. The set-based oracle below
@@ -83,7 +83,7 @@ def test_region_boundary_edges(device: str):
     region[:6] = True  # a contiguous block of faces
     region_wp = wp.array(region, dtype=wp.bool, device=device)
 
-    edges_wp_np = tw.selection.region_boundary_edges(faces_wp, region_wp).numpy()
+    edges_wp_np = od.selection.region_boundary_edges(faces_wp, region_wp).numpy()
     edges_wp_set = {tuple(sorted(int(x) for x in e)) for e in edges_wp_np}
 
     # Oracle: undirected edges with exactly two incident faces, exactly one in the region.
@@ -127,7 +127,7 @@ def test_region_boundary_edges_matches_pyvista(device: str) -> None:
     is the seam **plus** whatever part of the mesh rim the region contains, where
     ``region_boundary_edges`` keeps only the interior half ("InsideMesh", as the MeshLib pairing
     above spells out). So the named transform is subtracting
-    [`boundary_edges`][triwarp.boundary.boundary_edges], and at that it is exact. On this 6x6 grid:
+    [`boundary_edges`][ordito.boundary.boundary_edges], and at that it is exact. On this 6x6 grid:
     an interior region gives **12 = 12** edges with nothing on the rim, and the corner region gives
     4 against pyvista's 8, where the 4 extra are exactly the rim edges it contains. The same pair on
     a curved patch cut out of ``icosphere(3)`` reads 48 = 48 and 26 against 54 (28 on the rim), and
@@ -153,7 +153,7 @@ def test_region_boundary_edges_matches_pyvista(device: str) -> None:
     )
     rim = {
         tuple(sorted(int(x) for x in edge))
-        for edge in tw.boundary.boundary_edges(vertices_wp, faces_wp).numpy()
+        for edge in od.boundary.boundary_edges(vertices_wp, faces_wp).numpy()
     }
     assert len(rim) == 20  # the 6x6 grid's own boundary, which pyvista's route picks up
 
@@ -171,7 +171,7 @@ def test_region_boundary_edges_matches_pyvista(device: str) -> None:
         region_wp = wp.array(region_np, dtype=wp.bool, device=device)
         edges_wp = {
             tuple(sorted(int(x) for x in edge))
-            for edge in tw.selection.region_boundary_edges(faces_wp, region_wp).numpy()
+            for edge in od.selection.region_boundary_edges(faces_wp, region_wp).numpy()
         }
 
         surface_pv = mesh_pv.extract_cells(np.flatnonzero(region_np)).extract_surface(
@@ -201,7 +201,7 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Not a library comparison: this pins two triwarp entry points to each other as an inverse pair.
+    Not a library comparison: this pins two ordito entry points to each other as an inverse pair.
 
     ``region_boundary_edges(oriented=True)`` and ``faces_left_of_contour`` are dual, so the round
     trip must be the identity on the mask -- **exactly**, not approximately, since both sides
@@ -219,20 +219,20 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     device = faces_wp.device
     n_faces = faces_wp.size // 3
 
-    centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
+    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
     region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
 
-    oriented_wp = tw.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    oriented_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
     assert np.array_equal(
-        tw.selection.faces_left_of_contour(faces_wp, oriented_wp).numpy(), region_np
+        od.selection.faces_left_of_contour(faces_wp, oriented_wp).numpy(), region_np
     )
     # The oriented rows are the same undirected set as the default ones, only directed.
-    unoriented_wp = tw.selection.region_boundary_edges(faces_wp, region_wp)
+    unoriented_wp = od.selection.region_boundary_edges(faces_wp, region_wp)
     assert np.array_equal(
         np.sort(oriented_wp.numpy(), axis=1), np.sort(unoriented_wp.numpy(), axis=1)
     )
-    assert int(tw.selection.faces_left_of_contour(faces_wp, unoriented_wp).numpy().sum()) == n_faces
+    assert int(od.selection.faces_left_of_contour(faces_wp, unoriented_wp).numpy().sum()) == n_faces
 
 
 def test_region_boundary_edges_rejects_mismatched_face_mask(device: str) -> None:
@@ -242,7 +242,7 @@ def test_region_boundary_edges_rejects_mismatched_face_mask(device: str) -> None
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     short_mask = wp.zeros(n_faces - 1, dtype=wp.bool, device=device)
     with pytest.raises(ValueError, match="one entry per face"):
-        tw.selection.region_boundary_edges(faces_wp, short_mask)
+        od.selection.region_boundary_edges(faces_wp, short_mask)
 
 
 def _meshlib_contour(
@@ -266,12 +266,12 @@ def test_faces_left_of_contour_matches_meshlib(
     ``fillContourLeft`` takes a vector of directed ``EdgeId`` and returns the ``FaceBitSet`` on the
     left of that walk. The convention agreement is the part worth pinning: a winding disagreement
     would show up as the exact complement, which is why the reversed contour is checked in the same
-    test -- MeshLib's answer for the reversed rows is triwarp's complement, not its own answer, so
+    test -- MeshLib's answer for the reversed rows is ordito's complement, not its own answer, so
     the two libraries agree about which side "left" is rather than merely partitioning the mesh the
     same way.
 
     Also asserted: the two sides are disjoint and cover the mesh. A contour built by
-    [`region_boundary_edges`][triwarp.selection.region_boundary_edges] with ``oriented=True``
+    [`region_boundary_edges`][ordito.selection.region_boundary_edges] with ``oriented=True``
     separates by construction, so anything else would be a fill leaking across the cut.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -279,11 +279,11 @@ def test_faces_left_of_contour_matches_meshlib(
     device = faces_wp.device
     n_faces = faces_wp.size // 3
 
-    centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
+    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
     region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
     assert 0 < int(region_np.sum()) < n_faces  # non-vacuity: both sides have faces
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
-    contour_wp = tw.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    contour_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
     assert int(contour_wp.shape[0]) > 0  # and the seam between them is not empty
 
     topology_ml = trimesh_to_meshlib(mesh_tm).topology
@@ -291,16 +291,16 @@ def test_faces_left_of_contour_matches_meshlib(
     left_ml = meshlib_bitset_to_numpy(
         mm.fillContourLeft(topology_ml, _meshlib_contour(topology_ml, contour_np)), n_faces
     )
-    left_wp = tw.selection.faces_left_of_contour(faces_wp, contour_wp)
+    left_wp = od.selection.faces_left_of_contour(faces_wp, contour_wp)
     assert np.array_equal(left_wp.numpy(), left_ml)
 
-    reversed_wp = twt.as_array2d(
+    reversed_wp = odt.as_array2d(
         wp.array(np.ascontiguousarray(contour_np[:, ::-1]), dtype=wp.int32, device=device), wp.int32
     )
     right_ml = meshlib_bitset_to_numpy(
         mm.fillContourLeft(topology_ml, _meshlib_contour(topology_ml, contour_np[:, ::-1])), n_faces
     )
-    right_wp = tw.selection.faces_left_of_contour(faces_wp, reversed_wp)
+    right_wp = od.selection.faces_left_of_contour(faces_wp, reversed_wp)
     assert np.array_equal(right_wp.numpy(), right_ml)
     assert np.array_equal(right_ml, ~left_ml)
     assert not np.any(left_wp.numpy() & right_wp.numpy())
@@ -323,19 +323,19 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
     device = faces_wp.device
     n_faces = faces_wp.size // 3
 
-    empty_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    assert not np.any(tw.selection.faces_left_of_contour(faces_wp, empty_wp).numpy())
+    empty_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    assert not np.any(od.selection.faces_left_of_contour(faces_wp, empty_wp).numpy())
 
-    absent_wp = twt.as_array2d(
+    absent_wp = odt.as_array2d(
         wp.array(np.array([[0, 0], [1, 1]], dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
-    assert not np.any(tw.selection.faces_left_of_contour(faces_wp, absent_wp).numpy())
+    assert not np.any(od.selection.faces_left_of_contour(faces_wp, absent_wp).numpy())
 
-    loops_wp = tw.homology.homology_generators(mesh_wp.points, faces_wp)
+    loops_wp = od.homology.homology_generators(mesh_wp.points, faces_wp)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so a non-bounding cycle exists
     loop_np = loops_wp[0].numpy()
-    cycle_wp = twt.as_array2d(
+    cycle_wp = odt.as_array2d(
         wp.array(
             np.stack([loop_np, np.roll(loop_np, -1)], axis=1).astype(np.int32),
             dtype=wp.int32,
@@ -343,11 +343,11 @@ def test_faces_left_of_contour_edge_cases(torus: tuple[tm.Trimesh, wp.Mesh]) -> 
         ),
         wp.int32,
     )
-    assert int(tw.selection.faces_left_of_contour(faces_wp, cycle_wp).numpy().sum()) == n_faces
+    assert int(od.selection.faces_left_of_contour(faces_wp, cycle_wp).numpy().sum()) == n_faces
 
     with pytest.raises(ValueError, match=r"shape \(k, 2\)"):
-        tw.selection.faces_left_of_contour(
-            faces_wp, twt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32)
+        od.selection.faces_left_of_contour(
+            faces_wp, odt.as_array2d(wp.zeros((2, 3), dtype=wp.int32, device=device), wp.int32)
         )
 
 
@@ -355,24 +355,24 @@ def test_faces_left_of_contour_compressed_forest(
     icosphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Triwarp against triwarp: compressing the dual-graph forest changes no face.
+    Ordito against ordito: compressing the dual-graph forest changes no face.
 
     The fill compresses its pre-hooked forest only from ``connected_components.ECL_COMPRESS_FROM``
     faces, which no fixture reaches, so the threshold is lowered to force it; meshlib is the oracle
     above. The contour cuts the sphere in two, so the answer is neither empty nor the whole mesh.
     """
-    from triwarp.kernels.algorithms import connected_components as kernel_cc
+    from ordito.kernels.algorithms import connected_components as kernel_cc
 
     _, mesh_wp = icosphere
     faces_wp = mesh_wp.indices
-    centroids_np = tw.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
+    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
     region_wp = wp.array(
         centroids_np[:, 2] > centroids_np[:, 2].mean(), dtype=wp.bool, device=faces_wp.device
     )
-    contour_wp = tw.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
-    plain = tw.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
+    contour_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    plain = od.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
-    compressed = tw.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
+    compressed = od.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
     assert 0 < int(plain.sum()) < plain.size
     assert np.array_equal(compressed, plain)
 
@@ -384,7 +384,7 @@ def test_faces_left_of_contour_compressed_forest(
     reason="the reference is scipy.sparse.csgraph.connected_components plus a per-component all() "
     "on the host, which is a composition rather than a bound equivalent -- no library exposes this "
     "predicate -- so a row would time a host labelling against a device pass over an edge set that "
-    "triwarp builds inside the call. The classification is what is comparable.",
+    "ordito builds inside the call. The classification is what is comparable.",
 )
 @pytest.mark.parametrize("n_sub", [1, 2])
 def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int) -> None:
@@ -393,7 +393,7 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
 
     No library binds this predicate, so the reference is composed from one that does the hard half.
     ``csgraph.connected_components`` over the vertex adjacency labels the components independently
-    of triwarp's own connectivity pass, and the rule on top -- drop a component iff *every* one of
+    of ordito's own connectivity pass, and the rule on top -- drop a component iff *every* one of
     its
     vertices is selected -- is one line, which is what makes this an oracle rather than a
     reimplementation: the part that could plausibly be wrong is the labelling, and that comes from
@@ -423,7 +423,7 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
                 ),
             )
         )
-    vertices_wp, faces_wp = tw.combine.concatenate(parts)
+    vertices_wp, faces_wp = od.combine.concatenate(parts)
     n_vertices = vertices_wp.size
     offsets = np.cumsum([0, *(len(mesh_tm.vertices) for mesh_tm in meshes)])
 
@@ -432,7 +432,7 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
     mask_np[offsets[1] : offsets[1] + 4] = True  # component 1: partially selected
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
 
-    kept_wp = tw.selection.exclude_fully_selected_components(faces_wp, mask_wp, n_vertices).numpy()
+    kept_wp = od.selection.exclude_fully_selected_components(faces_wp, mask_wp, n_vertices).numpy()
 
     faces_2d_np = faces_wp.numpy().reshape(-1, 3)
     rows_np = np.concatenate([faces_2d_np[:, 0], faces_2d_np[:, 1], faces_2d_np[:, 2]])
@@ -462,7 +462,7 @@ def test_exclude_fully_selected_components(device: str):
     f_wp_ico = wp.array(ico.faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
     v_wp_hemi = points_to_warp(v_hemi, device)
     f_wp_hemi = wp.array(hemi.faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
-    verts, faces = tw.combine.concatenate([(v_wp_ico, f_wp_ico), (v_wp_hemi, f_wp_hemi)])
+    verts, faces = od.combine.concatenate([(v_wp_ico, f_wp_ico), (v_wp_hemi, f_wp_hemi)])
 
     n = verts.size
     n_ico = len(v_ico)
@@ -471,7 +471,7 @@ def test_exclude_fully_selected_components(device: str):
     mask[n_ico : n_ico + 3] = True  # partial hemisphere component
     mask_wp = wp.array(mask, dtype=wp.bool, device=device)
 
-    result = tw.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
+    result = od.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
     # The fully-selected icosahedron component is dropped; the partial hemisphere subset stays.
     assert not result[:n_ico].any()
     assert np.array_equal(result[n_ico : n_ico + 3], np.ones(3, dtype=bool))
@@ -481,17 +481,17 @@ def test_exclude_fully_selected_components_compressed_forest(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
-    Triwarp against triwarp: compressing the vertex forest changes no component.
+    Ordito against ordito: compressing the vertex forest changes no component.
 
     Both union-finds (from the faces, and from a supplied edge table) compress their pre-hooked
     forest only from ``connected_components.ECL_COMPRESS_FROM`` vertices, which no test mesh
     reaches, so the threshold is lowered to force it; scipy is the oracle above.
     """
-    from triwarp.kernels.algorithms import connected_components as kernel_cc
+    from ordito.kernels.algorithms import connected_components as kernel_cc
 
     ico = tm.creation.icosahedron()
     sphere = tm.creation.icosphere(subdivisions=1)
-    verts, faces = tw.combine.concatenate(
+    verts, faces = od.combine.concatenate(
         [
             (
                 points_to_warp(ico.vertices, device),
@@ -508,11 +508,11 @@ def test_exclude_fully_selected_components_compressed_forest(
     mask_np[: len(ico.vertices)] = True
     mask_np[len(ico.vertices) : len(ico.vertices) + 3] = True
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    edges, _inverse = tw.edges.edges_unique(faces)
+    edges, _inverse = od.edges.edges_unique(faces)
 
     def answers() -> tuple[np.ndarray, np.ndarray]:
-        from_faces = tw.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
-        from_edges = tw.selection.exclude_fully_selected_components(
+        from_faces = od.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
+        from_edges = od.selection.exclude_fully_selected_components(
             faces, mask_wp, n, unique_edges=edges
         ).numpy()
         return from_faces, from_edges
@@ -532,14 +532,14 @@ def test_exclude_fully_selected_components_rejects_mismatched_mask(device: str) 
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     short_mask = wp.zeros(n_vertices - 1, dtype=wp.bool, device=device)
     with pytest.raises(ValueError, match="one entry per vertex"):
-        tw.selection.exclude_fully_selected_components(faces_wp, short_mask, n_vertices)
+        od.selection.exclude_fully_selected_components(faces_wp, short_mask, n_vertices)
 
 
 def test_submesh_from_face_indices_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
     face_indices_wp = warp_empty(0, wp.int32, device)
-    submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
+    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         vertices_wp, faces_wp, face_indices_wp
     )
     assert submesh_vertices_wp.shape == (0,)
@@ -559,7 +559,7 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
 
     | | vertices returned | how the input's numbering is recovered |
     |---|---|---|
-    | triwarp | 89 | ``return_index=True`` returns the map |
+    | ordito | 89 | ``return_index=True`` returns the map |
     | pyvista ``extract_cells`` | 89 | ``vtkOriginalPointIds`` on the result's point data |
     | open3d ``select_faces_by_mask`` | 89 | **no map at all** -- matched by position |
 
@@ -588,16 +588,16 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
     mesh_tm, mesh_wp = request.getfixturevalue("icosphere_coarse")
     n_faces = mesh_tm.faces.shape[0]
     # A spatial half rather than every other face: an interleaved set still references every
-    # vertex, so triwarp's compaction would be a no-op and the transform would go untested.
+    # vertex, so ordito's compaction would be a no-op and the transform would go untested.
     upper_np = np.asarray(mesh_tm.vertices)[np.asarray(mesh_tm.faces)].mean(axis=1)[:, 2] > 0.0
     indices_np = np.flatnonzero(upper_np).astype(np.int32)
     assert 0 < indices_np.size < n_faces  # non-vacuity: a strict subset
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 
-    sub_vertices_wp, sub_faces_wp, vertex_map_wp = tw.selection.submesh_from_face_indices(
+    sub_vertices_wp, sub_faces_wp, vertex_map_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, indices_wp, return_index=True
     )
-    # triwarp's faces, lifted back into the input's vertex numbering.
+    # ordito's faces, lifted back into the input's vertex numbering.
     faces_wp = vertex_map_wp.numpy()[sub_faces_wp.numpy().reshape(-1, 3)]
     assert sub_vertices_wp.size < mesh_tm.vertices.shape[0]  # it really compacted
 
@@ -650,7 +650,7 @@ def test_submesh_from_face_indices_single_face(request: pytest.FixtureRequest) -
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
     face_indices = wp.array([0], dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [[0]], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
+    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.shape == (3,)
@@ -671,7 +671,7 @@ def test_submesh_from_face_indices_duplicated(request: pytest.FixtureRequest) ->
     face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
+    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.size <= len(np.unique(face_indices_np)) * 3
@@ -697,7 +697,7 @@ def test_submesh_from_face_indices_random_faces(
     face_indices_np = rng.choice(n_faces, size=n_select, replace=False).astype(np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
+    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
@@ -719,7 +719,7 @@ def test_submesh_from_face_indices_all_faces(
     face_indices_np = np.arange(n_faces, dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = tw.selection.submesh_from_face_indices(
+    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.size <= mesh_tm.vertices.shape[0]
@@ -732,7 +732,7 @@ def test_submesh_from_face_indices_all_faces(
 def test_submeshes_from_face_groups_matches_single(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
-    """Triwarp against triwarp: each group's slice equals the single-group call on that group."""
+    """Ordito against ordito: each group's slice equals the single-group call on that group."""
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     device = mesh_wp.points.device
     rng = np.random.default_rng(11)
@@ -744,7 +744,7 @@ def test_submeshes_from_face_groups_matches_single(
     groups_np = [np.sort(part) for part in np.split(order_np, cuts_np)]
     offsets_np = np.cumsum([0, *(len(group) for group in groups_np)]).astype(np.int32)
 
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(np.concatenate(groups_np).astype(np.int32), dtype=wp.int32, device=device),
@@ -763,7 +763,7 @@ def test_submeshes_from_face_groups_matches_single(
         face_bounds_np[1:],
         strict=True,
     ):
-        single_vertices_wp, single_faces_wp = tw.selection.submesh_from_face_indices(
+        single_vertices_wp, single_faces_wp = od.selection.submesh_from_face_indices(
             mesh_wp.points,
             mesh_wp.indices,
             wp.array(group.astype(np.int32), dtype=wp.int32, device=device),
@@ -791,7 +791,7 @@ def test_submeshes_from_face_groups_shared_vertex(device: str) -> None:
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
         vertices_wp,
         faces_wp,
         wp.array([0, 1], dtype=wp.int32, device=device),
@@ -814,7 +814,7 @@ def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
     vertices_wp = points_to_warp(vertices_np, device)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
 
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
         vertices_wp,
         faces_wp,
         wp.array([0], dtype=wp.int32, device=device),
@@ -829,7 +829,7 @@ def test_submeshes_from_face_groups_empty(device: str) -> None:
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
     empty_wp = warp_empty(0, wp.int32, device)
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = tw.selection.submeshes_from_face_groups(
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
         vertices_wp, faces_wp, empty_wp, wp.zeros(1, dtype=wp.int32, device=device)
     )
     assert vertices_all_wp.shape == (0,)
@@ -861,7 +861,7 @@ def test_submesh_return_index_carries_an_attribute(
     device = mesh_wp.points.device
     face_mask_wp = wp.array(face_mask_np, dtype=wp.bool, device=device)
 
-    sub_vertices_wp, sub_faces_wp, vertex_index_wp = tw.selection.submesh_from_face_mask(
+    sub_vertices_wp, sub_faces_wp, vertex_index_wp = od.selection.submesh_from_face_mask(
         mesh_wp.points, mesh_wp.indices, face_mask_wp, return_index=True
     )
     vertex_index_np = vertex_index_wp.numpy()
@@ -869,11 +869,11 @@ def test_submesh_return_index_carries_an_attribute(
     assert np.all(np.diff(vertex_index_np) > 0)  # ascending, so it is a sorted lookup
 
     # The round trip: an attribute gathered through the map is the submesh's own answer.
-    carried_wp = tw.array.gather(mesh_wp.points, vertex_index_wp)
+    carried_wp = od.array.gather(mesh_wp.points, vertex_index_wp)
     assert np.allclose(carried_wp.numpy(), sub_vertices_wp.numpy())
 
-    _index_vertices_wp, _index_faces_wp, index_map_wp = tw.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, tw.array.flatnonzero(face_mask_wp), return_index=True
+    _index_vertices_wp, _index_faces_wp, index_map_wp = od.selection.submesh_from_face_indices(
+        mesh_wp.points, mesh_wp.indices, od.array.flatnonzero(face_mask_wp), return_index=True
     )
     assert np.array_equal(index_map_wp.numpy(), vertex_index_np)
     assert sub_faces_wp.size > 0
@@ -897,10 +897,10 @@ def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) 
 
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     face_mask = wp.array(face_mask_np, dtype=wp.bool, device=mesh_wp.points.device)
-    got_vertices_wp, got_faces_wp = tw.selection.submesh_from_face_mask(
+    got_vertices_wp, got_faces_wp = od.selection.submesh_from_face_mask(
         mesh_wp.points, mesh_wp.indices, face_mask
     )
-    exp_vertices_wp, exp_faces_wp = tw.selection.submesh_from_face_indices(
+    exp_vertices_wp, exp_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device),
@@ -921,7 +921,7 @@ def test_submesh_from_face_mask_rejects_mismatched_length(device: str) -> None:
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     short_mask = wp.zeros(n_faces - 1, dtype=wp.bool, device=device)
     with pytest.raises(ValueError, match="one entry per face"):
-        tw.selection.submesh_from_face_mask(vertices_wp, faces_wp, short_mask)
+        od.selection.submesh_from_face_mask(vertices_wp, faces_wp, short_mask)
 
 
 @pytest.mark.parity("delete_region_keep_boundary", "meshlib")
@@ -934,7 +934,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     coincidence. Measured: both sides keep **1 148** of 1 280 faces and report **one** loop of
     **36** vertices.
 
-    MeshLib returns the rims as directed-edge lists and triwarp as vertex cycles, so the transform
+    MeshLib returns the rims as directed-edge lists and ordito as vertex cycles, so the transform
     is reading a length off each; the loop *count* and its length are the shared quantity, and the
     survivors are compared as a face count. ``delRegionKeepBd`` mutates its mesh, so it gets a fresh
     one, and ``keepLoneHoles=False`` is passed explicitly since it is the parameter that decides
@@ -946,7 +946,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     assert 0 < int(region_np.sum()) < n_faces  # the region is neither empty nor everything
 
     region_wp = wp.array(region_np, dtype=wp.bool, device=mesh_wp.points.device)
-    kept_vertices_wp, kept_faces_wp, new_loops = tw.selection.delete_region_keep_boundary(
+    kept_vertices_wp, kept_faces_wp, new_loops = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, region_wp
     )
 
@@ -959,7 +959,7 @@ def test_delete_region_keep_boundary_matches_meshlib(icosphere: tuple[tm.Trimesh
     assert len(new_loops) == len(loops_ml)
     assert sorted(loop.size for loop in new_loops) == sorted(len(loop_ml) for loop_ml in loops_ml)
     # The rim is a real cycle in the kept mesh, which the loop lengths alone would not say.
-    kept_boundary_np = tw.boundary.boundary_edges(kept_vertices_wp, kept_faces_wp).numpy()
+    kept_boundary_np = od.boundary.boundary_edges(kept_vertices_wp, kept_faces_wp).numpy()
     assert len(kept_boundary_np) == sum(loop.size for loop in new_loops)
 
 
@@ -974,9 +974,9 @@ def test_delete_region_keep_boundary_with_nothing_deleted_reports_no_rim(
     """
     mesh_tm, mesh_wp = hemisphere
     device = mesh_wp.points.device
-    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size > 0
+    assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size > 0
     nothing = wp.zeros(mesh_tm.faces.shape[0], dtype=wp.bool, device=device)
-    kept_vertices_wp, kept_faces_wp, loops = tw.selection.delete_region_keep_boundary(
+    kept_vertices_wp, kept_faces_wp, loops = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, nothing
     )
     assert loops == []
@@ -1005,7 +1005,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     mesh_tm, mesh_wp = hemisphere
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
-    rim_vertices_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
     assert rim_vertices_np.size > 0  # the fixture has a rim to be confused by
 
     faces_np = mesh_tm.faces
@@ -1014,7 +1014,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
 
     # A region away from the rim: one new loop, and the original rim is not reported.
     interior_np = _grown_region(mesh_tm, int(np.argmax(rim_distance_np)), 6, ~touches_rim_np)
-    _kept_vertices_wp, kept_faces_wp, interior_loops = tw.selection.delete_region_keep_boundary(
+    _kept_vertices_wp, kept_faces_wp, interior_loops = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, wp.array(interior_np, dtype=wp.bool, device=device)
     )
     assert kept_faces_wp.size // 3 == n_faces - int(interior_np.sum())
@@ -1026,7 +1026,7 @@ def test_delete_region_keep_boundary_reports_only_new_rims(
     # A region on the rim: the loop it grows is reported, not skipped.
     on_rim_np = np.flatnonzero(np.isin(faces_np, rim_vertices_np).sum(axis=1) >= 2)
     edge_np = _grown_region(mesh_tm, int(on_rim_np[0]), 4, np.ones(n_faces, dtype=bool))
-    _edge_vertices_wp, _edge_faces_wp, edge_loops = tw.selection.delete_region_keep_boundary(
+    _edge_vertices_wp, _edge_faces_wp, edge_loops = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, wp.array(edge_np, dtype=wp.bool, device=device)
     )
     assert len(edge_loops) == 1
@@ -1049,7 +1049,7 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
     mesh_tm, mesh_wp = hemisphere
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
-    rim_vertices_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
     faces_np = mesh_tm.faces
     interior_faces_np = np.flatnonzero(~np.isin(faces_np, rim_vertices_np).any(axis=1))
     # Two faces meeting at exactly one vertex and no edge: their rims meet at that vertex.
@@ -1064,7 +1064,7 @@ def test_delete_region_keep_boundary_reports_a_pinched_rim(
     pinched_np = np.zeros(n_faces, dtype=bool)
     pinched_np[[first, second]] = True
 
-    _kept_vertices_wp, _kept_faces_wp, loops = tw.selection.delete_region_keep_boundary(
+    _kept_vertices_wp, _kept_faces_wp, loops = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, wp.array(pinched_np, dtype=wp.bool, device=device)
     )
     reported_np = np.concatenate(
@@ -1085,7 +1085,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     hemisphere: tuple[tm.Trimesh, wp.Mesh], region: str
 ) -> None:
     """
-    Triwarp against triwarp: the list form is the packed form, loop by loop.
+    Ordito against ordito: the list form is the packed form, loop by loop.
 
     ``delete_region_keep_boundary`` carries the MeshLib comparison above; this pins
     ``delete_region_keep_boundary_with_offsets`` to it over every shape of answer: no rim, one,
@@ -1094,7 +1094,7 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
     mesh_tm, mesh_wp = hemisphere
     n_faces = mesh_tm.faces.shape[0]
     device = mesh_wp.points.device
-    rim_vertices_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    rim_vertices_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
     touches_rim_np = np.asarray(np.isin(mesh_tm.faces, rim_vertices_np).any(axis=1))
     interior_faces_np = np.flatnonzero(~touches_rim_np)
     mask_np = np.zeros(n_faces, dtype=bool)
@@ -1118,10 +1118,10 @@ def test_delete_region_keep_boundary_is_its_packed_form_split(
         mask_np[[first, second]] = True
     mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
 
-    vertices_wp, faces_wp, loops_wp = tw.selection.delete_region_keep_boundary(
+    vertices_wp, faces_wp, loops_wp = od.selection.delete_region_keep_boundary(
         mesh_wp.points, mesh_wp.indices, mask_wp
     )
-    packed = tw.selection.delete_region_keep_boundary_with_offsets(
+    packed = od.selection.delete_region_keep_boundary_with_offsets(
         mesh_wp.points, mesh_wp.indices, mask_wp
     )
     packed_vertices_wp, packed_faces_wp, flat_wp, offsets_wp = packed
@@ -1221,7 +1221,7 @@ def test_submesh_from_vertex_indices(
     # half_torus is dense enough that "all" selects 8 faces here; keep it that way.
     assert face_indices_np.size > 0
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    got_vertices_wp, got_faces_wp = tw.selection.submesh_from_vertex_indices(
+    got_vertices_wp, got_faces_wp = od.selection.submesh_from_vertex_indices(
         mesh_wp.points, mesh_wp.indices, vertex_indices, face_mode=face_mode
     )
     assert np.allclose(got_vertices_wp.numpy(), submesh_tm.vertices)
@@ -1244,10 +1244,10 @@ def test_submesh_from_vertex_mask(
     vertex_mask_np[selected] = True
     vertex_mask = wp.array(vertex_mask_np, dtype=wp.bool, device=mesh_wp.points.device)
 
-    got_vertices_wp, got_faces_wp = tw.selection.submesh_from_vertex_mask(
+    got_vertices_wp, got_faces_wp = od.selection.submesh_from_vertex_mask(
         mesh_wp.points, mesh_wp.indices, vertex_mask, face_mode=face_mode
     )
-    exp_vertices_wp, exp_faces_wp = tw.selection.submesh_from_vertex_indices(
+    exp_vertices_wp, exp_faces_wp = od.selection.submesh_from_vertex_indices(
         mesh_wp.points,
         mesh_wp.indices,
         wp.array(selected, dtype=wp.int32, device=mesh_wp.points.device),
@@ -1267,7 +1267,7 @@ def test_expand_vertex_mask(device: str):
     seed[len(vertices_np) // 2] = True
     seed_wp = wp.array(seed, dtype=wp.bool, device=device)
     for hops in (1, 2, 3):
-        edges_wp_np = tw.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy()
+        edges_wp_np = od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy()
         expected = _graph_distance(faces_np, n, seed) <= hops
         assert np.array_equal(edges_wp_np, expected)
 
@@ -1310,7 +1310,7 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
     for hops in (1, 2, 3, 4):
         meshset_pml.apply_selection_dilatation()
         assert np.array_equal(
-            tw.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy(),
+            od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy(),
             meshset_pml.current_mesh().vertex_selection_array(),
         )
 
@@ -1323,9 +1323,9 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
     Class A on both, and the reference that makes ``shrink_vertex_mask`` comparable at all.
 
     MeshLab's Erode Selection is a *face* operation and is a documented class-D exemption for the
-    erosion half (measured 51 / 39 / 25 surviving vertices where triwarp gives 19 / 7 / 1), which
+    erosion half (measured 51 / 39 / 25 surviving vertices where ordito gives 19 / 7 / 1), which
     left ``shrink_vertex_mask`` with a numpy oracle and no library to check it against. MeshLib's
-    ``shrink`` takes a ``VertBitSet`` and erodes it by one-ring layers, which is triwarp's operation
+    ``shrink`` takes a ``VertBitSet`` and erodes it by one-ring layers, which is ordito's operation
     exactly: element-for-element agreement at every hop count here, in both directions.
 
     Two things about the call, both of which fail silently if got wrong. ``expand`` and ``shrink``
@@ -1354,9 +1354,9 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
     for mask_np, grow in ((seed_np, True), (region_np, False)):
         mask_wp = wp.array(np.ascontiguousarray(mask_np), dtype=wp.bool, device=device)
         morphed_wp = (
-            tw.selection.expand_vertex_mask(faces_wp, mask_wp, hops)
+            od.selection.expand_vertex_mask(faces_wp, mask_wp, hops)
             if grow
-            else tw.selection.shrink_vertex_mask(faces_wp, mask_wp, hops)
+            else od.selection.shrink_vertex_mask(faces_wp, mask_wp, hops)
         )
 
         mesh_ml = numpy_to_meshlib(mesh_tm.vertices, mesh_tm.faces)
@@ -1377,8 +1377,8 @@ def test_shrink_vertex_mask(device: str):
     seed = np.zeros(n, dtype=bool)
     seed[len(vertices_np) // 2] = True
     seed_wp = wp.array(seed, dtype=wp.bool, device=device)
-    dilated = tw.selection.expand_vertex_mask(faces_wp, seed_wp, 2)
-    shrunk = tw.selection.shrink_vertex_mask(faces_wp, dilated, 1).numpy()
+    dilated = od.selection.expand_vertex_mask(faces_wp, seed_wp, 2)
+    shrunk = od.selection.shrink_vertex_mask(faces_wp, dilated, 1).numpy()
     # shrink = complement of expand of complement: vertex kept iff all 1-ring neighbours dilated.
     dilated_np = dilated.numpy()
     dist = _graph_distance(faces_np, n, ~dilated_np)
@@ -1411,7 +1411,7 @@ def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     seed_wp = wp.array(seed, dtype=wp.bool, device=device)
 
-    expanded_np = tw.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy()
+    expanded_np = od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy()
     expected_expand = _graph_distance(faces_np, n, seed) <= hops
     assert expected_expand[loose_on]
     assert not expected_expand[loose_off]
@@ -1420,7 +1420,7 @@ def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
 
     grown = ~seed
     grown[[loose_on, loose_off]] = [True, False]
-    shrunk_np = tw.selection.shrink_vertex_mask(
+    shrunk_np = od.selection.shrink_vertex_mask(
         faces_wp, wp.array(grown, dtype=wp.bool, device=device), hops
     ).numpy()
     expected_shrink = _graph_distance(faces_np, n, ~grown) > hops
@@ -1437,7 +1437,7 @@ def test_face_indices_from_vertex_indices(
     vertex_indices_np = _vertex_selection(mesh_tm, seed=11, fraction=4)
     vertex_indices = wp.array(vertex_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
 
-    face_indices_wp = tw.selection.face_indices_from_vertex_indices(
+    face_indices_wp = od.selection.face_indices_from_vertex_indices(
         mesh_wp.indices, vertex_indices, face_mode=face_mode
     )
     face_indices_ref_np = _face_indices_from_vertex_indices_np(
@@ -1451,5 +1451,5 @@ def test_face_indices_from_vertex_indices(
 def test_face_indices_from_vertex_indices_empty(device: str) -> None:
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
     vertex_indices_wp = warp_empty(0, wp.int32, device)
-    face_indices_wp = tw.selection.face_indices_from_vertex_indices(faces_wp, vertex_indices_wp)
+    face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, vertex_indices_wp)
     assert face_indices_wp.shape == (0,)

@@ -1,34 +1,34 @@
 # Point cloud to watertight surface
 
-Two different reconstruction algorithms answer two different questions, and triwarp ships both
-GPU-native: [`reconstruction.screened_poisson`][triwarp.reconstruction.screened_poisson] fits an
+Two different reconstruction algorithms answer two different questions, and ordito ships both
+GPU-native: [`reconstruction.screened_poisson`][ordito.reconstruction.screened_poisson] fits an
 **implicit** surface (smooth, always watertight, doesn't interpolate the input points exactly) and
-[`reconstruction.ball_pivoting`][triwarp.reconstruction.ball_pivoting] builds an **interpolating**
+[`reconstruction.ball_pivoting`][ordito.reconstruction.ball_pivoting] builds an **interpolating**
 one (its output vertices are literally a subset of the input points, but it can leave small holes
 where the ball can't find three points to rest on). Both need oriented normals.
 
 ```python
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 
-vertices, faces = tw.creation.icosphere(subdivisions=3)
-mesh = tw.Trimesh(vertices, faces)
+vertices, faces = od.creation.icosphere(subdivisions=3)
+mesh = od.Trimesh(vertices, faces)
 
 # Simulate a scanner: sample the surface into a point cloud and keep each sample's true normal
 # (a real scan would estimate normals instead -- see the note below).
-points, face_index = tw.sample.sample_surface(vertices, faces, 20_000, seed=0)
+points, face_index = od.sample.sample_surface(vertices, faces, 20_000, seed=0)
 normals = wp.array(
     mesh.face_normals.numpy()[face_index.numpy()], dtype=wp.vec3, device=vertices.device
 )
 
-poisson_vertices, poisson_faces = tw.reconstruction.screened_poisson(points, normals, depth=7)
+poisson_vertices, poisson_faces = od.reconstruction.screened_poisson(points, normals, depth=7)
 print("screened Poisson faces:", poisson_faces.shape[0] // 3)  # 127460
 print(
-    "screened Poisson watertight:", tw.validation.is_watertight(poisson_vertices, poisson_faces)
+    "screened Poisson watertight:", od.validation.is_watertight(poisson_vertices, poisson_faces)
 )  # True
 
-bpa_vertices, bpa_faces = tw.reconstruction.ball_pivoting(points, normals)
+bpa_vertices, bpa_faces = od.reconstruction.ball_pivoting(points, normals)
 print(
     "ball pivoting faces:", bpa_faces.shape[0] // 3, "verts:", bpa_vertices.shape[0]
 )  # 34804, 19864
@@ -37,12 +37,12 @@ print(
 ## Estimating normals for a real scan
 
 A real point cloud rarely comes with normals attached. Build a per-point neighbourhood with
-[`neighbors.query_nearest`][triwarp.neighbors.query_nearest] and estimate normals by local PCA with
-[`points.estimate_normals`][triwarp.points.estimate_normals]:
+[`neighbors.query_nearest`][ordito.neighbors.query_nearest] and estimate normals by local PCA with
+[`points.estimate_normals`][ordito.points.estimate_normals]:
 
 ```python
-neighbor_idx, _ = tw.neighbors.query_nearest(points, points, k=16)
-estimated_normals = tw.points.estimate_normals(points, neighbor_idx)
+neighbor_idx, _ = od.neighbors.query_nearest(points, points, k=16)
+estimated_normals = od.points.estimate_normals(points, neighbor_idx)
 ```
 
 `estimate_normals` orients each normal consistently with its neighbours, but not globally — for a

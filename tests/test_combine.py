@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.combine``."""
+"""Regression tests for ``ordito.combine``."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import cKDTree
 
-import triwarp as tw
+import ordito as od
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -43,7 +43,7 @@ def test_concatenate_meshes(request: pytest.FixtureRequest) -> None:
 
     concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(concat_tm, tm.Trimesh)
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
             (mesh_b_wp.points, mesh_b_wp.indices),
@@ -76,7 +76,7 @@ def test_concatenate_matches_meshlib(request: pytest.FixtureRequest) -> None:
     mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
     mesh_b_tm, mesh_b_wp = request.getfixturevalue("half_torus")
 
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [(mesh_a_wp.points, mesh_a_wp.indices), (mesh_b_wp.points, mesh_b_wp.indices)]
     )
 
@@ -98,7 +98,7 @@ def test_concatenate_matches_pytorch3d(request: pytest.FixtureRequest, device: s
     Class A: ``join_meshes_as_scene`` is ``concatenate`` -- positions exact, faces byte-equal.
 
     "As a scene" is the operation that matters: it concatenates the vertex buffers and shifts each
-    mesh's face indices by the running vertex count, which is triwarp's packing verbatim. The
+    mesh's face indices by the running vertex count, which is ordito's packing verbatim. The
     faces comparison is positional and passes, so the two agree on the *order* of the meshes and
     not merely on the resulting soup -- the sibling ``join_meshes_as_batch`` would keep them as a
     minibatch instead and is not this operation.
@@ -108,7 +108,7 @@ def test_concatenate_matches_pytorch3d(request: pytest.FixtureRequest, device: s
         [trimesh_to_pytorch3d(mesh_tm) for mesh_tm in meshes_tm]
     )
     meshes_wp = [numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device) for mesh_tm in meshes_tm]
-    vertices_wp, faces_wp = tw.combine.concatenate(meshes_wp)
+    vertices_wp, faces_wp = od.combine.concatenate(meshes_wp)
 
     verts_p3d = joined_p3d.verts_packed()
     faces_p3d = joined_p3d.faces_packed()
@@ -128,7 +128,7 @@ def test_concatenate_single_mesh(request: pytest.FixtureRequest) -> None:
     input's and not a rebuild.
     """
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [(mesh_wp.points, mesh_wp.indices)]
     )
     assert np.allclose(concat_vertices_wp.numpy(), mesh_tm.vertices)
@@ -136,7 +136,7 @@ def test_concatenate_single_mesh(request: pytest.FixtureRequest) -> None:
 
 
 def test_concatenate_empty() -> None:
-    vertices_wp, faces_wp = tw.combine.concatenate([])
+    vertices_wp, faces_wp = od.combine.concatenate([])
     assert vertices_wp.shape == (0,)
     assert faces_wp.shape == (0,)
 
@@ -144,7 +144,7 @@ def test_concatenate_empty() -> None:
 @pytest.mark.parity("split", "trimesh")
 def test_split_meshes(request: pytest.FixtureRequest) -> None:
     """
-    Triwarp against triwarp: ``split`` inverts ``concatenate`` on three known components.
+    Ordito against ordito: ``split`` inverts ``concatenate`` on three known components.
 
     The component *count* is the reference-checkable part and is pinned separately by
     [`test_split_matches_open3d_and_pymeshlab`]; what only a round trip can check is that each
@@ -160,12 +160,12 @@ def test_split_meshes(request: pytest.FixtureRequest) -> None:
         (mesh_b_wp.points, mesh_b_wp.indices),
         (mesh_c_wp.points, mesh_c_wp.indices),
     ]
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(meshes_wp)
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(meshes_wp)
 
-    split_wp = tw.combine.split(concat_vertices_wp, concat_faces_wp)
+    split_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
     assert len(split_wp) == 3
 
-    roundtrip_vertices_wp, roundtrip_faces_wp = tw.combine.concatenate(split_wp)
+    roundtrip_vertices_wp, roundtrip_faces_wp = od.combine.concatenate(split_wp)
     assert np.allclose(roundtrip_vertices_wp.numpy(), concat_vertices_wp.numpy())
     assert np.array_equal(roundtrip_faces_wp.numpy(), concat_faces_wp.numpy())
 
@@ -181,10 +181,10 @@ def test_split_matches_meshlib(request: pytest.FixtureRequest) -> None:
     """
     Class B on the partition: ``getAllComponents`` returns the components as face bitsets.
 
-    MeshLib splits in two steps where triwarp's ``split`` is one call -- ``getAllComponents`` labels
+    MeshLib splits in two steps where ordito's ``split`` is one call -- ``getAllComponents`` labels
     them and ``cloneRegion`` extracts each into its own object -- so the shared quantity is the
     *partition*, and the extraction is compared through the face counts it would produce rather
-    than by building three ``ObjectMesh`` wrappers. ``FaceIncidence.PerEdge`` is triwarp's rule and
+    than by building three ``ObjectMesh`` wrappers. ``FaceIncidence.PerEdge`` is ordito's rule and
     is passed explicitly, as it is for ``face_connected_component_labels``.
 
     Measured on three disjoint fixtures: both return three components with face counts
@@ -197,14 +197,14 @@ def test_split_matches_meshlib(request: pytest.FixtureRequest) -> None:
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(combined_tm, tm.Trimesh)
 
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
             (mesh_b_wp.points, mesh_b_wp.indices),
             (mesh_c_wp.points, mesh_c_wp.indices),
         ]
     )
-    parts_wp = tw.combine.split(concat_vertices_wp, concat_faces_wp)
+    parts_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
 
     components_ml = mm.getAllComponents(
         mm.MeshPart(trimesh_to_meshlib(combined_tm)), mm.MeshComponents.FaceIncidence.PerEdge
@@ -239,7 +239,7 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
     """
     mesh_tm, mesh_wp = torus_components
     n_faces = mesh_tm.faces.shape[0]
-    parts_wp = tw.combine.split(mesh_wp.points, mesh_wp.indices)
+    parts_wp = od.combine.split(mesh_wp.points, mesh_wp.indices)
 
     components_ml = mm.getAllComponents(
         mm.MeshPart(trimesh_to_meshlib(mesh_tm)), mm.MeshComponents.FaceIncidence.PerEdge
@@ -278,7 +278,7 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
     mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
     combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(combined_tm, tm.Trimesh)
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
             (mesh_b_wp.points, mesh_b_wp.indices),
@@ -312,7 +312,7 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
 
     parts_wp = [
         (vertices_wp.numpy().astype(np.float64), faces_wp.numpy().reshape(-1, 3))
-        for vertices_wp, faces_wp in tw.combine.split(concat_vertices_wp, concat_faces_wp)
+        for vertices_wp, faces_wp in od.combine.split(concat_vertices_wp, concat_faces_wp)
     ]
     assert len(parts_wp) == len(parts_o3d) == len(parts_pml) == 3
 
@@ -336,18 +336,18 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
 
 
 def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> None:
-    """Triwarp against triwarp: ``split`` is ``split_with_offsets`` split, slice for slice."""
+    """Ordito against ordito: ``split`` is ``split_with_offsets`` split, slice for slice."""
     meshes_wp = [
         request.getfixturevalue(name) for name in ("icosahedron", "hemisphere", "half_torus")
     ]
-    concat_vertices_wp, concat_faces_wp = tw.combine.concatenate(
+    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
         [(mesh_wp.points, mesh_wp.indices) for _mesh_tm, mesh_wp in meshes_wp]
     )
 
     vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
-        tw.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)
+        od.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)
     )
-    split_wp = tw.combine.split(concat_vertices_wp, concat_faces_wp)
+    split_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
     assert vertex_offsets_wp.size == len(split_wp) + 1 == 4
 
     vertex_bounds_np = vertex_offsets_wp.list()
@@ -362,7 +362,7 @@ def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> Non
 
     # ``copy=True`` returns the same data in independent buffers.
     for (view_vertices_wp, view_faces_wp), (copy_vertices_wp, copy_faces_wp) in zip(
-        split_wp, tw.combine.split(concat_vertices_wp, concat_faces_wp, copy=True), strict=True
+        split_wp, od.combine.split(concat_vertices_wp, concat_faces_wp, copy=True), strict=True
     ):
         assert np.array_equal(view_vertices_wp.numpy(), copy_vertices_wp.numpy())
         assert np.array_equal(view_faces_wp.numpy(), copy_faces_wp.numpy())
@@ -371,7 +371,7 @@ def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> Non
 
 def test_split_copies_many_components(device: str) -> None:
     """
-    Triwarp against triwarp: forty components copy out equal to their views, into owned buffers.
+    Ordito against ordito: forty components copy out equal to their views, into owned buffers.
 
     Forty is past the count at which ``array.split(copy=True)`` fills its copies in one launch, the
     path a handful of components never reaches. The views carry the oracle through
@@ -383,8 +383,8 @@ def test_split_copies_many_components(device: str) -> None:
     assert isinstance(mesh_tm, tm.Trimesh)
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
 
-    views_wp = tw.combine.split(vertices_wp, faces_wp)
-    copies_wp = tw.combine.split(vertices_wp, faces_wp, copy=True)
+    views_wp = od.combine.split(vertices_wp, faces_wp)
+    copies_wp = od.combine.split(vertices_wp, faces_wp, copy=True)
 
     assert len(views_wp) == len(copies_wp) == 40
     for (view_vertices_wp, view_faces_wp), (copy_vertices_wp, copy_faces_wp) in zip(
@@ -398,9 +398,9 @@ def test_split_copies_many_components(device: str) -> None:
 
 
 def test_split_single_component(request: pytest.FixtureRequest) -> None:
-    """Triwarp against triwarp: the ``k == 1`` fast path equals the batched key packing."""
+    """Ordito against ordito: the ``k == 1`` fast path equals the batched key packing."""
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
-    split_wp = tw.combine.split(mesh_wp.points, mesh_wp.indices)
+    split_wp = od.combine.split(mesh_wp.points, mesh_wp.indices)
     assert len(split_wp) == 1
     assert np.allclose(split_wp[0][0].numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
     assert np.array_equal(split_wp[0][1].numpy(), mesh_tm.faces.reshape(-1))
@@ -409,9 +409,9 @@ def test_split_single_component(request: pytest.FixtureRequest) -> None:
 def test_split_empty(device: str) -> None:
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.combine.split(vertices_wp, faces_wp) == []
+    assert od.combine.split(vertices_wp, faces_wp) == []
     vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
-        tw.combine.split_with_offsets(vertices_wp, faces_wp)
+        od.combine.split_with_offsets(vertices_wp, faces_wp)
     )
     assert vertices_all_wp.shape == (0,)
     assert np.array_equal(vertex_offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
@@ -421,7 +421,7 @@ def test_split_empty(device: str) -> None:
 
 def test_concatenate_rejects_mismatched_devices() -> None:
     """
-    Triwarp against triwarp: a cross-device ``(vertices, faces)`` pair must be rejected.
+    Ordito against ordito: a cross-device ``(vertices, faces)`` pair must be rejected.
 
     Not a library comparison: no reference library shares Warp's device model. This one is not
     covered by the family test in ``tests/test_array.py`` because the mismatch here is *inside* a
@@ -436,10 +436,10 @@ def test_concatenate_rejects_mismatched_devices() -> None:
     vertices_wp = wp.zeros(3, dtype=wp.vec3, device="cpu")
     faces_wp = wp.zeros(3, dtype=wp.int32, device="cuda:0")
     with pytest.raises(RuntimeError, match="one device"):
-        tw.combine.concatenate([(vertices_wp, faces_wp)])
+        od.combine.concatenate([(vertices_wp, faces_wp)])
     # A mismatch between two *pieces*, which the same descent has to catch.
     with pytest.raises(RuntimeError, match="one device"):
-        tw.combine.concatenate(
+        od.combine.concatenate(
             [
                 (vertices_wp, wp.zeros(3, dtype=wp.int32, device="cpu")),
                 (wp.zeros(3, dtype=wp.vec3, device="cuda:0"), faces_wp),

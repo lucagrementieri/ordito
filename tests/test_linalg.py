@@ -1,4 +1,4 @@
-# This file tests triwarp.linalg's private solver states and helpers directly.
+# This file tests ordito.linalg's private solver states and helpers directly.
 # pyright: reportPrivateUsage=false
 from __future__ import annotations
 
@@ -15,8 +15,8 @@ import trimesh as tm
 import warp as wp
 import warp.sparse as wps
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from tests.comparisons import assert_nonconstant
 from tests.conversions import bsr_to_dense, trimesh_to_pymeshlab
 
@@ -30,7 +30,7 @@ class _CgOptions(TypedDict):
 
 def _spd_system(
     device: str, n: int = 64, n_rhs: int = 3, seed: int = 11
-) -> tuple[twt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
+) -> tuple[odt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
     """
     Build an SPD operator with ``n_rhs`` right-hand sides, plus its NumPy form to solve.
 
@@ -54,15 +54,15 @@ def _spd_system(
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(dense_np.ravel()), dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(matrix_wp, wp.float64)
+    assert odt.has_blocks(matrix_wp, wp.float64)
     rhs_np = rng.standard_normal((n_rhs, n))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
-    return matrix_wp, twt.as_array2d(rhs_wp, wp.float64), dense_np, rhs_np
+    return matrix_wp, odt.as_array2d(rhs_wp, wp.float64), dense_np, rhs_np
 
 
 def _grid_laplacian_system(
     device: str, k: int = 24, n_rhs: int = 3, shift: float = 1e-3, seed: int = 5
-) -> tuple[twt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
+) -> tuple[odt.BsrMatrix[wp.float64], wp.array[wp.float64, Any], np.ndarray, np.ndarray]:
     """
     Build a ``k x k`` five-point Laplacian plus a small shift: sparse, SPD, and it coarsens.
 
@@ -93,13 +93,13 @@ def _grid_laplacian_system(
         wp.array(columns_np, dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(values_np), dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(matrix_wp, wp.float64)
+    assert odt.has_blocks(matrix_wp, wp.float64)
     dense_np = np.zeros((k * k, k * k))
     np.add.at(dense_np, (rows_np, columns_np), values_np)
     rng = np.random.default_rng(seed)
     rhs_np = rng.standard_normal((n_rhs, k * k))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
-    return matrix_wp, twt.as_array2d(rhs_wp, wp.float64), dense_np, rhs_np
+    return matrix_wp, odt.as_array2d(rhs_wp, wp.float64), dense_np, rhs_np
 
 
 @pytest.mark.parity("min_quad_with_fixed", "pymeshlab", "igl")
@@ -113,7 +113,7 @@ def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
     library that solves a similar system: it minimizes ``0.5 x' A x + x' B`` under ``x[known] = Y``,
     so at ``B = 0`` with no equality constraints it is this function's problem exactly. The named
     transform is one sign -- ``igl.cotmatrix`` is negative semi-definite, so ``A`` is ``-L`` --
-    plus its ``(n_vertices, 1)`` dense return against triwarp's free-block-only one, which the
+    plus its ``(n_vertices, 1)`` dense return against ordito's free-block-only one, which the
     ``free_map`` scatter already resolves for the MeshLab half.
 
     Two conventions worth knowing before using it: it returns a **plain array** here rather than the
@@ -137,11 +137,11 @@ def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
     values_np = np.zeros((1, n_vertices), dtype=np.float64)
     values_np[0, high] = 1.0
 
-    operator_wp = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64)
-    solution_wp, free_map_wp, n_free = tw.linalg.min_quad_with_fixed(
+    operator_wp = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64)
+    solution_wp, free_map_wp, n_free = od.linalg.min_quad_with_fixed(
         operator_wp,
         wp.array(fixed_np, dtype=wp.bool, device=device),
-        twt.as_array2d(
+        odt.as_array2d(
             wp.array(np.ascontiguousarray(values_np), dtype=wp.float64, device=device), wp.float64
         ),
     )
@@ -201,7 +201,7 @@ def test_free_partition_ranks_the_unpinned_degrees_of_freedom(device: str) -> No
     """Class A: the map is the rank of each free degree of freedom among the free ones."""
     _matrix_wp, fixed_wp, _values_wp, _dense_np, _rhs_np, fixed_np = _pinned_system(device)
 
-    free_map_wp, n_free = tw.linalg.free_partition(fixed_wp)
+    free_map_wp, n_free = od.linalg.free_partition(fixed_wp)
 
     assert n_free == int((~fixed_np).sum())
     free_np = np.flatnonzero(~fixed_np)
@@ -227,9 +227,9 @@ def test_assemble_interior_system_matches_a_numpy_partition(device: str) -> None
     the CPU gate.
     """
     matrix_wp, fixed_wp, fixed_values_wp, dense_np, values_np, fixed_np = _pinned_system(device)
-    free_map_wp, n_free = tw.linalg.free_partition(fixed_wp)
+    free_map_wp, n_free = od.linalg.free_partition(fixed_wp)
 
-    q_uu, rhs_wp = tw.linalg.assemble_interior_system(
+    q_uu, rhs_wp = od.linalg.assemble_interior_system(
         matrix_wp, fixed_wp, free_map_wp, fixed_values_wp, n_free
     )
 
@@ -264,7 +264,7 @@ def test_solve_spd_columns_matches_numpy(device: str) -> None:
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     solution_np = np.linalg.solve(dense_np, rhs_np.T).T
     assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-5, atol=1e-5)
 
@@ -297,10 +297,10 @@ def test_solve_spd_columns_across_the_reduction_tile_boundary(
     so the batched arm lowers the gate to reach the padded solver at all.
     """
     if engine == "batched":
-        monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n=n)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )
@@ -318,7 +318,7 @@ def test_solve_spd_columns_across_the_reduction_tile_boundary(
 @pytest.mark.parametrize("n_rhs", [1, 2, 5])
 def test_solve_spd_columns_agrees_across_column_counts(device: str, n_rhs: int) -> None:
     """
-    Class A. One column takes ``warp.optim.linear.cg``; more than one takes triwarp's own solver.
+    Class A. One column takes ``warp.optim.linear.cg``; more than one takes ordito's own solver.
 
     The split is an implementation detail -- a single column has nothing to batch, so Warp already
     reduces it with a tiled tree -- and this is what keeps the two paths answering the same
@@ -327,7 +327,7 @@ def test_solve_spd_columns_agrees_across_column_counts(device: str, n_rhs: int) 
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=n_rhs)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )
@@ -335,7 +335,7 @@ def test_solve_spd_columns_agrees_across_column_counts(device: str, n_rhs: int) 
 
 def test_solve_spd_columns_two_columns_uses_batched_cg(device: str) -> None:
     """
-    Triwarp against triwarp: the dispatch itself, not just the answer it produces.
+    Ordito against ordito: the dispatch itself, not just the answer it produces.
 
     Every multi-column solve under ``"diag"`` builds a ``linalg._BatchedCg``, the two-column case
     included. A block conjugate gradient sharing one Krylov subspace across exactly two columns
@@ -344,8 +344,8 @@ def test_solve_spd_columns_two_columns_uses_batched_cg(device: str) -> None:
     """
     matrix_wp, rhs_wp, _dense, _rhs = _spd_system(device, n_rhs=2)
     solution_wp = wp.zeros_like(rhs_wp)
-    solver = tw.linalg.spd_column_solver(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
-    assert isinstance(solver, tw.linalg._BatchedCg)
+    solver = od.linalg.spd_column_solver(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
+    assert isinstance(solver, od.linalg._BatchedCg)
 
 
 @pytest.mark.parametrize("n", [255, 256, 257, 511, 512, 513])
@@ -360,7 +360,7 @@ def test_solve_spd_columns_two_columns_across_the_tile_boundary(device: str, n: 
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n=n, n_rhs=2)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )
@@ -391,8 +391,8 @@ def test_two_column_solve_costs_no_more_iterations_than_its_worst_column(
     }
 
     both_solution = wp.zeros_like(rhs_wp)
-    both_iterations, _residual, _tol = tw.linalg._BatchedCg(
-        matrix_wp, rhs_wp, twt.as_array2d(both_solution, wp.float64), **kwargs
+    both_iterations, _residual, _tol = od.linalg._BatchedCg(
+        matrix_wp, rhs_wp, odt.as_array2d(both_solution, wp.float64), **kwargs
     )()
 
     worst_single = 0
@@ -401,10 +401,10 @@ def test_two_column_solve_costs_no_more_iterations_than_its_worst_column(
             np.ascontiguousarray(rhs_np[column : column + 1]), dtype=wp.float64, device=device
         )
         single_solution = wp.zeros_like(single_rhs)
-        iterations, _residual, _tol = tw.linalg._BatchedCg(
+        iterations, _residual, _tol = od.linalg._BatchedCg(
             matrix_wp,
-            twt.as_array2d(single_rhs, wp.float64),
-            twt.as_array2d(single_solution, wp.float64),
+            odt.as_array2d(single_rhs, wp.float64),
+            odt.as_array2d(single_solution, wp.float64),
             **kwargs,
         )()
         worst_single = max(worst_single, int(cast("int", iterations)))
@@ -431,8 +431,8 @@ def test_two_identical_columns_do_not_diverge(device: str) -> None:
     rhs_two_np = np.concatenate([rhs_np, rhs_np], axis=0)
     rhs_two_wp = wp.array(np.ascontiguousarray(rhs_two_np), dtype=wp.float64, device=device)
     solution_wp = wp.zeros((2, dense_np.shape[0]), dtype=wp.float64, device=device)
-    tw.linalg.solve_spd_columns(
-        matrix_wp, twt.as_array2d(rhs_two_wp, wp.float64), twt.as_array2d(solution_wp, wp.float64)
+    od.linalg.solve_spd_columns(
+        matrix_wp, odt.as_array2d(rhs_two_wp, wp.float64), odt.as_array2d(solution_wp, wp.float64)
     )
     solution_np = solution_wp.numpy()
     assert np.all(np.isfinite(solution_np))
@@ -448,8 +448,8 @@ def test_solve_spd_columns_check_every_is_solution_invariant(device: str, check_
     # answer. It is a performance knob only.
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), check_every=check_every
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), check_every=check_every
     )
     solution_np = np.linalg.solve(dense_np, rhs_np.T).T
     assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-5, atol=1e-5)
@@ -468,8 +468,8 @@ def test_spd_column_solver_check_every_reused_across_calls(device: str) -> None:
     # The hoisted functor keeps its ``check_every`` across calls and warm-starts from ``solution``.
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    solver = tw.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), check_every=0
+    solver = od.linalg.spd_column_solver(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), check_every=0
     )
     solver()
     solver()
@@ -492,8 +492,8 @@ def test_spd_column_solver_reads_a_rewritten_rhs_on_every_call(
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    solver = tw.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), check_every=check_every
+    solver = od.linalg.spd_column_solver(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), check_every=check_every
     )
     solver()
     second_np = np.roll(rhs_np, 1, axis=1) - 0.5 * rhs_np
@@ -532,12 +532,12 @@ def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
         wp.array(np.array(cols, dtype=np.int32), dtype=wp.int32, device=device),
         wp.array(np.array(values, dtype=np.float64), dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(matrix, wp.float64)
+    assert odt.has_blocks(matrix, wp.float64)
     rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
     solution = wp.zeros(n, dtype=wp.float64, device=device)
 
     with pytest.warns(UserWarning, match="iteration cap"):
-        iterations, _, _ = tw.linalg.solve_spd(
+        iterations, _, _ = od.linalg.solve_spd(
             matrix, rhs, solution, tol=1e-14, maxiter=2, name="test_solve_spd"
         )
     assert int(iterations) >= 2
@@ -549,13 +549,13 @@ def test_solve_spd_is_quiet_when_it_converges(device: str) -> None:
     indices = wp.array(np.arange(n, dtype=np.int32), dtype=wp.int32, device=device)
     values = wp.array(np.full(n, 2.0, dtype=np.float64), dtype=wp.float64, device=device)
     matrix = wps.bsr_from_triplets(n, n, indices, wp.clone(indices), values)
-    assert twt.has_blocks(matrix, wp.float64)
+    assert odt.has_blocks(matrix, wp.float64)
     rhs = wp.array(np.ones(n, dtype=np.float64), dtype=wp.float64, device=device)
     solution = wp.zeros(n, dtype=wp.float64, device=device)
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")  # any warning fails the test
-        tw.linalg.solve_spd(matrix, rhs, solution, maxiter=10 * n)
+        od.linalg.solve_spd(matrix, rhs, solution, maxiter=10 * n)
     assert np.allclose(solution.numpy(), np.full(n, 0.5))
 
 
@@ -571,15 +571,15 @@ def test_solve_spd_keeps_one_state_per_operator(
     which is why the two right-hand sides differ. A system this small would take the one-block
     solve, which keeps no state, so the gate is lowered to reach the cache.
     """
-    monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=2)
     for column in range(2):
         solution_wp = wp.zeros(dense_np.shape[0], dtype=wp.float64, device=device)
-        tw.linalg.solve_spd(matrix_wp, twt.as_dense(rhs_wp[column]), solution_wp)
+        od.linalg.solve_spd(matrix_wp, odt.as_dense(rhs_wp[column]), solution_wp)
         assert np.allclose(
             solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np[column]), rtol=1e-5, atol=1e-5
         )
-    assert len(tw.linalg._SOLVER_CACHE[matrix_wp]) == 1
+    assert len(od.linalg._SOLVER_CACHE[matrix_wp]) == 1
 
 
 def test_solver_cache_keys_on_the_operator(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -590,12 +590,12 @@ def test_solver_cache_keys_on_the_operator(device: str, monkeypatch: pytest.Monk
     shape would solve the first matrix's system and converge to a plausible wrong answer. The
     one-block gate is lowered so these small systems reach the cache.
     """
-    monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     first_wp, rhs_wp, first_np, rhs_np = _spd_system(device, n_rhs=1, seed=3)
     second_wp, _rhs_wp, second_np, _rhs_np = _spd_system(device, n_rhs=1, seed=4)
     for matrix_wp, dense_np in ((first_wp, first_np), (second_wp, second_np)):
         solution_wp = wp.zeros_like(rhs_wp)
-        tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
         assert np.allclose(
             solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
         )
@@ -616,18 +616,18 @@ def test_pooled_solver_state_follows_each_operator(
     Jacobi-Chebyshev arm also refits the polynomial on the device. The one-block gate is lowered
     so these small systems reach the cache.
     """
-    monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     systems = [_spd_system(device, n_rhs=1, seed=seed) for seed in (31, 32, 33)]
 
     def solve(
-        matrix_wp: twt.BsrMatrix[wp.float64], rhs_wp: wp.array[wp.float64, Any]
+        matrix_wp: odt.BsrMatrix[wp.float64], rhs_wp: wp.array[wp.float64, Any]
     ) -> np.ndarray:
         solution_wp = wp.zeros(int(rhs_wp.shape[1]), dtype=wp.float64, device=device)
         preconditioner = None
         if kind == "chebyshev":
-            preconditioner = tw.linalg.chebyshev_preconditioner(matrix_wp)
-        tw.linalg.solve_spd(
-            matrix_wp, twt.as_dense(rhs_wp[0]), solution_wp, preconditioner=preconditioner
+            preconditioner = od.linalg.chebyshev_preconditioner(matrix_wp)
+        od.linalg.solve_spd(
+            matrix_wp, odt.as_dense(rhs_wp[0]), solution_wp, preconditioner=preconditioner
         )
         return solution_wp.numpy()
 
@@ -654,9 +654,9 @@ def test_pooled_solver_state_follows_each_operator(
     if kind == "chebyshev":
         # The refit is a rate, not a fixed point, so the answers above cannot see it: compare the
         # pooled polynomial with the one a new state would fit to the last operator.
-        pooled = list(tw.linalg._SOLVER_POOL.values())[-1]
-        fresh = tw.linalg._JacobiChebyshev(matrix_wp).steps.numpy()
-        assert isinstance(pooled._cycle, tw.linalg._JacobiChebyshevApply)
+        pooled = list(od.linalg._SOLVER_POOL.values())[-1]
+        fresh = od.linalg._JacobiChebyshev(matrix_wp).steps.numpy()
+        assert isinstance(pooled._cycle, od.linalg._JacobiChebyshevApply)
         assert np.array_equal(pooled._cycle.owner.steps.numpy(), fresh)
 
 
@@ -675,18 +675,18 @@ def test_pooled_squared_laplacian_state_follows_each_system(
     copy of the polynomial must be bit-for-bit the last caller's. The one-block gate is lowered so
     these small systems reach the pool.
     """
-    monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     systems = [_spd_system(device, n_rhs=2, seed=seed) for seed in (41, 42, 43)]
     preconditioners = []
 
-    def solve(matrix_wp: twt.BsrMatrix[wp.float64], rhs_wp: twt.Array2dFloat64) -> np.ndarray:
+    def solve(matrix_wp: odt.BsrMatrix[wp.float64], rhs_wp: odt.Array2dFloat64) -> np.ndarray:
         weights_wp = wp.full(int(matrix_wp.nrow), 2.0, dtype=wp.float64, device=device)
-        preconditioner = tw.linalg.squared_laplacian_preconditioner(matrix_wp, weights_wp)
+        preconditioner = od.linalg.squared_laplacian_preconditioner(matrix_wp, weights_wp)
         preconditioners.append(preconditioner)
-        solution_wp = twt.as_array2d(
+        solution_wp = odt.as_array2d(
             wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device), wp.float64
         )
-        tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
+        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
         return solution_wp.numpy()
 
     for matrix_wp, rhs_wp, _dense_np, _rhs_np in systems[:2]:
@@ -705,8 +705,8 @@ def test_pooled_squared_laplacian_state_follows_each_system(
         assert np.allclose(solve(matrix_wp, rhs_wp), expected_np, rtol=1e-6, atol=1e-6)
     if wp.get_device(device).is_cuda and wp.is_conditional_graph_supported():
         assert captures == 0
-    pooled = list(tw.linalg._SOLVER_POOL.values())[-1]
-    assert isinstance(pooled._cycle, tw.linalg._SquaredLaplacianApply)
+    pooled = list(od.linalg._SOLVER_POOL.values())[-1]
+    assert isinstance(pooled._cycle, od.linalg._SquaredLaplacianApply)
     owned, last = pooled._cycle.owner, preconditioners[-1]
     assert owned is not last
     assert np.array_equal(owned._steps.numpy(), last._steps.numpy())
@@ -726,12 +726,12 @@ def test_solver_cache_does_not_outlive_its_operator(
     and recorded graph. A state that held the matrix itself would keep its own key alive for ever.
     The one-block gate is lowered so this small system reaches the cache.
     """
-    monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+    monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     matrix_wp, rhs_wp, _dense_np, _rhs_np = _spd_system(device, n_rhs=1)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64))
+    od.linalg.solve_spd_columns(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
     alive = weakref.ref(matrix_wp)
-    assert alive() in tw.linalg._SOLVER_CACHE
+    assert alive() in od.linalg._SOLVER_CACHE
     del matrix_wp
     gc.collect()
     assert alive() is None
@@ -758,12 +758,12 @@ def test_solve_spd_block_operator_matches_numpy(device: str) -> None:
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
     )
-    assert twt.has_blocks(matrix_wp, wp.mat22d)
+    assert odt.has_blocks(matrix_wp, wp.mat22d)
     rhs_np = rng.standard_normal((n_blocks, 2))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.vec2d, device=device)
     solution_wp = wp.zeros(n_blocks, dtype=wp.vec2d, device=device)
-    tw.linalg.solve_spd(
-        matrix_wp, rhs_wp, solution_wp, preconditioner=tw.linalg.jacobi_preconditioner(matrix_wp)
+    od.linalg.solve_spd(
+        matrix_wp, rhs_wp, solution_wp, preconditioner=od.linalg.jacobi_preconditioner(matrix_wp)
     )
     expected_np = np.linalg.solve(dense_np, rhs_np.ravel()).reshape(n_blocks, 2)
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
@@ -779,8 +779,8 @@ def test_jacobi_preconditioner_applies_the_inverse_diagonal(device: str) -> None
     Applied twice, so the second apply reuses the first one's diagonal.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device, n_rhs=1)
-    operator = tw.linalg.jacobi_preconditioner(matrix_wp)
-    x_wp = twt.as_dense(rhs_wp[0])
+    operator = od.linalg.jacobi_preconditioner(matrix_wp)
+    x_wp = odt.as_dense(rhs_wp[0])
     expected_np = rhs_np[0] / np.diag(dense_np)
     for _ in range(2):
         z_wp = wp.zeros_like(x_wp)
@@ -799,13 +799,13 @@ def test_unfolded_iteration_matches_numpy(
     update instead of every update block folding the partials itself. No fixture here is that
     large, so the threshold is lowered to reach it.
     """
-    monkeypatch.setattr(tw.linalg, "CG_FOLD_MAX_BLOCKS", 0)
+    monkeypatch.setattr(od.linalg, "CG_FOLD_MAX_BLOCKS", 0)
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, n_rhs=2)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(
+    od.linalg.solve_spd_columns(
         matrix_wp,
         rhs_wp,
-        twt.as_array2d(solution_wp, wp.float64),
+        odt.as_array2d(solution_wp, wp.float64),
         preconditioner=preconditioner,
         check_every=5,
     )
@@ -828,18 +828,18 @@ def test_solve_spd_float32_system_matches_numpy(
     The tolerance is ``float32``'s.
     """
     if heavy:
-        monkeypatch.setattr(tw.linalg, "CG_FOLD_MAX_BLOCKS", 0)
-        monkeypatch.setattr(tw.linalg, "CG_HEAVY_ROW_ENTRIES", 0)
+        monkeypatch.setattr(od.linalg, "CG_FOLD_MAX_BLOCKS", 0)
+        monkeypatch.setattr(od.linalg, "CG_HEAVY_ROW_ENTRIES", 0)
     matrix64_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device, n_rhs=1)
     matrix_wp = wps.bsr_copy(
         matrix64_wp,
         scalar_type=wp.float32,  # pyright: ignore[reportArgumentType]  # Warp types it an instance
     )
-    assert twt.has_blocks(matrix_wp, wp.float32)
+    assert odt.has_blocks(matrix_wp, wp.float32)
     rhs_np = np.random.default_rng(31).standard_normal(dense_np.shape[0]).astype(np.float32)
     rhs_wp = wp.array(rhs_np, dtype=wp.float32, device=device)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp, tol=1e-6)
+    od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp, tol=1e-6)
     expected_np = np.linalg.solve(dense_np, rhs_np.astype(np.float64))
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-4, atol=1e-4)
 
@@ -856,11 +856,11 @@ def test_adaptive_preconditioner_escalates_only_past_its_probe(device: str, shif
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=64, n_rhs=2, shift=shift)
     solution_wp = wp.zeros_like(rhs_wp)
-    solver = tw.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
+    solver = od.linalg.spd_column_solver(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
     )
     solver()
-    assert isinstance(solver, tw.linalg._AdaptiveCg)
+    assert isinstance(solver, od.linalg._AdaptiveCg)
     assert (solver._escalation is not None) == (shift < 1e-2)
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
@@ -893,8 +893,8 @@ def test_multigrid_preconditioner_solves_the_same_system(device: str) -> None:
     reference_np = np.linalg.solve(dense_np, rhs_np.T).T
     for mode in ("diag", "multigrid"):
         solution_wp = wp.zeros_like(rhs_wp)
-        tw.linalg.solve_spd_columns(
-            matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner=mode
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner=mode
         )
         assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5), mode
 
@@ -913,7 +913,7 @@ def test_multigrid_preconditioner_is_symmetric(device: str) -> None:
     """
     matrix_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device)
     n = dense_np.shape[0]
-    operator = tw.linalg.multigrid_preconditioner(matrix_wp)
+    operator = od.linalg.multigrid_preconditioner(matrix_wp)
     rng = np.random.default_rng(3)
     left_np, right_np = rng.standard_normal((2, n))
     left = wp.array(np.ascontiguousarray(left_np), dtype=wp.float64, device=device)
@@ -935,7 +935,7 @@ def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
     device: str, monkeypatch: pytest.MonkeyPatch, k: int
 ) -> None:
     """
-    Triwarp against triwarp: the triplet products and their ``bsr_mm`` fallback agree.
+    Ordito against ordito: the triplet products and their ``bsr_mm`` fallback agree.
 
     The fallback runs only on a level whose coarsening stalled, which no default-threshold system
     in this suite reaches, so it is forced by a zero budget. The triplet path carries the oracle
@@ -945,9 +945,9 @@ def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
     pair.
     """
     matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=k)
-    triplet = tw.linalg._multigrid_hierarchy(matrix_wp, 0)
-    monkeypatch.setattr(tw.linalg, "_MULTIGRID_TRIPLET_FACTOR", 0)
-    fallback = tw.linalg._multigrid_hierarchy(matrix_wp, 0)
+    triplet = od.linalg._multigrid_hierarchy(matrix_wp, 0)
+    monkeypatch.setattr(od.linalg, "_MULTIGRID_TRIPLET_FACTOR", 0)
+    fallback = od.linalg._multigrid_hierarchy(matrix_wp, 0)
     assert triplet is not None
     assert fallback is not None
     assert len(triplet[0]) == len(fallback[0]) >= 2
@@ -963,7 +963,7 @@ def test_multigrid_preconditioner_needs_fewer_iterations(device: str) -> None:
     """
     Not a library comparison: this is the *reason* the mode exists, stated as an assertion.
 
-    triwarp against triwarp -- the Jacobi arm is the reference implementation and carries the
+    ordito against ordito -- the Jacobi arm is the reference implementation and carries the
     oracle. Without this the mode could silently degrade to something that still converges (the
     test above would pass) while costing a hierarchy for nothing. The margin is deliberately loose:
     the measured factor on this operator is far above 2x, and the assertion is only meant to catch
@@ -973,10 +973,10 @@ def test_multigrid_preconditioner_needs_fewer_iterations(device: str) -> None:
     counts = {}
     for mode in ("diag", "multigrid"):
         solution_wp = wp.zeros_like(rhs_wp)
-        counts[mode] = tw.linalg.solve_spd_columns(
+        counts[mode] = od.linalg.solve_spd_columns(
             matrix_wp,
             rhs_wp,
-            twt.as_array2d(solution_wp, wp.float64),
+            odt.as_array2d(solution_wp, wp.float64),
             check_every=1,
             preconditioner=mode,
         )[0]
@@ -995,8 +995,8 @@ def test_multigrid_preconditioner_auto_matches_the_forced_modes(device: str) -> 
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
     )
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
@@ -1016,9 +1016,9 @@ def test_multigrid_preconditioner_auto_converges_past_the_probe(
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
-    monkeypatch.setattr(tw.linalg, "CG_PROBE_ITERATIONS", 1)
-    tw.linalg.solve_spd_columns(
-        matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
+    monkeypatch.setattr(od.linalg, "CG_PROBE_ITERATIONS", 1)
+    od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
     )
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
@@ -1045,7 +1045,7 @@ def test_offdiagonal_dominance_matches_a_numpy_reduction(device: str) -> None:
         wp.array(columns_np, dtype=wp.int32, device=device),
         wp.array(values_np, dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(matrix_wp, wp.float64)
+    assert odt.has_blocks(matrix_wp, wp.float64)
     dense_np = np.zeros((4, 4))
     np.add.at(dense_np, (rows_np, columns_np), values_np)
     diagonal_np = np.diag(dense_np)
@@ -1055,12 +1055,12 @@ def test_offdiagonal_dominance_matches_a_numpy_reduction(device: str) -> None:
         diagonal_np > 0.0, off_np / np.where(diagonal_np > 0.0, diagonal_np, 1.0), 0.0
     )
     assert diagonal_np[3] == 0.0, "the zero-diagonal row is the point of this fixture"
-    assert np.allclose(tw.linalg._offdiagonal_dominance(matrix_wp), ratios_np.max(), rtol=1e-12)
+    assert np.allclose(od.linalg._offdiagonal_dominance(matrix_wp), ratios_np.max(), rtol=1e-12)
 
 
 def test_multigrid_preconditioner_auto_gate_takes_both_branches(device: str) -> None:
     """
-    Triwarp against triwarp: ``"auto"``'s gate against the forced modes it chooses between.
+    Ordito against ordito: ``"auto"``'s gate against the forced modes it chooses between.
 
     The oracle is ``numpy.linalg.solve`` on the small system and forced ``"multigrid"`` on the
     large one, which is too big to densify. What this pins is that the gate is *answer-neutral*:
@@ -1081,29 +1081,29 @@ def test_multigrid_preconditioner_auto_gate_takes_both_branches(device: str) -> 
       for.
     """
     small_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=24)
-    assert not tw.linalg._wants_multigrid(small_wp), "576 unknowns must fall through to the probe"
+    assert not od.linalg._wants_multigrid(small_wp), "576 unknowns must fall through to the probe"
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(
-        small_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
+    od.linalg.solve_spd_columns(
+        small_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
     )
     assert np.allclose(
         solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, rtol=1e-5, atol=1e-5
     )
 
     large_wp, large_rhs_wp, _dense, _rhs = _grid_laplacian_system(device, k=90, n_rhs=1)
-    assert tw.linalg._offdiagonal_dominance(large_wp) < tw.linalg.CG_MULTIGRID_SIZE_FLOOR
-    assert not tw.linalg._wants_multigrid(large_wp), (
+    assert od.linalg._offdiagonal_dominance(large_wp) < od.linalg.CG_MULTIGRID_SIZE_FLOOR
+    assert not od.linalg._wants_multigrid(large_wp), (
         "a large but weakly-dominant operator must still be declined"
     )
 
-    squared_wp = twt.bsr_mm(large_wp, large_wp)
-    assert tw.linalg._offdiagonal_dominance(squared_wp) > tw.linalg.CG_MULTIGRID_DOMINANCE
-    assert tw.linalg._wants_multigrid(squared_wp), "the squared operator must clear the gate"
+    squared_wp = odt.bsr_mm(large_wp, large_wp)
+    assert od.linalg._offdiagonal_dominance(squared_wp) > od.linalg.CG_MULTIGRID_DOMINANCE
+    assert od.linalg._wants_multigrid(squared_wp), "the squared operator must clear the gate"
     answers = {}
     for mode in ("auto", "multigrid"):
         answers[mode] = wp.zeros_like(large_rhs_wp)
-        tw.linalg.solve_spd_columns(
-            squared_wp, large_rhs_wp, twt.as_array2d(answers[mode], wp.float64), preconditioner=mode
+        od.linalg.solve_spd_columns(
+            squared_wp, large_rhs_wp, odt.as_array2d(answers[mode], wp.float64), preconditioner=mode
         )
     assert np.allclose(answers["auto"].numpy(), answers["multigrid"].numpy(), rtol=1e-5, atol=1e-5)
 
@@ -1114,8 +1114,8 @@ def test_spd_column_solver_rejects_the_auto_preconditioner(device: str) -> None:
     matrix_wp, rhs_wp, _dense, _rhs_np = _grid_laplacian_system(device, k=8)
     solution_wp = wp.zeros_like(rhs_wp)
     with pytest.raises(ValueError, match="auto"):
-        tw.linalg.spd_column_solver(
-            matrix_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
+        od.linalg.spd_column_solver(
+            matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="auto"
         )
 
 
@@ -1142,14 +1142,14 @@ def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
         wp.array(index_np, dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(diagonal_np), dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(matrix_wp, wp.float64)
+    assert odt.has_blocks(matrix_wp, wp.float64)
     rhs_np = rng.standard_normal((2, n))
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
     solution_wp = wp.zeros_like(rhs_wp)
-    iterations = tw.linalg.solve_spd_columns(
+    iterations = od.linalg.solve_spd_columns(
         matrix_wp,
-        twt.as_array2d(rhs_wp, wp.float64),
-        twt.as_array2d(solution_wp, wp.float64),
+        odt.as_array2d(rhs_wp, wp.float64),
+        odt.as_array2d(solution_wp, wp.float64),
         check_every=1,
         preconditioner="multigrid",
     )[0]
@@ -1160,9 +1160,9 @@ def test_multigrid_preconditioner_falls_back_when_the_operator_does_not_coarsen(
 def _normal_equations_system(
     device: str, *, negative: bool, k: int = 28, n_rhs: int = 3, seed: int = 13
 ) -> tuple[
-    twt.BsrMatrix[wp.float64],
+    odt.BsrMatrix[wp.float64],
     wp.array[wp.float64, Any],
-    twt.BsrMatrix[wp.float64],
+    odt.BsrMatrix[wp.float64],
     wp.array[wp.float64],
     np.ndarray,
     np.ndarray,
@@ -1213,7 +1213,7 @@ def _normal_equations_system(
         :, free_index
     ].tocoo()
 
-    def upload(matrix_np: sp.coo_matrix) -> twt.BsrMatrix[wp.float64]:
+    def upload(matrix_np: sp.coo_matrix) -> odt.BsrMatrix[wp.float64]:
         matrix_wp = wps.bsr_from_triplets(
             matrix_np.shape[0],
             matrix_np.shape[1],
@@ -1221,14 +1221,14 @@ def _normal_equations_system(
             wp.array(matrix_np.col.astype(np.int32), dtype=wp.int32, device=device),
             wp.array(np.ascontiguousarray(matrix_np.data), dtype=wp.float64, device=device),
         )
-        assert twt.has_blocks(matrix_wp, wp.float64)
+        assert odt.has_blocks(matrix_wp, wp.float64)
         return matrix_wp
 
     rhs_wp = wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device)
     sums_wp = wp.array(np.ascontiguousarray(sums_np[free_index]), dtype=wp.float64, device=device)
     return (
         upload(sp.coo_matrix(system_np)),
-        twt.as_array2d(rhs_wp, wp.float64),
+        odt.as_array2d(rhs_wp, wp.float64),
         upload(laplacian_np),
         sums_wp,
         system_np,
@@ -1252,18 +1252,18 @@ def test_squared_laplacian_preconditioner_solves_the_same_system(
     lowering its gate reaches the batched one.
     """
     if engine == "batched":
-        monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     system_wp, rhs_wp, laplacian_wp, sums_wp, system_np, rhs_np = _normal_equations_system(
         device, negative=negative, n_rhs=n_columns
     )
     reference_np = np.linalg.solve(system_np, rhs_np.T).T
     assert np.ptp(reference_np) > 1e-3  # non-vacuity: a zero solve would pass trivially
     solution_wp = wp.zeros_like(rhs_wp)
-    tw.linalg.solve_spd_columns(
+    od.linalg.solve_spd_columns(
         system_wp,
         rhs_wp,
-        twt.as_array2d(solution_wp, wp.float64),
-        preconditioner=tw.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp),
+        odt.as_array2d(solution_wp, wp.float64),
+        preconditioner=od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp),
     )
     assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
 
@@ -1276,7 +1276,7 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
     """
     Not a library comparison: the reason the preconditioner exists, stated as an assertion.
 
-    triwarp against triwarp; the Jacobi arm carries the oracle through the test above. Measured
+    ordito against ordito; the Jacobi arm carries the oracle through the test above. Measured
     19x and 27x fewer iterations than Jacobi. The negative-weight arm is the one that matters: with
     the polynomial's interval ending at a fixed 2 rather than at the operator's Gershgorin bound it
     still converges -- the preconditioner stays positive definite -- but in 340 iterations against
@@ -1284,20 +1284,20 @@ def test_squared_laplacian_preconditioner_needs_far_fewer_iterations(
     through both engines, since the one-block solve applies the polynomial with code of its own.
     """
     if engine == "batched":
-        monkeypatch.setattr(tw.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
+        monkeypatch.setattr(od.linalg, "CG_ONE_BLOCK_MAX_ROWS", 0)
     system_wp, rhs_wp, laplacian_wp, sums_wp, _system_np, _rhs_np = _normal_equations_system(
         device, negative=negative
     )
     counts = {}
     for name, preconditioner in (
         ("diag", "diag"),
-        ("squared", tw.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp)),
+        ("squared", od.linalg.squared_laplacian_preconditioner(laplacian_wp, sums_wp)),
     ):
         solution_wp = wp.zeros_like(rhs_wp)
-        counts[name] = tw.linalg.solve_spd_columns(
+        counts[name] = od.linalg.solve_spd_columns(
             system_wp,
             rhs_wp,
-            twt.as_array2d(solution_wp, wp.float64),
+            odt.as_array2d(solution_wp, wp.float64),
             check_every=1,
             preconditioner=preconditioner,
         )[0]
@@ -1319,12 +1319,12 @@ def _chebyshev_reference(dense_np: np.ndarray, rhs_np: np.ndarray) -> np.ndarray
         float(np.max((np.abs(dense_np).sum(axis=1) - np.abs(diagonal)) / np.abs(diagonal))), 1e-3
     )
     lower = max(
-        min(tw.linalg.CHEBYSHEV_INTERVAL / n, tw.linalg.SQUARED_LAPLACIAN_INTERVAL_CAP),
+        min(od.linalg.CHEBYSHEV_INTERVAL / n, od.linalg.SQUARED_LAPLACIAN_INTERVAL_CAP),
         1.0 - radius,
     )
     upper = 1.0 + radius
     theta, delta = 0.5 * (upper + lower), 0.5 * (upper - lower)
-    degree = tw.linalg.CHEBYSHEV_DEGREE
+    degree = od.linalg.CHEBYSHEV_DEGREE
     root = 1.0 / np.sqrt(np.abs(diagonal))
     sign = np.sign(diagonal[0])
     eigenvalues, vectors = np.linalg.eigh(sign * root[:, None] * dense_np * root[None, :])
@@ -1362,7 +1362,7 @@ def test_chebyshev_preconditioner_applies_the_chebyshev_polynomial(
     n = dense_np.shape[0]
     rhs_np = np.random.default_rng(11).standard_normal((1, n))
     reference_np = _chebyshev_reference(dense_np, rhs_np).T
-    operator = tw.linalg.chebyshev_preconditioner(laplacian_wp)
+    operator = od.linalg.chebyshev_preconditioner(laplacian_wp)
     source = wp.array(np.ascontiguousarray(rhs_np[0]), dtype=wp.float64, device=device)
     applied = wp.zeros(n, dtype=wp.float64, device=device)
     operator.matvec(source, applied, applied, 1.0, 0.0)
@@ -1382,7 +1382,7 @@ def test_chebyshev_preconditioner_solves_the_same_system(
 
     Through both entry points -- the ``"chebyshev"`` name the column solvers take, which routes a
     single column through the batched solver too, and the operator
-    [`chebyshev_preconditioner`][triwarp.linalg.chebyshev_preconditioner] returns for
+    [`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner] returns for
     ``solve_spd``.
     """
     _system, _rhs, laplacian_wp, _sums, _system_np, _rhs_np = _normal_equations_system(
@@ -1392,20 +1392,20 @@ def test_chebyshev_preconditioner_solves_the_same_system(
     n = dense_np.shape[0]
     rhs_np = np.random.default_rng(12).standard_normal((n_columns, n))
     reference_np = np.linalg.solve(dense_np, rhs_np.T).T
-    rhs_wp = twt.as_array2d(
+    rhs_wp = odt.as_array2d(
         wp.array(np.ascontiguousarray(rhs_np), dtype=wp.float64, device=device), wp.float64
     )
     solution_wp = wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device)
-    tw.linalg.solve_spd_columns(
-        laplacian_wp, rhs_wp, twt.as_array2d(solution_wp, wp.float64), preconditioner="chebyshev"
+    od.linalg.solve_spd_columns(
+        laplacian_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="chebyshev"
     )
     assert np.allclose(solution_wp.numpy(), reference_np, rtol=1e-5, atol=1e-5)
     single = wp.zeros(n, dtype=wp.float64, device=device)
-    tw.linalg.solve_spd(
+    od.linalg.solve_spd(
         laplacian_wp,
-        twt.as_dense(rhs_wp[0]),
+        odt.as_dense(rhs_wp[0]),
         single,
-        preconditioner=tw.linalg.chebyshev_preconditioner(laplacian_wp),
+        preconditioner=od.linalg.chebyshev_preconditioner(laplacian_wp),
     )
     assert np.allclose(single.numpy(), reference_np[0], rtol=1e-5, atol=1e-5)
 
@@ -1414,7 +1414,7 @@ def test_chebyshev_preconditioner_needs_far_fewer_iterations(device: str) -> Non
     """
     Not a library comparison: the reason the preconditioner exists, stated as an assertion.
 
-    triwarp against triwarp; the Jacobi arm carries the oracle through the test above. Each
+    ordito against ordito; the Jacobi arm carries the oracle through the test above. Each
     iteration costs ``CHEBYSHEV_DEGREE`` extra launches, so a preconditioner that did not cut the
     count several-fold would be a loss on every system, and a solve test would not notice.
     """
@@ -1422,10 +1422,10 @@ def test_chebyshev_preconditioner_needs_far_fewer_iterations(device: str) -> Non
     counts = {}
     for name in ("diag", "chebyshev"):
         solution_wp = wp.zeros_like(rhs_wp)
-        counts[name] = tw.linalg.solve_spd_columns(
+        counts[name] = od.linalg.solve_spd_columns(
             matrix_wp,
             rhs_wp,
-            twt.as_array2d(solution_wp, wp.float64),
+            odt.as_array2d(solution_wp, wp.float64),
             check_every=1,
             preconditioner=name,
         )[0]
@@ -1454,7 +1454,7 @@ def test_block_diag_matches_scipy(device: str) -> None:
         wp.array(cols_np.ravel().astype(np.int32), dtype=wp.int32, device=device),
         wp.array(np.ascontiguousarray(blocks_np.reshape(-1, 2, 2)), dtype=wp.mat22d, device=device),
     )
-    assert twt.has_blocks(vector_wp, wp.mat22d)
+    assert odt.has_blocks(vector_wp, wp.mat22d)
     n = 9
     rows = rng.integers(0, n, 40).astype(np.int32)
     cols = rng.integers(0, n, 40).astype(np.int32)
@@ -1466,19 +1466,19 @@ def test_block_diag_matches_scipy(device: str) -> None:
         wp.array(cols, dtype=wp.int32, device=device),
         wp.array(vals, dtype=wp.float64, device=device),
     )
-    assert twt.has_blocks(scalar_wp, wp.float64)
+    assert odt.has_blocks(scalar_wp, wp.float64)
     # Duplicates, so the triplet build's ``nnz`` really is a capacity.
     assert len(set(zip(rows.tolist(), cols.tolist(), strict=True))) < rows.size
     scalar_np = sp.coo_matrix((vals, (rows, cols)), shape=(n, n)).toarray()
 
-    stacked_wp = tw.linalg.block_diag((vector_wp, scalar_wp, scalar_wp))
+    stacked_wp = od.linalg.block_diag((vector_wp, scalar_wp, scalar_wp))
 
     expected_np = sp.block_diag((dense_block_np, scalar_np, scalar_np)).toarray()
     assert stacked_wp.nrow == expected_np.shape[0]
     assert np.allclose(
         bsr_to_dense(stacked_wp, expected_np.shape[0]), expected_np, rtol=1e-12, atol=1e-12
     )
-    assert tw.linalg.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
+    assert od.linalg.block_diag((vector_wp, scalar_wp, scalar_wp)) is stacked_wp
 
 
 def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
@@ -1489,11 +1489,11 @@ def test_block_diag_rejects_a_rectangular_operator(device: str) -> None:
         wp.float64,  # pyright: ignore[reportArgumentType]  # Warp types it a BlockType instance
         device=device,
     )
-    assert twt.has_blocks(rectangular_wp, wp.float64)
+    assert odt.has_blocks(rectangular_wp, wp.float64)
     with pytest.raises(ValueError, match="square"):
-        tw.linalg.block_diag((rectangular_wp,))
+        od.linalg.block_diag((rectangular_wp,))
     with pytest.raises(ValueError, match="at least one"):
-        tw.linalg.block_diag(())
+        od.linalg.block_diag(())
 
 
 @pytest.mark.parametrize("n_columns", [1, 3])
@@ -1508,7 +1508,7 @@ def test_replicated_operator_applies_the_base_to_each_block(device: str, n_colum
     n = 12
     matrix_wp, _values_wp, dense_np, _rhs_np = _spd_system(device, n=n, n_rhs=1, seed=5)
 
-    operator = tw.linalg.replicated_operator(matrix_wp, n_columns)
+    operator = od.linalg.replicated_operator(matrix_wp, n_columns)
 
     assert operator.shape == (n_columns * n, n_columns * n)
     # A single column is not batched at all: no ``batch_offsets``, so no per-block residual.

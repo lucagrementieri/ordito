@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.parametrization``.
+Benchmarks for ``ordito.parametrization``.
 
 Two axes, because these solvers have two independent cost drivers and mesh size is neither outright:
 
@@ -22,12 +22,12 @@ References
 cotangent system, which fails outright on the scanned registry meshes (``Failed to compute harmonic
 map`` / ``igl::lscm failed``): they are not disk topology and their cotangent Laplacian is not
 positive definite on the free set. The patch and quality meshes are disk topology by construction,
-so the comparison is drawn on exactly the meshes triwarp is measured on. That also makes the quality
+so the comparison is drawn on exactly the meshes ordito is measured on. That also makes the quality
 axis a genuine A/B between an iterative and a direct solver: CG pays for conditioning in iterations,
 LDLT in fill-in, and they need not move together.
 
 ``rim_long`` is deliberately **not** used. It is an annulus, and pinning only one of its rims leaves
-ARAP free to fold: triwarp returns 32 767 flipped faces out of 131 072, disagrees with libigl by
+ARAP free to fold: ordito returns 32 767 flipped faces out of 131 072, disagrees with libigl by
 0.35 regardless of CG tolerance (the two land on different local minima of a non-convex energy), and
 burns 8 200 CG iterations per solve on the resulting near-singular system. Timing that measures a
 pathology, not the algorithm.
@@ -40,14 +40,14 @@ plumbing and MeshSet build rather than a different algorithm. Worth having — i
 *library wrapper* adds over the bare call — but not independent evidence, and it should not be read
 as such.
 
-**Its ``harm_function`` parameter is documented as triwarp's ``k`` (1 harmonic, 2 biharmonic) and is
+**Its ``harm_function`` parameter is documented as ordito's ``k`` (1 harmonic, 2 biharmonic) and is
 a no-op in pymeshlab 2025.7**: ``harm_function=1``, ``2`` and ``3`` return **bit-identical** texture
 coordinates at identical cost, where libigl's own ``k=2`` costs several times its ``k=1``. So the
 harmonic order axis does not map and the pymeshlab row appears at ``k=1`` only. A row tracking
-triwarp's ``k=2`` would be silently reporting the ``k=1`` solve.
+ordito's ``k=2`` would be silently reporting the ``k=1`` solve.
 
 LSCM takes no parameters at all: MeshLab pins the boundary condition itself rather than accepting a
-pin set, so unlike triwarp's two-pin call there is nothing to match. And **it rejects closed meshes
+pin set, so unlike ordito's two-pin call there is nothing to match. And **it rejects closed meshes
 outright** — a boundary loop is required — which is why a pymeshlab parametrization row can never
 move to the scan sweep or the ``scale`` axis. Both filters rewrite the per-vertex texture
 coordinates, so the MeshSet is rebuilt per round; on the ``patch`` axis that build is a small share.
@@ -60,7 +60,7 @@ import numpy as np
 import pytest
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 from conftest import BenchCase
 
 # Local/global alternations for ARAP. The pair brackets "converged early" against "ran the full
@@ -82,8 +82,8 @@ def _boundary(bench_case: BenchCase) -> tuple[wp.array[wp.int32], wp.array[wp.ve
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _boundary_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        loop = tw.boundary.longest_boundary_loop(vertices, faces)
-        _boundary_cache[key] = (loop, tw.parametrization.map_vertices_to_circle(vertices, loop))
+        loop = od.boundary.longest_boundary_loop(vertices, faces)
+        _boundary_cache[key] = (loop, od.parametrization.map_vertices_to_circle(vertices, loop))
     return _boundary_cache[key]
 
 
@@ -92,7 +92,7 @@ def _warm_start(bench_case: BenchCase) -> wp.array[wp.vec2]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _warm_start_cache:
         loop, loop_uv = _boundary(bench_case)
-        _warm_start_cache[key] = tw.parametrization.harmonic(
+        _warm_start_cache[key] = od.parametrization.harmonic(
             bench_case.vertices_wp, bench_case.faces_wp, loop, loop_uv
         )
     return _warm_start_cache[key]
@@ -106,13 +106,13 @@ def _igl_boundary(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray, np.nda
 
 @pytest.mark.benchmark(group="map_vertices_to_circle")
 @pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 def test_map_vertices_to_circle(bench_case: BenchCase) -> None:
     """Arc-length parametrization of the rim: driven by loop length, not by mesh size."""
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices = bench_case.vertices_wp
         loop, _loop_uv = _boundary(bench_case)
-        circle = bench_case.run(lambda: tw.parametrization.map_vertices_to_circle(vertices, loop))
+        circle = bench_case.run(lambda: od.parametrization.map_vertices_to_circle(vertices, loop))
         assert circle.size == loop.size
     else:
         vertices_np, _faces_np, loop_np = _igl_boundary(bench_case)
@@ -148,18 +148,18 @@ def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:
 )
 @pytest.mark.benchmark(group="harmonic")
 @pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 @pytest.mark.parametrize("order", _HARMONIC_ORDERS)
 def test_harmonic(bench_case: BenchCase, order: int) -> None:
     """Fixed-boundary harmonic map, at the Laplacian and the much stiffer bilaplacian."""
     if bench_case.kind == "pymeshlab":
         _run_harmonic_pml(bench_case, order)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, loop_uv = _boundary(bench_case)
         uv = bench_case.run(
-            lambda: tw.parametrization.harmonic(vertices, faces, loop, loop_uv, k=order)
+            lambda: od.parametrization.harmonic(vertices, faces, loop, loop_uv, k=order)
         )
         assert uv.size == vertices.size
     else:
@@ -180,24 +180,24 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
 )
 @pytest.mark.benchmark(group="harmonic_conditioning")
 @pytest.mark.benchaxis("quality")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 def test_harmonic_conditioning(bench_case: BenchCase) -> None:
     """
     The same harmonic solve on the same connectivity, well- and ill-conditioned.
 
     ``saddle`` and ``saddle_graded`` have identical vertex counts, face arrays and boundary loops;
     only the spacing differs. Any gap between these two rows is conditioning and nothing else --
-    for triwarp, CG iterations; for libigl, LDLT fill-in. The pymeshlab row wraps libigl's own
+    for ordito, CG iterations; for libigl, LDLT fill-in. The pymeshlab row wraps libigl's own
     solver, so it should track the ``igl`` row's *shape* and differ only by a constant; a pair that
     diverges here would mean MeshLab's boundary detection is doing something size-dependent.
     """
     if bench_case.kind == "pymeshlab":
         _run_harmonic_pml(bench_case, 1)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, loop_uv = _boundary(bench_case)
-        uv = bench_case.run(lambda: tw.parametrization.harmonic(vertices, faces, loop, loop_uv))
+        uv = bench_case.run(lambda: od.parametrization.harmonic(vertices, faces, loop, loop_uv))
         assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)
@@ -208,16 +208,16 @@ def test_harmonic_conditioning(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="arap")
 @pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("triwarp", "igl")
+@pytest.mark.benchlibs("ordito", "igl")
 @pytest.mark.parametrize("iterations", _ARAP_ITERATIONS)
 def test_arap(bench_case: BenchCase, iterations: int) -> None:
     """Local/global ARAP from a harmonic warm start: per-face SVD plus a CG solve per iteration."""
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, loop_uv = _boundary(bench_case)
         uv_init = _warm_start(bench_case)
         uv = bench_case.run(
-            lambda: tw.parametrization.arap(
+            lambda: od.parametrization.arap(
                 vertices, faces, loop, loop_uv, uv_init, max_iterations=iterations
             )
         )
@@ -229,7 +229,7 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
             igl.harmonic(vertices_np, faces_np, loop_np, circle_np, 1)
         )
 
-        # triwarp's ``arap`` rebuilds its operator on every call, so the igl side includes
+        # ordito's ``arap`` rebuilds its operator on every call, so the igl side includes
         # ``arap_precomputation`` for a like-for-like comparison rather than solve-only.
         def run() -> np.ndarray:
             data = igl.ARAPData()
@@ -246,12 +246,12 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
     oracle="igl",
     reason="D1 not an independent implementation: MeshLab's least-squares conformal maps filter "
     "also wraps libigl, the same solver the igl row calls. It additionally pins the boundary "
-    "condition itself rather than accepting a pin set, so triwarp's two-pin call has nothing to "
+    "condition itself rather than accepting a pin set, so ordito's two-pin call has nothing to "
     "match there.",
 )
 @pytest.mark.benchmark(group="lscm")
 @pytest.mark.benchaxis("patch")
-@pytest.mark.benchlibs("triwarp", "igl", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 def test_lscm(bench_case: BenchCase) -> None:
     """Free-boundary conformal map: two pins, so the free block is nearly the whole system."""
     if bench_case.kind == "pymeshlab":  # MeshLab picks its own pins; there is no pin set to pass
@@ -261,7 +261,7 @@ def test_lscm(bench_case: BenchCase) -> None:
             ).compute_texcoord_parametrization_least_squares_conformal_maps()
         )
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         loop, _loop_uv = _boundary(bench_case)
         # LSCM needs only enough pins to kill the similarity freedom: two opposite loop vertices.
@@ -273,7 +273,7 @@ def test_lscm(bench_case: BenchCase) -> None:
             dtype=wp.vec2,
             device=bench_case.device,
         )
-        uv = bench_case.run(lambda: tw.parametrization.lscm(vertices, faces, pins, pins_uv))
+        uv = bench_case.run(lambda: od.parametrization.lscm(vertices, faces, pins, pins_uv))
         assert uv.size == vertices.size
     else:
         vertices_np, faces_np, loop_np = _igl_boundary(bench_case)

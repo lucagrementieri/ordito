@@ -10,13 +10,13 @@ authors = [
 description = "Triangular mesh library based on NVIDIA Warp"
 license = "MIT OR Apache-2.0"
 license-files = ["LICENSE-APACHE", "LICENSE-MIT"]
-name = "triwarp"
+name = "ordito"
 readme = "README.md"
 requires-python = ">=3.11"
 version = "0.1.0"
 
 # ``Operating System :: POSIX :: Linux`` is the *tested* claim, not a technical limit: the wheel is
-# ``py3-none-any`` and warp-lang ships macOS and Windows builds, so triwarp very likely runs there.
+# ``py3-none-any`` and warp-lang ships macOS and Windows builds, so ordito very likely runs there.
 # Nothing verifies it, and CI is Linux-only, so the classifier says what is checked rather than
 # what is plausible. Widen it when a CI leg covers another platform.
 classifiers = [
@@ -47,19 +47,19 @@ keywords = [
     "warp",
 ]
 
-# ``triwarp.neighbors`` and ``triwarp.proximity`` are the package's hard 1.17 dependencies: their
+# ``ordito.neighbors`` and ``ordito.proximity`` are the package's hard 1.17 dependencies: their
 # ball queries call ``wp.bvh_query_sphere``, which does not exist before it.
 
-# ``numpy`` is core, not optional: 16 of the modules ``triwarp/__init__.py`` imports eagerly use it
+# ``numpy`` is core, not optional: 16 of the modules ``ordito/__init__.py`` imports eagerly use it
 # for host-side metadata math. It adds nothing to an install, since ``warp-lang`` itself declares an
-# unconditional ``Requires-Dist: numpy`` and ``import warp`` loads it before triwarp gets a say.
+# unconditional ``Requires-Dist: numpy`` and ``import warp`` loads it before ordito gets a say.
 dependencies = ["numpy>=1.20", "warp-lang>=1.17"]
 
 [project.urls]
-Documentation = "https://lucagrementieri.github.io/triwarp/"
-Homepage = "https://lucagrementieri.github.io/triwarp/"
-Issues = "https://github.com/lucagrementieri/triwarp/issues"
-Repository = "https://github.com/lucagrementieri/triwarp"
+Documentation = "https://lucagrementieri.github.io/ordito/"
+Homepage = "https://lucagrementieri.github.io/ordito/"
+Issues = "https://github.com/lucagrementieri/ordito/issues"
+Repository = "https://github.com/lucagrementieri/ordito"
 
 [project.optional-dependencies]
 io = ["meshio>=5.0"]
@@ -68,7 +68,7 @@ io = ["meshio>=5.0"]
 # ``cairosvg`` and ``matplotlib`` are ``plot_comparison.py``'s only extras over the plain
 # ``aggregate.py`` text tables: rasterizing a vendored SVG logo to a fixed-size PNG once
 # (``benchmarks/assets/logos/render.py``) and drawing the comparison charts. Neither is a runtime
-# dependency of triwarp itself.
+# dependency of ordito itself.
 bench = [
     "cairosvg>=2.7",
     "matplotlib>=3.9",
@@ -181,11 +181,11 @@ torch = { index = "pytorch-cu128" }
 
 [tool.setuptools.packages.find]
 exclude = ["reference*"]
-include = ["triwarp*"]
+include = ["ordito*"]
 where = ["."]
 
 [tool.setuptools.package-data]
-triwarp = ["py.typed"]
+ordito = ["py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -195,12 +195,12 @@ testpaths = ["tests"]
 # coverage.py
 # ---------------------------------------------------------------------------
 #
-# ``triwarp/kernels/`` is omitted, and that is a measurement fact rather than a convenience.
+# ``ordito/kernels/`` is omitted, and that is a measurement fact rather than a convenience.
 # A ``@wp.kernel`` / ``@wp.func`` body is never *called* as Python: Warp's decorator parses the
 # function's AST at import time, builds an ``Adjoint`` from it and generates C++, so the lines
 # inside it execute on the device and never under ``sys.monitoring``. Measured on
-# ``tests/test_edges.py`` -- the wrapper ``triwarp/edges.py`` reports 96 %, while
-# ``triwarp/kernels/edges.py`` reports 35 % with every missing range being exactly a kernel body
+# ``tests/test_edges.py`` -- the wrapper ``ordito/edges.py`` reports 96 %, while
+# ``ordito/kernels/edges.py`` reports 35 % with every missing range being exactly a kernel body
 # that ran on every one of the 53 tests. Over the whole CPU suite, in *line* coverage so the two
 # halves are directly comparable, the split is 96.02 % for the wrapper layer against 24.29 % for
 # ``kernels/``: including them would publish 59.40 %, a figure that measures nothing and invites
@@ -215,19 +215,19 @@ testpaths = ["tests"]
 branch = true
 # ``*.py:*`` is not a typo. ``warp._src.utils.map`` builds each generated kernel with ``exec`` and
 # names the module after its call site -- ``context.py`` spells it ``f"{basename}:{lineno}"`` --
-# so a ``wp.map`` site leaves a code object whose filename is ``triwarp/points.py:153``. Coverage
+# so a ``wp.map`` site leaves a code object whose filename is ``ordito/points.py:153``. Coverage
 # tries to parse that as a path, fails, and emits one ``couldnt-parse`` warning per generated
 # module: 72 of them over a full suite run, none contributing a line to the report. No real source
 # file has a colon in its name, so this omits exactly the synthetic ones.
-omit = ["*.py:*", "triwarp/kernels/*"]
-source = ["triwarp"]
+omit = ["*.py:*", "ordito/kernels/*"]
+source = ["ordito"]
 
 [tool.coverage.report]
 # No ``exclude_also``, and that is measured rather than an omission. The two candidates a wrapper
 # layer this type-heavy suggests both turn out to be handled already: coverage.py 7.16 excludes an
-# ``if TYPE_CHECKING:`` block by itself (``analysis2`` reports 2 excluded lines in ``triwarp/io.py``
+# ``if TYPE_CHECKING:`` block by itself (``analysis2`` reports 2 excluded lines in ``ordito/io.py``
 # with an empty config), and all 88 ``@overload`` stubs write ``...`` on the ``def`` line, which
-# *does* execute at import -- there is not one bare ``...`` line under ``triwarp/``. Both patterns
+# *does* execute at import -- there is not one bare ``...`` line under ``ordito/``. Both patterns
 # were tried and changed the statement count by exactly 0; a pattern that matches nothing is worse
 # than no pattern, because it reads as a caveat someone has already handled.
 #
@@ -283,7 +283,7 @@ ignore = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"triwarp/reduce.py" = ["A001"]
+"ordito/reduce.py" = ["A001"]
 
 [tool.ruff.lint.flake8-tidy-imports.banned-api]
 # Tests patch and assert through pytest alone (CLAUDE.md section 7.1): ``monkeypatch`` restores what
@@ -291,7 +291,7 @@ ignore = [
 "unittest".msg = "use pytest: the monkeypatch fixture (monkeypatch.context() for a scoped patch)"
 
 [tool.ruff.lint.isort]
-known-first-party = ["triwarp"]
+known-first-party = ["ordito"]
 split-on-trailing-comma = false
 
 [tool.ruff.lint.flake8-import-conventions.aliases]
@@ -319,10 +319,10 @@ exclude = [
     "site",
     # Warp's kernel DSL (wp.array[wp.vec3] subscripting, wp.tid(), typed vector
     # constructors, kernel-scope slicing) is not modeled by any type stubs, so
-    # triwarp/kernels/ is inherently un-typecheckable. Excluded wholesale.
-    "triwarp/kernels",
+    # ordito/kernels/ is inherently un-typecheckable. Excluded wholesale.
+    "ordito/kernels",
 ]
-include = ["benchmarks", "tests", "triwarp"]
+include = ["benchmarks", "tests", "ordito"]
 pythonVersion = "3.11"
 # Test-only stubs for reference libraries that ship none a checker can read (pymeshlab).
 stubPath = "tests/typings"

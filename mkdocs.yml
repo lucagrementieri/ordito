@@ -1,15 +1,15 @@
-site_name: triwarp
+site_name: ordito
 site_description: Triangular mesh library based on NVIDIA Warp
-site_url: https://lucagrementieri.github.io/triwarp/
-repo_url: https://github.com/lucagrementieri/triwarp
+site_url: https://lucagrementieri.github.io/ordito/
+repo_url: https://github.com/lucagrementieri/ordito
 docs_dir: docs
 
 # Read by Zensical (`zensical build` / `zensical serve`), not by MkDocs -- Zensical consumes
 # `mkdocs.yml` as-is, so the filename and every key below are unchanged. Build the site with
-# `--strict`, which is what fails on a dangling `[`name`][triwarp.old.path]` cross-reference.
+# `--strict`, which is what fails on a dangling `[`name`][ordito.old.path]` cross-reference.
 #
 # The API pages come from Zensical's native `api-autonav` (one page per public module, at
-# `api/triwarp/<module>/`); the nav, including the themed shelving of those pages, is the committed
+# `api/ordito/<module>/`); the nav, including the themed shelving of those pages, is the committed
 # `docs/SUMMARY.md`. A plain `zensical build` / `serve` needs no pre-build step.
 #
 # No `exclude_docs:` here, though MkDocs had one for `assets/benchmarks/*.md` -- Zensical has no
@@ -59,16 +59,16 @@ plugins:
   - literate-nav:
       nav_file: SUMMARY.md
   - section-index
-  # `triwarp` itself is excluded: its docstring is about the lazy-import mechanism, not a page for
+  # `ordito` itself is excluded: its docstring is about the lazy-import mechanism, not a page for
   # a caller. Private `_*.py` modules are excluded by the plugin's default.
   - api-autonav:
-      modules: [triwarp]
-      exclude: [triwarp.kernels, "re:^triwarp$"]
+      modules: [ordito]
+      exclude: [ordito.kernels, "re:^ordito$"]
       api_root_uri: api
-      # `triwarp.typing`'s aliases are linked from every return annotation (85 referrers for
+      # `ordito.typing`'s aliases are linked from every return annotation (85 referrers for
       # `Array2dInt32`), so a "Referenced by" block there lists signatures, not uses.
       module_options:
-        "triwarp\\.typing":
+        "ordito\\.typing":
           backlinks: false
   - mkdocstrings:
       handlers:

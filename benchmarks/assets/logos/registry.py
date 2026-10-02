@@ -36,8 +36,8 @@ PNG_DIR = Path(__file__).parent / "png"
 
 # id -> (png filename under png/, or None for a text-only fallback; display label)
 _REGISTRY: dict[str, tuple[str | None, str]] = {
-    "triwarp-cpu": ("triwarp.png", "triwarp (CPU)"),
-    "triwarp-cuda": ("triwarp.png", "triwarp (CUDA)"),
+    "ordito-cpu": ("ordito.png", "ordito (CPU)"),
+    "ordito-cuda": ("ordito.png", "ordito (CUDA)"),
     "trimesh": ("trimesh.png", "trimesh"),
     "igl": (None, "libigl"),
     "open3d": ("open3d.png", "Open3D"),
@@ -70,5 +70,5 @@ def display_label(library_id: str) -> str:
 
 
 def is_subject(library_id: str) -> bool:
-    """Whether `library_id` is triwarp itself rather than a reference library."""
-    return library_id.startswith("triwarp")
+    """Whether `library_id` is ordito itself rather than a reference library."""
+    return library_id.startswith("ordito")

@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.graph`` against Trimesh (CPU reference)."""
+"""Regression tests for ``ordito.graph`` against Trimesh (CPU reference)."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito import _launch
 from tests.comparisons import same_partition
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -23,14 +24,13 @@ from tests.conversions import (
     trimesh_to_pymeshlab,
     warp_empty,
 )
-from triwarp import _launch
 
 
 def test_edges_to_csr_roundtrip(device: str) -> None:
     edges_np = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.int32)
     node_count = 3
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    adjacency = tw.graph.edges_to_csr(node_count, edges_wp)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    adjacency = od.graph.edges_to_csr(node_count, edges_wp)
     offsets = adjacency.offsets.numpy()
     indices = adjacency.columns.numpy()
 
@@ -61,7 +61,7 @@ def test_edges_to_neighbor_lists_matches_igl(
     igl returns one Python list per vertex, already ascending; ``edges_to_neighbor_lists`` returns
     ``(neighbors, offsets)`` with **arbitrary order within a row**, which is the documented
     difference and the whole reason it is cheaper than
-    [`edges_to_csr`][triwarp.graph.edges_to_csr]. Sorting each row is the transform.
+    [`edges_to_csr`][ordito.graph.edges_to_csr]. Sorting each row is the transform.
 
     The fixtures span closed/open and curved/faceted, and every one of them is **irregular**: the
     assert below pins the maximum degree strictly above the minimum, because on a mesh where every
@@ -71,9 +71,9 @@ def test_edges_to_neighbor_lists_matches_igl(
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
-    neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
     neighbors, offsets = neighbors_wp.numpy(), offsets_wp.numpy()
     adjacency_igl = igl.adjacency_list(np.asarray(mesh_tm.faces, dtype=np.int64))
 
@@ -94,7 +94,7 @@ def test_edges_to_neighbor_lists_agrees_with_edges_to_csr(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
     """
-    Triwarp against triwarp: the two adjacency builders describe the same graph.
+    Ordito against ordito: the two adjacency builders describe the same graph.
 
     ``edges_to_csr`` carries the oracle — it is the one with a reference comparison
     (``igl.adjacency_list``, above, and scipy through ``connected_component_labels``). This pins
@@ -104,10 +104,10 @@ def test_edges_to_neighbor_lists_agrees_with_edges_to_csr(
     _, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
-    neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
-    adjacency = tw.graph.edges_to_csr(n_vertices, edges_wp)
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
+    adjacency = od.graph.edges_to_csr(n_vertices, edges_wp)
 
     assert np.array_equal(offsets_wp.numpy(), adjacency.offsets.numpy())
     neighbors, offsets = neighbors_wp.numpy(), offsets_wp.numpy()
@@ -122,12 +122,12 @@ def test_edges_to_neighbor_lists_sorted_rows_are_edges_to_csr_exactly(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
     """
-    Triwarp against triwarp: ``sort_rows=True`` is ``edges_to_csr``'s structure, bit for bit.
+    Ordito against ordito: ``sort_rows=True`` is ``edges_to_csr``'s structure, bit for bit.
 
     ``edges_to_csr`` carries the oracle (``igl.adjacency_list``, above). This is the stronger of
     the two claims the sibling test makes about the cheap builder -- not "the same rows up to a
     permutation" but *the same buffer* -- because that is what
-    [`neighbors.geodesic_ball`][triwarp.neighbors.geodesic_ball] relies on: it emits its BFS queue
+    [`neighbors.geodesic_ball`][ordito.neighbors.geodesic_ball] relies on: it emits its BFS queue
     in visit order, so a permuted adjacency row permutes its result, and
     ``curvature.principal_curvature`` then moves at the near-flat vertices where its quadric fit is
     ill conditioned.
@@ -139,12 +139,12 @@ def test_edges_to_neighbor_lists_sorted_rows_are_edges_to_csr_exactly(
     _, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
 
-    neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(
         n_vertices, edges_wp, sort_rows=True
     )
-    adjacency = tw.graph.edges_to_csr(n_vertices, edges_wp)
+    adjacency = od.graph.edges_to_csr(n_vertices, edges_wp)
     neighbors = neighbors_wp.numpy()
 
     # Not a regular fixture, and not an empty one: a constant degree hides a misplaced row.
@@ -155,13 +155,13 @@ def test_edges_to_neighbor_lists_sorted_rows_are_edges_to_csr_exactly(
     assert np.array_equal(neighbors, adjacency.columns.numpy())
 
     for _ in range(4):
-        repeat_wp, _ = tw.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
+        repeat_wp, _ = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
         assert np.array_equal(repeat_wp.numpy(), neighbors)
 
 
 def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
     """
-    Triwarp against triwarp: the per-row sort is a shell sort, so its gap loop needs a wide row.
+    Ordito against ordito: the per-row sort is a shell sort, so its gap loop needs a wide row.
 
     Every mesh fixture has a vertex valence of a handful, where the gap sequence collapses to one
     pass and the kernel is a plain insertion sort -- so the fixtures above exercise none of the
@@ -171,9 +171,9 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
     edges_np = np.stack(
         [np.zeros(degree, dtype=np.int32), np.arange(1, degree + 1, dtype=np.int32)], axis=1
     )
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
-    neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(
         degree + 1, edges_wp, sort_rows=True
     )
     offsets = offsets_wp.numpy()
@@ -184,18 +184,18 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
 
 def test_edges_to_neighbor_lists_rejects_an_out_of_range_endpoint(device: str) -> None:
     """The guard that keeps an unchecked index off a raw ``degree[a]`` write (section 12.1)."""
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[0, 1], [1, 5]], dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
     with pytest.raises(ValueError, match="edge indices must lie in"):
-        tw.graph.edges_to_neighbor_lists(3, edges_wp)
+        od.graph.edges_to_neighbor_lists(3, edges_wp)
 
 
 def test_edges_to_neighbor_lists_empty(device: str) -> None:
     """No edges means every row is empty, and the offsets are still the ``n + 1`` CSR form."""
-    edges_wp = twt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
-    neighbors_wp, offsets_wp = tw.graph.edges_to_neighbor_lists(4, edges_wp)
+    edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
+    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(4, edges_wp)
     assert neighbors_wp.size == 0
     assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
 
@@ -205,7 +205,7 @@ def test_connected_component_labels_random(device: str) -> None:
     """
     Class B (label packing): the *partition* matches scipy's, through ``same_partition``.
 
-    triwarp names a component after a representative node and scipy numbers them in traversal
+    ordito names a component after a representative node and scipy numbers them in traversal
     order, so only the partition is shared -- comparing labels directly would fail on a correct
     answer. But that transform is only *exercised* if the graph genuinely fragments: with one
     component the two numbering conventions coincide and ``same_partition`` compares one constant
@@ -222,8 +222,8 @@ def test_connected_component_labels_random(device: str) -> None:
     n_edges = 24
     edges_np = rng.integers(0, node_count, size=(n_edges, 2), dtype=np.int32)
 
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_np = _scipy_component_labels(edges_np, node_count)
 
     # Non-vacuous: with one component the label-packing transform under test is the identity.
@@ -238,11 +238,11 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     """
     Class B (label packing): the partition against ``igl.connected_components``.
 
-    The reference worth having here because it takes the *same argument* triwarp does -- a
+    The reference worth having here because it takes the *same argument* ordito does -- a
     ``scipy.sparse`` adjacency matrix -- rather than a mesh, which is why
     ``benchmarks/test_graph.py`` used to say no second implementation existed for these two groups.
     It returns ``(n_components, labels, sizes)``, three values, and numbers components ``0..k-1`` in
-    its own traversal order where triwarp names each after a representative node, so
+    its own traversal order where ordito names each after a representative node, so
     [`same_partition`][tests.comparisons.same_partition] is the transform exactly as it is for the
     scipy comparison above.
 
@@ -272,8 +272,8 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     n_components_igl, labels_igl, sizes_igl = igl.connected_components(
         adjacency_np  # pyright: ignore[reportArgumentType]
     )
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
 
     assert int(n_components_igl) == np.unique(labels_wp.numpy()).size
     assert int(np.asarray(sizes_igl).sum()) == node_count  # every node landed in a component
@@ -285,7 +285,7 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
 @pytest.mark.parametrize("shape", ["random", "path", "star", "loops_and_duplicates"])
 def test_connected_component_labels_edge_list_matches_csr(device: str, shape: str) -> None:
     """
-    Triwarp against triwarp: the edge-list entry point returns the CSR one's labels exactly.
+    Ordito against ordito: the edge-list entry point returns the CSR one's labels exactly.
 
     ``connected_component_labels_from_edges`` hooks straight off the edge list rather than building
     the adjacency matrix ``connected_component_labels`` walks, so the two no longer share a code
@@ -309,12 +309,12 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
         base = rng.integers(0, node_count, size=(200, 2), dtype=np.int32)
         loops = np.repeat(rng.integers(0, node_count, size=(40, 1), dtype=np.int32), 2, axis=1)
         edges_np = np.concatenate([base, base[:50, ::-1], loops])
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
     )
 
-    labels_edges = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
-    labels_csr = tw.graph.connected_component_labels(tw.graph.edges_to_csr(node_count, edges_wp))
+    labels_edges = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    labels_csr = od.graph.connected_component_labels(od.graph.edges_to_csr(node_count, edges_wp))
 
     assert np.array_equal(labels_edges.numpy(), labels_csr.numpy())
     # The smallest-id convention, checked directly rather than through the other entry point.
@@ -328,14 +328,14 @@ def test_connected_component_labels_compressed_forest(
     device: str, monkeypatch: pytest.MonkeyPatch, shape: str
 ) -> None:
     """
-    Triwarp against triwarp: compressing the pre-hooked forest changes no label.
+    Ordito against ordito: compressing the pre-hooked forest changes no label.
 
     ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
     ``ECL_COMPRESS_FROM`` nodes, which no test graph reaches, so the threshold is lowered to force
     it; the uncompressed path carries the oracles (scipy and igl, above). The path is the shape the
     compression exists for: a long descending chain after the pre-hook.
     """
-    from triwarp.kernels.algorithms import connected_components as kernel_cc
+    from ordito.kernels.algorithms import connected_components as kernel_cc
 
     rng = np.random.default_rng(13)
     node_count = 512
@@ -347,12 +347,12 @@ def test_connected_component_labels_compressed_forest(
     else:
         leaves = np.arange(node_count - 1, dtype=np.int32)
         edges_np = np.stack([np.full_like(leaves, node_count - 1), leaves], axis=1)
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
     )
-    plain = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count).numpy()
+    plain = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
-    compressed = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    compressed = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     assert np.unique(plain).size > 1 or shape != "random"
     assert np.array_equal(compressed.numpy(), plain)
 
@@ -368,7 +368,7 @@ def test_connected_component_labels_matches_pymeshlab(
     ``compute_selection_by_small_disconnected_components_per_face`` is the closest thing that runs
     the component pass without also splitting the mesh -- it labels every component, then selects
     the faces of every component holding fewer than ``nbfaceratio`` times the largest component's
-    face count. So the named transform runs triwarp's labels through exactly that rule: push the
+    face count. So the named transform runs ordito's labels through exactly that rule: push the
     per-vertex labels onto faces (all three corners of a face share a component), count faces per
     label, and select where the count is below the threshold. Equality is then exact on the bool
     array.
@@ -397,9 +397,9 @@ def test_connected_component_labels_matches_pymeshlab(
     meshset_pml.compute_selection_by_small_disconnected_components_per_face(nbfaceratio=face_ratio)
     selection_pml = np.asarray(meshset_pml.current_mesh().face_selection_array())
 
-    unique_edges_wp, _inverse_wp = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-    labels_np = tw.graph.connected_component_labels(
-        tw.graph.edges_to_csr(n_vertices, unique_edges_wp)
+    unique_edges_wp, _inverse_wp = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    labels_np = od.graph.connected_component_labels(
+        od.graph.edges_to_csr(n_vertices, unique_edges_wp)
     ).numpy()
 
     face_labels_np = labels_np[combined_tm.faces[:, 0]]
@@ -417,7 +417,7 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     The transform is the one every component comparison in this package makes plus a decode:
     MeshLib hands back a vector of ``VertBitSet``, one per component in its own traversal order,
     so each is expanded to a bool array over the vertex domain and its index becomes the label,
-    and only the *partition* is then shared -- triwarp names a component after a representative
+    and only the *partition* is then shared -- ordito names a component after a representative
     vertex. Hence [`same_partition`][tests.comparisons.same_partition].
 
     Stronger than the scipy pairing in one respect and weaker in another, which is why both stay:
@@ -449,9 +449,9 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     for label, component_ml in enumerate(components_ml):
         labels_ml[meshlib_bitset_to_numpy(component_ml, n_vertices)] = label
 
-    unique_edges_wp, _inverse_wp = tw.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-    labels_wp = tw.graph.connected_component_labels(
-        tw.graph.edges_to_csr(n_vertices, unique_edges_wp)
+    unique_edges_wp, _inverse_wp = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    labels_wp = od.graph.connected_component_labels(
+        od.graph.edges_to_csr(n_vertices, unique_edges_wp)
     )
 
     assert sorted(component_ml.count() for component_ml in components_ml) == sorted(
@@ -463,15 +463,15 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
 
 def test_connected_component_labels_empty_edges(device: str) -> None:
     node_count = 10
-    edges_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_exp = _scipy_component_labels(np.empty((0, 2), dtype=np.int32), node_count)
     assert np.array_equal(labels_wp.numpy(), labels_exp)
 
 
 def test_connected_component_labels_zero_nodes(device: str) -> None:
-    edges_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=0)
+    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=0)
     assert labels_wp.shape == (0,)
 
 
@@ -486,8 +486,8 @@ def test_connected_component_labels_path_graph(device: str) -> None:
     """
     n = 2048
     edges_np = np.stack([np.arange(n - 1, dtype=np.int32), np.arange(1, n, dtype=np.int32)], axis=1)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
     labels_exp = _scipy_component_labels(edges_np, n)
     assert same_partition(labels_wp.numpy(), labels_exp)
 
@@ -497,8 +497,8 @@ def test_connected_component_labels_star_graph(device: str) -> None:
     hub = 0
     leaves = np.arange(1, n, dtype=np.int32)
     edges_np = np.stack([np.full(n - 1, hub, dtype=np.int32), leaves], axis=1)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = tw.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
     labels_exp = _scipy_component_labels(edges_np, n)
     assert same_partition(labels_wp.numpy(), labels_exp)
 
@@ -514,9 +514,9 @@ def test_connected_component_parity_random(device: str) -> None:
     edges_np = np.stack([a_np, b_np], axis=1)
     signs_np = (potential_np[a_np] ^ potential_np[b_np]).astype(np.int32)
 
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
-    labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
+    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
 
     parity_np = parity_wp.numpy()
     assert np.array_equal(parity_np[a_np] ^ parity_np[b_np], signs_np)
@@ -533,10 +533,10 @@ def test_connected_component_parity_long_path(device: str) -> None:
     rng = np.random.default_rng(5)
     edges_np = np.stack([np.arange(n - 1), np.arange(1, n)], axis=1).astype(np.int32)
     signs_np = rng.integers(0, 2, size=n - 1).astype(np.int32)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
-    labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
+    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
     parity_exp = np.concatenate([[0], np.cumsum(signs_np) % 2]).astype(np.int32)
     assert np.array_equal(parity_wp.numpy(), parity_exp)
     assert np.array_equal(labels_wp.numpy(), np.zeros(n, dtype=np.int32))
@@ -548,10 +548,10 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
     n = 1025
     edges_np = np.stack([np.arange(n), (np.arange(n) + 1) % n], axis=1).astype(np.int32)
     signs_np = np.ones(n, dtype=np.int32)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
-    labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
+    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
     assert np.array_equal(labels_wp.numpy(), np.zeros(n, dtype=np.int32))
     parity_np = parity_wp.numpy()
     assert set(np.unique(parity_np).tolist()) <= {0, 1}
@@ -560,18 +560,18 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
 
 
 def test_connected_component_parity_no_edges(device: str) -> None:
-    edges_wp = twt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.zeros((0, 2), dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.zeros(0, dtype=wp.int32, device=device)
-    labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 7)
+    labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 7)
     assert np.array_equal(labels_wp.numpy(), np.arange(7, dtype=np.int32))
     assert np.array_equal(parity_wp.numpy(), np.zeros(7, dtype=np.int32))
 
 
 def test_connected_component_parity_signs_length_mismatch(device: str) -> None:
-    edges_wp = twt.as_array2d(wp.zeros((4, 2), dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.zeros((4, 2), dtype=wp.int32, device=device), wp.int32)
     signs_wp = wp.zeros(3, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="signs must have length 4"):
-        tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 4)
+        od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 4)
 
 
 def test_connected_component_parity_validates_range(device: str) -> None:
@@ -581,12 +581,12 @@ def test_connected_component_parity_validates_range(device: str) -> None:
     Without this, ``ecl_hook_parity`` indexes a ``node_count``-element buffer by the raw
     endpoint -- an out-of-range value reads and writes out of bounds rather than raising.
     """
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[0, 10]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
     )
     signs_wp = wp.zeros(1, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
-        tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 5)
+        od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 5)
 
 
 def test_connected_component_parity_validates_signs(device: str) -> None:
@@ -600,14 +600,14 @@ def test_connected_component_parity_validates_signs(device: str) -> None:
     parent of ``-1`` that the next find read out of bounds. Both arms are asserted: the checked
     path raises, and the unchecked path still joins the edge.
     """
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[2, 3]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
     )
     for bad in (2, -1, 1 << 20):
         signs_wp = wp.array(np.array([bad], dtype=np.int32), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="signs must be 0 or 1"):
-            tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 6)
-        labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(
+            od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 6)
+        labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(
             edges_wp, signs_wp, 6, validate=False
         )
         labels_np = labels_wp.numpy()
@@ -620,7 +620,7 @@ def test_connected_component_parity_validates_signs(device: str) -> None:
     # A valid sign is untouched by the mask.
     for good in (0, 1):
         signs_wp = wp.array(np.array([good], dtype=np.int32), dtype=wp.int32, device=device)
-        labels_wp, parity_wp = tw.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 6)
+        labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 6)
         assert labels_wp.numpy()[2] == labels_wp.numpy()[3]
         assert int(parity_wp.numpy()[3]) == good
 
@@ -640,14 +640,14 @@ def test_face_connected_component_labels(request: pytest.FixtureRequest) -> None
 
     concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
     assert isinstance(concat_tm, tm.Trimesh)
-    _, concat_faces_wp = tw.combine.concatenate(
+    _, concat_faces_wp = od.combine.concatenate(
         [
             (mesh_a_wp.points, mesh_a_wp.indices),
             (mesh_b_wp.points, mesh_b_wp.indices),
             (mesh_c_wp.points, mesh_c_wp.indices),
         ]
     )
-    face_labels_wp = tw.adjacency.face_connected_component_labels(concat_faces_wp)
+    face_labels_wp = od.adjacency.face_connected_component_labels(concat_faces_wp)
     n_faces = concat_tm.faces.shape[0]
     face_labels_tm = _scipy_component_labels(concat_tm.face_adjacency.astype(np.int32), n_faces)
     assert same_partition(face_labels_wp.numpy(), face_labels_tm)
@@ -669,7 +669,7 @@ def _scipy_component_labels(edges: np.ndarray, node_count: int) -> np.ndarray:
 
 def test_successor_cycles_single_cycle(device: str) -> None:
     """One 4-cycle: the result starts at the smallest node and follows the edge direction."""
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(
             np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32),
             dtype=wp.int32,
@@ -677,7 +677,7 @@ def test_successor_cycles_single_cycle(device: str) -> None:
         ),
         wp.int32,
     )
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
 
     assert np.array_equal(flat_wp.numpy(), np.array([2, 7, 3, 5], dtype=np.int32))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 4], dtype=np.int32))
@@ -697,9 +697,9 @@ def test_successor_cycles_multiple_cycles(device: str) -> None:
     ]
     order = rng.permutation(len(edge_rows))
     edges_np = np.array(edge_rows, dtype=np.int32)[order]
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 11)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 11)
 
     flat_np = flat_wp.numpy()
     offsets_np = offsets_wp.numpy()
@@ -735,9 +735,9 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
     rows = [(cycle[i], cycle[(i + 1) % length]) for i in range(length)]
     rows += [(chain[i], chain[i + 1]) for i in range(length)]
     edges_np = np.array(rows, dtype=np.int32)[rng.permutation(len(rows))]
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
 
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 3 * length)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 3 * length)
 
     start = int(np.argmin(cycle))
     assert np.array_equal(flat_wp.numpy(), np.roll(cycle, -start))
@@ -746,12 +746,12 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
 
 def test_successor_cycles_validates_range(device: str) -> None:
     """The default range check rejects an endpoint outside ``[0, node_count)``."""
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
     with pytest.raises(ValueError, match="edge indices must lie in"):
-        tw.graph.successor_cycles(edges_wp, 4)
+        od.graph.successor_cycles(edges_wp, 4)
 
 
 def test_successor_cycles_validates_before_launching(
@@ -765,7 +765,7 @@ def test_successor_cycles_validates_before_launching(
     CPU device that is a host-heap overwrite which aborts the process much later, somewhere
     unrelated. Asserting only that ``ValueError`` is raised does not catch that: the exception is
     raised either way. Recording what launched pins the ordering: the only kernels allowed before
-    the raise are the read-only range reduction's, from ``triwarp.kernels.reduce`` (none on the CPU
+    the raise are the read-only range reduction's, from ``ordito.kernels.reduce`` (none on the CPU
     device, which reads the bounds back on the host).
     """
     launched: list[str] = []
@@ -778,17 +778,17 @@ def test_successor_cycles_validates_before_launching(
 
         return recording_launch
 
-    # The wrapper layer launches through ``triwarp._launch``, which falls back to ``wp.launch``
+    # The wrapper layer launches through ``ordito._launch``, which falls back to ``wp.launch``
     # and routes ``launch_tiled`` through its own ``launch``; record every path.
     monkeypatch.setattr(wp, "launch", recording("wp"))
     monkeypatch.setattr(_launch, "launch", recording("_launch"))
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
     with pytest.raises(ValueError, match="edge indices must lie in"):
-        tw.graph.successor_cycles(edges_wp, 4)
-    assert set(launched) <= {"triwarp.kernels.reduce"}, launched
+        od.graph.successor_cycles(edges_wp, 4)
+    assert set(launched) <= {"ordito.kernels.reduce"}, launched
 
 
 def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
@@ -799,8 +799,8 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     the packed buffer stays a valid node index and the offsets still partition it.
     """
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [3, 1]], dtype=np.int32)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 4)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 4)
 
     flat_np = flat_wp.numpy()
     assert flat_np.size == int(offsets_wp.numpy()[-1]) == 4
@@ -817,11 +817,11 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     the two collided and fabricated a bogus "cycle" out of the collision -- one that could even
     contain a node id that never appeared in the input at all.
     """
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[5, 3], [3, 7]], dtype=np.int32), dtype=wp.int32, device=device),
         wp.int32,
     )
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
@@ -829,23 +829,23 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
 def test_successor_cycles_mixed_cycle_and_chain(device: str) -> None:
     """A real cycle is reported unchanged alongside a chain that contributes nothing."""
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [5, 3], [3, 7]], dtype=np.int32)
-    edges_wp = twt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 8)
+    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
     assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2], dtype=np.int32))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 3], dtype=np.int32))
 
 
 def test_successor_cycles_empty(device: str) -> None:
-    edges_wp = twt.empty_2d((0, 2), wp.int32, device=device)
-    flat_wp, offsets_wp = tw.graph.successor_cycles(edges_wp, 5)
+    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
+    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 5)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
-def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[twt.Array2dInt32, int]:
+def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[odt.Array2dInt32, int]:
     """Return the unique undirected vertex edges and vertex count for a Warp mesh."""
     n = mesh_wp.points.size
-    unique_edges, _ = tw.edges.edges_unique(mesh_wp.indices, n_vertices=n)
+    unique_edges, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=n)
     return unique_edges, n
 
 
@@ -854,7 +854,7 @@ def _mesh_vertex_edges(mesh_wp: wp.Mesh) -> tuple[twt.Array2dInt32, int]:
 # ---------------------------------------------------------------------------
 
 
-def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> twt.BsrMatrix[wp.float32]:
+def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> odt.BsrMatrix[wp.float32]:
     """
     Build the mesh edge graph with Euclidean lengths as weights, divided by ``threshold``.
 
@@ -862,12 +862,12 @@ def _length_weighted_csr(mesh_wp: wp.Mesh, threshold: float = 1.0) -> twt.BsrMat
     ``shortest_path_envelope`` takes no threshold because the weights carry it.
     """
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
-    lengths = tw.edges.edges_unique_length(mesh_wp.points, mesh_wp.indices, edges)
+    lengths = od.edges.edges_unique_length(mesh_wp.points, mesh_wp.indices, edges)
     if threshold != 1.0:
         scaled = warp_empty(lengths.size, wp.float32, mesh_wp.device)
         wp.map(wp.div, lengths, wp.float32(threshold), out=scaled)
         lengths = scaled
-    return tw.graph.edges_to_csr(n_vertices, edges, lengths)
+    return od.graph.edges_to_csr(n_vertices, edges, lengths)
 
 
 def _spike_field(n_vertices: int) -> np.ndarray:
@@ -897,7 +897,7 @@ def test_shortest_path_envelope_matches_pymeshlab(
     meshset_pml.apply_scalar_saturation_per_vertex(gradientthr=threshold)
 
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
-    saturated_wp = tw.graph.shortest_path_envelope(
+    saturated_wp = od.graph.shortest_path_envelope(
         _length_weighted_csr(mesh_wp, threshold), values_wp
     )
     # Anti-vacuity: the spike must have been lowered, or a no-op would pass. It is the *peak* that
@@ -926,7 +926,7 @@ def test_shortest_path_envelope_is_the_edge_graph_distance(
 
     seeded_np = np.full(n_vertices, 1e6, dtype=np.float32)
     seeded_np[sources_np] = 0.0
-    envelope_wp = tw.graph.shortest_path_envelope(
+    envelope_wp = od.graph.shortest_path_envelope(
         _length_weighted_csr(mesh_wp), wp.array(seeded_np, dtype=wp.float32, device=mesh_wp.device)
     )
 
@@ -955,7 +955,7 @@ def test_shortest_path_envelope_respects_the_bound(half_torus: tuple[tm.Trimesh,
     values_np = rng.uniform(0.0, 5.0, size=mesh_tm.vertices.shape[0])
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
 
-    saturated_np = tw.graph.shortest_path_envelope(
+    saturated_np = od.graph.shortest_path_envelope(
         _length_weighted_csr(mesh_wp, threshold), values_wp
     ).numpy()
     assert (saturated_np <= values_np.astype(np.float32) + 1e-5).all()
@@ -975,12 +975,12 @@ def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     adjacency = _length_weighted_csr(mesh_wp)
     values_wp = wp.zeros(mesh_tm.vertices.shape[0], dtype=wp.float32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="max_iterations must be non-negative"):
-        tw.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=-1)
+        od.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=-1)
     with pytest.raises(ValueError, match="one entry per node"):
-        tw.graph.shortest_path_envelope(adjacency, twt.as_dense(values_wp[:3]))
+        od.graph.shortest_path_envelope(adjacency, odt.as_dense(values_wp[:3]))
     edges, n_vertices = _mesh_vertex_edges(mesh_wp)
     with pytest.raises(ValueError, match="one entry per edge"):
-        tw.graph.edges_to_csr(n_vertices, edges, values_wp)
+        od.graph.edges_to_csr(n_vertices, edges, values_wp)
 
 
 def test_shortest_path_envelope_rejects_negative_weights(device: str) -> None:
@@ -991,11 +991,11 @@ def test_shortest_path_envelope_rejects_negative_weights(device: str) -> None:
     ``max_iterations`` grows -- silently wrong rather than raising, exactly what the docstring's
     "not admissible" note warns about.
     """
-    edges_wp = twt.as_array2d(
+    edges_wp = odt.as_array2d(
         wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
     )
     weights_wp = wp.array(np.array([-1.0], dtype=np.float32), dtype=wp.float32, device=device)
-    adjacency = tw.graph.edges_to_csr(2, edges_wp, weights_wp)
+    adjacency = od.graph.edges_to_csr(2, edges_wp, weights_wp)
     values_wp = wp.array(np.array([0.0, 1000.0], dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="non-negative"):
-        tw.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=5)
+        od.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=5)

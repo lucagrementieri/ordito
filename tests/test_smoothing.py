@@ -1,4 +1,4 @@
-"""Regression tests for ``triwarp.smoothing`` against trimesh / igl (CPU reference)."""
+"""Regression tests for ``ordito.smoothing`` against trimesh / igl (CPU reference)."""
 
 from __future__ import annotations
 
@@ -22,8 +22,9 @@ import warp.sparse as wps
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
+from ordito.kernels import smoothing as kernel_smoothing
 from tests.conversions import (
     meshlib_bitset_to_numpy,
     meshlib_to_trimesh,
@@ -39,18 +40,17 @@ from tests.conversions import (
     warp_empty,
     warp_to_trimesh,
 )
-from triwarp.kernels import smoothing as kernel_smoothing
 
 if TYPE_CHECKING:
     from typing_extensions import Buffer
 
 
-def _meshlab_umbrella(mesh_tm: tm.Trimesh, device: str) -> twt.BsrMatrix[wp.float32]:
+def _meshlab_umbrella(mesh_tm: tm.Trimesh, device: str) -> odt.BsrMatrix[wp.float32]:
     """
     Assemble MeshLab's face-count-weighted umbrella as a row-stochastic operator.
 
     Each neighbour is weighted by the number of faces its edge shares (2 for an interior edge, 1 on
-    a boundary) and the vertex itself by 1, then the row is normalized. Feeding this to triwarp's
+    a boundary) and the vertex itself by 1, then the row is normalized. Feeding this to ordito's
     ``laplacian_operator=`` parameter is what makes the comparison Class B rather than an exemption.
     """
     shared: dict[tuple[int, int], int] = {}
@@ -86,7 +86,7 @@ def _meshlab_umbrella(mesh_tm: tm.Trimesh, device: str) -> twt.BsrMatrix[wp.floa
             device=device,
         ),
     )
-    assert twt.has_blocks(umbrella, wp.float32)
+    assert odt.has_blocks(umbrella, wp.float32)
     return umbrella
 
 
@@ -103,7 +103,7 @@ def _noisy_icosphere(subdivisions: int = 2, sigma: float = 0.01, seed: int = 0) 
 def test_filter_laplacian_explicit(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points, mesh_wp.indices, iterations=8, volume_constraint=False
     )
     mesh_ref = mesh_tm.copy()
@@ -115,7 +115,7 @@ def test_filter_laplacian_explicit(request: pytest.FixtureRequest, mesh_name: st
 def test_filter_laplacian_volume_constraint(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points, mesh_wp.indices, iterations=8, volume_constraint=True
     )
     mesh_ref = mesh_tm.copy()
@@ -133,7 +133,7 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
     Three named transforms. ``cotangentweight=False`` selects the uniform scheme (the benchmark
     passes it too); ``lamb=1.0`` matches MeshLab's full step, which replaces the vertex by the
     weighted mean rather than interpolating toward it; and the operator is
-    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] rather than triwarp's default,
+    [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] rather than ordito's default,
     because MeshLab's uniform Laplacian is *not* the 1-ring mean.
 
     Measured agreement **6.5e-08 / 1.2e-07 / 2.6e-07** at 1 / 3 / 10 passes -- float32 accumulation
@@ -153,7 +153,7 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
         stepsmoothnum=iterations, cotangentweight=False, boundary=True
     )
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         lamb=1.0,
@@ -169,7 +169,7 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
 def test_filter_laplacian_implicit(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = icosahedron
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         lamb=0.5,
@@ -201,7 +201,7 @@ def test_filter_laplacian_implicit_on_open_meshes(
     BiCGSTAB fallback.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         lamb=lamb,
@@ -220,9 +220,9 @@ def test_filter_laplacian_implicit_on_open_meshes(
 
 def test_filter_laplacian_pluggable_operator(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     mesh_tm, mesh_wp = half_torus
-    operator = tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False)
+    operator = od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices, equal_weight=False)
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         iterations=6,
@@ -257,8 +257,8 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
     # *in place*, so measuring the capacity on one build would hand the filter a repaired matrix and
     # the test would pass whatever the implementation does -- the operator under test has to be a
     # build nothing has synced.
-    unsynced = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float32)
-    reference = tw.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float32)
+    unsynced = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float32)
+    reference = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float32)
     capacity = int(reference.nnz)
     nnz = reference.nnz_sync()
     # Guard the guard: without a real capacity gap this test compares a matrix with itself.
@@ -271,7 +271,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
         reference.values[:nnz],
         prune_numerical_zeros=False,
     )
-    assert twt.has_blocks(compact, wp.float32)
+    assert odt.has_blocks(compact, wp.float32)
 
     # Random garbage is almost always out of range, and ``bsr_from_triplets`` drops an out-of-range
     # index silently -- which is exactly why the defect stayed invisible. Leaving plausible in-range
@@ -287,7 +287,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
         del _junk
     wp.synchronize()
 
-    smoothed_wp = tw.smoothing.filter_laplacian(
+    smoothed_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         iterations=2,
@@ -295,7 +295,7 @@ def test_filter_laplacian_implicit_duplicate_built_operator(
         volume_constraint=False,
         laplacian_operator=unsynced,
     )
-    compact_wp = tw.smoothing.filter_laplacian(
+    compact_wp = od.smoothing.filter_laplacian(
         mesh_wp.points,
         mesh_wp.indices,
         iterations=2,
@@ -344,15 +344,15 @@ def test_inflate_grows_the_volume_along_the_normals(icosphere: tuple[tm.Trimesh,
             mesh_tm.vertices[mesh_tm.edges[:, 0]] - mesh_tm.vertices[mesh_tm.edges[:, 1]], axis=1
         ).mean()
     )
-    normals_np = tw.vertices.vertex_normals(vertices_wp, faces_wp).numpy()
+    normals_np = od.vertices.vertex_normals(vertices_wp, faces_wp).numpy()
 
     volumes = []
     for scale in (0.0, 0.1, 0.5):
-        inflated_wp = tw.smoothing.inflate(vertices_wp, faces_wp, scale * mean_edge)
+        inflated_wp = od.smoothing.inflate(vertices_wp, faces_wp, scale * mean_edge)
         inflated_tm = warp_to_trimesh(inflated_wp, faces_wp)
         volumes.append(float(inflated_tm.volume))
         assert inflated_tm.is_watertight
-        assert not tw.validation.is_self_intersecting(wp.Mesh(inflated_wp, faces_wp))
+        assert not od.validation.is_self_intersecting(wp.Mesh(inflated_wp, faces_wp))
         if scale == 0.0:
             assert np.isclose(volumes[-1], mesh_tm.volume, rtol=1e-3)
             continue
@@ -378,24 +378,24 @@ def test_inflate_deflates_and_handles_edge_cases(device: str) -> None:
     vertices_wp, faces_wp = numpy_to_warp(
         np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
     )
-    deflated_wp = tw.smoothing.inflate(vertices_wp, faces_wp, -0.05)
+    deflated_wp = od.smoothing.inflate(vertices_wp, faces_wp, -0.05)
     assert warp_to_trimesh(deflated_wp, faces_wp).volume < mesh_tm.volume
 
-    plain_np = tw.smoothing.inflate(vertices_wp, faces_wp, 0.05, pre_smooth=False).numpy()
-    smoothed_np = tw.smoothing.inflate(vertices_wp, faces_wp, 0.05, pre_smooth=True).numpy()
+    plain_np = od.smoothing.inflate(vertices_wp, faces_wp, 0.05, pre_smooth=False).numpy()
+    smoothed_np = od.smoothing.inflate(vertices_wp, faces_wp, 0.05, pre_smooth=True).numpy()
     assert not np.allclose(plain_np, smoothed_np)
     assert not np.allclose(
-        plain_np, tw.smoothing.inflate(vertices_wp, faces_wp, 0.05, gradual=False).numpy()
+        plain_np, od.smoothing.inflate(vertices_wp, faces_wp, 0.05, gradual=False).numpy()
     )
 
     assert np.array_equal(
-        tw.smoothing.inflate(vertices_wp, faces_wp, 0.05, iterations=0).numpy(), vertices_wp.numpy()
+        od.smoothing.inflate(vertices_wp, faces_wp, 0.05, iterations=0).numpy(), vertices_wp.numpy()
     )
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     empty_faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.smoothing.inflate(empty_vertices_wp, empty_faces_wp, 0.1).shape == (0,)
+    assert od.smoothing.inflate(empty_vertices_wp, empty_faces_wp, 0.1).shape == (0,)
     with pytest.raises(ValueError, match="iterations must be non-negative"):
-        tw.smoothing.inflate(vertices_wp, faces_wp, 0.1, iterations=-1)
+        od.smoothing.inflate(vertices_wp, faces_wp, 0.1, iterations=-1)
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
@@ -414,7 +414,7 @@ def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    smoothed_wp = tw.smoothing.filter_humphrey(
+    smoothed_wp = od.smoothing.filter_humphrey(
         mesh_wp.points, mesh_wp.indices, alpha=0.1, beta=0.5, iterations=8
     )
     mesh_ref = mesh_tm.copy()
@@ -450,8 +450,8 @@ def test_filter_spikes_matches_meshlib(
     n_vertices = vertices_wp.size
     min_angle_sum = threshold_turns * 2.0 * math.pi
 
-    defects_np = tw.vertices.vertex_defects(
-        n_vertices, faces_wp, tw.triangles.face_angles(vertices_wp, faces_wp)
+    defects_np = od.vertices.vertex_defects(
+        n_vertices, faces_wp, od.triangles.face_angles(vertices_wp, faces_wp)
     ).numpy()
     spikes_np = (2.0 * np.pi - defects_np) < min_angle_sum
     assert 0 < int(spikes_np.sum()) < n_vertices  # non-vacuity: some but not all
@@ -462,7 +462,7 @@ def test_filter_spikes_matches_meshlib(
     )
     assert np.array_equal(spikes_np, spikes_ml)
 
-    repaired_wp, flattened = tw.smoothing.filter_spikes(
+    repaired_wp, flattened = od.smoothing.filter_spikes(
         vertices_wp, faces_wp, min_angle_sum, return_count=True
     )
     moved_np = np.abs(repaired_wp.numpy() - vertices_wp.numpy()).max(axis=1) > 1e-7
@@ -481,8 +481,8 @@ def test_filter_spikes_matches_meshlib(
     assert int(moved_ml.sum()) == int(moved_np.sum())
 
     # And the repair worked: recomputed on the new positions, nothing is a spike any more.
-    after_np = tw.vertices.vertex_defects(
-        n_vertices, faces_wp, tw.triangles.face_angles(repaired_wp, faces_wp)
+    after_np = od.vertices.vertex_defects(
+        n_vertices, faces_wp, od.triangles.face_angles(repaired_wp, faces_wp)
     ).numpy()
     assert not np.any((2.0 * np.pi - after_np) < min_angle_sum)
 
@@ -500,10 +500,10 @@ def test_filter_spikes_return_count_shapes(torus_spikes: tuple[tm.Trimesh, wp.Me
     _mesh_tm, mesh_wp = torus_spikes
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    positions_only_wp = tw.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi)
+    positions_only_wp = od.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi)
     assert isinstance(positions_only_wp, wp.array)
 
-    positions_wp, flattened = tw.smoothing.filter_spikes(
+    positions_wp, flattened = od.smoothing.filter_spikes(
         vertices_wp, faces_wp, math.pi, return_count=True
     )
     assert flattened > 0  # non-vacuity: the fixture really has spikes
@@ -522,7 +522,7 @@ def test_filter_spikes_leaves_a_clean_mesh_alone(
     """
     _, mesh_wp = icosphere
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    repaired_wp, flattened = tw.smoothing.filter_spikes(
+    repaired_wp, flattened = od.smoothing.filter_spikes(
         vertices_wp, faces_wp, math.pi, return_count=True
     )
     assert flattened == 0
@@ -530,9 +530,9 @@ def test_filter_spikes_leaves_a_clean_mesh_alone(
 
     empty_vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     empty_faces_wp = warp_empty(0, wp.int32, device)
-    assert tw.smoothing.filter_spikes(empty_vertices_wp, empty_faces_wp, math.pi).shape == (0,)
+    assert od.smoothing.filter_spikes(empty_vertices_wp, empty_faces_wp, math.pi).shape == (0,)
     with pytest.raises(ValueError, match="max_iter must be non-negative"):
-        tw.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi, max_iter=-1)
+        od.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi, max_iter=-1)
 
 
 @pytest.mark.parity("equalize_triangle_areas", "meshlib")
@@ -559,7 +559,7 @@ def test_equalize_triangle_areas_matches_meshlib(device: str, no_shrinkage: bool
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    relaxed_wp = tw.smoothing.equalize_triangle_areas(
+    relaxed_wp = od.smoothing.equalize_triangle_areas(
         vertices_wp, faces_wp, 3, 0.5, no_shrinkage=no_shrinkage
     )
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -573,8 +573,8 @@ def test_equalize_triangle_areas_matches_meshlib(device: str, no_shrinkage: bool
     assert np.abs(relaxed_ml - np.asarray(mesh_tm.vertices)).max() > 1e-3
     assert np.allclose(relaxed_wp.numpy(), relaxed_ml, rtol=1e-5, atol=1e-5)
 
-    before = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)[1].numpy()
-    after = tw.triangles.face_normals_and_areas(relaxed_wp, faces_wp)[1].numpy()
+    before = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)[1].numpy()
+    after = od.triangles.face_normals_and_areas(relaxed_wp, faces_wp)[1].numpy()
     assert after.std() < before.std()
 
 
@@ -593,15 +593,15 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
     n_vertices = vertices_wp.size
     positions_np = vertices_wp.numpy()
 
-    unbounded_wp = tw.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 3, 0.5)
+    unbounded_wp = od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 3, 0.5)
     reach = np.linalg.norm(unbounded_wp.numpy() - positions_np, axis=1).max()
     assert reach > 1e-3  # non-vacuity: there is a displacement for the bound to bite into
 
-    loose_wp = tw.smoothing.equalize_triangle_areas(
+    loose_wp = od.smoothing.equalize_triangle_areas(
         vertices_wp, faces_wp, 3, 0.5, max_displacement=10.0 * reach
     )
     assert np.array_equal(loose_wp.numpy(), unbounded_wp.numpy())
-    tight_wp = tw.smoothing.equalize_triangle_areas(
+    tight_wp = od.smoothing.equalize_triangle_areas(
         vertices_wp, faces_wp, 3, 0.5, max_displacement=0.2 * reach
     )
     assert np.linalg.norm(tight_wp.numpy() - positions_np, axis=1).max() <= 0.2 * reach + 1e-6
@@ -609,7 +609,7 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
     region_np = positions_np[:, 2] > 0.0
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
     assert 0 < int(region_np.sum()) < n_vertices  # non-vacuity: a real partition
-    partial_wp = tw.smoothing.equalize_triangle_areas(
+    partial_wp = od.smoothing.equalize_triangle_areas(
         vertices_wp, faces_wp, 3, 0.5, region=region_wp
     )
     assert np.array_equal(partial_wp.numpy()[~region_np], positions_np[~region_np])
@@ -617,18 +617,18 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
 
     all_true_wp = wp.full(n_vertices, True, dtype=wp.bool, device=device)
     assert np.array_equal(
-        tw.smoothing.equalize_triangle_areas(
+        od.smoothing.equalize_triangle_areas(
             vertices_wp, faces_wp, 3, 0.5, region=all_true_wp
         ).numpy(),
         unbounded_wp.numpy(),
     )
     assert np.array_equal(
-        tw.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 0).numpy(), positions_np
+        od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, 0).numpy(), positions_np
     )
     with pytest.raises(ValueError, match="iterations must be non-negative"):
-        tw.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, -1)
+        od.smoothing.equalize_triangle_areas(vertices_wp, faces_wp, -1)
     with pytest.raises(ValueError, match="region must be a length-"):
-        tw.smoothing.equalize_triangle_areas(
+        od.smoothing.equalize_triangle_areas(
             vertices_wp, faces_wp, 1, region=wp.zeros(3, dtype=wp.bool, device=device)
         )
 
@@ -643,7 +643,7 @@ def test_relax_keep_volume_matches_meshlib(device: str) -> None:
     arithmetic on both sides.
 
     The invariant is the point of the function and no comparison implies it: a plain
-    [`filter_laplacian`][triwarp.smoothing.filter_laplacian] over the same mesh must lose
+    [`filter_laplacian`][ordito.smoothing.filter_laplacian] over the same mesh must lose
     noticeably more volume than this does. Asserted as a ratio rather than an absolute so it does
     not depend on the noise amplitude.
     """
@@ -651,7 +651,7 @@ def test_relax_keep_volume_matches_meshlib(device: str) -> None:
     mesh_wp = trimesh_to_warp(mesh_tm, device)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
-    relaxed_wp = tw.smoothing.relax_keep_volume(vertices_wp, faces_wp, 3, 0.5)
+    relaxed_wp = od.smoothing.relax_keep_volume(vertices_wp, faces_wp, 3, 0.5)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     params_ml = mm.MeshRelaxParams()
     params_ml.iterations = 3
@@ -663,7 +663,7 @@ def test_relax_keep_volume_matches_meshlib(device: str) -> None:
 
     start = abs(warp_to_trimesh(vertices_wp, faces_wp).volume)
     kept = abs(warp_to_trimesh(relaxed_wp, faces_wp).volume)
-    plain_wp = tw.smoothing.filter_laplacian(
+    plain_wp = od.smoothing.filter_laplacian(
         vertices_wp, faces_wp, lamb=0.5, iterations=3, volume_constraint=False
     )
     shrunk = abs(warp_to_trimesh(plain_wp, faces_wp).volume)
@@ -676,8 +676,8 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     """
     Class C against ``relaxApprox``: the surfaces agree, the neighbourhoods are not the same set.
 
-    The two differ by construction in *which* vertices each fit sees -- triwarp uses
-    [`geodesic_ball`][triwarp.neighbors.geodesic_ball]'s breadth-first ball and meshlib dilates a
+    The two differ by construction in *which* vertices each fit sees -- ordito uses
+    [`geodesic_ball`][ordito.neighbors.geodesic_ball]'s breadth-first ball and meshlib dilates a
     bitset by an edge-length budget, which are the same idea and not the same set -- so an
     element-wise comparison is not available and the displacement fields are compared instead.
 
@@ -700,7 +700,7 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     positions_np = vertices_wp.numpy()
 
-    relaxed_wp = tw.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, 1, 0.5, fit)
+    relaxed_wp = od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, 1, 0.5, fit)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     params_ml = mm.MeshApproxRelaxParams()
     params_ml.iterations = 1
@@ -724,15 +724,15 @@ def test_relax_approx_matches_meshlib(device: str, fit: Literal["planar", "quadr
     before = roughness(positions_np)
     assert roughness(relaxed_wp.numpy()) < before
     assert roughness(relaxed_ml) < before
-    smoothed_tw = before - roughness(relaxed_wp.numpy())
+    smoothed_od = before - roughness(relaxed_wp.numpy())
     smoothed_ml = before - roughness(relaxed_ml)
-    assert abs(smoothed_tw - smoothed_ml) < 0.25 * max(smoothed_tw, smoothed_ml)
+    assert abs(smoothed_od - smoothed_ml) < 0.25 * max(smoothed_od, smoothed_ml)
 
 
 @pytest.mark.parametrize("scale", [3e-4, 1e-4])
 def test_relax_approx_quadric_is_scale_equivariant(device: str, scale: float) -> None:
     """
-    Triwarp against triwarp: the same relaxation, in units of the mesh, at two mesh scales.
+    Ordito against ordito: the same relaxation, in units of the mesh, at two mesh scales.
 
     The oracle sits on the unit-scale side, which ``test_relax_approx_matches_meshlib`` pins
     against ``relaxApprox``; this only asks that shrinking the mesh does not change the relative
@@ -756,10 +756,10 @@ def test_relax_approx_quadric_is_scale_equivariant(device: str, scale: float) ->
 
     moves = {}
     for fit in ("planar", "quadric"):
-        unit_np = tw.smoothing.relax_approx(
+        unit_np = od.smoothing.relax_approx(
             unit_wp.points, unit_wp.indices, 0.3, 1, 0.5, fit
         ).numpy()
-        small_np = tw.smoothing.relax_approx(
+        small_np = od.smoothing.relax_approx(
             small_wp.points, small_wp.indices, 0.3 * scale, 1, 0.5, fit
         ).numpy()
         moves[fit] = unit_np - np.asarray(mesh_tm.vertices)
@@ -783,22 +783,22 @@ def test_relax_approx_needs_a_radius_that_reaches(device: str) -> None:
     """
     mesh_wp = trimesh_to_warp(_noisy_icosphere(3, 0.02), device)
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    tiny_wp = tw.smoothing.relax_approx(vertices_wp, faces_wp, 1e-6, 1, 0.5)
+    tiny_wp = od.smoothing.relax_approx(vertices_wp, faces_wp, 1e-6, 1, 0.5)
     assert np.array_equal(tiny_wp.numpy(), vertices_wp.numpy())
     assert np.array_equal(
-        tw.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, 0).numpy(), vertices_wp.numpy()
+        od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, 0).numpy(), vertices_wp.numpy()
     )
     with pytest.raises(ValueError, match="dilate_radius must be positive"):
-        tw.smoothing.relax_approx(vertices_wp, faces_wp, 0.0)
+        od.smoothing.relax_approx(vertices_wp, faces_wp, 0.0)
     with pytest.raises(ValueError, match="fit must be"):
-        tw.smoothing.relax_approx(
+        od.smoothing.relax_approx(
             vertices_wp,
             faces_wp,
             0.3,
             fit="cubic",  # pyright: ignore[reportArgumentType]  # the off-menu value under test
         )
     with pytest.raises(ValueError, match="max_displacement must be non-negative"):
-        tw.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
+        od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
@@ -813,7 +813,7 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    smoothed_wp = tw.smoothing.filter_taubin(
+    smoothed_wp = od.smoothing.filter_taubin(
         mesh_wp.points, mesh_wp.indices, lamb=0.5, nu=0.53, iterations=9
     )
     mesh_ref = mesh_tm.copy()
@@ -834,7 +834,7 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
 #     mesh a degree-d vertex gets ``1 / (2d + 1)`` on itself and ``2 / (2d + 1)`` on each neighbour.
 #     That is `_meshlab_umbrella` below, and it is why these two filters are NOT the plain 1-ring
 #     mean -- the difference is 8% of the displacement, far too large to read as a tolerance.
-#   * ``apply_coord_taubin_smoothing`` uses the plain 1-ring mean instead, which is triwarp's own
+#   * ``apply_coord_taubin_smoothing`` uses the plain 1-ring mean instead, which is ordito's own
 #     default operator.
 
 
@@ -844,17 +844,17 @@ def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
     """
     Class B: exact, once the *pass count* is mapped -- and the mapping is a factor of two.
 
-    MeshLab's ``stepsmoothnum`` counts lambda-mu **pairs**, where triwarp follows trimesh and does
+    MeshLab's ``stepsmoothnum`` counts lambda-mu **pairs**, where ordito follows trimesh and does
     one half-step per ``iterations``, alternating the shrinking and inflating passes. So
-    ``iterations = 2 * stepsmoothnum`` is the named transform, and ``mu=-0.53`` is triwarp's
+    ``iterations = 2 * stepsmoothnum`` is the named transform, and ``mu=-0.53`` is ordito's
     ``nu=0.53`` (the sign is in the convention, not the value). Unlike the two filters above, this
-    one uses the plain 1-ring mean, so triwarp's default operator is the right one.
+    one uses the plain 1-ring mean, so ordito's default operator is the right one.
 
     Measured **5.2e-08 / 4.4e-08 / 4.6e-08** at 1 / 3 / 5 MeshLab steps under the doubled count,
     against **2.7e-02 / 2.6e-02 / 2.6e-02** at the naive equal count -- a 5-orders-of-magnitude
     separation, so this assert is what holds the pass mapping in place.
     ``benchmarks/test_smoothing`` originally gave MeshLab ``stepsmoothnum=_ITERATIONS`` against
-    triwarp's ``iterations=_ITERATIONS`` and so timed it doing twice the passes; that row now halves
+    ordito's ``iterations=_ITERATIONS`` and so timed it doing twice the passes; that row now halves
     it.
     """
     mesh_tm = _noisy_icosphere()
@@ -863,7 +863,7 @@ def test_filter_taubin_matches_pymeshlab(device: str, steps: int) -> None:
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.apply_coord_taubin_smoothing(lambda_=0.5, mu=-0.53, stepsmoothnum=steps)
 
-    smoothed_wp = tw.smoothing.filter_taubin(
+    smoothed_wp = od.smoothing.filter_taubin(
         mesh_wp.points, mesh_wp.indices, lamb=0.5, nu=0.53, iterations=2 * steps
     )
     assert np.allclose(
@@ -894,8 +894,8 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
     closes it to **2.4e-07 / 4.2e-07 / 7.2e-07**.
 
     Two named transforms, both conventions rather than arithmetic: ``num_iter`` counts lambda-mu
-    **pairs** where triwarp does one half-step per ``iterations``, so the count doubles (the same
-    factor the pymeshlab pair above needs); and ``mu=-0.53`` is triwarp's ``nu=0.53``, the sign
+    **pairs** where ordito does one half-step per ``iterations``, so the count doubles (the same
+    factor the pymeshlab pair above needs); and ``mu=-0.53`` is ordito's ``nu=0.53``, the sign
     living in the convention.
 
     The fixed-operator gap is asserted here too, on the same input -- without it this test would
@@ -911,7 +911,7 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
     assert verts_t is not None
     vertices_p3d = verts_t.cpu().numpy()
 
-    recomputed_wp = tw.smoothing.filter_taubin(
+    recomputed_wp = od.smoothing.filter_taubin(
         mesh_wp.points,
         mesh_wp.indices,
         lamb=0.53,
@@ -922,24 +922,24 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
     assert np.allclose(recomputed_wp.numpy(), vertices_p3d, rtol=1e-5, atol=1e-5)
 
     # The default is a *different* filter, and the whole reason for the keyword.
-    fixed_wp = tw.smoothing.filter_taubin(
+    fixed_wp = od.smoothing.filter_taubin(
         mesh_wp.points,
         mesh_wp.indices,
         lamb=0.53,
         nu=0.53,
         iterations=2 * iterations,
-        laplacian_operator=tw.laplacian.laplacian(
+        laplacian_operator=od.laplacian.laplacian(
             mesh_wp.points, mesh_wp.indices, equal_weight=False
         ),
     )
     assert float(np.abs(fixed_wp.numpy() - vertices_p3d).max()) > 1e-3
 
     with pytest.raises(ValueError, match="do not also pass one"):
-        tw.smoothing.filter_taubin(
+        od.smoothing.filter_taubin(
             mesh_wp.points,
             mesh_wp.indices,
             recompute=True,
-            laplacian_operator=tw.laplacian.laplacian(mesh_wp.points, mesh_wp.indices),
+            laplacian_operator=od.laplacian.laplacian(mesh_wp.points, mesh_wp.indices),
         )
 
 
@@ -955,7 +955,7 @@ def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: 
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     iterations = 5
 
-    smoothed_wp = tw.smoothing.filter_neighborhood_average(
+    smoothed_wp = od.smoothing.filter_neighborhood_average(
         mesh_wp.points, mesh_wp.indices, iterations=iterations
     )
 
@@ -980,7 +980,7 @@ def test_filter_mut_dif_laplacian_volume_constraint(
     # must be meaningful.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
-    smoothed_wp = tw.smoothing.filter_mut_dif_laplacian(
+    smoothed_wp = od.smoothing.filter_mut_dif_laplacian(
         mesh_wp.points, mesh_wp.indices, lamb=0.5, iterations=8, volume_constraint=True
     )
     mesh_ref = mesh_tm.copy()
@@ -999,7 +999,7 @@ def test_filter_mut_dif_laplacian_no_volume_constraint(
     # so float32 warp matches the float64 reference tightly.
     mesh_tm, mesh_wp = hemisphere
 
-    smoothed_wp = tw.smoothing.filter_mut_dif_laplacian(
+    smoothed_wp = od.smoothing.filter_mut_dif_laplacian(
         mesh_wp.points, mesh_wp.indices, lamb=0.5, iterations=8, volume_constraint=False
     )
     mesh_ref = mesh_tm.copy()
@@ -1044,7 +1044,7 @@ def test_filter_implicit_fairing(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> Non
         system_igl = (mass_igl - lamb * stiffness_igl).tocsc()
         vertices_igl = cast("np.ndarray", spla.spsolve(system_igl, mass_igl.dot(vertices_igl)))
 
-    smoothed_wp = tw.smoothing.filter_implicit_fairing(
+    smoothed_wp = od.smoothing.filter_implicit_fairing(
         mesh_wp.points, mesh_wp.indices, lamb=lamb, iterations=iterations
     )
 
@@ -1055,11 +1055,11 @@ def test_filter_implicit_fairing_pins_the_boundary(hemisphere: tuple[tm.Trimesh,
     """Boundary vertices are held exactly; the interior is the part that moves."""
     _, mesh_wp = hemisphere
     original_np = mesh_wp.points.numpy()
-    boundary_np = tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
+    boundary_np = od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).numpy()
     interior_np = np.setdiff1d(np.arange(len(original_np)), boundary_np)
     assert len(boundary_np) > 0  # the fixture must actually be open for this to mean anything
 
-    smoothed_np = tw.smoothing.filter_implicit_fairing(
+    smoothed_np = od.smoothing.filter_implicit_fairing(
         mesh_wp.points, mesh_wp.indices, iterations=5
     ).numpy()
 
@@ -1083,7 +1083,7 @@ def test_filter_implicit_fairing_pinned_stays_stable_on_an_open_mesh(
 
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
-        smoothed_np = tw.smoothing.filter_implicit_fairing(
+        smoothed_np = od.smoothing.filter_implicit_fairing(
             mesh_wp.points, mesh_wp.indices, iterations=25
         ).numpy()
 
@@ -1109,16 +1109,16 @@ def test_filter_implicit_fairing_pins_a_mesh_with_no_interior_vertex(device: str
     faces_np = np.array([0, 1, 2, 1, 3, 2], dtype=np.int32)
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
     # Non-vacuity: every vertex really is on the boundary, so there is no interior to solve over.
-    boundary_np = tw.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
+    boundary_np = od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
     assert len(boundary_np) == len(vertices_np)
 
-    pinned_np = tw.smoothing.filter_implicit_fairing(
+    pinned_np = od.smoothing.filter_implicit_fairing(
         vertices_wp, faces_wp, iterations=4, pin_boundary=True
     ).numpy()
     assert np.array_equal(pinned_np, vertices_wp.numpy())
     # The unconstrained flow on the same input *does* move, which is what the pinned path was
     # silently doing before -- so this is the arm that makes the equality above mean something.
-    free_np = tw.smoothing.filter_implicit_fairing(
+    free_np = od.smoothing.filter_implicit_fairing(
         vertices_wp, faces_wp, iterations=4, pin_boundary=False
     ).numpy()
     assert np.abs(free_np - vertices_wp.numpy()).max() > 1e-6
@@ -1134,12 +1134,12 @@ def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
     atomics, so *any* two runs of this function differ in the last bits, flag or no flag.
     """
     _, mesh_wp = icosahedron
-    assert tw.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size == 0
+    assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).size == 0
 
-    pinned_np = tw.smoothing.filter_implicit_fairing(
+    pinned_np = od.smoothing.filter_implicit_fairing(
         mesh_wp.points, mesh_wp.indices, iterations=6, pin_boundary=True
     ).numpy()
-    unpinned_np = tw.smoothing.filter_implicit_fairing(
+    unpinned_np = od.smoothing.filter_implicit_fairing(
         mesh_wp.points, mesh_wp.indices, iterations=6, pin_boundary=False
     ).numpy()
 
@@ -1165,13 +1165,13 @@ def test_implicit_filters_cpu_match_cuda(icosahedron: tuple[tm.Trimesh, wp.Mesh]
     for name, call in (
         (
             "filter_laplacian",
-            lambda v, f: tw.smoothing.filter_laplacian(
+            lambda v, f: od.smoothing.filter_laplacian(
                 v, f, iterations=2, implicit_time_integration=True
             ),
         ),
         (
             "filter_implicit_fairing",
-            lambda v, f: tw.smoothing.filter_implicit_fairing(v, f, iterations=2),
+            lambda v, f: od.smoothing.filter_implicit_fairing(v, f, iterations=2),
         ),
     ):
         positions = {}
@@ -1208,7 +1208,7 @@ def test_smooth_region_fixed_rim_matches_meshlib(device: str):
     f_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
     free_wp = wp.array(free_np, dtype=wp.bool, device=device)
 
-    result_wp = tw.smoothing.smooth_region_fixed_rim(v_wp, f_wp, free_wp)
+    result_wp = od.smoothing.smooth_region_fixed_rim(v_wp, f_wp, free_wp)
 
     mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
     params_ml = mm.PositionVertsSmoothlyParams()
@@ -1226,7 +1226,7 @@ def test_smooth_region_fixed_rim_dirichlet_residual(device: str):
     f_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
     free_wp = wp.array(free_np, dtype=wp.bool, device=device)
 
-    result = tw.smoothing.smooth_region_fixed_rim(v_wp, f_wp, free_wp).numpy()
+    result = od.smoothing.smooth_region_fixed_rim(v_wp, f_wp, free_wp).numpy()
 
     # Umbrella (unit-weight) residual: deg(v) * p_v - sum_neighbors p_d == 0 for every free vertex.
     adjacency: dict[int, set[int]] = {}
@@ -1250,17 +1250,17 @@ def test_smooth_region_matches_meshlib(device: str, edge_weights: str):
 
     Same reasoning as the fixed-rim test above, at ``1e-4``. Both weightings are run because each
     builds a different system rather than a differently-scaled one, and because the pairing of
-    ``EdgeWeights.Cotan`` / ``EdgeWeights.Unit`` onto triwarp's ``edge_weights`` is a claim about
+    ``EdgeWeights.Cotan`` / ``EdgeWeights.Unit`` onto ordito's ``edge_weights`` is a claim about
     which discretization each name means -- the same kind of claim MeshLib settles for the vertex
     normals. ``VertexMass.Unit`` is passed explicitly for that reason: the mass matrix is the third
-    axis, and triwarp has no counterpart to its area-weighted setting.
+    axis, and ordito has no counterpart to its area-weighted setting.
     """
     vertices_np, faces_np, free_np = _sphere_region()
     v_wp = points_to_warp(vertices_np, device)
     f_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
     free_wp = wp.array(free_np, dtype=wp.bool, device=device)
 
-    result_wp = tw.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights=edge_weights)
+    result_wp = od.smoothing.smooth_region(v_wp, f_wp, free_wp, edge_weights=edge_weights)
 
     mesh_ml = numpy_to_meshlib(vertices_np, faces_np)
     ew_ml = mm.EdgeWeights.Cotan if edge_weights == "cotan" else mm.EdgeWeights.Unit
@@ -1278,12 +1278,12 @@ def test_smooth_region_empty_region(device: str):
     v_wp = points_to_warp(vertices_np, device)
     f_wp = wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device)
     empty = wp.zeros(len(vertices_np), dtype=wp.bool, device=device)
-    result = tw.smoothing.smooth_region_fixed_rim(v_wp, f_wp, empty)
+    result = od.smoothing.smooth_region_fixed_rim(v_wp, f_wp, empty)
     assert np.array_equal(result.numpy(), v_wp.numpy())
 
 
 @pytest.mark.parametrize(
-    "smoother", [tw.smoothing.smooth_region, tw.smoothing.smooth_region_fixed_rim]
+    "smoother", [od.smoothing.smooth_region, od.smoothing.smooth_region_fixed_rim]
 )
 def test_region_smoothers_leave_an_unreferenced_free_vertex_where_it_is(
     device: str, smoother: Callable[..., wp.array[wp.vec3]]
@@ -1324,9 +1324,9 @@ def test_region_smoothers_leave_an_unreferenced_free_vertex_where_it_is(
 @pytest.mark.parametrize(
     ("smoother", "edge_weights"),
     [
-        (tw.smoothing.smooth_region_fixed_rim, None),
-        (tw.smoothing.smooth_region, "unit"),
-        (tw.smoothing.smooth_region, "cotan"),
+        (od.smoothing.smooth_region_fixed_rim, None),
+        (od.smoothing.smooth_region, "unit"),
+        (od.smoothing.smooth_region, "cotan"),
     ],
 )
 def test_region_smoothers_ignore_a_face_repeating_a_vertex(
@@ -1369,9 +1369,9 @@ def _patch_to_refine(device: str):
 
     n_vertices_before = vertices_wp.size
     n_faces_before = faces_wp.size // 3
-    filled_wp = tw.holes.fill_min_weight(vertices_wp, faces_wp)
+    filled_wp = od.holes.fill_min_weight(vertices_wp, faces_wp)
     n_faces_after = filled_wp.size // 3
-    patch_wp = tw.array.indices_to_mask(
+    patch_wp = od.array.indices_to_mask(
         wp.array(
             np.arange(n_faces_before, n_faces_after, dtype=np.int32), dtype=wp.int32, device=device
         ),
@@ -1390,9 +1390,9 @@ def test_refine_and_smooth_region_without_curvature_is_just_the_subdivision(devi
     ``np.array_equal``, not a tolerance.
     """
     vertices_wp, faces_wp, patch_wp, n_vertices_before = _patch_to_refine(device)
-    max_edge = float(tw.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
+    max_edge = float(od.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
 
-    refined_wp, refined_faces_wp, refined_patch_wp = tw.smoothing.refine_and_smooth_region(
+    refined_wp, refined_faces_wp, refined_patch_wp = od.smoothing.refine_and_smooth_region(
         vertices_wp,
         faces_wp,
         n_vertices_before,
@@ -1401,7 +1401,7 @@ def test_refine_and_smooth_region_without_curvature_is_just_the_subdivision(devi
         smooth_curvature=False,
         **_REFINE_KWARGS,
     )
-    subdivided_wp, subdivided_faces_wp, subdivided_patch_wp = tw.remesh.subdivide_region_to_size(
+    subdivided_wp, subdivided_faces_wp, subdivided_patch_wp = od.remesh.subdivide_region_to_size(
         vertices_wp, faces_wp, patch_wp, max_edge=max_edge, max_splits=3, max_angle_change=0.5
     )
 
@@ -1420,9 +1420,9 @@ def test_refine_and_smooth_region_moves_only_the_vertices_subdivision_added(devi
     three displaced (max 0.034), and the 161 pre-existing ones displaced by **exactly 0.0**.
     """
     vertices_wp, faces_wp, patch_wp, n_vertices_before = _patch_to_refine(device)
-    max_edge = float(tw.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
+    max_edge = float(od.edges.mean_edge_length(vertices_wp, faces_wp)) * 0.6
 
-    smoothed_wp, smoothed_faces_wp, _patch_wp = tw.smoothing.refine_and_smooth_region(
+    smoothed_wp, smoothed_faces_wp, _patch_wp = od.smoothing.refine_and_smooth_region(
         vertices_wp,
         faces_wp,
         n_vertices_before,
@@ -1431,7 +1431,7 @@ def test_refine_and_smooth_region_moves_only_the_vertices_subdivision_added(devi
         smooth_curvature=True,
         **_REFINE_KWARGS,
     )
-    subdivided_wp, subdivided_faces_wp, _subdivided_patch_wp = tw.remesh.subdivide_region_to_size(
+    subdivided_wp, subdivided_faces_wp, _subdivided_patch_wp = od.remesh.subdivide_region_to_size(
         vertices_wp, faces_wp, patch_wp, max_edge=max_edge, max_splits=3, max_angle_change=0.5
     )
 
@@ -1491,7 +1491,7 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel(), device)
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
 
-    smoothed_wp = tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 4)
+    smoothed_wp = od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 4)
     smoothed_np = smoothed_wp.numpy()
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
@@ -1507,7 +1507,7 @@ def test_smooth_region_boundary_matches_meshlib(device: str, subdivisions: int) 
     assert np.array_equal(moved_wp, moved_ml)
     assert np.abs(smoothed_np - smoothed_ml).max() < 0.05
 
-    rim_np = tw.selection.region_boundary_edges(faces_wp, region_wp).numpy()
+    rim_np = od.selection.region_boundary_edges(faces_wp, region_wp).numpy()
 
     def rim_length(points_np: np.ndarray) -> float:
         return float(
@@ -1538,7 +1538,7 @@ def test_smooth_region_boundary_leaves_connectivity_and_the_rest_alone(device: s
 
     region_np = vertices_np[faces_np].mean(axis=1)[:, 2] > 0.3
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
-    smoothed_np = tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 4).numpy()
+    smoothed_np = od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 4).numpy()
     moved = np.linalg.norm(smoothed_np - vertices_wp.numpy(), axis=1) > 1e-6
     # Every moved vertex belongs to both a selected and an unselected face: that is the band.
     inside = np.zeros(len(vertices_np), dtype=bool)
@@ -1548,25 +1548,25 @@ def test_smooth_region_boundary_leaves_connectivity_and_the_rest_alone(device: s
     assert not np.any(moved & ~(inside & outside))
 
     for degenerate in (np.zeros(n_faces, dtype=bool), np.ones(n_faces, dtype=bool)):
-        identity_np = tw.smoothing.smooth_region_boundary(
+        identity_np = od.smoothing.smooth_region_boundary(
             vertices_wp, faces_wp, wp.array(degenerate, dtype=wp.bool, device=device), 4
         ).numpy()
         assert np.array_equal(identity_np, vertices_wp.numpy())
     assert np.array_equal(
-        tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 0).numpy(),
+        od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 0).numpy(),
         vertices_wp.numpy(),
     )
     with pytest.raises(ValueError, match="iterations must be non-negative"):
-        tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, -1)
+        od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, -1)
     with pytest.raises(ValueError, match="region must be a length-"):
-        tw.smoothing.smooth_region_boundary(
+        od.smoothing.smooth_region_boundary(
             vertices_wp, faces_wp, wp.zeros(3, dtype=wp.bool, device=device), 4
         )
 
 
 def test_smooth_region_boundary_later_passes_match_a_rebuild(device: str) -> None:
     """
-    Triwarp against triwarp: the in-place rewrite of the band's system against a fresh one.
+    Ordito against ordito: the in-place rewrite of the band's system against a fresh one.
 
     Every pass after the first rewrites the first pass's Dirichlet system from the new cotangents
     (``kernels/smoothing.band_dirichlet_values``) into the same operator, whose solver state -- and
@@ -1584,10 +1584,10 @@ def test_smooth_region_boundary_later_passes_match_a_rebuild(device: str) -> Non
     region_np = centers_np[:, 0] + 0.3 * np.sin(5.0 * centers_np[:, 1]) > 0.1
     region_wp = wp.array(region_np, dtype=wp.bool, device=device)
 
-    rewritten_np = tw.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 3).numpy()
+    rewritten_np = od.smoothing.smooth_region_boundary(vertices_wp, faces_wp, region_wp, 3).numpy()
     rebuilt_wp = vertices_wp
     for _ in range(3):
-        rebuilt_wp = tw.smoothing.smooth_region_boundary(rebuilt_wp, faces_wp, region_wp, 1)
+        rebuilt_wp = od.smoothing.smooth_region_boundary(rebuilt_wp, faces_wp, region_wp, 1)
     displacement_np = np.linalg.norm(rewritten_np - vertices_np, axis=1)
     assert displacement_np.max() > 1e-2
     assert np.allclose(rewritten_np, rebuilt_wp.numpy(), rtol=0.0, atol=1e-5)
@@ -1595,12 +1595,12 @@ def test_smooth_region_boundary_later_passes_match_a_rebuild(device: str) -> Non
 
 def test_smooth_region_boundary_system_matches_the_cotmatrix_extraction(device: str) -> None:
     """
-    Triwarp against triwarp: the band-sized Dirichlet system against the mesh-wide extraction.
+    Ordito against ordito: the band-sized Dirichlet system against the mesh-wide extraction.
 
     ``smooth_region_boundary`` assembles its band's system from the free vertices' vertex-face
     rings (``kernels/smoothing.band_pattern`` and ``band_dirichlet_values``) rather than
     extracting it from a mesh-wide ``-cotmatrix`` with
-    [`assemble_interior_system`][triwarp.linalg.assemble_interior_system], which carries the
+    [`assemble_interior_system`][ordito.linalg.assemble_interior_system], which carries the
     oracle here. The pattern -- offsets and sorted columns -- must match exactly, and the values
     and right-hand side to summation order. The band holds a vertex whose ring meets another free
     vertex through two faces, so a neighbour counted twice would show in the offsets.
@@ -1618,18 +1618,18 @@ def test_smooth_region_boundary_system_matches_the_cotmatrix_extraction(device: 
     free_np = inside_np & outside_np
     fixed_wp = wp.array(~free_np, dtype=wp.bool, device=device)
     field_np = np.where(inside_np, -1.0, 1.0)[None, :]
-    field_wp = twt.as_array2d(wp.array(field_np, dtype=wp.float64, device=device), wp.float64)
-    free_map_wp, n_free = tw.linalg.free_partition(fixed_wp)
+    field_wp = odt.as_array2d(wp.array(field_np, dtype=wp.float64, device=device), wp.float64)
+    free_map_wp, n_free = od.linalg.free_partition(fixed_wp)
     assert n_free > 10
 
-    operator = wps.bsr_scale(tw.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64), -1.0)
-    assert twt.has_blocks(operator, wp.float64)
-    system_wp, rhs_wp = tw.linalg.assemble_interior_system(
+    operator = wps.bsr_scale(od.laplacian.cotmatrix(vertices_wp, faces_wp, dtype=wp.float64), -1.0)
+    assert odt.has_blocks(operator, wp.float64)
+    system_wp, rhs_wp = od.linalg.assemble_interior_system(
         operator, fixed_wp, free_map_wp, field_wp, n_free
     )
 
-    vertex_faces = tw.adjacency.vertex_face_adjacency(faces_wp)
-    offsets_wp, columns_wp = tw.smoothing._band_pattern(  # pyright: ignore[reportPrivateUsage]
+    vertex_faces = od.adjacency.vertex_face_adjacency(faces_wp)
+    offsets_wp, columns_wp = od.smoothing._band_pattern(  # pyright: ignore[reportPrivateUsage]
         faces_wp, vertex_faces, fixed_wp, free_map_wp, n_free
     )
     values_wp = warp_empty(columns_wp.size, wp.float64, device)
@@ -1750,7 +1750,7 @@ def test_filter_scalar_laplacian_matches_pymeshlab(
     meshset_pml.apply_scalar_smoothing_per_vertex()
 
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
-    smoothed_wp = tw.smoothing.filter_scalar_laplacian(
+    smoothed_wp = od.smoothing.filter_scalar_laplacian(
         values_wp, mesh_wp.points, mesh_wp.indices, lamb=1.0, iterations=1
     )
     assert np.allclose(
@@ -1772,7 +1772,7 @@ def test_filter_scalar_laplacian_conserves_the_mean_on_a_closed_mesh(
     values_np = _scalar_spike(mesh_tm)
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=mesh_wp.device)
 
-    smoothed_wp = tw.smoothing.filter_scalar_laplacian(
+    smoothed_wp = od.smoothing.filter_scalar_laplacian(
         values_wp, mesh_wp.points, mesh_wp.indices, lamb=0.5, iterations=40
     )
     assert np.isclose(smoothed_wp.numpy().sum(), values_np.sum(), rtol=1e-4)
@@ -1784,7 +1784,7 @@ def test_filter_scalar_laplacian_zero_iterations(icosahedron: tuple[tm.Trimesh, 
     mesh_tm, mesh_wp = icosahedron
     values_np = _scalar_spike(mesh_tm).astype(np.float32)
     values_wp = wp.array(values_np, dtype=wp.float32, device=mesh_wp.device)
-    out_wp = tw.smoothing.filter_scalar_laplacian(
+    out_wp = od.smoothing.filter_scalar_laplacian(
         values_wp, mesh_wp.points, mesh_wp.indices, iterations=0
     )
     assert np.array_equal(out_wp.numpy(), values_np)
@@ -1794,7 +1794,7 @@ def test_filter_scalar_laplacian_length_mismatch(icosahedron: tuple[tm.Trimesh, 
     _mesh_tm, mesh_wp = icosahedron
     values_wp = wp.zeros(3, dtype=wp.float32, device=mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per vertex"):
-        tw.smoothing.filter_scalar_laplacian(values_wp, mesh_wp.points, mesh_wp.indices)
+        od.smoothing.filter_scalar_laplacian(values_wp, mesh_wp.points, mesh_wp.indices)
 
 
 # ---------------------------------------------------------------------------
@@ -1829,17 +1829,17 @@ def test_filter_normals_are_unit_and_crease_gated(device: str) -> None:
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    raw_wp, _areas = tw.triangles.face_normals_and_areas(vertices_wp, faces_wp)
+    raw_wp, _areas = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)
 
-    gated_wp = tw.smoothing.filter_normals(vertices_wp, faces_wp, iterations=20, threshold=60.0)
+    gated_wp = od.smoothing.filter_normals(vertices_wp, faces_wp, iterations=20, threshold=60.0)
     assert np.allclose(np.linalg.norm(gated_wp.numpy(), axis=1), 1.0, rtol=1e-4, atol=1e-4)
 
     # Threshold 0 lets nothing average, so the field is the geometric one (up to renormalization).
-    untouched_wp = tw.smoothing.filter_normals(vertices_wp, faces_wp, threshold=0.0)
+    untouched_wp = od.smoothing.filter_normals(vertices_wp, faces_wp, threshold=0.0)
     assert np.allclose(untouched_wp.numpy(), raw_wp.numpy(), rtol=1e-4, atol=1e-4)
 
     # Threshold 180 averages across the cube's edges too, so the normals collapse toward each other.
-    isotropic_wp = tw.smoothing.filter_normals(vertices_wp, faces_wp, threshold=180.0)
+    isotropic_wp = od.smoothing.filter_normals(vertices_wp, faces_wp, threshold=180.0)
     assert (
         np.abs(isotropic_wp.numpy() - raw_wp.numpy()).max()
         > np.abs(gated_wp.numpy() - raw_wp.numpy()).max()
@@ -1864,9 +1864,9 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     | | mean | worst |
     |---|---|---|
     | noisy input | 0.9604 | **0.665** |
-    | triwarp, 20 passes | 0.99943 | 0.9942 |
+    | ordito, 20 passes | 0.99943 | 0.9942 |
     | meshlib, ``gamma=20`` | 0.99867 | 0.9879 |
-    | triwarp against meshlib | 0.99856 | 0.9843 |
+    | ordito against meshlib | 0.99856 | 0.9843 |
 
     So both recover the field, and **they agree with each other more closely than either agrees
     with the input** -- which is the claim, and the mutation probe is the input row itself: a
@@ -1881,15 +1881,15 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3)
     clean_vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
-    clean_normals_wp, _areas_wp = tw.triangles.face_normals_and_areas(clean_vertices_wp, faces_wp)
+    clean_normals_wp, _areas_wp = od.triangles.face_normals_and_areas(clean_vertices_wp, faces_wp)
     clean_normals_np = clean_normals_wp.numpy()
 
     rng = np.random.default_rng(0)
     noisy_np = mesh_tm.vertices + rng.normal(scale=0.02, size=mesh_tm.vertices.shape)
     noisy_vertices_wp, _faces_wp = numpy_to_warp(noisy_np, mesh_tm.faces, device)
-    raw_normals_wp, _areas_wp = tw.triangles.face_normals_and_areas(noisy_vertices_wp, faces_wp)
+    raw_normals_wp, _areas_wp = od.triangles.face_normals_and_areas(noisy_vertices_wp, faces_wp)
 
-    smoothed_wp = tw.smoothing.filter_normals(
+    smoothed_wp = od.smoothing.filter_normals(
         noisy_vertices_wp, faces_wp, iterations=20, threshold=60.0
     )
 
@@ -1920,7 +1920,7 @@ def test_filter_normals_matches_meshlib(device: str) -> None:
 def test_filter_normals_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match=r"threshold must be in \[0, 180\]"):
-        tw.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, threshold=-1.0)
+        od.smoothing.filter_normals(mesh_wp.points, mesh_wp.indices, threshold=-1.0)
 
 
 def test_filter_two_step_denoises_without_rounding_the_creases(device: str) -> None:
@@ -1939,9 +1939,9 @@ def test_filter_two_step_denoises_without_rounding_the_creases(device: str) -> N
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
 
-    two_step_np = tw.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
+    two_step_np = od.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
     laplacian_np = (
-        tw.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=10)
+        od.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=10)
         .numpy()
         .astype(np.float64)
     )
@@ -1988,7 +1988,7 @@ def test_filter_two_step_matches_pymeshlab_on_crease_preservation(device: str) -
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    two_step_np = tw.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
+    two_step_np = od.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
 
     assert _rms_error(two_step_np, clean_np) <= _rms_error(pml_np, clean_np)
     assert _dihedral_percentile(pml_np, faces_np, 95.0) > 85.0
@@ -2019,7 +2019,7 @@ def test_filter_two_step_matches_meshlib_on_crease_preserving_denoising(device: 
     parametrized by ``beta`` and ``gamma`` and has no crease threshold in degrees at all -- so this
     compares outcomes at each side's own defaults rather than positions. They land close all the
     same: mutual RMS **0.004979**, max coordinate deviation **0.019910**, which is under half the
-    noise amplitude. triwarp is the closer of the two to clean (0.011415).
+    noise amplitude. ordito is the closer of the two to clean (0.011415).
 
     The bug class excluded is the one this filter exists to avoid: a scheme that blurs a crease
     while reporting a lower residual. Both sides must clear *both* thresholds, and isotropic
@@ -2032,9 +2032,9 @@ def test_filter_two_step_matches_meshlib_on_crease_preserving_denoising(device: 
     faces_wp = wp.array(
         np.ascontiguousarray(faces_np.reshape(-1), dtype=np.int32), dtype=wp.int32, device=device
     )
-    two_step_np = tw.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
+    two_step_np = od.smoothing.filter_two_step(vertices_wp, faces_wp).numpy().astype(np.float64)
     laplacian_np = (
-        tw.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=10)
+        od.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=10)
         .numpy()
         .astype(np.float64)
     )
@@ -2061,8 +2061,8 @@ def test_filter_two_step_matches_meshlib_on_crease_preserving_denoising(device: 
 
 def test_filter_two_step_leaves_a_flat_patch_alone(device: str) -> None:
     """A plane is a fixed point of both halves: filtered normals are already the geometric ones."""
-    grid_vertices_wp, grid_faces_wp = tw.creation.grid(count=(12, 12), device=device)
-    smoothed_wp = tw.smoothing.filter_two_step(grid_vertices_wp, grid_faces_wp)
+    grid_vertices_wp, grid_faces_wp = od.creation.grid(count=(12, 12), device=device)
+    smoothed_wp = od.smoothing.filter_two_step(grid_vertices_wp, grid_faces_wp)
     assert np.allclose(smoothed_wp.numpy(), grid_vertices_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
@@ -2075,8 +2075,8 @@ def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
     See [`test_filter_laplacian_matches_pymeshlab`]
     [tests.test_smoothing.test_filter_laplacian_matches_pymeshlab] for how the operator is derived.
 
-    ``apply_coord_unsharp_mask`` takes ``weight`` and ``iterations`` under triwarp's own names and
-    meanings, and ``weightorig=1.0`` is its default (the original-position weight triwarp fixes at
+    ``apply_coord_unsharp_mask`` takes ``weight`` and ``iterations`` under ordito's own names and
+    meanings, and ``weightorig=1.0`` is its default (the original-position weight ordito fixes at
     1), so the only transform is passing
     [`_meshlab_umbrella`][tests.test_smoothing._meshlab_umbrella] as the smoothing operator.
 
@@ -2090,7 +2090,7 @@ def test_filter_sharpen_matches_pymeshlab(device: str, iterations: int) -> None:
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.apply_coord_unsharp_mask(weight=0.3, weightorig=1.0, iterations=iterations)
 
-    sharpened_wp = tw.smoothing.filter_sharpen(
+    sharpened_wp = od.smoothing.filter_sharpen(
         mesh_wp.points,
         mesh_wp.indices,
         weight=0.3,
@@ -2119,14 +2119,14 @@ def test_filter_sharpen_amplifies_detail(
     )
 
     smoothed_np = (
-        tw.smoothing.filter_laplacian(
+        od.smoothing.filter_laplacian(
             vertices_wp, faces_wp, lamb=1.0, iterations=5, volume_constraint=False
         )
         .numpy()
         .astype(np.float64)
     )
     sharpened_np = (
-        tw.smoothing.filter_sharpen(vertices_wp, faces_wp, weight=0.5, iterations=5)
+        od.smoothing.filter_sharpen(vertices_wp, faces_wp, weight=0.5, iterations=5)
         .numpy()
         .astype(np.float64)
     )
@@ -2141,7 +2141,7 @@ def test_filter_sharpen_zero_weight_is_the_identity(
     icosahedron: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     _mesh_tm, mesh_wp = icosahedron
-    out_wp = tw.smoothing.filter_sharpen(mesh_wp.points, mesh_wp.indices, weight=0.0)
+    out_wp = od.smoothing.filter_sharpen(mesh_wp.points, mesh_wp.indices, weight=0.0)
     assert np.allclose(out_wp.numpy(), mesh_wp.points.numpy(), rtol=1e-6, atol=1e-6)
 
 
@@ -2152,17 +2152,17 @@ def test_filter_sharpen_zero_weight_is_the_identity(
 _SMOOTHING_VERTEX_FILTER_CASES = [
     (
         "filter_taubin",
-        lambda v, f, iterations: tw.smoothing.filter_taubin(v, f, iterations=iterations),
+        lambda v, f, iterations: od.smoothing.filter_taubin(v, f, iterations=iterations),
     ),
     (
         "filter_neighborhood_average",
-        lambda v, f, iterations: tw.smoothing.filter_neighborhood_average(
+        lambda v, f, iterations: od.smoothing.filter_neighborhood_average(
             v, f, iterations=iterations
         ),
     ),
     (
         "filter_two_step",
-        lambda v, f, iterations: tw.smoothing.filter_two_step(v, f, iterations=iterations),
+        lambda v, f, iterations: od.smoothing.filter_two_step(v, f, iterations=iterations),
     ),
 ]
 
@@ -2188,9 +2188,9 @@ def test_smoothing_zero_iterations_returns_a_copy(
 @pytest.mark.parametrize(
     "smoothing_fn",
     [
-        lambda v, f: tw.smoothing.filter_taubin(v, f, iterations=4),
-        lambda v, f: tw.smoothing.filter_two_step(v, f),
-        lambda v, f: tw.smoothing.filter_sharpen(v, f),
+        lambda v, f: od.smoothing.filter_taubin(v, f, iterations=4),
+        lambda v, f: od.smoothing.filter_two_step(v, f),
+        lambda v, f: od.smoothing.filter_sharpen(v, f),
     ],
     ids=["filter_taubin", "filter_two_step", "filter_sharpen"],
 )
@@ -2222,7 +2222,7 @@ _REFINE_KWARGS: _RefineKwargs = {
 
 def test_filter_laplacian_leaves_a_faceless_mesh_alone(device: str) -> None:
     """
-    Triwarp against triwarp: the volume constraint must not touch a mesh it cannot measure.
+    Ordito against ordito: the volume constraint must not touch a mesh it cannot measure.
 
     Not a library comparison: trimesh's ``filter_laplacian`` requires a real mesh, so there is no
     reference for the degenerate input. The invariant is that a face buffer with no faces leaves
@@ -2237,6 +2237,6 @@ def test_filter_laplacian_leaves_a_faceless_mesh_alone(device: str) -> None:
     vertices_wp = points_to_warp(positions_np, device)
     faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
 
-    smoothed_np = tw.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=3).numpy()
+    smoothed_np = od.smoothing.filter_laplacian(vertices_wp, faces_wp, iterations=3).numpy()
     assert np.isfinite(smoothed_np).all()
     assert np.array_equal(smoothed_np, positions_np)

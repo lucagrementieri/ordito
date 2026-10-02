@@ -14,7 +14,7 @@ error naming the coerced type rather than anything about handles, which is easy 
 "``wp.map`` cannot do mesh queries". ``wp.launch`` needs no such wrapping, so this only bites on
 conversion.
 
-These are capability probes, not regression tests for triwarp code: they exist so a future
+These are capability probes, not regression tests for ordito code: they exist so a future
 conversion can check the platform rather than guess. See ``.claude/CLAUDE.md`` section 3.5.
 """
 
@@ -24,7 +24,7 @@ import numpy as np
 import trimesh as tm
 import warp as wp
 
-import triwarp as tw
+import ordito as od
 from tests.conversions import points_to_warp, warp_empty
 
 
@@ -39,7 +39,7 @@ def _snap_to_mesh(point: wp.vec3, mesh_id: wp.uint64, max_dist: wp.float32) -> w
     if query.result:  # pyright: ignore[reportAttributeAccessIssue]  # the stub's MeshQueryPoint has no fields
         # Warp's own stub inconsistency: the builtin is declared to return ``vec3f`` while
         # ``wp.vec3`` re-exports a separate declaration of the same runtime class
-        # (``wp.vec3 is wp.vec3f``). Kernel DSL is why ``triwarp/kernels`` is excluded outright.
+        # (``wp.vec3 is wp.vec3f``). Kernel DSL is why ``ordito/kernels`` is excluded outright.
         return wp.mesh_eval_position(mesh_id, query.face, query.u, query.v)  # pyright: ignore[reportReturnType, reportAttributeAccessIssue]
     return point
 
@@ -81,7 +81,7 @@ def test_map_accepts_a_uint64_mesh_id_and_queries_inside_the_func(
     wp.map(_snap_to_mesh, pushed_wp, wp.uint64(mesh_wp.id), wp.float32(1.0), out=snapped_wp)
 
     # Snapped points sit on the mesh, so their distance to it is ~0 while the pushed ones are not.
-    _, distance_wp, _ = tw.proximity.closest_point_on_mesh(
+    _, distance_wp, _ = od.proximity.closest_point_on_mesh(
         mesh_wp.points, mesh_wp.indices, snapped_wp
     )
     assert float(np.max(np.abs(distance_wp.numpy()))) < 1e-4

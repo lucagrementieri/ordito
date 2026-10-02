@@ -1,8 +1,8 @@
 """
-Tests for ``triwarp._launch``: the cached launcher, stamped allocation and native utility paths.
+Tests for ``ordito._launch``: the cached launcher, stamped allocation and native utility paths.
 
 Not a library comparison: every fast path here reimplements a Warp call, so Warp's own call is the
-oracle and each test is triwarp against Warp on the same inputs, byte for byte. The CPU device
+oracle and each test is ordito against Warp on the same inputs, byte for byte. The CPU device
 exercises the fallbacks, which must be Warp itself.
 """
 
@@ -15,8 +15,8 @@ import numpy as np
 import pytest
 import warp as wp
 
+from ordito import _launch
 from tests.conversions import warp_empty
-from triwarp import _launch
 
 
 class _CopyKwargs(TypedDict, total=False):

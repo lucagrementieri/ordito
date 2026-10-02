@@ -1,12 +1,12 @@
 """
-Benchmarks for ``triwarp.reduce``.
+Benchmarks for ``ordito.reduce``.
 
 This is the module every other one is built on, so what matters is the *floor*: a whole-array
 reduction of a few hundred thousand elements is far too small to saturate a modern GPU, so these
 numbers are dominated by launch latency and — for the reductions returning a Python scalar — by the
 readback that ends them. That readback is why the full-array variants cannot be much faster than
 they are, and why callers inside iterative loops keep values on device instead (the ``check_every``
-discussion in ``triwarp/linalg.py``).
+discussion in ``ordito/linalg.py``).
 
 Three shapes are timed:
 
@@ -48,7 +48,7 @@ and the output allocation are tens of microseconds before a single element is to
 the kernel does.
 
 Three kernel defects were found by asking the question these rows invite — whether the tiling is
-earning its keep — and all are fixed. None was *exposed* by the NumPy rows, since triwarp was
+earning its keep — and all are fixed. None was *exposed* by the NumPy rows, since ordito was
 already ahead in those groups. Two are the same bug in different clothes:
 
 - **Tiling below one tile is pure loss.** With the reduced extent under ``TILE_1D`` the
@@ -97,13 +97,13 @@ import pytorch3d.ops.utils as p3d_ops_utils
 import torch
 import warp as wp
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase
 
 _mask_cache: dict[tuple[str, str], wp.array[wp.bool]] = {}
 _scalar_cache: dict[tuple[str, str], wp.array[wp.float32]] = {}
-_rows_cache: dict[tuple[str, str], twt.Array2dFloat32] = {}
+_rows_cache: dict[tuple[str, str], odt.Array2dFloat32] = {}
 _scalar_np_cache: dict[str, np.ndarray] = {}
 _rows_np_cache: dict[str, np.ndarray] = {}
 _face_cache: dict[tuple[str, str, str], wp.array[wp.float32]] = {}
@@ -181,7 +181,7 @@ def _scalars_wp(bench_case: BenchCase) -> wp.array[wp.float32]:
     return _scalar_cache[key]
 
 
-def _rows_wp(bench_case: BenchCase) -> twt.Array2dFloat32:
+def _rows_wp(bench_case: BenchCase) -> odt.Array2dFloat32:
     """``(n_vertices, 3)`` float32 — the vertex table as a rank-2 array for the axis cases."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _rows_cache:
@@ -204,7 +204,7 @@ def _mask_wp(bench_case: BenchCase) -> wp.array[wp.bool]:
 
 
 @pytest.mark.benchmark(group="sum_bool")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_sum_bool(bench_case: BenchCase) -> None:
     """
     Counting a ``wp.bool`` mask, the shape thirteen call sites across the package use.
@@ -221,12 +221,12 @@ def test_sum_bool(bench_case: BenchCase) -> None:
         assert total_np >= 0
         return
     mask = _mask_wp(bench_case)
-    total = bench_case.run(lambda: tw.reduce.sum(mask))
+    total = bench_case.run(lambda: od.reduce.sum(mask))
     assert total >= 0
 
 
 @pytest.mark.benchmark(group="any_bool")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_any_bool(bench_case: BenchCase) -> None:
     """
     ``reduce.any`` over a mask — the predicate shape ``validation`` and ``mesh.Trimesh`` use.
@@ -242,12 +242,12 @@ def test_any_bool(bench_case: BenchCase) -> None:
         assert isinstance(flag_np, bool)
         return
     mask = _mask_wp(bench_case)
-    flag = bench_case.run(lambda: tw.reduce.any(mask))
+    flag = bench_case.run(lambda: od.reduce.any(mask))
     assert isinstance(flag, bool)
 
 
 @pytest.mark.benchmark(group="all_bool")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_all_bool(bench_case: BenchCase) -> None:
     """``reduce.all`` over the same mask — the other half of the predicate pair."""
     if bench_case.kind == "numpy":
@@ -256,12 +256,12 @@ def test_all_bool(bench_case: BenchCase) -> None:
         assert isinstance(flag_np, bool)
         return
     mask = _mask_wp(bench_case)
-    flag = bench_case.run(lambda: tw.reduce.all(mask))
+    flag = bench_case.run(lambda: od.reduce.all(mask))
     assert isinstance(flag, bool)
 
 
 @pytest.mark.benchmark(group="sum_scalar")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_sum_scalar(bench_case: BenchCase) -> None:
     """Tiled float32 sum to a Python scalar: one block reduction plus the host readback."""
     if bench_case.kind == "numpy":
@@ -270,12 +270,12 @@ def test_sum_scalar(bench_case: BenchCase) -> None:
         assert np.isfinite(total_np)
         return
     values = _scalars_wp(bench_case)
-    total = bench_case.run(lambda: tw.reduce.sum(values))
+    total = bench_case.run(lambda: od.reduce.sum(values))
     assert np.isfinite(total)
 
 
 @pytest.mark.benchmark(group="sum_vec3")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_sum_vec3(bench_case: BenchCase) -> None:
     """The ``wp.vec3`` accumulator path — what a centroid actually calls."""
     if bench_case.kind == "numpy":
@@ -284,12 +284,12 @@ def test_sum_vec3(bench_case: BenchCase) -> None:
         assert total_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    total = bench_case.run(lambda: tw.reduce.sum(vertices))
+    total = bench_case.run(lambda: od.reduce.sum(vertices))
     assert len(total) == 3
 
 
 @pytest.mark.benchmark(group="mean_vec3")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_mean_vec3(bench_case: BenchCase) -> None:
     """``sum`` plus a scalar divide: the delta over ``sum_vec3`` is the normalization."""
     if bench_case.kind == "numpy":
@@ -298,12 +298,12 @@ def test_mean_vec3(bench_case: BenchCase) -> None:
         assert centroid_np.shape == (3,)
         return
     vertices = bench_case.vertices_wp
-    centroid = bench_case.run(lambda: tw.reduce.mean(vertices))
+    centroid = bench_case.run(lambda: od.reduce.mean(vertices))
     assert len(centroid) == 3
 
 
 @pytest.mark.benchmark(group="weighted_sum")
-@pytest.mark.benchlibs("triwarp", "numpy", "pyvista", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "numpy", "pyvista", "pytorch3d")
 def test_weighted_sum(bench_case: BenchCase) -> None:
     """
     ``sum(values * weights)`` in one pass: the reduction every surface integral bottoms out in.
@@ -319,7 +319,7 @@ def test_weighted_sum(bench_case: BenchCase) -> None:
     set exposes a weighted reduction at all.
 
     **pytorch3d**'s ``ops.utils.wmean`` is the weighted *mean* -- the same reduction plus a division
-    by ``sum(weights)`` with an ``eps`` floor -- so its row does one more pass than triwarp's and
+    by ``sum(weights)`` with an ``eps`` floor -- so its row does one more pass than ordito's and
     is an upper bound rather than a race. It is the only GPU reference in the module, which is what
     it is here for: the ``numpy`` row is the host floor and this one says what the same reduction
     costs in another device library. Both arrays are inputs and are uploaded outside the timed
@@ -347,12 +347,12 @@ def test_weighted_sum(bench_case: BenchCase) -> None:
         assert np.isfinite(total_np)
         return
     values, areas = _face_values_wp(bench_case), _face_areas_wp(bench_case)
-    total = bench_case.run(lambda: tw.reduce.weighted_sum(values, areas))
+    total = bench_case.run(lambda: od.reduce.weighted_sum(values, areas))
     assert np.isfinite(total)
 
 
 @pytest.mark.benchmark(group="minmax_scalar")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_minmax_scalar(bench_case: BenchCase) -> None:
     """Both extrema in one pass — compare against ``min_scalar`` for the single-pass saving."""
     if bench_case.kind == "numpy":
@@ -361,12 +361,12 @@ def test_minmax_scalar(bench_case: BenchCase) -> None:
         assert lo_np <= hi_np
         return
     values = _scalars_wp(bench_case)
-    lo, hi = bench_case.run(lambda: tw.reduce.minmax(values))
+    lo, hi = bench_case.run(lambda: od.reduce.minmax(values))
     assert lo <= hi
 
 
 @pytest.mark.benchmark(group="min_scalar")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_min_scalar(bench_case: BenchCase) -> None:
     """A single extremum, for reference against ``minmax_scalar``."""
     if bench_case.kind == "numpy":
@@ -375,12 +375,12 @@ def test_min_scalar(bench_case: BenchCase) -> None:
         assert np.isfinite(lo_np)
         return
     values = _scalars_wp(bench_case)
-    lo = bench_case.run(lambda: tw.reduce.min(values))
+    lo = bench_case.run(lambda: od.reduce.min(values))
     assert np.isfinite(lo)
 
 
 @pytest.mark.benchmark(group="minmax_global_2d")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_minmax_global_2d(bench_case: BenchCase) -> None:
     """
     A rank-2 table reduced to one scalar pair — the shape ``graph`` validates an edge list with.
@@ -396,12 +396,12 @@ def test_minmax_global_2d(bench_case: BenchCase) -> None:
         assert lo_np <= hi_np
         return
     rows = _rows_wp(bench_case)
-    lo, hi = bench_case.run(lambda: tw.reduce.minmax(rows))
+    lo, hi = bench_case.run(lambda: od.reduce.minmax(rows))
     assert lo <= hi
 
 
 @pytest.mark.benchmark(group="sum_axis0")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_sum_axis0(bench_case: BenchCase) -> None:
     """Column sums of an ``(n, 3)`` table: device-resident result, no readback."""
     if bench_case.kind == "numpy":
@@ -410,12 +410,12 @@ def test_sum_axis0(bench_case: BenchCase) -> None:
         assert sums_np.shape == (3,)
         return
     rows = _rows_wp(bench_case)
-    sums = bench_case.run(lambda: tw.reduce.sum(rows, axis=0))
+    sums = bench_case.run(lambda: od.reduce.sum(rows, axis=0))
     assert sums.shape[0] == 3
 
 
 @pytest.mark.benchmark(group="max_axis1")
-@pytest.mark.benchlibs("triwarp", "numpy")
+@pytest.mark.benchlibs("ordito", "numpy")
 def test_max_axis1(bench_case: BenchCase) -> None:
     """Row maxima of the same table: reduces along the contiguous axis instead of across it."""
     if bench_case.kind == "numpy":
@@ -424,7 +424,7 @@ def test_max_axis1(bench_case: BenchCase) -> None:
         assert maxima_np.shape[0] == bench_case.n_vertices
         return
     rows = _rows_wp(bench_case)
-    maxima = bench_case.run(lambda: tw.reduce.max(rows, axis=1))
+    maxima = bench_case.run(lambda: od.reduce.max(rows, axis=1))
     assert maxima.shape[0] == bench_case.n_vertices
 
 
@@ -436,7 +436,7 @@ def _scalar_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 
 @pytest.mark.benchmark(group="median")
-@pytest.mark.benchlibs("triwarp", "pymeshlab", "numpy")
+@pytest.mark.benchlibs("ordito", "pymeshlab", "numpy")
 def test_median(bench_case: BenchCase) -> None:
     """Radix-sorts a copy and reads the middle: O(n log n) where the rest are one pass."""
     if bench_case.kind == "pymeshlab":  # one call: min, max, avg, med, stddev, variance
@@ -451,5 +451,5 @@ def test_median(bench_case: BenchCase) -> None:
         return
     # ``reduce.median`` is annotated rank-1 only; the cache holds the package's ``wp.array``.
     values = _scalars_wp(bench_case)
-    middle = bench_case.run(lambda: tw.reduce.median(values))
+    middle = bench_case.run(lambda: od.reduce.median(values))
     assert np.isfinite(middle)

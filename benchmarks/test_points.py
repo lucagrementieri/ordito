@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.points``.
+Benchmarks for ``ordito.points``.
 
 The point cloud is a registry mesh's own vertices — deterministic, and it scales with the mesh. The
 functions here fall into two groups:
@@ -11,7 +11,7 @@ functions here fall into two groups:
   ``wp.map`` each (the cheapest thing here, so the most sensitive to launch overhead), and
   ``radial_sort`` is a key kernel plus a radix sort.
 
-Where a neighbour table is an *input* of triwarp's function, the group is timed twice — the kernel
+Where a neighbour table is an *input* of ordito's function, the group is timed twice — the kernel
 alone on a cached table, and the table plus the kernel. Only the second is a fair cross-library
 comparison, since every reference builds its own k-d tree per call. That covers
 ``estimate_normals`` / ``estimate_normals_knn`` and both outlier groups.
@@ -25,17 +25,17 @@ costs block time rather than a launch.
 References
 ----------
 **trimesh** covers everything except normal estimation: ``point_plane_distance``, ``major_axis``,
-``plane_fit``, ``radial_sort`` and ``geometry.vector_angle`` are the functions triwarp's are ports
+``plane_fit``, ``radial_sort`` and ``geometry.vector_angle`` are the functions ordito's are ports
 of. **open3d** is the reference for ``estimate_normals`` (``KDTreeSearchParamKNN``, the same
 k-nearest PCA estimator) and for both outlier filters — those additionally *copy* the survivors
-into a new cloud where triwarp returns a mask, so those rows are upper bounds.
+into a new cloud where ordito returns a mask, so those rows are upper bounds.
 
 **pymeshlab** covers three. ``compute_normal_for_point_clouds(k=)`` is the same estimator and
 exists for exactly this case, so its input is a *face-less* MeshSet.
 ``compute_matrix_by_fitting_to_plane`` is the ``fit_plane`` counterpart; it raises ``Cannot compute
 rotation: there is no selection`` unless something is selected, so ``set_selection_all`` runs
 first, untimed — that is how the filter is told "fit all the points", not part of the fit. It also
-builds a rotation onto a target plane, which triwarp does not, so its row is an upper bound. Third,
+builds a rotation onto a target plane, which ordito does not, so its row is an upper bound. Third,
 ``compute_selection_point_cloud_outliers`` is the LoOP score behind ``outlier_probability``.
 MeshLab has nothing for the array primitives (``fit_line``, ``point_plane_distance``,
 ``vector_angle``, ``radial_sort``). **libigl** has no point-cloud entry points at all.
@@ -49,7 +49,7 @@ Both ``estimate_normals`` groups stop at ``bunny``: the neighbour table is what 
 ``fit_line``'s **trimesh** case stops there for an unrelated reason: ``points.major_axis`` calls
 ``numpy.linalg.svd`` on the ``(n, 3)`` matrix with the default ``full_matrices=True``, so it
 materializes the full ``(n, n)`` left-singular matrix and raises ``_ArrayMemoryError`` on a scan
-mesh. Triwarp accumulates a 3x3 Gram matrix instead and runs the full registry. ``plane_fit`` does
+mesh. Ordito accumulates a 3x3 Gram matrix instead and runs the full registry. ``plane_fit`` does
 not take that path and needs no cap.
 
 Approximate hull
@@ -92,8 +92,8 @@ import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, points_torch_from_numpy, skip_larger_than
 
 if TYPE_CHECKING:
@@ -112,7 +112,7 @@ _KNN_SWEEP = [8, 64]
 # single-threaded: ``tm.points.fit_line`` takes tens of seconds a call on a scan mesh, and that one
 # reference was most of this module's wall clock. So every host branch is capped at the smallest
 # scan mesh -- the ratio
-# against triwarp is four orders of magnitude and needs no larger input to establish.
+# against ordito is four orders of magnitude and needs no larger input to establish.
 _HOST_CAP_REASON = "host reference is a single-threaded pass; capped at bunny_decimated"
 
 # Radius sweep for ``radius_outlier_mask``, in mean edge lengths. The ball count is linear in how
@@ -132,18 +132,18 @@ _SAMPLE_COUNTS = [64, 1024]
 # Fixed plane / sort axis, deliberately not axis-aligned so no branch is skipped.
 _PLANE_NORMAL = np.array([0.3, -0.6, 0.74])
 
-_neighbors_cache: dict[tuple[str, str, int], twt.Array2dInt32] = {}
+_neighbors_cache: dict[tuple[str, str, int], odt.Array2dInt32] = {}
 _normals_wp_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
 _pcd_cache: dict[str, o3d.geometry.PointCloud] = {}
 _cloud_pml_cache: dict[str, ml.MeshSet] = {}
 
 
-def _neighbor_table(bench_case: BenchCase, k: int = _KNN) -> twt.Array2dInt32:
+def _neighbor_table(bench_case: BenchCase, k: int = _KNN) -> odt.Array2dInt32:
     """``(n, k)`` k-nearest table over the cloud itself — an *input* of ``estimate_normals``."""
     key = (bench_case.mesh_name, str(bench_case.device), k)
     if key not in _neighbors_cache:
         points = bench_case.vertices_wp
-        _neighbors_cache[key] = tw.neighbors.query_nearest(points, points, k=k)[0]
+        _neighbors_cache[key] = od.neighbors.query_nearest(points, points, k=k)[0]
     return _neighbors_cache[key]
 
 
@@ -152,7 +152,7 @@ def _unit_normals_wp(bench_case: BenchCase) -> wp.array[wp.vec3]:
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _normals_wp_cache:
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-        _normals_wp_cache[key] = tw.vertices.vertex_normals(vertices, faces)
+        _normals_wp_cache[key] = od.vertices.vertex_normals(vertices, faces)
     return _normals_wp_cache[key]
 
 
@@ -174,7 +174,7 @@ def _pcd(bench_case: BenchCase) -> o3d.geometry.PointCloud:
 
 
 @pytest.mark.benchmark(group="point_plane_distance")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista")
 def test_point_plane_distance(bench_case: BenchCase) -> None:
     """
     Signed point-to-plane distance of every point: a single ``wp.map`` over the cloud.
@@ -205,10 +205,10 @@ def test_point_plane_distance(bench_case: BenchCase) -> None:
         distances_pv = bench_case.run(lambda: cloud_pv.compute_implicit_distance(plane_pv))
         assert distances_pv.point_data["implicit_distance"].shape[0] == n_points
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         normal = wp.vec3(*_PLANE_NORMAL.tolist())
-        distances = bench_case.run(lambda: tw.points.point_plane_distance(points, normal))
+        distances = bench_case.run(lambda: od.points.point_plane_distance(points, normal))
         assert distances.shape == (n_points,)
     else:
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
@@ -227,15 +227,15 @@ def test_point_plane_distance(bench_case: BenchCase) -> None:
     "trimesh.points.major_axis -- normalize(S @ V) over the SVD of the *uncentered* point matrix, "
     "a singular-value-weighted sum of all three right singular vectors. Measured |dot| between the "
     "two of 0.802 on an aspect-3:1:0.05 cloud offset from the origin, where pyvista agrees with "
-    "the leading eigenvector to 1.0000000 and triwarp does not; on a 1000:1 needle the two "
+    "the leading eigenvector to 1.0000000 and ordito does not; on a 1000:1 needle the two "
     "definitions coincide to 3e-6, which is why the difference is easy to miss. The principal "
-    "frame is a *separate* triwarp function -- points.principal_axes, whose own group carries the "
+    "frame is a *separate* ordito function -- points.principal_axes, whose own group carries the "
     "pyvista row -- so this is a naming coincidence rather than two implementations of one "
     "quantity. trimesh is the oracle here, in tests/test_points.py::test_fit_line, and the "
     "distinction is pinned in test_principal_axes_is_not_fit_line.",
 )
 @pytest.mark.benchmark(group="fit_line")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pyvista")
+@pytest.mark.benchlibs("ordito", "trimesh", "pyvista")
 def test_fit_line(bench_case: BenchCase) -> None:
     """
     Major axis from the uncentred Gram matrix: tiled outer-product sum plus one ``svd3``.
@@ -250,9 +250,9 @@ def test_fit_line(bench_case: BenchCase) -> None:
         line_pv = bench_case.run(lambda: pv.fit_line_to_points(points_np))
         assert np.asarray(line_pv.points).shape[1] == 3
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        axis = bench_case.run(lambda: tw.points.fit_line(points))
+        axis = bench_case.run(lambda: od.points.fit_line(points))
         assert len(axis) == 3
     else:
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
@@ -295,7 +295,7 @@ def _points_ml(bench_case: BenchCase) -> mm.std_vector_Vector3_float:
 
 
 @pytest.mark.benchmark(group="half_space_mask")
-@pytest.mark.benchlibs("triwarp", "meshlib", "pyvista")
+@pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 def test_half_space_mask(bench_case: BenchCase) -> None:
     """
     Select every point on one side of a plane: the same ``wp.map`` shape as the distance row.
@@ -306,18 +306,18 @@ def test_half_space_mask(bench_case: BenchCase) -> None:
 
     meshlib's ``findHalfSpacePoints`` is the one query in family H that needs no callback: it takes
     the whole cloud and returns a ``VertBitSet``, so this row compares two batched calls rather than
-    pricing an interpreter loop. Its plane is ``dot(n, x) = d`` where triwarp takes a normal and a
+    pricing an interpreter loop. Its plane is ``dot(n, x) = d`` where ordito takes a normal and a
     point on the plane, and the packed bitset is a 64x narrower write than a ``wp.bool`` array --
     both worth knowing before reading the ratio.
 
     On a small cloud the GPU row is several times *behind* meshlib -- which is this module's wrapper
     floor rather than the map, exactly as ``point_plane_distance`` warns. On a cloud two orders of
-    magnitude larger triwarp costs the same, so the floor is the whole story below about 10^5 points
+    magnitude larger ordito costs the same, so the floor is the whole story below about 10^5 points
     and the axis is the only honest way to read either row.
 
     pyvista reaches the mask through the same ``compute_implicit_distance`` the
     ``point_plane_distance`` row times, plus one host threshold -- so read the two pyvista rows as
-    that threshold's cost, which is the same thing this pair measures on triwarp's side. The
+    that threshold's cost, which is the same thing this pair measures on ordito's side. The
     threshold is inside the timed callable for that reason.
     """
     n_points = bench_case.n_vertices
@@ -346,12 +346,12 @@ def test_half_space_mask(bench_case: BenchCase) -> None:
         return
     points = bench_case.vertices_wp
     normal = wp.vec3(*_PLANE_NORMAL.tolist())
-    mask = bench_case.run(lambda: tw.points.half_space_mask(points, normal))
+    mask = bench_case.run(lambda: od.points.half_space_mask(points, normal))
     assert mask.shape == (n_points,)
 
 
 @pytest.mark.benchmark(group="principal_axes")
-@pytest.mark.benchlibs("triwarp", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "pyvista", "meshlib")
 def test_principal_axes(bench_case: BenchCase) -> None:
     """
     Principal frame: centroid reduction, centred scatter, then one 3x3 SVD.
@@ -375,9 +375,9 @@ def test_principal_axes(bench_case: BenchCase) -> None:
 
         assert bench_case.run(principal_axes_ml).z > 0.0
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        rotation, eigenvalues, centroid = bench_case.run(lambda: tw.points.principal_axes(points))
+        rotation, eigenvalues, centroid = bench_case.run(lambda: od.points.principal_axes(points))
         assert len(rotation) == 3
         assert len(eigenvalues) == 3
         assert len(centroid) == 3
@@ -389,7 +389,7 @@ def test_principal_axes(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="fit_plane")
-@pytest.mark.benchlibs("triwarp", "trimesh", "pymeshlab", "pyvista", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "pymeshlab", "pyvista", "meshlib")
 def test_fit_plane(bench_case: BenchCase) -> None:
     """
     Least-squares plane: centroid reduction, centred covariance, then the smallest-sigma axis.
@@ -424,8 +424,8 @@ def test_fit_plane(bench_case: BenchCase) -> None:
         # ``compute_matrix_by_fitting_to_plane`` raises ``Cannot compute rotation: there is no
         # selection`` unless something is selected, so ``set_selection_all`` runs first (untimed --
         # it is how the filter is told "fit all the points", not part of the fit). It returns the
-        # fitted normal and the average fitting error, which is triwarp's answer plus a residual;
-        # the rotation matrix it also builds is the part triwarp does not do.
+        # fitted normal and the average fitting error, which is ordito's answer plus a residual;
+        # the rotation matrix it also builds is the part ordito does not do.
         meshset_pml = bench_case.meshset_pml
         meshset_pml.set_selection_all()
         result_pml = bench_case.run(
@@ -433,9 +433,9 @@ def test_fit_plane(bench_case: BenchCase) -> None:
         )
         assert result_pml["fitting_plane_normal"].shape == (3,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        normal, centroid = bench_case.run(lambda: tw.points.fit_plane(points))
+        normal, centroid = bench_case.run(lambda: od.points.fit_plane(points))
         assert len(centroid) == 3
         assert len(normal) == 3
     else:
@@ -447,18 +447,18 @@ def test_fit_plane(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="vector_angle")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_vector_angle(bench_case: BenchCase) -> None:
     """Unsigned angle between paired unit vectors: the ``acos``-of-dot map."""
     n_points = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         normals = _unit_normals_wp(bench_case)
         directions = wp.array(
             np.ascontiguousarray(_unit_directions_np(bench_case), dtype=np.float32),
             dtype=wp.vec3,
             device=bench_case.device,
         )
-        angles = bench_case.run(lambda: tw.points.vector_angle(normals, directions))
+        angles = bench_case.run(lambda: od.points.vector_angle(normals, directions))
         assert angles.shape == (n_points,)
     else:
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
@@ -471,16 +471,16 @@ def test_vector_angle(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="radial_sort")
-@pytest.mark.benchlibs("triwarp", "trimesh")
+@pytest.mark.benchlibs("ordito", "trimesh")
 def test_radial_sort(bench_case: BenchCase) -> None:
     """Order points by angle about an axis: the key kernel plus a radix sort."""
     n_points = bench_case.n_vertices
     origin_np = bench_case.vertices_np.mean(axis=0)
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         origin = wp.vec3(*origin_np.tolist())
         normal = wp.vec3(*_PLANE_NORMAL.tolist())
-        ordered = bench_case.run(lambda: tw.points.radial_sort(points, origin, normal))
+        ordered = bench_case.run(lambda: od.points.radial_sort(points, origin, normal))
         assert ordered.shape == (n_points,)
     else:
         skip_larger_than(bench_case, "bunny_decimated", _HOST_CAP_REASON)
@@ -493,7 +493,7 @@ def test_radial_sort(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="estimate_normals")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp")
+@pytest.mark.benchlibs("ordito")
 @pytest.mark.parametrize("k", _KNN_SWEEP)
 def test_estimate_normals(bench_case: BenchCase, k: int) -> None:
     """
@@ -505,7 +505,7 @@ def test_estimate_normals(bench_case: BenchCase, k: int) -> None:
     """
     points = bench_case.vertices_wp
     neighbors = _neighbor_table(bench_case, k)
-    normals = bench_case.run(lambda: tw.points.estimate_normals(points, neighbors))
+    normals = bench_case.run(lambda: od.points.estimate_normals(points, neighbors))
     assert normals.shape == (bench_case.n_vertices,)
 
 
@@ -527,7 +527,7 @@ def _cloud_meshset_pml(bench_case: BenchCase) -> ml.MeshSet:
 
 @pytest.mark.benchmark(group="estimate_normals_knn")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d", "pymeshlab", "meshlib", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "open3d", "pymeshlab", "meshlib", "pytorch3d")
 def test_estimate_normals_knn(bench_case: BenchCase) -> None:
     """
     Neighbour search plus PCA -- what open3d's ``estimate_normals`` does in one call.
@@ -542,7 +542,7 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
     **pytorch3d**'s ``estimate_pointcloud_normals`` is the same search-plus-PCA in one call and the
     only other row with GPU kernels, but its neighbour search is the brute-force pairwise loop, so
     at this cloud size it prices the search rather than the eigen-solve.
-    ``disambiguate_directions=False`` leaves out the SHOT sign rule triwarp has no counterpart for,
+    ``disambiguate_directions=False`` leaves out the SHOT sign rule ordito has no counterpart for,
     which is also what the parity test compares at.
     """
     if bench_case.mesh_name == "sphere_large":
@@ -564,17 +564,17 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
         return
     if bench_case.kind == "pymeshlab":
         # The same search-plus-PCA in one call, at the same ``k``; ``smoothiter=0`` keeps it to that
-        # and leaves out the orientation propagation triwarp does not do either. A *point-cloud*
+        # and leaves out the orientation propagation ordito does not do either. A *point-cloud*
         # MeshSet: the filter is for datasets with no faces.
         cloud_pml = _cloud_meshset_pml(bench_case)
         bench_case.run(lambda: cloud_pml.compute_normal_for_point_clouds(k=_KNN, smoothiter=0))
         assert cloud_pml.current_mesh().vertex_normal_matrix().shape == (bench_case.n_vertices, 3)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         normals = bench_case.run(
-            lambda: tw.points.estimate_normals(
-                points, tw.neighbors.query_nearest(points, points, k=_KNN)[0]
+            lambda: od.points.estimate_normals(
+                points, od.neighbors.query_nearest(points, points, k=_KNN)[0]
             )
         )
         assert normals.shape == (bench_case.n_vertices,)
@@ -587,14 +587,14 @@ def test_estimate_normals_knn(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="outlier_probability")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_outlier_probability(bench_case: BenchCase) -> None:
     """LoOP scores: the k-NN table plus four passes over it, against the filter they came from."""
     if bench_case.mesh_name == "sphere_large":
         pytest.skip("MeshLab's k-d tree searches one point at a time; capped at sphere_med")
     if bench_case.kind == "pymeshlab":
         # Selection-only, so the geometry is untouched and the MeshSet is shared; the filter still
-        # rebuilds its k-d tree every call, which is why triwarp's row builds its table in-callable.
+        # rebuilds its k-d tree every call, which is why ordito's row builds its table in-callable.
         cloud_pml = _cloud_meshset_pml(bench_case)
         bench_case.run(
             lambda: cloud_pml.compute_selection_point_cloud_outliers(
@@ -605,28 +605,28 @@ def test_outlier_probability(bench_case: BenchCase) -> None:
         return
     points = bench_case.vertices_wp
     probability = bench_case.run(
-        lambda: tw.points.outlier_probability(*tw.neighbors.query_nearest(points, points, k=_KNN))
+        lambda: od.points.outlier_probability(*od.neighbors.query_nearest(points, points, k=_KNN))
     )
     assert probability.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="statistical_outlier_mask")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 def test_statistical_outlier_mask(bench_case: BenchCase) -> None:
     """One global threshold on the mean neighbour distance — open3d's own outlier criterion."""
     if bench_case.mesh_name == "sphere_large":
         pytest.skip("open3d searches one point at a time; capped at sphere_med")
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         mask = bench_case.run(
-            lambda: tw.points.statistical_outlier_mask(
-                tw.neighbors.query_nearest(points, points, k=_KNN)[1]
+            lambda: od.points.statistical_outlier_mask(
+                od.neighbors.query_nearest(points, points, k=_KNN)[1]
             )
         )
         assert mask.shape == (bench_case.n_vertices,)
     else:
-        # ``remove_statistical_outlier`` also materializes the kept subset, which triwarp does not.
+        # ``remove_statistical_outlier`` also materializes the kept subset, which ordito does not.
         cloud = _pcd(bench_case)
         _kept, keep_indices = bench_case.run(
             lambda: cloud.remove_statistical_outlier(nb_neighbors=_KNN, std_ratio=2.0)
@@ -636,7 +636,7 @@ def test_statistical_outlier_mask(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="radius_outlier_mask")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d")
+@pytest.mark.benchlibs("ordito", "open3d")
 @pytest.mark.parametrize("radius_scale", _RADIUS_SCALES)
 def test_radius_outlier_mask(bench_case: BenchCase, radius_scale: float) -> None:
     """
@@ -654,9 +654,9 @@ def test_radius_outlier_mask(bench_case: BenchCase, radius_scale: float) -> None
     if bench_case.mesh_name == "sphere_large":
         pytest.skip("open3d searches one point at a time; capped at sphere_med")
     radius = radius_scale * bench_case.mean_edge
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        mask = bench_case.run(lambda: tw.points.radius_outlier_mask(points, radius, _MIN_NEIGHBORS))
+        mask = bench_case.run(lambda: od.points.radius_outlier_mask(points, radius, _MIN_NEIGHBORS))
         assert mask.shape == (bench_case.n_vertices,)
     else:
         cloud = _pcd(bench_case)
@@ -668,7 +668,7 @@ def test_radius_outlier_mask(bench_case: BenchCase, radius_scale: float) -> None
 
 @pytest.mark.benchmark(group="point_duplicate_mask")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d", "meshlib")
+@pytest.mark.benchlibs("ordito", "open3d", "meshlib")
 def test_point_duplicate_mask(bench_case: BenchCase) -> None:
     """
     Exact positional dedup: one hashed pass over a table of point indices, then a mask launch.
@@ -709,13 +709,13 @@ def test_point_duplicate_mask(bench_case: BenchCase) -> None:
         assert len(deduplicated_o3d.points) <= bench_case.n_vertices
         return
     points = bench_case.vertices_wp
-    mask = bench_case.run(lambda: tw.points.point_duplicate_mask(points))
+    mask = bench_case.run(lambda: od.points.point_duplicate_mask(points))
     assert mask.shape == (bench_case.n_vertices,)
 
 
 @pytest.mark.benchmark(group="farthest_point_sample")
 @pytest.mark.benchaxis("scale")
-@pytest.mark.benchlibs("triwarp", "open3d", "pytorch3d")
+@pytest.mark.benchlibs("ordito", "open3d", "pytorch3d")
 @pytest.mark.parametrize("count", _SAMPLE_COUNTS)
 def test_farthest_point_sample(bench_case: BenchCase, count: int) -> None:
     """
@@ -729,14 +729,14 @@ def test_farthest_point_sample(bench_case: BenchCase, count: int) -> None:
 
     open3d's ``FarthestPointDownSample`` runs the identical loop serially in C++ on one core, so
     the comparison is device parallelism against a tighter inner loop; it also copies the selected
-    points out where triwarp returns indices.
+    points out where ordito returns indices.
 
     **pytorch3d**'s ``sample_farthest_points`` runs the identical greedy loop with CUDA kernels of
     its own, so it is the one row here that is not a serial C++ baseline -- and the ratio is the
     narrowest and the flattest of its four, holding at roughly 3x across the point-count axis where
     its brute-force k-NN swings by two orders of magnitude because it has no structure to build.
-    ``random_start_point=False`` pins its start to index 0, which is triwarp's default, and it
-    returns both the points and the indices where triwarp returns indices alone.
+    ``random_start_point=False`` pins its start to index 0, which is ordito's default, and it
+    returns both the points and the indices where ordito returns indices alone.
     """
     if bench_case.mesh_name == "sphere_large":
         pytest.skip("open3d's greedy loop is serial over the whole cloud; capped at sphere_med")
@@ -747,9 +747,9 @@ def test_farthest_point_sample(bench_case: BenchCase, count: int) -> None:
         )
         assert indices_p3d.shape == (1, count)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        indices = bench_case.run(lambda: tw.points.farthest_point_sample(points, count))
+        indices = bench_case.run(lambda: od.points.farthest_point_sample(points, count))
         assert indices.shape == (count,)
     else:
         cloud = _pcd(bench_case)
@@ -767,7 +767,7 @@ _SUBDIVISIONS = [1, 3]
 
 
 @pytest.mark.benchmark(group="convex_subset_mask")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 @pytest.mark.parametrize("n_directions", _N_DIRECTIONS)
 def test_convex_subset_mask(bench_case: BenchCase, n_directions: int) -> None:
     """
@@ -781,10 +781,10 @@ def test_convex_subset_mask(bench_case: BenchCase, n_directions: int) -> None:
         skip_larger_than(bench_case, "dragon", "qhull is single-threaded on the host")
         bench_case.run(lambda: bench_case.new_meshset_pml().generate_convex_hull())
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         mask = bench_case.run(
-            lambda: tw.points.convex_subset_mask(points, n_directions=n_directions)
+            lambda: od.points.convex_subset_mask(points, n_directions=n_directions)
         )
         assert mask.shape[0] == bench_case.n_vertices
     elif bench_case.kind == "trimesh":
@@ -800,7 +800,7 @@ def test_convex_subset_mask(bench_case: BenchCase, n_directions: int) -> None:
 
 
 @pytest.mark.benchmark(group="convex_subset")
-@pytest.mark.benchlibs("triwarp", "trimesh", "open3d", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 def test_convex_subset(bench_case: BenchCase) -> None:
     """
     The mask plus ``flatnonzero`` and a gather: isolates the compaction cost.
@@ -815,9 +815,9 @@ def test_convex_subset(bench_case: BenchCase) -> None:
     No ``n_directions`` axis here (unlike the mask group): the compaction this group isolates does
     not scale with the direction count, so one row per library is the whole comparison.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
-        selected = bench_case.run(lambda: tw.points.convex_subset(points))
+        selected = bench_case.run(lambda: od.points.convex_subset(points))
         assert selected.shape[0] <= bench_case.n_vertices
         return
     skip_larger_than(bench_case, "dragon", "qhull is single-threaded on the host")
@@ -834,7 +834,7 @@ def test_convex_subset(bench_case: BenchCase) -> None:
 
 
 @pytest.mark.benchmark(group="convex_superset_mask")
-@pytest.mark.benchlibs("triwarp", "scipy")
+@pytest.mark.benchlibs("ordito", "scipy")
 @pytest.mark.parametrize("subdivisions", _SUBDIVISIONS)
 def test_convex_superset_mask(bench_case: BenchCase, subdivisions: int) -> None:
     """
@@ -851,10 +851,10 @@ def test_convex_superset_mask(bench_case: BenchCase, subdivisions: int) -> None:
     the support sweep and the tetrahedron count of the interior test -- and is the knob that trades
     selectivity for time.
     """
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         points = bench_case.vertices_wp
         mask = bench_case.run(
-            lambda: tw.points.convex_superset_mask(points, subdivisions=subdivisions)
+            lambda: od.points.convex_superset_mask(points, subdivisions=subdivisions)
         )
         assert mask.shape[0] == bench_case.n_vertices
     else:

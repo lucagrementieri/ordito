@@ -14,8 +14,8 @@ matters for reading the code below):
 - **Identity is carried by the logo + a muted text label, not by hue.** A logo already
   disambiguates *which* library a bar is; burning a categorical color per bar on top of that would
   be decoration competing with the one thing color should be doing here.
-- **Color's one job on this chart is "is this triwarp."** The subject bar (triwarp-cuda, or
-  triwarp-cpu if that is the only triwarp row in the cell) takes the site's own brand accent; every
+- **Color's one job on this chart is "is this ordito."** The subject bar (ordito-cuda, or
+  ordito-cpu if that is the only ordito row in the cell) takes the site's own brand accent; every
   reference bar takes one shared muted gray. This is a two-value status encoding, not an 8-hue
   categorical one -- it does not need the dataviz skill's categorical CVD/chroma validator (which
   is built for genuine multi-hue identity palettes and will flag an intentionally achromatic gray
@@ -71,12 +71,12 @@ LOG_SCALE_RATIO = 15.0
 # 3. **Honesty.** Three of the ten are ties or losses, and they are chosen to be *informative*
 #    rather than token: `query_nearest_bvh_k1` is the same family as the two query wins above it
 #    and shows where the crossover is, and `quadric_decimate[saddle_graded]` is a five-reference
-#    cell triwarp loses to MeshLib's serial decimator.
+#    cell ordito loses to MeshLib's serial decimator.
 #
 # **These must be rendered from a `--bench-all-libs` run.** `_known_slow_libraries.json` skips any
 # reference already measured losing by more than 2x and ranking third-or-worse -- a sound
 # optimization for the development loss table (it recovers most of the suite's timed regions) and
-# exactly wrong for these charts, because the libraries it drops are the ones triwarp beats most
+# exactly wrong for these charts, because the libraries it drops are the ones ordito beats most
 # widely. Measured, the default sweep has a handful of cells with three or more references where the
 # full sweep has hundreds. Rendering this list against a default sweep silently produces two-bar
 # charts.
@@ -226,12 +226,12 @@ def render_cell(
     key: aggregate.CellKey, libs: dict[str, float], out_dir: Path, provenance: str
 ) -> bool:
     """Render one `(light, dark)` PNG pair plus a markdown table for one benchmark cell."""
-    if "triwarp-cuda" in libs:
-        subject_id = "triwarp-cuda"
-    elif "triwarp-cpu" in libs:
-        subject_id = "triwarp-cpu"
+    if "ordito-cuda" in libs:
+        subject_id = "ordito-cuda"
+    elif "ordito-cpu" in libs:
+        subject_id = "ordito-cpu"
     else:
-        print(f"  ! {aggregate.cell_label(key)}: no triwarp row, skipped", file=sys.stderr)
+        print(f"  ! {aggregate.cell_label(key)}: no ordito row, skipped", file=sys.stderr)
         return False
     references = {lib: t for lib, t in libs.items() if not registry.is_subject(lib)}
     if not references:

@@ -1,6 +1,6 @@
 # Performance
 
-triwarp exists because mesh processing is embarrassingly parallel and almost every CPU-bound
+ordito exists because mesh processing is embarrassingly parallel and almost every CPU-bound
 geometry library leaves that parallelism on the table. This page explains *why* the GPU path is
 fast in the shapes that matter, and how to reproduce every number this project publishes —
 it deliberately does not repeat this project's own internal, hardware-pinned engineering notes
@@ -13,7 +13,7 @@ was measured against, and it is kept current rather than copied once and left to
   never round-trips through the host between them (see
   [Concepts: the device follows the data](concepts.md#the-device-follows-the-data)). A CPU
   library built around NumPy pays a Python-loop or a memory-layout cost between every step that
-  isn't itself vectorized; triwarp pays it once, at the boundary where you actually need values
+  isn't itself vectorized; ordito pays it once, at the boundary where you actually need values
   back on the host.
 - **One kernel launch does the work of a whole loop.** A per-triangle or per-vertex computation —
   a normal, an area, a Laplacian entry, a nearest-neighbour query — launches as a single batched
@@ -37,13 +37,13 @@ of its own, and so the suite's only GPU-against-GPU comparison). Anyone can run 
 comparison:
 
 ```bash
-git clone https://github.com/lucagrementieri/triwarp
-cd triwarp
+git clone https://github.com/lucagrementieri/ordito
+cd ordito
 uv sync --group bench
 uv run pytest benchmarks/ --benchmark-json=results.json
 ```
 
-See [`benchmarks/README.md`](https://github.com/lucagrementieri/triwarp/tree/main/benchmarks) in
+See [`benchmarks/README.md`](https://github.com/lucagrementieri/ordito/tree/main/benchmarks) in
 the repository for the full methodology: which axis each benchmark group sweeps, which libraries
 are compared for which operation, and why a handful of comparisons are excluded (a different
 algorithm answering a related-but-not-identical question, a parameter one library's API doesn't
@@ -59,12 +59,12 @@ A speed claim on this project is only meaningful next to three things: **which l
 triangle aspect ratio move the needle as often as raw triangle count does), and **on what
 hardware**. A bare "GPU-accelerated" adjective is not a number, and a number with no mesh or
 hardware attached is not reproducible. Every claim in this project's own documentation follows
-that discipline; hold any number quoted elsewhere about triwarp to the same standard before
+that discipline; hold any number quoted elsewhere about ordito to the same standard before
 trusting it.
 
-## Where triwarp is not the fastest option
+## Where ordito is not the fastest option
 
-Not every operation benefits from a GPU. A handful of triwarp's own functions are launch-bound
+Not every operation benefits from a GPU. A handful of ordito's own functions are launch-bound
 rather than compute-bound at realistic mesh sizes — a short, sequential DP over one small
 boundary loop, or a per-mesh CPU seed step a parallel algorithm can't usefully replace — and lose
 to a fast single-threaded C++ implementation there. This isn't hidden: where it's true, it's

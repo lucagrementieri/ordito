@@ -1,5 +1,5 @@
 """
-Benchmarks for ``triwarp.graph``: connected components and the weighted envelope.
+Benchmarks for ``ordito.graph``: connected components and the weighted envelope.
 
 Two axes, matching the two ways a graph algorithm gets slow:
 
@@ -21,7 +21,7 @@ isolate the graph algorithms from the edge sort that produces them -- including
 ``shortest_path_envelope``'s length-weighted one, whose weights are ``edges_unique_length``.
 
 ``combine.split`` is the other component-count-driven function in the package and sits in
-[`test_combine.py`](test_combine.py) with the rest of ``triwarp.combine``, on the same
+[`test_combine.py`](test_combine.py) with the rest of ``ordito.combine``, on the same
 ``components`` axis.
 
 References
@@ -52,7 +52,7 @@ that returns a label array. The closest thing that runs the component pass *with
 or deleting anything is ``compute_selection_by_small_disconnected_components_per_face`` at
 ``nbfaceratio=0.0`` -- it labels every component and then thresholds against a fraction of the
 largest one, selecting nothing. So the row is "label everything, then one threshold pass", against
-triwarp's "label everything". The labelling is the only graph work MeshLab exposes.
+ordito's "label everything". The labelling is the only graph work MeshLab exposes.
 """
 
 from __future__ import annotations
@@ -65,22 +65,22 @@ import scipy.sparse as sp
 import warp as wp
 from meshlib import mrmeshpy as mm
 
-import triwarp as tw
-import triwarp.typing as twt
+import ordito as od
+import ordito.typing as odt
 from conftest import BenchCase, skip_larger_than
 
-_adjacency_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
+_adjacency_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
 _scipy_cache: dict[str, sp.csr_matrix] = {}
 
 
-def _adjacency(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
+def _adjacency(bench_case: BenchCase) -> odt.BsrMatrix[wp.float32]:
     """Vertex adjacency as a warp BSR matrix -- an *input*, built once per (mesh, device)."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _adjacency_cache:
-        unique_edges, _ = tw.edges.edges_unique(
+        unique_edges, _ = od.edges.edges_unique(
             bench_case.faces_wp, n_vertices=bench_case.n_vertices
         )
-        _adjacency_cache[key] = tw.graph.edges_to_csr(bench_case.n_vertices, unique_edges)
+        _adjacency_cache[key] = od.graph.edges_to_csr(bench_case.n_vertices, unique_edges)
     return _adjacency_cache[key]
 
 
@@ -98,7 +98,7 @@ def _scipy_graph(bench_case: BenchCase) -> sp.csr_matrix:
 
 @pytest.mark.benchmark(group="connected_component_labels")
 @pytest.mark.benchaxis("components")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "scipy", "igl", "pymeshlab", "meshlib")
 def test_connected_component_labels(bench_case: BenchCase) -> None:
     """
     ECL-CC hook and flatten, over 1 / 64 / 1024 components at a fixed face count.
@@ -107,12 +107,12 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
     themselves -- one ``VertBitSet`` each, in its own traversal order -- rather than a label array
     or a derived selection, so its cost includes materializing ``k`` bitsets and should be the row
     that moves most across this axis. It reads the topology rather than an assembled adjacency, so
-    the mesh is built outside the timed callable exactly as triwarp's CSR is.
+    the mesh is built outside the timed callable exactly as ordito's CSR is.
 
     ``igl.connected_components`` is the other label-array reference and the closest match to
-    triwarp's signature -- a ``scipy.sparse`` adjacency in, labels out. It builds that adjacency
+    ordito's signature -- a ``scipy.sparse`` adjacency in, labels out. It builds that adjacency
     inside the timed callable (``igl.adjacency_matrix`` is the only form it takes), so on this axis
-    its row carries the build where scipy's does not; the two are read against triwarp separately
+    its row carries the build where scipy's does not; the two are read against ordito separately
     rather than against each other. Note it counts every *isolated vertex* as its own component, so
     its component count differs from the others on a mesh with unreferenced vertices while the
     partition it induces on the referenced ones does not.
@@ -146,9 +146,9 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
         )
         assert meshset_pml.current_mesh().face_selection_array().shape == (bench_case.n_faces,)
         return
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         adjacency = _adjacency(bench_case)
-        labels = bench_case.run(lambda: tw.graph.connected_component_labels(adjacency))
+        labels = bench_case.run(lambda: od.graph.connected_component_labels(adjacency))
         assert labels.shape == (n_vertices,)
     else:
         graph = _scipy_graph(bench_case)
@@ -159,7 +159,7 @@ def test_connected_component_labels(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="connected_component_labels_depth")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl")
+@pytest.mark.benchlibs("ordito", "scipy", "igl")
 def test_connected_component_labels_depth(bench_case: BenchCase) -> None:
     """
     The depth-robustness gate: ECL-CC on a graph of diameter 130 against one of diameter 20 481.
@@ -171,16 +171,16 @@ def test_connected_component_labels_depth(bench_case: BenchCase) -> None:
     regression that would invalidate it.
 
     ``igl.connected_components`` takes a ``scipy.sparse`` adjacency matrix -- the same argument
-    triwarp's function takes -- so it is a genuine third labelling here rather than a mesh-bound
+    ordito's function takes -- so it is a genuine third labelling here rather than a mesh-bound
     stand-in. Its adjacency comes from ``igl.adjacency_matrix(F)`` and is built inside the timed
     callable, because that is the only form it accepts; the scipy row reuses this module's cached
     CSR, so read the two reference rows as build-included and build-excluded rather than against
     each other.
     """
     n_vertices = bench_case.n_vertices
-    if bench_case.kind == "triwarp":
+    if bench_case.kind == "ordito":
         adjacency = _adjacency(bench_case)
-        labels = bench_case.run(lambda: tw.graph.connected_component_labels(adjacency))
+        labels = bench_case.run(lambda: od.graph.connected_component_labels(adjacency))
         assert labels.shape == (n_vertices,)
     elif bench_case.kind == "igl":
         faces_np = bench_case.faces_np
@@ -198,7 +198,7 @@ def test_connected_component_labels_depth(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="face_connected_component_labels_depth")
 @pytest.mark.benchaxis("diameter")
-@pytest.mark.benchlibs("triwarp", "scipy", "igl")
+@pytest.mark.benchlibs("ordito", "scipy", "igl")
 def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
     """
     Same gate one level up, over the face-adjacency graph.
@@ -208,7 +208,7 @@ def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
     Flat across the two diameters as well -- the edge sort dominates and neither half of it is
     depth-sensitive.
 
-    Both references are **build-included**, which is what makes them fair here: triwarp's row times
+    Both references are **build-included**, which is what makes them fair here: ordito's row times
     the dual-graph construction *and* the labelling, so a reference handed a prebuilt matrix would
     be pricing half the work. "No scipy counterpart" is an argument about the timed region rather
     than about the comparison -- the answer is to put the reference's build inside its own callable,
@@ -217,7 +217,7 @@ def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
     - **igl** ``facet_components(F)`` is the direct counterpart: faces in, per-face labels out, dual
       graph built internally.
     - **scipy** builds the dual explicitly -- each edge shared by two faces contributes one entry --
-      and then runs ``connected_components``, so its row is the same two phases triwarp's is.
+      and then runs ``connected_components``, so its row is the same two phases ordito's is.
     """
     n_faces = bench_case.n_faces
     if bench_case.kind == "igl":
@@ -250,25 +250,25 @@ def test_face_connected_component_labels_depth(bench_case: BenchCase) -> None:
         assert labels_np.shape == (n_faces,)
         return
     labels = bench_case.run(
-        lambda: tw.adjacency.face_connected_component_labels(bench_case.faces_wp)
+        lambda: od.adjacency.face_connected_component_labels(bench_case.faces_wp)
     )
     assert labels.shape == (n_faces,)
 
 
-_weighted_cache: dict[tuple[str, str], twt.BsrMatrix[wp.float32]] = {}
+_weighted_cache: dict[tuple[str, str], odt.BsrMatrix[wp.float32]] = {}
 
 
-def _length_weighted_adjacency(bench_case: BenchCase) -> twt.BsrMatrix[wp.float32]:
+def _length_weighted_adjacency(bench_case: BenchCase) -> odt.BsrMatrix[wp.float32]:
     """Vertex adjacency weighted by Euclidean edge length -- an *input*, built once per case."""
     key = (bench_case.mesh_name, str(bench_case.device))
     if key not in _weighted_cache:
-        unique_edges, _ = tw.edges.edges_unique(
+        unique_edges, _ = od.edges.edges_unique(
             bench_case.faces_wp, n_vertices=bench_case.n_vertices
         )
-        lengths = tw.edges.edges_unique_length(
+        lengths = od.edges.edges_unique_length(
             bench_case.vertices_wp, bench_case.faces_wp, unique_edges
         )
-        _weighted_cache[key] = tw.graph.edges_to_csr(bench_case.n_vertices, unique_edges, lengths)
+        _weighted_cache[key] = od.graph.edges_to_csr(bench_case.n_vertices, unique_edges, lengths)
     return _weighted_cache[key]
 
 
@@ -280,13 +280,13 @@ def _spike_field_np(bench_case: BenchCase) -> np.ndarray:
 
 
 @pytest.mark.benchmark(group="shortest_path_envelope")
-@pytest.mark.benchlibs("triwarp", "pymeshlab")
+@pytest.mark.benchlibs("ordito", "pymeshlab")
 def test_shortest_path_envelope(bench_case: BenchCase) -> None:
     """
     Weighted relaxation to the shortest-path envelope: pass count is the graph diameter.
 
     Capped at ``bunny_decimated`` on both sides. The spike seed makes every pass matter, so the
-    triwarp row is ``diameter`` launches deep and the MeshLab row is a serial flood over the same
+    ordito row is ``diameter`` launches deep and the MeshLab row is a serial flood over the same
     region -- neither says anything new at larger scale that the two smallest meshes do not. The
     weighted adjacency is an input and is built outside the timed callable, like the unweighted
     one the labelling groups take.
@@ -313,5 +313,5 @@ def test_shortest_path_envelope(bench_case: BenchCase) -> None:
     values = wp.array(
         _spike_field_np(bench_case).astype(np.float32), dtype=wp.float32, device=bench_case.device
     )
-    envelope = bench_case.run(lambda: tw.graph.shortest_path_envelope(adjacency, values), rounds=3)
+    envelope = bench_case.run(lambda: od.graph.shortest_path_envelope(adjacency, values), rounds=3)
     assert envelope.shape == (n_vertices,)

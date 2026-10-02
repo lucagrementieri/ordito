@@ -1,7 +1,7 @@
 """
 Cross-suite parity bookkeeping: which benchmarked reference libraries are also *tested* against.
 
-``benchmarks/`` times triwarp against every reference in ``benchmarks/conftest.py``'s
+``benchmarks/`` times ordito against every reference in ``benchmarks/conftest.py``'s
 ``LIBRARIES`` -- ten CPU-only baselines plus ``pytorch3d``, which carries CUDA kernels of its own
 and so takes two rows -- but only ever asserts shapes and
 finiteness -- its ``pytest_generate_tests`` parametrizes over ``(mesh_name, library)``, so one
@@ -204,7 +204,7 @@ class Site:
 
 @dataclass(frozen=True)
 class Exemption:
-    """A benchmarked reference whose result is declared not comparable with triwarp's."""
+    """A benchmarked reference whose result is declared not comparable with ordito's."""
 
     group: str
     library: str
@@ -215,7 +215,7 @@ class Exemption:
 
 @dataclass(frozen=True)
 class Claim:
-    """A correctness test's declaration that it asserts triwarp agrees with one reference."""
+    """A correctness test's declaration that it asserts ordito agrees with one reference."""
 
     group: str
     library: str
@@ -247,7 +247,7 @@ class BenchmarkScan:
     """Everything the benchmark suite declares about what it times and what it cannot compare."""
 
     libraries: dict[str, frozenset[str]] = field(default_factory=dict)
-    """Group name -> its ``benchlibs`` kinds, ``triwarp`` included."""
+    """Group name -> its ``benchlibs`` kinds, ``ordito`` included."""
 
     sites: dict[str, Site] = field(default_factory=dict)
     """Group name -> where its benchmark function is defined."""
@@ -260,18 +260,18 @@ class BenchmarkScan:
         """
         Every ``(group, library)`` pair that a correctness test could meaningfully cover.
 
-        A group whose ``benchlibs`` has no ``triwarp`` entry contributes nothing: it prices two
+        A group whose ``benchlibs`` has no ``ordito`` entry contributes nothing: it prices two
         references against each other (``fast_marching_distance`` times potpourri3d against
-        pymeshlab for an algorithm triwarp deliberately does not implement), so "triwarp agrees with
+        pymeshlab for an algorithm ordito deliberately does not implement), so "ordito agrees with
         this reference" is not a statement about it. Excluding those here rather than exempting them
-        one by one keeps the rule general -- a group that loses its triwarp branch by accident stops
+        one by one keeps the rule general -- a group that loses its ordito branch by accident stops
         demanding coverage instead of silently keeping a stale exemption.
         """
         return {
             (group, library)
             for group, libraries in self.libraries.items()
-            if "triwarp" in libraries
-            for library in libraries - {"triwarp"}
+            if "ordito" in libraries
+            for library in libraries - {"ordito"}
         }
 
 
@@ -604,7 +604,7 @@ def _called_roots(node: ast.FunctionDef) -> set[str]:
 
     ``tm.creation.cylinder(...)`` contributes ``tm``, ``mesh_tm.outline()`` contributes ``mesh_tm``.
     Half of the anti-vacuity signal: a test may consult a reference inline without ever binding its
-    result to a name, which the suffix half alone would read as a triwarp-only test.
+    result to a name, which the suffix half alone would read as a ordito-only test.
     """
     roots: set[str] = set()
     for child in ast.walk(node):
@@ -662,7 +662,7 @@ def suffix_problem(claim: Claim) -> str | None:
     Describe why a claim looks vacuous, or ``None`` when the test really consults the reference.
 
     A ``parity`` marker is a self-assertion, and the likeliest way for one to be wrong is to sit on
-    a test that only compares triwarp with itself -- a precomputed-argument shortcut, or an
+    a test that only compares ordito with itself -- a precomputed-argument shortcut, or an
     invariant check. Two signals count as consulting the reference, and either suffices:
 
     - a **name** carrying the CLAUDE.md reference-variable suffix (``_tm`` / ``_igl`` / ``_pp`` /
@@ -685,7 +685,7 @@ def suffix_problem(claim: Claim) -> str | None:
     expected = " / ".join(f"*{suffix}" for suffix in sorted(suffixes))
     return (
         f"claims {claim.library!r} but neither binds a {expected} variable nor calls into it; "
-        "a parity test must read the reference's answer, not compare triwarp with itself"
+        "a parity test must read the reference's answer, not compare ordito with itself"
     )
 
 
