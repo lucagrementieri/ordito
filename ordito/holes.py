@@ -3065,7 +3065,10 @@ def join_closest_components(
         pair = _closest_cross_component_edges(vertices, current, max_distance_sq)
         if pair is None:
             break
-        current = bridge_edges(vertices, current, pair[0], pair[1])
+        # Both checks ``validate`` runs hold by construction: the edges are rows of the current
+        # faces' oriented boundary, and they lie in different components, so no chord between them
+        # can already be an edge. Skipping them saves a face census and a readback per join.
+        current = bridge_edges(vertices, current, pair[0], pair[1], validate=False)
         joins += 1
 
     return _launch.clone(faces) if joins == 0 else current

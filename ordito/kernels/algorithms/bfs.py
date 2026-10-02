@@ -43,7 +43,9 @@ def bfs_visited_insert(
 
     Returns ``(is_new, new_count)``: ``is_new`` is ``False`` when the value was already present.
     Beyond the load-factor fill bound the insert is dropped and the value reads as new, so dropped
-    nodes can be revisited; the caller sees the drop as ``is_new`` with ``new_count == count``.
+    nodes can be revisited; the drop returns ``new_count == _VISITED_MAX_FILL + 1``, which the bound
+    test still reads as full, so a caller learns whether anything was dropped from the final count
+    alone rather than comparing counts around every insert.
     """
     slot = kernel_grouping.hash_slot(value, mask)
     while True:
@@ -52,7 +54,7 @@ def bfs_visited_insert(
             return False, count
         if stored == wp.int32(-1):
             if count >= _VISITED_MAX_FILL:
-                return True, count
+                return True, _VISITED_MAX_FILL + wp.int32(1)
             visited[slot] = value
             return True, count + 1
         slot = kernel_grouping.next_slot(slot, mask)
@@ -155,7 +157,6 @@ def per_source_bfs_collect(
     # was nearly all of the walk.
     full = wp.bool(False)
     clipped = wp.bool(False)
-    previous_n = wp.int32(0)
 
     while q_head < q_tail and not full:
         current = queue[q_head]
@@ -166,12 +167,9 @@ def per_source_bfs_collect(
         end = adj_offsets[current + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            previous_n = visited_n
             is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
-            if visited_n == previous_n:
-                clipped = wp.bool(True)
             distance = wp.float32(0.0)
             if use_geometry:
                 distance = wp.length(vertices[neighbor] - center)
@@ -210,17 +208,15 @@ def per_source_bfs_collect(
         end = adj_offsets[cand + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            previous_n = visited_n
             is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
-            if visited_n == previous_n:
-                clipped = wp.bool(True)
             distance = wp.float32(0.0)
             if use_geometry:
                 distance = wp.length(vertices[neighbor] - center)
             ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
 
-    if clipped:
+    # A visited-table drop leaves ``visited_n`` one past the fill bound (``bfs_visited_insert``).
+    if clipped or visited_n > _VISITED_MAX_FILL:
         wp.atomic_add(out_overflow, 0, 1)
     return collected

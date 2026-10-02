@@ -4387,6 +4387,14 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   The count is exactly one per clipped source (visited-table and backfill drops included), and
   the warning says "`k` of `n` neighborhoods exceeded the fixed capacity"; the dropped-neighbour
   count it used to print is only known by walking the tail the early exit skips.
+  **The exact count must cost nothing per insert** (2026-10-02): the first version compared
+  `visited_n` before and after every visited-table insert and cost `geodesic_ball` 1.33x and
+  `relax_approx` 1.59x at `dragon` / `happy_buddha`. A dropped insert now returns
+  `_VISITED_MAX_FILL + 1`, which the `>=` bound still reads as full, and the source commits once
+  on `clipped or visited_n > _VISITED_MAX_FILL`: outputs and warnings identical (76 arrays, both
+  devices), 1.43-1.48x / 1.62-1.65x against the per-insert form and faster than before it
+  (48 vs 52.5 ms on `geodesic_ball[dragon]`). Bookkeeping in a BFS's innermost loop is a
+  codegen-variance hazard (§14.2): carry the signal in a value the loop already updates.
 - **`geodesic_ball` was never nondeterministic; its radius was** (closed 2026-10-02). The
   "differs in some processes" reading came from `r = 5 * mean_edge_length`, whose float32 sum
   committed one `atomic_add` per block and moved in its last bit between processes and calls;
@@ -5182,6 +5190,14 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `"chebyshev"` unconditionally. `_AdaptiveCg` keeps its states across calls and therefore must not
   use pooled states (§16.16).
 - **Smoother verdicts are §14.8** (a Chebyshev multigrid smoother is refuted; interval robustness).
+- **The coarsest level is factored on the host and is non-singular** (2026-10-02, `probes/r28_coarse.py`
+  in `plans/benchmark-round-28-data/`): `_multigrid_dense_inverse`'s `pinv(hermitian=True)` is about a
+  third of `multigrid_preconditioner` at n = 118-331 (nullity 0 at `saddle`, `saddle_graded`,
+  `sphere_med`). A Cholesky inverse is 2.2-3.6x cheaper single-threaded. **OpenBLAS's 48-thread
+  default slows these small factorizations** (Cholesky at n = 118: 6.0 ms threaded, 0.25 ms on one
+  thread) and the whole call is 1.27-1.52x faster under `OPENBLAS_NUM_THREADS=1`; a six-module
+  A/B of ordito rows showed no comparable effect elsewhere, so the lever is this one factorization,
+  not a thread setting. Open: Cholesky-first with a `pinv` fallback (round 28's R28-3).
 - **The multigrid hierarchy's *setup* is the blocker** (several sparse-op calls per coarsening level
   at Warp's fixed per-call cost, not the aggregation algorithm): every losing case loses by exactly
   that; with a free setup all would win. **No `bsr_mm` runs in a well-coarsened level**: the smoothed
