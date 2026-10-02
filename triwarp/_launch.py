@@ -597,6 +597,10 @@ def _slow(
         _remember(kernel, device, block_dim)
 
 
+# The widest block a debug build can launch (see ``launch_tiled``).
+DEBUG_MAX_BLOCK_DIM = 256
+
+
 def launch_tiled(
     kernel: twt.Kernel,
     dim: int | Sequence[int],
@@ -609,6 +613,14 @@ def launch_tiled(
     """``wp.launch_tiled`` through [`launch`][triwarp._launch.launch]."""
     if type(device) is not _Device:
         device = wp.get_device(device)
+    if block_dim > DEBUG_MAX_BLOCK_DIM and wp.config.mode == "debug":
+        # A ``--device-debug`` build runs at -O0 and spends up to the 255-register cap per thread,
+        # so a 512- or 1 024-lane block exceeds the 64 K-register file and the launch fails with
+        # CUDA error 701 (the one-block ear-clip, RDP and CG kernels: 39-56 registers released,
+        # 163-255 in debug). 256 lanes always fit 255 registers. Every kernel launched wider
+        # strides by ``wp.block_dim()`` (it already runs at width 1 on the CPU device), so the
+        # narrower block is the same walk; only float reduction order moves.
+        block_dim = DEBUG_MAX_BLOCK_DIM
     if device.is_cpu or kwargs:
         return wp.launch_tiled(kernel, dim=dim, inputs=inputs, outputs=outputs, device=device,
                                block_dim=block_dim, **kwargs)  # fmt: skip

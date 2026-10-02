@@ -538,22 +538,21 @@ def max_tangent_sphere(
 
     # ``max_t`` needs the box enclosing the mesh *and* the queries, while the convergence threshold
     # is a fraction of the mesh's own diagonal. Both boxes reduce into one twelve-slot corner
-    # buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the queries' second), read
-    # back once; the union is then the componentwise extreme of the two, exact in any order.
+    # buffer (``minmax_vec3_chunked``'s packing, the mesh's first and the queries' second) in one
+    # launch, read back once; the union is then the componentwise extreme of the two, exact in any
+    # order.
     #
     # ``max_t`` is part of the answer, not only a bound: the shrink step's closest-point query is
     # capped at it, and a centre farther than that from the mesh misses and stops the sphere where
     # an unbounded query would keep shrinking it, so the two converge to different spheres.
     corners = _launch.full(12, math.inf, dtype=wp.float32, device=device)
-    for cloud, box in ((mesh.points, corners), (points, twt.as_dense(corners[6:]))):
-        n_cloud = cloud.size
-        if n_cloud > 0:
-            _launch.launch(
-                kernel_reduce.minmax_vec3_chunked,
-                dim=kernel_reduce.chunks_1d(n_cloud),
-                inputs=[cloud, box],
-                device=device,
-            )
+    _launch.launch(
+        kernel_reduce.minmax_vec3_pair_chunked,
+        dim=kernel_reduce.chunks_1d(mesh.points.size) + kernel_reduce.chunks_1d(m),
+        inputs=[mesh.points, points, wp.int32(1)],
+        outputs=[corners],
+        device=device,
+    )
     # Slots 3..5 and 9..11 hold the *negated* upper corners. ``math.dist`` on plain floats rather
     # than ``wp.length`` of a Warp vector difference: a Warp operator or builtin at Python scope
     # routes through builtin dispatch, several times dearer. It computes in float64 where

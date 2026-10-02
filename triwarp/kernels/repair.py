@@ -401,6 +401,15 @@ def is_interior_degree3(ring_start: wp.int32, ring_end: wp.int32, on_boundary: w
 
 
 @wp.func
+def is_interior_degree3_in_region(
+    ring_start: wp.int32, ring_end: wp.int32, on_boundary: wp.bool, in_region: wp.bool
+) -> wp.bool:
+    # ``is_interior_degree3`` restricted to a caller's vertex region, so the restriction rides the
+    # same map rather than a second pass over the mask.
+    return in_region and is_interior_degree3(ring_start, ring_end, on_boundary)
+
+
+@wp.func
 def wins_degree3_conflict(
     faces: wp.array[wp.int32],
     ring_offsets: wp.array[wp.int32],
@@ -758,7 +767,7 @@ def select_and_flatten_degree3(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     candidate: wp.array[wp.bool],
-    out_selected: wp.array[wp.bool],
+    out_candidate: wp.array[wp.bool],
     out_positions: wp.array[wp.vec3],
 ) -> None:
     # Move each selected vertex to the centroid of its three neighbours -- which lies in their
@@ -774,21 +783,24 @@ def select_and_flatten_degree3(
     #
     # The divisor is a literal 3 because ``selected`` implies interior valence 3; the ring walk is
     # over ``ring_offsets`` all the same, so a stale mask cannot make it read past the ring.
-    # The selection and the move it implies, in one pass. They are the same thread's decision about
-    # the same vertex, so running them apart cost a launch and a full round trip of the selection
-    # mask through global memory to tell this kernel what the previous one had just decided. No
-    # selection count here: this caller's loop reads the remaining candidates instead, and the
-    # positions are written for *every* vertex because the caller ping-pongs two buffers and an
-    # unwritten slot would hold an iteration-old value.
+    # The selection, the move it implies and the next pass's candidates, in one pass. They are the
+    # same thread's decision about the same vertex, so running them apart cost a launch and a full
+    # round trip of a selection mask through global memory to tell the next kernel what this one
+    # had just decided. The remaining candidates go to a second buffer (``out_candidate``, the
+    # caller ping-pongs the two) because ``wins_degree3_conflict`` reads ``candidate`` at the
+    # neighbours. No selection count here: this caller's loop reads the remaining candidates
+    # instead, and the positions are written for *every* vertex because the caller ping-pongs two
+    # buffers and an unwritten slot would hold an iteration-old value.
     #
     # Measured 1.12x on ``flatten_degree3_vertices`` at 3 413 flattened vertices, byte-identical.
     # The ring walk is done twice in the taken branch -- once to decide, once to average -- and
     # that is still cheaper than writing the mask out and reading it back.
     vertex = wp.int32(wp.tid())
     if not wins_degree3_conflict(faces, ring_offsets, ring_halfedges, candidate, vertex):
+        out_candidate[vertex] = candidate[vertex]
         out_positions[vertex] = positions[vertex]
         return
-    out_selected[vertex] = True
+    out_candidate[vertex] = False
     total = wp.vec3()
     for slot in range(ring_offsets[vertex], ring_offsets[vertex + 1]):
         total += positions[halfedge_destination(faces, ring_halfedges[slot])]
@@ -827,16 +839,27 @@ def _declare_map_kernels() -> None:
     and what forks a ``wp.map`` module; only this module's *own* forking ops belong here (the shared
     builtins are declared there).
 
-    One op: ``is_interior_degree3``, mapped over ``(ring_offsets[:-1], ring_offsets[1:],
-    is_boundary)`` by ``repair.flatten_degree3_vertices``. The length-1 row is not speculative -- a
-    ring CSR over a one-vertex mesh makes both offset slices length 1, and the broadcast mask is
-    part of the cache key, so that call would fork the module on first use.
+    Two ops: ``is_interior_degree3``, mapped over ``(ring_offsets[:-1], ring_offsets[1:],
+    is_boundary)`` by ``repair.flatten_degree3_vertices``, and ``is_interior_degree3_in_region``,
+    the same with the caller's ``region`` mask. The length-1 rows are not speculative -- a ring CSR
+    over a one-vertex mesh makes both offset slices length 1, and the broadcast mask is part of the
+    cache key, so that call would fork the module on first use.
     """
     dense, single = map_probe, map_probe_single
     declare_map_signatures(
         [
             (is_interior_degree3, (dense(wp.int32), dense(wp.int32), dense(wp.bool)), wp.bool),
             (is_interior_degree3, (single(wp.int32), single(wp.int32), single(wp.bool)), wp.bool),
+            (
+                is_interior_degree3_in_region,
+                (dense(wp.int32), dense(wp.int32), dense(wp.bool), dense(wp.bool)),
+                wp.bool,
+            ),
+            (
+                is_interior_degree3_in_region,
+                (single(wp.int32), single(wp.int32), single(wp.bool), single(wp.bool)),
+                wp.bool,
+            ),
         ]
     )
 

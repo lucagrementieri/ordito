@@ -18,7 +18,7 @@ from typing import Any
 import warp as wp
 
 from triwarp.constants import TOLERANCE_ZERO_CONSTANT
-from triwarp.kernels.array import OverloadTable, binary_search_index, cross2, to_vec2, to_vec2d
+from triwarp.kernels.array import binary_search_index, cross2, to_vec2, to_vec2d
 from triwarp.kernels.linalg import free_row
 from triwarp.kernels.predicates import (
     stable_length,
@@ -64,47 +64,67 @@ def upper_edge_length_sum_and_count(
     commit_sum_and_count(t, total, count, out_sum_and_count)
 
 
-@wp.kernel
-def shifted_system_values(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[Any],
-    diagonal: wp.array[Any],
-    scale: wp.float64,
-    edge_sum_and_count: wp.array[wp.float64],
-    from_edges: wp.int32,
-    negate: wp.int32,
-    out_values: wp.array[Any],
-    out_negated: wp.array[Any],
-) -> None:
-    # One row of ``scale * A + diag(diagonal)``, written over ``A``'s own pattern -- the heat
-    # method's ``M - t L`` and ``M + t L_connection`` -- where ``warp.sparse.bsr_axpy`` against a
-    # ``bsr_diag`` would merge two patterns, sorting both, for a result whose pattern is ``A``'s:
-    # every vertex a face references has a diagonal entry (``cotmatrix`` and
-    # ``connection_laplacian`` keep every triplet), and one no face references has no mass. With
-    # ``negate`` set, ``-A`` rides along into ``out_negated`` in the same pass: the scalar method's
-    # Poisson operator; unset, ``out_negated`` is never touched and may be ``None``. Scalar
-    # ``float64`` or ``wp.mat22d`` blocks.
-    #
-    # With ``from_edges`` set the scale is ``scale`` times the default timestep ``h ** 2``, ``h``
-    # the mean unique-edge length from ``upper_edge_length_sum_and_count``'s two sums (``0`` for no
-    # edges), formed on the device so the host never waits for them; ``scale`` is then the sign.
-    # Unset, ``edge_sum_and_count`` is never read and may be ``None``.
-    row = wp.int32(wp.tid())
-    factor = scale
-    if from_edges != 0:
-        h = wp.float64(0.0)
-        if edge_sum_and_count[1] > wp.float64(0.0):
-            h = edge_sum_and_count[0] / edge_sum_and_count[1]
-        factor = scale * (h * h)
-    for e in range(offsets[row], offsets[row + 1]):
-        value = values[e]
-        shifted = factor * value
-        if columns[e] == row:
-            shifted = shifted + diagonal[row]
-        out_values[e] = shifted
-        if negate != 0:
-            out_negated[e] = -value
+def _shifted_system_values_kernel(dtype: Any) -> Any:
+    """``shifted_system_values`` for one block dtype: ``wp.float64`` or ``wp.mat22d``."""
+
+    def shifted_system_values(
+        offsets: wp.array[wp.int32],
+        columns: wp.array[wp.int32],
+        values: wp.array[Any],
+        mass: wp.array[wp.float64],
+        scale: wp.float64,
+        edge_sum_and_count: wp.array[wp.float64],
+        from_edges: wp.int32,
+        negate: wp.int32,
+        out_values: wp.array[Any],
+        out_negated: wp.array[Any],
+    ) -> None:
+        # One row of ``scale * A + M``, written over ``A``'s own pattern -- the heat method's
+        # ``M - t L`` and ``M + t L_connection`` -- where ``warp.sparse.bsr_axpy`` against a
+        # ``bsr_diag`` would merge two patterns, sorting both, for a result whose pattern is
+        # ``A``'s: every vertex a face references has a diagonal entry (``cotmatrix`` and
+        # ``connection_laplacian`` keep every triplet), and one no face references has no mass.
+        # With ``negate`` set, ``-A`` rides along into ``out_negated`` in the same pass: the scalar
+        # method's Poisson operator; unset, ``out_negated`` is never touched and may be ``None``.
+        # Scalar ``float64`` or ``wp.mat22d`` blocks.
+        #
+        # ``M`` is the scalar lumped mass at either block dtype: a ``wp.mat22d`` system carries
+        # two unknowns per vertex and the same area weight applies to both, so its diagonal block
+        # is formed here, as it is read, rather than mapped into a block buffer first.
+        #
+        # With ``from_edges`` set the scale is ``scale`` times the default timestep ``h ** 2``,
+        # ``h`` the mean unique-edge length from ``upper_edge_length_sum_and_count``'s two sums
+        # (``0`` for no edges), formed on the device so the host never waits for them; ``scale``
+        # is then the sign. Unset, ``edge_sum_and_count`` is never read and may be ``None``.
+        row = wp.int32(wp.tid())
+        factor = scale
+        if from_edges != 0:
+            h = wp.float64(0.0)
+            if edge_sum_and_count[1] > wp.float64(0.0):
+                h = edge_sum_and_count[0] / edge_sum_and_count[1]
+            factor = scale * (h * h)
+        for e in range(offsets[row], offsets[row + 1]):
+            value = values[e]
+            shifted = factor * value
+            if columns[e] == row:
+                m = mass[row]
+                if wp.static(dtype == wp.mat22d):
+                    shifted = shifted + wp.mat22d(m, wp.float64(0.0), wp.float64(0.0), m)
+                else:
+                    shifted = shifted + m
+            out_values[e] = shifted
+            if negate != 0:
+                out_negated[e] = -value
+
+    for name in ("values", "out_values", "out_negated"):
+        shifted_system_values.__annotations__[name] = wp.array[dtype]
+    return wp.kernel(shifted_system_values, name=f"shifted_system_values_{dtype.__name__}")
+
+
+# Keyed by the block dtype: the scalar heat system and the vector one's ``wp.mat22d`` blocks. A
+# factory rather than one generic kernel because the diagonal block is formed from the scalar mass
+# differently at the two dtypes.
+SHIFTED_SYSTEM_VALUES = {d: _shifted_system_values_kernel(d) for d in (wp.float64, wp.mat22d)}
 
 
 @wp.func
@@ -385,13 +405,6 @@ def gather_free_solution(
 # --------------------------------------------------------------------------------------
 
 
-@wp.func
-def block_mass(mass: wp.float64) -> wp.mat22d:
-    # The scalar lumped mass, as one 2x2 block per vertex: the vector problem carries two unknowns
-    # per vertex and the same area weight applies to both.
-    return wp.mat22d(mass, wp.float64(0.0), wp.float64(0.0), mass)
-
-
 @wp.kernel
 def seed_source_scalars(
     sources: wp.array[wp.int32],
@@ -556,34 +569,3 @@ def log_map_from_angles(
         return
     angle = wp.atan2(cross2(reference, outward), wp.dot(reference, outward))
     out_log[v] = wp.vec2(r * wp.cos(angle), r * wp.sin(angle))
-
-
-# Concrete overloads, registered at import (CLAUDE.md section 2.5): the scalar heat system and the
-# vector one's ``wp.mat22d`` blocks, keyed by the block dtype.
-SHIFTED_SYSTEM_VALUES: OverloadTable
-
-
-def _register_overloads() -> None:
-    """Instantiate every concrete overload of this module's generic kernels."""
-    global SHIFTED_SYSTEM_VALUES
-    SHIFTED_SYSTEM_VALUES = OverloadTable(
-        shifted_system_values,
-        {
-            d: [
-                wp.array[wp.int32],
-                wp.array[wp.int32],
-                wp.array[d],
-                wp.array[d],
-                wp.float64,
-                wp.array[wp.float64],
-                wp.int32,
-                wp.int32,
-                wp.array[d],
-                wp.array[d],
-            ]
-            for d in (wp.float64, wp.mat22d)
-        },
-    )
-
-
-_register_overloads()

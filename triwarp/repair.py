@@ -1642,22 +1642,31 @@ def flatten_degree3_vertices(
         rings if rings is not None else tw.halfedge.vertex_one_rings(faces, n_vertices=n_vertices)
     )
     candidate = _launch.empty(n_vertices, dtype=wp.bool, device=device)
-    _launch.map(
-        kernel_repair.is_interior_degree3,
-        ring_offsets[:-1],
-        ring_offsets[1:],
-        is_boundary,
-        out=candidate,
-    )
-    if region is not None:
-        _launch.map(kernel_array.mask_and, candidate, region, out=candidate)
+    if region is None:
+        _launch.map(
+            kernel_repair.is_interior_degree3,
+            ring_offsets[:-1],
+            ring_offsets[1:],
+            is_boundary,
+            out=candidate,
+        )
+    else:
+        _launch.map(
+            kernel_repair.is_interior_degree3_in_region,
+            ring_offsets[:-1],
+            ring_offsets[1:],
+            is_boundary,
+            region,
+            out=candidate,
+        )
 
     positions = vertices
     # Scratch hoisted out of the loop: the connectivity and the vertex count are both invariant
     # here, so a pass reuses these rather than allocating. The two position buffers alternate so
     # the caller's own ``vertices`` is never written -- pass 0 reads it and writes ``buffers[0]``,
-    # pass 1 reads that and writes ``buffers[1]``, and so on.
-    selected = _launch.zeros(n_vertices, dtype=wp.bool, device=device)
+    # pass 1 reads that and writes ``buffers[1]``, and so on -- and the two candidate masks
+    # alternate the same way, each pass writing the next one's.
+    remaining = _launch.empty(n_vertices, dtype=wp.bool, device=device)
     # Allocated on first use, not upfront: the common mesh has no two candidates adjacent, so the
     # loop runs a single pass and only ever needs one of the two.
     buffers: dict[int, wp.array[wp.vec3]] = {}
@@ -1666,24 +1675,23 @@ def flatten_degree3_vertices(
         # for what flattening both ends of an edge at once does to a tetrahedron. The lowest
         # remaining index always wins its own conflict, so every pass retires at least one
         # candidate and the loop cannot spin.
-        _launch.zero_(selected)
         slot = iteration % 2
         if slot not in buffers:
             buffers[slot] = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
         flattened = buffers[slot]
-        # One launch: choosing the independent set and moving the vertices it chose are the same
-        # thread's decision about the same vertex, so a second pass would only re-read the mask
-        # the first had just written to learn what it already knew.
+        # One launch: choosing the independent set, moving the vertices it chose and retiring them
+        # from the candidates are the same thread's decision about the same vertex.
         _launch.launch(
             kernel_repair.select_and_flatten_degree3,
             dim=n_vertices,
-            inputs=[positions, faces, ring_offsets, ring_halfedges, candidate, selected, flattened],
+            inputs=[positions, faces, ring_offsets, ring_halfedges, candidate],
+            outputs=[remaining, flattened],
             device=device,
         )
         positions = flattened
+        candidate, remaining = remaining, candidate
         if iteration + 1 == max_iter:
             break
-        _launch.map(kernel_array.mask_and_not, candidate, selected, out=candidate)
         # One readback per pass beyond the first, and it is the loop's own termination test: how
         # many candidates are still unflattened is a device-side fact and a Python loop cannot
         # branch on it otherwise. It is taken *after* the pass rather than before so that a mesh

@@ -109,7 +109,14 @@ def grid_coord(point: wp.vec3, bbox_min: wp.vec3, inv_cell_size: wp.float32) -> 
 
 
 @wp.func
-def grid_cell_key(coord: wp.vec3i, grid_w: wp.int32) -> wp.int64:
+def point_cell_key(
+    point: wp.vec3, bbox_min: wp.vec3, inv_cell_size: wp.float32, grid_w: wp.int32
+) -> wp.int64:
+    # The background grid's cell key of ``point``: its ``grid_coord``, packed at ``grid_w`` cells a
+    # side. One map from the points, because ``grid_w`` is known before any coordinate is: every
+    # step of ``grid_coord`` is monotone in the point, so the largest coordinate is the one at the
+    # bounding box's upper corner, which the caller evaluates in the same float32 arithmetic.
+    coord = grid_coord(point, bbox_min, inv_cell_size)
     w64 = wp.int64(grid_w)
     return cell_key(w64, wp.int64(coord.x), wp.int64(coord.y), wp.int64(coord.z))
 
@@ -144,21 +151,6 @@ def cell_table(
 
 
 @wp.kernel
-def sorted_point_cells(
-    sorted_keys: wp.array[wp.int64],
-    unique_keys: wp.array[wp.int64],
-    out_point_cell: wp.array[wp.int32],
-) -> None:
-    # Compacted cell index of every pool point (its cell is occupied by construction), written
-    # straight into the cell-sorted index space the dart loop runs in. Reading the *sorted* key
-    # rather than recomputing the point's key from its grid coordinate is what makes the per-point
-    # table and the permutation through ``bucket`` one pass: ``sorted_keys[s]`` already is the key
-    # of pool point ``bucket[s]``.
-    s = wp.int32(wp.tid())
-    out_point_cell[s] = lookup_cell(unique_keys, sorted_keys[s])
-
-
-@wp.kernel
 def dart_cell_neighbors(
     unique_keys: wp.array[wp.int64], grid_w: wp.int32, out_cell_neighbors: wp.array2d[wp.int32]
 ) -> None:
@@ -189,17 +181,6 @@ def dart_cell_neighbors(
     )
 
 
-@wp.kernel
-def sorted_random_priorities(
-    seed: wp.int32, bucket: wp.array[wp.int32], out_priority: wp.array[wp.uint32]
-) -> None:
-    # ``array.random_priorities`` drawn straight into cell-sorted space: the draw is keyed on the
-    # point's *pool* index ``bucket[s]``, so each point holds exactly the priority the unsorted draw
-    # gave it and the gather through ``bucket`` that used to follow is gone.
-    s = wp.int32(wp.tid())
-    out_priority[s] = element_priority(seed, bucket[s])
-
-
 @wp.func
 def summarize_min_priority(
     priority: wp.array[wp.uint32],
@@ -207,34 +188,49 @@ def summarize_min_priority(
     i: wp.int32,
     out_cell_min_priority: wp.array[wp.uint32],
 ) -> None:
-    # Fold one alive point into its cell's minimum-priority summary. Shared by the first round's
-    # summary pass and by ``dart_compact_alive``, which builds every later round's summary over the
-    # survivors it is compacting; ``wp.atomic_min`` is order-independent, so the two builders give
-    # the same summary for the same alive set.
+    # Fold one alive point into its cell's minimum-priority summary: ``dart_compact_alive`` builds
+    # every later round's summary over the survivors it is compacting, as ``dart_point_setup``
+    # builds the first round's; ``wp.atomic_min`` is order-independent, so the two give the same
+    # summary for the same alive set.
     wp.atomic_min(out_cell_min_priority, point_cell[i], priority[i])
 
 
 @wp.kernel
-def dart_cell_min_priority(
-    priority: wp.array[wp.uint32],
-    point_cell: wp.array[wp.int32],
-    alive: wp.array[wp.int32],
+def dart_point_setup(
+    seed: wp.int32,
+    sorted_keys: wp.array[wp.int64],
+    unique_keys: wp.array[wp.int64],
+    bucket: wp.array[wp.int32],
+    out_point_cell: wp.array[wp.int32],
+    out_priority: wp.array[wp.uint32],
     out_cell_min_priority: wp.array[wp.uint32],
 ) -> None:
-    # Per-cell summary for the selection sweep: the smallest priority any *alive* point in the cell
-    # holds. ``dart_select_minima`` vetoes a candidate only from a strictly smaller priority, so a
-    # cell whose minimum already loses to the candidate's key cannot contribute and is skipped
-    # whole -- which is most of the 27, most rounds.
+    # Everything the dart loop keeps per pool point, written straight into the cell-sorted index
+    # space it runs in, plus the first round's per-cell summary -- one launch over the pool:
     #
-    # Summarising the alive list rather than every not-COVERED point leaves the points ACCEPTED in
-    # an *earlier* round out, and that is safe: such a point covered its own ``r``-ball in the round
-    # it was accepted, so no point still alive now is within ``r`` of it and none of them could have
-    # been vetoed by it anyway.
-    #
-    # Launched for the first round only: every later round's summary is folded into the previous
-    # round's compaction, which already visits exactly the survivors.
-    t = wp.int32(wp.tid())
-    summarize_min_priority(priority, point_cell, alive[t], out_cell_min_priority)
+    # - the compacted cell index of every point (its cell is occupied by construction). Reading the
+    #   *sorted* key rather than recomputing the point's key from its grid coordinate is what makes
+    #   the per-point table and the permutation through ``bucket`` one pass: ``sorted_keys[s]``
+    #   already is the key of pool point ``bucket[s]``;
+    # - ``array.random_priorities`` drawn into sorted space: the draw is keyed on the point's
+    #   *pool* index ``bucket[s]``, so each point holds exactly the priority the unsorted draw gave
+    #   it;
+    # - the selection sweep's per-cell summary, the smallest priority any *alive* point in the
+    #   cell holds (``out_cell_min_priority``, arriving at ``DART_NO_PRIORITY``). The first round's
+    #   alive list is the whole pool. ``dart_select_minima`` vetoes a candidate only from a strictly
+    #   smaller priority, so a cell whose minimum already loses to the candidate's key cannot
+    #   contribute and is skipped whole -- which is most of the 27, most rounds. Summarising the
+    #   alive list rather than every not-COVERED point leaves the points ACCEPTED in an *earlier*
+    #   round out, and that is safe: such a point covered its own ``r``-ball in the round it was
+    #   accepted, so no point still alive now is within ``r`` of it and none of them could have
+    #   been vetoed by it anyway. Every later round's summary is folded into the previous round's
+    #   compaction, which already visits exactly the survivors.
+    s = wp.int32(wp.tid())
+    cell = lookup_cell(unique_keys, sorted_keys[s])
+    out_point_cell[s] = cell
+    priority = element_priority(seed, bucket[s])
+    out_priority[s] = priority
+    wp.atomic_min(out_cell_min_priority, cell, priority)
 
 
 @wp.kernel

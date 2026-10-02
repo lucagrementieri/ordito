@@ -655,22 +655,16 @@ def arap(
     # Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain
     # wp.empty; kernels index it as wp.array2d per CLAUDE.md).
     rest_edges = _launch.empty((n_faces, 3), dtype=wp.vec2d, device=device)
-    _launch.launch(
-        kernel_parametrization.arap_rest_edges,
-        dim=n_faces,
-        inputs=[vertices, faces, cot_entries, rest_edges],
-        device=device,
-    )
-
     # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
-    # warm-started CG solution per column; one launch seeds it from ``uv_init``'s interior values
-    # and writes the working ``out_uv`` with the constraints enforced for iteration 1. Every row of
-    # ``sol`` is seeded, so it is allocated uninitialised.
+    # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior
+    # values and writes the working ``out_uv`` with the constraints enforced for iteration 1. Every
+    # row of ``sol`` is seeded, so it is allocated uninitialised.
     sol = _launch.empty((2, n_interior), dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_parametrization.gather_interior_uv,
-        dim=n_vertices,
-        inputs=[fixed_mask, interior_map, uv_init, fixed_values_2d, sol, out_uv],
+        kernel_parametrization.arap_setup,
+        dim=max(n_faces, n_vertices),
+        inputs=[vertices, faces, cot_entries, fixed_mask, interior_map, uv_init, fixed_values_2d],
+        outputs=[rest_edges, sol, out_uv],
         device=device,
     )
     rhs_rot_x = _launch.zeros(n_vertices, dtype=wp.float64, device=device)

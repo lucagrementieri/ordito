@@ -170,26 +170,29 @@ def homology_generators_with_offsets(
     # count rides in the candidate mask below, which already tests ``edge_face_count == 2``, so
     # neither guard costs a pass of its own.
     counts = _launch.zeros(kernel_homology.COUNT_SIZE, dtype=wp.int32, device=device)
-    _launch.launch_tiled(
-        kernel_homology.count_reached_and_referenced,
-        dim=kernel_reduce.blocks_1d(n_vertices),
-        inputs=[offsets, distances, counts],
-        block_dim=TILE_1D,
-        device=device,
-    )
 
     # A generator is an edge in neither tree. ``candidate`` starts as the edges the cotree is
-    # allowed to cross — interior, and not already claimed by the primal tree — and the forest pass
-    # removes the ones it took, so the leftovers need no predicate of their own. It is issued
-    # *before* the readback so both guards read one buffer; on the raising path that is one wasted
-    # launch, and on every other path it is one fewer.
+    # allowed to cross -- interior, and not already claimed by the primal tree -- and the forest
+    # pass removes the ones it took, so the leftovers need no predicate of their own. It is written
+    # *before* the readback, by the launch that folds the connectivity counts, so both guards read
+    # one buffer; on the raising path that is wasted work, and on every other path a launch fewer.
     candidate = _launch.empty(n_edges, dtype=wp.bool, device=device)
+    vertex_blocks = kernel_reduce.blocks_1d(n_vertices)
     _launch.launch_tiled(
-        kernel_homology.dual_candidate_mask,
-        # One *tile* per block, not one reduce-module chunk: this kernel writes a mask entry per
-        # edge as well as folding the count, so its per-edge dimension has to stay in the grid.
-        dim=(n_edges + TILE_1D - 1) // TILE_1D,
-        inputs=[unique_edges, edge_face_count, parents, candidate, counts],
+        kernel_homology.guards_and_dual_candidates,
+        # The vertex fold at the reduce module's chunk width, then one *tile* per edge block: the
+        # candidate mask writes an entry per edge as well as folding a count, so its per-edge
+        # dimension has to stay in the grid.
+        dim=vertex_blocks + (n_edges + TILE_1D - 1) // TILE_1D,
+        inputs=[
+            offsets,
+            distances,
+            wp.int32(vertex_blocks),
+            unique_edges,
+            edge_face_count,
+            parents,
+        ],
+        outputs=[candidate, counts],
         block_dim=TILE_1D,
         device=device,
     )

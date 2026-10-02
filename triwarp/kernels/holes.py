@@ -2,14 +2,11 @@
 
 import warp as wp
 
-from triwarp.constants import FLOAT32_INF_CONSTANT
+from triwarp.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels.array import (
-    declare_map_signatures,
     loop_next_slot,
     loop_rim_edge_vertices,
-    map_probe,
-    map_probe_single,
     pack_nearest_key,
     update_argmin,
 )
@@ -898,52 +895,97 @@ def mark_forbidden_chords(
 # --- stitching two boundary loops -------------------------------------------------------------
 
 
-@wp.kernel
-def cyclic_gather(
-    src: wp.array[wp.int32],
-    n: wp.int32,
-    shift: wp.int32,
-    flip: wp.bool,
-    value_offset: wp.int32,
-    out_gathered: wp.array[wp.int32],
-) -> None:
-    # out[i] = src[wrap(index)] + value_offset with index = n-1-i (flip) or i+shift (roll);
-    # covers loop reversal, cyclic rolls, and the roll-plus-vertex-offset variant in one kernel.
-    i = wp.int32(wp.tid())
-    j = i + shift
+@wp.func
+def rim_vertex(
+    loop: wp.array[wp.int32], n: wp.int32, i: wp.int32, shift: wp.int32, flip: wp.bool
+) -> wp.int32:
+    # Entry ``i`` of a rim loop rolled by ``shift`` -- of the *reversed* loop when ``flip`` -- read
+    # straight from the loop: ``loop[n - 1 - wrap(i + shift)]`` or ``loop[wrap(i + shift)]``. One
+    # rule for the reversal, the rolls and their composition, so ``stitch_loops`` never
+    # materializes the reversed or rolled loops it reasons about.
+    k = _wrap(i + shift, n)
     if flip:
-        j = n - 1 - i
-    out_gathered[i] = src[_wrap(j, n)] + value_offset
+        k = n - 1 - k
+    return loop[k]
 
 
 @wp.kernel
-def boundary_perimeters(
+def stitch_rim_positions(
+    vertices_a: wp.array[wp.vec3],
+    loop_a: wp.array[wp.int32],
+    vertices_b: wp.array[wp.vec3],
+    loop_b: wp.array[wp.int32],
+    out_a_pos: wp.array[wp.vec3],
+    out_b_pos: wp.array[wp.vec3],
+) -> None:
+    # Both rims' positions in one launch over ``n + m`` threads: rim A reversed, so both rims wind
+    # the same way, and rim B as given.
+    t = wp.int32(wp.tid())
+    n = loop_a.shape[0]
+    if t < n:
+        out_a_pos[t] = vertices_a[rim_vertex(loop_a, n, t, 0, True)]
+    else:
+        out_b_pos[t - n] = vertices_b[loop_b[t - n]]
+
+
+# The two costs ``row_argmin`` minimises, selected per launch (warp-uniform).
+LOOP_PAIR_PERIMETER = wp.constant(0)
+LOOP_PAIR_SQ_DISTANCE = wp.constant(1)
+
+
+@wp.func
+def loop_pair_cost(
     a_pos: wp.array[wp.vec3],
     b_pos: wp.array[wp.vec3],
     n_a: wp.int32,
-    out_perimeters: wp.array2d[wp.float32],
-) -> None:
-    i, j = wp.tid()
-    edge_start = a_pos[i]
-    edge_end = a_pos[_wrap(i + 1, n_a)]
+    i: wp.int32,
+    j: wp.int32,
+    metric: wp.int32,
+) -> wp.float32:
+    # The cost of pairing rim-A position ``i`` with rim-B position ``j``: with
+    # ``LOOP_PAIR_PERIMETER`` the triangle perimeter less its A edge,
+    # ``|a_i - b_j| + |a_{i+1} - b_j|`` (the zippering's objective), otherwise the squared distance
+    # ``|a_i - b_j|^2`` (the stitch band's start pair). Evaluated where it is minimised rather than
+    # tabulated first: every reader takes a row's minimum, so a whole ``(n_a, n_b)`` table was
+    # written to be read once.
     b = b_pos[j]
-    out_perimeters[i, j] = wp.length(edge_start - b) + wp.length(edge_end - b)
+    if metric == LOOP_PAIR_SQ_DISTANCE:
+        return wp.length_sq(a_pos[i] - b)
+    return wp.length(a_pos[i] - b) + wp.length(a_pos[_wrap(i + 1, n_a)] - b)
+
+
+# Lanes per row of ``row_argmin``.
+ROW_ARGMIN_BLOCK = 64
 
 
 @wp.kernel(enable_backward=False)
 def row_argmin(
-    perimeters: wp.array2d[wp.float32],
+    a_pos: wp.array[wp.vec3],
+    b_pos: wp.array[wp.vec3],
+    n_a: wp.int32,
     m_b: wp.int32,
+    metric: wp.int32,
     out_col: wp.array[wp.int32],
     out_val: wp.array[wp.float32],
 ) -> None:
-    i = wp.int32(wp.tid())
-    best_col = wp.int32(0)
-    best_val = perimeters[i, 0]
-    for j in range(1, m_b):
-        update_argmin(best_val, best_col, perimeters[i, j], j)
-    out_col[i] = best_col
-    out_val[i] = best_val
+    # Each A row's lowest-cost B column (``loop_pair_cost``), lowest column winning a tie -- the
+    # answer of one thread walking the row with ``update_argmin``, bit for bit: each lane walks the
+    # columns congruent to it in ascending order, and ``reduce.block_argmin`` takes the smallest
+    # value and the lowest column among the lanes that attained it.
+    #
+    # One block per row (``wp.launch_tiled(dim=n_a)``) because the costs are no longer tabulated by
+    # a 2-D launch first: one thread per row walking every column measured 0.79x at 4 096-vertex
+    # rims, where the tabulation's parallelism was worth more than the table's traffic. Lanes stride
+    # by ``wp.block_dim()``, so the one CPU lane walks the whole row (CLAUDE.md section 2.2).
+    i, lane = wp.tid()
+    best_col = INT32_MAX_CONSTANT
+    best_val = FLOAT32_INF_CONSTANT
+    for j in range(lane, m_b, wp.block_dim()):
+        update_argmin(best_val, best_col, loop_pair_cost(a_pos, b_pos, n_a, i, j, metric), j)
+    best_val, best_col = block_argmin(best_val, best_col)
+    if lane == 0:
+        out_col[i] = best_col
+        out_val[i] = best_val
 
 
 @wp.kernel(enable_backward=False)
@@ -986,7 +1028,8 @@ def rolled_edge_map(
 
 @wp.kernel(enable_backward=False)
 def resolve_corrections(
-    perimeters: wp.array2d[wp.float32],
+    a_pos: wp.array[wp.vec3],
+    b_pos: wp.array[wp.vec3],
     unsorted_indices: wp.array[wp.int32],
     next_indices: wp.array[wp.int32],
     n_corrections: wp.int32,
@@ -999,7 +1042,8 @@ def resolve_corrections(
     # Single-thread sequential correction: force ``out_edge`` non-decreasing by re-picking, for
     # each unsorted edge, the B vertex minimizing the perimeter within the bracket of its stable
     # neighbours. ``out_edge`` has length ``n_a + 1`` with the sentinel ``out_edge[n_a] == m_b``.
-    # ``perimeters`` is the unrolled matrix, indexed through the running ``row_roll``/``col_roll``.
+    # The perimeter is ``loop_pair_cost`` over the unrolled loops, indexed through the running
+    # ``row_roll``/``col_roll``.
     for k in range(n_corrections):
         idx = unsorted_indices[k]
         lo = out_edge[idx - 1]
@@ -1008,44 +1052,49 @@ def resolve_corrections(
             hi = m_b - 1
         row = _wrap(idx + row_roll, n_a)
         best_col = lo
-        best_val = perimeters[row, _wrap(lo + col_roll, m_b)]
+        best_val = loop_pair_cost(
+            a_pos, b_pos, n_a, row, _wrap(lo + col_roll, m_b), LOOP_PAIR_PERIMETER
+        )
         for c in range(lo + 1, hi + 1):
-            update_argmin(best_val, best_col, perimeters[row, _wrap(c + col_roll, m_b)], c)
+            cost = loop_pair_cost(
+                a_pos, b_pos, n_a, row, _wrap(c + col_roll, m_b), LOOP_PAIR_PERIMETER
+            )
+            update_argmin(best_val, best_col, cost, c)
         out_edge[idx] = best_col
 
 
 @wp.kernel
-def bridge_a_faces(
-    roll_loop_a: wp.array[wp.int32],
-    roll_loop_b: wp.array[wp.int32],
+def bridge_faces(
+    loop_a: wp.array[wp.int32],
+    loop_b: wp.array[wp.int32],
     edge: wp.array[wp.int32],
-    n_a: wp.int32,
+    row_roll: wp.int32,
+    col_roll: wp.int32,
+    b_offset: wp.int32,
     out_faces: wp.array[wp.int32],
 ) -> None:
-    i = wp.int32(wp.tid())
-    out_faces[3 * i + 0] = roll_loop_a[i]
-    out_faces[3 * i + 1] = roll_loop_a[_wrap(i + 1, n_a)]
-    out_faces[3 * i + 2] = roll_loop_b[edge[i]]
-
-
-@wp.kernel
-def bridge_b_faces(
-    roll_loop_a: wp.array[wp.int32],
-    roll_loop_b: wp.array[wp.int32],
-    edge: wp.array[wp.int32],
-    n_a: wp.int32,
-    m_b: wp.int32,
-    out_faces: wp.array[wp.int32],
-) -> None:
-    j = wp.int32(wp.tid())
-    # ``edge`` is non-decreasing, so the upper bound over its first ``n_a`` entries is the count of
-    # entries at or below ``j`` -- the A-loop vertex this B-loop vertex fans to. A result of ``n_a``
+    # The band's triangles in one launch over ``n + m`` threads, into one buffer: A-edge ``i``'s
+    # triangle at row ``i``, B-edge ``j``'s at row ``n + j``. Both rims are read through
+    # ``rim_vertex`` -- A reversed and rolled by ``row_roll``, B rolled by ``col_roll`` and offset
+    # by ``b_offset`` into the concatenated vertex buffer -- so the rolled loops are never written.
+    t = wp.int32(wp.tid())
+    n = loop_a.shape[0]
+    m = loop_b.shape[0]
+    if t < n:
+        i = t
+        out_faces[3 * t + 0] = rim_vertex(loop_a, n, i, row_roll, True)
+        out_faces[3 * t + 1] = rim_vertex(loop_a, n, i + 1, row_roll, True)
+        out_faces[3 * t + 2] = rim_vertex(loop_b, m, edge[i], col_roll, False) + b_offset
+        return
+    j = t - n
+    # ``edge`` is non-decreasing, so the upper bound over its first ``n`` entries is the count of
+    # entries at or below ``j`` -- the A-loop vertex this B-loop vertex fans to. A result of ``n``
     # wraps to the first.
-    apex = roll_loop_a[kernel_array.binary_search_index(edge[:n_a], j) % n_a]
+    apex = kernel_array.binary_search_index(edge[:n], j) % n
     # The B edge is reversed (``fliplr``) so the bridge winding matches mesh B's faces.
-    out_faces[3 * j + 0] = roll_loop_b[_wrap(j + 1, m_b)]
-    out_faces[3 * j + 1] = roll_loop_b[j]
-    out_faces[3 * j + 2] = apex
+    out_faces[3 * t + 0] = rim_vertex(loop_b, m, j + 1, col_roll, False) + b_offset
+    out_faces[3 * t + 1] = rim_vertex(loop_b, m, j, col_roll, False) + b_offset
+    out_faces[3 * t + 2] = rim_vertex(loop_a, n, apex, row_roll, True)
 
 
 # --- Minimum-weight hole triangulation (the Liepa/Klincsek interval DP) -----------------------
@@ -1114,17 +1163,6 @@ def stitch_prev_apex(
     if came[i, j] == CAME_A:
         return a_pos[(i - 1) % n_a]
     return b_pos[(j - 1) % n_b]
-
-
-@wp.kernel
-def pair_sq_distances(
-    a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3], out_dist: wp.array2d[wp.float32]
-) -> None:
-    # Squared distance between every rim-A vertex ``i`` and rim-B vertex ``j``; the global argmin
-    # (reused ``row_argmin`` + ``global_argmin``) is the aligned start pair the band grows from.
-    i, j = wp.tid()
-    d = a_pos[i] - b_pos[j]
-    out_dist[i, j] = wp.length_sq(d)
 
 
 @wp.kernel
@@ -1448,7 +1486,8 @@ def plane_origin_from_extreme(
     extreme: wp.float32, direction: wp.vec3, extension: wp.float32
 ) -> wp.vec3:
     # A point on the plane through the rim's extreme vertex, pushed ``extension`` further along
-    # ``-direction``. Only its component along ``direction`` matters to the projection.
+    # ``-direction``. Only its component along ``direction`` matters to the projection. Formed by
+    # ``extend_rim_to_ring`` as it reads it.
     return direction * (extreme - extension)
 
 
@@ -1460,6 +1499,8 @@ def extend_rim_to_ring(
     loop_offsets: wp.array[wp.int32],
     plane_normal: wp.vec3,
     plane_origins: wp.array[wp.vec3],
+    extremes: wp.array[wp.float32],
+    extension: wp.float32,
     ring_base: wp.int32,
     out_positions: wp.array[wp.vec3],
     out_faces: wp.array2d[wp.int32],
@@ -1480,9 +1521,18 @@ def extend_rim_to_ring(
     # disagreement sits at float32 epsilon and stays there whatever the model's scale or distance
     # from the origin, rather than growing. Face buffers are unchanged, so nothing topological turns
     # on it, and the off-plane residual is a wash between the two forms.
+    #
+    # The origin is the caller's (``plane_origins``) or, when ``extremes`` is non-empty, formed here
+    # from the loop's extreme projection (``plane_origin_from_extreme``, ``build_bottom``'s plane),
+    # so no per-loop origin table is mapped first.
     a = loop_vertices[t]
     point = vertices[a]
-    origin = plane_origins[loop_id[t]]
+    loop = loop_id[t]
+    origin = wp.vec3()
+    if extremes.shape[0] > 0:
+        origin = plane_origin_from_extreme(extremes[loop], plane_normal, extension)
+    else:
+        origin = plane_origins[loop]
     out_positions[t] = origin + project_out_normal(point - origin, plane_normal)
 
     # Two triangles per rim edge, joining it to the corresponding edge of the projected ring. The
@@ -1611,23 +1661,3 @@ def closest_pair_rows(
     out_rows[2] = edges[slot_a, 1]
     out_rows[3] = edges[slot_b, 0]
     out_rows[4] = edges[slot_b, 1]
-
-
-def _declare_map_kernels() -> None:
-    """
-    Pre-declare this module's forking ``wp.map`` signatures so each builds one module, not three.
-
-    See ``kernels/array.py::declare_map_signatures`` for why this exists, how the table was
-    derived and what forks a ``wp.map`` module; only this module's *own* forking ops belong
-    here (the shared builtins are declared there).
-    """
-    dense, single = map_probe, map_probe_single
-    declare_map_signatures(
-        [
-            (plane_origin_from_extreme, (dense(wp.float32), wp.vec3(), wp.float32(1)), wp.vec3),
-            (plane_origin_from_extreme, (single(wp.float32), wp.vec3(), wp.float32(1)), wp.vec3),
-        ]
-    )
-
-
-_declare_map_kernels()

@@ -1003,6 +1003,28 @@ def outer_sum_chunk(
 # factored: ``tile_chunk`` and the clamp rule it documents, which is the part that goes wrong.
 
 
+@wp.func
+def minmax_vec3_chunk(
+    points: wp.array[wp.vec3], chunk: wp.int32, out_corners: wp.array[wp.float32], box: wp.int32
+) -> None:
+    # One ``TILE_1D`` chunk of ``points`` folded into packed box ``box`` of ``out_corners`` -- a box
+    # *index*, so its six slots are ``6 * box`` onwards (``array.atomic_min_packed_box``,
+    # ``minmax_vec3_chunked``'s layout). Shared by the one-cloud and the two-cloud kernels.
+    offset, remaining = tile_chunk(points.shape[0], chunk, TILE_1D)
+    if remaining <= 0:
+        return
+    count = wp.min(remaining, TILE_1D)
+
+    lower = points[offset]
+    upper = points[offset]
+    for k in range(1, count):
+        p = points[offset + k]
+        lower = wp.min(lower, p)  # wp.min / wp.max on a vector are component-wise
+        upper = wp.max(upper, p)
+
+    atomic_min_packed_box(out_corners, box, lower, upper)
+
+
 @wp.kernel
 def minmax_vec3_chunked(points: wp.array[wp.vec3], out_corners: wp.array[wp.float32]) -> None:
     # Component-wise min and max of a ``wp.vec3`` array, in one launch into one buffer.
@@ -1016,19 +1038,26 @@ def minmax_vec3_chunked(points: wp.array[wp.vec3], out_corners: wp.array[wp.floa
     # rather than one per point. Launch it with
     # [`chunks_1d`][triwarp.kernels.reduce.chunks_1d] and not ``blocks_1d``: this kernel does not
     # fold ``TILES_PER_BLOCK_1D`` tiles, so the two differ by that factor.
-    offset, remaining = tile_chunk(points.shape[0], wp.int32(wp.tid()), TILE_1D)
-    if remaining <= 0:
-        return
-    count = wp.min(remaining, TILE_1D)
+    minmax_vec3_chunk(points, wp.int32(wp.tid()), out_corners, wp.int32(0))
 
-    lower = points[offset]
-    upper = points[offset]
-    for k in range(1, count):
-        p = points[offset + k]
-        lower = wp.min(lower, p)  # wp.min / wp.max on a vector are component-wise
-        upper = wp.max(upper, p)
 
-    atomic_min_packed_box(out_corners, wp.int32(0), lower, upper)
+@wp.kernel
+def minmax_vec3_pair_chunked(
+    points_a: wp.array[wp.vec3],
+    points_b: wp.array[wp.vec3],
+    b_box: wp.int32,
+    out_corners: wp.array[wp.float32],
+) -> None:
+    # ``minmax_vec3_chunked`` over two clouds in one launch, ``chunks_1d(n_a) + chunks_1d(n_b)``
+    # wide: the first cloud's chunks fold into box 0, the second's into box ``b_box`` -- 0 for the
+    # union of the two, 1 for two boxes side by side (a box *index*: twelve slots in all). No
+    # concatenation of the clouds (an allocation and a copy of both, which loses to two launches).
+    t = wp.int32(wp.tid())
+    chunks_a = (points_a.shape[0] + TILE_1D - 1) // TILE_1D
+    if t < chunks_a:
+        minmax_vec3_chunk(points_a, t, out_corners, wp.int32(0))
+    else:
+        minmax_vec3_chunk(points_b, t - chunks_a, out_corners, b_box)
 
 
 # ---------------------------------------------------------------------------

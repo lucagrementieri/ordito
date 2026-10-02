@@ -31,18 +31,19 @@ near-nullspace vector, normalized per aggregate), the smoothed prolongator is
 the Galerkin product ``P^T A P``. Operator complexity comes out just above 1, so the coarse levels
 are nearly free and a cycle's cost is its fine level.
 
-The per-level inverse diagonal is ``array.inverse_or_one`` mapped over the operator's diagonal,
-not a copy of the conjugate gradient's: the quantity is the same one the Jacobi preconditioner
-needs, down to mapping a zero diagonal to 1 rather than to infinity -- which the least-squares
-operators here rely on, since they carry empty rows for free vertices no equation reaches. The
-strength test's ``sqrt(|A_ii|)`` is ``array.sqrt_abs`` over the same diagonal.
+The per-level inverse diagonal is ``array.inverse_or_one`` of the operator's diagonal, applied
+where it is read rather than written to a buffer first. It is not a copy of the conjugate
+gradient's: the quantity is the same one the Jacobi preconditioner needs, down to mapping a zero
+diagonal to 1 rather than to infinity -- which the least-squares operators here rely on, since they
+carry empty rows for free vertices no equation reaches. The strength test's ``sqrt(|A_ii|)`` is
+``array.sqrt_abs`` over the same diagonal.
 """
 
 from typing import Any
 
 import warp as wp
 
-from triwarp.kernels.array import inverse_or_one
+from triwarp.kernels.array import element_priority, inverse_or_one, sqrt_abs
 
 # Node states for the distance-2 maximal independent set. The encoding is ordered rather than
 # arbitrary: a root must win any maximum (it vetoes every node in its two-hop ball) and an excluded
@@ -87,69 +88,6 @@ def mis_key(state: wp.int32, priority: wp.uint32, index: wp.int32) -> wp.int64:
     )
 
 
-@wp.kernel
-def mis_seed_keys(
-    state: wp.array[wp.int32], priority: wp.array[wp.uint32], out_key: wp.array[wp.int64]
-) -> None:
-    i = wp.int32(wp.tid())
-    out_key[i] = mis_key(state[i], priority[i], i)
-
-
-@wp.kernel
-def mis_propagate(
-    key: wp.array[wp.int64],
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    scaled_diagonal: wp.array[wp.float64],
-    theta: wp.float64,
-    out_key: wp.array[wp.int64],
-) -> None:
-    # One hop of the lexicographic maximum over the operator's *strong off-diagonal* graph -- the
-    # diagonal is skipped because a node is not its own neighbour, and the node's own key is folded
-    # in separately so the reduction is over the closed neighbourhood. Two launches of this give the
-    # maximum over the two-hop ball, which is the distance-2 test without a squared graph.
-    #
-    # The strength test is applied here rather than by materializing a filtered graph, so a level
-    # pays no extra allocation and ``theta = 0`` is bit-exactly the unfiltered aggregation.
-    #
-    # Reads ``key`` and writes a second buffer, so the caller swaps rather than synchronizing.
-    i = wp.int32(wp.tid())
-    best = key[i]
-    for k in range(offsets[i], offsets[i + 1]):
-        j = columns[k]
-        if j != i and mg_is_strong(values[k], scaled_diagonal[i], scaled_diagonal[j], theta):
-            best = wp.max(best, key[j])
-    out_key[i] = best
-
-
-@wp.kernel
-def mis_decide(
-    reduced_key: wp.array[wp.int64],
-    priority: wp.array[wp.uint32],
-    state: wp.array[wp.int32],
-    out_state: wp.array[wp.int32],
-    out_undecided: wp.array[wp.int32],
-) -> None:
-    # One round's verdict for every still-undecided node: a root anywhere in its two-hop ball
-    # excludes it, and otherwise being the maximum of that ball makes it a root. Anything else waits
-    # for the next round, and ``out_undecided`` is what tells the host whether there is one.
-    i = wp.int32(wp.tid())
-    current = state[i]
-    if current != MG_UNDECIDED:
-        out_state[i] = current
-        return
-    best = reduced_key[i]
-    if wp.int32(best >> _MG_STATE_SHIFT) == MG_ROOT:
-        out_state[i] = MG_EXCLUDED
-        return
-    if best == mis_key(current, priority[i], i):
-        out_state[i] = MG_ROOT
-        return
-    out_state[i] = MG_UNDECIDED
-    wp.atomic_add(out_undecided, 0, wp.int32(1))
-
-
 @wp.func
 def mis_root_flag(state: wp.int32) -> wp.int32:
     """Whether ``state`` claims an aggregate, as the 0/1 flag ``wp.utils.array_scan`` wants."""
@@ -160,28 +98,170 @@ def mis_root_flag(state: wp.int32) -> wp.int32:
     # round cap is reached becomes an aggregate of its own instead of an unaggregated hole. The
     # selection normally settles well inside the cap and the two readings then coincide.
     #
-    # A ``@wp.func`` rather than a kernel because the wrapper maps it (CLAUDE.md section 3.5). It
-    # returns the flag directly rather than composing an inequality map with an
-    # ``array_cast(bool -> int32)``, which would be two device passes and a second buffer.
+    # ``mis_propagate_decide`` writes it as it decides. It returns the flag directly rather than
+    # composing an inequality with an ``array_cast(bool -> int32)``, which would be two device
+    # passes and a second buffer.
     return wp.where(state != MG_EXCLUDED, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def mis_level_setup(
+    seed: wp.int32,
+    diagonal: wp.array[wp.float64],
+    out_scaled_diagonal: wp.array[wp.float64],
+    out_priority: wp.array[wp.uint32],
+    out_state: wp.array[wp.int32],
+) -> None:
+    # Everything one level's aggregation reads per row before its first round, in one launch: the
+    # strength test's ``sqrt(|A_ii|)`` (``array.sqrt_abs``), the priority order
+    # (``array.element_priority``, so the draw is exactly ``array.random_priorities``') and the
+    # undecided start state. Three independent elementwise writes at one ``dim``; launched apart
+    # they were two launches and a fill.
+    i = wp.int32(wp.tid())
+    out_scaled_diagonal[i] = sqrt_abs(diagonal[i])
+    out_priority[i] = element_priority(seed, i)
+    out_state[i] = MG_UNDECIDED
+
+
+@wp.func
+def mis_entry_key(
+    j: wp.int32,
+    from_state: wp.int32,
+    key: wp.array[wp.int64],
+    state: wp.array[wp.int32],
+    priority: wp.array[wp.uint32],
+) -> wp.int64:
+    # Node ``j``'s packed key as a hop reads it: formed from its state on a round's first hop, read
+    # from the first hop's output on the second. ``from_state`` is a literal at each call site, so
+    # the branch folds at compile time.
+    if from_state != 0:
+        return mis_key(state[j], priority[j], j)
+    return key[j]
+
+
+@wp.func
+def mis_ball_max(
+    i: wp.int32,
+    from_state: wp.int32,
+    key: wp.array[wp.int64],
+    state: wp.array[wp.int32],
+    priority: wp.array[wp.uint32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    scaled_diagonal: wp.array[wp.float64],
+    theta: wp.float64,
+) -> wp.int64:
+    # One hop of the lexicographic maximum over the operator's *strong off-diagonal* graph -- the
+    # diagonal is skipped because a node is not its own neighbour, and the node's own key is folded
+    # in separately so the reduction is over the closed neighbourhood. Two hops give the maximum
+    # over the two-hop ball, which is the distance-2 test without a squared graph.
+    #
+    # The strength test is applied here rather than by materializing a filtered graph, so a level
+    # pays no extra allocation and ``theta = 0`` is bit-exactly the unfiltered aggregation. Shared
+    # by the round's two kernels below, which differ in where a neighbour's key comes from
+    # (``mis_entry_key``) and in what the second does with the maximum.
+    best = mis_entry_key(i, from_state, key, state, priority)
+    for k in range(offsets[i], offsets[i + 1]):
+        j = columns[k]
+        if j != i and mg_is_strong(values[k], scaled_diagonal[i], scaled_diagonal[j], theta):
+            best = wp.max(best, mis_entry_key(j, from_state, key, state, priority))
+    return best
+
+
+@wp.kernel
+def mis_propagate_states(
+    state: wp.array[wp.int32],
+    priority: wp.array[wp.uint32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    scaled_diagonal: wp.array[wp.float64],
+    theta: wp.float64,
+    out_key: wp.array[wp.int64],
+) -> None:
+    # A round's first hop, reading every key straight from ``(state, priority, index)``: the packed
+    # key is an elementwise function of the state, so no seeding pass writes it first.
+    # ``mis_propagate_decide`` is the round's second hop.
+    i = wp.int32(wp.tid())
+    out_key[i] = mis_ball_max(
+        i, wp.int32(1), out_key, state, priority, offsets, columns, values, scaled_diagonal, theta
+    )
+
+
+@wp.kernel
+def mis_propagate_decide(
+    key: wp.array[wp.int64],
+    priority: wp.array[wp.uint32],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    scaled_diagonal: wp.array[wp.float64],
+    theta: wp.float64,
+    state: wp.array[wp.int32],
+    out_state: wp.array[wp.int32],
+    out_root_flags: wp.array[wp.int32],
+    out_undecided: wp.array[wp.int32],
+) -> None:
+    # A round's second hop and its verdict in one pass: the two-hop maximum is only ever read at
+    # the node that formed it, so it never needs to reach memory. A root anywhere in the two-hop
+    # ball excludes the node, and otherwise being the maximum of that ball makes it a root.
+    # Anything else waits for the next round, and ``out_undecided`` is what tells the host whether
+    # there is one. A node already decided keeps its state and skips the hop, whose maximum it
+    # would not read.
+    #
+    # ``out_root_flags`` is ``mis_root_flag`` of the new state, written by the round that decides it
+    # (and by every round a node stays undecided): a decided node's flag never changes, so after
+    # whichever round ends the loop it holds every node's final flag, with no map over the final
+    # state.
+    i = wp.int32(wp.tid())
+    current = state[i]
+    if current != MG_UNDECIDED:
+        out_state[i] = current
+        return
+    best = mis_ball_max(
+        i, wp.int32(0), key, state, priority, offsets, columns, values, scaled_diagonal, theta
+    )
+    verdict = MG_UNDECIDED
+    if wp.int32(best >> _MG_STATE_SHIFT) == MG_ROOT:
+        verdict = MG_EXCLUDED
+    elif best == mis_key(current, priority[i], i):
+        verdict = MG_ROOT
+    out_state[i] = verdict
+    out_root_flags[i] = mis_root_flag(verdict)
+    if verdict == MG_UNDECIDED:
+        wp.atomic_add(out_undecided, 0, wp.int32(1))
 
 
 @wp.func
 def aggregate_label(state: wp.int32, scan_pos: wp.int32) -> wp.int32:
     # An excluded node has no aggregate; everything else takes the (0-based) index its inclusive
-    # scan position names. A `wp.map` target (CLAUDE.md section 3.5) rather than a kernel: the body
-    # is one indexed assignment reading only `state[i]` / `scan_pos[i]`, the elementwise-map scan's
-    # own definition of a trivial kernel. Left un-hoisted (no `return_kernel=True`) at its one call
-    # site inside `linalg._multigrid_aggregate`'s per-level loop: hoisting would need a dummy
-    # int32 array allocated before the loop just to seed the kernel factory, or threading the
-    # cached kernel object through the function's signature, for a per-level saving three orders of
-    # magnitude below the setup it sits in.
+    # scan position names.
     return wp.where(state != MG_EXCLUDED, scan_pos - wp.int32(1), MG_UNAGGREGATED)
+
+
+@wp.func
+def aggregate_entry_label(
+    j: wp.int32,
+    from_state: wp.int32,
+    label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    scan_pos: wp.array[wp.int32],
+) -> wp.int32:
+    # Node ``j``'s label as a spread hop reads it: the first hop forms it from ``(state, scan_pos)``
+    # (``aggregate_label``), the second reads the first's output. ``from_state`` is a literal at
+    # each call site.
+    if from_state != 0:
+        return aggregate_label(state[j], scan_pos[j])
+    return label[j]
 
 
 @wp.kernel
 def spread_aggregate_labels(
     label: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    scan_pos: wp.array[wp.int32],
+    from_state: wp.int32,
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
@@ -190,20 +270,22 @@ def spread_aggregate_labels(
     out_label: wp.array[wp.int32],
 ) -> None:
     # An unlabelled node adopts a neighbour's aggregate, largest id winning so the choice does not
-    # depend on thread order. Two launches cover the two hops the MIS guarantees are enough.
+    # depend on thread order. Two launches cover the two hops the MIS guarantees are enough; the
+    # first (warp-uniform ``from_state != 0``) reads every label straight from the root flags'
+    # scan, so no pass writes the labels first, and ``label`` is not read.
     #
     # The spread walks the same *strong* graph the independent set was selected on, which is what
     # keeps the tiling consistent: every excluded node has a root within two strong hops precisely
     # because the exclusion came from a strong-graph propagation.
     i = wp.int32(wp.tid())
-    best = label[i]
+    best = aggregate_entry_label(i, from_state, label, state, scan_pos)
     if best != MG_UNAGGREGATED:
         out_label[i] = best
         return
     for k in range(offsets[i], offsets[i + 1]):
         j = columns[k]
         if j != i and mg_is_strong(values[k], scaled_diagonal[i], scaled_diagonal[j], theta):
-            best = wp.max(best, label[j])
+            best = wp.max(best, aggregate_entry_label(j, from_state, label, state, scan_pos))
     out_label[i] = best
 
 
@@ -382,11 +464,13 @@ def damped_inverse_diagonal(
     start: wp.float64,
     exponent: wp.float64,
     factor: wp.float64,
-    inverse_diagonal: wp.array[wp.float64],
+    diagonal: wp.array[wp.float64],
     out_scaled: wp.array[wp.float64],
 ) -> None:
     # ``omega D^-1`` for a level's smoother and prolongator, with ``omega = factor / rho`` formed
-    # on the device from the power iteration's growth rather than read back to the host.
+    # on the device from the power iteration's growth rather than read back to the host. ``D^-1``
+    # is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, as
+    # ``power_step`` does.
     # ``rho = sqrt(growth / start) ** exponent``, ``exponent`` being one over the step count, and
     # ``rho = 1`` when the growth is not a positive finite number (an operator the iteration cannot
     # measure), which is the host form's guard verbatim. Every thread forms the same two scalars;
@@ -400,12 +484,31 @@ def damped_inverse_diagonal(
     rho = wp.float64(1.0)
     if start > wp.float64(0.0) and end > wp.float64(0.0) and wp.isfinite(end):
         rho = wp.pow(wp.sqrt(end / start), exponent)
-    out_scaled[i] = (factor / rho) * inverse_diagonal[i]
+    out_scaled[i] = (factor / rho) * inverse_or_one(diagonal[i])
+
+
+@wp.func
+def random_sign(seed: wp.int32, index: wp.int32) -> wp.float64:
+    # Entry ``index`` of the power iteration's start vector.
+    #
+    # Random rather than constant, because on a Laplacian-like operator the dominant eigenvector is
+    # the highest-frequency mode and a constant vector is nearly orthogonal to it. And *signs*
+    # rather than uniform values, because then the squared norm is exactly ``n`` and the growth
+    # needs no measurement of the start.
+    #
+    # Deliberately *not* ``array.element_priority``, which has the same shape over ``wp.randu``:
+    # that one draws a total order on the elements, this one draws a start vector whose norm is
+    # known in closed form. Same tokens, different quantities.
+    return wp.where(
+        wp.randi(wp.rand_init(seed, index)) < wp.int32(0), wp.float64(-1.0), wp.float64(1.0)
+    )
 
 
 @wp.kernel
 def power_step(
-    inv_diag: wp.array[wp.float64],
+    seed: wp.int32,
+    from_signs: wp.int32,
+    diagonal: wp.array[wp.float64],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float64],
@@ -418,27 +521,19 @@ def power_step(
     # ``bsr_mv`` plus a ``scaled_diagonal_apply`` it is two launches, and an uncaptured ``bsr_mv``
     # costs a fixed host price whatever its nnz. Writing a second buffer rather than updating ``x``
     # in place is what lets it be one launch; the caller swaps the two.
-    i = wp.int32(wp.tid())
-    out_y[i] = inv_diag[i] * csr_row_dot(i, wp.int32(0), offsets, columns, values, x)
-
-
-@wp.kernel
-def random_signs(seed: wp.int32, out_x: wp.array[wp.float64]) -> None:
-    # Start vector for the power iteration that estimates the spectral radius of ``D^-1 A``.
     #
-    # Random rather than constant, because on a Laplacian-like operator the dominant eigenvector is
-    # the highest-frequency mode and a constant vector is nearly orthogonal to it. And *signs*
-    # rather than uniform values, because then the norm is exactly ``sqrt(n)`` and the caller needs
-    # one host readback for the whole estimate instead of two -- which at these sizes is most of
-    # what the estimate costs.
-    #
-    # Deliberately *not* folded into ``array.random_priorities``, which has the same shape over
-    # ``wp.randu``: that one draws a total order on the elements, this one draws a start vector
-    # whose norm is known in closed form. Same tokens, different quantities.
+    # ``D^-1`` is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, so no
+    # pass writes the inverse first. The first step (warp-uniform ``from_signs != 0``) draws its
+    # ``x`` from ``random_sign`` as it reads it and does not read ``x``; its row dot is
+    # ``csr_row_dot``'s, term for term.
     i = wp.int32(wp.tid())
-    out_x[i] = wp.where(
-        wp.randi(wp.rand_init(seed, i)) < wp.int32(0), wp.float64(-1.0), wp.float64(1.0)
-    )
+    total = wp.float64(0.0)
+    if from_signs != 0:
+        for k in range(offsets[i], offsets[i + 1]):
+            total += values[k] * random_sign(seed, columns[k])
+    else:
+        total = csr_row_dot(i, wp.int32(0), offsets, columns, values, x)
+    out_y[i] = inverse_or_one(diagonal[i]) * total
 
 
 @wp.kernel

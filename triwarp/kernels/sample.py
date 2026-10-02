@@ -43,13 +43,18 @@ def sample_surface(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     cdf: wp.array[wp.float32],
+    total: wp.float32,
     seed: wp.int32,
     out_points: wp.array[wp.vec3],
     out_face_indices: wp.array[wp.int32],
 ) -> None:
     tid = wp.int32(wp.tid())
     state = wp.rand_init(seed, tid)
-    fi = wp.sample_cdf(state, cdf)
+    # ``wp.sample_cdf`` over the *unnormalized* prefix sum: the same single ``randf`` draw, so the
+    # random stream continues exactly as before, scaled to ``total`` rather than the cdf divided by
+    # it -- no normalizing pass. The two place a bin edge differently only by float32 rounding,
+    # below the prefix scan's own; inline because ``randf`` advances ``state`` in place.
+    fi = wp.lower_bound(cdf, wp.randf(state) * total)
 
     v0, v1, v2 = face_vertices(vertices, faces, fi)
 
@@ -66,12 +71,14 @@ def sample_volume_tetrahedra(
     faces: wp.array[wp.int32],
     center: wp.vec3,
     cdf: wp.array[wp.float32],
+    total: wp.float32,
     seed: wp.int32,
     out_points: wp.array[wp.vec3],
 ) -> None:
     tid = wp.int32(wp.tid())
     state = wp.rand_init(seed, tid)
-    fi = wp.sample_cdf(state, cdf)
+    # Drawn as ``sample_surface`` draws (see there).
+    fi = wp.lower_bound(cdf, wp.randf(state) * total)
 
     v0, v1, v2 = face_vertices(vertices, faces, fi)
 

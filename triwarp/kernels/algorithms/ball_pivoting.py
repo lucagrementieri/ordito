@@ -233,19 +233,28 @@ def ball_is_empty(
     return True
 
 
-@wp.kernel(enable_backward=False)
-def begin_wave(counters: wp.array[wp.int32]) -> None:
+@wp.func
+def reset_wave_counters(counters: wp.array[wp.int32]) -> None:
     # Reset the per-wave counters and snapshot the face count and the seed-failure count the two
     # progress tests compare against. The vertex claim is *not* cleared here: ``propose_triangle``
     # clears the three vertices it is about to contend for, which is the only part of an n-sized
-    # array a wave ever reads.
-    if counters[CNT_CONTINUE] == 0:
-        return
+    # array a wave ever reads. Idempotent: running it twice before a wave changes nothing.
     counters[CNT_NEXT_FRONT] = 0
     counters[CNT_LIVE] = 0
     counters[CNT_PROPOSAL] = 0
     counters[CNT_PREV_FACE] = counters[CNT_FACE]
     counters[CNT_PREV_SEED_FAILED] = counters[CNT_SEED_FAILED]
+
+
+@wp.kernel(enable_backward=False)
+def begin_wave(counters: wp.array[wp.int32]) -> None:
+    # The first wave of a batch's reset. Every later wave's is the tail of the ``end_wave`` before
+    # it, which resets whenever the loop keeps going; this launch covers the start of a run and a
+    # restart after the host grew the budget or compacted the front, where the previous
+    # ``end_wave`` stopped the loop and so reset nothing.
+    if counters[CNT_CONTINUE] == 0:
+        return
+    reset_wave_counters(counters)
 
 
 @wp.func
@@ -917,6 +926,11 @@ def end_wave(max_waves: wp.int32, counters: wp.array[wp.int32]) -> None:
         counters[CNT_CONTINUE] = 0
     elif counters[CNT_NEXT_FRONT] > 4 * counters[CNT_LIVE] + 1024:
         counters[CNT_CONTINUE] = 0
+    # The next wave's reset, done here rather than by a ``begin_wave`` launch of its own whenever
+    # the loop keeps going. A loop handed back to the host keeps this wave's counters, which the
+    # host's growth and compaction read; the batch that resumes it opens with ``begin_wave``.
+    if counters[CNT_CONTINUE] != 0:
+        reset_wave_counters(counters)
 
 
 @wp.kernel(enable_backward=False)

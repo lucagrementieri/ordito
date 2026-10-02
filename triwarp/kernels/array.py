@@ -417,7 +417,7 @@ def segment_owner_labels(offsets: wp.array[wp.int32], out_owner: wp.array[wp.int
 @wp.func
 def element_priority(seed: wp.int32, index: wp.int32) -> wp.uint32:
     # Element ``index``'s draw of the priority order ``random_priorities`` below writes. Named so a
-    # kernel drawing into another index space (``blue_noise.sorted_random_priorities``) gives each
+    # kernel drawing into another index space (``blue_noise.dart_point_setup``) gives each
     # element exactly the priority the plain draw would.
     return wp.randu(wp.rand_init(seed, index))
 
@@ -461,19 +461,11 @@ def sort_rows_insertion(data: wp.array2d[wp.Scalar]) -> None:
         data[row, j + 1] = value
 
 
-@wp.kernel
-def sort_segments(offsets: wp.array[wp.int32], data: wp.array[wp.int32]) -> None:
-    # One thread per segment, in-place ascending sort of ``data[offsets[s] : offsets[s + 1]]``.
-    # The ragged sibling of ``sort_rows_insertion``, and the two differ in exactly one thing: a
-    # rank-2 row's width is a *shape*, so that kernel can be a plain insertion sort and the wide
-    # case escapes to ``segmented_sort_pairs`` on a host-side branch (``array.sort_rows``). A
-    # segment's width is *data*, known only per thread, so there is no host branch to make -- which
-    # is why this one is a shell sort rather than the insertion sort it degenerates into. For the
-    # vertex valences its caller sorts the gap loop runs twice and costs a couple of comparisons;
-    # what it buys is that a single high-degree segment cannot take the whole launch quadratic,
-    # since the launch waits for its slowest thread. It beats ``edges_to_csr`` up to a few hundred
-    # neighbours in one row and loses badly above that, which is why the caller chooses.
-    segment = wp.int32(wp.tid())
+@wp.func
+def sort_segment(offsets: wp.array[wp.int32], data: wp.array[wp.int32], segment: wp.int32) -> None:
+    # In-place ascending sort of ``data[offsets[segment] : offsets[segment + 1]]`` by one thread.
+    # ``sort_segments`` below is the kernel and says why a shell sort; a kernel that also reads the
+    # sorted segment back (``smoothing.sort_incidence_and_count_free_pattern``) calls this first.
     start = offsets[segment]
     width = offsets[segment + 1] - start
     gap = wp.int32(1)
@@ -488,6 +480,21 @@ def sort_segments(offsets: wp.array[wp.int32], data: wp.array[wp.int32]) -> None
                 j = j - gap
             data[start + j] = value
         gap = gap // 3
+
+
+@wp.kernel
+def sort_segments(offsets: wp.array[wp.int32], data: wp.array[wp.int32]) -> None:
+    # One thread per segment, in-place ascending sort of ``data[offsets[s] : offsets[s + 1]]``.
+    # The ragged sibling of ``sort_rows_insertion``, and the two differ in exactly one thing: a
+    # rank-2 row's width is a *shape*, so that kernel can be a plain insertion sort and the wide
+    # case escapes to ``segmented_sort_pairs`` on a host-side branch (``array.sort_rows``). A
+    # segment's width is *data*, known only per thread, so there is no host branch to make -- which
+    # is why this one is a shell sort rather than the insertion sort it degenerates into. For the
+    # vertex valences its caller sorts the gap loop runs twice and costs a couple of comparisons;
+    # what it buys is that a single high-degree segment cannot take the whole launch quadratic,
+    # since the launch waits for its slowest thread. It beats ``edges_to_csr`` up to a few hundred
+    # neighbours in one row and loses badly above that, which is why the caller chooses.
+    sort_segment(offsets, data, wp.int32(wp.tid()))
 
 
 @wp.func
@@ -588,11 +595,6 @@ def mask_not(a: wp.bool) -> wp.bool:
     # complement, which is wrong for a ``wp.bool``), so this one-liner is what ``wp.map`` needs, and
     # it is the tree's only spelling of it.
     return not a
-
-
-@wp.func
-def mask_and(a: wp.bool, b: wp.bool) -> wp.bool:
-    return a and b
 
 
 @wp.func
@@ -1326,10 +1328,6 @@ def _declare_map_kernels() -> None:
             (greater_equal, (single(wp.int32), wp.int32(1)), wp.bool),
             (greater_equal, (gathered(wp.float32), wp.float32(1)), wp.bool),
             (greater_equal, (gathered(wp.int32), wp.int32(1)), wp.bool),
-            (inverse_or_one, (dense(wp.float64),), wp.float64),
-            (inverse_or_one, (single(wp.float64),), wp.float64),
-            # ``linalg._BatchedCg``'s Jacobi diagonal of a ``float32`` system (``reconstruction``).
-            (inverse_or_one, (dense(wp.float32),), wp.float32),
             (
                 is_close_scalar,
                 (dense(wp.float32), dense(wp.float32), wp.float32(1), wp.float32(1)),

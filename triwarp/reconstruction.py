@@ -1822,7 +1822,7 @@ _BPA_MIN_GRID = 1 << 12
 # Waves queued between host synchronisations. The wave loop is device-driven — ``end_wave`` keeps
 # the seeding flag, the progress test and the continue flag in ``counters`` — so the host only ever
 # needs to look in order to *stop*, and it can queue a batch and let the device run ahead. A wave
-# that runs after the flag clears costs six no-op launches, which is far less than a sync.
+# that runs after the flag clears costs five no-op launches, which is far less than a sync.
 #
 # ``wp.capture_while`` is not used here: its conditional-graph per-iteration overhead is larger
 # than the sync it would replace, because a batch already amortises the sync over eight waves.
@@ -1854,8 +1854,8 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
     _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
     waves_run = 0
     for _ in range(_BPA_MAX_BATCHES):
-        for _ in range(_BPA_WAVES_PER_BATCH):
-            _bpa_wave(state, max_waves)
+        for wave in range(_BPA_WAVES_PER_BATCH):
+            _bpa_wave(state, max_waves, begin=wave == 0)
             state.front_in, state.front_out = state.front_out, state.front_in
         counters = state.counters.numpy()
         no_op_waves = _BPA_WAVES_PER_BATCH - (int(counters[kernel_bpa.CNT_WAVE]) - waves_run)
@@ -1873,10 +1873,16 @@ def _bpa_run(state: _BpaState, max_waves: int) -> None:
         _launch.fill_(state.counters[kernel_bpa.CNT_CONTINUE : kernel_bpa.CNT_CONTINUE + 1], 1)
 
 
-def _bpa_wave(state: _BpaState, max_waves: int) -> None:
-    """Queue one wave: seed or pivot, claim, commit, advance. No allocations, no readbacks."""
+def _bpa_wave(state: _BpaState, max_waves: int, *, begin: bool) -> None:
+    """
+    Queue one wave: seed or pivot, claim, commit, advance. No allocations, no readbacks.
+
+    ``begin`` opens a batch with the counter reset; within a batch the previous wave's
+    ``end_wave`` has done it already.
+    """
     device = state.device
-    _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
+    if begin:
+        _launch.launch(kernel_bpa.begin_wave, dim=1, inputs=[state.counters], device=device)
     _launch.launch(
         kernel_bpa.seed_triangles,
         dim=state.n,

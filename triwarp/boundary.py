@@ -374,12 +374,6 @@ def _unoriented_boundary_cycles(
         inputs=[boundary_edges, slot_count, neighbors],
         device=device,
     )
-    _launch.launch(
-        kernel_boundary.sort_boundary_neighbor_slots,
-        dim=n_vertices,
-        inputs=[neighbors],
-        device=device,
-    )
 
     # Each edge end is one dart, and every successor is a dart or, where a rim ends on a vertex with
     # one boundary edge, ``-1``: ``next_node`` is read only at darts and needs no fill.

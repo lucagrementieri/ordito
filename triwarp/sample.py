@@ -33,6 +33,7 @@ import math
 import secrets
 from typing import cast
 
+import numpy as np
 import warp as wp
 
 import triwarp as tw
@@ -197,7 +198,7 @@ def sample_surface(
     Sample points uniformly on a triangle mesh surface (area-weighted faces).
 
     Uses ``face_normals_and_areas`` for default triangle weights. Builds a CDF and
-    draws triangle indices with ``wp.sample_cdf``, then uniform points with
+    draws triangle indices by inverse-transform sampling it, then uniform points with
     ``wp.sample_triangle`` (same scheme as [`trimesh.sample.sample_surface`][]).
 
     Parameters
@@ -261,14 +262,21 @@ def sample_surface(
     total = float(read_scalar(cdf))
     if total <= 0.0:
         raise ValueError("total face weight must be positive")
-    _launch.map(wp.div, cdf, wp.float32(total), out=cdf)
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     out_face_indices = _launch.empty(count, dtype=wp.int32, device=vertices.device)
     _launch.launch(
         kernel_sample.sample_surface,
         dim=count,
-        inputs=[vertices, faces, cdf, resolve_seed(seed), out_points, out_face_indices],
+        inputs=[
+            vertices,
+            faces,
+            cdf,
+            wp.float32(total),
+            resolve_seed(seed),
+            out_points,
+            out_face_indices,
+        ],
         device=vertices.device,
     )
     return out_points, out_face_indices
@@ -584,18 +592,22 @@ def _dart_throw_blue_noise(
         return empty
 
     # Background grid at cell size ``radius``, so a 3x3x3 neighbourhood covers the disk exactly.
-    bbox_min, _ = tw.bounds.aabb(pool_points)
-    grid_coords = _launch.empty(n_pool, dtype=wp.vec3i, device=device)
+    bbox_min, bbox_max = tw.bounds.aabb(pool_points)
+    inv_cell_size = np.float32(1.0 / radius)
+    # The grid's side, one past the largest cell coordinate: ``kernels/algorithms/blue_noise.
+    # grid_coord`` is monotone in the point, so that coordinate is the bounding box's upper
+    # corner's, evaluated here in the kernel's float32 arithmetic.
+    span = np.asarray(bbox_max, dtype=np.float32) - np.asarray(bbox_min, dtype=np.float32)
+    grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 1
+    cell_keys = _launch.empty(n_pool, dtype=wp.int64, device=device)
     _launch.map(
-        kernel_blue_noise.grid_coord,
+        kernel_blue_noise.point_cell_key,
         pool_points,
         bbox_min,
-        wp.float32(1.0 / radius),
-        out=grid_coords,
+        wp.float32(float(inv_cell_size)),
+        wp.int32(grid_w),
+        out=cell_keys,
     )
-    grid_w = int(tw.reduce.max(cast(twt.Array2dInt32, grid_coords.view(wp.int32)))) + 1
-    cell_keys = _launch.empty(n_pool, dtype=wp.int64, device=device)
-    _launch.map(kernel_blue_noise.grid_cell_key, grid_coords, wp.int32(grid_w), out=cell_keys)
 
     # Bucket the pool by cell: one radix sort gives both the per-cell membership lists and, through
     # the run starts of the sorted keys, the sentinel-terminated bounds that index them.
@@ -625,13 +637,6 @@ def _dart_throw_blue_noise(
     # original-index tie-break (see ``dart_select_minima``) and as the map back at the end. The
     # per-point cell table is born sorted, read off the sorted keys.
     sorted_points = gather(pool_points, bucket)
-    sorted_cell = _launch.empty(n_pool, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_blue_noise.sorted_point_cells,
-        dim=n_pool,
-        inputs=[sorted_keys, unique_keys, sorted_cell],
-        device=device,
-    )
     cell_neighbors = twt.empty_2d(
         (n_cells, kernel_blue_noise.DART_SHELL_CELLS), wp.int32, device=device
     )
@@ -642,23 +647,29 @@ def _dart_throw_blue_noise(
         device=device,
     )
 
-    # Keyed on the *original* pool index even though it is stored in sorted space: the priority a
-    # point holds is what decides the packing, so it has to stay the same function of the seed and
-    # the point rather than of where the sort happened to put it.
+    # The per-point cell table, the priorities and the first round's per-cell priority summary,
+    # one launch. The priority is keyed on the *original* pool index even though it is stored in
+    # sorted space: the priority a point holds is what decides the packing, so it has to stay the
+    # same function of the seed and the point rather than of where the sort happened to put it.
+    sorted_cell = _launch.empty(n_pool, dtype=wp.int32, device=device)
     priority = _launch.empty(n_pool, dtype=wp.uint32, device=device)
+    # Per-cell summaries that let each round's two sweeps skip a shell cell whole; see the kernel
+    # module for what each one summarises and why the accepted set is unchanged. Both are refilled
+    # per round rather than accumulated, so a cell stops pruning the moment it stops being empty;
+    # every later round's priority summary is folded into the compaction that produces its work
+    # list (see ``dart_compact_alive``).
+    cell_min_priority = _launch.full(
+        n_cells, kernel_blue_noise.DART_NO_PRIORITY, dtype=wp.uint32, device=device
+    )
+    cell_accepted = _launch.empty(n_cells, dtype=wp.bool, device=device)
     _launch.launch(
-        kernel_blue_noise.sorted_random_priorities,
+        kernel_blue_noise.dart_point_setup,
         dim=n_pool,
-        inputs=[wp.int32(seed), bucket, priority],
+        inputs=[wp.int32(seed), sorted_keys, unique_keys, bucket],
+        outputs=[sorted_cell, priority, cell_min_priority],
         device=device,
     )
     state = _launch.zeros(n_pool, dtype=wp.int32, device=device)
-
-    # Per-cell summaries that let each round's two sweeps skip a shell cell whole; see the kernel
-    # module for what each one summarises and why the accepted set is unchanged. Both are refilled
-    # per round rather than accumulated, so a cell stops pruning the moment it stops being empty.
-    cell_min_priority = _launch.empty(n_cells, dtype=wp.uint32, device=device)
-    cell_accepted = _launch.empty(n_cells, dtype=wp.bool, device=device)
 
     # Work-list buffers sized for their final use once: the first round's list is the whole pool and
     # every later one is a prefix of it, so nothing here is reallocated per round.
@@ -669,16 +680,6 @@ def _dart_throw_blue_noise(
     alive_count = n_pool
     rr = wp.float32(radius * radius)
 
-    # The first round's priority summary is built here; every later one is folded into the
-    # compaction that produces its work list (see ``dart_compact_alive``). Fills rather than a reset
-    # kernel: a memset is cheaper than a full launch.
-    _launch.fill_(cell_min_priority, kernel_blue_noise.DART_NO_PRIORITY)
-    _launch.launch(
-        kernel_blue_noise.dart_cell_min_priority,
-        dim=n_pool,
-        inputs=[priority, sorted_cell, alive, cell_min_priority],
-        device=device,
-    )
     while alive_count > 0:
         view = alive[:alive_count]
         _launch.fill_(cell_accepted, False)
@@ -847,13 +848,20 @@ def sample_volume(
     total_vol = float(read_scalar(cdf))
     if total_vol == 0.0:
         raise ValueError("mesh has zero volume")
-    _launch.map(wp.div, cdf, wp.float32(total_vol), out=cdf)
 
     out_points = _launch.empty(count, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
         kernel_sample.sample_volume_tetrahedra,
         dim=count,
-        inputs=[vertices, faces, center, cdf, resolve_seed(seed), out_points],
+        inputs=[
+            vertices,
+            faces,
+            center,
+            cdf,
+            wp.float32(total_vol),
+            resolve_seed(seed),
+            out_points,
+        ],
         device=vertices.device,
     )
     return out_points

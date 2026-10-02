@@ -715,10 +715,9 @@ def vector_heat_operators(
         )
     else:
         mass = mass_matrix_entries(vertices, faces, dtype=wp.float64)
-    mass_blocks = _launch.empty(n_vertices, dtype=wp.mat22d, device=device)
-    _launch.map(kernel_heat.block_mass, mass, out=mass_blocks)
     # ``M + t L_connection`` over the connection Laplacian's own pattern, as the scalar system is
-    # built over the cotangent one's (``heat_operators``).
+    # built over the cotangent one's (``heat_operators``); the kernel forms each vertex's mass block
+    # from the scalar mass as it reads it.
     vector_values = _launch.empty_like(connection.values)
     _launch.launch(
         kernel_heat.SHIFTED_SYSTEM_VALUES[wp.mat22d],
@@ -727,7 +726,7 @@ def vector_heat_operators(
             connection.offsets,
             connection.columns,
             connection.values,
-            mass_blocks,
+            mass,
             wp.float64(1.0 if t is None else t),
             edge_sums,
             wp.int32(1 if t is None else 0),

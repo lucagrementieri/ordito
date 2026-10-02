@@ -859,7 +859,7 @@ def _mesh_operator_pattern(
     )
     _launch.array_scan(flags, out_array=flags, inclusive=True)
     # One exclusive scan of the three tally rows taken as one array places every part of every row
-    # (``kernels/laplacian.mesh_row_start``); ``mesh_place_lower`` writes the offsets from it.
+    # (``kernels/laplacian.mesh_row_start``); ``mesh_place_columns`` writes the offsets from it.
     before = _launch.empty((3, n_vertices), dtype=wp.int32, device=device)
     _launch.array_scan(tallies.flatten(), out_array=before.flatten(), inclusive=False)
     _launch.radix_sort_pairs(
@@ -870,35 +870,20 @@ def _mesh_operator_pattern(
     columns = _launch.empty(capacity, dtype=wp.int32, device=device)
     run_start = _launch.empty(capacity, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_laplacian.mesh_place_upper,
-        dim=count,
+        kernel_laplacian.mesh_place_columns,
+        dim=max(count, n_vertices),
         inputs=[
             keys,
             flags,
             wp.uint64(sentinel),
-            wp.int32(n_vertices),
-            tallies,
-            before,
-            columns,
-            run_start,
-        ],
-        device=device,
-    )
-    _launch.launch(
-        kernel_laplacian.mesh_place_lower,
-        dim=max(count, n_vertices),
-        inputs=[
-            keys,
             second_keys,
             second_order,
             wp.int32(count),
             wp.int32(n_vertices),
             tallies,
             before,
-            offsets,
-            columns,
-            run_start,
         ],
+        outputs=[offsets, columns, run_start],
         device=device,
     )
     return offsets, columns, run_start, keys, count, order

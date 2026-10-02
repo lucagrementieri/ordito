@@ -1273,9 +1273,8 @@ def _triangulate_ring(
     ``points2d`` holds the ring plus, possibly, a repeated closing point. With
     ``detect_closing=False`` the caller's prologue has already written the closing flag into
     ``sums``; otherwise the turning-angle pass decides it. Either way the one readback of ``sums``
-    carries the ring length, the orientation and the reflex count together. ``points2d`` is only
-    mutated -- mirrored in place for a clockwise ring -- when ``detect_closing=False``, i.e. when it
-    is a buffer of the caller's own; a caller's input ring is cloned first.
+    carries the ring length, the orientation and the reflex count together. ``points2d`` is never
+    written: a clockwise ring is read mirrored by the ear tests.
     """
     device = points2d.device
     n = points2d.size
@@ -1306,10 +1305,9 @@ def _triangulate_ring(
         )
         return n_ring, twt.as_array2d(out_faces, wp.int32)
 
-    if clockwise:
-        if detect_closing:
-            points2d = _launch.clone(points2d)
-        _launch.launch(kernel_polyline.orient_ccw, dim=n_ring, inputs=[points2d], device=device)
+    # The ear tests read a clockwise ring mirrored (``kernels/polyline.ring_point``), so it is never
+    # written mirrored, and a caller's ring needs no copy.
+    mirror = wp.int32(1 if clockwise else 0)
 
     # One block runs every round (see ``ear_clip_block``): no graph to record, one launch. On the
     # CPU device a launch grid is a serial loop either way, so the block form does the same walk
@@ -1320,7 +1318,7 @@ def _triangulate_ring(
         _launch.launch_tiled(
             kernel_polyline.ear_clip_block,
             dim=1,
-            inputs=[points2d, out_faces, ring, count_wp],
+            inputs=[points2d, mirror, out_faces, ring, count_wp],
             block_dim=kernel_polyline.EAR_BLOCK_DIM,
             device=device,
         )
@@ -1342,7 +1340,7 @@ def _triangulate_ring(
         _launch.launch(
             kernel_polyline.compute_ears,
             dim=n_ring,
-            inputs=[points2d, left, right, active, is_ear],
+            inputs=[points2d, left, right, active, mirror, is_ear],
             device=device,
         )
         _launch.launch(

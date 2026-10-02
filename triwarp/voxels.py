@@ -70,7 +70,6 @@ from triwarp.kernels import grouping as kernel_grouping
 from triwarp.kernels import interpolation as kernel_interpolation
 from triwarp.kernels import scatter as kernel_scatter
 from triwarp.kernels import voxels as kernel_voxels
-from triwarp.kernels.algorithms import connected_components as kernel_components
 
 DType = TypeVar("DType")
 
@@ -1753,15 +1752,12 @@ def fill_cavities(grid: wp.Volume, *, max_cells: int = 1 << 28) -> wp.Volume:
     )
     _launch.launch(kernel_voxels.flood_hook, dim=dims, inputs=[occupancy, parents], device=device)
     labels = _launch.empty(n_nodes, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_components.ecl_flatten, dim=n_nodes, inputs=[parents, labels], device=device
-    )
-
     outside = _launch.zeros(n_nodes, dtype=wp.bool, device=device)
     _launch.launch(
-        kernel_voxels.mark_outside_roots,
+        kernel_voxels.flatten_and_mark_outside,
         dim=dims,
-        inputs=[occupancy, labels, outside],
+        inputs=[occupancy, parents],
+        outputs=[labels, outside],
         device=device,
     )
     # The filled set goes straight to the builder as candidates plus a keep mask -- the pair
@@ -2363,20 +2359,15 @@ def to_boxes(
     vertices = _launch.empty(n_corners, dtype=wp.vec3, device=device)
     if n_voxels == 0:
         return vertices, _launch.empty(0, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_voxels.corner_positions,
-        dim=n_corners,
-        inputs=[grid.id, corner_cells, vertices],
-        device=device,
-    )
-
     voxels = cells(grid)
     neighbors = _face_neighbors(device)
     counts = _launch.empty(n_voxels, dtype=wp.int32, device=device)
+    # The corner positions ride the face-count launch.
     _launch.launch(
         kernel_voxels.count_box_faces,
-        dim=n_voxels,
-        inputs=[grid.id, voxels, neighbors, cull_internal, counts],
+        dim=max(n_corners, n_voxels),
+        inputs=[grid.id, voxels, neighbors, cull_internal, corner_cells],
+        outputs=[counts, vertices],
         device=device,
     )
     offsets, n_quads = tw.array.counts_to_offsets(counts)

@@ -308,8 +308,8 @@ def _corner_parents_from_adjacency(
     """
     Union-find forest of the corner graph over a face-adjacency table.
 
-    Two corner-graph edges per adjacency row, one per shared-edge endpoint, hooked by
-    ``connected_components``' edge-list pre-hook and hook: the forest
+    Two corner-graph edges per adjacency row, one per shared-edge endpoint, formed in the thread
+    and hooked by ``connected_components``' pair pre-hook and hook: the forest
     [`connected_component_labels_from_edges`][triwarp.graph.connected_component_labels_from_edges]
     flattens, left unflattened for the fused labelling pass that follows.
     """
@@ -318,18 +318,16 @@ def _corner_parents_from_adjacency(
     m = int(face_adjacency.shape[0])
     if m == 0:
         return parents
-    corner_edges = twt.empty_2d((2 * m, 2), wp.int32, device=device)
-    _launch.launch(
-        kernel_validation.build_corner_adjacency_edges,
-        dim=m,
-        inputs=[faces, face_adjacency, face_adjacency_edges, corner_edges],
-        device=device,
-    )
     for kernel in (
-        kernel_connected_components.ecl_init_parent_edges,
-        kernel_connected_components.ecl_hook_edges,
+        kernel_validation.adjacency_corner_prehook,
+        kernel_validation.adjacency_corner_hook,
     ):
-        _launch.launch(kernel, dim=2 * m, inputs=[corner_edges, parents], device=device)
+        _launch.launch(
+            kernel,
+            dim=m,
+            inputs=[faces, face_adjacency, face_adjacency_edges, parents],
+            device=device,
+        )
     return parents
 
 

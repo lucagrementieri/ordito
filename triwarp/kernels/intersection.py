@@ -1156,11 +1156,12 @@ def plane_edge_crossing_points(
     vertex_dots: wp.array[wp.float32],
     out_points: wp.array[wp.vec3],
 ) -> None:
-    # ``remesh.fill_edge_midpoints`` with the level-set crossing in place of the midpoint. One point
-    # per *unique edge* rather than per cut face, which is what makes the split crack-free where
-    # ``_clip_with_vertex_field`` is cracked: the two faces sharing the edge address the same new
-    # vertex, where a per-face crossing would leave two coincident copies and a seam of loose edges
-    # (which is exactly why ``clip_mesh_with_field(cap=True)`` has to weld before it can fill).
+    # ``remesh.split_child_counts_and_midpoints``' midpoint with the level-set crossing in its
+    # place. One point per *unique edge* rather than per cut face, which is what makes the split
+    # crack-free where ``_clip_with_vertex_field`` is cracked: the two faces sharing the edge
+    # address the same new vertex, where a per-face crossing would leave two coincident copies and
+    # a seam of loose edges (which is exactly why ``clip_mesh_with_field(cap=True)`` has to weld
+    # before it can fill).
     #
     # Launched over every unique edge and gated on the mask, writing each crossing at the slot the
     # exclusive scan of that mask gave it -- so neither split needs the crossed edges' own index

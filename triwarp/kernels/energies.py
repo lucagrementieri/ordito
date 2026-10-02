@@ -354,8 +354,11 @@ def hessian_energy_triplets(
 def internal_angles_and_sums(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
+    inverse: wp.array[wp.int32],
+    edge_cursor: wp.array[wp.int32],
     out_angles: wp.array2d[wp.float64],
     out_angle_sums: wp.array[wp.float64],
+    out_edge_halfedges: wp.array2d[wp.int32],
 ) -> None:
     # Interior angle at each corner (law of cosines, float64) plus the per-vertex angle sum the
     # curvature correction normalizes by. ``wp.acos`` clamps its argument, so a sliver face yields
@@ -364,7 +367,19 @@ def internal_angles_and_sums(
     # ``triangles.angles`` is the same quantity in float32 from normalized edge vectors, and stays a
     # separate kernel: it emits no angle sums, takes its third angle as ``PI - a0 - a1``, and zeroes
     # all three angles of a degenerate face instead of letting the acos clamp report 0 / pi.
+    #
+    # The face's three halfedges are also recorded against their unique edges (``inverse``), up to
+    # two per edge in arbitrary order, before any exit: the topology half of
+    # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. That caller
+    # validates edge-manifoldness first, so a third halfedge for one edge id is unreachable in
+    # practice; the ``slot < 2`` guard stays as a defensive bound against writing out of
+    # ``out_edge_halfedges``' row width rather than as a behavior any caller may rely on.
     f = wp.int32(wp.tid())
+    for k in range(3):
+        h = 3 * f + k
+        slot = wp.atomic_add(edge_cursor, inverse[h], 1)
+        if slot < 2:
+            out_edge_halfedges[inverse[h], slot] = h
     l2_0, l2_1, l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
     zero = wp.float64(0.0)
     if dbl_area <= zero:
@@ -387,21 +402,6 @@ def internal_angles_and_sums(
     out_angles[f, 1] = theta1
     out_angles[f, 2] = theta2
     add_corner_triple(out_angle_sums, faces, f, theta0, theta1, theta2)
-
-
-@wp.kernel
-def scatter_edge_halfedges(
-    inverse: wp.array[wp.int32], cursor: wp.array[wp.int32], out_halfedges: wp.array2d[wp.int32]
-) -> None:
-    # Up to two halfedges per unique edge, in arbitrary order. ``curved_hessian_energy`` (this
-    # kernel's only caller) validates edge-manifoldness before launching it, so a third halfedge
-    # for one edge id is unreachable in practice; the ``slot < 2`` guard stays as a defensive
-    # bound against writing out of ``out_halfedges``' row width rather than as a behavior any
-    # caller may rely on.
-    h = wp.int32(wp.tid())
-    slot = wp.atomic_add(cursor, inverse[h], 1)
-    if slot < 2:
-        out_halfedges[inverse[h], slot] = h
 
 
 @wp.kernel
@@ -658,51 +658,25 @@ def crouzeix_raviart_mass_diag(
     add_corner_triple(out_mass, inverse, f, third, third, third)
 
 
-@wp.kernel
-def neg_repdiag2_triplets(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    n_vertices: wp.int32,
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_vals: wp.array[wp.float64],
-) -> None:
-    # ``-repdiag(L, 2)``: the block-diagonal ``[[-L, 0], [0, -L]]`` (2n x 2n) of the LSCM Hessian.
-    # One thread per CSR row ``i`` of ``L``; each entry ``e`` emits both diagonal-block copies into
-    # slots ``2*e`` (upper block) and ``2*e + 1`` (lower block, shifted by ``n_vertices``).
-    i = wp.int32(wp.tid())
-    start = offsets[i]
-    end = offsets[i + 1]
-    for e in range(start, end):
-        j = columns[e]
-        v = -values[e]
-        out_rows[2 * e] = i
-        out_cols[2 * e] = j
-        out_vals[2 * e] = v
-        out_rows[2 * e + 1] = i + n_vertices
-        out_cols[2 * e + 1] = j + n_vertices
-        out_vals[2 * e + 1] = v
-
-
-@wp.kernel
-def vector_area_triplets(
+@wp.func
+def write_vector_area_triplets(
     boundary_edges: wp.array2d[wp.int32],
     n_vertices: wp.int32,
     scale: wp.float64,
+    b: wp.int32,
+    base: wp.int32,
     out_rows: wp.array[wp.int32],
     out_cols: wp.array[wp.int32],
     out_vals: wp.array[wp.float64],
 ) -> None:
     # ``igl::vector_area_matrix``: per oriented boundary edge ``(i, j)`` emit the four
     # cross-quadrant triplets ``(i+n, j, -q)``, ``(j, i+n, -q)``, ``(i, j+n, +q)``, ``(j+n, i, +q)``
-    # with ``q = 0.25 * scale``. ``scale = 1`` builds ``A`` itself; ``scale = -2`` builds the
-    # ``-2A`` term of the LSCM Hessian with the same kernel. Slot base ``4 * b``.
-    b = wp.int32(wp.tid())
+    # with ``q = 0.25 * scale``, at slots ``base .. base + 3``. ``scale = 1`` builds ``A`` itself
+    # (``vector_area_triplets``); ``scale = -2`` builds the ``-2A`` term of the LSCM Hessian
+    # (``lscm_hessian_triplets``).
     i = boundary_edges[b, 0]
     j = boundary_edges[b, 1]
     q = wp.float64(0.25) * scale
-    base = 4 * b
     out_rows[base] = i + n_vertices
     out_cols[base] = j
     out_vals[base] = -q
@@ -715,6 +689,60 @@ def vector_area_triplets(
     out_rows[base + 3] = j + n_vertices
     out_cols[base + 3] = i
     out_vals[base + 3] = q
+
+
+@wp.kernel
+def lscm_hessian_triplets(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    n_vertices: wp.int32,
+    boundary_edges: wp.array2d[wp.int32],
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
+    out_vals: wp.array[wp.float64],
+) -> None:
+    # The LSCM Hessian ``-repdiag(L, 2) - 2 A`` as triplets, in one launch over
+    # ``max(n_vertices, n_boundary_edges)`` threads writing disjoint slots of one buffer:
+    #
+    # - ``-repdiag(L, 2)``, the block-diagonal ``[[-L, 0], [0, -L]]`` (2n x 2n): thread ``t`` below
+    #   ``n_vertices`` takes CSR row ``t`` of ``L``, and each entry ``e`` emits both diagonal-block
+    #   copies into slots ``2*e`` (upper block) and ``2*e + 1`` (lower block, shifted by
+    #   ``n_vertices``);
+    # - ``-2 A``: thread ``t`` below the boundary-edge count writes edge ``t``'s four vector-area
+    #   triplets after them, at ``2 * offsets[n_vertices] + 4 t``.
+    t = wp.int32(wp.tid())
+    if t < n_vertices:
+        for e in range(offsets[t], offsets[t + 1]):
+            j = columns[e]
+            v = -values[e]
+            out_rows[2 * e] = t
+            out_cols[2 * e] = j
+            out_vals[2 * e] = v
+            out_rows[2 * e + 1] = t + n_vertices
+            out_cols[2 * e + 1] = j + n_vertices
+            out_vals[2 * e + 1] = v
+    if t < boundary_edges.shape[0]:
+        base = 2 * offsets[n_vertices] + 4 * t
+        write_vector_area_triplets(
+            boundary_edges, n_vertices, wp.float64(-2.0), t, base, out_rows, out_cols, out_vals
+        )
+
+
+@wp.kernel
+def vector_area_triplets(
+    boundary_edges: wp.array2d[wp.int32],
+    n_vertices: wp.int32,
+    scale: wp.float64,
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
+    out_vals: wp.array[wp.float64],
+) -> None:
+    # ``write_vector_area_triplets`` for every oriented boundary edge, slot base ``4 * b``.
+    b = wp.int32(wp.tid())
+    write_vector_area_triplets(
+        boundary_edges, n_vertices, scale, b, 4 * b, out_rows, out_cols, out_vals
+    )
 
 
 # Concrete overloads, registered at import -- rationale in ``triwarp/kernels/reduce.py``, rule in

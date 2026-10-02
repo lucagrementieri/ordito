@@ -328,7 +328,7 @@ def mesh_row_start(before: wp.array2d[wp.int32], r: wp.int32) -> wp.int32:
     return before[0, r] + (before[1, r] - before[1, 0]) + (before[2, r] - before[2, 0])
 
 
-@wp.kernel
+@wp.func
 def mesh_place_upper(
     keys: wp.array[wp.uint64],
     inclusive: wp.array[wp.int32],
@@ -336,12 +336,13 @@ def mesh_place_upper(
     n_vertices: wp.int32,
     tallies: wp.array2d[wp.int32],
     before: wp.array2d[wp.int32],
+    i: wp.int32,
     out_columns: wp.array[wp.int32],
     out_run_start: wp.array[wp.int32],
 ) -> None:
-    # Edge ``(lo, hi)`` in row ``lo``: after the lower half and the diagonal, at its rank among the
-    # edges whose smaller endpoint is ``lo`` -- its global rank less the edges of earlier rows.
-    i = wp.int32(wp.tid())
+    # Edge ``(lo, hi)`` of sorted key ``i``, in row ``lo``: after the lower half and the diagonal,
+    # at its rank among the edges whose smaller endpoint is ``lo`` -- its global rank less the edges
+    # of earlier rows.
     if not csr_run_start(keys, i, sentinel):
         return
     lo = wp.int32(keys[i] // wp.uint64(n_vertices))
@@ -352,8 +353,10 @@ def mesh_place_upper(
 
 
 @wp.kernel
-def mesh_place_lower(
+def mesh_place_columns(
     keys: wp.array[wp.uint64],
+    inclusive: wp.array[wp.int32],
+    sentinel: wp.uint64,
     second_keys: wp.array[wp.int32],
     second_order: wp.array[wp.int32],
     count: wp.int32,
@@ -364,10 +367,11 @@ def mesh_place_lower(
     out_columns: wp.array[wp.int32],
     out_run_start: wp.array[wp.int32],
 ) -> None:
-    # Launched over ``max(count, n_vertices)``. As a vertex: its row's offset (the last also closes
-    # the total) and its diagonal, which has no contributors. As a sorted position of the second
-    # sort: edge ``(lo, hi)`` in row ``hi``, at its rank among the edges whose larger endpoint is
-    # ``hi`` -- stable, so in ascending ``lo``.
+    # Launched over ``max(count, n_vertices)``; every write lands in a slot no other thread writes.
+    # As a vertex: its row's offset (the last also closes the total) and its diagonal, which has no
+    # contributors. As a position of the first sort: its upper-half entry (``mesh_place_upper``).
+    # As a sorted position of the second sort: edge ``(lo, hi)`` in row ``hi``, at its rank among
+    # the edges whose larger endpoint is ``hi`` -- stable, so in ascending ``lo``.
     t = wp.int32(wp.tid())
     if t < n_vertices:
         start = mesh_row_start(before, t)
@@ -379,6 +383,9 @@ def mesh_place_lower(
             out_columns[slot] = t
             out_run_start[slot] = 0
     if t < count:
+        mesh_place_upper(
+            keys, inclusive, sentinel, n_vertices, tallies, before, t, out_columns, out_run_start
+        )
         hi = second_keys[t]
         if hi < n_vertices:
             i = second_order[t]

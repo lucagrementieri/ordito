@@ -1487,10 +1487,10 @@ def test_bpa_front_swap_tracks_the_waves_that_ran(
     unpatched_wave = tw.reconstruction._bpa_wave  # pyright: ignore[reportPrivateUsage]
     unpatched = {name: getattr(tw.reconstruction._BpaState, name) for name in ("compact", "grow")}  # pyright: ignore[reportPrivateUsage]
 
-    def recording_wave(tracked: tw.reconstruction._BpaState, waves: int) -> None:  # pyright: ignore[reportPrivateUsage]
+    def recording_wave(tracked: tw.reconstruction._BpaState, waves: int, *, begin: bool) -> None:  # pyright: ignore[reportPrivateUsage]
         if int(tracked.counters.numpy()[kernel_bpa.CNT_CONTINUE]):
             live.append(id(tracked.front_out))
-        unpatched_wave(tracked, waves)
+        unpatched_wave(tracked, waves, begin=begin)
 
     def checked(name: str):
         def wrapper(tracked: tw.reconstruction._BpaState) -> None:  # pyright: ignore[reportPrivateUsage]

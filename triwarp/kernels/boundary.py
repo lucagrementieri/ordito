@@ -176,17 +176,18 @@ def scatter_boundary_neighbors(
         out_neighbors[b, slot_b] = a
 
 
-@wp.kernel
-def sort_boundary_neighbor_slots(neighbors: wp.array2d[wp.int32]) -> None:
-    # Order each vertex's two slots ascending, so the dart numbering below does not depend on the
-    # order the atomics happened to run in. This is what makes the non-orientable answer
-    # reproducible: with no face winding to follow, slot 0 is the smaller neighbour by definition.
-    v = wp.int32(wp.tid())
+@wp.func
+def boundary_neighbor(neighbors: wp.array2d[wp.int32], v: wp.int32, slot: wp.int32) -> wp.int32:
+    # Vertex ``v``'s boundary neighbour in ``slot``, with the two slots read in ascending order, so
+    # the dart numbering below does not depend on the order the scatter's atomics happened to run
+    # in. This is what makes the non-orientable answer reproducible: with no face winding to
+    # follow, slot 0 is the smaller neighbour by definition. Read sorted rather than sorted in
+    # place by a pass of its own; a lone neighbour (the other slot ``-1``) stays in slot 0.
     first = neighbors[v, 0]
     second = neighbors[v, 1]
     if first >= 0 and second >= 0 and second < first:
-        neighbors[v, 0] = second
-        neighbors[v, 1] = first
+        first, second = second, first
+    return wp.where(slot == 0, first, second)
 
 
 @wp.kernel
@@ -209,8 +210,8 @@ def dart_successors(
     e, end = wp.tid()
     v = boundary_edges[e, end]
     u = boundary_edges[e, 1 - end]
-    s = wp.where(neighbors[v, 0] == u, wp.int32(0), wp.int32(1))
-    w = neighbors[v, 1 - s]
+    s = wp.where(boundary_neighbor(neighbors, v, 0) == u, wp.int32(0), wp.int32(1))
+    w = boundary_neighbor(neighbors, v, 1 - s)
     dart = 2 * v + s
     out_tails[2 * e + end] = dart
     if w < 0:
@@ -218,7 +219,7 @@ def dart_successors(
         # the ranking drops.
         out_next[dart] = -1
     else:
-        arriving = wp.where(neighbors[w, 0] == v, wp.int32(0), wp.int32(1))
+        arriving = wp.where(boundary_neighbor(neighbors, w, 0) == v, wp.int32(0), wp.int32(1))
         out_next[dart] = 2 * w + arriving
 
 

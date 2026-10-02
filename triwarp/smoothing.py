@@ -1409,11 +1409,22 @@ def filter_mut_dif_laplacian(
             block_dim=TILE_1D,
             device=device,
         )
+        # The volume constraint's first pass also writes the eps probe its slope calibrates on.
+        probe = constraint[0] if constraint is not None and index == 0 else None
         _launch.launch(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
-            inputs=[positions, lv, adil, adil_sum, inv_n, wp.float64(lamb)],
-            outputs=[nxt],
+            inputs=[
+                positions,
+                lv,
+                adil,
+                adil_sum,
+                inv_n,
+                wp.float64(lamb),
+                normals,
+                wp.float64(eps),
+            ],
+            outputs=[nxt, probe],
             device=device,
         )
         positions, nxt = nxt, positions
@@ -1422,24 +1433,19 @@ def filter_mut_dif_laplacian(
             vol_cur = scratch.volume
             scratch.accumulate(positions, faces)
             if index == 0:
-                _launch.map(
-                    kernel_smoothing.add_scaled_normal,
-                    positions,
-                    normals,
-                    wp.float64(eps),
-                    out=probe,
-                )
                 scratch.accumulate(probe, faces, vol_probe)
-                _launch.launch(
-                    kernel_smoothing.mut_dif_volume_slope,
-                    dim=1,
-                    inputs=[vol_cur, vol_probe, wp.float64(eps), slope],
-                    device=device,
-                )
             _launch.launch(
                 kernel_smoothing.mut_dif_volume_correct,
                 dim=n,
-                inputs=[normals, vol_ini, vol_cur, slope],
+                inputs=[
+                    normals,
+                    vol_ini,
+                    vol_cur,
+                    vol_probe,
+                    wp.float64(eps),
+                    wp.int32(index == 0),
+                    slope,
+                ],
                 outputs=[positions],
                 device=device,
             )
@@ -1634,20 +1640,15 @@ def filter_implicit_fairing(
         interior_system, interior_rhs = twl.assemble_interior_system(
             system, dirichlet.fixed_mask, dirichlet.free_map, dirichlet.pinned, dirichlet.n_free
         )
+        # Add ``(M V)_u`` and seed CG with the free vertices' current positions, exactly as the
+        # unreduced branch above does -- the right-hand side is not a position, and an unreferenced
+        # vertex whose row and right-hand side are both zero would be left wherever the seed put it.
+        solution_2d = dirichlet.solution
         _launch.launch(
-            kernel_smoothing.add_interior_mass_rhs,
+            kernel_smoothing.interior_mass_rhs_and_seed,
             dim=n,
             inputs=[dirichlet.fixed_mask, dirichlet.free_map, mass, positions, interior_rhs],
-            device=device,
-        )
-        solution_2d = dirichlet.solution
-        # Seed CG with the free vertices' current positions, exactly as the unreduced branch above
-        # does -- the right-hand side is not a position, and an unreferenced vertex whose row and
-        # right-hand side are both zero would be left wherever the seed put it.
-        _launch.launch(
-            kernel_smoothing.gather_free_positions_2d,
-            dim=n,
-            inputs=[dirichlet.fixed_mask, dirichlet.free_map, positions, solution_2d],
+            outputs=[solution_2d],
             device=device,
         )
         twl.solve_spd_columns(
@@ -2103,14 +2104,11 @@ def _region_topology(
             outputs=[incident_edges],
             device=device,
         )
-        _launch.launch(
-            kernel_array.sort_segments,
-            dim=n,
-            inputs=[incidence_offsets, incident_edges],
-            device=device,
-        )
+        # The per-row sort rides the pattern count below.
+        count_kernel = kernel_smoothing.sort_incidence_and_count_free_pattern
     else:
         incidence_offsets, incident_edges = incidence
+        count_kernel = kernel_smoothing.free_pattern_counts
     # The free-free pattern, sized without a readback: a free row holds its diagonal and at most
     # its degree of neighbours, so ``n_free + 2 m`` bounds the whole. Every reader walks rows
     # through the offsets, so the unused tail is never touched.
@@ -2118,11 +2116,7 @@ def _region_topology(
     pattern_counts = twt.as_dense(pattern_offsets[1:])
     pattern_inputs = [incidence_offsets, incident_edges, unique_edges, free_mask, free_map]
     _launch.launch(
-        kernel_smoothing.free_pattern_counts,
-        dim=n,
-        inputs=pattern_inputs,
-        outputs=[pattern_counts],
-        device=device,
+        count_kernel, dim=n, inputs=pattern_inputs, outputs=[pattern_counts], device=device
     )
     _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
     capacity = n_free + 2 * m
@@ -2945,7 +2939,9 @@ def filter_two_step(
     adjacency = tw.adjacency.face_adjacency(faces, n_vertices=n)
     # Zeroed once: ``apply_fit_step_and_reset`` leaves every slot zero behind it, so each fit
     # iteration's scatter starts from an empty accumulator without a clear of its own. The
-    # incident-face count is fixed by the topology, so it is taken once rather than per iteration.
+    # incident-face count is fixed by the topology, so it is taken once rather than per iteration,
+    # and by a launch of its own: folding it into the first fit launch would carry its two
+    # arguments on every fit launch of the loop, at more host cost than the launch it saves.
     delta = _launch.zeros(n, dtype=wp.vec3, device=device)
     counts = _launch.zeros(n, dtype=wp.int32, device=device)
     _launch.launch(

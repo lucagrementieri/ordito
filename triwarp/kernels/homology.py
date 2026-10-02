@@ -129,16 +129,19 @@ def bfs_push_level(
             state[LOOP_PROGRESS] = 1
 
 
-@wp.kernel
+@wp.func
 def count_reached_and_referenced(
-    offsets: wp.array[wp.int32], distances: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+    offsets: wp.array[wp.int32],
+    distances: wp.array[wp.int32],
+    chunk: wp.int32,
+    lane: wp.int32,
+    out_counts: wp.array[wp.int32],
 ) -> None:
     # The connectivity guard's two numbers, folded per block into the same buffer the interior-edge
     # count went to. A vertex is referenced exactly when its adjacency row is non-empty and reached
     # exactly when the level loop gave it a depth, so the two agree if and only if the referenced
     # vertices form one component. Unreferenced vertices are deliberately not counted: they carry no
     # edges, so they cannot change the generator count.
-    chunk, lane = wp.tid()
     offset, n_rows = block_chunk_1d(distances.shape[0], chunk)
     if n_rows <= 0:
         return
@@ -157,11 +160,13 @@ def count_reached_and_referenced(
     commit_block_sum(lane, wp.vec2i(reached, referenced), out_counts, COUNT_REACHED)
 
 
-@wp.kernel
+@wp.func
 def dual_candidate_mask(
     unique_edges: wp.array2d[wp.int32],
     edge_face_count: wp.array[wp.int32],
     parents: wp.array[wp.int32],
+    chunk: wp.int32,
+    lane: wp.int32,
     out_candidate: wp.array[wp.bool],
     out_counts: wp.array[wp.int32],
 ) -> None:
@@ -190,7 +195,6 @@ def dual_candidate_mask(
     # under one block per SM. Section 2.3's occupancy rule: a kernel that already has a per-element
     # dimension must not collapse it into ``block_dim`` lanes. One atomic per tile is still one per
     # block, which is the shape section 13.2 asks for.
-    chunk, lane = wp.tid()
     offset, remaining = tile_chunk(unique_edges.shape[0], chunk, TILE_1D)
     if remaining <= 0:
         return
@@ -212,6 +216,37 @@ def dual_candidate_mask(
     interior_total = block_sum(interior)
     if lane == 0:
         wp.atomic_add(out_counts, COUNT_INTERIOR_EDGES, interior_total)
+
+
+@wp.kernel
+def guards_and_dual_candidates(
+    offsets: wp.array[wp.int32],
+    distances: wp.array[wp.int32],
+    vertex_blocks: wp.int32,
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    parents: wp.array[wp.int32],
+    out_candidate: wp.array[wp.bool],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # ``count_reached_and_referenced`` and ``dual_candidate_mask`` in one grid: the first
+    # ``vertex_blocks`` blocks take the vertex fold at its reduce-module chunk width, the rest one
+    # edge tile each -- the two widths each body needs (see ``dual_candidate_mask`` for why its own
+    # must stay narrow). The branch is per block, so every lane of a block takes the same body and
+    # its block-collective fold. They fold into different slots of ``out_counts``.
+    chunk, lane = wp.tid()
+    if chunk < vertex_blocks:
+        count_reached_and_referenced(offsets, distances, chunk, lane, out_counts)
+    else:
+        dual_candidate_mask(
+            unique_edges,
+            edge_face_count,
+            parents,
+            chunk - vertex_blocks,
+            lane,
+            out_candidate,
+            out_counts,
+        )
 
 
 @wp.kernel

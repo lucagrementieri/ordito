@@ -348,7 +348,7 @@ _KERNEL_WRITE_CALLS = frozenset(
 # ``.claude/CLAUDE.md`` section 2.1:
 #
 # - **In-place**: the argument is both the input and the result -- an ``out_`` prefix would misread
-#   as write-only. ``sort_rows_insertion(data)``, ``orient_ccw(points2d)``,
+#   as write-only. ``sort_rows_insertion(data)``,
 #   ``offset_packed_faces(faces)``, the hole-filling DP tables (read at smaller spans, written at
 #   the current one) and ``transform_and_accumulate_cost(acc)``, which reads the packed
 #   accumulator's weight-sum slot while atomically adding into its cost slot.
@@ -359,10 +359,8 @@ _KERNEL_WRITE_CALLS = frozenset(
 _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # in-place
     ("array", "sort_rows_insertion"): frozenset({"data"}),
-    ("array", "sort_segments"): frozenset({"data"}),
     # ``neighbors`` is sorted in place: this kernel only orders the two slots each vertex already
     # holds, so it is both the input and the result and ``out_`` would read as write-only.
-    ("boundary", "sort_boundary_neighbor_slots"): frozenset({"neighbors"}),
     # The refinement carries its chains across rounds: ``chains`` holds each chain's current frame
     # and ``chain_state`` its running loss and best box, so both are read, compared against and
     # conditionally overwritten by every round. They are the loop's state, not its answer -- the
@@ -412,10 +410,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("homology", "forest_link"): frozenset({"candidate"}),
     ("holes", "fill_dp_span"): frozenset({"tables"}),
     ("holes", "fill_dp_span_tiled"): frozenset({"tables"}),
-    ("polyline", "orient_ccw"): frozenset({"points2d"}),
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
-    ("remesh", "compose_vertex_index"): frozenset({"index"}),
+    ("remesh", "compact_decimation_pass"): frozenset({"index"}),
     # ``intrinsic_delaunay``'s halfedge-twin flip engine mutates the mesh it was handed rather than
     # producing a fresh one each round: ``edge_lengths`` is the caller's own metric, read pre-flip
     # and overwritten in the same launch, and ``twin`` is the incrementally-maintained twin table
@@ -437,7 +434,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # eliminates a quadratic form with no linear term of its own), and this kernel only ever
     # accumulates the linear term on top -- the same in-place shape as ``acc`` just above, not a
     # fresh per-call answer.
-    ("smoothing", "add_interior_mass_rhs"): frozenset({"rhs"}),
+    ("smoothing", "interior_mass_rhs_and_seed"): frozenset({"rhs"}),
+    ("smoothing", "mut_dif_volume_correct"): frozenset({"slope"}),
     # ``filter_normals`` folds one pass's normalization into the next pass's seed, and both act on
     # the same accumulator slot: the thread reads its own entry and overwrites it in the same
     # launch, so ``out_`` would misread it as write-only. The answer is ``out_normals``.
@@ -465,7 +463,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("reconstruction", "lexicographic_triangulation"): frozenset(
         {"boundary", "boundary_next", "orientations"}
     ),
-    ("algorithms.ball_pivoting", "begin_wave"): frozenset({"counters"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through
     # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
     ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),
@@ -487,7 +484,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.ball_pivoting", "rehash_edges"): frozenset(
         {"new_cand", "new_count", "new_opp", "new_src", "new_state", "new_tgt"}
     ),
-    ("energies", "scatter_edge_halfedges"): frozenset({"cursor"}),
+    ("energies", "internal_angles_and_sums"): frozenset({"edge_cursor"}),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
     # The flip loop's incremental state, carried across rounds and kept current by the commit that
     # rewrites the faces: the row <-> halfedge maps and the tracked valences. Neither an input nor

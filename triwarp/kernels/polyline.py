@@ -1126,6 +1126,25 @@ def point_in_triangle(a: wp.vec2, b: wp.vec2, c: wp.vec2, p: wp.vec2) -> wp.bool
 
 
 @wp.func
+def mirror_y(p: wp.vec2) -> wp.vec2:
+    # The reflection that turns a clockwise loop counter-clockwise, shared so the reflex count taken
+    # before the ear loop and the points the ear tests read (``ring_point``) are the same values.
+    return wp.vec2(p[0], -p[1])
+
+
+@wp.func
+def ring_point(points2d: wp.array[wp.vec2], k: wp.int32, mirror: wp.int32) -> wp.vec2:
+    # Ring point ``k`` as the ear tests read it: mirrored (``mirror_y``) when the ring runs
+    # clockwise, so a clockwise ring is tested as the counter-clockwise loop the convex and ear
+    # tests assume without a pass writing the mirrored loop first. The reflection is exact, so the
+    # tests see the very values a mirrored copy would hold. ``mirror`` is warp-uniform.
+    p = points2d[k]
+    if mirror != 0:
+        p = mirror_y(p)
+    return p
+
+
+@wp.func
 def is_ear_at(
     points2d: wp.array[wp.vec2],
     left: wp.array[wp.int32],
@@ -1133,6 +1152,7 @@ def is_ear_at(
     active: wp.array[wp.int32],
     i: wp.int32,
     n: wp.int32,
+    mirror: wp.int32,
 ) -> wp.bool:
     # Corner (a, i, b) is an ear iff it is strictly convex and no other active vertex lies
     # strictly inside triangle (a, i, b). Equivalent to libigl's edge-intersection walk for a
@@ -1152,15 +1172,19 @@ def is_ear_at(
     b = right[i]
     if a == b or a == i or b == i:
         return False
-    pa = points2d[a]
-    pi = points2d[i]
-    pb = points2d[b]
+    pa = ring_point(points2d, a, mirror)
+    pi = ring_point(points2d, i, mirror)
+    pb = ring_point(points2d, b, mirror)
     if orient2d(pa, pi, pb) <= 0:
         return False
     # Walk the remaining ring from R[b] up to a, skipping the ear's own vertices.
     j = right[b]
     while j != a:
-        if active[j] == 1 and j != i and point_in_triangle(pa, pi, pb, points2d[j]):
+        if (
+            active[j] == 1
+            and j != i
+            and point_in_triangle(pa, pi, pb, ring_point(points2d, j, mirror))
+        ):
             return False
         j = right[j]
     return True
@@ -1254,13 +1278,6 @@ def project_polyline_to_plane(
     out_points2d[i] = project_to_plane_2d(polyline[i], center, u, v)
 
 
-@wp.func
-def mirror_y(p: wp.vec2) -> wp.vec2:
-    # The reflection ``orient_ccw`` applies to a clockwise loop, shared so the reflex count taken
-    # before it and the points written by it are the same values.
-    return wp.vec2(p[0], -p[1])
-
-
 @wp.kernel
 def accumulate_turning_angle(
     points2d: wp.array[wp.vec2], detect_closing: wp.int32, out_sums: wp.array[wp.float32]
@@ -1323,16 +1340,6 @@ def accumulate_turning_angle(
 
 
 @wp.kernel
-def orient_ccw(points2d: wp.array[wp.vec2]) -> None:
-    # Mirror the y-axis to flip a clockwise loop to counter-clockwise (replaces libigl's row
-    # reversal); the convex/ear tests assume CCW orientation. Launched only on the ear-clipping
-    # path, and only when the turning angle the caller read back is negative -- the fan needs no
-    # orientation at all, since its faces are index triples. dim == the ring length.
-    i = wp.int32(wp.tid())
-    points2d[i] = mirror_y(points2d[i])
-
-
-@wp.kernel
 def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
     # Convex fast-path: fan from vertex 0. dim == n - 2.
     k = wp.int32(wp.tid())
@@ -1386,6 +1393,7 @@ def ear_flag(
     active: wp.array[wp.int32],
     i: wp.int32,
     n: wp.int32,
+    mirror: wp.int32,
 ) -> wp.int32:
     # ``1`` when corner ``i`` is an active ear. One round's first step, shared by ``compute_ears``
     # (one thread per corner) and ``ear_clip_block`` (one block walks every corner).
@@ -1393,7 +1401,7 @@ def ear_flag(
     # its ring walk must never run.
     flag = wp.int32(0)
     if active[i] != 0:
-        if is_ear_at(points2d, left, right, active, i, n):
+        if is_ear_at(points2d, left, right, active, i, n, mirror):
             flag = wp.int32(1)
     return flag
 
@@ -1404,10 +1412,11 @@ def compute_ears(
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
+    mirror: wp.int32,
     out_is_ear: wp.array[wp.int32],
 ) -> None:
     i = wp.int32(wp.tid())
-    out_is_ear[i] = ear_flag(points2d, left, right, active, i, points2d.shape[0])
+    out_is_ear[i] = ear_flag(points2d, left, right, active, i, points2d.shape[0], mirror)
 
 
 @wp.func
@@ -1543,6 +1552,7 @@ EAR_BLOCK_DIM = 1024
 @wp.kernel(enable_backward=False)
 def ear_clip_block(
     points2d: wp.array[wp.vec2],
+    mirror: wp.int32,
     out_faces: wp.array2d[wp.int32],
     out_ring: wp.array2d[wp.int32],
     out_count: wp.array[wp.int32],
@@ -1576,7 +1586,7 @@ def ear_clip_block(
     rounds = wp.int32(0)
     while count < n - 2 and rounds < n:
         for i in range(lane, n, wp.block_dim()):
-            is_ear[i] = ear_flag(points2d, left, right, active, i, n)
+            is_ear[i] = ear_flag(points2d, left, right, active, i, n, mirror)
         block_barrier()
         for i in range(lane, n, wp.block_dim()):
             selected[i] = ear_selected(is_ear, left, right, i)

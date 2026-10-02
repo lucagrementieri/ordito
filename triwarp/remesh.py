@@ -35,7 +35,7 @@ import triwarp as tw
 import triwarp.typing as twt
 from triwarp import _launch
 from triwarp._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
-from triwarp.constants import TOLERANCE_MOLLIFY, UINT64_MAX
+from triwarp.constants import INT32_MAX, TOLERANCE_MOLLIFY, UINT64_MAX
 from triwarp.kernels import adjacency as kernel_adjacency
 from triwarp.kernels import array as kernel_array
 from triwarp.kernels import grouping as kernel_grouping
@@ -1115,6 +1115,8 @@ class _FlipTopology:
                 )
             else:
                 _launch.zero_(self.edge_set)
+        if self.valence is not None:
+            _launch.zero_(self.valence)
         _launch.launch(
             kernel_remesh.mark_edge_pair_starts,
             dim=n,
@@ -1123,10 +1125,10 @@ class _FlipTopology:
                 self._order,
                 wp.int32(n),
                 wp.int32(self.active_edge_set_mask),
+                self._radix,
                 self.edge_set,
-                self._starts,
-                self.halfedge_row,
             ],
+            outputs=[self._starts, self.halfedge_row, self.valence],
             device=self._device,
         )
         # Inclusive, so the row count is one 4-byte tail read and the emit kernel's row is
@@ -1159,14 +1161,6 @@ class _FlipTopology:
                     self.row_halfedges,
                     self.halfedge_row,
                 ],
-                device=self._device,
-            )
-        if self.valence is not None:
-            _launch.zero_(self.valence)
-            _launch.launch(
-                kernel_scatter.scatter_valence_from_sorted_edge_keys,
-                dim=n,
-                inputs=[self._keys, wp.int32(n), self._radix, self.valence],
                 device=self._device,
             )
         return m
@@ -1898,7 +1892,6 @@ class _DecimationBuffers:
         self._quadrics = _launch.empty(v_cap, dtype=wp.mat44d, device=device)
         self._locked = _launch.empty(v_cap, dtype=wp.int32, device=device)
         self._min_key = _launch.empty(v_cap, dtype=wp.int64, device=device)
-        self._vertex_remap = _launch.empty(self.n_vertices, dtype=wp.int32, device=device)
         # Vertex-vertex then vertex-face incidence counts, one row per vertex each and a closing
         # zero, so one exclusive scan yields both CSRs' offset tables (see ``kernels/remesh.py``).
         self._adjacency_counts = _launch.empty(2 * v_cap + 1, dtype=wp.int32, device=device)
@@ -1909,8 +1902,8 @@ class _DecimationBuffers:
         )
 
         # Provenance, only when a caller asked for it: one entry per *input* vertex composed pass by
-        # pass (``compose_vertex_index``), and a column beside the face buffer compacted with it
-        # (``compact_face_provenance``). Both are fixed width -- the vertex map by construction, the
+        # pass, and a column beside the face buffer compacted with it (both inside
+        # ``compact_decimation_pass``). Both are fixed width -- the vertex map by construction, the
         # face column because the face buffer is -- so tracking them does not stop the pass being
         # captured; the scratch exists because the compaction cannot read and write one buffer.
         self.vertex_index = (
@@ -2336,6 +2329,9 @@ class _DecimationBuffers:
             device=device,
         )
         self._compact_scan.launch(self._compact_flags)
+        if self._track_index:
+            # The compaction moves the provenance column with the faces, so it reads a copy.
+            _launch.copy(self._face_source_scratch, self.face_source)
         _launch.launch(
             kernel_remesh.compact_decimation_pass,
             dim=max(self.n_faces, self.n_vertices),
@@ -2346,35 +2342,13 @@ class _DecimationBuffers:
                 self._compact_scan.prefix,
                 self._compact_scan.chunk_offsets,
                 wp.int32(self.n_vertices),
-                self.faces,
-                self.vertices,
-                self._vertex_remap,
-                self.state,
+                self._collapse_remap,
+                self._face_source_scratch,
+                self.vertex_index,
             ],
+            outputs=[self.faces, self.vertices, self.face_source, self.state],
             device=device,
         )
-        if self._track_index:
-            # Both maps fold *this* pass into the running answer, so they run after the compaction
-            # that produced the face ranks and ``_vertex_remap``.
-            _launch.copy(self._face_source_scratch, self.face_source)
-            _launch.launch(
-                kernel_remesh.compact_face_provenance,
-                dim=self.n_faces,
-                inputs=[
-                    self._face_source_scratch,
-                    self._compact_flags,
-                    self._compact_scan.prefix,
-                    self._compact_scan.chunk_offsets,
-                    self.face_source,
-                ],
-                device=device,
-            )
-            _launch.launch(
-                kernel_remesh.compose_vertex_index,
-                dim=self.n_vertices,
-                inputs=[self._collapse_remap, self._vertex_remap, self.vertex_index],
-                device=device,
-            )
 
 
 class _ExclusiveScan:
@@ -2850,30 +2824,24 @@ def intrinsic_delaunay(
     quad = twt.empty_2d((n_half, 4), wp.int32, device=device)
     new_length = _launch.empty(n_half, dtype=wp.float32, device=device)
     neighbors = twt.empty_2d((n_half, 4), wp.int32, device=device)
-    face_claim = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    # Armed here for the first round; ``fixup_twin_remap`` re-arms it for every later one.
+    face_claim = _launch.full(n_faces, INT32_MAX, dtype=wp.int32, device=device)
     remap = _launch.empty(n_half, dtype=wp.int32, device=device)
     no_remap = _launch.zeros(n_half, dtype=wp.bool, device=device)
     count = _launch.zeros(1, dtype=wp.int32, device=device)
 
     total = 0
     for _ in range(max_iter):
-        # The four per-iteration resets this loop used to issue as `fill_` / `zero_` calls ride in
-        # the two kernels above the launches that read them instead -- ``face_claim`` in the
-        # candidate pass, ``remap`` / ``no_remap`` / ``count`` in the claim pass. Each is a whole
-        # device pass over a buffer that scales with the mesh, sitting immediately next to a launch
-        # at exactly the right ``dim``; see those kernels for why no barrier is needed.
+        # The per-iteration resets ride the launches next to their readers: ``remap`` /
+        # ``no_remap`` / ``count`` in the candidate pass, the claim table in the previous
+        # iteration's ``fixup_twin_remap``. The candidate pass also claims: independent-set
+        # selection over just the flipping pair -- that kernel's comment says why that is enough
+        # here, unlike the vertex-pair-keyed flip loops.
         _launch.launch(
             kernel_remesh.intrinsic_delaunay_candidates,
             dim=n_half,
-            inputs=[intrinsic_faces, lengths, twin, flip, quad, new_length, neighbors, face_claim],
-            device=device,
-        )
-        # Independent-set selection over just the flipping pair -- ``claim_intrinsic_flips``'s own
-        # docstring says why that is enough here, unlike the vertex-pair-keyed flip loops.
-        _launch.launch(
-            kernel_remesh.claim_intrinsic_flips,
-            dim=n_half,
-            inputs=[flip, twin, face_claim, remap, no_remap, count],
+            inputs=[intrinsic_faces, lengths, twin],
+            outputs=[flip, quad, new_length, neighbors, face_claim, remap, no_remap, count],
             device=device,
         )
         _launch.launch(
@@ -2898,6 +2866,7 @@ def intrinsic_delaunay(
             kernel_remesh.fixup_twin_remap,
             dim=n_half,
             inputs=[remap, no_remap, twin],
+            outputs=[face_claim],
             device=device,
         )
         n = int(read_scalar(count, 0))
@@ -3100,47 +3069,49 @@ def subdivide_loop(
     ring_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
     boundary_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
     boundary_sum = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
+    # One buffer sized for its final use, written through two views: the relocated originals in the
+    # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
+    # assumes and the one ``igl.loop`` returns. The edge vertices are written by the ring pass,
+    # which has their endpoints in hand.
+    new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
     _launch.launch(
         kernel_remesh.loop_vertex_rings,
         dim=n_unique,
-        inputs=[
-            vertices,
-            unique_edges,
-            edge_face_count,
-            valence,
-            ring_sum,
-            boundary_count,
-            boundary_sum,
-        ],
+        inputs=[vertices, unique_edges, edge_face_count, edge_opposite_sum],
+        outputs=[valence, ring_sum, boundary_count, boundary_sum, new_vertices[n_vertices:]],
         device=device,
     )
-
-    # One buffer sized for its final use, written through two views: the relocated originals in the
-    # prefix and the new edge vertices after them, which is the index layout `_split_faces_four`
-    # assumes and the one ``igl.loop`` returns.
-    new_vertices = _launch.empty(n_vertices + n_unique, dtype=wp.vec3, device=device)
+    # The operator's triplets, when asked for: the even self-weights are written by the even
+    # position pass below, the rest by ``_loop_operator``.
+    operator_triplets = (
+        tw.array.triplet_buffers(
+            _loop_triplet_count(n_vertices, n_unique, n_faces), wp.float32, device
+        )
+        if return_operator
+        else None
+    )
     _launch.launch(
         kernel_remesh.loop_even_positions,
         dim=n_vertices,
         inputs=[vertices, valence, ring_sum, boundary_count, boundary_sum],
-        outputs=[new_vertices[:n_vertices]],
-        device=device,
-    )
-    _launch.launch(
-        kernel_remesh.loop_odd_positions,
-        dim=n_unique,
-        inputs=[vertices, unique_edges, edge_opposite_sum, edge_face_count],
-        outputs=[new_vertices[n_vertices:]],
+        outputs=[new_vertices[:n_vertices], *(operator_triplets or (None, None, None))],
         device=device,
     )
     new_faces = _split_faces_four(faces, inverse, n_vertices)
-    if not return_operator:
+    if operator_triplets is None:
         return new_vertices, new_faces
     return (
         new_vertices,
         new_faces,
         _loop_operator(
-            faces, unique_edges, inverse, edge_face_count, valence, boundary_count, n_vertices
+            faces,
+            unique_edges,
+            inverse,
+            edge_face_count,
+            valence,
+            boundary_count,
+            n_vertices,
+            operator_triplets,
         ),
     )
 
@@ -3153,28 +3124,23 @@ def _loop_operator(
     valence: wp.array[wp.int32],
     boundary_count: wp.array[wp.int32],
     n_vertices: int,
+    triplets: tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.float32]],
 ) -> twt.BsrMatrix[wp.float32]:
     """
     Assemble one Loop pass as a sparse interpolation matrix, from the pass's own intermediates.
 
-    Three launches over the three grids the positions come from -- vertices, unique edges, faces --
-    writing into one triplet buffer. ``array.csr_from_triplets`` sums coincident entries, which is
-    what lets the odd rows' 3/8 endpoints (edge grid) and 1/8 wings (face grid) be emitted
-    independently.
+    Launches over the three grids the positions come from -- vertices, unique edges, faces --
+    writing into one triplet buffer, sized by ``_loop_triplet_count``, whose vertex rows (the even
+    self-weights) the even position pass has already written. ``array.csr_from_triplets`` sums
+    coincident entries, which is what lets the odd rows' 3/8 endpoints (edge grid) and 1/8 wings
+    (face grid) be emitted independently.
     """
     device = faces.device
     n_faces = faces.size // 3
     n_unique = int(unique_edges.shape[0])
     edge_base = n_vertices
     face_base = edge_base + 4 * n_unique
-    rows, cols, values = tw.array.triplet_buffers(face_base + 3 * n_faces, wp.float32, device)
-
-    _launch.launch(
-        kernel_remesh.loop_even_self_triplets,
-        dim=n_vertices,
-        inputs=[valence, boundary_count, rows, cols, values],
-        device=device,
-    )
+    rows, cols, values = triplets
     _launch.launch(
         kernel_remesh.loop_edge_triplets,
         dim=n_unique,
@@ -3207,6 +3173,11 @@ def _loop_operator(
         device=device,
     )
     return tw.array.csr_from_triplets(n_vertices + n_unique, n_vertices, rows, cols, values)
+
+
+def _loop_triplet_count(n_vertices: int, n_unique: int, n_faces: int) -> int:
+    """Triplet count of one Loop pass's operator: one per vertex, four per edge, three per face."""
+    return n_vertices + 4 * n_unique + 3 * n_faces
 
 
 def _split_faces_four(
@@ -4139,15 +4110,7 @@ def _split_ranked_edges(
     new_vertices = _launch.empty(n_vertices + n_split, dtype=wp.vec3, device=device)
     if n_vertices > 0:
         _launch.copy(new_vertices, vertices, count=n_vertices)
-    if split_positions is None:
-        _launch.launch(
-            kernel_remesh.fill_edge_midpoints,
-            dim=n_edges,
-            inputs=[vertices, edges, split_mask, offsets],
-            outputs=[new_vertices[n_vertices:]],
-            device=device,
-        )
-    else:
+    if split_positions is not None:
         if split_positions.size != n_split:
             raise ValueError(
                 f"split_positions must have one entry per flagged edge ({n_split}), "
@@ -4157,12 +4120,20 @@ def _split_ranked_edges(
 
     # Each face's child count, scanned, is its first output row -- so the emission writes the
     # compact face buffer directly and the provenance with it, rather than four fixed slots per face
-    # and a compaction of both.
+    # and a compaction of both. The same launch writes the midpoints when the caller gave none.
     child_counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_remesh.split_face_child_counts,
-        dim=n_faces,
-        inputs=[corner_edge, split_mask, child_counts],
+        kernel_remesh.split_child_counts_and_midpoints,
+        dim=max(n_faces, n_edges),
+        inputs=[
+            corner_edge,
+            split_mask,
+            vertices,
+            edges,
+            offsets,
+            wp.int32(1 if split_positions is None else 0),
+        ],
+        outputs=[child_counts, new_vertices[n_vertices:]],
         device=device,
     )
     face_offsets, n_out_faces = tw.array.counts_to_offsets(child_counts)

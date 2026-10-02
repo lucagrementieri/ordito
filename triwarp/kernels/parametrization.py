@@ -173,19 +173,19 @@ def scatter_solution_stacked(
     out_uv[i] = wp.vec2(wp.float32(u), wp.float32(v))
 
 
-@wp.kernel
+@wp.func
 def arap_rest_edges(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     cot_entries: wp.array2d[wp.float64],
+    f: wp.int32,
     out_rest_edges: wp.array2d[wp.vec2d],
 ) -> None:
     # Isometrically flatten each triangle into the plane (igl project_isometrically_to_plane) and
     # store its three weight-folded rest edges ``c_e * p_e`` in igl edge order e0:(1,2), e1:(2,0),
-    # e2:(0,1). Run once (dim = n_faces): folding the half-cotangent weight ``c_e`` in here removes
+    # e2:(0,1). Run once (``arap_setup``): folding the half-cotangent weight ``c_e`` in here removes
     # the cotangent lookup from the per-iteration local step. Computed in float64 (squared edge
     # lengths promoted from the float32 vertex precision) for a deterministic operator.
-    f = wp.int32(wp.tid())
     v0, v1, v2 = face_vertices(vertices, faces, f)
     l2_0f, l2_1f, l2_2f = squared_edge_lengths(v0, v1, v2)
     # l0 = |v1 - v2|, l1 = |v2 - v0|, l2 = |v0 - v1| (igl edge_lengths column order).
@@ -293,16 +293,17 @@ def arap_interior_rhs(
     out_b[1, ri] = rhs_const[1, ri] + rhs_rot_y[i]
 
 
-@wp.kernel
+@wp.func
 def gather_interior_uv(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     uv: wp.array[wp.vec2],
     fixed_values: wp.array2d[wp.float64],
+    i: wp.int32,
     out_sol: wp.array2d[wp.float64],
     out_uv: wp.array[wp.vec2],
 ) -> None:
-    # Seed the conjugate-gradient warm start with the current interior UV (dim = n_vertices):
+    # Seed the conjugate-gradient warm start with the current interior UV at vertex ``i``:
     # interior vertex ``i`` writes its UV into the two rows (u, v) of ``out_sol`` at the compact
     # free index. ``out_sol`` is (2, n_interior), and every row is written, because ``free_map`` is
     # a bijection of the free vertices onto it.
@@ -311,7 +312,6 @@ def gather_interior_uv(
     # wrote: a fixed vertex takes its prescribed position, a free one reads back its own seed --
     # ``uv[i]`` itself, since a ``float32`` widened to ``float64`` and narrowed again is exact. So
     # the thread never reads a row another thread wrote, and the separate launch is not needed.
-    i = wp.int32(wp.tid())
     ri = free_row(fixed_mask, free_map, i)
     if ri < 0:
         out_uv[i] = fixed_uv(fixed_values, i)
@@ -320,3 +320,26 @@ def gather_interior_uv(
     out_sol[0, ri] = wp.float64(p[0])
     out_sol[1, ri] = wp.float64(p[1])
     out_uv[i] = p
+
+
+@wp.kernel
+def arap_setup(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cot_entries: wp.array2d[wp.float64],
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    uv: wp.array[wp.vec2],
+    fixed_values: wp.array2d[wp.float64],
+    out_rest_edges: wp.array2d[wp.vec2d],
+    out_sol: wp.array2d[wp.float64],
+    out_uv: wp.array[wp.vec2],
+) -> None:
+    # The ARAP loop's two one-time inputs in one launch over ``max(n_faces, n_vertices)`` threads:
+    # the rest edges per face (``arap_rest_edges``) and the warm start per vertex
+    # (``gather_interior_uv``). They write disjoint buffers from the input alone.
+    t = wp.int32(wp.tid())
+    if t < faces.shape[0] // 3:
+        arap_rest_edges(vertices, faces, cot_entries, t, out_rest_edges)
+    if t < vertices.shape[0]:
+        gather_interior_uv(fixed_mask, free_map, uv, fixed_values, t, out_sol, out_uv)

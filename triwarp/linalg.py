@@ -2969,13 +2969,18 @@ class SquaredLaplacianPreconditioner:
         """Build ``M_ff`` and its transpose from ``L`` and ``D``, and fix the interval."""
         self._n = int(laplacian.nrow)
         self._device = laplacian.values.device
-        self._factor = twt.bsr_copy(laplacian)
+        # ``M_ff``'s values and the Gershgorin ratios below come from one walk of ``L``'s rows, and
+        # ``M_ff`` takes ``L``'s pattern rather than a copy of it.
+        factor_values = _launch.empty_like(laplacian.values)
+        ratios = twt.empty_1d(self._n, wp.float64, device=self._device)
         _launch.launch(
-            kernel_mg.scale_rows,
+            kernel_linalg.scaled_rows_and_abs_sums,
             dim=self._n,
-            inputs=[self._factor.offsets, weight_sums, wp.float64(1.0), 1, self._factor.values],
+            inputs=[laplacian.offsets, laplacian.values, weight_sums],
+            outputs=[factor_values, ratios],
             device=self._device,
         )
+        self._factor = bsr_with_values(laplacian, factor_values)
         self._factor_t = twt.bsr_transposed(self._factor)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
         # 2. With ``D`` the diagonal of ``L`` it is exactly 2 when every weight is non-negative and
@@ -2989,13 +2994,6 @@ class SquaredLaplacianPreconditioner:
         # The bound, the interval and the steps stay on the device (``_device_chebyshev_steps``):
         # the interval is ``[min(SQUARED_LAPLACIAN_INTERVAL / n, SQUARED_LAPLACIAN_INTERVAL_CAP) *
         # upper / 2, upper]`` with ``upper = max(bound, 2)``.
-        ratios = twt.empty_1d(self._n, wp.float64, device=self._device)
-        _launch.launch(
-            kernel_linalg.scaled_row_abs_sums,
-            dim=self._n,
-            inputs=[laplacian.offsets, laplacian.values, weight_sums, ratios],
-            device=self._device,
-        )
         self._steps = _device_chebyshev_steps(
             ratios, SQUARED_LAPLACIAN_INTERVAL, SQUARED_LAPLACIAN_DEGREE, squared=True
         )
@@ -3025,7 +3023,7 @@ class SquaredLaplacianPreconditioner:
             zeros.
         ratios
             ``(n,)`` ``sum_j |L_ij| / D_i``, ``0`` for an empty row: what the constructor's
-            ``scaled_row_abs_sums`` writes.
+            ``scaled_rows_and_abs_sums`` writes.
         narrowed
             ``factor``'s and ``factor_t``'s values in ``float32``, when the caller wrote them
             too; otherwise ``narrowed()``
@@ -3453,11 +3451,9 @@ def _multigrid_hierarchy(
         label, n_aggregates = _multigrid_aggregate(operator, diag, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
-        diagonal = _launch.empty(level.n, dtype=wp.float64, device=operator.device)
-        _launch.map(kernel_array.inverse_or_one, diag, out=diagonal)
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
-        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diagonal, seed)
+        level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, seed)
         level.prolongator = _multigrid_prolongator(
             operator, label, n_aggregates, level.inverse_diagonal
         )
@@ -3493,36 +3489,41 @@ def _multigrid_aggregate(
     offsets, columns, values = matrix.offsets, matrix.columns, matrix.values
     theta = wp.float64(_MULTIGRID_THETA)
     # ``sqrt(|A_ii|)`` per row, so the strength test below is a product rather than a square root
-    # per edge. One ``(n,)`` buffer and one map, read by both walks. The ``diagonal`` argument is
-    # the caller's, because the hierarchy needs the same extraction for the smoother and must not
-    # repeat it here.
+    # per edge, read by both walks; the priority order; and the undecided start state -- one
+    # launch. The ``diagonal`` argument is the caller's, because the hierarchy needs the same
+    # extraction for the smoother and must not repeat it here.
     scaled_diagonal = _launch.empty(n, dtype=wp.float64, device=device)
-    _launch.map(kernel_array.sqrt_abs, diagonal, out=scaled_diagonal)
-
     priority = _launch.empty(n, dtype=wp.uint32, device=device)
+    state = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_array.random_priorities, dim=n, inputs=[wp.int32(seed), priority], device=device
+        kernel_mg.mis_level_setup,
+        dim=n,
+        inputs=[wp.int32(seed), diagonal],
+        outputs=[scaled_diagonal, priority, state],
+        device=device,
     )
-    state = _launch.full(n, int(kernel_mg.MG_UNDECIDED), dtype=wp.int32, device=device)
     next_state = _launch.empty(n, dtype=wp.int32, device=device)
     key = _launch.empty(n, dtype=wp.int64, device=device)
-    next_key = _launch.empty(n, dtype=wp.int64, device=device)
+    # Every node's root flag, written by the round that decides it (and every round it is still
+    # undecided), so the scan below needs no map over the final state.
+    flags = _launch.empty(n, dtype=wp.int32, device=device)
     undecided = _launch.zeros(1, dtype=wp.int32, device=device)
     for _ in range(_MULTIGRID_MIS_ROUNDS):
-        _launch.launch(kernel_mg.mis_seed_keys, dim=n, inputs=[state, priority, key], device=device)
-        for _ in range(2):
-            _launch.launch(
-                kernel_mg.mis_propagate,
-                dim=n,
-                inputs=[key, offsets, columns, values, scaled_diagonal, theta, next_key],
-                device=device,
-            )
-            key, next_key = next_key, key
+        # Two launches a round: the first hop forms every key from the state as it reads it, the
+        # second hop decides as it reduces.
+        _launch.launch(
+            kernel_mg.mis_propagate_states,
+            dim=n,
+            inputs=[state, priority, offsets, columns, values, scaled_diagonal, theta],
+            outputs=[key],
+            device=device,
+        )
         _launch.zero_(undecided)
         _launch.launch(
-            kernel_mg.mis_decide,
+            kernel_mg.mis_propagate_decide,
             dim=n,
-            inputs=[key, priority, state, next_state, undecided],
+            inputs=[key, priority, offsets, columns, values, scaled_diagonal, theta, state],
+            outputs=[next_state, flags, undecided],
             device=device,
         )
         state, next_state = next_state, state
@@ -3531,31 +3532,40 @@ def _multigrid_aggregate(
         if int(read_scalar(undecided, 0)) == 0:
             break
 
-    flags = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.map(kernel_mg.mis_root_flag, state, out=flags)
     scan_pos = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.array_scan(flags, scan_pos, inclusive=True)
     n_aggregates = int(read_scalar(scan_pos))
 
+    # Two hops of the spread. The first reads each label straight from ``(state, scan_pos)`` (its
+    # ``label`` argument is not read); the second reads the first's output.
+    strong_graph = [offsets, columns, values, scaled_diagonal, theta]
+    hop = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_mg.spread_aggregate_labels,
+        dim=n,
+        inputs=[hop, state, scan_pos, wp.int32(1), *strong_graph],
+        outputs=[hop],
+        device=device,
+    )
     label = _launch.empty(n, dtype=wp.int32, device=device)
-    next_label = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.map(kernel_mg.aggregate_label, state, scan_pos, out=label)
-    for _ in range(2):
-        _launch.launch(
-            kernel_mg.spread_aggregate_labels,
-            dim=n,
-            inputs=[label, offsets, columns, values, scaled_diagonal, theta, next_label],
-            device=device,
-        )
-        label, next_label = next_label, label
+    _launch.launch(
+        kernel_mg.spread_aggregate_labels,
+        dim=n,
+        inputs=[hop, state, scan_pos, wp.int32(0), *strong_graph],
+        outputs=[label],
+        device=device,
+    )
     return label, n_aggregates
 
 
 def _multigrid_damped_diagonal(
-    matrix: twt.BsrMatrix[wp.float64], inverse_diagonal: wp.array[wp.float64], seed: int
+    matrix: twt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
 ) -> wp.array[wp.float64]:
     """
     ``omega D^-1``, with ``omega = 4/3 / rho`` and ``rho`` the spectral radius of ``D^-1 A``.
+
+    ``diagonal`` is ``matrix``'s own; ``D^-1`` is ``array.inverse_or_one`` of it, which the kernels
+    apply as they read it.
 
     ``rho`` comes from an unnormalized power iteration. Normalizing every step would cost a host
     readback per step; leaving the iterate to grow and taking the geometric mean of the growth over
@@ -3569,18 +3579,26 @@ def _multigrid_damped_diagonal(
     Everything about the arithmetic here is chosen against the launch count, because the hierarchy
     build is launch-bound. A step is one fused ``power_step`` launch rather than a ``bsr_mv`` plus
     an elementwise scale, and the two buffers are ping-ponged rather than updated in place, which is
-    what allows the single kernel.
+    what allows the single kernel. The first step draws the sign vector as it reads it.
     """
     device = matrix.device
     n = int(matrix.nrow)
     x = _launch.empty(n, dtype=wp.float64, device=device)
     y = _launch.empty(n, dtype=wp.float64, device=device)
-    _launch.launch(kernel_mg.random_signs, dim=n, inputs=[wp.int32(seed), x], device=device)
-    for _ in range(_MULTIGRID_POWER_STEPS):
+    for step in range(_MULTIGRID_POWER_STEPS):
         _launch.launch(
             kernel_mg.power_step,
             dim=n,
-            inputs=[inverse_diagonal, matrix.offsets, matrix.columns, matrix.values, x, y],
+            inputs=[
+                wp.int32(seed),
+                wp.int32(step == 0),
+                diagonal,
+                matrix.offsets,
+                matrix.columns,
+                matrix.values,
+                x,
+            ],
+            outputs=[y],
             device=device,
         )
         x, y = y, x
@@ -3598,7 +3616,7 @@ def _multigrid_damped_diagonal(
             wp.float64(n),
             wp.float64(1.0 / _MULTIGRID_POWER_STEPS),
             wp.float64(_MULTIGRID_JACOBI_FACTOR),
-            inverse_diagonal,
+            diagonal,
         ],
         outputs=[damped],
         device=device,

@@ -584,10 +584,14 @@ def curved_hessian_energy(
 
     angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)
     angle_sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    # Each unique edge's two halfedges are recorded by the same face pass.
+    edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
+    cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_energies.internal_angles_and_sums,
         dim=n_faces,
-        inputs=[vertices, faces, angles, angle_sums],
+        inputs=[vertices, faces, inverse, cursor],
+        outputs=[angles, angle_sums, edge_halfedges],
         device=device,
     )
     # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
@@ -597,14 +601,6 @@ def curved_hessian_energy(
     _zero_at_boundary(vertices, faces, angle_sums)
     mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
 
-    edge_halfedges = _launch.full((n_edges, 2), -1, dtype=wp.int32, device=device)
-    cursor = _launch.zeros(n_edges, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_energies.scatter_edge_halfedges,
-        dim=3 * n_faces,
-        inputs=[inverse, cursor, edge_halfedges],
-        device=device,
-    )
     vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)
     par = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
     perp = _launch.zeros((n_edges, 4), dtype=wp.float64, device=device)
@@ -885,38 +881,17 @@ def lscm_hessian(
     # boundary edge (the vector-area cross-quadrant terms). Every slot is written, so wp.empty.
     total = 2 * n_entries + 4 * n_be
     rows, cols, vals = tw.array.triplet_buffers(total, wp.float64, device)
+    # Both terms in one launch. The ``-2 A`` term shares its triplet rule with
+    # [`vector_area_matrix`][triwarp.energies.vector_area_matrix] but writes after the Laplacian's
+    # blocks in the combined buffer: assembling ``A`` as its own matrix and adding it would need a
+    # second build plus a ``bsr_axpy``, where this one pass over exact-size buffers does.
     _launch.launch(
-        kernel_energies.neg_repdiag2_triplets,
-        dim=n,
-        inputs=[
-            laplacian.offsets,
-            laplacian.columns,
-            laplacian.values,
-            wp.int32(n),
-            rows,
-            cols,
-            vals,
-        ],
+        kernel_energies.lscm_hessian_triplets,
+        dim=max(n, n_be),
+        inputs=[laplacian.offsets, laplacian.columns, laplacian.values, wp.int32(n), boundary],
+        outputs=[rows, cols, vals],
         device=device,
     )
-    if n_be > 0:
-        # The ``-2 A`` term shares its triplet kernel with
-        # [`vector_area_matrix`][triwarp.energies.vector_area_matrix] but writes into a slice
-        # of the combined buffer: assembling ``A`` as its own matrix and adding it would need a
-        # second build plus a ``bsr_axpy``, where this one pass over exact-size buffers does.
-        _launch.launch(
-            kernel_energies.vector_area_triplets,
-            dim=n_be,
-            inputs=[
-                boundary,
-                wp.int32(n),
-                wp.float64(-2.0),
-                twt.as_dense(rows[2 * n_entries :]),
-                twt.as_dense(cols[2 * n_entries :]),
-                twt.as_dense(vals[2 * n_entries :]),
-            ],
-            device=device,
-        )
     return tw.array.csr_from_triplets(2 * n, 2 * n, rows, cols, vals)
 
 

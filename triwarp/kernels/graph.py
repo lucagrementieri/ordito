@@ -234,6 +234,12 @@ def jump_rank(
     # its ``hops^k``-th successor and the exact hop count to it. The fixed point at the cycle start
     # contributes zero, so steps converges to the hop distance to the start once the window covers
     # the chain. Ping-ponged: the chase reads only the previous round's table.
+    #
+    # ``init_rank_arrays`` and ``finalize_rank_positions`` stay launches of their own. Forming the
+    # initial entry as the first round reads it costs three loads where a table entry is two, on
+    # every hop of a dependent chase (0.96x on ``successor_cycles`` over 200 000 nodes in 20 000
+    # cycles and in three); folding the finalize into the last round measured 0.98-0.995x there,
+    # two launches of about forty.
     tid = wp.int32(wp.tid())
     v = cycle_nodes[tid]
     s = successor_in[v]

@@ -156,19 +156,18 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     """
     require_same_device(points=points, other=other)
     # Both clouds reduce into **one** corner buffer, so the union costs one readback rather than
-    # two boxes and an ``aabb_union``: ``minmax_vec3_chunked`` accumulates with ``wp.atomic_min``
-    # into a buffer the caller seeds, so a second launch over a second cloud continues the same
-    # reduction. Reducing a concatenation instead is slower -- the union buffer is an allocation
-    # and a copy of both clouds, against one launch that is flat in its ``dim``.
+    # two boxes and an ``aabb_union``, and in one launch: ``minmax_vec3_pair_chunked`` folds both
+    # clouds' chunks into the same slots with ``wp.atomic_min``. Reducing a concatenation instead
+    # is slower -- the union buffer is an allocation and a copy of both clouds.
     device = points.device
     corners = _launch.full(6, math.inf, dtype=wp.float32, device=device)
-    for cloud in (points, other):
-        if cloud is None or cloud.size == 0:
-            continue
+    n_other = 0 if other is None else other.size
+    if points.size + n_other > 0:
         _launch.launch(
-            kernel_reduce.minmax_vec3_chunked,
-            dim=kernel_reduce.chunks_1d(cloud.size),
-            inputs=[cloud, corners],
+            kernel_reduce.minmax_vec3_pair_chunked,
+            dim=kernel_reduce.chunks_1d(points.size) + kernel_reduce.chunks_1d(n_other),
+            inputs=[points, points if other is None else other, wp.int32(0)],
+            outputs=[corners],
             device=device,
         )
     # Slots 3..5 hold the *negated* upper corner; see the kernel. An all-empty input leaves the

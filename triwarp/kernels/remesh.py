@@ -43,6 +43,7 @@ from triwarp.kernels.predicates import (
 from triwarp.kernels.scatter import (
     accumulate_endpoint_value,
     add_corner_triple,
+    add_edge_valence,
     lock_two_rings,
     mark_corners,
     record_edge_incidence,
@@ -172,36 +173,6 @@ def loop_edge_opposites(
         wp.atomic_add(out_face_count, e, 1)
 
 
-@wp.kernel
-def loop_vertex_rings(
-    vertices: wp.array[wp.vec3],
-    unique_edges: wp.array2d[wp.int32],
-    edge_face_count: wp.array[wp.int32],
-    out_valence: wp.array[wp.int32],
-    out_ring_sum: wp.array[wp.vec3],
-    out_boundary_count: wp.array[wp.int32],
-    out_boundary_sum: wp.array[wp.vec3],
-) -> None:
-    # Per vertex: its valence and 1-ring position sum, plus the same two restricted to boundary
-    # edges. Driven by the *unique* edge list rather than by the faces, so the valence is the number
-    # of distinct neighbours on any input -- the count a per-face pass would have to deduplicate
-    # (each neighbour appears twice around an interior vertex but once at a boundary).
-    e = wp.int32(wp.tid())
-    v0 = unique_edges[e, 0]
-    v1 = unique_edges[e, 1]
-    p0 = vertices[v0]
-    p1 = vertices[v1]
-    wp.atomic_add(out_valence, v0, 1)
-    wp.atomic_add(out_valence, v1, 1)
-    wp.atomic_add(out_ring_sum, v0, p1)
-    wp.atomic_add(out_ring_sum, v1, p0)
-    if edge_face_count[e] == 1:
-        wp.atomic_add(out_boundary_count, v0, 1)
-        wp.atomic_add(out_boundary_count, v1, 1)
-        wp.atomic_add(out_boundary_sum, v0, p1)
-        wp.atomic_add(out_boundary_sum, v1, p0)
-
-
 @wp.func
 def loop_odd_weights(edge_face_count: wp.int32) -> tuple[wp.float32, wp.float32]:
     # Loop's odd (edge) stencil as weights: 3/8 on each endpoint and 1/8 on each opposite vertex for
@@ -212,6 +183,43 @@ def loop_odd_weights(edge_face_count: wp.int32) -> tuple[wp.float32, wp.float32]
     if edge_face_count == 2:
         return LOOP_ODD_ENDPOINT, LOOP_ODD_OPPOSITE
     return wp.float32(0.5), wp.float32(0.0)
+
+
+@wp.kernel
+def loop_vertex_rings(
+    vertices: wp.array[wp.vec3],
+    unique_edges: wp.array2d[wp.int32],
+    edge_face_count: wp.array[wp.int32],
+    edge_opposite_sum: wp.array[wp.vec3],
+    out_valence: wp.array[wp.int32],
+    out_ring_sum: wp.array[wp.vec3],
+    out_boundary_count: wp.array[wp.int32],
+    out_boundary_sum: wp.array[wp.vec3],
+    out_odd_positions: wp.array[wp.vec3],
+) -> None:
+    # Per vertex: its valence and 1-ring position sum, plus the same two restricted to boundary
+    # edges. Driven by the *unique* edge list rather than by the faces, so the valence is the number
+    # of distinct neighbours on any input -- the count a per-face pass would have to deduplicate
+    # (each neighbour appears twice around an interior vertex but once at a boundary).
+    #
+    # The edge's own odd (Loop) vertex rides the same thread, from the endpoints it has just loaded:
+    # 3/8 on each endpoint and 1/8 on each of the two opposite vertices (``loop_odd_weights``).
+    e = wp.int32(wp.tid())
+    v0 = unique_edges[e, 0]
+    v1 = unique_edges[e, 1]
+    p0 = vertices[v0]
+    p1 = vertices[v1]
+    endpoint_weight, opposite_weight = loop_odd_weights(edge_face_count[e])
+    out_odd_positions[e] = endpoint_weight * (p0 + p1) + opposite_weight * edge_opposite_sum[e]
+    wp.atomic_add(out_valence, v0, 1)
+    wp.atomic_add(out_valence, v1, 1)
+    wp.atomic_add(out_ring_sum, v0, p1)
+    wp.atomic_add(out_ring_sum, v1, p0)
+    if edge_face_count[e] == 1:
+        wp.atomic_add(out_boundary_count, v0, 1)
+        wp.atomic_add(out_boundary_count, v1, 1)
+        wp.atomic_add(out_boundary_sum, v0, p1)
+        wp.atomic_add(out_boundary_sum, v1, p0)
 
 
 @wp.func
@@ -237,21 +245,6 @@ def loop_even_weights(
 
 
 @wp.kernel
-def loop_odd_positions(
-    vertices: wp.array[wp.vec3],
-    unique_edges: wp.array2d[wp.int32],
-    edge_opposite_sum: wp.array[wp.vec3],
-    edge_face_count: wp.array[wp.int32],
-    out_positions: wp.array[wp.vec3],
-) -> None:
-    # Loop's odd (edge) vertices: 3/8 on each endpoint and 1/8 on each of the two opposite vertices.
-    e = wp.int32(wp.tid())
-    endpoints = vertices[unique_edges[e, 0]] + vertices[unique_edges[e, 1]]
-    endpoint_weight, opposite_weight = loop_odd_weights(edge_face_count[e])
-    out_positions[e] = endpoint_weight * endpoints + opposite_weight * edge_opposite_sum[e]
-
-
-@wp.kernel
 def loop_even_positions(
     vertices: wp.array[wp.vec3],
     valence: wp.array[wp.int32],
@@ -259,37 +252,34 @@ def loop_even_positions(
     boundary_count: wp.array[wp.int32],
     boundary_sum: wp.array[wp.vec3],
     out_positions: wp.array[wp.vec3],
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
+    out_values: wp.array[wp.float32],
 ) -> None:
     # Loop's even (original) vertices, relaxed towards their 1-ring; the rule is
     # ``loop_even_weights``, and the mode says which neighbour sum the weight multiplies.
+    #
+    # With non-empty triplet buffers (``subdivide_loop(return_operator=True)``) the vertex's
+    # self-weight triplet of the interpolation operator rides the same thread: row ``v`` is the
+    # relocated original vertex ``v`` (see the operator's triplet kernels below).
     v = wp.int32(wp.tid())
     self_weight, neighbor_weight, mode = loop_even_weights(valence[v], boundary_count[v])
     neighbor = ring_sum[v]
     if mode == LOOP_EVEN_BOUNDARY:
         neighbor = boundary_sum[v]
     out_positions[v] = self_weight * vertices[v] + neighbor_weight * neighbor
+    if out_rows.shape[0] > 0:
+        out_rows[v] = v
+        out_cols[v] = v
+        out_values[v] = self_weight
 
 
 # The interpolation operator ``subdivide_loop(return_operator=True)`` assembles, emitted as triplets
 # from the same three grids the positions come from and through the same two weight functions. Row
-# ``v`` is the relocated original vertex ``v``; row ``n_vertices + e`` is the odd vertex on unique
-# edge ``e``. Every slot is written -- a zero weight where a rule does not apply -- because
+# ``v`` is the relocated original vertex ``v`` (its self-weight is written by
+# ``loop_even_positions``); row ``n_vertices + e`` is the odd vertex on unique edge ``e``. Every
+# slot is written -- a zero weight where a rule does not apply -- because
 # ``triplet_buffers`` hands back uninitialized memory (CLAUDE.md section 3.7).
-@wp.kernel
-def loop_even_self_triplets(
-    valence: wp.array[wp.int32],
-    boundary_count: wp.array[wp.int32],
-    out_rows: wp.array[wp.int32],
-    out_cols: wp.array[wp.int32],
-    out_values: wp.array[wp.float32],
-) -> None:
-    v = wp.int32(wp.tid())
-    self_weight, _neighbor_weight, _mode = loop_even_weights(valence[v], boundary_count[v])
-    out_rows[v] = v
-    out_cols[v] = v
-    out_values[v] = self_weight
-
-
 @wp.kernel
 def loop_edge_triplets(
     unique_edges: wp.array2d[wp.int32],
@@ -394,34 +384,33 @@ def split_corner_midpoints(
 
 
 @wp.kernel
-def split_face_child_counts(
-    corner_edge: wp.array[wp.int32], split_mask: wp.array[wp.bool], out_counts: wp.array[wp.int32]
-) -> None:
-    # How many triangles face ``f`` becomes under ``emit_size_faces``' templates: one more than the
-    # number of its edges being split. Scanned, this is each face's first output row, so the emit
-    # pass writes the compact buffer directly rather than four fixed slots and a compaction.
-    f = wp.int32(wp.tid())
-    count = wp.int32(1)
-    for k in range(3):
-        if split_mask[corner_edge[f * 3 + k]]:
-            count += 1
-    out_counts[f] = count
-
-
-@wp.kernel
-def fill_edge_midpoints(
+def split_child_counts_and_midpoints(
+    corner_edge: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
     vertices: wp.array[wp.vec3],
     unique_edges: wp.array2d[wp.int32],
-    long_mask: wp.array[wp.bool],
     offsets: wp.array[wp.int32],
+    write_midpoints: wp.int32,
+    out_counts: wp.array[wp.int32],
     out_mid: wp.array[wp.vec3],
 ) -> None:
-    # Shares its guard and its ``offsets[e]`` load with ``split_corner_midpoints`` above, which is
-    # the same rule read from the face side: this writes the new vertex's position at its rank,
-    # that one names the index the rank gives it.
-    e = wp.int32(wp.tid())
-    if long_mask[e]:
-        out_mid[offsets[e]] = edge_midpoint(vertices, unique_edges, e)
+    # Two independent writes of one refine pass, over ``max(n_faces, n_edges)`` threads:
+    #
+    # - how many triangles face ``t`` becomes under ``emit_size_faces``' templates: one more than
+    #   the number of its edges being split. Scanned, this is each face's first output row, so the
+    #   emit pass writes the compact buffer directly rather than four fixed slots and a compaction;
+    # - with ``write_midpoints`` (warp-uniform; unset when the caller supplies the positions), each
+    #   split edge ``t``'s midpoint at its rank -- the rule ``split_corner_midpoints`` reads from
+    #   the face side, naming the index the rank gives it.
+    t = wp.int32(wp.tid())
+    if t < out_counts.shape[0]:
+        count = wp.int32(1)
+        for k in range(3):
+            if split_mask[corner_edge[t * 3 + k]]:
+                count += 1
+        out_counts[t] = count
+    if write_midpoints != 0 and t < split_mask.shape[0] and split_mask[t]:
+        out_mid[offsets[t]] = edge_midpoint(vertices, unique_edges, t)
 
 
 @wp.kernel
@@ -432,7 +421,8 @@ def fill_edge_mean_sizing(
     offsets: wp.array[wp.int32],
     out_sizing: wp.array[wp.float32],
 ) -> None:
-    # ``fill_edge_midpoints`` for the sizing field rather than the position: the value carried to a
+    # ``split_child_counts_and_midpoints``' midpoint for the sizing field rather than the position:
+    # the value carried to a
     # new midpoint is the endpoint mean ``mark_long_edges`` tested the edge with.
     e = wp.int32(wp.tid())
     if split_mask[e]:
@@ -490,7 +480,8 @@ def emit_size_faces(
     out_index: wp.array[wp.int32],
 ) -> None:
     # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
-    # into rows ``face_offsets[f] ..`` of the compact output (``split_face_child_counts`` scanned).
+    # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
+    # ``split_child_counts_and_midpoints``).
     # The children come out in template order ``t0, t1, ..``, which is the order the fixed-slot
     # form's compaction kept them in, so the output is the same buffer either way.
     f = wp.int32(wp.tid())
@@ -884,9 +875,11 @@ def mark_edge_pair_starts(
     order: wp.array[wp.int32],
     n: wp.int32,
     edge_set_mask: wp.int32,
+    base: wp.uint64,
     edge_set: wp.array[wp.uint64],
     out_starts: wp.array[wp.int32],
     out_halfedge_row: wp.array[wp.int32],
+    out_valence: wp.array[wp.int32],
 ) -> None:
     # ``grouping.mark_group_starts`` at ``length=2`` (the same ``sorted_run_of_length`` rule). Both
     # emit ``int32`` for the same reason: the flag feeds ``warp.utils.array_scan``, which has no
@@ -900,12 +893,17 @@ def mark_edge_pair_starts(
     # An incremental build (``out_halfedge_row`` given, ``edge_set_mask >= 0``) seeds the flip
     # loop's other two structures in the same pass: every halfedge starts with no row
     # (``emit_flip_topology`` then writes the interior ones), and every run -- every undirected
-    # edge, whatever its multiplicity -- goes into the zeroed duplicate-edge set.
+    # edge, whatever its multiplicity -- goes into the zeroed duplicate-edge set. A non-empty
+    # ``out_valence`` (zeroed by the caller) gets every vertex's degree from the same runs
+    # (``scatter.add_edge_valence``), which the valence flip objective reads.
     i = wp.int32(wp.tid())
     if out_halfedge_row.shape[0] > 0:
         out_halfedge_row[order[i]] = -1
-    if edge_set_mask >= 0 and sorted_run_start(sorted_keys, i):
-        hash_find_or_insert(sorted_keys[i], edge_set, edge_set_mask)
+    if sorted_run_start(sorted_keys, i):
+        if edge_set_mask >= 0:
+            hash_find_or_insert(sorted_keys[i], edge_set, edge_set_mask)
+        if out_valence.shape[0] > 0:
+            add_edge_valence(sorted_keys, i, base, out_valence)
     out_starts[i] = wp.where(sorted_run_of_length(sorted_keys, n, i, 2), wp.int32(1), wp.int32(0))
 
 
@@ -2133,10 +2131,14 @@ def intrinsic_delaunay_candidates(
     out_new_length: wp.array[wp.float32],
     out_neighbors: wp.array2d[wp.int32],
     out_face_claim: wp.array[wp.int32],
+    out_remap: wp.array[wp.int32],
+    out_no_remap: wp.array[wp.bool],
+    out_count: wp.array[wp.int32],
 ) -> None:
-    # Mark the interior edges that violate the local Delaunay condition, and measure what the
-    # flipped edge would be -- both from edge lengths only, which is what makes the retriangulation
-    # intrinsic: no vertex moves, so the *surface* is unchanged and only its triangulation improves.
+    # Mark the interior edges that violate the local Delaunay condition, measure what the flipped
+    # edge would be -- both from edge lengths only, which is what makes the retriangulation
+    # intrinsic: no vertex moves, so the *surface* is unchanged and only its triangulation improves
+    # -- and claim the flip's two faces for the independent set ``commit_intrinsic_flips`` takes.
     #
     # Indexed per *halfedge* (``h = 3 * f + e``, the edge opposite corner ``e`` -- ``edge_lengths``'
     # own convention) and read through ``twin`` rather than a duplicate-edge-keyed adjacency table.
@@ -2148,13 +2150,15 @@ def intrinsic_delaunay_candidates(
     h = wp.int32(wp.tid())
     out_flip[h] = False
     out_new_length[h] = 0.0
-    # ``out_face_claim`` is the *next* launch's lock table, reset here rather than by a ``fill_``
-    # of its own: it is one third the length of this grid (one entry per face, and this kernel runs
-    # per halfedge), nothing below reads it, and the kernel that does read it is the next launch --
-    # so this is a whole device pass and a host call removed per iteration for one store in a third
-    # of the threads of a kernel that is already resident.
-    if h < out_face_claim.shape[0]:
-        out_face_claim[h] = INT32_MAX_CONSTANT
+    # The three buffers ``commit_intrinsic_flips`` expects cleared are cleared here, before any
+    # exit: they are exactly this grid's length (``out_count`` aside), nothing in this kernel reads
+    # them, and the kernel that does is the next launch. ``out_face_claim`` cannot be: the claim
+    # below ``atomic_min``s into it from other threads of this same launch, so it arrives reset --
+    # by ``fixup_twin_remap`` of the previous iteration, and by the caller before the first.
+    out_remap[h] = INT32_MAX_CONSTANT
+    out_no_remap[h] = False
+    if h == 0:
+        out_count[0] = 0
     h1 = twin[h]
     if h1 < 0 or h1 <= h:
         return  # boundary, or the mirror of a lower-indexed canonical candidate
@@ -2222,36 +2226,12 @@ def intrinsic_delaunay_candidates(
     out_neighbors[h, 3] = twin[f0 * 3 + corner_f0_second]  # edge (d, a), opposite c in f0
     out_new_length[h] = wp.sqrt(flipped)
     out_flip[h] = True
-
-
-@wp.kernel
-def claim_intrinsic_flips(
-    flip: wp.array[wp.bool],
-    twin: wp.array[wp.int32],
-    out_face_claim: wp.array[wp.int32],
-    out_remap: wp.array[wp.int32],
-    out_no_remap: wp.array[wp.bool],
-    out_count: wp.array[wp.int32],
-) -> None:
-    # Only a flip's own two faces are claimed -- unlike the vertex-pair-keyed flip loops' shared
+    # The claim: only the flip's own two faces -- unlike the vertex-pair-keyed flip loops' shared
     # ``claim_flips``, there is no new-edge hash to also claim, because two flips creating an edge
-    # with the same endpoint labels are no longer a conflict at all (see
-    # ``intrinsic_delaunay_candidates``). The *other* four faces a commit touches (each one's twin
-    # pointer, not its connectivity) are handled without a lock, by ``fixup_twin_remap`` below.
-    h = wp.int32(wp.tid())
-    # The three buffers ``commit_intrinsic_flips`` expects cleared are cleared here, before the
-    # early return, for the reason ``intrinsic_delaunay_candidates`` clears the claim table: they
-    # are exactly this grid's length (``out_count`` aside), nothing in this kernel reads them, and
-    # the kernel that does is the next launch. Three device memsets and three host calls per
-    # iteration, for one store each in a kernel that is already resident.
-    out_remap[h] = INT32_MAX_CONSTANT
-    out_no_remap[h] = False
-    if h == 0:
-        out_count[0] = 0
-    if not flip[h]:
-        return
-    f0 = h // 3
-    f1 = twin[h] // 3
+    # with the same endpoint labels are no longer a conflict at all (see above). The *other* four
+    # faces a commit touches (each one's twin pointer, not its connectivity) are handled without a
+    # lock, by ``fixup_twin_remap``. It rides this kernel because the decision has this one exit;
+    # the vertex-pair-keyed engines decide at several, which is why theirs stays a launch.
     wp.atomic_min(out_face_claim, f0, h)
     wp.atomic_min(out_face_claim, f1, h)
 
@@ -2261,7 +2241,7 @@ def intrinsic_flip_claim_won(
     flip: wp.array[wp.bool], twin: wp.array[wp.int32], face_claim: wp.array[wp.int32], h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.bool]:
     # ``flip_claim_won``'s counterpart for the halfedge-twin engine, minus the new-edge hash claim
-    # that engine also checks -- see ``claim_intrinsic_flips``.
+    # that engine also checks -- see the claim at the end of ``intrinsic_delaunay_candidates``.
     if not flip[h]:
         return wp.int32(-1), wp.int32(-1), False
     f0 = h // 3
@@ -2375,7 +2355,10 @@ def commit_intrinsic_flips(
 
 @wp.kernel
 def fixup_twin_remap(
-    remap: wp.array[wp.int32], no_remap: wp.array[wp.bool], twin: wp.array[wp.int32]
+    remap: wp.array[wp.int32],
+    no_remap: wp.array[wp.bool],
+    twin: wp.array[wp.int32],
+    out_face_claim: wp.array[wp.int32],
 ) -> None:
     # The other half of ``commit_intrinsic_flips``'s deferred neighbor fixup: every halfedge except
     # this round's two brand-new diagonal cells (``no_remap``, set only there) asks whether its twin
@@ -2383,7 +2366,13 @@ def fixup_twin_remap(
     # exactly what it was before the round started, so this is safe whether or not the *target* face
     # flipped: ``remap`` is keyed by each flipped face's own old slot, which is where the answer
     # lives if it flipped, and stays at the sentinel (leaving ``twin`` unchanged) if it did not.
+    #
+    # Also re-arms the next round's face-claim table (one entry per face, a third of this grid),
+    # which nothing here reads: its reader, ``intrinsic_delaunay_candidates``, claims into it from
+    # every thread and so cannot reset it itself.
     h = wp.int32(wp.tid())
+    if h < out_face_claim.shape[0]:
+        out_face_claim[h] = INT32_MAX_CONSTANT
     if no_remap[h]:
         return
     target = twin[h]
@@ -3181,6 +3170,12 @@ def mark_unique_edge_starts(
     # ``grouping.unique_1d`` answers with a hash table, over sorted keys instead, and emitting
     # ``int32`` so the scan that follows needs no cast. See ``mark_edge_pair_starts`` above for the
     # one condition the two differ by.
+    #
+    # Not folded into the scan's chunk kernel (``scan_chunks_exclusive``) although the flags are an
+    # elementwise map of the keys: that kernel loads its tile with ``wp.tile_load``, which is
+    # lane-independent, and forming the flags in it would build the tile from per-lane values,
+    # which collapses to one lane per block on the CPU device (CLAUDE.md section 12.2). The saving
+    # is one replayed node a pass, about half a percent of a decimation.
     i = wp.int32(wp.tid())
     start = wp.int32(0)
     if i < state[DECIMATION_FACES] * 3 and sorted_run_start(sorted_keys, i):
@@ -3633,9 +3628,12 @@ def compact_decimation_pass(
     prefix: wp.array[wp.int32],
     chunk_offsets: wp.array[wp.int32],
     dummy_vertex: wp.int32,
+    collapse_remap: wp.array[wp.int32],
+    source: wp.array[wp.int32],
+    index: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_vertices: wp.array[wp.vec3],
-    out_vertex_remap: wp.array[wp.int32],
+    out_source: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
 ) -> None:
     # Both compactions at once, publishing both counts. The exclusive scan of
@@ -3646,9 +3644,23 @@ def compact_decimation_pass(
     # A surviving face moves to its row with its corners already renumbered, and every row past the
     # survivors becomes the dummy triangle. Survivors move strictly left and are read from a
     # separate buffer, as the vertices are read from ``positions``, so nothing here can race.
+    #
+    # The pass's provenance rides the same threads when a caller asked for it (``index`` and
+    # ``out_source`` are empty otherwise, which is the whole selector):
+    #
+    # - a surviving face carries its source-face id to the row the face itself moved to. ``source``
+    #   is a copy of the column taken before this launch, because the column cannot be read and
+    #   written in one pass.
+    # - each *input* vertex's entry of ``index`` is composed with this pass, in place: an input
+    #   vertex sits at some live slot, the pass's collapse sends that slot to its survivor, and the
+    #   compaction renumbers the survivor (``compacted_vertex``, a pure function of the scan, so no
+    #   renumbering table is written first). Composing here rather than returning either map keeps
+    #   the map a single array of the *input* length -- fixed width, so the pass stays capturable --
+    #   instead of a chain of per-pass maps the caller would have to fold itself. ``index`` is
+    #   genuinely in place, which is why it carries no ``out_`` prefix.
     t = wp.int32(wp.tid())
     n_faces = out_faces.shape[0] // 3
-    n_vertices = out_vertex_remap.shape[0]
+    n_vertices = flags.shape[0] - n_faces
     kept_faces = scanned_prefix(prefix, chunk_offsets, n_faces)
     if t == 0:
         last = flags.shape[0] - 1
@@ -3669,46 +3681,16 @@ def compact_decimation_pass(
                 compacted_vertex(flags, prefix, chunk_offsets, n_faces, b),
                 compacted_vertex(flags, prefix, chunk_offsets, n_faces, c),
             )
+            if t < out_source.shape[0]:
+                out_source[row] = source[t]
         if t >= kept_faces:
             write_corner_triple(out_faces, t, dummy_vertex, dummy_vertex, dummy_vertex)
     if t < n_vertices:
         slot = compacted_vertex(flags, prefix, chunk_offsets, n_faces, t)
-        out_vertex_remap[t] = slot
         if slot >= 0:
             out_vertices[slot] = positions[t]
-
-
-@wp.kernel
-def compose_vertex_index(
-    collapse_remap: wp.array[wp.int32],
-    compaction_remap: wp.array[wp.int32],
-    index: wp.array[wp.int32],
-) -> None:
-    # Carry ``quadric_decimate``'s per-input-vertex provenance across one pass, in place: an input
-    # vertex sits at some live slot, the pass's collapse sends that slot to its survivor, and the
-    # compaction renumbers the survivor. Composing the two here rather than returning either one is
-    # what keeps the map a single array of the *input* length -- fixed width, so the pass stays
-    # capturable -- instead of a chain of per-pass maps the caller would have to fold itself.
-    #
-    # ``index`` is genuinely in place: it is both the pass's input and its result, so an ``out_``
-    # prefix would read as write-only (CLAUDE.md section 2.1's first exemption class).
-    i = wp.int32(wp.tid())
-    current = index[i]
-    if current >= 0:
-        index[i] = compaction_remap[collapse_remap[current]]
-
-
-@wp.kernel
-def compact_face_provenance(
-    source: wp.array[wp.int32],
-    flags: wp.array[wp.int32],
-    prefix: wp.array[wp.int32],
-    chunk_offsets: wp.array[wp.int32],
-    out_source: wp.array[wp.int32],
-) -> None:
-    # The companion of ``compact_decimation_pass`` for its provenance column: a face that survives
-    # carries its source-face id to the same slot the face itself moved to. Reads and writes are
-    # separate buffers for the same reason the compaction reads ``remapped``.
-    f = wp.int32(wp.tid())
-    if flags[f] != 0:
-        out_source[scanned_prefix(prefix, chunk_offsets, f)] = source[f]
+    if t < index.shape[0]:
+        current = index[t]
+        if current >= 0:
+            survivor = collapse_remap[current]
+            index[t] = compacted_vertex(flags, prefix, chunk_offsets, n_faces, survivor)

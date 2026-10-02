@@ -353,23 +353,30 @@ def refresh_pooled_operator(
 
 
 @wp.kernel
-def scaled_row_abs_sums(
+def scaled_rows_and_abs_sums(
     offsets: wp.array[wp.int32],
     values: wp.array[wp.float64],
     weight_sums: wp.array[wp.float64],
+    out_scaled: wp.array[wp.float64],
     out_ratio: wp.array[wp.float64],
 ) -> None:
-    # One thread per row of a CSR ``L``, writing ``sum_j |L_ij| / D_i``: the Gershgorin radius plus
-    # centre of row ``i`` of ``D^-1 L``, whose maximum bounds that operator's spectrum from above.
+    # One thread per row of a CSR ``L``, in one walk of the row: the values of ``D^-1 L`` (each
+    # row scaled by ``array.inverse_or_one`` of ``D_i``, ``algorithms/multigrid.scale_rows``' rule)
+    # and ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``,
+    # whose maximum bounds that operator's spectrum from above.
     # ``linalg.SquaredLaplacianPreconditioner`` fits its polynomial to that bound. With ``D`` the
     # diagonal of ``L`` it is ``1 + offdiagonal_dominance_rows``' ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
     # ratio is not, and an interval fitted short of the spectrum amplifies what it should invert.
     i = wp.int32(wp.tid())
+    weight = weight_sums[i]
+    scale = wp.float64(1.0) * inverse_or_one(weight)
     total = wp.float64(0.0)
     for e in range(offsets[i], offsets[i + 1]):
-        total += wp.abs(values[e])
-    out_ratio[i] = total / weight_sums[i]
+        value = values[e]
+        total += wp.abs(value)
+        out_scaled[e] = value * scale
+    out_ratio[i] = total / weight
 
 
 @wp.kernel

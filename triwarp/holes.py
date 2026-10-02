@@ -1448,7 +1448,7 @@ def extend_hole(
     if packed is None:
         return _launch.clone(vertices), _launch.clone(faces)
     origins = _launch.full(packed.n_loops, plane_origin, dtype=wp.vec3, device=faces.device)
-    return _extend_packed_rims(vertices, faces, packed, plane_normal, origins)
+    return _extend_packed_rims(vertices, faces, packed, plane_normal, origins=origins)
 
 
 def build_bottom(
@@ -1525,15 +1525,10 @@ def build_bottom(
         inputs=[vertices, packed.flat_loops, packed.loop_id, direction, extremes],
         device=device,
     )
-    origins = _launch.empty(packed.n_loops, dtype=wp.vec3, device=device)
-    _launch.map(
-        kernel_holes.plane_origin_from_extreme,
-        extremes,
-        direction,
-        wp.float32(hole_extension),
-        out=origins,
+    # Each rim's plane origin is formed from its extreme as the extension reads it.
+    return _extend_packed_rims(
+        vertices, faces, packed, direction, extremes=extremes, extension=hole_extension
     )
-    return _extend_packed_rims(vertices, faces, packed, direction, origins)
 
 
 def _packed_rims(
@@ -1563,9 +1558,17 @@ def _extend_packed_rims(
     faces: wp.array[wp.int32],
     rims: _PackedLoops,
     plane_normal: wp.vec3,
-    plane_origins: wp.array[wp.vec3],
+    *,
+    origins: wp.array[wp.vec3] | None = None,
+    extremes: wp.array[wp.float32] | None = None,
+    extension: float = 0.0,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """Project every packed rim vertex onto its loop's plane and bridge the two rings."""
+    """
+    Project every packed rim vertex onto its loop's plane and bridge the two rings.
+
+    Each loop's plane passes through ``origins[loop]``, or -- given ``extremes`` instead -- through
+    ``plane_normal * (extremes[loop] - extension)``.
+    """
     device = faces.device
     total = rims.total
     n_vertices = vertices.size
@@ -1583,7 +1586,9 @@ def _extend_packed_rims(
             rims.loop_id,
             rims.offsets,
             plane_normal,
-            plane_origins,
+            origins,
+            extremes,
+            wp.float32(extension),
             wp.int32(n_vertices),
             extended_vertices[n_vertices:],
             twt.as_dense(extended_faces[3 * n_faces :]).reshape((2 * total, 3)),
@@ -2196,32 +2201,28 @@ def stitch_loops(
         raise ValueError(f"each boundary loop must have at least 3 vertices, got {n} and {m}")
     n_vertices_a = vertices_a.size
 
-    # Reverse loop A so both rims wind the same way, then take rim positions.
-    flipped_loop_a = _launch.empty(n, dtype=wp.int32, device=device)
+    # Rim positions, loop A reversed so both rims wind the same way. Everything below reads loop A
+    # reversed (``kernels/holes.rim_vertex``): neither the reversed nor the rolled loops are
+    # written.
+    a_pos = _launch.empty(n, dtype=wp.vec3, device=device)
+    b_pos = _launch.empty(m, dtype=wp.vec3, device=device)
     _launch.launch(
-        kernel_holes.cyclic_gather,
-        dim=n,
-        inputs=[loop_a, wp.int32(n), wp.int32(0), wp.bool(True), wp.int32(0), flipped_loop_a],
-        device=device,
-    )
-    a_pos = tw.array.gather(vertices_a, flipped_loop_a)
-    b_pos = tw.array.gather(vertices_b, loop_b)
-
-    # perimeters[i, j] = |a_i - b_j| + |a_{i+1} - b_j| for A-edge i and B-vertex j.
-    perimeters = twt.empty_2d((n, m), wp.float32, device=device)
-    _launch.launch(
-        kernel_holes.boundary_perimeters,
-        dim=(n, m),
-        inputs=[a_pos, b_pos, wp.int32(n), perimeters],
+        kernel_holes.stitch_rim_positions,
+        dim=n + m,
+        inputs=[vertices_a, loop_a, vertices_b, loop_b],
+        outputs=[a_pos, b_pos],
         device=device,
     )
 
+    # Each A edge's best B vertex by the perimeter |a_i - b_j| + |a_{i+1} - b_j|.
     col_min = _launch.empty(n, dtype=wp.int32, device=device)
     val_min = _launch.empty(n, dtype=wp.float32, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_holes.row_argmin,
-        dim=n,
-        inputs=[perimeters, wp.int32(m), col_min, val_min],
+        dim=[n],
+        inputs=[a_pos, b_pos, wp.int32(n), wp.int32(m), kernel_holes.LOOP_PAIR_PERIMETER],
+        outputs=[col_min, val_min],
+        block_dim=kernel_holes.ROW_ARGMIN_BLOCK,
         device=device,
     )
 
@@ -2272,7 +2273,8 @@ def stitch_loops(
             kernel_holes.resolve_corrections,
             dim=1,
             inputs=[
-                perimeters,
+                a_pos,
+                b_pos,
                 _launch.array(unsorted_indices.astype(np.int32), dtype=wp.int32, device=device),
                 _launch.array(next_indices.astype(np.int32), dtype=wp.int32, device=device),
                 wp.int32(unsorted_indices.size),
@@ -2285,55 +2287,27 @@ def stitch_loops(
             device=device,
         )
 
-    # Rolled loops referencing the concatenated vertex buffer (A first, then B offset).
-    roll_a = _launch.empty(n, dtype=wp.int32, device=device)
+    # The band, referencing the concatenated vertex buffer (A first, then B offset).
+    bridge = _launch.empty(3 * (n + m), dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_holes.cyclic_gather,
-        dim=n,
+        kernel_holes.bridge_faces,
+        dim=n + m,
         inputs=[
-            flipped_loop_a,
-            wp.int32(n),
-            wp.int32(row_roll),
-            wp.bool(False),
-            wp.int32(0),
-            roll_a,
-        ],
-        device=device,
-    )
-    roll_b = _launch.empty(m, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.cyclic_gather,
-        dim=m,
-        inputs=[
+            loop_a,
             loop_b,
-            wp.int32(m),
+            out_edge,
+            wp.int32(row_roll),
             wp.int32(col_roll),
-            wp.bool(False),
             wp.int32(n_vertices_a),
-            roll_b,
         ],
-        device=device,
-    )
-
-    bridge_a = _launch.empty(3 * n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.bridge_a_faces,
-        dim=n,
-        inputs=[roll_a, roll_b, out_edge, wp.int32(n), bridge_a],
-        device=device,
-    )
-    bridge_b = _launch.empty(3 * m, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.bridge_b_faces,
-        dim=m,
-        inputs=[roll_a, roll_b, out_edge, wp.int32(n), wp.int32(m), bridge_b],
+        outputs=[bridge],
         device=device,
     )
 
     combined_vertices, combined_faces = tw.combine.concatenate(
         [(vertices_a, faces_a), (vertices_b, faces_b)]
     )
-    return combined_vertices, tw.array.concatenate([combined_faces, bridge_a, bridge_b])
+    return combined_vertices, tw.array.concatenate([combined_faces, bridge])
 
 
 def _non_increasing_indices(numbers: np.ndarray) -> np.ndarray:
@@ -2580,33 +2554,29 @@ def _closest_loop_pair(a_pos: wp.array[wp.vec3], b_pos: wp.array[wp.vec3]) -> tu
     """
     Return the closest vertex pair ``(i, j)`` between the two rims: the band's start pair.
 
-    The full ``(n_a, n_b)`` squared-distance matrix and its argmin run in Warp kernels (the same
-    ``row_argmin`` / ``global_argmin`` reduction the greedy zippering uses); only the two winning
-    indices come back to the host. Ties resolve to the smallest ``i`` then smallest ``j``, matching
-    ``numpy.argmin`` on the flattened matrix.
+    Each rim-A vertex's nearest rim-B vertex and the argmin over those run in Warp kernels (the
+    same ``row_argmin`` / ``global_argmin`` reduction the greedy zippering uses, at the squared
+    distance rather than the perimeter); only the two winning indices come back to the host. Ties
+    resolve to the smallest ``i`` then smallest ``j``, matching ``numpy.argmin`` on the flattened
+    squared-distance matrix, which is never built.
 
     ``kernels/holes.reduce_closest_cross_label_pair`` answers the same question in **one** kernel
-    with no matrix at all, by reducing a ``pack_nearest_key`` atomic over labelled members, but the
-    two are not one function wearing two hats: that kernel takes members and labels over a shared
-    vertex buffer, this takes two separate position arrays, and the three launches here reuse
-    ``row_argmin`` / ``global_argmin``, which the caller needs anyway for its *perimeter* objective.
+    by reducing a ``pack_nearest_key`` atomic over labelled members, but the two are not one
+    function wearing two hats: that kernel takes members and labels over a shared vertex buffer,
+    this takes two separate position arrays, and the launches here reuse ``row_argmin`` /
+    ``global_argmin``, which the caller needs anyway for its *perimeter* objective.
     """
     device = a_pos.device
     n_a = a_pos.size
     n_b = b_pos.size
-    dist_sq = twt.empty_2d((n_a, n_b), wp.float32, device=device)
-    _launch.launch(
-        kernel_holes.pair_sq_distances,
-        dim=(n_a, n_b),
-        inputs=[a_pos, b_pos, dist_sq],
-        device=device,
-    )
     col_min = _launch.empty(n_a, dtype=wp.int32, device=device)
     val_min = _launch.empty(n_a, dtype=wp.float32, device=device)
-    _launch.launch(
+    _launch.launch_tiled(
         kernel_holes.row_argmin,
-        dim=n_a,
-        inputs=[dist_sq, wp.int32(n_b), col_min, val_min],
+        dim=[n_a],
+        inputs=[a_pos, b_pos, wp.int32(n_a), wp.int32(n_b), kernel_holes.LOOP_PAIR_SQ_DISTANCE],
+        outputs=[col_min, val_min],
+        block_dim=kernel_holes.ROW_ARGMIN_BLOCK,
         device=device,
     )
     pair = _launch.empty(2, dtype=wp.int32, device=device)

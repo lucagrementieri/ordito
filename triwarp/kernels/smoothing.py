@@ -1,6 +1,6 @@
 import warp as wp
 
-from triwarp.kernels.array import inverse_or_one, to_vec3d
+from triwarp.kernels.array import inverse_or_one, sort_segment, to_vec3d
 from triwarp.kernels.laplacian import face_half_cotangents, operator_row
 from triwarp.kernels.linalg import free_row, selected_row, solve_normal_equations
 from triwarp.kernels.predicates import closest_point_on_segment, plane_basis
@@ -173,6 +173,26 @@ def free_pattern_counts(
     # sparsity of the fixed-rim system ``D - W`` and of the smooth solve's square block ``L_ff``
     # alike. ``out_counts`` is the tail of the ``n_free + 1`` offsets buffer.
     v = wp.int32(wp.tid())
+    ri = selected_row(free_mask, free_map, v)
+    if ri >= 0:
+        out_counts[ri] = free_degree(offsets, incident, unique_edges, free_mask, v)
+
+
+@wp.kernel
+def sort_incidence_and_count_free_pattern(
+    offsets: wp.array[wp.int32],
+    incident: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    free_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    out_counts: wp.array[wp.int32],
+) -> None:
+    # ``free_pattern_counts`` over an incidence this same thread first puts in neighbour order
+    # (``array.sort_segment``, the ``sort_segments`` rule): the count reads only vertex ``v``'s own
+    # row, so the sort and the count are one pass. Every row is sorted, free or not, because the
+    # incidence is reused by the region's other solve. ``incident`` is sorted in place.
+    v = wp.int32(wp.tid())
+    sort_segment(offsets, incident, v)
     ri = selected_row(free_mask, free_map, v)
     if ri >= 0:
         out_counts[ri] = free_degree(offsets, incident, unique_edges, free_mask, v)
@@ -732,18 +752,30 @@ def scatter_free_solution(
 
 
 @wp.kernel
-def add_interior_mass_rhs(
+def interior_mass_rhs_and_seed(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     mass: wp.array[wp.float64],
     positions: wp.array[wp.vec3d],
     rhs: wp.array2d[wp.float64],
+    out_solution: wp.array2d[wp.float64],
 ) -> None:
-    # Add the linear term ``b_u = (M V)_u`` into the reduced right-hand side, which arrives holding
-    # only ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (that helper eliminates the pinned
-    # columns of a quadratic form, which has no linear term of its own). ``rhs`` is genuinely
-    # in-place -- an accumulator carrying that prior term in, not a fresh answer -- which is why it
-    # does not carry the ``out_`` prefix reserved for write-only outputs (CLAUDE.md section 2.1).
+    # The two per-free-vertex writes the implicit-fairing Dirichlet pass needs before its solve,
+    # from one read of the vertex:
+    #
+    # - Add the linear term ``b_u = (M V)_u`` into the reduced right-hand side, which arrives
+    #   holding only ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (that helper eliminates
+    #   the pinned columns of a quadratic form, which has no linear term of its own). ``rhs`` is
+    #   genuinely in-place -- an accumulator carrying that prior term in, not a fresh answer --
+    #   which is why it does not carry the ``out_`` prefix reserved for write-only outputs
+    #   (CLAUDE.md section 2.1).
+    # - Seed the reduced solve with the free vertices' *current* positions: the exact inverse of
+    #   ``scatter_free_positions`` below, and the counterpart of ``gather_free_positions`` above for
+    #   the ``fixed_mask`` partition and the float64 storage the implicit-fairing flow carries.
+    #   Seeding from the right-hand side instead would leave a vertex no face refers to at the
+    #   origin -- it has an all-zero row and so a zero right-hand side, and CG never writes its
+    #   entry -- which is the failure ``gather_free_positions`` exists to avoid on the region
+    #   solves.
     v = wp.int32(wp.tid())
     i = free_row(fixed_mask, free_map, v)
     if i < 0:
@@ -753,26 +785,6 @@ def add_interior_mass_rhs(
     rhs[0, i] = rhs[0, i] + m * p[0]
     rhs[1, i] = rhs[1, i] + m * p[1]
     rhs[2, i] = rhs[2, i] + m * p[2]
-
-
-@wp.kernel
-def gather_free_positions_2d(
-    fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    positions: wp.array[wp.vec3d],
-    out_solution: wp.array2d[wp.float64],
-) -> None:
-    # Seed the reduced solve with the free vertices' *current* positions: the exact inverse of
-    # ``scatter_free_positions`` below, and the counterpart of ``gather_free_positions`` above for
-    # the ``fixed_mask`` partition and the float64 storage the implicit-fairing flow carries.
-    # Seeding from the right-hand side instead would leave a vertex no face refers to at the
-    # origin -- it has an all-zero row and so a zero right-hand side, and CG never writes its
-    # entry -- which is the failure ``gather_free_positions`` exists to avoid on the region solves.
-    v = wp.int32(wp.tid())
-    i = free_row(fixed_mask, free_map, v)
-    if i < 0:
-        return
-    p = positions[v]
     out_solution[0, i] = p[0]
     out_solution[1, i] = p[1]
     out_solution[2, i] = p[2]
@@ -947,6 +959,12 @@ def mut_dif_adil_pass(
     out_adil[i] = wp.float64(1.0) / wp.max(wp.float64(1e-12), residual)
 
 
+@wp.func
+def add_scaled_normal(v_prev: wp.vec3d, normal: wp.vec3, scale: wp.float64) -> wp.vec3d:
+    # v' = v + scale * N; reused for the eps finite-difference probe and the volume correction.
+    return v_prev + scale * to_vec3d(normal)
+
+
 @wp.kernel
 def mut_dif_step_scaled(
     positions: wp.array[wp.vec3d],
@@ -955,30 +973,32 @@ def mut_dif_step_scaled(
     adil_sum: wp.array[wp.float64],
     inv_n: wp.float64,
     lamb: wp.float64,
+    normals: wp.array[wp.vec3],
+    probe_scale: wp.float64,
     out_next: wp.array[wp.vec3d],
+    out_probe: wp.array[wp.vec3d],
 ) -> None:
     # ``mut_dif_step`` with the mean coefficient read from a device scalar (adil_sum[0] * inv_n),
     # so the smoothing loop never synchronises with the host. A real kernel rather than wp.map:
     # the length-1 ``adil_sum`` is a uniform argument, which wp.map cannot broadcast.
+    #
+    # A non-empty ``out_probe`` (the volume constraint's first pass) also receives the stepped
+    # vertex offset by ``probe_scale`` along its normal: the finite-difference probe
+    # ``mut_dif_volume_correct`` calibrates its slope against, formed from the value this thread
+    # has just computed rather than read back by a map of its own.
     i = wp.int32(wp.tid())
     mean_adil = adil_sum[0] * inv_n
-    out_next[i] = mut_dif_step(positions[i], lv[i], adil[i], mean_adil, lamb)
+    stepped = mut_dif_step(positions[i], lv[i], adil[i], mean_adil, lamb)
+    out_next[i] = stepped
+    if out_probe.shape[0] > 0:
+        out_probe[i] = add_scaled_normal(stepped, normals[i], probe_scale)
 
 
 @wp.func
-def add_scaled_normal(v_prev: wp.vec3d, normal: wp.vec3, scale: wp.float64) -> wp.vec3d:
-    # v' = v + scale * N; reused for the eps finite-difference probe and the volume correction.
-    return v_prev + scale * to_vec3d(normal)
-
-
-@wp.kernel
 def mut_dif_volume_slope(
-    volume_base: wp.array[wp.float64],
-    volume_probe: wp.array[wp.float64],
-    eps: wp.float64,
-    out_slope: wp.array[wp.float64],
-) -> None:
-    # dim=1. The finite-difference slope d(offset)/d(volume), calibrated once from the first pass's
+    volume_base: wp.array[wp.float64], volume_probe: wp.array[wp.float64], eps: wp.float64
+) -> wp.float64:
+    # The finite-difference slope d(offset)/d(volume), calibrated once from the first pass's
     # volume and the volume of the same mesh offset by ``eps`` along its normals. Formed here rather
     # than on the host because the only reason to read the two volumes back was to divide them --
     # one pipeline drain per calibration, and the correction below needs them on the device anyway.
@@ -988,12 +1008,10 @@ def mut_dif_volume_slope(
     # that with a slope of exactly zero rather than an infinity. So does this -- as a branch and
     # not a ``wp.where``, which evaluates both arms and would divide by the zero before discarding
     # the result.
-    _ = wp.int32(wp.tid())
     delta = volume_probe[0] - volume_base[0]
     if delta == wp.float64(0.0):
-        out_slope[0] = wp.float64(0.0)
-        return
-    out_slope[0] = eps / delta
+        return wp.float64(0.0)
+    return eps / delta
 
 
 @wp.kernel
@@ -1001,6 +1019,9 @@ def mut_dif_volume_correct(
     normals: wp.array[wp.vec3],
     volume_initial: wp.array[wp.float64],
     volume_current: wp.array[wp.float64],
+    volume_probe: wp.array[wp.float64],
+    eps: wp.float64,
+    calibrate: wp.int32,
     slope: wp.array[wp.float64],
     out_positions: wp.array[wp.vec3d],
 ) -> None:
@@ -1012,8 +1033,20 @@ def mut_dif_volume_correct(
     # replaces did: at a zero slope it applied an offset of exactly zero rather than skipping, and
     # ``v + 0 * N`` is the same value for every finite ``N``. The two therefore agree on a
     # degenerate mesh as well as on an ordinary one, which is the property that matters.
+    #
+    # The first pass (``calibrate != 0``, warp-uniform) calibrates the slope itself: every thread
+    # forms it from the two device volumes (``mut_dif_volume_slope``) rather than reading it, and
+    # thread 0 keeps it in ``slope`` for the later passes -- one division per thread against a
+    # ``dim=1`` launch, the ``damped_inverse_diagonal`` trade.
     v = wp.int32(wp.tid())
-    offset = slope[0] * (volume_initial[0] - volume_current[0])
+    s = wp.float64(0.0)
+    if calibrate != 0:
+        s = mut_dif_volume_slope(volume_current, volume_probe, eps)
+        if v == 0:
+            slope[0] = s
+    else:
+        s = slope[0]
+    offset = s * (volume_initial[0] - volume_current[0])
     out_positions[v] = add_scaled_normal(out_positions[v], normals[v], offset)
 
 

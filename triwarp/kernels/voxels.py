@@ -12,7 +12,7 @@ NanoVDB voxel ``i`` covering world ``[origin + i * s, origin + (i + 1) * s)``, s
 
 **Two halves of this module convert between cells and world positions differently, and the split is
 deliberate.** Every kernel *downstream* of a built grid -- ``point_cell``,
-``cell_center_positions``, ``corner_positions`` -- goes through ``wp.volume_world_to_index`` /
+``cell_center_positions``, ``corner_position`` -- goes through ``wp.volume_world_to_index`` /
 ``wp.volume_index_to_world``, so the convention above is read off the object that defines it
 instead of re-implemented. The *voxelization* kernels -- ``voxel_cell``, ``voxel_cell_indices``,
 ``triangle_voxel_window`` -- run before any volume exists: they produce the cells
@@ -860,18 +860,26 @@ def flood_hook(occupancy: wp.array3d[wp.bool], parents: wp.array[wp.int32]) -> N
 
 
 @wp.kernel
-def mark_outside_roots(
-    occupancy: wp.array3d[wp.bool], labels: wp.array[wp.int32], out_outside: wp.array[wp.bool]
+def flatten_and_mark_outside(
+    occupancy: wp.array3d[wp.bool],
+    parents: wp.array[wp.int32],
+    out_labels: wp.array[wp.int32],
+    out_outside: wp.array[wp.bool],
 ) -> None:
-    # The padded shell is empty by construction, so its components are exactly the "outside".
+    # ``connected_components.ecl_flatten`` over the flood forest, plus the outside marking it
+    # feeds: the padded shell is empty by construction, so its components are exactly the
+    # "outside", and an empty shell cell marks its own component's root as the label is found
+    # rather than reading the labels back in a second pass. ``parents`` is compressed in place by
+    # the finds, the benign race ``find_representative`` documents.
     i, j, k = wp.tid()
     nx = occupancy.shape[0]
     ny = occupancy.shape[1]
     nz = occupancy.shape[2]
+    label = find_representative(parents, flat_cell_index(i, j, k, ny, nz))
+    out_labels[flat_cell_index(i, j, k, ny, nz)] = label
     on_shell = i == 0 or j == 0 or k == 0 or i == nx - 1 or j == ny - 1 or k == nz - 1
-    if not on_shell or occupancy[i, j, k]:
-        return
-    out_outside[labels[flat_cell_index(i, j, k, ny, nz)]] = True
+    if on_shell and not occupancy[i, j, k]:
+        out_outside[label] = True
 
 
 @wp.func
@@ -986,16 +994,13 @@ def cell_corner_indices(
         out_corners[v, c] = wp.volume_lookup_index(corner_volume, i, j, k)
 
 
-@wp.kernel
-def corner_positions(
-    volume: wp.uint64, corners: wp.array2d[wp.int32], out_positions: wp.array[wp.vec3]
-) -> None:
+@wp.func
+def corner_position(volume: wp.uint64, corners: wp.array2d[wp.int32], c: wp.int32) -> wp.vec3:
     # Corner ``(i, j, k)`` is the *lower* corner of cell ``(i, j, k)``. A cell is centred on its
     # integer index-space coordinate, so its lower corner sits half a voxel below on every axis --
     # which is a shift in *index* space, where it is the NanoVDB convention itself rather than a
     # constant re-derived from the grid's translation.
-    c = wp.int32(wp.tid())
-    out_positions[c] = wp.volume_index_to_world(
+    return wp.volume_index_to_world(
         volume,
         wp.vec3(
             wp.float32(corners[c, 0]) - 0.5,
@@ -1011,9 +1016,17 @@ def count_box_faces(
     voxels: wp.array2d[wp.int32],
     neighbors: wp.array2d[wp.int32],
     cull_internal: wp.bool,
+    corners: wp.array2d[wp.int32],
     out_counts: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
 ) -> None:
+    # Launched over ``max(n_corners, n_voxels)``: each corner's world position
+    # (``corner_position``) and each voxel's exposed-face count, independent writes in one launch.
     v = wp.int32(wp.tid())
+    if v < corners.shape[0]:
+        out_positions[v] = corner_position(volume, corners, v)
+    if v >= voxels.shape[0]:
+        return
     if not cull_internal:
         out_counts[v] = 6
         return

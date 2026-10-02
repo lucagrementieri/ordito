@@ -771,6 +771,12 @@ def distinct_from_predecessor(
     # Marks the survivors of a run of repeats, cyclically within each loop: a position is kept
     # unless it repeats its predecessor. The first position of a loop is always kept, so a run that
     # wraps the seam keeps its head.
+    #
+    # Launched per position, after ``array.segment_owner_labels`` writes each position's loop, not
+    # fused into that per-loop walk: the fused form (one thread per loop, testing its span as it
+    # walks) removes a launch and the owner table, and is identical, but measured 0.86x on
+    # ``shorten_loop`` over a genus-64 basis -- a loop is a serial chain of loads there, where this
+    # is one independent test per position.
     t = wp.int32(wp.tid())
     begin = loop_offsets[position_loop[t]]
     n = loop_offsets[position_loop[t] + 1] - begin

@@ -188,30 +188,54 @@ def corner_link(
     )
 
 
-@wp.kernel
-def build_corner_adjacency_edges(
+@wp.func
+def adjacency_corner_links(
     faces: wp.array[wp.int32],
     adjacency: wp.array2d[wp.int32],
     adjacency_edges: wp.array2d[wp.int32],
-    out_edges: wp.array2d[wp.int32],
-) -> None:
+    r: wp.int32,
+) -> tuple[wp.int32, wp.int32, wp.int32, wp.int32]:
     """
-    Two corner-graph edges per face-adjacency row (one per shared-edge endpoint).
+    Return the two corner-graph edges of face-adjacency row ``r``, one per shared-edge endpoint.
 
-    Corner node ``3 * f + k`` is the corner of face ``f`` at its local vertex ``k``.
-    Two faces sharing edge ``(a, b)`` fan-connect their ``a`` corners and their ``b``
-    corners, so the connected components of the corner graph are exactly the
-    edge-connected fans around each vertex.
+    Corner node ``3 * f + k`` is the corner of face ``f`` at its local vertex ``k``. Two faces
+    sharing edge ``(a, b)`` fan-connect their ``a`` corners and their ``b`` corners, so the
+    connected components of the corner graph are exactly the edge-connected fans around each
+    vertex. Shared by ``adjacency_corner_prehook`` and ``adjacency_corner_hook``, which form the
+    edges in the thread so no ``(2 m, 2)`` corner-edge table is written only to be read back
+    twice.
     """
-    r = wp.int32(wp.tid())
     f0 = adjacency[r, 0]
     f1 = adjacency[r, 1]
     a0, a1 = corner_link(faces, f0, f1, adjacency_edges[r, 0])
     b0, b1 = corner_link(faces, f0, f1, adjacency_edges[r, 1])
-    out_edges[2 * r, 0] = a0
-    out_edges[2 * r, 1] = a1
-    out_edges[2 * r + 1, 0] = b0
-    out_edges[2 * r + 1, 1] = b1
+    return a0, a1, b0, b1
+
+
+@wp.kernel
+def adjacency_corner_prehook(
+    faces: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    parents: wp.array[wp.int32],
+) -> None:
+    # ``connected_components.ecl_init_parent_edges`` over ``adjacency_corner_links``' two edges.
+    a0, a1, b0, b1 = adjacency_corner_links(faces, adjacency, adjacency_edges, wp.int32(wp.tid()))
+    ecl_prehook_pair(parents, a0, a1)
+    ecl_prehook_pair(parents, b0, b1)
+
+
+@wp.kernel
+def adjacency_corner_hook(
+    faces: wp.array[wp.int32],
+    adjacency: wp.array2d[wp.int32],
+    adjacency_edges: wp.array2d[wp.int32],
+    parents: wp.array[wp.int32],
+) -> None:
+    # ``connected_components.ecl_hook_edges`` over the same edges, after the pre-hook.
+    a0, a1, b0, b1 = adjacency_corner_links(faces, adjacency, adjacency_edges, wp.int32(wp.tid()))
+    ecl_hook_pair(parents, a0, a1)
+    ecl_hook_pair(parents, b0, b1)
 
 
 @wp.func
@@ -224,7 +248,7 @@ def sorted_corner_link(
     """
     Corner-graph edge of sorted halfedge position ``i``, plus ``sorted_pair_slot``'s run flag.
 
-    ``build_corner_adjacency_edges`` with no face-adjacency table between them. Both members of an
+    ``adjacency_corner_links`` with no face-adjacency table between them. Both members of an
     exact pair give one link each -- the pair's first shared-edge endpoint from its first member,
     the second from its second -- which are the two links the adjacency row would have produced,
     taken from the same first-member edge. Every other position gives the self-loop ``(i, i)``, a

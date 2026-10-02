@@ -2464,6 +2464,15 @@ re-deriving a number.
   is evidence about timing, not correctness**; a **component-swap bisection** (substitute one
   library component at a time into a clean pipeline) finds launch-ordering bugs line-level bisection
   cannot.
+    - **A debug build is `--device-debug` (-O0) and changes two things a release suite relies on.**
+      Registers: the one-block ear-clip, RDP and CG kernels go from 39-56 per thread to 163-255,
+      so a 512- or 1 024-lane block fails with CUDA error 701 (too many resources);
+      `_launch.launch_tiled` caps `block_dim` at `DEBUG_MAX_BLOCK_DIM = 256` in debug mode (255
+      registers x 256 lanes always fits; those kernels stride by `wp.block_dim()`). FMA: -G does
+      not contract despite `--fmad=true`, so an exact-float comparison against an optimized
+      reference moves by an ulp (`test_marching_cubes_matches_pytorch3d`, 9.5e-7 at lattice
+      coordinates 8-16, reproduced in release with `fuse_fp=False` on `warp._src.marching_cubes`).
+      Read that failure as expected under debug, not as a defect.
 - **A `wp.Mesh` with zero triangles silently corrupts CUDA allocator state.** The constructor
   succeeds; the *next* unrelated CUDA allocation fails with a spurious OOM and cascades into `CUDA
   error 700`. Only `indices.shape[0] == 0` matters. Safe on `cpu`. Never construct one on CUDA,
@@ -3360,14 +3369,44 @@ The distinguishing variable is whether the grid stays full.
 own thread index are fusible, and the fused kernel is faster: every pair measured, at every size,
 1.04-3.46x** (one launch, one allocation and one global-memory round trip fewer).
 
-A tree-wide scan finds **93** runs of consecutive same-`dim` launches, **89** adjacent pairs passing
-the index-locality test (~120 lines of `ast`: walk each wrapper's launches, map argument expressions
-onto the kernel's parameter names, check every array the first kernel writes is read by the second
-only at a name bound from `wp.tid()`). Re-derive it rather than re-reading call sites. Its traps:
-locality is necessary and not sufficient; it does not follow `@wp.func` calls, does not see
-intervening host work (a `counts_to_offsets` scan between the launches), and a claim/commit
-independent-set pair is never fusible (commit must see every claim). Read both kernel bodies and the
-wrapper lines between.
+**The 2026-10-01 tree-wide audit** (every consecutive launch pair in every wrapper function: 217
+functions, 413 pairs) found the earlier 89-pair backlog worked through. About 375 pairs are
+blocked: ~150 because the consumer needs the producer's complete output (atomics, neighbour reads,
+reductions, union-find rounds, claim/commit), ~140 by host work between (scan, sort, readback,
+readback-sized allocation), ~55 by exclusive branches, ~20 because both sit in a replayed graph.
+About 14 carried a recorded decline. Of ~60 fusible pairs, 41 landed (byte-identical on CPU) and
+the rest are declined at their sites with the number. The scan is an `ast` walk mapping argument
+expressions onto kernel parameters (resolve kernels through the wrapper module's namespace at
+runtime, so `OverloadTable` entries and factories resolve); re-derive it rather than re-reading call
+sites. Its traps: locality is necessary and not sufficient; it does not follow `@wp.func` calls,
+does not see intervening host work or replayed graphs entered through a helper
+(`run_device_loop`), mislabels a scatter-then-per-vertex pair at different `dim`s as a candidate,
+and a claim/commit independent-set pair is never fusible (commit must see every claim). Read both
+kernel bodies and the wrapper lines between.
+
+The audit's verdicts that generalize:
+
+- **The biggest wins were never the pair the scan flagged but what it exposed**: dropping a
+  `bsr_copy` once the row walk wrote the scaled values (`SquaredLaplacianPreconditioner` 1.8-1.9x),
+  dropping an `(n_a, n_b)` cost matrix once the per-row argmin computed its own costs (`stitch`
+  3.15x at 16 384-vertex rims; the old matrix needed 17 GB at 65 536), and an MIS round going
+  4 -> 2 launches by forming keys from state on read (aggregation 1.35x).
+- **Removing a 2-D tabulation can lose its parallelism**: one thread per row walking the costs was
+  0.79x at 4 096-vertex rims; one block per row with lanes striding by `wp.block_dim()` and
+  `reduce.block_argmin` was 1.24x there and bit-identical (§2.2, §2.3).
+- **Forming a table entry on read costs a load per read**: on a *dependent* chase (pointer-jumping
+  ranking) the inline init lost 0.96x; on a serial per-loop walk (`geodesic_walk`'s repeat flags)
+  folding the owner labels lost 0.86x. Fold on read only where the read is independent.
+- **An argument added to a launch repeated per iteration can outweigh the launch it removes**
+  (~1 µs per argument, §13.1): declined at `filter_humphrey`-style fit loops.
+- **An F6 grid-share (two independent launches, one grid) is worth 1.00-1.08x on the call**; take it
+  where the branch is per block or per thread range and the bodies already exist as `@wp.func`s.
+- **A fusion that changes a slot or box index needs a bounds-checked run** (`wp.config.mode =
+  "debug"`): `array.atomic_min_packed_box` takes a *box index*, and passing the element offset 6
+  wrote past a 12-slot buffer. On CUDA it was silent and the A/B read identical (the probe's queries
+  sat inside the mesh box, so the unwritten box was never the extreme); on CPU it corrupted the
+  JIT's state and one run in four failed with `Failed to find forward kernel ... for device 'cpu'`.
+  Make the probe fixture exercise every slot a change writes.
 
 - **Measure the region, not the call that contains it** (§15.2). Whole-call A/B gave 1.02x and a
   25-row harness sweep 0.987-1.041x where the region itself is 1.04-2.65x and never slower. A cell
@@ -3858,6 +3897,9 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
       order nothing to decide); only an irregular-spacing fixture exposes it.
     - **The default `radius=0` auto-radius is nondeterministic**; the reproducibility claim is
       scoped to an explicit `radius=`. Do not "fix" the reduction without a caller that needs it.
+    - **Even with an explicit `radius=`, the CUDA face buffer is not reproducible on `bunny`**:
+      650-2 500 of 211 038 entries differ run to run (face count stable), measured 2026-10-01 on
+      the unchanged tree. `bunny_decimated` reproduces. Gate a ball-pivoting A/B on the CPU device.
     - **The seed kernel must not re-prove failures**: an attempt's outcome depends only on the
       stored neighbour list (`ball_is_empty` never reads `point_used`), so a point whose failed
       walk saw its *whole* neighbourhood can never succeed and returns at once
@@ -4408,6 +4450,14 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 
 ### 16.7 `sample`
 
+- **`sample_surface` / `sample_volume` draw `lower_bound(cdf, randf * total)` over the unnormalized
+  prefix sum** instead of normalizing the cdf by a map first (1.18-1.24x on `sample_surface`). Not
+  bit-identical to the normalized draw, and not meant to be: of 2 M draws on `bunny`, 351 move to
+  the adjacent face; against an exact float64 inverse transform of the same uniforms the normalized
+  form disagrees on 8 045 and this one on 7 930 (the float32 prefix scan dominates both); per-face
+  chi2/dof is 0.9873 for both. Seeded output is reproducible within a version and device, which is
+  all the contract and the tests claim. The draw must stay inline in the kernel: `randf` advances
+  `state` in place, and a `@wp.func` taking `state` advances a copy.
 - **Reach for randomized-priority selection whenever a GPU port needs a maximal-packing / MIS-shaped
   result.** `sample_surface_blue_noise` is randomized-priority parallel dart throwing, not
   Bridson: every pool point draws a priority, a point is accepted when no smaller-priority point

@@ -373,25 +373,12 @@ def thicken_mesh(
     n_rim = int(rim.shape[0])
 
     out_vertices = _launch.empty(2 * n_vertices, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_levelset.shell_vertices,
-        dim=n_vertices,
-        inputs=[vertices, normals, wp.float32(outside), wp.float32(thickness), out_vertices],
-        device=device,
-    )
-
     out_faces = _launch.empty(3 * (2 * n_faces + 2 * n_rim), dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_levelset.shell_faces,
-        dim=n_faces,
-        inputs=[faces, wp.int32(n_vertices), out_faces],
+        kernel_levelset.shell_mesh,
+        dim=n_vertices + n_faces + n_rim,
+        inputs=[vertices, normals, wp.float32(outside), wp.float32(thickness), faces, rim],
+        outputs=[out_vertices, out_faces],
         device=device,
     )
-    if n_rim > 0:
-        _launch.launch(
-            kernel_levelset.shell_band_faces,
-            dim=n_rim,
-            inputs=[rim, wp.int32(n_vertices), wp.int32(6 * n_faces), out_faces],
-            device=device,
-        )
     return out_vertices, out_faces
