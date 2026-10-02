@@ -3396,6 +3396,15 @@ _MULTIGRID_MIS_ROUNDS = 32
 # systems and both the setup and the solve, not a single system's clock.
 _MULTIGRID_THETA = 0.05
 
+# Triplet budget of one Galerkin-product assembly, as a multiple of the operator's stored entries
+# plus rows, and an absolute cap that keeps the ``int32`` scan of the counts clear of overflow. The
+# well-coarsened levels this hierarchy builds by default emit 1-3x their operator's size; a level
+# whose coarsening stalled goes nearly dense and the per-row products become quadratic in the row
+# length (a billion triplets on ``icosphere(6)`` at ``theta = 0.2``), so such a level falls back to
+# ``bsr_mm``, whose memory follows its output.
+_MULTIGRID_TRIPLET_FACTOR = 16
+_MULTIGRID_TRIPLET_CAP = 1 << 30
+
 
 class _MultigridLevel:
     """One level of the hierarchy: its operator, its smoother, and its link to the next."""
@@ -3671,53 +3680,97 @@ def _multigrid_galerkin(
     """
     Form the coarse operator ``P^T A P``, with its exactly-zero entries pruned.
 
-    ``A P`` is one ``bsr_mm``; ``P^T (A P)`` is assembled from each fine row's outer product of
-    its two sparse rows (``kernels/algorithms/multigrid.galerkin_triplets``), so no transpose is
-    multiplied and no second ``bsr_mm`` runs.
+    Two triplet assemblies and no sparse product: ``A P`` from its ``A_ij P_jl`` products
+    (``kernels/algorithms/multigrid.product_triplets``), then ``P^T (A P)`` from each fine row's
+    outer product of its two sparse rows (``galerkin_triplets``), so no transpose is multiplied.
 
-    Pruning is part of the algorithm, not tidying. ``bsr_mm`` returns a structural **superset**
-    of the product, the extra entries exactly zero and interspersed in column order; an explicit
-    zero at ``(i, c)`` would make coarse column ``c`` see fine row ``i``, so the next level's
-    product would inherit every aggregate reachable from it and operator complexity would blow up.
-    Here those zeros become zero-valued triplets, which the assembly skips, and an entry whose
-    triplets cancel exactly is dropped -- two summation orders can disagree on that, for a handful
-    of entries per million.
+    Pruning is part of the algorithm, not tidying: an explicit zero at ``(i, c)`` would make coarse
+    column ``c`` see fine row ``i``, so the next level's product would inherit every aggregate
+    reachable from it and operator complexity would blow up. Zero-valued triplets are skipped and
+    an entry whose triplets cancel exactly is dropped -- two summation orders can disagree on that,
+    for a handful of entries per million.
     """
-    device = matrix.device
     n = int(matrix.nrow)
     n_coarse = int(prolongator.ncol)
-    product = twt.bsr_mm(matrix, prolongator)
-    counts = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_mg.galerkin_triplet_counts,
-        dim=n,
-        inputs=[prolongator.offsets, product.offsets],
-        outputs=[counts],
-        device=device,
+    p = prolongator
+    # A level that coarsens badly goes nearly dense, and there the per-row products are quadratic
+    # in the row length where the product itself is not; past the budget a product takes
+    # ``bsr_mm`` instead, whose memory follows the output.
+    budget = min(_MULTIGRID_TRIPLET_FACTOR * (int(matrix.nnz) + n), _MULTIGRID_TRIPLET_CAP)
+    product = _row_triplet_assembly(
+        matrix.device,
+        n,
+        n_coarse,
+        kernel_mg.product_triplet_counts,
+        [matrix.offsets, matrix.columns, p.offsets],
+        kernel_mg.product_triplets,
+        [matrix.offsets, matrix.columns, matrix.values, p.offsets, p.columns, p.values],
+        budget=budget,
     )
-    starts, total = tw.array.counts_to_offsets(counts)
+    if product is None:
+        product = twt.bsr_mm(matrix, p)
+    galerkin = _row_triplet_assembly(
+        matrix.device,
+        n,
+        n_coarse,
+        kernel_mg.galerkin_triplet_counts,
+        [p.offsets, product.offsets],
+        kernel_mg.galerkin_triplets,
+        [p.offsets, p.columns, p.values, product.offsets, product.columns, product.values],
+        budget=budget,
+        out_rows=n_coarse,
+    )
+    if galerkin is None:
+        # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here.
+        galerkin = _synced(
+            twt.bsr_compress(twt.bsr_mm(twt.bsr_transposed(p), product), prune_numerical_zeros=True)
+        )
+    return galerkin
+
+
+def _row_triplet_assembly(
+    device: wp.DeviceLike,
+    n: int,
+    n_cols: int,
+    count_kernel: twt.Kernel,
+    count_inputs: Sequence[object],
+    triplet_kernel: twt.Kernel,
+    triplet_inputs: Sequence[object],
+    *,
+    budget: int,
+    out_rows: int | None = None,
+) -> twt.BsrMatrix[wp.float64] | None:
+    """
+    Sum the triplets ``n`` fine rows emit into a pruned, ``nnz``-synced CSR.
+
+    Each row's thread counts its triplets (``count_kernel`` writes ``counts[i + 1]`` and a leading
+    zero, in ``int64``), the counts are scanned in place into starts, and ``triplet_kernel`` writes
+    row ``i``'s triplets from ``starts[i]``. The result has ``out_rows`` rows (``n`` by default)
+    and ``n_cols`` columns. ``None``, with nothing allocated past the counts, when the triplets
+    would number more than ``budget``.
+    """
+    # Counted and scanned in 64 bits: the budget test must see the true total, which an ``int32``
+    # scan wraps on a dense level.
+    starts = _launch.empty(n + 1, dtype=wp.int64, device=device)
+    _launch.launch(count_kernel, dim=n, inputs=count_inputs, outputs=[starts], device=device)
+    _launch.array_scan(starts, starts, inclusive=True)
+    # The total sizes the triplet buffers, and decides the fallback.
+    total = int(read_scalar(starts, n))
+    if total > budget:
+        return None
     rows = _launch.empty(total, dtype=wp.int32, device=device)
     cols = _launch.empty(total, dtype=wp.int32, device=device)
     values = _launch.empty(total, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_mg.galerkin_triplets,
+        triplet_kernel,
         dim=n,
-        inputs=[
-            prolongator.offsets,
-            prolongator.columns,
-            prolongator.values,
-            product.offsets,
-            product.columns,
-            product.values,
-            starts,
-        ],
+        inputs=[*triplet_inputs, starts],
         outputs=[rows, cols, values],
         device=device,
     )
+    n_out = n if out_rows is None else out_rows
     return _synced(
-        tw.array.csr_from_triplets(
-            n_coarse, n_coarse, rows, cols, values, prune_numerical_zeros=True
-        )
+        tw.array.csr_from_triplets(n_out, n_cols, rows, cols, values, prune_numerical_zeros=True)
     )
 
 

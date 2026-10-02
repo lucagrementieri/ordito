@@ -930,6 +930,35 @@ def test_multigrid_preconditioner_is_symmetric(device: str) -> None:
     assert not np.allclose(applied_left.numpy(), left_np)
 
 
+@pytest.mark.parametrize("k", [24, 40])
+def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
+    device: str, monkeypatch: pytest.MonkeyPatch, k: int
+) -> None:
+    """
+    Triwarp against triwarp: the triplet products and their ``bsr_mm`` fallback agree.
+
+    The fallback runs only on a level whose coarsening stalled, which no default-threshold system
+    in this suite reaches, so it is forced by a zero budget. The triplet path carries the oracle
+    (the convergence tests above). Equal shapes and coarse operators to rounding, level by level,
+    exclude a fallback that drops the pruning (the coarse levels would gain explicit zeros and
+    the shapes would still match, so the patterns are compared too) or multiplies the wrong
+    pair.
+    """
+    matrix_wp, _rhs, _dense_np, _rhs_np = _grid_laplacian_system(device, k=k)
+    triplet = tw.linalg._multigrid_hierarchy(matrix_wp, 0)
+    monkeypatch.setattr(tw.linalg, "_MULTIGRID_TRIPLET_FACTOR", 0)
+    fallback = tw.linalg._multigrid_hierarchy(matrix_wp, 0)
+    assert triplet is not None
+    assert fallback is not None
+    assert len(triplet[0]) == len(fallback[0]) >= 2
+    for level_triplet, level_fallback in zip(triplet[0][1:], fallback[0][1:], strict=True):
+        dense_triplet = bsr_to_dense(level_triplet.operator, level_triplet.n)
+        dense_fallback = bsr_to_dense(level_fallback.operator, level_fallback.n)
+        assert dense_triplet.shape == dense_fallback.shape
+        assert np.allclose(dense_triplet, dense_fallback, rtol=1e-12, atol=1e-12)
+        assert level_triplet.operator.nnz_sync() == level_fallback.operator.nnz_sync()
+
+
 def test_multigrid_preconditioner_needs_fewer_iterations(device: str) -> None:
     """
     Not a library comparison: this is the *reason* the mode exists, stated as an assertion.

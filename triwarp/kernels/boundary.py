@@ -1,7 +1,13 @@
 import warp as wp
 
 from triwarp.kernels.adjacency import edge_endpoints
-from triwarp.kernels.array import loop_rim_edge, pack_ranked_key, scanned_count, wrap_index
+from triwarp.kernels.array import (
+    loop_rim_edge,
+    merge_window_minimum,
+    pack_ranked_key,
+    scanned_count,
+    wrap_index,
+)
 from triwarp.kernels.grouping import sorted_run_of_length
 from triwarp.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
 
@@ -349,8 +355,7 @@ def closed_cycle_jump(
 ) -> None:
     # One further round: ``hops`` adjacent windows of length ``window`` merged into one, chased
     # through the previous round's table (ping-ponged, so no thread reads a window merged this
-    # round). The minimum keeps its first occurrence -- strict ``<`` -- so the hop count is the
-    # distance to the earliest one.
+    # round), under ``array.merge_window_minimum``'s first-occurrence rule.
     v = tails[wp.tid()]
     own = windows[v]
     current = own[0]
@@ -360,9 +365,7 @@ def closed_cycle_jump(
     for _ in range(hops - 1):
         if current >= 0:
             other = windows[current]
-            if other[1] < start:
-                start = other[1]
-                dist = offset + other[2]
+            start, dist = merge_window_minimum(start, dist, other[1], other[2], offset)
             offset += window
             current = other[0]
     out_windows[v] = wp.vec3i(current, start, dist)

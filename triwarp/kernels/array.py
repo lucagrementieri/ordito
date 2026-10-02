@@ -119,6 +119,24 @@ def wrap_index(i: wp.int32, n: wp.int32) -> wp.int32:
 
 
 @wp.func
+def merge_window_minimum(
+    lowest: wp.int32,
+    offset: wp.int32,
+    window_lowest: wp.int32,
+    window_offset: wp.int32,
+    window_start: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # The merge rule of every multi-hop pointer-jumping ranking (``boundary.closed_cycle_jump``,
+    # ``intersection.link_rank_round``): fold a later window, which begins ``window_start`` hops
+    # into the merged one, into the running ``(lowest, offset)``. The strict ``<`` keeps the
+    # *first* occurrence of the minimum, which is what makes ``offset`` the hop count to it -- a
+    # ``<=`` would move every tied cycle's start to its last occurrence.
+    if window_lowest < lowest:
+        return window_lowest, window_start + window_offset
+    return lowest, offset
+
+
+@wp.func
 def loop_point(k: wp.int32, n: wp.int32) -> wp.int32:
     # Point index of entry ``k`` in ``[0, n]`` of a closed loop's ``n + 1`` entries, the last being
     # the first point again -- ``wrap_index`` for an index known to be at most ``n``, as a select

@@ -803,10 +803,10 @@ def face_flip_mask(
     """
     Per-face flag: whether a face must be flipped to make winding consistent within its patch.
 
-    Runs the Z2 orientation propagation over the face-adjacency graph (seeding one arbitrary
-    reference face per connected component) and returns ``True`` for every face whose winding
-    disagrees with its component's seed. Applying these flips yields a consistently wound mesh, so
-    this is the per-face flip mask consumed by
+    Runs the Z2 orientation propagation over the face-adjacency graph and returns ``True`` for
+    every face whose winding disagrees with its connected component's seed, the component's
+    lowest-indexed face (whose own entry is therefore always ``False``). Applying these flips
+    yields a consistently wound mesh, so this is the per-face flip mask consumed by
     [`make_winding_consistent`][triwarp.repair.make_winding_consistent]. A mesh that is already
     consistently wound yields an all-``False`` mask.
 
@@ -834,8 +834,10 @@ def face_flip_mask(
 
     Notes
     -----
-    The reference orientation is arbitrary per connected component, so on a non-orientable patch the
-    mask is still a best-effort flood-fill (matching ``trimesh.repair.fix_winding``).
+    On an orientable mesh the mask is a deterministic function of ``faces``: each component keeps
+    its lowest-indexed face's winding, on either device. On a non-orientable patch no consistent
+    winding exists and the mask is a best-effort flood-fill (matching
+    ``trimesh.repair.fix_winding``), which on CUDA can differ between runs.
 
     This is a different flip from
     [`face_flipped_mask`][triwarp.parametrization.face_flipped_mask], which is about the *UV

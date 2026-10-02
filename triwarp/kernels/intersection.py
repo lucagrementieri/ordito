@@ -1448,8 +1448,8 @@ def link_rank_round(
     state: wp.array[wp.vec4i], hops: wp.int32, width: wp.int32, out_state: wp.array[wp.vec4i]
 ) -> None:
     # One multi-hop pointer-jumping round: merge the ``hops`` consecutive windows of ``width``
-    # segments starting here into one of ``hops * width``. The strict ``<`` keeps the *first*
-    # occurrence of the window's minimum, which is what makes ``offset`` the hop count to it.
+    # segments starting here into one of ``hops * width``, under ``array.merge_window_minimum``'s
+    # first-occurrence rule.
     i = wp.int32(wp.tid())
     own = state[i]
     ahead = own[0]
@@ -1458,9 +1458,9 @@ def link_rank_round(
     steps = own[3]
     for k in range(1, hops):
         window = state[ahead]
-        if window[1] < lowest:
-            lowest = window[1]
-            offset = k * width + window[2]
+        lowest, offset = kernel_array.merge_window_minimum(
+            lowest, offset, window[1], window[2], k * width
+        )
         steps = steps + window[3]
         ahead = window[0]
     out_state[i] = wp.vec4i(ahead, lowest, offset, steps)

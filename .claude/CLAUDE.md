@@ -3869,8 +3869,10 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   size**, so each level costs ~8x and the CPU test depth is one lower than CUDA's. **Error is not
   monotone in depth** (past some depth the octree resolves sampling noise), so never assert
   "finer depth reduces error".
-- **OPEN: `screened_poisson(point_weight=0.0)` returns a handful of zero-area triangles every
-  run** — the only reconstruction entry point with no degenerate-face cleanup pass (§7.7).
+- **`screened_poisson` drops zero-area triangles before orienting** (`remove_degenerate_faces`;
+  `point_weight=0.0` used to emit 27-64 a run, §7.7). Deliberately not the full
+  `_clean_reconstruction` tail (welding manufactures non-manifold edges; dedup would move the
+  default path's output); pinned by `test_reconstruction.py`'s `point_weight=0` arm.
 - **Dense solve preconditioner: a geometric multigrid V-cycle** (`_PoissonMultigrid`, kernels
   `poisson_mg_*`). Nested node grids; level `l`'s operator is `2 ** l * L_l + screen * (P^T)^l
   W` (the 7-point rediscretization of the Galerkin product; its smooth-mode ratio to `P^T L P`
@@ -4111,9 +4113,12 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   `exclude_fully_selected_components`. `fix_self_intersections` is not bit-reproducible on CUDA
   (float atomics).
 - **`repair` details**: `make_winding_consistent` takes its flips from
-  `validation.face_flip_mask` (§16.11). **OPEN: it seeds each connected component from an
-  arbitrary face**, so per-component winding is not reproducible even though the unoriented
-  triangle set is. `remove_degenerate_and_non_manifold_faces` filters in the input's numbering
+  `validation.face_flip_mask` (§16.11). **Each connected component keeps its lowest-indexed
+  face's winding** (the parity union-find's root is the component's smallest face id at parity 0),
+  so on orientable input the result is a deterministic function of `faces` on both devices,
+  documented as the contract and pinned by
+  `test_make_winding_consistent_keeps_each_components_lowest_face`; only a non-orientable input
+  varies run to run on CUDA (§16.11). `remove_degenerate_and_non_manifold_faces` filters in the input's numbering
   and compacts once. Declined: reading the orientation sign off halfedge origins instead of
   `pair_flip_sign`'s corner search (they disagree on a face with a repeated vertex, changing
   `is_orientable`). `_vertex_scale_attribute` lifts the region faces' keys by `base**2` so one
@@ -4230,8 +4235,11 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   segfaulted the CPU device). Pointer jumping chases up to `POINTER_JUMP_MAX_HOPS = 16` pointers a
   launch; the clock is flat from 8 to 64 hops (`rim_long` 0.633 / 0.512 / 0.463 / 0.454 / 0.451 /
   0.443 ms at 2 / 4 / 8 / 16 / 32 / 64). Three multi-hop window rankings (`boundary`,
-  `intersection`, `graph.jump_rank`) share one merge rule no `@wp.func` names yet: open lead
-  (`graph.pointer_jump_schedule` is shared by `marching_triangles`' link).
+  `intersection`, `graph.jump_rank`) share one merge rule; the window-minimum half is
+  `kernels/array.merge_window_minimum` (strict `<`, first occurrence), called by
+  `boundary.closed_cycle_jump` and `intersection.link_rank_round` (`jump_rank` carries no
+  minimum), cost-neutral (0.98-1.03x on `boundary_loops[rim_long]` and `marching_triangles`).
+  `graph.pointer_jump_schedule` is shared by `marching_triangles`' link.
 - **`boundary.boundary_loops` is a floor row.** Its largest piece is the pointer-doubling loop
   and both mechanisms for removing it are refuted: a CUDA graph cannot be reused across calls
   (round count varies, §14.3) and a single persistent block is §14.9's shape. Its gate must
@@ -5071,7 +5079,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 - **Smoother verdicts are §14.8** (a Chebyshev multigrid smoother is refuted; interval robustness).
 - **The multigrid hierarchy's *setup* is the blocker** (several sparse-op calls per coarsening level
   at Warp's fixed per-call cost, not the aggregation algorithm): every losing case loses by exactly
-  that; with a free setup all would win. **Two of a level's three `bsr_mm` are gone**: the smoothed
+  that; with a free setup all would win. **No `bsr_mm` runs in a well-coarsened level**: the smoothed
   prolongator `(I - ωD⁻¹A)P0` is `A`'s entries re-keyed by their column's aggregate plus the
   identity's, one `csr_from_triplets` (`smoothed_prolongator_triplets`; 1.9-4.0x on the
   prolongator), and `Pᵀ(AP)` is each fine row's outer product of its `P` and `AP` rows as triplets
@@ -5079,14 +5087,30 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   1.23-1.51x on the `bunny_decimated` to `dragon` cotangent Laplacians, setup plus a `1e-8` solve
   1.15-1.28x below `dragon`, CG iteration counts identical; patterns equal except 4 of 1.08 M
   coarse entries that cancel exactly in one summation order. Every hierarchy matrix is
-  `nnz_sync`ed (the triplet build leaves `nnz` at the triplet count). The remaining lever is `AP`
-  itself (`nnz(A) · deg(P)` triplets, ~12 M at `dragon`); the direct triple product
-  (`nnz(A) · deg(P)²`, ~75 M) is too large to assemble. The `"auto"` gate's decision ("will the hierarchy pay for itself") belongs
+  `nnz_sync`ed (the triplet build leaves `nnz` at the triplet count). `AP` is the same shape
+  (`product_triplets`, one triplet per `A_ij P_jl`: 1.7x on the product at the bunnies, 1.04x at
+  `dragon`'s 9 M triplets; setup a further 1.11-1.19x, residuals identical); the direct triple
+  product (`nnz(A) · deg(P)²`, ~75 M at `dragon`) is too large to assemble.
+  **The triplet products need a budget, and their counts need 64 bits.** A level whose coarsening
+  stalls goes nearly dense and the per-row products turn quadratic in row length (`icosphere(6)`
+  at `theta = 0.2`: 1.04 G triplets; `dragon`: 8-80 G per level), where `bsr_mm`'s memory follows
+  its output. Past `_MULTIGRID_TRIPLET_FACTOR = 16` times the operator's entries plus rows (cap
+  2^30) a product falls back to `bsr_mm`. The counts and their scan are `int64`: an `int32` scan
+  wrapped to a positive 440 M on `dragon` and passed the budget test, an out-of-bounds write
+  (CUDA error 700). The default levels emit 1-3x their operator. The `"auto"` gate's decision ("will the hierarchy pay for itself") belongs
   on a property of the *operator*, not of problem size or an extrapolated iteration count (both
   tried, both wrong): off-diagonal dominance (`CG_MULTIGRID_DOMINANCE`) separates the cases. **Never
   route a new caller through `"auto"` without re-measuring on its own systems** (an operator with a
-  favourable dominance on one mesh can read unfavourably on another of identical connectivity). Open
-  lead: a strength-of-connection threshold for anisotropic operators; the connection-Laplacian
+  favourable dominance on one mesh can read unfavourably on another of identical connectivity).
+  **DECLINED (2026-10-02): an operator-chosen strength threshold.** Interleaved, setup plus a
+  `1e-8` solve: `theta = 0` beats the default 0.05 by 1.0-1.3x on isotropic cotangent systems
+  (`saddle`, `sphere_med`, `hemisphere`, `bunny_decimated`) and on a 3x-stretched saddle (1.5x),
+  but loses 1.8x on `saddle_graded` (316 iterations vs 51) and 1.07-1.17x on a 10x-stretched
+  one; `theta >= 0.2` stalls the coarsening. No operator statistic separates the cases (the
+  weak-entry fraction and the median `|A_ij| / sqrt(A_ii A_jj)` both interleave: 0.051 on the 3x
+  saddle that prefers 0, 0.075 on the graded one that needs 0.05). 0.05 never loses badly, so it
+  stays. Iteration counts in a sequential theta sweep are trustworthy, its clocks are not (each
+  later theta read slower on unchanged hierarchies; §15.7). The connection-Laplacian
   operator cannot reach the gate (the hierarchy is scalar-CSR-only). The smoothed-aggregation
   hierarchy serves `harmonic` at `k >= 2`, `"auto"` and `"multigrid"`.
     - The multigrid damping is folded into the inverse diagonal on the device
@@ -5102,11 +5126,16 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       aggregation is refuted (§14.9).
 - **A direct GPU factorization (cuDSS) wins only where the multigrid gate already fires**, and is
   not installed. The cost is the symbolic plan, not the numeric work (flat in conditioning), so it
-  loses badly wherever CG converges quickly. **Do not add it as a one-shot backend.** The real
-  lever, unmeasured, is plan reuse for ARAP-shaped loops, and `parametrization.arap` already beats
-  igl in all six benchmarked cells. Traps if opened: AMD reordering beats the defaults without the
+  loses badly wherever CG converges quickly. **Do not add it as a one-shot backend.**
+  **DECLINED (2026-10-02, measured): plan reuse for ARAP's loop** (nvmath-python 1.0 /
+  `nvidia-cudss-cu12` 0.8 in a throwaway env, factorized once and re-solved per iteration for
+  both columns): per-iteration solves are 1.5-2.8x faster than the batched CG (0.25-0.32 vs
+  0.47-0.70 ms), but plan plus factorization is 25-90 ms against a whole default 10-iteration
+  `arap` of 2-9 ms (0.04-0.23x on `saddle_small` / `saddle` / `hemisphere`), break-even ~150
+  iterations; and it would make triwarp depend on more than `warp-lang`. Traps if opened: AMD reordering beats the defaults without the
   MT layer; a one-shot `direct_solver` re-creates the handle; `reset_operands(a=new)` drops the
-  plan; `libcudss.so` is not on the loader path; systems with **empty rows** (unreferenced free
+  plan; `libcudss.so` is not on the loader path (preload it with `ctypes.CDLL(...,
+  RTLD_GLOBAL)` from the wheel's `nvidia/cu12/lib`, found through `importlib.metadata`); systems with **empty rows** (unreferenced free
   vertices) are singular for a direct solver where CG leaves them at the initial guess. A host
   launch count cannot bound the solve's share (the CG is graph-captured, §15.10).
 

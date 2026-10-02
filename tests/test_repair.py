@@ -1171,6 +1171,40 @@ def test_make_winding_consistent_idempotent(icosahedron: tuple[tm.Trimesh, wp.Me
     assert np.array_equal(_faces_2d(repaired_wp), _faces_2d(mesh_wp.indices))
 
 
+def test_make_winding_consistent_keeps_each_components_lowest_face(device: str) -> None:
+    """
+    Not a library comparison: no reference documents which face of a component keeps its winding.
+
+    The seed is each connected component's lowest-indexed face, which pins the output to the input
+    rather than to thread order. Three spheres with 30 % of their faces reversed: the result is
+    consistently wound, each component's first face is untouched, and three runs agree exactly.
+    A seed taken anywhere else in a component flips that component wholesale, which the first-face
+    assert catches whichever face it was.
+    """
+    sphere = tm.creation.icosphere(subdivisions=2)
+    n_per_sphere = sphere.faces.shape[0]
+    n_sphere_vertices = sphere.vertices.shape[0]
+    vertices_np = np.concatenate(
+        [sphere.vertices + np.array([3.0 * index, 0.0, 0.0]) for index in range(3)]
+    )
+    faces_np = np.concatenate(
+        [sphere.faces + index * n_sphere_vertices for index in range(3)]
+    ).astype(np.int32)
+    flipped = np.random.default_rng(5).random(faces_np.shape[0]) < 0.3
+    faces_np[flipped] = faces_np[flipped][:, ::-1]
+    _, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    first_faces = np.arange(3) * n_per_sphere
+    # Both seed states are exercised: some first faces arrive flipped, some do not.
+    assert flipped[first_faces].any()
+    assert not flipped[first_faces].all()
+
+    runs = [_faces_2d(tw.repair.make_winding_consistent(faces_wp)) for _ in range(3)]
+    assert all(np.array_equal(runs[0], run) for run in runs[1:])
+    assert np.array_equal(runs[0][first_faces], faces_np[first_faces])
+    repaired_wp = wp.array(runs[0].reshape(-1), dtype=wp.int32, device=device)
+    assert tw.validation.is_winding_consistent(repaired_wp) is True
+
+
 @pytest.mark.parity("make_volume", "trimesh", "pyvista")
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
 def test_make_volume_repairs_inversion(request: pytest.FixtureRequest, mesh_name: str) -> None:

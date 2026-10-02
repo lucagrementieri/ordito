@@ -1777,8 +1777,8 @@ def make_winding_consistent(
     Flip faces so every shared edge is traversed in opposite directions by its two faces.
 
     Reuses the orientation flood-fill of
-    [`face_flip_mask`][triwarp.validation.face_flip_mask] (one arbitrary seed
-    face per connected component) and reverses the winding of every face whose orientation bit is
+    [`face_flip_mask`][triwarp.validation.face_flip_mask] (each connected component seeded at
+    its lowest-indexed face) and reverses the winding of every face whose orientation bit is
     set. The result satisfies
     [`is_winding_consistent`][triwarp.validation.is_winding_consistent] **whenever one exists**,
     which is to say whenever the mesh is
@@ -1808,9 +1808,11 @@ def make_winding_consistent(
 
     Notes
     -----
-    The reference winding within each connected component is arbitrary (the seed face keeps its
-    orientation), matching ``trimesh.repair.fix_winding``'s BFS. Use
-    [`make_volume`][triwarp.repair.make_volume] afterwards to also orient normals outward.
+    Each connected component keeps the winding of its lowest-indexed face, so on an orientable
+    mesh the result is a deterministic function of ``faces`` on either device;
+    ``trimesh.repair.fix_winding``'s BFS likewise keeps its seed face's winding, though its seed
+    choice is its own. Use [`make_volume`][triwarp.repair.make_volume] afterwards to also orient
+    normals outward.
 
     On a **non-orientable** mesh no consistent winding exists, so this cannot succeed and does not
     fail either: the flood-fill orients everything it reaches and the contradiction is left on a
