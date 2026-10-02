@@ -827,6 +827,30 @@ def coo_keys(
 
 
 @wp.kernel
+def csr_transposed_keys(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    n_rows: wp.int32,
+    n_cols: wp.int32,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``coo_keys`` of the transpose, read straight off a CSR: one thread per row writes the key
+    # ``(col, row)`` of the ``(n_cols, n_rows)`` result and the identity payload for each of its
+    # entries. Thread ``n_rows`` marks the slots past ``offsets[n_rows]`` -- a capacity tail the
+    # ``nnz`` field may still count -- as sentinels.
+    r = wp.int32(wp.tid())
+    if r == n_rows:
+        for e in range(offsets[n_rows], out_keys.shape[0] // 2):
+            out_keys[e] = wp.uint64(n_rows) * wp.uint64(n_cols)
+            out_order[e] = e
+        return
+    for e in range(offsets[r], offsets[r + 1]):
+        out_keys[e] = csr_key(columns[e], r, n_cols, n_rows)
+        out_order[e] = e
+
+
+@wp.kernel
 def coo_keys_nonzero(
     rows: wp.array[wp.int32],
     cols: wp.array[wp.int32],

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import gc
-from typing import TypeVar, cast
+from typing import Any, TypeVar, cast
 
 import numpy as np
 import numpy.typing as npt
@@ -763,6 +763,75 @@ def test_csr_from_triplets_prunes_assembled_zeros(device: str) -> None:
     assert all(warp.get(key) == value for key, value in ours.items())
     dropped = [value for key, value in warp.items() if key not in ours]
     assert dropped == [0.0]  # (1, 1): Warp keeps the cancelled entry
+
+
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
+@pytest.mark.parametrize("synced", [True, False], ids=["synced", "capacity"])
+def test_csr_transpose(dtype: type, synced: bool, device: str) -> None:
+    """
+    ``csr_transpose`` returns the transpose, rows sorted, values bit for bit.
+
+    Class A against NumPy's dense transpose, plus Warp's ``bsr_transposed`` for the stored layout
+    (which takes floats only). The input has duplicates summed, empty rows and empty columns, and
+    is handed over both with ``nnz`` synced and with ``nnz`` still the triplet count, so the
+    capacity tail is exercised.
+    """
+    rng = np.random.default_rng(11)
+    n_rows, n_cols, m = 37, 53, 400
+    rows_np = rng.integers(0, n_rows, m).astype(np.int32)
+    cols_np = rng.integers(0, n_cols, m).astype(np.int32)
+    rows_np[rows_np == 5] = 6  # an empty row
+    cols_np[cols_np == 9] = 10  # an empty column
+    values_np = (rng.standard_normal(m) * 10).astype(wp.dtype_to_numpy(dtype))
+    matrix_wp = od.array.csr_from_triplets(
+        n_rows,
+        n_cols,
+        wp.array(rows_np, dtype=wp.int32, device=device),
+        wp.array(cols_np, dtype=wp.int32, device=device),
+        wp.array(values_np, dtype=dtype, device=device),
+    )
+
+    def dense(matrix: odt.BsrMatrix[Any], shape: tuple[int, int]) -> npt.NDArray[np.float64]:
+        offsets = matrix.offsets.numpy()
+        stored = int(offsets[-1])
+        out = np.zeros(shape)
+        rows = np.repeat(np.arange(shape[0]), np.diff(offsets))
+        out[rows, matrix.columns.numpy()[:stored]] = matrix.values.numpy()[:stored]
+        return out
+
+    dense_np = dense(matrix_wp, (n_rows, n_cols))
+    if synced:
+        matrix_wp.nnz_sync()
+    transposed_wp = od.array.csr_transpose(matrix_wp)
+    assert (transposed_wp.nrow, transposed_wp.ncol) == (n_cols, n_rows)
+    n_entries = transposed_wp.nnz_sync()
+    assert n_entries == matrix_wp.nnz_sync()
+    assert np.array_equal(dense(transposed_wp, (n_cols, n_rows)), dense_np.T)
+    columns_np = transposed_wp.columns.numpy()[:n_entries]
+    offsets_np = transposed_wp.offsets.numpy()
+    for row in range(n_cols):
+        assert np.all(np.diff(columns_np[offsets_np[row] : offsets_np[row + 1]]) > 0)
+    if dtype != wp.int32:
+        warp_wp = odt.bsr_transposed(matrix_wp)
+        assert np.array_equal(offsets_np, warp_wp.offsets.numpy())
+        assert np.array_equal(columns_np, warp_wp.columns.numpy()[:n_entries])
+        assert np.array_equal(
+            transposed_wp.values.numpy()[:n_entries], warp_wp.values.numpy()[:n_entries]
+        )
+
+
+def test_csr_transpose_empty(device: str) -> None:
+    """An entry-free matrix transposes to an entry-free matrix of the swapped shape."""
+    matrix_wp = od.array.csr_from_triplets(
+        3,
+        5,
+        wp.zeros(0, dtype=wp.int32, device=device),
+        wp.zeros(0, dtype=wp.int32, device=device),
+        wp.zeros(0, dtype=wp.float32, device=device),
+    )
+    transposed_wp = od.array.csr_transpose(matrix_wp)
+    assert (transposed_wp.nrow, transposed_wp.ncol) == (5, 3)
+    assert np.array_equal(transposed_wp.offsets.numpy(), np.zeros(6))
 
 
 @pytest.mark.parametrize("data", [None, np.arange(1, 13, dtype=np.int32)])

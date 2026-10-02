@@ -442,6 +442,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("smoothing", "renormalize_and_reseed"): frozenset({"accumulated"}),
     # scratch / persistent state
     ("adjacency", "scatter_vertex_faces"): frozenset({"cursor"}),
+    # ``state`` is ``shorten_loop_with_offsets``' device-side loop word: every sweep kernel reads
+    # its parity and stop flag, and this one counts the sweep's accepted replacements into it for
+    # ``shorten_loop_advance`` to read and clear. The answers are the count and arc tables.
+    ("geodesic_walk", "shorten_loop_counts"): frozenset({"state"}),
     # ``min_distance_sq`` is the farthest-point sampler's running distance-to-the-chosen-set:
     # caller-allocated scratch the persistent block initializes and folds down one selection per
     # round. The answer is ``out_selected``; this buffer is the sweep's state.

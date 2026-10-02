@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.constants import PI, TOLERANCE_ZERO_CONSTANT, TWO_PI
-from ordito.kernels.array import loop_point, to_vec3, wrap_index
+from ordito.kernels.array import binary_search_index, loop_point, to_vec3, wrap_index
 from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to_tangent
 from ordito.kernels.tangent_space import corner_angle
@@ -663,6 +663,37 @@ def ring_arc_length(
     return total, interior
 
 
+# ``shorten_loop_with_offsets``' device-side loop state, one ``wp.int32`` word each. The sweep
+# kernels read the parity and the stop flag from it and the closing ``shorten_loop_advance`` writes
+# it, so a group of sweeps replays as one recorded graph with one read of the state per group.
+SHORTEN_SWEEPS = wp.constant(0)  # sweeps run so far; its parity is the next sweep's
+SHORTEN_DONE = wp.constant(1)  # set once the loop has stopped: every kernel then returns at once
+SHORTEN_UNCHANGED = wp.constant(2)  # consecutive sweeps that accepted nothing
+SHORTEN_CHANGED = wp.constant(3)  # replacements accepted by the sweep in flight
+SHORTEN_OVERFLOW = wp.constant(4)  # the sweep in flight did not fit the buffers and was undone
+SHORTEN_LENGTH = wp.constant(5)  # positions in the current loops
+SHORTEN_ANY = wp.constant(6)  # whether any sweep has changed the loops
+SHORTEN_MAX_SWEEPS = wp.constant(7)
+SHORTEN_STATE_SLOTS = 8
+
+
+@wp.func
+def shorten_loop_owner(loop_offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
+    # The loop holding position ``t``: the last offset at or below it, so an empty loop (equal
+    # neighbouring offsets) is never the answer.
+    return binary_search_index(loop_offsets, t) - 1
+
+
+@wp.func
+def shorten_loop_rewriting(state: wp.array[wp.int32], positions: wp.array[wp.int32]) -> wp.bool:
+    # Whether the sweep in flight rewrites the loops: it accepted something and its rewritten
+    # length (the counts' scanned total, ``positions``' entry ``capacity``) fits the buffers.
+    capacity = positions.shape[0] - 1
+    return (
+        state[SHORTEN_DONE] == 0 and state[SHORTEN_CHANGED] != 0 and positions[capacity] <= capacity
+    )
+
+
 @wp.kernel
 def shorten_loop_counts(
     vertices: wp.array[wp.vec3],
@@ -671,25 +702,31 @@ def shorten_loop_counts(
     ring_halfedges: wp.array[wp.int32],
     is_boundary: wp.array[wp.bool],
     loop_vertices: wp.array[wp.int32],
-    position_loop: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
-    parity: wp.int32,
     tolerance: wp.float32,
+    state: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_arc_slot: wp.array[wp.int32],
     out_arc_step: wp.array[wp.int32],
-    out_changed: wp.array[wp.int32],
 ) -> None:
-    # One thread per loop position. A position is *active* when its parity matches this sweep's, so
-    # no two neighbours are ever rewritten at once and each replacement sees an unmodified triple.
+    # One thread per buffer slot; slots past the current loops count nothing. A position is
+    # *active* when its parity matches this sweep's, so no two neighbours are ever rewritten at
+    # once and each replacement sees an unmodified triple. Each accepted replacement is counted in
+    # ``state[SHORTEN_CHANGED]``.
     t = wp.int32(wp.tid())
-    begin = loop_offsets[position_loop[t]]
-    n = loop_offsets[position_loop[t] + 1] - begin
+    if state[SHORTEN_DONE] != 0:
+        return
+    out_counts[t] = wp.int32(0)
+    if t >= loop_offsets[loop_offsets.shape[0] - 1]:
+        return
+    loop = shorten_loop_owner(loop_offsets, t)
+    begin = loop_offsets[loop]
+    n = loop_offsets[loop + 1] - begin
     p = t - begin
     out_counts[t] = wp.int32(1)
     out_arc_slot[t] = wp.int32(-1)
     out_arc_step[t] = wp.int32(0)
-    if n < 3 or p % 2 != parity:
+    if n < 3 or p % 2 != state[SHORTEN_SWEEPS] % 2:
         return
     # An odd-length cycle makes positions 0 and n - 1 neighbours *and* both even, so the even sweep
     # gives up the last one rather than letting two adjacent threads rewrite one triple.
@@ -705,7 +742,7 @@ def shorten_loop_counts(
         # The loop doubles back through b. Dropping b leaves the duplicate that the compaction pass
         # removes, and both together contract the spur.
         out_counts[t] = wp.int32(0)
-        wp.atomic_add(out_changed, 0, 1)
+        wp.atomic_add(state, SHORTEN_CHANGED, 1)
         return
     slot_a = ring_slot_of(faces, ring_offsets, ring_halfedges, b, a)
     slot_c = ring_slot_of(faces, ring_offsets, ring_halfedges, b, c)
@@ -730,7 +767,7 @@ def shorten_loop_counts(
         out_counts[t] = interior
         out_arc_slot[t] = slot_a
         out_arc_step[t] = step
-        wp.atomic_add(out_changed, 0, 1)
+        wp.atomic_add(state, SHORTEN_CHANGED, 1)
 
 
 @wp.kernel
@@ -739,14 +776,24 @@ def shorten_loop_write(
     ring_offsets: wp.array[wp.int32],
     ring_halfedges: wp.array[wp.int32],
     loop_vertices: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
     arc_slot: wp.array[wp.int32],
     arc_step: wp.array[wp.int32],
     positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     out_loop_vertices: wp.array[wp.int32],
+    out_loop_offsets: wp.array[wp.int32],
 ) -> None:
     # ``positions`` is ``shorten_loop_counts``' counts scanned in place behind a leading zero, so a
-    # position's count is the step between its offset and the next.
+    # position's count is the step between its offset and the next. Threads up to ``n_loops`` also
+    # map each loop's offset through that remap.
     t = wp.int32(wp.tid())
+    if not shorten_loop_rewriting(state, positions):
+        return
+    if t < loop_offsets.shape[0]:
+        out_loop_offsets[t] = positions[loop_offsets[t]]
+    if t >= loop_offsets[loop_offsets.shape[0] - 1]:
+        return
     count = positions[t + 1] - positions[t]
     if count == 0:
         return  # b dropped: either the loop doubled back through it, or a -- c is itself an edge
@@ -764,36 +811,76 @@ def shorten_loop_write(
 @wp.kernel
 def distinct_from_predecessor(
     loop_vertices: wp.array[wp.int32],
-    position_loop: wp.array[wp.int32],
     loop_offsets: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
-    # Marks the survivors of a run of repeats, cyclically within each loop: a position is kept
-    # unless it repeats its predecessor. The first position of a loop is always kept, so a run that
-    # wraps the seam keeps its head.
-    #
-    # Launched per position, after ``array.segment_owner_labels`` writes each position's loop, not
-    # fused into that per-loop walk: the fused form (one thread per loop, testing its span as it
-    # walks) removes a launch and the owner table, and is identical, but measured 0.86x on
-    # ``shorten_loop`` over a genus-64 basis -- a loop is a serial chain of loads there, where this
-    # is one independent test per position.
+    # Marks the survivors of a run of repeats within each loop: a position is kept unless it
+    # repeats its predecessor. The first position of a loop is always kept, so a run that wraps the
+    # seam keeps its head. Slots past the rewritten loops keep nothing.
     t = wp.int32(wp.tid())
-    begin = loop_offsets[position_loop[t]]
-    n = loop_offsets[position_loop[t] + 1] - begin
-    p = t - begin
-    if p == 0 or loop_vertices[t] != loop_vertices[begin + wrap_index(p - 1, n)]:
+    if not shorten_loop_rewriting(state, positions):
+        return
+    out_counts[t] = wp.int32(0)
+    if t >= loop_offsets[loop_offsets.shape[0] - 1]:
+        return
+    if t == loop_offsets[shorten_loop_owner(loop_offsets, t)]:
         out_counts[t] = wp.int32(1)
-    else:
-        out_counts[t] = wp.int32(0)
+    elif loop_vertices[t] != loop_vertices[t - 1]:
+        out_counts[t] = wp.int32(1)
 
 
 @wp.kernel
 def compact_kept(
-    values: wp.array[wp.int32], positions: wp.array[wp.int32], out_kept: wp.array[wp.int32]
+    values: wp.array[wp.int32],
+    loop_offsets: wp.array[wp.int32],
+    kept: wp.array[wp.int32],
+    positions: wp.array[wp.int32],
+    state: wp.array[wp.int32],
+    out_values: wp.array[wp.int32],
+    out_loop_offsets: wp.array[wp.int32],
 ) -> None:
     # Stream compaction against 0/1 counts scanned in place behind a leading zero, so a kept
-    # position is a step of the scan: a scatter, so it stays a kernel.
+    # position is a step of the scan: a scatter, so it stays a kernel. Threads up to ``n_loops``
+    # map each loop's offset through the same scan.
     t = wp.int32(wp.tid())
-    slot = positions[t]
-    if positions[t + 1] != slot:
-        out_kept[slot] = values[t]
+    if not shorten_loop_rewriting(state, positions):
+        return
+    if t < loop_offsets.shape[0]:
+        out_loop_offsets[t] = kept[loop_offsets[t]]
+    slot = kept[t]
+    if kept[t + 1] != slot:
+        out_values[slot] = values[t]
+
+
+@wp.kernel
+def shorten_loop_advance(
+    positions: wp.array[wp.int32], kept: wp.array[wp.int32], out_state: wp.array[wp.int32]
+) -> None:
+    # dim=1, closing a sweep. A sweep whose rewrite would not fit flags the overflow and stops the
+    # loop *without* counting itself -- its rewrite and compaction were skipped, so the loops are
+    # the ones it started from and the host can grow the buffers and run it again. Otherwise the
+    # sweep counts, and the loop stops once two consecutive sweeps (one of each parity) accepted
+    # nothing, the cap is reached, or no position is left. Two, not one: a rewrite can shift which
+    # positions land on which parity, so one unchanged sweep says nothing about the other parity.
+    if out_state[SHORTEN_DONE] != 0:
+        return
+    capacity = positions.shape[0] - 1
+    changed = out_state[SHORTEN_CHANGED]
+    if changed != 0 and positions[capacity] > capacity:
+        out_state[SHORTEN_OVERFLOW] = 1
+        out_state[SHORTEN_DONE] = 1
+        return
+    out_state[SHORTEN_CHANGED] = 0
+    sweeps = out_state[SHORTEN_SWEEPS] + 1
+    out_state[SHORTEN_SWEEPS] = sweeps
+    unchanged = wp.int32(0)
+    if changed == 0:
+        unchanged = out_state[SHORTEN_UNCHANGED] + 1
+    else:
+        out_state[SHORTEN_ANY] = 1
+        out_state[SHORTEN_LENGTH] = kept[capacity]
+    out_state[SHORTEN_UNCHANGED] = unchanged
+    if unchanged >= 2 or sweeps >= out_state[SHORTEN_MAX_SWEEPS] or out_state[SHORTEN_LENGTH] == 0:
+        out_state[SHORTEN_DONE] = 1

@@ -4003,6 +4003,19 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   reproducible contained stage (`_valence_flip_pass`) instead.
 - **Edge-length equilibrium is ~1.0x target only for a "nice" ratio of the input edge**
   (midpoint-split quantization); coarser-than-input targets plateau lower.
+- **`isotropic_remesh` hands its edge groupings between stages, and a collapse pass reads back
+  once** (2026-10-02, R28-5). The split pass that finds nothing to split grouped the faces it
+  returns (`_subdivide_to_size`'s fourth return), which the first collapse pass takes; a flip pass
+  that flipped regroups from its own `_FlipTopology` sort. A collapse pass issues its compaction
+  before reading the commit count, so one copy of a three-word buffer carries the stop decision
+  and both sizes (a pass that committed nothing discards a compaction of an identity remap).
+  Together 1.10-1.12x `saddle`, 1.06-1.10x `saddle_graded`, level `hemisphere`; CPU
+  byte-identical over four stage-toggle arms. Stage profile (`saddle`, three iterations, synced):
+  the 15 collapse passes are 8.1 of 14.2 ms, ~60 Warp calls each. **Not built, priced:** patching
+  the edge table across passes (the per-pass regroup is ~0.11 ms of ~8 launches; a patch still
+  sorts or merges the changed keys at these sizes, so it saves launches only at meshes far above
+  the benchmark's); fusing the ring and vertex-face CSR builds into one count/scan/fill (~5 calls
+  a pass, ~3.5 % of the call, at the price of a remesh-private copy of two shared builders).
 
 #### Collapse, independent sets, valence flips
 
@@ -4123,6 +4136,18 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   solving `3 r^2 - 3 r + 1 <= v`; ring starts are `1 + 3 r (r - 1)` **except ring 0**, the lone
   apex at slot 0. Getting it wrong wound every apex triangle around its neighbour and only a
   byte-identity gate saw it.
+- **`shorten_loop_with_offsets` replays recorded sweeps** (2026-10-02, `geodesic_walk._LoopSweep`):
+  the loops live in fixed buffers with headroom (`_SHORTEN_LOOP_GROWTH = 0.5`, at least
+  `_SHORTEN_LOOP_SLACK = 1024`), the loop state in eight device words
+  (`kernels/geodesic_walk.SHORTEN_*`: parity, stop, consecutive-unchanged, accepted, overflow,
+  length, any-change, cap), the owning loop is a binary search of the offsets (no owner-label
+  pass), and a sweep is six launches plus two scans with no readback. Sweep 0 is issued, then
+  `_SHORTEN_LOOP_GRAPH_SWEEPS = 4` are recorded and replayed with one state read per replay. A
+  sweep whose rewrite would not fit is undone (its rewrite and compaction skip, its count is not
+  taken) and re-run in buffers twice the needed size (`test_shorten_loop_regrows_its_buffers_and_
+  matches` forces it with zero headroom). Byte-identical loops and sweep counts on both devices
+  (`handles_1` / `handles_64` / `tangle_torus_small`, 5 / 20 / 52 sweeps); `handles_64` 3.85 ->
+  1.42 ms (2.7x), `handles_1` 1.13x; `remove_tunnels[handles_64]` 12.9 -> 10.3 ms (1.26x).
 - **`remove_tunnels`**: vertex-disjoint non-trivial loops can still be *dependent* (23 disjoint
   generators on `handles_64` bound a piece of the slab and cutting all split it). Fix: label the
   faces of the cut mesh (`kernels/repair.sever_barrier_pairs`, a binary search of the host-sorted
@@ -4395,6 +4420,30 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   devices), 1.43-1.48x / 1.62-1.65x against the per-insert form and faster than before it
   (48 vs 52.5 ms on `geodesic_ball[dragon]`). Bookkeeping in a BFS's innermost loop is a
   codegen-variance hazard (§14.2): carry the signal in a value the loop already updates.
+- **`geodesic_ball`'s chunk is its occupancy** (2026-10-02, `neighbors._GEODESIC_BALL_CHUNK`):
+  the per-source walk is latency-bound and one launch holds a chunk of sources, so at `1 << 15`
+  it ran under a tenth of the device's threads. `1 << 16`: 1.51x `bunny` (one launch instead of
+  two), 1.26-1.28x `happy_buddha` / `dragon` at five mean edges, 1.09-1.13x at 3 % of the diagonal;
+  `1 << 17` and `1 << 18` lose (0.84-0.70x at 3 %: the ~6.6 kB-a-source pools outgrow L2). CPU flat
+  (0.97-1.04x). Outputs are per-source, so identical; `test_geodesic_ball_chunks_agree` forces
+  the multi-chunk path no fixture reaches.
+- **DECLINED: a smaller visited row for small balls** (2026-10-02, R28-7). A source whose walk stays
+  under a smaller row's fill bound inserts the same set, so a 512-slot row is exact for every
+  source below 384 inserts (all of `bunny`'s at five mean edges, 98.9-99.4 % of `dragon` /
+  `happy_buddha`'s, ~none at 3 % of the diagonal, where every ball fills the 512 queue). Three exact
+  forms, outputs identical to HEAD on both devices, all slower than the plain 1024-slot row at the
+  1 << 16 chunk (37.2 / 83.0 ms `dragon`, 45.5 / 105.9 `happy_buddha`, 2.34 `bunny`):
+  - **retry pass** (a source that fills the small row stops and runs again in a full row): the
+    retried sources are the longest walks and a launch costs its longest walk whatever its thread
+    count (a 4 096-source probe launch took 1.0 ms, as long as the 31 851 sources after it), so
+    the retry launch is a second tail per chunk. Small-row launches alone were 1.21x on `bunny`
+    (kernel 1.31 -> 1.08 ms). With the retry test after every insert the walk ran 3.4x slower
+    (§14.2); moved into the loop conditions, 1.2-1.5x slower on the large meshes;
+  - **grow in place** (the row's base, mask and fill become loop-carried values, the entries are
+    rehashed into a full row when a dequeue could overflow): 42.3 / 94.3, 54.9 / 119.9, 2.28 ms;
+  - **two phases** (one loop per row, constant fill bounds, a switch between them): 42.5 / 102.6,
+    51.7 / 130.2, 2.27 ms. The second loop's code costs the walk more than the small row saves.
+  The walk is latency- and tail-bound, and anything added to its loop is paid by every source.
 - **`geodesic_ball` was never nondeterministic; its radius was** (closed 2026-10-02). The
   "differs in some processes" reading came from `r = 5 * mean_edge_length`, whose float32 sum
   committed one `atomic_add` per block and moved in its last bit between processes and calls;
@@ -4693,6 +4742,15 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   (`crease_edges[lucy]` 19.0 ms wall vs 2.5 ms device; `cotmatrix[dragon]` 2.95 vs 0.41) pay it
   per allocation; raising the release threshold was 1.5-1.6x at `dragon` / `lucy`, flat at
   `bunny`. ordito does not set it (process-wide); the lever is fewer and smaller allocations.
+  **Where the cost lands (nsys, `lucy`, 2026-10-02)**: not in the allocations (1.2-3.2 ms of
+  `cudaMallocAsync` a call) but in the *sync after the call*, which returns the pool's freed pages:
+  the closing `cuCtxSynchronize` outlasts the last kernel by 5.1 / 6.8 / 6.0 / 12.1 / 7.3 ms on
+  `face_adjacency` / `edges_unique` / `crease_edges` / `cotmatrix` / `voxelize_mesh`, a third of
+  each wall. With the threshold raised the wall *is* the device time (17.6 -> 11.3, 37.6 -> 23.9,
+  18.8 -> 10.2 ms); the device time is CUB's onesweep radix passes first (8.2 of 11.2 ms on
+  `face_adjacency`). Warp's timer sees neither half, so these rows read "host-bound" with no
+  Python to remove. The remaining levers are bytes freed per call and an ordito-owned scratch
+  cache, which keeps memory reserved between calls (the objection the threshold was declined on).
 - **`cotmatrix` allocated 9.4 GB a call at `lucy`** for a matrix under 1 GB (three 1.28 GB
   12-triplet buffers and 5.2 GB of `bsr_from_triplets` scratch). It now emits six off-diagonal
   triplets per face plus one diagonal slot per vertex (the tail's rows prefilled with
@@ -5020,6 +5078,19 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   correction (LIS over the association array), the band traceback and `bridge_edges_smooth`'s
   Hermite strip are host-sequential or fixed-size (§3.8); `_PackedLoops`' cumsums and uploads are
   0.10-0.16 ms even at 8 192 rims.
+- **`join_closest_components` edits its rim instead of regrouping per join** (2026-10-02,
+  `holes._JoinRim`): a join appends a two-triangle patch, so the boundary loses the two bridged
+  rows and gains the patch's two chords (tails unchanged) and two components merge; the table is
+  kept in `oriented_boundary_edges`' row order (ascending undirected key, larger index the high
+  digit), which is the pairing's tie-break, so every round sees the rows, order and label
+  equalities a regroup would. Byte-identical faces on both devices over `open_parts_*` and
+  `max_joins` / `max_distance` arms; `test_join_closest_components_rim_tracks_the_regrouped_boundary`
+  bites on an unsorted insert and on a dropped diagonal. Each round is one upload, a block-per-row
+  pairing (`CLOSEST_PAIR_BLOCK = 64`, a one-thread-per-row walk of ~200 members was a 34 us
+  dependent chain) and one five-integer read; the patches are appended once. `open_parts_4 / 16 /
+  64`: 1.51 -> 1.27, 6.15 -> 2.80, 25.9 -> 8.8 ms (2.9x at 64). The exact Kruskal-on-the-host batch
+  (R28-2) was not needed for identity and is not built: per-round tie-breaks read row indices a
+  bridge renumbers, so a batched pick must reproduce the table anyway.
 - **The floor under every entry point is `boundary_loops_batched`, a flat ~2 ms** whatever the
   mesh (closed, §16.5): `fill_fan[holes_many]` is 2.2 ms of which 2.1 is that call. Bridge
   validation: §16.5.
@@ -5190,14 +5261,21 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `"chebyshev"` unconditionally. `_AdaptiveCg` keeps its states across calls and therefore must not
   use pooled states (§16.16).
 - **Smoother verdicts are §14.8** (a Chebyshev multigrid smoother is refuted; interval robustness).
-- **The coarsest level is factored on the host and is non-singular** (2026-10-02, `probes/r28_coarse.py`
-  in `plans/benchmark-round-28-data/`): `_multigrid_dense_inverse`'s `pinv(hermitian=True)` is about a
-  third of `multigrid_preconditioner` at n = 118-331 (nullity 0 at `saddle`, `saddle_graded`,
-  `sphere_med`). A Cholesky inverse is 2.2-3.6x cheaper single-threaded. **OpenBLAS's 48-thread
-  default slows these small factorizations** (Cholesky at n = 118: 6.0 ms threaded, 0.25 ms on one
-  thread) and the whole call is 1.27-1.52x faster under `OPENBLAS_NUM_THREADS=1`; a six-module
-  A/B of ordito rows showed no comparable effect elsewhere, so the lever is this one factorization,
-  not a thread setting. Open: Cholesky-first with a `pinv` fallback (round 28's R28-3).
+- **The coarsest level is a checked LU inverse under a one-thread BLAS** (2026-10-02,
+  `linalg._symmetric_inverse`). Every coarse level probed is non-singular (nullity 0, condition
+  88-333 at n = 118-331), where `np.linalg.inv` equals `pinv(hermitian=True)` to 1e-14 relative at
+  0.55-0.6x its cost; an infinity-norm condition above `1e9` (or `LinAlgError`) falls back to
+  `pinv`, and both are symmetrized. **OpenBLAS's 48-thread default costs twice**: the small
+  factorization is slower threaded, and its workers keep spinning after it returns and slow the
+  launches that follow (cProfile: the setup's `_launch.launch` cumulative 21 vs 12 ms over ten
+  calls). `openblas_set_num_threads_local(1)` (thread-local, OpenBLAS >= 0.3.27, found in
+  `numpy.libs/` by `ctypes`; a no-op where absent) around the factorization recovers both:
+  `multigrid_preconditioner` 1.52x / 1.88x / 1.75x on `saddle_graded` / `saddle` / `sphere_med`
+  (11.0 -> 7.2, 10.2 -> 5.5, 15.4 -> 8.9 ms), CG iteration counts identical on both devices,
+  residuals equal to ~1e-13. `inv` alone was 1.07-1.36x, the thread limit the rest. Prefer it to
+  the process-wide `OPENBLAS_NUM_THREADS` (a six-module A/B of ordito rows found nothing else it
+  helps). The level transposes are `array.csr_transpose` (one sort of `nnz` keys, bit-identical to
+  `bsr_transposed`, ~0.4 ms of Warp host time a level removed).
 - **The multigrid hierarchy's *setup* is the blocker** (several sparse-op calls per coarsening level
   at Warp's fixed per-call cost, not the aggregation algorithm): every losing case loses by exactly
   that; with a free setup all would win. **No `bsr_mm` runs in a well-coarsened level**: the smoothed

@@ -38,7 +38,6 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.halfedge import halfedge_twins, vertex_one_rings
-from ordito.kernels import array as kernel_array
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
 
 _DEFAULT_MAX_STEPS = 4096
@@ -682,7 +681,7 @@ def shorten_loop_with_offsets(
     odt.ensure_ndim(loops, 1, dtype=wp.int32)
     odt.ensure_ndim(loop_offsets, 1, dtype=wp.int32)
     n_loops = loop_offsets.size - 1
-    if n_loops <= 0 or faces.size == 0 or max_iter <= 0:
+    if n_loops <= 0 or faces.size == 0 or max_iter <= 0 or loops.size == 0:
         return loops, loop_offsets, 0
 
     n_vertices = vertices.size
@@ -692,190 +691,207 @@ def shorten_loop_with_offsets(
         rings if rings is not None else vertex_one_rings(faces, twins=twins, n_vertices=n_vertices)
     )
 
-    # Each sweep reads ``packed`` and writes a freshly sized buffer, so the caller's loops are never
-    # written; a sweep that accepts nothing leaves them alone. The offsets are total-terminated,
-    # which is what every kernel below reads ``loop_offsets[l + 1]`` against.
-    packed = loops
-
-    sweeps = 0
-    # Requires TWO CONSECUTIVE sweeps to accept nothing, not "this sweep is odd and accepted
-    # nothing" -- a rewrite can shift which loop positions land on even/odd parity, so a single
-    # unchanged sweep says nothing about whether the *other* parity would still find something.
-    consecutive_unchanged = 0
-    position_loop = positions = counts = changed = arc_slot = arc_step = None
-    for sweep in range(max_iter):
-        n_positions = packed.size
-        if n_positions == 0:
+    # The loop state lives on the device (``kernels/geodesic_walk.SHORTEN_*``) and every sweep
+    # reads and writes fixed buffers sized with headroom, so a group of sweeps is recorded once
+    # and replayed with one read of the state per group. A sweep whose rewrite would outgrow the
+    # buffers is undone and flagged; the buffers then grow and the loop resumes from that sweep.
+    state = _launch.array([0, 0, 0, 0, 0, loops.size, 0, max_iter], dtype=wp.int32, device=device)
+    capacity = max(
+        loops.size + max(_SHORTEN_LOOP_SLACK, int(_SHORTEN_LOOP_GROWTH * loops.size)), n_loops + 1
+    )
+    current, current_offsets, length = loops, loop_offsets, loops.size
+    while True:
+        sweep = _LoopSweep(
+            vertices,
+            faces,
+            ring_offsets,
+            ring_halfedges,
+            is_boundary,
+            tolerance,
+            state,
+            capacity,
+            n_loops,
+        )
+        sweep.load(current, current_offsets, length)
+        values = sweep.run()
+        if values[kernel_geodesic_walk.SHORTEN_OVERFLOW] == 0:
             break
-        if consecutive_unchanged == 0:
-            # An unchanged sweep leaves `packed` and `loop_offsets` as they were, so the owner
-            # labels and the per-position scratch carry over; rebuild them only after a rewrite.
-            position_loop = _launch.empty(n_positions, dtype=wp.int32, device=device)
-            _launch.launch(
-                kernel_array.segment_owner_labels,
-                dim=n_loops,
-                inputs=[loop_offsets, position_loop],
-                device=device,
-            )
-            # One zeroed buffer: a leading zero, the per-position counts, and the accepted-anything
-            # flag after them. Scanning the counts in place makes the head the exclusive offsets
-            # and entry ``n`` the total, so the total and the flag come back in one read. The flag
-            # stays zero across unchanged sweeps -- that is what unchanged means -- so it is never
-            # re-zeroed, and the leading zero is outside the scan.
-            positions = _launch.zeros(n_positions + 2, dtype=wp.int32, device=device)
-            counts = odt.as_dense(positions[1 : n_positions + 1])
-            changed = odt.as_dense(positions[n_positions + 1 :])
-            arc_slot = _launch.empty(n_positions, dtype=wp.int32, device=device)
-            arc_step = _launch.empty(n_positions, dtype=wp.int32, device=device)
-        assert position_loop is not None
-        assert positions is not None
-        assert counts is not None
-        assert changed is not None
-        assert arc_slot is not None
-        assert arc_step is not None
+        # The undone sweep's rewritten length is the counts' total; grow past it, keep the loops
+        # it started from, and clear the stop, overflow and accepted flags to run it again.
+        needed = int(read_scalar(sweep.positions, capacity))
+        capacity = 2 * max(needed, capacity)
+        current, current_offsets = sweep.loops, sweep.loop_offsets
+        length = values[kernel_geodesic_walk.SHORTEN_LENGTH]
+        _launch.zero_(
+            state[kernel_geodesic_walk.SHORTEN_DONE : kernel_geodesic_walk.SHORTEN_LENGTH]
+        )
+
+    sweeps = values[kernel_geodesic_walk.SHORTEN_SWEEPS]
+    if values[kernel_geodesic_walk.SHORTEN_ANY] == 0:
+        return loops, loop_offsets, sweeps
+    return (
+        odt.as_dense(sweep.loops[: values[kernel_geodesic_walk.SHORTEN_LENGTH]]),
+        sweep.loop_offsets,
+        sweeps,
+    )
+
+
+# Headroom of ``shorten_loop_with_offsets``' fixed buffers over the input's positions: a sweep
+# replaces a vertex by a way round its link, which can lengthen a loop, and one that would not fit
+# is undone and run again in buffers twice the size. The shortening usually shrinks the loops, so
+# a sweep needing the headroom is rare and an overflow rarer.
+_SHORTEN_LOOP_GROWTH = 0.5
+_SHORTEN_LOOP_SLACK = 1024
+
+# Sweeps recorded into one replayed graph on CUDA, after the first sweep is issued directly (it
+# decides whether there is a loop to record at all). A sweep is nine launches; a group that runs
+# past the loop's stop is guarded no-op launches, so the group trades those against one state read
+# per sweep.
+_SHORTEN_LOOP_GRAPH_SWEEPS = 4
+
+
+class _LoopSweep:
+    """The fixed buffers of one ``shorten_loop_with_offsets`` run, and the sweep over them."""
+
+    def __init__(
+        self,
+        vertices: wp.array[wp.vec3],
+        faces: wp.array[wp.int32],
+        ring_offsets: wp.array[wp.int32],
+        ring_halfedges: wp.array[wp.int32],
+        is_boundary: wp.array[wp.bool],
+        tolerance: float,
+        state: wp.array[wp.int32],
+        capacity: int,
+        n_loops: int,
+    ) -> None:
+        device = faces.device
+        self._device = wp.get_device(device)
+        self._mesh = (vertices, faces, ring_offsets, ring_halfedges, is_boundary)
+        self._tolerance = tolerance
+        self._state = state
+        self._capacity = capacity
+        # The current loops, and the rewrite the compaction reads back into them.
+        self.loops = _launch.empty(capacity, dtype=wp.int32, device=device)
+        self.loop_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
+        self._rewritten = _launch.empty(capacity, dtype=wp.int32, device=device)
+        self._rewritten_offsets = _launch.empty(n_loops + 1, dtype=wp.int32, device=device)
+        # Each is the per-slot counts behind a leading zero, scanned in place into exclusive
+        # offsets with the total at entry ``capacity``.
+        self.positions = _launch.zeros(capacity + 1, dtype=wp.int32, device=device)
+        self._kept = _launch.zeros(capacity + 1, dtype=wp.int32, device=device)
+        self._counts = odt.as_dense(self.positions[1:])
+        self._kept_counts = odt.as_dense(self._kept[1:])
+        self._arc_slot = _launch.empty(capacity, dtype=wp.int32, device=device)
+        self._arc_step = _launch.empty(capacity, dtype=wp.int32, device=device)
+
+    def load(
+        self, loops: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], length: int
+    ) -> None:
+        """Copy the loops a run starts from into the buffers."""
+        _launch.copy(self.loops, loops, count=length)
+        _launch.copy(self.loop_offsets, loop_offsets)
+
+    def run(self) -> list[int]:
+        """Sweep until the device-side state stops the loop; return the state's words."""
+        n_state = kernel_geodesic_walk.SHORTEN_STATE_SLOTS
+        self._issue()
+        values = [int(v) for v in read_values(self._state, 0, n_state)]
+        if values[kernel_geodesic_walk.SHORTEN_DONE] != 0:
+            return values
+        if not (self._device.is_cuda and wp.is_conditional_graph_supported()):
+            while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
+                self._issue()
+                values = [int(v) for v in read_values(self._state, 0, n_state)]
+            return values
+        with wp.ScopedCapture(self._device) as capture:
+            for _ in range(_SHORTEN_LOOP_GRAPH_SWEEPS):
+                self._issue()
+        graph = capture.graph
+        assert graph is not None
+        while values[kernel_geodesic_walk.SHORTEN_DONE] == 0:
+            wp.capture_launch(graph)
+            values = [int(v) for v in read_values(self._state, 0, n_state)]
+        return values
+
+    def _issue(self) -> None:
+        """One sweep: counts, rewrite, compaction and the closing state update."""
+        vertices, faces, ring_offsets, ring_halfedges, is_boundary = self._mesh
+        device = self._device
+        state = self._state
+        capacity = self._capacity
         _launch.launch(
             kernel_geodesic_walk.shorten_loop_counts,
-            dim=n_positions,
+            dim=capacity,
             inputs=[
                 vertices,
                 faces,
                 ring_offsets,
                 ring_halfedges,
                 is_boundary,
-                packed,
-                position_loop,
-                loop_offsets,
-                sweep % 2,
-                tolerance,
-                counts,
-                arc_slot,
-                arc_step,
-                changed,
+                self.loops,
+                self.loop_offsets,
+                self._tolerance,
+                state,
+                self._counts,
+                self._arc_slot,
+                self._arc_step,
             ],
             device=device,
         )
-        sweeps = sweep + 1
-        _launch.array_scan(counts, out_array=counts, inclusive=True)
-        # One readback per sweep, and the only way to stop early: whether any replacement was
-        # accepted is a device-side fact, and the alternative -- always running `max_iter` sweeps --
-        # costs a full pass over every loop for each one that would have been skipped. The same
-        # read carries the rewritten length that sizes the rewrite.
-        total, n_changed = read_values(positions, n_positions, 2)
-        if int(n_changed) == 0:
-            consecutive_unchanged += 1
-            if consecutive_unchanged >= 2:
-                break  # both parities have now had a turn with nothing to do
-            continue
-        consecutive_unchanged = 0
-        packed, loop_offsets = _rewrite_loops(
-            faces,
-            ring_offsets,
-            ring_halfedges,
-            packed,
-            positions,
-            int(total),
-            arc_slot,
-            arc_step,
-            loop_offsets,
+        _launch.array_scan(self._counts, out_array=self._counts, inclusive=True)
+        _launch.launch(
+            kernel_geodesic_walk.shorten_loop_write,
+            dim=capacity,
+            inputs=[
+                faces,
+                ring_offsets,
+                ring_halfedges,
+                self.loops,
+                self.loop_offsets,
+                self._arc_slot,
+                self._arc_step,
+                self.positions,
+                state,
+                self._rewritten,
+                self._rewritten_offsets,
+            ],
+            device=device,
         )
-        packed, loop_offsets = _compact_repeats(packed, loop_offsets, n_loops)
-
-    return packed, loop_offsets, sweeps
-
-
-def _rewrite_loops(
-    faces: wp.array[wp.int32],
-    ring_offsets: wp.array[wp.int32],
-    ring_halfedges: wp.array[wp.int32],
-    packed: wp.array[wp.int32],
-    positions: wp.array[wp.int32],
-    total: int,
-    arc_slot: wp.array[wp.int32],
-    arc_step: wp.array[wp.int32],
-    loop_offsets: wp.array[wp.int32],
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Scatter each position's replacement into a freshly sized buffer, and remap the offsets.
-
-    ``positions`` is the sweep's counts scanned in place behind a leading zero (its first
-    ``len(packed) + 1`` entries are the exclusive offsets, entry ``len(packed)`` the ``total``).
-    """
-    device = packed.device
-    rewritten = _launch.empty(max(total, 1), dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_geodesic_walk.shorten_loop_write,
-        dim=packed.size,
-        inputs=[
-            faces,
-            ring_offsets,
-            ring_halfedges,
-            packed,
-            arc_slot,
-            arc_step,
-            positions,
-            rewritten,
-        ],
-        device=device,
-    )
-    # Each loop's old offset mapped through the position remap: a Python-scope gather.
-    offsets = _launch.empty(loop_offsets.size, dtype=wp.int32, device=device)
-    _launch.copy(offsets, positions[loop_offsets])
-    return odt.as_dense(rewritten[:total]), offsets
-
-
-def _compact_repeats(
-    packed: wp.array[wp.int32], loop_offsets: wp.array[wp.int32], n_loops: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
-    """
-    Drop positions repeating their cyclic predecessor, which a contracted spur leaves behind.
-
-    Shares its resize-then-scatter-then-remap tail with
-    [`_rewrite_loops`][ordito.geodesic_walk._rewrite_loops] (both scan counts in place behind a
-    zeroed head, then allocate/launch/slice, then gather the loop offsets through the remap), and
-    the two are kept separate rather than merged: this function has a legitimate optimization
-    ``_rewrite_loops`` does not need -- when ``total == n_positions`` (nothing was dropped) it
-    returns the original buffers unchanged instead of allocating and launching a no-op scatter. A
-    shared helper would either drop that optimization or need an early-exit signal threaded back
-    through it, which is more machinery than the handful of duplicated lines are worth
-    (CLAUDE.md section 2.4: "merge on identity of meaning, not identity of tokens" -- two different
-    amounts of control flow around one similarly-shaped call is not one function).
-    """
-    device = packed.device
-    n_positions = packed.size
-    if n_positions == 0:
-        return packed, loop_offsets
-    position_loop = _launch.empty(n_positions, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_array.segment_owner_labels,
-        dim=n_loops,
-        inputs=[loop_offsets, position_loop],
-        device=device,
-    )
-    # The 0/1 counts are written behind a zeroed head and scanned in place, so the buffer is the
-    # exclusive offsets with the total at its end: ``counts_to_offsets`` without the counts buffer.
-    positions = _launch.zeros(n_positions + 1, dtype=wp.int32, device=device)
-    counts = odt.as_dense(positions[1:])
-    _launch.launch(
-        kernel_geodesic_walk.distinct_from_predecessor,
-        dim=n_positions,
-        inputs=[packed, position_loop, loop_offsets, counts],
-        device=device,
-    )
-    _launch.array_scan(counts, out_array=counts, inclusive=True)
-    # Sizes the output: the one host readback of the compaction.
-    total = int(read_scalar(positions))
-    if total == n_positions:
-        return packed, loop_offsets
-    kept = _launch.empty(max(total, 1), dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_geodesic_walk.compact_kept,
-        dim=n_positions,
-        inputs=[packed, positions, kept],
-        device=device,
-    )
-    offsets = _launch.empty(loop_offsets.size, dtype=wp.int32, device=device)
-    _launch.copy(offsets, positions[loop_offsets])
-    return odt.as_dense(kept[:total]), offsets
+        # Drop positions repeating their predecessor, which a contracted spur leaves behind.
+        _launch.launch(
+            kernel_geodesic_walk.distinct_from_predecessor,
+            dim=capacity,
+            inputs=[
+                self._rewritten,
+                self._rewritten_offsets,
+                self.positions,
+                state,
+                self._kept_counts,
+            ],
+            device=device,
+        )
+        _launch.array_scan(self._kept_counts, out_array=self._kept_counts, inclusive=True)
+        _launch.launch(
+            kernel_geodesic_walk.compact_kept,
+            dim=capacity,
+            inputs=[
+                self._rewritten,
+                self._rewritten_offsets,
+                self._kept,
+                self.positions,
+                state,
+                self.loops,
+                self.loop_offsets,
+            ],
+            device=device,
+        )
+        _launch.launch(
+            kernel_geodesic_walk.shorten_loop_advance,
+            dim=1,
+            inputs=[self.positions, self._kept, state],
+            device=device,
+        )
 
 
 def _length_epsilon(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> float:

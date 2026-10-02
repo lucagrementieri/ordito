@@ -840,6 +840,47 @@ def test_shorten_loop_is_its_packed_form_split(genus_two: tuple[tm.Trimesh, wp.M
     assert unchanged == (flat_wp, offsets_wp, 0)
 
 
+@pytest.mark.parametrize("group", [1, 4])
+def test_shorten_loop_regrows_its_buffers_and_matches(
+    genus_two: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, group: int
+) -> None:
+    """
+    Ordito against ordito: buffers with no headroom give the same loops as the default ones.
+
+    With zero headroom the first sweep that lengthens a loop cannot fit, so it is undone and run
+    again in grown buffers -- the path no default-sized call reaches. The default call carries the
+    oracle (the potpourri3d comparison above). The test asserts that the regrowth really ran and
+    that the loops and the sweep count are identical, at two recorded group sizes.
+    """
+    _, mesh_wp = genus_two
+    flat_wp, offsets_wp = od.homology.homology_generators_with_offsets(
+        mesh_wp.points, mesh_wp.indices
+    )
+    expected_wp, expected_offsets_wp, expected_sweeps = od.geodesic_walk.shorten_loop_with_offsets(
+        mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp
+    )
+    built: list[int] = []
+    sweep_class = od.geodesic_walk._LoopSweep  # pyright: ignore[reportPrivateUsage]
+
+    class CountingSweep(sweep_class):
+        def __init__(self, *args: object) -> None:
+            built.append(cast("int", args[7]))
+            super().__init__(*args)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(od.geodesic_walk, "_LoopSweep", CountingSweep)
+    monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_GROWTH", 0.0)
+    monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_SLACK", 0)
+    monkeypatch.setattr(od.geodesic_walk, "_SHORTEN_LOOP_GRAPH_SWEEPS", group)
+    shortened_wp, shortened_offsets_wp, sweeps = od.geodesic_walk.shorten_loop_with_offsets(
+        mesh_wp.points, mesh_wp.indices, flat_wp, offsets_wp
+    )
+    assert len(built) >= 2
+    assert built[0] == flat_wp.size
+    assert sweeps == expected_sweeps
+    assert np.array_equal(shortened_offsets_wp.numpy(), expected_offsets_wp.numpy())
+    assert np.array_equal(shortened_wp.numpy(), expected_wp.numpy())
+
+
 def test_shorten_loop_is_idempotent_and_handles_edge_cases(
     torus: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:

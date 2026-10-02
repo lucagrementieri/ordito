@@ -71,7 +71,7 @@ null space, where IC(0) hits a zero pivot on the last row of every connected com
 smoothed aggregation, the one scheme that breaks the iteration count's growth with problem size
 rather than paying it down by a constant factor. It is not the default, and the reason is the
 *setup* rather than the cycle: building the hierarchy (one aggregation, one power iteration, a
-``bsr_transposed`` and three ``bsr_mm`` per level) has a real fixed cost, so the V-cycle wins
+transpose and two sparse products per level) has a real fixed cost, so the V-cycle wins
 exactly where the solve it replaces is long enough to amortize that setup and loses on a
 well-conditioned or already-fast-converging system. See
 [`CG_MULTIGRID_DOMINANCE`][ordito.linalg.CG_MULTIGRID_DOMINANCE] for how the gate decides.
@@ -119,10 +119,15 @@ multilevel help of its own: it converges in a small, size-independent number of 
 
 from __future__ import annotations
 
+import contextlib
+import ctypes
+import functools
+import glob
 import math
+import os
 import warnings
 import weakref
-from collections.abc import Sequence
+from collections.abc import Callable, Generator, Sequence
 from typing import TYPE_CHECKING, Any, Literal, TypeGuard, cast, overload
 
 import numpy as np
@@ -2784,7 +2789,7 @@ def multigrid_preconditioner(
     Notes
     -----
     Setup is not free and it is not amortized over anything: building the hierarchy costs one
-    aggregation, one power iteration, two ``bsr_mm`` and one ``bsr_transposed`` per level. **Ask for
+    aggregation, one power iteration, two sparse products and one transpose per level. **Ask for
     this where the solve dominates the call**, and pass the same operator's preconditioner into a
     loop rather than rebuilding it -- [`solve_spd`][ordito.linalg.solve_spd]'s ``preconditioner``
     parameter exists for exactly that.
@@ -3025,7 +3030,7 @@ class SquaredLaplacianPreconditioner:
             device=self._device,
         )
         self._factor = bsr_with_values(laplacian, factor_values)
-        self._factor_t = odt.bsr_transposed(self._factor)
+        self._factor_t = od.array.csr_transpose(self._factor)
         # The upper end is ``M_ff``'s Gershgorin bound, ``max_i sum_j |L_ij| / D_i``, never below
         # 2. With ``D`` the diagonal of ``L`` it is exactly 2 when every weight is non-negative and
         # exceeds it when a clamped cotangent weight is negative, as on a regular grid's near-right
@@ -3510,7 +3515,7 @@ def _multigrid_hierarchy(
         level.prolongator = _multigrid_prolongator(
             operator, label, sizes, n_aggregates, level.inverse_diagonal
         )
-        level.restrictor = odt.bsr_transposed(level.prolongator)
+        level.restrictor = od.array.csr_transpose(level.prolongator)
         operator = _multigrid_galerkin(operator, level.prolongator)
     coarse_inverse = _multigrid_dense_inverse(levels[-1].operator)
     if coarse_inverse is None:
@@ -3803,7 +3808,9 @@ def _multigrid_galerkin(
     if galerkin is None:
         # ``bsr_mm``'s structural zeros are what ``bsr_compress`` drops here.
         galerkin = _synced(
-            odt.bsr_compress(odt.bsr_mm(odt.bsr_transposed(p), product), prune_numerical_zeros=True)
+            odt.bsr_compress(
+                odt.bsr_mm(od.array.csr_transpose(p), product), prune_numerical_zeros=True
+            )
         )
     return galerkin
 
@@ -3858,7 +3865,7 @@ def _synced(matrix: odt.BsrMatrix[wp.float64]) -> odt.BsrMatrix[wp.float64]:
     """
     ``matrix`` with its ``nnz`` field repaired to the stored count.
 
-    A triplet assembly leaves ``nnz`` at the triplet count, and ``bsr_transposed``, ``bsr_mm`` and
+    A triplet assembly leaves ``nnz`` at the triplet count, and ``csr_transpose``, ``bsr_mm`` and
     the V-cycle's launches read the field rather than the offsets, so every hierarchy matrix pays
     the one readback here.
     """
@@ -3891,11 +3898,85 @@ def _multigrid_dense_inverse(matrix: odt.BsrMatrix[wp.float64]) -> odt.ArrayNd |
         return None
     inverse = np.zeros((n, n), dtype=np.float64)
     if active.size:
-        # ``hermitian=True`` factors through ``eigh`` rather than a general SVD, which the operator
-        # being symmetric makes exact and considerably cheaper.
-        block = np.linalg.pinv(dense[np.ix_(active, active)], rcond=1e-12, hermitian=True)
-        inverse[np.ix_(active, active)] = block
+        inverse[np.ix_(active, active)] = _symmetric_inverse(dense[np.ix_(active, active)])
     return _launch.array(inverse, dtype=wp.float64, device=matrix.device)
+
+
+# Largest infinity-norm condition number at which ``_symmetric_inverse`` trusts a plain inverse.
+# ``kappa_2 <= n kappa_inf``, so at ``n <= _MULTIGRID_MAX_DENSE`` this keeps ``kappa_2`` under
+# ``1e12``, the cut ``pinv(rcond=1e-12)`` would make: below it the pseudo-inverse truncates nothing
+# and the two agree to rounding.
+_DENSE_INVERSE_MAX_CONDITION = 1e9
+
+
+def _symmetric_inverse(block: npt.NDArray[np.float64]) -> npt.NDArray[np.float64]:
+    """
+    Inverse of a symmetric matrix, or its pseudo-inverse when it is numerically singular.
+
+    The coarsest levels this factors are non-singular in practice, where an LU inverse is the same
+    answer as ``pinv(hermitian=True)`` (an eigendecomposition) to rounding at a fraction of its
+    cost; a singular or ill-conditioned level -- a semi-definite operator whose constants survived
+    coarsening -- falls back to the pseudo-inverse. Both run with the calling thread's BLAS
+    limited to one thread: at these sizes a threaded factorization is slower, and its worker
+    threads keep spinning afterwards, slowing the launches that follow.
+    """
+    with _single_threaded_blas():
+        try:
+            inverse = np.linalg.inv(block)
+        except np.linalg.LinAlgError:
+            inverse = None
+        if inverse is not None and not (
+            np.linalg.norm(block, np.inf) * np.linalg.norm(inverse, np.inf)
+            <= _DENSE_INVERSE_MAX_CONDITION
+        ):
+            inverse = None
+        if inverse is None:
+            # ``hermitian=True`` factors through ``eigh`` rather than a general SVD, which the
+            # operator being symmetric makes exact and considerably cheaper.
+            inverse = np.linalg.pinv(block, rcond=1e-12, hermitian=True).astype(
+                np.float64, copy=False
+            )
+    # Neither factorization returns an exactly symmetric matrix, and the V-cycle must stay a
+    # symmetric preconditioner.
+    return 0.5 * (inverse + inverse.T)
+
+
+@contextlib.contextmanager
+def _single_threaded_blas() -> Generator[None]:
+    """
+    Limit OpenBLAS to one thread for the calling thread, inside a ``with`` block.
+
+    Uses OpenBLAS's thread-local ``openblas_set_num_threads_local``, so no other thread's BLAS
+    calls are affected. A no-op when NumPy is not linked against an OpenBLAS that exports it.
+    """
+    setter = _openblas_thread_setter()
+    if setter is None:
+        yield
+        return
+    previous = setter(1)
+    try:
+        yield
+    finally:
+        setter(previous)
+
+
+@functools.cache
+def _openblas_thread_setter() -> Callable[[int], int] | None:
+    """``openblas_set_num_threads_local`` from the OpenBLAS NumPy ships with, or ``None``."""
+    root = os.path.dirname(os.path.abspath(np.__file__))
+    candidates = [
+        *glob.glob(os.path.join(root + ".libs", "*openblas*")),
+        *glob.glob(os.path.join(root, ".dylibs", "*openblas*")),
+    ]
+    for path in candidates:
+        try:
+            setter = ctypes.CDLL(path).openblas_set_num_threads_local
+        except (OSError, AttributeError):
+            continue
+        setter.restype = ctypes.c_int
+        setter.argtypes = [ctypes.c_int]
+        return setter
+    return None
 
 
 class _MultigridCycle:

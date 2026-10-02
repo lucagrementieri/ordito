@@ -1710,6 +1710,10 @@ def bridge_edge_census(
                 out_census[q, 2] = corner[_wrap(k + 2, 3)] + 1
 
 
+# Lanes per member of ``reduce_closest_cross_label_pair``.
+CLOSEST_PAIR_BLOCK = 64
+
+
 @wp.kernel
 def reduce_closest_cross_label_pair(
     vertices: wp.array[wp.vec3],
@@ -1723,32 +1727,40 @@ def reduce_closest_cross_label_pair(
     # first column of each row of ``members`` (the tail of an oriented boundary edge, read in place
     # rather than copied out of the strided column first), reduced into one
     # ``int64`` by ``pack_nearest_key`` -- "smallest distance, lowest index on a tie", so the answer
-    # is deterministic whatever the thread order. Thread ``i`` finds its own nearest cross-label
-    # partner and records it in ``out_partner[i]``, so the winning *pair* is recoverable from the
-    # key (whose low half is the query index) plus one lookup.
+    # is deterministic whatever the thread order. Block ``i`` finds member ``i``'s nearest
+    # cross-label partner and records it in ``out_partner[i]``, so the winning *pair* is
+    # recoverable from the key (whose low half is the query index) plus one lookup.
     #
-    # The scan is exhaustive: every thread walks the whole member list. That is ``O(B^2)`` for ``B``
-    # members and it is the deliberate choice, because the members here are *boundary* vertices of a
-    # mesh with more than one component -- a single-component mesh has no cross-label pair and the
-    # caller never launches this -- so ``B`` is split across the components that exist. Accelerating
-    # it means a structure per round and a label predicate inside the query; nothing has measured a
-    # need for that yet.
-    i = wp.int32(wp.tid())
+    # The scan is exhaustive: every member is tested against every other. That is ``O(B^2)`` for
+    # ``B`` members and it is the deliberate choice, because the members here are *boundary*
+    # vertices of a mesh with more than one component -- a single-component mesh has no cross-label
+    # pair and the caller never launches this -- so ``B`` is split across the components that
+    # exist. Accelerating it means a structure per round and a label predicate inside the query;
+    # nothing has measured a need for that yet.
+    #
+    # One block per query: ``B`` is a few hundred on the benchmarked inputs, so one thread per
+    # query walking every member was a short grid of long dependent chains. The lanes stride the
+    # members by ``wp.block_dim()`` with the strict ``<`` of the serial walk, so each keeps the
+    # lowest index among its own ties, and ``block_argmin`` keeps the lowest across lanes -- the
+    # serial walk's answer exactly, on the one CPU lane too.
+    i, lane = wp.tid()
     n = members.shape[0]
     position = vertices[members[i, 0]]
     label = labels[i]
     best_sq = FLOAT32_INF_CONSTANT
     best = wp.int32(-1)
-    for j in range(n):
+    for j in range(lane, n, wp.block_dim()):
         if labels[j] == label:
             continue
         distance_sq = wp.length_sq(vertices[members[j, 0]] - position)
         if distance_sq < best_sq:
             best_sq = distance_sq
             best = j
-    out_partner[i] = best
-    if best >= 0 and best_sq <= max_distance_sq:
-        wp.atomic_min(out_best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
+    best_sq, best = block_argmin(best_sq, best)
+    if lane == 0:
+        out_partner[i] = best
+        if best >= 0 and best_sq <= max_distance_sq:
+            wp.atomic_min(out_best, 0, pack_nearest_key(wp.sqrt(best_sq), i))
 
 
 @wp.kernel

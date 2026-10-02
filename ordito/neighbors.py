@@ -76,6 +76,12 @@ _KNN_DEFER_MIN_POINTS = 8192
 # ``_GRID_BINS_MIN``, which every cloud up to about a million points keeps. The cost of a table
 # too small grows with the cloud; past a few bins per occupied cell it is flat, while a build
 # clears both ``int32`` per-bin tables every time, so ``_GRID_BINS_MAX`` caps them at ~450 MB.
+# Sources per ``geodesic_ball`` launch: the per-source scratch pools (queue, visited row,
+# nearest-fallback pool, a few kilobytes a source) are sized for one chunk. The walk is
+# latency-bound, so the chunk is also the launch's thread count, and it is as large as it can be
+# before the pools stop fitting in the device's L2 cache.
+_GEODESIC_BALL_CHUNK = 1 << 16
+
 _GRID_BINS_MIN = 128
 _GRID_BINS_MAX = 384
 _GRID_BINS_PER_POINT = 2
@@ -1743,7 +1749,7 @@ def geodesic_ball(
     # Per-source scratch lives in shared global-memory pools sized for one chunk of sources
     # (queue rows, an open-addressing visited row pre-filled with -1 per launch, and a small
     # nearest-fallback pool) instead of kilobytes of per-thread local arrays.
-    chunk = min(n, 1 << 15)
+    chunk = min(n, _GEODESIC_BALL_CHUNK)
     queue_pool = _launch.empty(
         (chunk, kernel_bfs.PER_SOURCE_MAX_NEIGHBORS), dtype=wp.int32, device=device
     )

@@ -22,6 +22,7 @@ from tests.comparisons import (
     canonical_winding,
     hausdorff_surface_two_sided,
     lexsort_rows,
+    same_partition,
 )
 from tests.conftest import OPEN_MESHES
 from tests.conversions import (
@@ -3290,6 +3291,49 @@ def test_join_closest_components_matches_pymeshfix(
     assert od.validation.is_edge_manifold(joined_wp)
     # The prefix is the input face buffer: bridge triangles are appended, never interleaved.
     assert np.array_equal(joined_wp.numpy()[: faces_wp.size], faces_wp.numpy())
+
+
+@pytest.mark.parametrize("count", [3, 6])
+def test_join_closest_components_rim_tracks_the_regrouped_boundary(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], device: str, count: int
+) -> None:
+    """
+    Ordito against ordito: the rim edited join by join is the rim a regroup would find.
+
+    ``join_closest_components`` no longer regroups the face buffer between joins; it edits its
+    boundary table and component labels as each patch dictates. The pymeshfix comparison above
+    carries the oracle for the joins themselves. This pins the edit: after every join, the table
+    (rows and their order, which is the pairing's tie-break) equals
+    ``oriented_boundary_edges`` of the faces so far, and the labels partition the rows as
+    ``face_connected_component_labels`` does. The shells are a regular row, so the distances
+    carry exact ties and the row order is live.
+    """
+    mesh_tm = _open_shells_tm(hemisphere, count, gap=2.2)
+    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces, device)
+    rim = od.holes._JoinRim.of(vertices_wp, faces_wp)  # pyright: ignore[reportPrivateUsage]
+    assert rim is not None
+    faces_np = faces_wp.numpy()
+    max_distance_sq = wp.float32(float("inf"))
+    for _ in range(count - 1):
+        pair = rim.closest_cross_component_edges(max_distance_sq)
+        assert pair is not None
+        triangles = od.holes._bridge_triangles(*pair)  # pyright: ignore[reportPrivateUsage]
+        rim.bridge(triangles)
+        faces_np = np.concatenate([faces_np, np.asarray(triangles, dtype=np.int32).reshape(-1)])
+        current_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+        rows_np = od.boundary.oriented_boundary_edges(vertices_wp, current_wp).numpy()
+        assert np.array_equal(rim.rows(), rows_np)
+        face_labels_np = od.adjacency.face_connected_component_labels(current_wp).numpy()
+        tail_faces_np = np.array(
+            [
+                np.flatnonzero((faces_np.reshape(-1, 3) == tail).any(axis=1))[0]
+                for tail in rows_np[:, 0]
+            ]
+        )
+        expected_np = face_labels_np[tail_faces_np]
+        labels_np = rim.row_components()
+        assert same_partition(labels_np, expected_np)
+    assert rim.closest_cross_component_edges(max_distance_sq) is None
 
 
 def test_join_closest_components_joins_the_nearest_pair(

@@ -264,8 +264,8 @@ def test_multigrid_preconditioner(bench_case: BenchCase) -> None:
     The solve-side win is not timed here -- it lands in the ``smooth_region`` group, the one
     operator class in the package where it pays. What this row
     measures is the other half of that trade, and why the switch is per call site and not a default:
-    building the hierarchy is one aggregation, one power iteration, a ``bsr_transposed`` and three
-    ``bsr_mm`` per level, and at these sizes every one of those is a *fixed* per-call cost rather
+    building the hierarchy is one aggregation, one power iteration, a transpose and two sparse
+    products per level, and at these sizes every one of those is a *fixed* per-call cost rather
     than a function of the operator -- which is why ``smoothing.smooth_region_fixed_rim`` and
     ``parametrization.harmonic`` at ``k=1`` decline it: their whole solve is shorter than this row.
 

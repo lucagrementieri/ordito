@@ -331,9 +331,11 @@ def isotropic_remesh(
                     current_vertices.size,
                     device,
                 )[1]
-            current_vertices, current_faces = subdivide_to_size(
+            current_vertices, current_faces, _index, grouping = _subdivide_to_size(
                 current_vertices, current_faces, split_limit, max_iter=20
             )
+        else:
+            grouping = None
         # The edge grouping of ``current_faces`` whenever a stage leaves one behind, so the next
         # stage that classifies the same faces need not regroup them.
         incidence: _EdgeIncidence | None = None
@@ -345,14 +347,22 @@ def isotropic_remesh(
                 device,
             )
             current_vertices, current_faces, incidence = _collapse_pass(
-                current_vertices, current_faces, low, high, feature
+                current_vertices, current_faces, low, high, feature, grouping=grouping
             )
+        elif grouping is not None:
+            incidence = _edge_incidence(current_faces, current_vertices.size, grouping)
         if current_faces.size == 0:
             break
-        if swap and _valence_flip_pass(
-            current_vertices, current_faces, feature, incidence=incidence
-        ):
-            incidence = None  # a flip rewrote the faces in place, so the grouping is stale
+        if swap:
+            flips, topology = _valence_flip_pass(
+                current_vertices, current_faces, feature, incidence=incidence
+            )
+            if flips:
+                # A flip rewrote the faces in place, so the grouping is stale; the flip loop's own
+                # key sort regroups them without re-packing every corner's key.
+                incidence = _edge_incidence(
+                    current_faces, current_vertices.size, topology.edges_unique()
+                )
         if smooth or reproject:
             # One edge grouping serves both the classification and the smoothing ring: the two read
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
@@ -480,7 +490,11 @@ def _classify(
     return feature_count, boundary_vertex
 
 
-def _edge_incidence(faces: wp.array[wp.int32], n_vertices: int) -> _EdgeIncidence:
+def _edge_incidence(
+    faces: wp.array[wp.int32],
+    n_vertices: int,
+    grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
+) -> _EdgeIncidence:
     """
     Group a triangulation's edge rows once, into unique edges and their incident faces.
 
@@ -488,9 +502,15 @@ def _edge_incidence(faces: wp.array[wp.int32], n_vertices: int) -> _EdgeIncidenc
     passes run anyway -- and it replaces the ``scatter.count_occurrences`` launch they used to make
     for the count alone, so it is very nearly free. It is what lets ``_classify`` skip a second and
     third grouping of the same rows; see ``scatter_edge_incidence`` in ``kernels/scatter.py``.
+    ``grouping``, when given, is ``edges_unique``'s ``(unique_edges, inverse)`` for ``faces``,
+    already in hand from the stage that produced them.
     """
     device = faces.device
-    unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    unique_edges, inverse = (
+        grouping
+        if grouping is not None
+        else od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
+    )
     m = int(unique_edges.shape[0])
     face_count = _launch.zeros(m, dtype=wp.int32, device=device)
     edge_faces = odt.empty_2d((m, 2), wp.int32, device=device)
@@ -511,6 +531,7 @@ def _collapse_pass(
     high: wp.array[wp.float32],
     feature: wp.float32,
     max_passes: int = 5,
+    grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None]:
     """
     Collapse short edges in parallel with 1-ring locking; returns compacted (vertices, faces).
@@ -522,11 +543,15 @@ def _collapse_pass(
     The third return is the edge grouping of the returned faces when the loop has one in hand --
     it stopped on a pass that committed nothing, so the faces it grouped are the ones it returns --
     and ``None`` otherwise, so the next stage can classify the same faces without regrouping them.
+    ``grouping`` is ``edges_unique``'s ``(unique_edges, inverse)`` of ``faces`` on entry, when the
+    caller has it.
     """
     device = vertices.device
-    # One commit counter for the whole loop, never reset: it accumulates across passes and a pass
-    # committed nothing exactly when it did not move.
-    count = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Slot 0 is one commit counter for the whole loop, never reset: it accumulates across passes and
+    # a pass committed nothing exactly when it did not move. Slots 1-2 are the pass's compaction
+    # counts (``_compact_remapped_faces``), so the pass reads all three in one copy.
+    state = _launch.zeros(3, dtype=wp.int32, device=device)
+    count = odt.as_dense(state[:1])
     committed = 0
     current: _EdgeIncidence | None = None
     for _ in range(max_passes):
@@ -536,8 +561,10 @@ def _collapse_pass(
         if n_faces == 0:
             break
 
-        # One edge grouping per pass, shared by the candidate scoring and ``_classify``.
-        incidence = _edge_incidence(faces, n_vertices)
+        # One edge grouping per pass, shared by the candidate scoring and ``_classify``; the first
+        # pass's may come from the stage before (``grouping``).
+        incidence = _edge_incidence(faces, n_vertices, grouping)
+        grouping = None
         unique_edges = incidence.unique_edges
         m = int(unique_edges.shape[0])
         if m == 0:
@@ -620,16 +647,24 @@ def _collapse_pass(
             ],
             device=device,
         )
-        total = int(read_scalar(count, 0))
+        # Drop the faces the collapses degenerated and the vertices no face names any more, in one
+        # scan: the positions and both length bands are compacted together, so neither band is
+        # re-sampled. Issued before the commit count is read, so one copy carries the loop's
+        # decision and the sizes; a pass that committed nothing discards a compaction of an
+        # identity remap.
+        ranks, compacted = _compact_remapped_faces(
+            faces, remap, n_vertices, odt.as_dense(state[1:])
+        )
+        total, n_kept, n_surviving = (int(value) for value in read_values(state, 0, 3))
         if total == committed:
             current = incidence
             break
         committed = total
-
-        # Drop the faces the collapses degenerated and the vertices no face names any more, in one
-        # scan: the positions and both length bands are compacted together, so neither band is
-        # re-sampled.
-        ranks, faces, n_kept = _compact_remapped_faces(faces, remap, n_vertices)
+        faces = (
+            odt.as_dense(compacted[: 3 * n_surviving])
+            if n_surviving > 0
+            else _launch.empty(0, dtype=wp.int32, device=device)
+        )
         vertices = _launch.empty(n_kept, dtype=wp.vec3, device=device)
         kept_low = _launch.empty(n_kept, dtype=wp.float32, device=device)
         kept_high = _launch.empty(n_kept, dtype=wp.float32, device=device)
@@ -651,13 +686,14 @@ def _valence_flip_pass(
     feature: wp.float32,
     max_iter: int = 10,
     incidence: _EdgeIncidence | None = None,
-) -> int:
+) -> tuple[int, _FlipTopology]:
     """
     Flip interior edges toward ideal valence (6 interior, 4 boundary); mutates ``faces``.
 
     ``incidence``, when given, is the edge grouping of ``faces`` as they are on entry; the boundary
     classification reads it rather than grouping the rows again. Returns the number of flips, so a
-    caller holding that grouping knows whether it still describes ``faces``.
+    caller holding that grouping knows whether it still describes ``faces``, and the flip topology,
+    whose ``edges_unique`` regroups the flipped faces from the loop's own key sort.
     """
     device = faces.device
     n_vertices = vertices.size
@@ -701,7 +737,11 @@ def _valence_flip_pass(
             device=device,
         )
 
-    return _flip_interior_edges(faces, n_vertices, launch, max_iter, valence=valence)
+    topology = _FlipTopology(faces, n_vertices)
+    flips = _flip_interior_edges(
+        faces, n_vertices, launch, max_iter, topology=topology, valence=valence
+    )
+    return flips, topology
 
 
 def _smooth_pass(
@@ -1564,21 +1604,22 @@ def _cluster_faces(
 
 
 def _compact_remapped_faces(
-    faces: wp.array[wp.int32], remap: wp.array[wp.int32], n_targets: int
-) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
+    faces: wp.array[wp.int32], remap: wp.array[wp.int32], n_targets: int, totals: wp.array[wp.int32]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Faces pushed through a vertex remap, with the collapsed ones dropped and the targets compacted.
 
-    Returns ``(ranks, compacted_faces, n_kept)``. A face survives when its three remapped corners
-    are distinct; the targets kept are those a surviving face names, in target order, and
-    ``compacted_faces`` holds the surviving faces in input order renumbered onto them -- a
-    face-mask ``submesh`` followed by ``repair.remove_unreferenced_vertices``. ``ranks`` is the
-    ``n_targets + 1`` scan ``kernels/array.scanned_slot`` reads each target's slot from.
+    Returns ``(ranks, compacted_faces)`` and writes ``totals = [n_kept, n_surviving]`` on the
+    device: the caller reads them with whatever else it reads. A face survives when its three
+    remapped corners are distinct; the targets kept are those a surviving face names, in target
+    order, and the first ``3 * n_surviving`` entries of ``compacted_faces`` hold the surviving
+    faces in input order renumbered onto them -- a face-mask ``submesh`` followed by
+    ``repair.remove_unreferenced_vertices``. ``ranks`` is the ``n_targets + 1`` scan
+    ``kernels/array.scanned_slot`` reads each target's slot from.
 
-    One marking launch, one scan over the face flags and the target marks together, one compaction
-    that also publishes both counts, and one read of them. The compacted buffer is sized for every
-    face so that launch can publish the counts before the host knows them; the result is its
-    leading view.
+    One marking launch, one scan over the face flags and the target marks together, and one
+    compaction that also publishes both counts. The compacted buffer is sized for every face so
+    that launch can publish the counts before the host knows them.
     """
     device = faces.device
     n_faces = faces.size // 3
@@ -1592,18 +1633,13 @@ def _compact_remapped_faces(
     _launch.array_scan(marks, marks, inclusive=True)
     ranks = odt.as_dense(scan[n_faces:])
     compacted = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
-    totals = _launch.empty(2, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.compact_surviving_faces,
         dim=n_faces,
         inputs=[faces, remap, scan[: n_faces + 1], ranks, compacted, totals],
         device=device,
     )
-    # Both counts size what the caller allocates next, so they come back -- together, in one copy.
-    n_kept, n_surviving = (int(count) for count in totals.numpy())
-    if n_surviving == 0:
-        return ranks, _launch.empty(0, dtype=wp.int32, device=device), n_kept
-    return ranks, odt.as_dense(compacted[: 3 * n_surviving]), n_kept
+    return ranks, compacted
 
 
 @overload
@@ -3286,6 +3322,31 @@ def subdivide_to_size(
     [`trimesh.remesh.subdivide_to_size`][]
     """
     require_same_device(vertices=vertices, faces=faces, max_edge=max_edge)
+    new_vertices, new_faces, index, _grouping = _subdivide_to_size(
+        vertices, faces, max_edge, max_iter
+    )
+    if return_index:
+        return new_vertices, new_faces, index
+    return new_vertices, new_faces
+
+
+def _subdivide_to_size(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    max_edge: float | wp.array[wp.float32],
+    max_iter: int,
+) -> tuple[
+    wp.array[wp.vec3],
+    wp.array[wp.int32],
+    wp.array[wp.int32],
+    tuple[odt.Array2dInt32, wp.array[wp.int32]] | None,
+]:
+    """
+    ``subdivide_to_size`` with its face index and the returned faces' edge grouping.
+
+    The grouping is ``edges_unique``'s ``(unique_edges, inverse)``, which the pass that found
+    nothing left to split computed for exactly the faces returned; ``None`` for an empty mesh.
+    """
     device = vertices.device
     sizing = max_edge if isinstance(max_edge, wp.array) else None
     max_edge_f = wp.float32(0.0 if isinstance(max_edge, wp.array) else max_edge)
@@ -3296,10 +3357,9 @@ def subdivide_to_size(
     index = od.array.arange(n_faces, device=device)
 
     if n_faces == 0:
-        if return_index:
-            return _launch.clone(vertices), _launch.clone(faces), index
-        return _launch.clone(vertices), _launch.clone(faces)
+        return _launch.clone(vertices), _launch.clone(faces), index, None
 
+    grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None
     for i in range(max_iter + 1):
         n_vertices = current_vertices.size
 
@@ -3335,6 +3395,7 @@ def subdivide_to_size(
         # Every edge is short enough: we are done. The count is already on the host, so the pass
         # that finds nothing to split stops here rather than running a split that only copies.
         if n_split == 0:
+            grouping = (unique_edges, inverse)
             break
         # Ran out of passes with over-long edges still present.
         if i >= max_iter:
@@ -3373,9 +3434,7 @@ def subdivide_to_size(
     # fresh buffers there.
     if current_vertices is vertices:
         current_vertices, current_faces = _launch.clone(vertices), _launch.clone(faces)
-    if return_index:
-        return current_vertices, current_faces, index
-    return current_vertices, current_faces
+    return current_vertices, current_faces, index, grouping
 
 
 def _extend_sizing_field(

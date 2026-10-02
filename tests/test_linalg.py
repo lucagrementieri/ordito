@@ -971,6 +971,27 @@ def test_multigrid_preconditioner_is_symmetric(device: str) -> None:
     assert not np.allclose(applied_left.numpy(), left_np)
 
 
+@pytest.mark.parametrize("singular", [False, True], ids=["definite", "semi-definite"])
+def test_multigrid_coarse_inverse_matches_the_pseudo_inverse(singular: bool) -> None:
+    """
+    The coarse factorization is ``pinv(hermitian=True)``'s answer on both branches.
+
+    Not a library comparison: NumPy's pseudo-inverse is the oracle for the faster path. A path
+    graph's Laplacian is singular (constants), which an LU inverse cannot see -- it returns
+    garbage or raises -- so this arm must take the pseudo-inverse fallback; shifted it is definite
+    and takes the plain inverse. Both must be symmetric (the V-cycle is a CG preconditioner).
+    """
+    n = 60
+    laplacian_np = 2.0 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1)
+    laplacian_np[0, 0] = laplacian_np[-1, -1] = 1.0
+    block_np = -laplacian_np if singular else -(laplacian_np + 0.1 * np.eye(n))
+    inverse_np = od.linalg._symmetric_inverse(block_np)
+    expected_np = np.linalg.pinv(block_np, rcond=1e-12, hermitian=True)
+    assert np.array_equal(inverse_np, inverse_np.T)
+    assert np.allclose(inverse_np, expected_np, rtol=1e-9, atol=1e-9)
+    assert np.abs(expected_np).max() < 1e3  # the pseudo-inverse, not a huge near-singular inverse
+
+
 @pytest.mark.parametrize("k", [24, 40])
 def test_multigrid_galerkin_fallback_builds_the_same_hierarchy(
     device: str, monkeypatch: pytest.MonkeyPatch, k: int

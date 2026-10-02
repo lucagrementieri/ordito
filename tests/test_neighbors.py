@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import heapq
 import math
+import warnings
 from collections import deque
 from collections.abc import Callable
 from functools import partial
@@ -1882,6 +1883,38 @@ def test_geodesic_ball_neighborhoods_overflow_warns(device: str) -> None:
         _, offsets_wp, _ = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
     # Clamped, not crashed: every per-vertex count fits within the fixed capacity.
     assert np.diff(offsets_wp.numpy()).max() <= 512
+
+
+@pytest.mark.parametrize("radius_scale", [3.0, 100.0], ids=["ball", "clipped"])
+def test_geodesic_ball_chunks_agree(
+    device: str, monkeypatch: pytest.MonkeyPatch, radius_scale: float
+) -> None:
+    """
+    Ordito against ordito: sources split over several launches give the one-launch answer.
+
+    A mesh larger than one chunk of sources is walked a chunk at a time, re-filling the shared
+    scratch pools between launches and stitching the per-chunk rows together; no fixture in this
+    suite is that large, so the chunk is forced down to an uneven split. The one-launch call carries
+    the oracle (the libigl and meshlib comparisons above). Rows, offsets, reference neighbours and
+    the clipped-source warning must be identical, on a ball and on a radius that clips every source.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4)
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
+    )
+    radius = radius_scale * float(od.edges.mean_edge_length(vertices_wp, faces_wp))
+    with warnings.catch_warnings(record=True) as whole_warnings:
+        warnings.simplefilter("always")
+        whole = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
+    monkeypatch.setattr(od.neighbors, "_GEODESIC_BALL_CHUNK", 700)
+    assert vertices_wp.size > 3 * 700
+    with warnings.catch_warnings(record=True) as chunked_warnings:
+        warnings.simplefilter("always")
+        chunked = od.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
+    for whole_wp, chunked_wp in zip(whole, chunked, strict=True):
+        assert np.array_equal(whole_wp.numpy(), chunked_wp.numpy())
+    assert [str(w.message) for w in whole_warnings] == [str(w.message) for w in chunked_warnings]
+    assert len(whole_warnings) == (1 if radius_scale > 10.0 else 0)
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])

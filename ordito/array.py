@@ -1243,11 +1243,14 @@ def csr_from_triplets(
             f"{values.shape[0]}"
         )
     device = rows.device
-    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(count, dtype=wp.int32, device=device)
-    summed = _launch.empty(count, dtype=values.dtype, device=device)
     if count == 0:
-        return bsr_from_csr(n_rows, n_cols, offsets, columns, summed)
+        return bsr_from_csr(
+            n_rows,
+            n_cols,
+            _launch.zeros(n_rows + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=values.dtype, device=device),
+        )
     keys, order = csr_key_buffers(count, device)
     if prune_numerical_zeros:
         # Zero-valued triplets are never sorted: they cannot change a sum, so this only saves work.
@@ -1273,6 +1276,85 @@ def csr_from_triplets(
             inputs=[rows, cols, wp.int32(n_rows), wp.int32(n_cols), keys, order],
             device=device,
         )
+    return _csr_from_coo_keys(
+        n_rows, n_cols, keys, order, values, prune_numerical_zeros=prune_numerical_zeros
+    )
+
+
+def csr_transpose(matrix: odt.BsrMatrix[odt.Block]) -> odt.BsrMatrix[odt.Block]:
+    """
+    Transpose a sparse matrix of scalar blocks, with no host readback.
+
+    The entries keep their values bit for bit and every row of the result is sorted by column, as
+    ``warp.sparse.bsr_transposed`` returns them; this sorts one key per entry over only the bits
+    the shape needs instead.
+
+    Parameters
+    ----------
+    matrix
+        ``(n_rows, n_cols)`` compact matrix of ``wp.float32``, ``wp.float64`` or ``wp.int32``
+        entries. Its ``nnz`` may be a capacity (the stored entries are ``offsets[-1]``).
+
+    Returns
+    -------
+    warp.sparse.BsrMatrix
+        ``(n_cols, n_rows)`` transpose, its ``nnz`` the same count ``matrix.nnz`` records.
+
+    Raises
+    ------
+    ValueError
+        If ``matrix`` has blocks larger than 1x1.
+
+    See Also
+    --------
+    [`csr_from_triplets`][ordito.array.csr_from_triplets]
+    """
+    if matrix.block_shape != (1, 1):
+        raise ValueError(f"csr_transpose takes 1x1 blocks, got {matrix.block_shape}")
+    n_rows = int(matrix.nrow)
+    n_cols = int(matrix.ncol)
+    count = int(matrix.nnz)
+    device = matrix.values.device
+    if count == 0:
+        return bsr_from_csr(
+            n_cols,
+            n_rows,
+            _launch.zeros(n_cols + 1, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=wp.int32, device=device),
+            _launch.empty(0, dtype=matrix.values.dtype, device=device),
+            nnz=0,
+        )
+    keys, order = csr_key_buffers(count, device)
+    _launch.launch(
+        kernel_array.csr_transposed_keys,
+        dim=n_rows + 1,
+        inputs=[matrix.offsets, matrix.columns, wp.int32(n_rows), wp.int32(n_cols), keys, order],
+        device=device,
+    )
+    # Every key is distinct, so each run is one entry and its "sum" is its own value.
+    return _csr_from_coo_keys(n_cols, n_rows, keys, order, odt.as_dense(matrix.values[:count]))
+
+
+def _csr_from_coo_keys(
+    n_rows: int,
+    n_cols: int,
+    keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
+    values: wp.array[odt.Block, Any],
+    *,
+    prune_numerical_zeros: bool = False,
+) -> odt.BsrMatrix[odt.Block]:
+    """
+    Sort written COO keys and assemble the matrix they spell, summing each run of ``values``.
+
+    ``keys`` / ``order`` are [`csr_key_buffers`][ordito.array.csr_key_buffers] holding one
+    ``kernels/array.csr_key`` and one index into ``values`` per slot in their first halves.
+    """
+    count = int(values.shape[0])
+    device = keys.device
+    offsets = _launch.zeros(n_rows + 1, dtype=wp.int32, device=device)
+    columns = _launch.empty(count, dtype=wp.int32, device=device)
+    summed = _launch.empty(count, dtype=values.dtype, device=device)
     sentinel = n_rows * n_cols
     _launch.radix_sort_pairs(keys, order, count=count, end_bit=max(1, sentinel.bit_length()))
     # One pass flags the entries (pruning on each run's sum), one scan numbers the kept ones, and

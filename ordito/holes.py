@@ -64,7 +64,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Sequence
-from typing import Literal, overload
+from typing import TYPE_CHECKING, Literal, overload
 
 import numpy as np
 import warp as wp
@@ -81,6 +81,9 @@ from ordito._device import read_scalar, require_same_device
 from ordito.constants import TOLERANCE_ZERO
 from ordito.kernels import holes as kernel_holes
 from ordito.kernels import scatter as kernel_scatter
+
+if TYPE_CHECKING:
+    import numpy.typing as npt
 
 
 class _PackedLoops:
@@ -3026,8 +3029,7 @@ def join_closest_components(
     Raises
     ------
     ValueError
-        If ``max_joins`` is negative, or if a chosen pair admits no valid bridge at either of its
-        two incident boundary edges.
+        If ``max_joins`` is negative.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -3044,12 +3046,11 @@ def join_closest_components(
 
     Notes
     -----
-    The loop is host-sequential over the ``k - 1`` joins and recomputes the component labelling and
-    the boundary edges from the updated face buffer each round, so the cost is ``O(k * n_faces)``.
-    That is deliberate: ``k`` is the number of *open* components, which does not grow with the mesh,
-    and recomputing makes the merge and the rim update fall out rather than needing a union-find
-    and an incremental rim edit whose correctness would be much harder to see. The pairing itself is
-    on the device.
+    The loop is host-sequential over the ``k - 1`` joins. The component labelling and the
+    boundary edges are computed once; each join then edits them as its patch dictates -- the two
+    bridged rim edges close, the patch's two chords open, the two components merge -- which is
+    exactly what recomputing them from the grown face buffer would give, so each round costs one
+    pass over the boundary vertices rather than over the mesh. The pairing itself is on the device.
 
     A component with no boundary -- a closed shell -- has nothing to bridge to and is left alone, so
     an input of closed shells comes back unchanged rather than raising.
@@ -3059,19 +3060,29 @@ def join_closest_components(
         raise ValueError(f"max_joins must be non-negative, got {max_joins}")
     max_distance_sq = wp.float32(float("inf") if max_distance is None else float(max_distance) ** 2)
 
-    current = faces
+    rim = _JoinRim.of(vertices, faces)
+    patch: list[tuple[int, int, int]] = []
     joins = 0
-    while max_joins is None or joins < max_joins:
-        pair = _closest_cross_component_edges(vertices, current, max_distance_sq)
+    while rim is not None and (max_joins is None or joins < max_joins):
+        pair = rim.closest_cross_component_edges(max_distance_sq)
         if pair is None:
             break
-        # Both checks ``validate`` runs hold by construction: the edges are rows of the current
-        # faces' oriented boundary, and they lie in different components, so no chord between them
-        # can already be an edge. Skipping them saves a face census and a readback per join.
-        current = bridge_edges(vertices, current, pair[0], pair[1], validate=False)
+        # ``bridge_edges(..., validate=False)``'s patch: both checks ``validate`` runs hold by
+        # construction, since the edges are rows of the current oriented boundary and lie in
+        # different components, so no chord between them can already be an edge.
+        triangles = _bridge_triangles(*pair)
+        rim.bridge(triangles)
+        patch.extend(triangles)
         joins += 1
 
-    return _launch.clone(faces) if joins == 0 else current
+    if joins == 0:
+        return _launch.clone(faces)
+    # Each join appended its patch to the face buffer the next one read; appending them all at
+    # once is the same buffer.
+    patch_wp = _launch.array(
+        np.asarray(patch, dtype=np.int32).reshape(-1), dtype=wp.int32, device=faces.device
+    )
+    return od.array.concatenate([faces, patch_wp])
 
 
 # ``pack_nearest_key`` is non-negative for any real candidate, so the largest ``int64`` is a seed no
@@ -3079,69 +3090,155 @@ def join_closest_components(
 _NEAREST_KEY_SEED = (1 << 63) - 1
 
 
-def _closest_cross_component_edges(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], max_distance_sq: wp.float32
-) -> tuple[tuple[int, int], tuple[int, int]] | None:
+class _JoinRim:
     """
-    Pick the two oriented boundary edges to bridge next, or ``None`` when nothing is left to join.
+    ``join_closest_components``' boundary and component labels, kept current across its joins.
 
-    ``None`` covers every reason at once: one component, no boundary at all, or no cross-component
-    boundary-vertex pair within ``max_distance_sq``.
+    A join appends a two-triangle patch and changes nothing else, so instead of regrouping the
+    whole face buffer each round -- labelling its components, sorting every halfedge for the
+    oriented boundary -- this edits the boundary table the way the patch edits the boundary: the
+    two bridged rim edges become interior, the patch's diagonal is interior, and its two chords are
+    new boundary edges wound as the patch winds them. Every boundary vertex stays one (the chords'
+    tails are the bridged edges' tails), and the two components the patch touches merge. The table
+    is kept in the order ``boundary.oriented_boundary_edges`` emits it -- ascending undirected key,
+    which packs ``(min, max)`` with the larger index as the high digit -- so the pairing kernel sees
+    exactly the rows, the row order (its tie-break) and the label equalities a regroup would give.
 
-    The candidate set is the **first column** of the oriented boundary edges rather than a separate
-    boundary-vertex list, and that is what makes the answer an *edge* pair with no search: row ``i``
-    of that table is already a boundary edge wound the way its face winds it, i.e. exactly what
-    [`bridge_edges`][ordito.holes.bridge_edges] takes, so the winning slots name their own edges.
-    The kernels read that column in place rather than through a Python-scope gather, which would
-    need it cloned dense first because a column view is strided and the gather silently ignores an
-    index array's stride.
-
-    One small buffer comes back: whether a pair was found, and the two rows it names. The boundary
-    table itself never leaves the device.
+    That holds while the boundary is edge-manifold around the joins: a chord between two components
+    cannot already be an edge, and a bridged edge occurred once, so the patch's edges are all that
+    change in the count of each key.
     """
-    device = faces.device
-    boundary = od.boundary.oriented_boundary_edges(vertices, faces)
-    n_boundary = int(boundary.shape[0])
-    if n_boundary == 0:
-        return None
 
-    n_faces = faces.size // 3
-    face_labels = od.adjacency.face_connected_component_labels(faces)
-    vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_face_labels_to_vertices,
-        dim=3 * n_faces,
-        inputs=[faces, face_labels, vertex_labels],
-        device=device,
-    )
-    labels = _launch.empty(n_boundary, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.edge_tail_labels,
-        dim=n_boundary,
-        inputs=[boundary, vertex_labels, labels],
-        device=device,
-    )
+    def __init__(
+        self,
+        vertices: wp.array[wp.vec3],
+        rows: npt.NDArray[np.int64],
+        labels: npt.NDArray[np.int64],
+        vertex_labels: npt.NDArray[np.int64],
+        n_labels: int,
+    ) -> None:
+        self._vertices = vertices
+        self._radix = max(int(vertices.size), 1)
+        self._tails = rows[:, 0].copy()
+        self._heads = rows[:, 1].copy()
+        self._keys = self._key(self._tails, self._heads)
+        self._labels = labels
+        self._vertex_labels = vertex_labels
+        # The current component of each original one: equality is all the pairing reads.
+        self._component = np.arange(n_labels, dtype=np.int64)
 
-    best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=device)
-    partner = _launch.empty(n_boundary, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.reduce_closest_cross_label_pair,
-        dim=n_boundary,
-        inputs=[vertices, boundary, labels, max_distance_sq, best, partner],
-        device=device,
-    )
-    # The winner decoded on the device into ``[found, a0, a1, b0, b1]``: one readback.
-    rows = _launch.empty(5, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_holes.closest_pair_rows,
-        dim=1,
-        inputs=[best, partner, boundary, wp.int64(_NEAREST_KEY_SEED), rows],
-        device=device,
-    )
-    found, a0, a1, b0, b1 = (int(value) for value in rows.numpy())
-    if not found:
-        return None
-    return ((a0, a1), (b0, b1))
+    @staticmethod
+    def of(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> _JoinRim | None:
+        """Build the rim of ``faces``, or return ``None`` when it has no boundary."""
+        device = faces.device
+        boundary = od.boundary.oriented_boundary_edges(vertices, faces)
+        if int(boundary.shape[0]) == 0:
+            return None
+        n_faces = faces.size // 3
+        face_labels = od.adjacency.face_connected_component_labels(faces)
+        vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_scatter.scatter_face_labels_to_vertices,
+            dim=3 * n_faces,
+            inputs=[faces, face_labels, vertex_labels],
+            device=device,
+        )
+        # The two host reads of the whole loop: the rim and every vertex's component.
+        rows = boundary.numpy().astype(np.int64)
+        names, compact = np.unique(vertex_labels.numpy(), return_inverse=True)
+        vertex_compact = compact.astype(np.int64)
+        return _JoinRim(vertices, rows, vertex_compact[rows[:, 0]], vertex_compact, names.size)
+
+    def _key(
+        self, tails: npt.NDArray[np.int64], heads: npt.NDArray[np.int64]
+    ) -> npt.NDArray[np.int64]:
+        return np.maximum(tails, heads) * self._radix + np.minimum(tails, heads)
+
+    def closest_cross_component_edges(
+        self, max_distance_sq: wp.float32
+    ) -> tuple[tuple[int, int], tuple[int, int]] | None:
+        """
+        Pick the two oriented boundary edges to bridge next, or ``None`` when nothing is left.
+
+        ``None`` covers every reason at once: one component, or no cross-component boundary-vertex
+        pair within ``max_distance_sq``. The candidates are the rows' tails, so the winning rows
+        name their own edges, wound as ``bridge_edges`` takes them. One upload of the table and one
+        read of the five-integer answer per call.
+        """
+        device = self._vertices.device
+        n = int(self._keys.size)
+        table = np.empty(3 * n, dtype=np.int32)
+        table[0 : 2 * n : 2] = self._tails
+        table[1 : 2 * n : 2] = self._heads
+        table[2 * n :] = self.row_components()
+        table_wp = _launch.array(table, dtype=wp.int32, device=device)
+        rows = odt.as_array2d(odt.as_dense(table_wp[: 2 * n]).reshape((n, 2)), wp.int32)
+        labels = odt.as_dense(table_wp[2 * n :])
+        best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=device)
+        partner = _launch.empty(n, dtype=wp.int32, device=device)
+        _launch.launch_tiled(
+            kernel_holes.reduce_closest_cross_label_pair,
+            dim=[n],
+            inputs=[self._vertices, rows, labels, max_distance_sq, best, partner],
+            block_dim=kernel_holes.CLOSEST_PAIR_BLOCK,
+            device=device,
+        )
+        # The winner decoded on the device into ``[found, a0, a1, b0, b1]``: one readback.
+        answer = _launch.empty(5, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_holes.closest_pair_rows,
+            dim=1,
+            inputs=[best, partner, rows, wp.int64(_NEAREST_KEY_SEED), answer],
+            device=device,
+        )
+        found, a0, a1, b0, b1 = (int(value) for value in answer.numpy())
+        if not found:
+            return None
+        return ((a0, a1), (b0, b1))
+
+    def rows(self) -> npt.NDArray[np.int64]:
+        """Return the ``(n_boundary, 2)`` oriented boundary rows, in the table's order."""
+        return np.stack([self._tails, self._heads], axis=1)
+
+    def row_components(self) -> npt.NDArray[np.int64]:
+        """Return each row's current component, as a name only equality may read."""
+        return self._component[self._labels]
+
+    def bridge(self, triangles: Sequence[tuple[int, int, int]]) -> None:
+        """Apply a bridge patch: edit the rim as its edges dictate, and merge the components."""
+        added: dict[int, tuple[int, int]] = {}
+        removed: list[int] = []
+        touched: list[int] = []
+        for triangle in triangles:
+            for k in range(3):
+                u, v = triangle[k], triangle[(k + 1) % 3]
+                key = max(u, v) * self._radix + min(u, v)
+                slot = int(np.searchsorted(self._keys, key))
+                if slot < self._keys.size and int(self._keys[slot]) == key:
+                    removed.append(slot)  # a rim edge the patch closes
+                elif key in added:
+                    del added[key]  # the patch's own diagonal
+                else:
+                    added[key] = (u, v)
+                touched.append(u)
+        merged = sorted({int(c) for c in self._component[self._vertex_labels[touched]]})
+        for component in merged[1:]:
+            self._component[self._component == component] = merged[0]
+        keep = np.ones(self._keys.size, dtype=bool)
+        keep[removed] = False
+        new_keys = np.fromiter(added.keys(), dtype=np.int64, count=len(added))
+        new_rows = np.asarray(list(added.values()), dtype=np.int64).reshape(-1, 2)
+        keys = np.concatenate([self._keys[keep], new_keys])
+        tails = np.concatenate([self._tails[keep], new_rows[:, 0]])
+        heads = np.concatenate([self._heads[keep], new_rows[:, 1]])
+        labels = np.concatenate([self._labels[keep], self._vertex_labels[new_rows[:, 0]]])
+        order = np.argsort(keys, kind="stable")
+        self._keys, self._tails, self._heads, self._labels = (
+            keys[order],
+            tails[order],
+            heads[order],
+            labels[order],
+        )
 
 
 def _require_distinct_edges(edge_a: tuple[int, int], edge_b: tuple[int, int]) -> None:
