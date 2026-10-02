@@ -212,9 +212,15 @@ def chunks_1d(n: int) -> int:
 # ---------------------------------------------------------------------------
 
 
-def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype):
+def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False):
     """
     axis=None on a 1-D array: ``TILES_PER_BLOCK_1D`` tiles per block, one atomic per block.
+
+    With ``partials=True`` the block's result is *stored* at ``out_result[block]`` instead of
+    committed with ``atomic`` (which is then unused): the deterministic float sum's first stage,
+    and, launched over its own output, the fold of those partials. A float ``atomic_add`` commits
+    blocks in arrival order, so its total moves in the last bits from run to run on CUDA; stored
+    partials folded by the same fixed tree give one answer on every run.
 
     The accumulator is seeded from the block's *first* chunk rather than from an identity, which
     keeps the kernel generic over ``wp.Scalar`` without the wrapper having to pass a per-dtype
@@ -255,14 +261,17 @@ def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype):
                     result = scalar(result, values[offset + k])
 
         if t == 0:
-            atomic(out_result, 0, result)
+            if wp.static(partials):
+                out_result[i] = result
+            else:
+                atomic(out_result, 0, result)
 
     _k.__annotations__["values"] = wp.array[dtype]
     _k.__annotations__["out_result"] = wp.array[dtype]
     return wp.kernel(_k, name=name)
 
 
-def _weighted_sum_1d_tiled(name, dtype):
+def _weighted_sum_1d_tiled(name, dtype, partials=False):
     """
     Weighted 1-D sum ``sum_k values[k] * weights[k]``, in ``_reduce_1d_tiled``'s block shape.
 
@@ -276,6 +285,8 @@ def _weighted_sum_1d_tiled(name, dtype):
     ``wp.float32``, and a ``wp.vec3`` tile times a ``wp.float32`` tile scales component-wise. The
     accumulator is seeded from the first weighted element for the same reason as above: neither a
     ``wp.float32(0.0)`` nor a ``wp.vec3(0.0)`` literal spells both instantiations.
+
+    ``partials=True`` stores each block's sum at ``out_sum[block]``, as in ``_reduce_1d_tiled``.
     """
 
     def _k(
@@ -308,7 +319,10 @@ def _weighted_sum_1d_tiled(name, dtype):
                     result = result + values[offset + k] * weights[offset + k]
 
         if t == 0:
-            wp.atomic_add(out_sum, 0, result)
+            if wp.static(partials):
+                out_sum[i] = result
+            else:
+                wp.atomic_add(out_sum, 0, result)
 
     _k.__annotations__["values"] = wp.array[dtype]
     _k.__annotations__["out_sum"] = wp.array[dtype]
@@ -597,6 +611,15 @@ SUM1D_TILED = KernelTable(
     {
         d: _reduce_1d_tiled(_tile_sum, wp.atomic_add, wp.add, f"sum1d_tiled_{d.__name__}", d)
         for d in _GLOBAL_DTYPES
+    },
+)
+# The deterministic float sums' stages (see ``_reduce_1d_tiled``). Integer sums are exact in any
+# order and keep the one-launch atomic form.
+SUM1D_PARTIALS = KernelTable(
+    "sum1d_partials",
+    {
+        d: _reduce_1d_tiled(_tile_sum, None, wp.add, f"sum1d_partials_{d.__name__}", d, True)
+        for d in (wp.float32, wp.float64)
     },
 )
 SUM2D_TILED = KernelTable(
@@ -961,8 +984,14 @@ sum_vec3_1d_tiled = _reduce_1d_tiled(
     _tile_sum, wp.atomic_add, wp.add, "sum_vec3_1d_tiled", dtype=wp.vec3
 )
 
-weighted_sum1d_tiled = _weighted_sum_1d_tiled("weighted_sum1d_tiled", wp.float32)
-weighted_sum_vec3_1d_tiled = _weighted_sum_1d_tiled("weighted_sum_vec3_1d_tiled", wp.vec3)
+sum_vec3_1d_partials = _reduce_1d_tiled(
+    _tile_sum, None, wp.add, "sum_vec3_1d_partials", dtype=wp.vec3, partials=True
+)
+
+weighted_sum1d_partials = _weighted_sum_1d_tiled("weighted_sum1d_partials", wp.float32, True)
+weighted_sum_vec3_1d_partials = _weighted_sum_1d_tiled(
+    "weighted_sum_vec3_1d_partials", wp.vec3, True
+)
 
 
 @wp.func

@@ -1676,7 +1676,8 @@ def geodesic_ball(
     result) and a scan + gather compacts the rows into the CSR neighbor buffer. Each source uses
     fixed-capacity scratch of ``PER_SOURCE_MAX_NEIGHBORS`` neighbors
     (``triwarp.kernels.algorithms.bfs``, currently 512);
-    if a vertex collects more than that the surplus is dropped and a warning is emitted.
+    if a vertex collects more than that the surplus is dropped and a warning reports how many
+    vertices' neighborhoods were clipped.
 
     !!! note
 
@@ -1827,8 +1828,8 @@ def geodesic_ball(
 
     if n_overflow > 0:
         warnings.warn(
-            f"geodesic_ball: {n_overflow} neighborhood capacity breaches "
-            f"(fixed cap {kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}); surplus neighbors dropped.",
+            f"geodesic_ball: {n_overflow} of {n} neighborhoods exceeded the fixed capacity of "
+            f"{kernel_bfs.PER_SOURCE_MAX_NEIGHBORS}; their surplus neighbors were dropped.",
             stacklevel=2,
         )
 

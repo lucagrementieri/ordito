@@ -49,16 +49,16 @@ def mark_group_starts(
 
 @wp.kernel
 def emit_groups(
-    offsets: wp.array[wp.int32], indices: wp.array[wp.int32], out_groups: wp.array2d[wp.int32]
+    inclusive: wp.array[wp.int32], indices: wp.array[wp.int32], out_groups: wp.array2d[wp.int32]
 ) -> None:
-    # Launched over the ``n`` sorted positions with ``offsets`` the total-terminated exclusive scan
-    # of ``mark_group_starts``' flags: a position starts a group exactly where the scan steps, and
-    # the step's value is the group's row. Reading the flag back off the scan is what lets one
+    # Launched over the ``n`` sorted positions with ``inclusive`` the in-place inclusive scan of
+    # ``mark_group_starts``' flags: a position starts a group exactly where the scan steps, and the
+    # exclusive offset is the group's row. Reading the flag back off the scan is what lets one
     # launch do the compaction and the emit together, instead of a ``flatnonzero`` of the starts
     # followed by a launch over them.
     i = wp.int32(wp.tid())
-    g, starts = kernel_array.scanned_slot(offsets, i)
-    if not starts:
+    g, count = kernel_array.scanned_count(inclusive, i)
+    if count == 0:
         return
     for j in range(out_groups.shape[1]):
         out_groups[g, j] = indices[i + j]

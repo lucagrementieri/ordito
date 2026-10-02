@@ -1864,7 +1864,7 @@ def test_geodesic_ball_matches_meshlib(device: str) -> None:
 
 
 def test_geodesic_ball_neighborhoods_overflow_warns(device: str) -> None:
-    """Not a library comparison: a neighborhood past the 512 cap must clamp and warn, not crash."""
+    """Not a library comparison: a ball past the 512 cap clamps and counts its source once."""
     # A subdivided icosphere has > 512 vertices; a radius covering the whole mesh makes every
     # vertex's geodesic ball the entire connected component, exceeding the fixed scratch capacity.
     mesh_tm = tm.creation.icosphere(subdivisions=4)
@@ -1874,7 +1874,11 @@ def test_geodesic_ball_neighborhoods_overflow_warns(device: str) -> None:
     )
     radius = 100.0 * float(mesh_tm.scale)
 
-    with pytest.warns(UserWarning, match="capacity breaches"):
+    # Every vertex's ball is the whole mesh, so every vertex is clipped exactly once.
+    n_vertices = mesh_tm.vertices.shape[0]
+    with pytest.warns(
+        UserWarning, match=f"{n_vertices} of {n_vertices} neighborhoods exceeded the fixed capacity"
+    ):
         _, offsets_wp, _ = tw.neighbors.geodesic_ball(vertices_wp, faces_wp, radius)
     # Clamped, not crashed: every per-vertex count fits within the fixed capacity.
     assert np.diff(offsets_wp.numpy()).max() <= 512

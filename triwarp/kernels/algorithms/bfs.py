@@ -36,19 +36,14 @@ EXTRAS_CAPACITY = 64
 
 @wp.func
 def bfs_visited_insert(
-    visited: wp.array[wp.int32],
-    mask: wp.int32,
-    value: wp.int32,
-    count: wp.int32,
-    out_overflow: wp.array[wp.int32],
+    visited: wp.array[wp.int32], mask: wp.int32, value: wp.int32, count: wp.int32
 ) -> tuple[wp.bool, wp.int32]:
     """
     Insert ``value`` into the open-addressing ``visited`` row (empty slots hold ``-1``).
 
     Returns ``(is_new, new_count)``: ``is_new`` is ``False`` when the value was already present.
-    Beyond the load-factor fill bound the insert is dropped (counted in ``out_overflow``) and the
-    value reads as new, mirroring the old full-buffer behavior where dropped nodes could be
-    revisited.
+    Beyond the load-factor fill bound the insert is dropped and the value reads as new, so dropped
+    nodes can be revisited; the caller sees the drop as ``is_new`` with ``new_count == count``.
     """
     slot = kernel_grouping.hash_slot(value, mask)
     while True:
@@ -57,7 +52,6 @@ def bfs_visited_insert(
             return False, count
         if stored == wp.int32(-1):
             if count >= _VISITED_MAX_FILL:
-                wp.atomic_add(out_overflow, 0, 1)
                 return True, count
             visited[slot] = value
             return True, count + 1
@@ -132,7 +126,8 @@ def per_source_bfs_collect(
     On return the collected set *is* ``queue[:count]`` in BFS-then-backfill order (drained
     fallback candidates are appended to the queue), so ``count == q_tail <= queue capacity``
     always and the caller gathers results straight from its queue row — no second traversal.
-    Exceeding the queue or visited capacity increments ``out_overflow`` and drops the surplus.
+    Exceeding the queue or visited capacity drops the surplus, and a source that dropped anything
+    adds exactly one to ``out_overflow``, so the counter is the number of clipped sources.
     """
     use_geometry = not wp.isinf(radius)
 
@@ -145,7 +140,7 @@ def per_source_bfs_collect(
 
     visited_n = wp.int32(0)
     is_new = wp.bool(True)
-    is_new, visited_n = bfs_visited_insert(visited, mask, i, visited_n, out_overflow)
+    is_new, visited_n = bfs_visited_insert(visited, mask, i, visited_n)
     queue[0] = i
     q_head = wp.int32(0)
     q_tail = wp.int32(1)
@@ -154,10 +149,13 @@ def per_source_bfs_collect(
     # Once an in-ball neighbour finds the queue full, nothing more can be enqueued: the remaining
     # dequeues would only count further drops, and -- with ``min_count`` within the capacity -- the
     # nearest fallback can no longer engage, since every queued vertex counts as collected. So the
-    # traversal stops there with the identical queue; ``out_overflow`` then counts sources whose
-    # ball was clipped rather than every neighbour dropped. On a radius several times the cap's
-    # reach that tail was nearly all of the walk.
+    # traversal stops there with the identical queue. That is why the overflow counter counts
+    # clipped *sources* (``clipped``, committed once at the end): the number of dropped neighbours
+    # is only known by walking the tail this skips, which on a radius several times the cap's reach
+    # was nearly all of the walk.
     full = wp.bool(False)
+    clipped = wp.bool(False)
+    previous_n = wp.int32(0)
 
     while q_head < q_tail and not full:
         current = queue[q_head]
@@ -168,9 +166,12 @@ def per_source_bfs_collect(
         end = adj_offsets[current + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n, out_overflow)
+            previous_n = visited_n
+            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
+            if visited_n == previous_n:
+                clipped = wp.bool(True)
             distance = wp.float32(0.0)
             if use_geometry:
                 distance = wp.length(vertices[neighbor] - center)
@@ -179,7 +180,7 @@ def per_source_bfs_collect(
                     queue[q_tail] = neighbor
                     q_tail += wp.int32(1)
                 else:
-                    wp.atomic_add(out_overflow, 0, 1)
+                    clipped = wp.bool(True)
                     if min_count <= queue_cap:
                         full = wp.bool(True)
                         break
@@ -202,19 +203,24 @@ def per_source_bfs_collect(
             q_tail += wp.int32(1)
             collected += wp.int32(1)
         else:
-            wp.atomic_add(out_overflow, 0, 1)
+            clipped = wp.bool(True)
             continue
 
         start = adj_offsets[cand]
         end = adj_offsets[cand + 1]
         for k in range(start, end):
             neighbor = adj_columns[k]
-            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n, out_overflow)
+            previous_n = visited_n
+            is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
+            if visited_n == previous_n:
+                clipped = wp.bool(True)
             distance = wp.float32(0.0)
             if use_geometry:
                 distance = wp.length(vertices[neighbor] - center)
             ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
 
+    if clipped:
+        wp.atomic_add(out_overflow, 0, 1)
     return collected

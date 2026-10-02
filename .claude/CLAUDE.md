@@ -3065,6 +3065,14 @@ prefix scan (~600 ns); if the level's own work is under that, the rewrite loses 
   `wp.length_sq` are not the same predicate, §12.4).
 - **A single-address `float64` `wp.atomic_add` serializes the launch**: a global dot needs a
   two-stage reduction.
+- **`reduce.sum` / `mean` / `weighted_sum` on floats are a fixed-order two-stage sum** (2026-10-02,
+  `reduce._sum_in_fixed_order`, `kernels/reduce.SUM1D_PARTIALS`): each block stores its partial
+  in its own slot and the same kernel folds the partials until one block remains, so the result is
+  bit-identical across runs and processes on CUDA (one atomic per block summed in arrival order
+  moved the last bit of `mean_edge_length[bunny]` between processes). One launch up to 1 024
+  elements as before, one more per factor of 1 024 after. Integer sums keep the atomic (exact in
+  any order); internal device-resident float folds (`smoothing`'s `adil_sum`,
+  `points._point_sum`) still commit atomically.
 - **A `wp.tile(v, preserve_type=True)` keeps a vector tile** and `wp.tile_sum` reduces it
   componentwise in **one** tree, bit-identical to one reduction per component, for vectors,
   matrices and `wp.types.vector(length=N)`. Pack several same-dtype quantities into one vector for
@@ -3608,6 +3616,15 @@ not just the call.
 - **A harness number and an isolated hand-probe number for the same call are not comparable** (the
   harness syncs and cold-pools differently): compare probe to probe or harness to harness, and label
   which a quoted number is.
+- **A row's cost can depend on whether its *setup* left a large mempool chunk mapped.** A CUDA
+  mempool chunk is released at a sync only once nothing in it is live, so an input allocated
+  inside a big chunk keeps that chunk's free remainder warm for the timed call's scratch.
+  `group[dragon]` read 0.74x after `edges_unique` moved from a hash table to a sort: the timed
+  call is unchanged and its sort identical (0.155 ms), but HEAD's inverse sat in the hash table's
+  chunk, so `group`'s two 21 MB buffers allocated in 0.034 ms against 0.094 cold. HEAD handed a
+  value-identical *fresh* copy is as slow as the new tree; `edges_unique_inverse` + `group`
+  together is 2.0x faster. **When an unchanged function regresses in the harness, time its
+  allocation step with and without a fresh copy of its input** before suspecting the code.
 - **A median at low sample count (`rounds=3`) can misrepresent its samples**: a one-off cost (a Warp
   module load) in two of three samples inflates the median while the floor never moved. Run the
   aggregate script's "suspect" check (median far above its own minimum, on triwarp's and the
@@ -4367,11 +4384,15 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   (CPU byte-identical over 18 radius / `min_count` cases) and the warning's number now counts
   clipped *sources*. `relax_approx` (3 % of the diagonal, 48 M drops a call at `dragon`)
   1.21-1.24x at 0.4-0.5 M vertices; `geodesic_ball` at 5 mean edges is flat (it rarely clips).
-- **OPEN DEFECT: `geodesic_ball` is not reproducible on CUDA when balls clip**, at baseline
-  `f60f952` too: `bunny` at 0.03 / 0.012 of the diagonal, several calls in one process, returns a
-  few entries more or fewer in 4 of 8 processes (a fresh process with one call is stable, and the
-  CPU device is always). Not the scratch helpers (in bounds) and not the launcher (reproduces with
-  the hot path off and on the baseline). Untraced.
+  The count is exactly one per clipped source (visited-table and backfill drops included), and
+  the warning says "`k` of `n` neighborhoods exceeded the fixed capacity"; the dropped-neighbour
+  count it used to print is only known by walking the tail the early exit skips.
+- **`geodesic_ball` was never nondeterministic; its radius was** (closed 2026-10-02). The
+  "differs in some processes" reading came from `r = 5 * mean_edge_length`, whose float32 sum
+  committed one `atomic_add` per block and moved in its last bit between processes and calls;
+  a vertex pair exactly `r` apart (`bunny` 9560 / 15147) then flipped in or out. Fixed at the sum
+  (§13.2's deterministic float sum). **Before calling a kernel nondeterministic, check its scalar
+  inputs are bit-stable across processes** (`repr(float(...))` of every derived radius).
 
 - **`query_hashgrid_nearest`'s cost is *cubic* in how far `initial_radius` under-estimates the
   answer distance**, because that one scalar sets both the cell width and the seed. The default

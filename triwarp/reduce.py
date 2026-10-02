@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from collections.abc import Callable
-from typing import Literal, NamedTuple, cast, overload
+from typing import Any, Literal, NamedTuple, cast, overload
 
 import numpy as np
 import warp as wp
@@ -276,7 +276,8 @@ def sum(
         n = int(array.shape[0])
         if n == 0:
             raise ValueError("sum requires a non-empty array.")
-        return _launch_vec3_tiled_sum(kernel_reduce.sum_vec3_1d_tiled, n, array.device, [array])
+        total = _sum_in_fixed_order(kernel_reduce.sum_vec3_1d_partials, [array], n, wp.vec3)
+        return cast(wp.vec3, total.list()[0])
     if array.dtype == wp.bool:
         mask = cast(wp.array[wp.bool], array)
         if axis is None:
@@ -410,20 +411,14 @@ def weighted_sum(
         raise ValueError("weighted_sum requires values and weights of equal length.")
 
     if values.dtype == wp.vec3:
-        return _launch_vec3_tiled_sum(
-            kernel_reduce.weighted_sum_vec3_1d_tiled, n_values, values.device, [values, weights]
+        total = _sum_in_fixed_order(
+            kernel_reduce.weighted_sum_vec3_1d_partials, [values, weights], n_values, wp.vec3
         )
-
-    n_blocks = kernel_reduce.blocks_1d(n_values)
-    out = _launch.zeros(1, dtype=wp.float32, device=values.device)
-    _launch.launch_tiled(
-        kernel_reduce.weighted_sum1d_tiled,
-        dim=[n_blocks],
-        inputs=[values, weights, out],
-        block_dim=TILE_1D,
-        device=values.device,
+        return cast(wp.vec3, total.list()[0])
+    total = _sum_in_fixed_order(
+        kernel_reduce.weighted_sum1d_partials, [values, weights], n_values, wp.float32
     )
-    return float(read_scalar(out, 0))
+    return float(read_scalar(total, 0))
 
 
 @overload
@@ -613,24 +608,36 @@ _BOOL_REDUCE: dict[str, _BoolReduceSpec] = {
 # one dispatch table in the middle of the public surface.
 
 
-def _launch_vec3_tiled_sum(
-    kernel: twt.Kernel, n: int, device: wp.DeviceLike, inputs: list[twt.ArrayNd]
-) -> wp.vec3:
+def _sum_in_fixed_order(
+    first: twt.Kernel, inputs: list[twt.ArrayNd], n: int, dtype: type
+) -> wp.array[Any]:
     """
-    Shared boilerplate behind ``sum``'s and ``weighted_sum``'s ``wp.vec3`` branches.
+    Sum a float reduction in a fixed order, into a ``(1,)`` device array holding the total.
 
-    One tiled launch into a single-slot ``wp.vec3`` accumulator, one readback. ``inputs`` holds
-    the array arguments the reduction kernel expects before its own accumulator output.
+    ``first`` is a ``partials=True`` kernel storing each block's sum in its own slot; while more
+    than one partial remains, ``SUM1D_PARTIALS`` (or its ``wp.vec3`` sibling) folds them a block at
+    a time. Every stage is a fixed tree, where one ``atomic_add`` per block would add the blocks in
+    arrival order and move the total's last bits between runs on CUDA. One launch up to
+    ``ITEMS_PER_BLOCK_1D`` elements, one more per factor of it after; integer sums keep the atomic.
+    ``inputs`` holds the arrays ``first`` takes before its output.
     """
-    out_vec = _launch.zeros(1, dtype=wp.vec3, device=device)
-    _launch.launch_tiled(
-        kernel,
-        dim=[kernel_reduce.blocks_1d(n)],
-        inputs=[*inputs, out_vec],
-        block_dim=TILE_1D,
-        device=device,
+    device = inputs[0].device
+    fold = (
+        kernel_reduce.sum_vec3_1d_partials
+        if dtype == wp.vec3
+        else kernel_reduce.SUM1D_PARTIALS[dtype]
     )
-    return cast(wp.vec3, out_vec.list()[0])
+    kernel = first
+    blocks = kernel_reduce.blocks_1d(n)
+    while True:
+        partials = _launch.empty(blocks, dtype=dtype, device=device)
+        _launch.launch_tiled(
+            kernel, dim=[blocks], inputs=[*inputs, partials], block_dim=TILE_1D, device=device
+        )
+        if blocks == 1:
+            return partials
+        kernel, inputs = fold, [partials]
+        blocks = kernel_reduce.blocks_1d(blocks)
 
 
 def _launch_global_vec3_minmax(array: wp.array[wp.vec3]) -> tuple[wp.vec3, wp.vec3]:
@@ -673,6 +680,12 @@ def _reduce_scalar(
 def _launch_global_scalar_tiled(
     array: twt.ArrayNdScalar, spec: _ScalarReduceSpec
 ) -> float | int | tuple[float, float] | tuple[int, int]:
+    flat = _flattened_for_global(array)
+    if flat is not None and spec.name == "sum" and array.dtype in (wp.float32, wp.float64):
+        total = _sum_in_fixed_order(
+            kernel_reduce.SUM1D_PARTIALS[array.dtype], [flat], flat.size, array.dtype
+        )
+        return float(read_scalar(total, 0))
     if spec.global_output_slots == 2:
         out = _launch.array(
             [twt.dtype_max(array.dtype), twt.dtype_min(array.dtype)],
@@ -682,7 +695,6 @@ def _launch_global_scalar_tiled(
     else:
         out = _launch.full(1, spec.init_global(array.dtype), dtype=array.dtype, device=array.device)
 
-    flat = _flattened_for_global(array)
     if flat is not None:
         _launch.launch_tiled(
             spec.tiled_1d[array.dtype],

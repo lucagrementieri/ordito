@@ -65,25 +65,24 @@ def group(values: wp.array[wp.Int], length: int) -> twt.Array2dInt32:
     # Scan compaction: flag run starts, scan the flags, then emit one right-sized row per group
     # (deterministic ascending-value order, no atomic counter and no (n, length) over-allocation).
     # The emit reads each flag back as a step in the scan, so it compacts and writes in one launch.
-    # The flags are written straight into the tail of the total-terminated offsets buffer and
-    # scanned in place, so its leading zero makes it the exclusive scan with the total at the end.
-    offsets = _launch.zeros(n + 1, dtype=wp.int32, device=device)
-    flags = offsets[1:]
+    # The flags live in the sort payload's upper half, which is free scratch once the sort has run
+    # (``adjacency``'s pair grouping does the same), and are scanned there in place.
+    inclusive = twt.as_dense(indices_buffer[n:])
     _launch.launch(
         kernel_grouping.MARK_GROUP_STARTS[values_buffer.dtype],
         dim=n,
-        inputs=[values_buffer, wp.int32(n), wp.int32(length), flags],
+        inputs=[values_buffer, wp.int32(n), wp.int32(length), inclusive],
         device=device,
     )
-    _launch.array_scan(flags, flags, inclusive=True)
+    _launch.array_scan(inclusive, inclusive, inclusive=True)
     # The group count sizes the output, so it has to come back to the host.
-    n_groups = int(read_scalar(offsets))
+    n_groups = int(read_scalar(inclusive))
     groups = twt.empty_2d((n_groups, length), wp.int32, device=device)
     if n_groups > 0:
         _launch.launch(
             kernel_grouping.emit_groups,
             dim=n,
-            inputs=[offsets, indices_buffer, groups],
+            inputs=[inclusive, indices_buffer, groups],
             device=device,
         )
     return twt.as_array2d(groups, wp.int32)

@@ -360,6 +360,31 @@ def test_sum_1d(device: str) -> None:
     assert np.allclose(sum_wp, sum_np)
 
 
+@pytest.mark.parametrize("n", [1_000, 50_000, 3_000_000])
+def test_float_sums_are_bit_identical_across_calls(device: str, n: int) -> None:
+    """
+    Triwarp against triwarp: repeated float sums agree bit for bit, and match NumPy in float64.
+
+    The NumPy comparison is the oracle for the value; the repeat is the claim. One ``atomic_add``
+    per block adds the blocks in arrival order on CUDA, which moved the last bit between calls; the
+    sizes span one block, one fold stage and two (``ITEMS_PER_BLOCK_1D = 1024``).
+    """
+    rng = np.random.default_rng(7)
+    values_np = rng.random(n, dtype=np.float32)
+    weights_np = rng.random(n, dtype=np.float32)
+    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
+    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
+    points_wp = wp.array(rng.random((n, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+
+    sums = {tw_reduce.sum(values_wp) for _ in range(6)}
+    means = {tw_reduce.mean(values_wp) for _ in range(6)}
+    weighted = {tw_reduce.weighted_sum(values_wp, weights_wp) for _ in range(6)}
+    vectors = {tuple(tw_reduce.sum(points_wp)) for _ in range(6)}
+    assert len(sums) == len(means) == len(weighted) == len(vectors) == 1
+    assert np.isclose(sums.pop(), values_np.astype(np.float64).sum(), rtol=1e-5)
+    assert np.isclose(weighted.pop(), (values_np.astype(np.float64) * weights_np).sum(), rtol=1e-5)
+
+
 def test_sum_2d(device: str) -> None:
     n = 200
     m = 100
