@@ -2778,8 +2778,12 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.bvh_query_sphere` as a broad phase over *bounds***: `curvature.discrete_mean_curvature` won
   2-4x over a cube `wp.bvh_query_aabb`. **`wp.bvh_query_aabb`'s traversal costs several times
   `wp.bvh_query_sphere`'s per candidate on the same BVH, even at equal candidate count**, so a cube
-  broad phase is the wrong query when the real predicate is a ball. Open lead, unmeasured:
-  `ball_pivoting`'s pivot search (tiled BVH walk; no `tile_bvh_query_sphere` in Warp 1.17).
+  broad phase is the wrong query when the real predicate is a ball. **`ball_pivoting`'s pivot
+  search is blocked on Warp**: its tiled box walk is the win (§14.2) and Warp 1.17 has no
+  `tile_bvh_query_sphere`. The exact in-loop substitute (reject `|c - mp| > 2r` before the
+  prefilter: a candidate on a radius-`r` ball whose chord holds the edge midpoint is within `2r`
+  of it) measured 1.00x on `bunny_decimated` / `bunny` with identical faces, so the cost is the
+  box traversal, not the candidates it returns; reverted.
 - **`wp.mesh_get_bvh`** (Warp 1.17): `proximity.mesh_to_mesh_distance` builds one structure over
   mesh B instead of two.
 - **`wp.volume_index_to_world`**: adopted for the convention (perf-neutral).
@@ -3235,9 +3239,15 @@ ms as an 8-launch group replayed 64 times, 5.9x**, recording included.
 - **`wp.capture_while` is slower than a batched host loop** where the per-iteration
   conditional-graph overhead exceeds the sync it removes (ball pivoting batches 8 waves per
   readback). Nesting one inside a capture is fine.
-- **Open leads**: a repeated wrapper loop issuing an identical uncaptured sequence, and
-  `wp.capture_if` (unused) for a stage that spends a host readback deciding. Grep for a Python
-  `for`/`while` whose body is one launch with only the loop variable changing.
+- **DECLINED (2026-10-02): recording a fixed-count smoothing loop** (two ping-pong passes
+  recorded once, replayed `iterations // 2` times; `filter_neighborhood_average`, byte-identical):
+  0.89-0.90x at 4 iterations, 0.99-1.02x at the default 10, 1.16-1.27x at 50 on
+  `bunny_decimated` / `bunny`, 0.99-1.00x on `dragon` at every count. `_launch`'s cached launcher
+  issues a launch in ~6 µs, so a replayed one saves too little to repay the recording below a few
+  dozen passes. The same shape covers `filter_laplacian`, `filter_taubin`, `filter_humphrey` and
+  the other one-to-four-launch smoothing loops (an AST scan for readback-free launch loops lists
+  them). Open, unmeasured: `wp.capture_if` (unused) for a stage that spends a host readback
+  deciding.
 
 ### 14.4 Tile solves: the crossover is K >= 16-32
 
@@ -4772,8 +4782,14 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   cannot live in `kernels/adjacency.py`, which imports `halfedge`). `face_adjacency(edges_paired=
   True)`: every edge on exactly two faces makes the adjacency the sort permutation read two to a
   row. `is_watertight` / `is_volume` / `is_vertex_manifold` / `is_edge_manifold` are a handful of
-  launches with `n_vertices=`; `validation.is_winding_consistent` / `is_orientable` would take an
-  `end_bit` sort given `n_vertices=` (open lead).
+  launches with `n_vertices=`. `is_winding_consistent` / `is_orientable` / `face_flip_mask` /
+  `repair.make_winding_consistent` take `n_vertices=` too (trusted, not checked) for the same
+  `end_bit` sort: the sort 1.3-1.6x, the calls 1.15-1.41x from `bunny_decimated` to `happy_buddha`,
+  answers unchanged (`Trimesh`, `make_solid` and `make_normals_outward` pass it).
+  **`face_flip_mask` on a non-orientable mesh is not reproducible on CUDA** (the parity hooks race:
+  31-68 of a few thousand bits differ between two unbounded runs on `boy` / `mobius` with half the
+  faces flipped; CPU is byte-identical), so a triwarp-against-triwarp gate compares the flip mask
+  on orientable input only.
 - **`adjacency.sorted_face_edge_keys(faces, *, n_vertices=None)`** names the run four modules
   repeated: pack straight into the sort's double-width buffer (no staging copy, 670 MB at `lucy`)
   and sort only the bits a known radix needs (§13.1, §3.1); `face_adjacency(edges_paired=)`,
@@ -4979,8 +4995,8 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   2 562 and 40 962 points: the loop is paced by its per-iteration readback, which a removed launch
   hides behind); a `wp.mat22d`-style structural merge belongs to §16.10.
 - **Cloud targets and mesh targets**: an unbounded `max_dist` is used on a mesh target (§16.6);
-  `mesh_from_points` backs cloud targets (§16.6). Point-to-point `icp`'s readbacks (the loop's
-  per-iteration read) are the open lead only where a caller needs the early exit.
+  `mesh_from_points` backs cloud targets (§16.6). Both ICP loops already run under
+  `record_device_loop` with no per-iteration readback, so no readback lead remains there.
 
 ### 16.15 Preconditioners (Jacobi-Chebyshev, squared-Laplacian, adaptive, multigrid)
 
@@ -5055,8 +5071,17 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 - **Smoother verdicts are §14.8** (a Chebyshev multigrid smoother is refuted; interval robustness).
 - **The multigrid hierarchy's *setup* is the blocker** (several sparse-op calls per coarsening level
   at Warp's fixed per-call cost, not the aggregation algorithm): every losing case loses by exactly
-  that; with a free setup all would win. **Cutting the per-call cost of the sparse matrix-multiply
-  is the open lever.** The `"auto"` gate's decision ("will the hierarchy pay for itself") belongs
+  that; with a free setup all would win. **Two of a level's three `bsr_mm` are gone**: the smoothed
+  prolongator `(I - ωD⁻¹A)P0` is `A`'s entries re-keyed by their column's aggregate plus the
+  identity's, one `csr_from_triplets` (`smoothed_prolongator_triplets`; 1.9-4.0x on the
+  prolongator), and `Pᵀ(AP)` is each fine row's outer product of its `P` and `AP` rows as triplets
+  (`galerkin_triplets`; 1.14-1.8x on the Galerkin product, no transpose multiplied). Setup
+  1.23-1.51x on the `bunny_decimated` to `dragon` cotangent Laplacians, setup plus a `1e-8` solve
+  1.15-1.28x below `dragon`, CG iteration counts identical; patterns equal except 4 of 1.08 M
+  coarse entries that cancel exactly in one summation order. Every hierarchy matrix is
+  `nnz_sync`ed (the triplet build leaves `nnz` at the triplet count). The remaining lever is `AP`
+  itself (`nnz(A) · deg(P)` triplets, ~12 M at `dragon`); the direct triple product
+  (`nnz(A) · deg(P)²`, ~75 M) is too large to assemble. The `"auto"` gate's decision ("will the hierarchy pay for itself") belongs
   on a property of the *operator*, not of problem size or an extrapolated iteration count (both
   tried, both wrong): off-diagonal dominance (`CG_MULTIGRID_DOMINANCE`) separates the cases. **Never
   route a new caller through `"auto"` without re-measuring on its own systems** (an operator with a

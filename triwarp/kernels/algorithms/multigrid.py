@@ -25,11 +25,15 @@ same cycle and same coarse solve -- the comparison that decides whether the para
 gives anything up -- it costs about a tenth more iterations. That is the price of the parallelism
 and it is small.
 
-The rest is ``warp.sparse``: the tentative prolongator is one entry per row (the constant
-near-nullspace vector, normalized per aggregate), the smoothed prolongator is
-``P = (I - w D^-1 A) P0`` through one ``bsr_mm`` and one ``bsr_axpy``, and the coarse operator is
-the Galerkin product ``P^T A P``. Operator complexity comes out just above 1, so the coarse levels
-are nearly free and a cycle's cost is its fine level.
+The tentative prolongator is one entry per row (the constant near-nullspace vector, normalized
+per aggregate), so the smoothed prolongator ``P = (I - w D^-1 A) P0`` is ``A``'s own entries
+re-keyed by their column's aggregate and summed as triplets; the coarse operator is the Galerkin
+product ``P^T A P``, one ``bsr_mm`` for ``A P`` and the outer product of each fine row's two
+sparse rows, summed as triplets, for ``P^T (A P)``. Against the earlier ``bsr_mm`` / ``bsr_axpy``
+chain (and a ``bsr_transposed`` multiplied in) the prolongator is 1.9-4.0x and the Galerkin product
+1.14-1.8x faster on the dragon and bunny cotangent Laplacians, the hierarchy's whole setup
+1.23-1.51x, with the same patterns and values to round-off. Operator complexity comes out just
+above 1, so the coarse levels are nearly free and a cycle's cost is its fine level.
 
 The per-level inverse diagonal is ``array.inverse_or_one`` of the operator's diagonal, applied
 where it is read rather than written to a buffer first. It is not a copy of the conjugate
@@ -296,23 +300,75 @@ def aggregate_sizes(label: wp.array[wp.int32], out_sizes: wp.array[wp.int32]) ->
 
 
 @wp.kernel
-def tentative_prolongator(
+def smoothed_prolongator_triplets(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
     label: wp.array[wp.int32],
     sizes: wp.array[wp.int32],
-    out_offsets: wp.array[wp.int32],
-    out_columns: wp.array[wp.int32],
+    damped_inverse_diagonal: wp.array[wp.float64],
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
-    # The tentative prolongator as a CSR, written directly: exactly one entry per row, so row ``i``
-    # is entry ``i`` and the offsets are the identity. It carries the constant near-nullspace
-    # vector restricted to the node's aggregate, normalized so every column has unit norm.
+    # The smoothed prolongator ``P = (I - w D^-1 A) P0`` as coordinate triplets, one thread a row.
+    # ``P0`` holds one entry a row -- node ``j``'s aggregate, ``1 / sqrt(|aggregate|)``, the
+    # constant near-nullspace vector normalized per column -- so ``(A P0)_ik`` is the sum of
+    # ``A_ij P0_j`` over the row's columns ``j`` in aggregate ``k``: every stored ``A_ij`` is one
+    # triplet at ``(i, label[j])``, at the slot ``A`` stores it in, and the identity's ``P0_i`` one
+    # more, after all of ``A``'s. The triplet sum that follows is the whole product, where
+    # ``bsr_mm`` against ``P0`` then a row scale and a ``bsr_axpy`` against ``P0`` was three
+    # sparse passes, each allocating its result.
     i = wp.int32(wp.tid())
-    aggregate = label[i]
-    out_offsets[i] = i
-    if i == out_columns.shape[0] - 1:
-        out_offsets[i + 1] = i + 1
-    out_columns[i] = aggregate
-    out_values[i] = wp.float64(1.0) / wp.sqrt(wp.float64(sizes[aggregate]))
+    n = offsets.shape[0] - 1
+    scale = -damped_inverse_diagonal[i]
+    for e in range(offsets[i], offsets[i + 1]):
+        aggregate = label[columns[e]]
+        out_rows[e] = i
+        out_cols[e] = aggregate
+        out_values[e] = scale * values[e] / wp.sqrt(wp.float64(sizes[aggregate]))
+    own = offsets[n] + i
+    out_rows[own] = i
+    out_cols[own] = label[i]
+    out_values[own] = wp.float64(1.0) / wp.sqrt(wp.float64(sizes[label[i]]))
+
+
+@wp.kernel
+def galerkin_triplet_counts(
+    p_offsets: wp.array[wp.int32], ap_offsets: wp.array[wp.int32], out_counts: wp.array[wp.int32]
+) -> None:
+    # Row ``i`` of ``A P`` meets row ``i`` of ``P`` in every product ``P_ik (A P)_il``.
+    i = wp.int32(wp.tid())
+    out_counts[i] = (p_offsets[i + 1] - p_offsets[i]) * (ap_offsets[i + 1] - ap_offsets[i])
+
+
+@wp.kernel
+def galerkin_triplets(
+    p_offsets: wp.array[wp.int32],
+    p_columns: wp.array[wp.int32],
+    p_values: wp.array[wp.float64],
+    ap_offsets: wp.array[wp.int32],
+    ap_columns: wp.array[wp.int32],
+    ap_values: wp.array[wp.float64],
+    starts: wp.array[wp.int32],
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # ``P^T (A P)`` as coordinate triplets, one thread a fine row: ``(P^T A P)_kl`` is the sum over
+    # fine rows ``i`` of ``P_ik (A P)_il``, so row ``i`` emits the outer product of its two sparse
+    # rows at ``starts[i]``. No transpose is formed and no second ``bsr_mm`` runs. ``bsr_mm``'s
+    # structural zeros in ``A P`` become zero-valued triplets, which the triplet assembly skips.
+    i = wp.int32(wp.tid())
+    slot = starts[i]
+    for a in range(p_offsets[i], p_offsets[i + 1]):
+        k = p_columns[a]
+        weight = p_values[a]
+        for b in range(ap_offsets[i], ap_offsets[i + 1]):
+            out_rows[slot] = k
+            out_cols[slot] = ap_columns[b]
+            out_values[slot] = weight * ap_values[b]
+            slot += 1
 
 
 @wp.kernel

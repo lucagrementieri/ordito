@@ -3458,9 +3458,7 @@ def _multigrid_hierarchy(
             operator, label, n_aggregates, level.inverse_diagonal
         )
         level.restrictor = twt.bsr_transposed(level.prolongator)
-        operator = _multigrid_prune(
-            twt.bsr_mm(level.restrictor, twt.bsr_mm(operator, level.prolongator))
-        )
+        operator = _multigrid_galerkin(operator, level.prolongator)
     coarse_inverse = _multigrid_dense_inverse(levels[-1].operator)
     if coarse_inverse is None:
         return None
@@ -3630,60 +3628,109 @@ def _multigrid_prolongator(
     n_aggregates: int,
     damped_inverse_diagonal: wp.array[wp.float64],
 ) -> twt.BsrMatrix[wp.float64]:
-    """Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``."""
+    """
+    Smoothed prolongator ``(I - omega D^-1 A) P0``, given ``omega D^-1``, for ``P0``.
+
+    ``P0`` has one entry a row, so the product is ``A``'s entries re-keyed by their column's
+    aggregate and summed: one triplet per stored entry plus the identity's, one assembly
+    (``kernels/algorithms/multigrid.smoothed_prolongator_triplets``), with no sparse product.
+    Entries that sum to exactly zero are pruned.
+    """
     device = matrix.device
     n = int(matrix.nrow)
     sizes = _launch.zeros(n_aggregates, dtype=wp.int32, device=device)
     _launch.launch(kernel_mg.aggregate_sizes, dim=n, inputs=[label, sizes], device=device)
-    offsets = _launch.empty(n + 1, dtype=wp.int32, device=device)
-    columns = _launch.empty(n, dtype=wp.int32, device=device)
-    values = _launch.empty(n, dtype=wp.float64, device=device)
+    # The stored count, not ``matrix.nnz``: that field is a capacity after a triplet build, and the
+    # triplets are laid out at the slots the entries occupy.
+    count = int(read_scalar(matrix.offsets, n)) + n
+    rows = _launch.empty(count, dtype=wp.int32, device=device)
+    cols = _launch.empty(count, dtype=wp.int32, device=device)
+    values = _launch.empty(count, dtype=wp.float64, device=device)
     _launch.launch(
-        kernel_mg.tentative_prolongator,
+        kernel_mg.smoothed_prolongator_triplets,
         dim=n,
-        inputs=[label, sizes, offsets, columns, values],
+        inputs=[
+            matrix.offsets,
+            matrix.columns,
+            matrix.values,
+            label,
+            sizes,
+            damped_inverse_diagonal,
+        ],
+        outputs=[rows, cols, values],
         device=device,
     )
-    # Exactly one entry per row, so the CSR is written directly and its ``nnz`` is exact.
-    tentative = _bsr_over(n, n_aggregates, offsets, columns, values, n)
-    smoothed = twt.bsr_mm(matrix, tentative)
-    # Row-scale by ``-omega D^-1`` in place: one pass over the product's values, where a ``bsr_mm``
-    # against a diagonal matrix would be a second sparse product.
+    return _synced(
+        tw.array.csr_from_triplets(n, n_aggregates, rows, cols, values, prune_numerical_zeros=True)
+    )
+
+
+def _multigrid_galerkin(
+    matrix: twt.BsrMatrix[wp.float64], prolongator: twt.BsrMatrix[wp.float64]
+) -> twt.BsrMatrix[wp.float64]:
+    """
+    Form the coarse operator ``P^T A P``, with its exactly-zero entries pruned.
+
+    ``A P`` is one ``bsr_mm``; ``P^T (A P)`` is assembled from each fine row's outer product of
+    its two sparse rows (``kernels/algorithms/multigrid.galerkin_triplets``), so no transpose is
+    multiplied and no second ``bsr_mm`` runs.
+
+    Pruning is part of the algorithm, not tidying. ``bsr_mm`` returns a structural **superset**
+    of the product, the extra entries exactly zero and interspersed in column order; an explicit
+    zero at ``(i, c)`` would make coarse column ``c`` see fine row ``i``, so the next level's
+    product would inherit every aggregate reachable from it and operator complexity would blow up.
+    Here those zeros become zero-valued triplets, which the assembly skips, and an entry whose
+    triplets cancel exactly is dropped -- two summation orders can disagree on that, for a handful
+    of entries per million.
+    """
+    device = matrix.device
+    n = int(matrix.nrow)
+    n_coarse = int(prolongator.ncol)
+    product = twt.bsr_mm(matrix, prolongator)
+    counts = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_mg.scale_rows,
+        kernel_mg.galerkin_triplet_counts,
         dim=n,
-        inputs=[smoothed.offsets, damped_inverse_diagonal, wp.float64(-1.0), 0, smoothed.values],
+        inputs=[prolongator.offsets, product.offsets],
+        outputs=[counts],
         device=device,
     )
-    return _multigrid_prune(twt.bsr_axpy(smoothed, tentative, alpha=1.0, beta=1.0))
+    starts, total = tw.array.counts_to_offsets(counts)
+    rows = _launch.empty(total, dtype=wp.int32, device=device)
+    cols = _launch.empty(total, dtype=wp.int32, device=device)
+    values = _launch.empty(total, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_mg.galerkin_triplets,
+        dim=n,
+        inputs=[
+            prolongator.offsets,
+            prolongator.columns,
+            prolongator.values,
+            product.offsets,
+            product.columns,
+            product.values,
+            starts,
+        ],
+        outputs=[rows, cols, values],
+        device=device,
+    )
+    return _synced(
+        tw.array.csr_from_triplets(
+            n_coarse, n_coarse, rows, cols, values, prune_numerical_zeros=True
+        )
+    )
 
 
-def _multigrid_prune(matrix: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]:
+def _synced(matrix: twt.BsrMatrix[wp.float64]) -> twt.BsrMatrix[wp.float64]:
     """
-    Drop a matrix's explicitly-zero entries, by rebuilding it from its own CSR.
+    ``matrix`` with its ``nnz`` field repaired to the stored count.
 
-    ``bsr_mm`` returns a structural **superset** of the product, with the extra entries exactly
-    zero, and here those zeros are not cosmetic. An explicit zero at ``(i, c)`` makes coarse column
-    ``c`` see fine row ``i``, so the Galerkin product inherits every aggregate reachable from it,
-    which can blow up the pattern far more than the true product would. Pruning is part of the
-    algorithm, not tidying, and it is what holds operator complexity down to a reasonable multiple.
-
-    The extra entries are interspersed in column order rather than trailing reserved capacity, so
-    they cannot be dropped by truncating a row -- the columns stay strictly increasing within every
-    row and the padding is scattered gaps.
-
-    ``bsr_compress(matrix, prune_numerical_zeros=True)`` is the API for exactly this and is used
-    directly here.
-
-    !!! warning "``inplace=False`` does not mean the source is untouched"
-        ``twt.bsr_compress(m)`` at the documented default returns **``m`` itself**, pruned in place
-        -- ``result is m`` and ``result.values.ptr == m.values.ptr``, with ``m.nnz_sync()`` reduced
-        across the call. It returns ``src`` unchanged when there is nothing to prune, too. That is
-        safe at both call sites here only because each passes a freshly built temporary
-        (``bsr_mm(...)`` / ``bsr_axpy(...)``) that nothing else holds. **A caller that still needs
-        the unpruned matrix must copy it first.**
+    A triplet assembly leaves ``nnz`` at the triplet count, and ``bsr_transposed``, ``bsr_mm`` and
+    the V-cycle's launches read the field rather than the offsets, so every hierarchy matrix pays
+    the one readback here.
     """
-    return twt.bsr_compress(matrix, prune_numerical_zeros=True)
+    matrix.nnz_sync()
+    return matrix
 
 
 def _multigrid_dense_inverse(matrix: twt.BsrMatrix[wp.float64]) -> twt.ArrayNd | None:

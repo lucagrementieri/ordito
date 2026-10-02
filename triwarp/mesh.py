@@ -1190,7 +1190,7 @@ class Trimesh:
         [`triwarp.validation.is_winding_consistent`][]
         [`trimesh.Trimesh.is_winding_consistent`][]
         """
-        return tw.validation.is_winding_consistent(self._faces)
+        return tw.validation.is_winding_consistent(self._faces, n_vertices=self.n_vertices)
 
     @_CachedProperty
     def is_orientable(self) -> bool:
@@ -1208,7 +1208,7 @@ class Trimesh:
         --------
         [`triwarp.validation.is_orientable`][]
         """
-        return tw.validation.is_orientable(self._faces)
+        return tw.validation.is_orientable(self._faces, n_vertices=self.n_vertices)
 
     @_CachedProperty
     def is_watertight(self) -> bool:

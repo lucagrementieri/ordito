@@ -551,7 +551,7 @@ def _mark_self_intersections(
     )
 
 
-def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
+def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -> bool:
     """
     Whether every shared edge is traversed in opposite directions by its two faces.
 
@@ -564,6 +564,11 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys] so the key sort orders
+        only the bits a key can occupy. It does not change the answer, and it is trusted, not
+        checked.
 
     Returns
     -------
@@ -584,7 +589,7 @@ def is_winding_consistent(faces: wp.array[wp.int32]) -> bool:
 
     # ``edge_winding_consistent_mask``'s per-pair test read straight off the sorted keys, so the
     # verdict needs no group table, no host read of its length and no reduction over a mask.
-    keys, order = _sorted_halfedge_keys(faces, None)
+    keys, order = _sorted_halfedge_keys(faces, n_vertices)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     _launch.launch(
         kernel_validation.sorted_pair_winding_violation,
@@ -736,7 +741,7 @@ def face_orientation_bits(
     return orient, signed_edges, signs, m
 
 
-def is_orientable(faces: wp.array[wp.int32]) -> bool:
+def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -> bool:
     """
     Whether the faces admit a consistent orientation (allowing per-face flips).
 
@@ -752,6 +757,11 @@ def is_orientable(faces: wp.array[wp.int32]) -> bool:
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys] so the key sort orders
+        only the bits a key can occupy. It does not change the answer, and it is trusted, not
+        checked.
 
     Returns
     -------
@@ -775,7 +785,7 @@ def is_orientable(faces: wp.array[wp.int32]) -> bool:
     if n_faces == 0:
         return True
 
-    orient, keys, order = _orientation_bits_from_keys(faces)
+    orient, keys, order = _orientation_bits_from_keys(faces, n_vertices)
     device = faces.device
     conflict = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
@@ -787,7 +797,9 @@ def is_orientable(faces: wp.array[wp.int32]) -> bool:
     return int(read_scalar(conflict, 0)) == 0
 
 
-def face_flip_mask(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
+def face_flip_mask(
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+) -> wp.array[wp.bool]:
     """
     Per-face flag: whether a face must be flipped to make winding consistent within its patch.
 
@@ -802,6 +814,11 @@ def face_flip_mask(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`sorted_face_edge_keys`][triwarp.adjacency.sorted_face_edge_keys] so the key sort orders
+        only the bits a key can occupy. It does not change the answer, and it is trusted, not
+        checked.
 
     Returns
     -------
@@ -831,14 +848,14 @@ def face_flip_mask(faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    orient, _, _ = _orientation_bits_from_keys(faces)
+    orient, _, _ = _orientation_bits_from_keys(faces, n_vertices)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.map(kernel_array.greater, orient, wp.int32(0), out=mask)
     return mask
 
 
 def _orientation_bits_from_keys(
-    faces: wp.array[wp.int32],
+    faces: wp.array[wp.int32], n_vertices: int | None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.uint64], wp.array[wp.int32]]:
     """
     Flip bits, with the signed edges formed straight off the sorted halfedge keys.
@@ -850,10 +867,11 @@ def _orientation_bits_from_keys(
     The pair rows keep their adjacency order, so the bits are the ones the adjacency table gives,
     and neither that table nor the host read of its length is built. For callers that consume the
     bits, not the table: [`is_orientable`][triwarp.validation.is_orientable] and
-    [`face_flip_mask`][triwarp.validation.face_flip_mask]. ``faces`` must be non-empty. The sorted
+    [`face_flip_mask`][triwarp.validation.face_flip_mask]. ``faces`` must be non-empty;
+    ``n_vertices`` is the sort's optional radix, as in those two. The sorted
     keys are returned too, so a caller can re-form the same edges.
     """
-    keys, order = _sorted_halfedge_keys(faces, None)
+    keys, order = _sorted_halfedge_keys(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
     # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
     orient = _solve_orientation(

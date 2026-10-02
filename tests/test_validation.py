@@ -1027,6 +1027,49 @@ def test_is_orientable_closed_non_orientable(boy_surface: tuple[tm.Trimesh, wp.M
     assert tw.validation.is_winding_consistent(mesh_wp.indices) is False
 
 
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "mobius", "boy_surface"])
+@pytest.mark.parametrize("flip_half", [False, True])
+def test_orientation_predicates_with_vertex_bound_match_without(
+    request: pytest.FixtureRequest, mesh_name: str, flip_half: bool
+) -> None:
+    """
+    Triwarp against triwarp: ``n_vertices=`` only narrows the key sort; no answer moves.
+
+    The oracle-carrying path is the one without the bound (the tests above). Flipping half the
+    faces makes ``is_winding_consistent`` ``False`` and the flip mask non-trivial, and the two
+    non-orientable fixtures carry the ``False`` branch of ``is_orientable``, so neither boolean is
+    compared on one answer only.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = mesh_tm.faces.copy()
+    if flip_half:
+        faces_np[::2] = faces_np[::2][:, ::-1]
+    faces_wp = wp.array(
+        faces_np.reshape(-1).astype(np.int32), dtype=wp.int32, device=mesh_wp.device
+    )
+    n_vertices = mesh_tm.vertices.shape[0]
+
+    winding = tw.validation.is_winding_consistent(faces_wp)
+    assert tw.validation.is_winding_consistent(faces_wp, n_vertices=n_vertices) == winding
+    assert winding is (not flip_half and mesh_name == "icosahedron")
+    orientable = tw.validation.is_orientable(faces_wp)
+    assert tw.validation.is_orientable(faces_wp, n_vertices=n_vertices) == orientable
+    assert orientable is (mesh_name == "icosahedron")
+    if not orientable:
+        # On a non-orientable mesh the parity hooks race on CUDA, so the best-effort flip mask
+        # differs between two runs of the unbounded path alone; only the verdicts compare there.
+        return
+    flips_np = tw.validation.face_flip_mask(faces_wp).numpy()
+    assert flips_np.any() == flip_half
+    assert np.array_equal(
+        tw.validation.face_flip_mask(faces_wp, n_vertices=n_vertices).numpy(), flips_np
+    )
+    assert np.array_equal(
+        tw.repair.make_winding_consistent(faces_wp, n_vertices=n_vertices).numpy(),
+        tw.repair.make_winding_consistent(faces_wp).numpy(),
+    )
+
+
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_face_flip_mask_all_false_on_consistent(
     request: pytest.FixtureRequest, mesh_name: str

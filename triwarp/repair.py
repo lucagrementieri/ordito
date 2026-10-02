@@ -206,7 +206,7 @@ def make_solid(
     # characteristic and one component while still **not watertight**, because nothing downstream
     # addresses a non-manifold edge.
     vertices, faces, _remap = remove_unreferenced_vertices(vertices, faces)
-    faces = make_winding_consistent(faces)
+    faces = make_winding_consistent(faces, n_vertices=vertices.size)
     vertices, faces, _source = split_non_manifold_vertices(vertices, faces)
 
     if keep_largest:
@@ -1770,7 +1770,9 @@ def reverse_winding(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     return reversed_faces
 
 
-def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
+def make_winding_consistent(
+    faces: wp.array[wp.int32], *, n_vertices: int | None = None
+) -> wp.array[wp.int32]:
     """
     Flip faces so every shared edge is traversed in opposite directions by its two faces.
 
@@ -1787,6 +1789,10 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
     ----------
     faces
         ``(3 * n_faces,)`` flat triangle index buffer.
+    n_vertices
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`face_flip_mask`][triwarp.validation.face_flip_mask] for its key sort. It does not
+        change the answer, and it is trusted, not checked.
 
     Returns
     -------
@@ -1819,7 +1825,7 @@ def make_winding_consistent(faces: wp.array[wp.int32]) -> wp.array[wp.int32]:
 
     # The flip mask solves the bits straight off the sorted halfedge keys, with no adjacency table
     # and no host read of its length -- the bits ``face_orientation_bits`` gives.
-    flip = tw.validation.face_flip_mask(faces)
+    flip = tw.validation.face_flip_mask(faces, n_vertices=n_vertices)
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.flip_faces_masked, dim=n_faces, inputs=[faces, flip, out_faces], device=device
@@ -1963,7 +1969,7 @@ def make_normals_outward(
     [`is_volume`][triwarp.validation.is_volume]
     """
     require_same_device(vertices=vertices, faces=faces)
-    wound = make_winding_consistent(faces)
+    wound = make_winding_consistent(faces, n_vertices=vertices.size)
     return make_volume(vertices, wound, multibody=multibody)
 
 

@@ -700,8 +700,11 @@ def test_make_winding_consistent(bench_case: BenchCase) -> None:
         )
         return
     if bench_case.kind == "triwarp":
-        faces = bench_case.faces_wp
-        oriented = bench_case.run(lambda: tw.repair.make_winding_consistent(faces))
+        faces, n_vertices = bench_case.faces_wp, bench_case.vertices_wp.size
+        # The vertex count every reference is handed with the faces; it narrows the key sort.
+        oriented = bench_case.run(
+            lambda: tw.repair.make_winding_consistent(faces, n_vertices=n_vertices)
+        )
         assert oriented.size == faces.size
     else:  # trimesh mutates in place: rebuild inside the timed callable
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
