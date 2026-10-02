@@ -2942,9 +2942,9 @@ def test_subdivide_loop_shrinks_a_convex_solid_towards_its_limit(
 
     The pair of assertions is what distinguishes the two functions on a convex solid: the midpoint
     split puts every new vertex on the old flat faces, so the surface and its volume are unchanged
-    (to float32 rounding), while Loop pulls the vertices in and the volume falls. Iterating three times also checks the passes compose --
-    each one is a fresh call, which is how ``igl.loop``'s ``number_of_subdivs`` is meant to be
-    reproduced.
+    (to float32 rounding), while Loop pulls the vertices in and the volume falls. Iterating three
+    times also checks the passes compose -- each one is a fresh call, which is how ``igl.loop``'s
+    ``number_of_subdivs`` is meant to be reproduced.
     """
     _, mesh_wp = icosahedron
     volume_before = tw.measures.volume(mesh_wp.points, mesh_wp.indices)
