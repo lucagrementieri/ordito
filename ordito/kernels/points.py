@@ -14,12 +14,12 @@ from ordito.kernels.grouping import hash_slot_words3, next_slot
 from ordito.kernels.neighbors import ACCEL_HASHGRID, ball_count_in_radius
 from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
+    block_chunk,
     block_chunk_1d,
     block_max,
     commit_block_total,
     commit_sum_and_count,
     outer_sum_chunk,
-    tile_chunk,
 )
 
 
@@ -270,10 +270,9 @@ def neighbor_distance_moments(
     # reduction.
     chunk, lane = wp.tid()
     k = neighbor_distance.shape[1]
-    offset, remaining = tile_chunk(neighbor_distance.shape[0], chunk, MOMENT_ROWS_PER_BLOCK)
+    offset, remaining = block_chunk(neighbor_distance.shape[0], chunk, MOMENT_ROWS_PER_BLOCK)
     if remaining <= 0:
         return
-    remaining = wp.min(remaining, MOMENT_ROWS_PER_BLOCK)
     counted = wp.float64(0.0)
     distance_total = wp.float64(0.0)
     for r in range(lane, remaining, wp.block_dim()):
@@ -351,9 +350,9 @@ def local_outlier_factors(
     # its per-point width, since every point is written), lanes striding it by ``wp.block_dim()``
     # so the one CPU lane walks it all, and one atomic per block.
     block, lane = wp.tid()
-    offset, remaining = tile_chunk(neighbor_idx.shape[0], block, TILE_1D)
+    offset, count = block_chunk(neighbor_idx.shape[0], block, TILE_1D)
     squares = wp.float32(0.0)
-    for k in range(lane, wp.min(remaining, TILE_1D), wp.block_dim()):
+    for k in range(lane, count, wp.block_dim()):
         plof = local_outlier_factor(standard_distance, neighbor_idx, offset + k)
         out_plof[offset + k] = plof
         squares += plof * plof

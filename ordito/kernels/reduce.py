@@ -46,14 +46,21 @@ ITEMS_PER_BLOCK_1D = wp.constant(TILE_1D * TILES_PER_BLOCK_1D)
 
 
 @wp.func
+def block_chunk(n: wp.int32, block: wp.int32, width: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # ``tile_chunk`` **clamped to the block's own share**: ``(offset, count)`` of the ``width``
+    # elements block ``block`` owns, ``count <= 0`` past the end. The clamp is the part a loop
+    # bounded by the count cannot omit -- ``tile_chunk``'s ``remaining`` runs to the end of the
+    # array, so without it block 0 walks everything, which a sum gets wrong loudly and a
+    # min/max/any/all silently. The one spelling of that clamp for every block-owned chunk, whatever
+    # its width (a tile, the fold width, a kernel's own rows per block).
+    offset, remaining = tile_chunk(n, block, width)
+    return offset, wp.min(remaining, width)
+
+
+@wp.func
 def block_chunk_1d(n: wp.int32, block: wp.int32) -> tuple[wp.int32, wp.int32]:
-    # ``tile_chunk`` at the ``ITEMS_PER_BLOCK_1D`` fold width, **clamped to the block's own
-    # share**: ``(offset, count)`` of the elements block ``block`` owns, ``count <= 0`` past the
-    # end. The clamp is the part a loop bounded by the count cannot omit -- ``tile_chunk``'s
-    # ``remaining`` runs to the end of the array, so without it block 0 walks everything, which a
-    # sum gets wrong loudly and a min/max/any/all silently.
-    offset, remaining = tile_chunk(n, block, ITEMS_PER_BLOCK_1D)
-    return offset, wp.min(remaining, ITEMS_PER_BLOCK_1D)
+    # ``block_chunk`` at the ``ITEMS_PER_BLOCK_1D`` fold width.
+    return block_chunk(n, block, ITEMS_PER_BLOCK_1D)
 
 
 # The three block-wide reductions of one value per lane, correct on **every** lane and a full
@@ -1053,10 +1060,9 @@ def minmax_vec3_chunk(
     # One ``TILE_1D`` chunk of ``points`` folded into packed box ``box`` of ``out_corners`` -- a box
     # *index*, so its six slots are ``6 * box`` onwards (``array.atomic_min_packed_box``,
     # ``minmax_vec3_chunked``'s layout). Shared by the one-cloud and the two-cloud kernels.
-    offset, remaining = tile_chunk(points.shape[0], chunk, TILE_1D)
-    if remaining <= 0:
+    offset, count = block_chunk(points.shape[0], chunk, TILE_1D)
+    if count <= 0:
         return
-    count = wp.min(remaining, TILE_1D)
 
     lower = points[offset]
     upper = points[offset]

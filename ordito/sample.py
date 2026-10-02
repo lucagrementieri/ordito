@@ -40,7 +40,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.array import arange, flatnonzero, gather
+from ordito.array import flatnonzero, gather
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import sample as kernel_sample
 from ordito.kernels.algorithms import blue_noise as kernel_blue_noise
@@ -423,10 +423,9 @@ def sample_surface_poisson_disk(
         )
         alive_count -= n_max
 
-    # 7. GPU gather: the 0/1 alive flags are already what ``flatnonzero`` reads
-    indices = flatnonzero(alive)
-
-    return gather(init_points, indices), gather(init_face_indices, indices)
+    # 7. Compaction: the 0/1 alive flags are scanned in place (the loop is done with them) and one
+    # launch writes the survivors and their faces.
+    return _emit_kept_samples(alive, init_points, init_face_indices)
 
 
 def _top_maxima_by_weight(
@@ -646,8 +645,8 @@ def _dart_throw_blue_noise(
     # call read their neighbours at stride 1 instead of scattering into the unsorted pool for every
     # candidate of every one of ``DART_SHELL_CELLS`` cells. ``bucket`` itself survives only as the
     # original-index tie-break (see ``dart_select_minima``) and as the map back at the end. The
-    # per-point cell table is born sorted, read off the sorted keys.
-    sorted_points = gather(pool_points, bucket)
+    # per-point cell table is born sorted, read off the sorted keys, and the points are permuted
+    # in the setup launch below.
     cell_neighbors = odt.empty_2d(
         (n_cells, kernel_blue_noise.DART_SHELL_CELLS), wp.int32, device=device
     )
@@ -658,12 +657,18 @@ def _dart_throw_blue_noise(
         device=device,
     )
 
-    # The per-point cell table, the priorities and the first round's per-cell priority summary,
-    # one launch. The priority is keyed on the *original* pool index even though it is stored in
-    # sorted space: the priority a point holds is what decides the packing, so it has to stay the
-    # same function of the seed and the point rather than of where the sort happened to put it.
+    # The sorted points, the per-point cell table, the priorities, the state, the first round's
+    # work list and its per-cell priority summary, one launch. The priority is keyed on the
+    # *original* pool index even though it is stored in sorted space: the priority a point holds is
+    # what decides the packing, so it has to stay the same function of the seed and the point rather
+    # than of where the sort happened to put it.
+    sorted_points = _launch.empty(n_pool, dtype=wp.vec3, device=device)
     sorted_cell = _launch.empty(n_pool, dtype=wp.int32, device=device)
     priority = _launch.empty(n_pool, dtype=wp.uint32, device=device)
+    state = _launch.empty(n_pool, dtype=wp.int32, device=device)
+    # Work-list buffers sized for their final use once: the first round's list is the whole pool and
+    # every later one is a prefix of it, so nothing here is reallocated per round.
+    alive = _launch.empty(n_pool, dtype=wp.int32, device=device)
     # Per-cell summaries that let each round's two sweeps skip a shell cell whole; see the kernel
     # module for what each one summarises and why the accepted set is unchanged. Both are refilled
     # per round rather than accumulated, so a cell stops pruning the moment it stops being empty;
@@ -676,15 +681,10 @@ def _dart_throw_blue_noise(
     _launch.launch(
         kernel_blue_noise.dart_point_setup,
         dim=n_pool,
-        inputs=[wp.int32(seed), cell_ranks, bucket],
-        outputs=[sorted_cell, priority, cell_min_priority],
+        inputs=[wp.int32(seed), pool_points, cell_ranks, bucket],
+        outputs=[sorted_points, sorted_cell, priority, state, alive, cell_min_priority],
         device=device,
     )
-    state = _launch.zeros(n_pool, dtype=wp.int32, device=device)
-
-    # Work-list buffers sized for their final use once: the first round's list is the whole pool and
-    # every later one is a prefix of it, so nothing here is reallocated per round.
-    alive = arange(n_pool, device=device)
     next_alive = _launch.empty(n_pool, dtype=wp.int32, device=device)
     survivor_flag = _launch.empty(n_pool, dtype=wp.int32, device=device)
     positions = _launch.empty(n_pool, dtype=wp.int32, device=device)
@@ -767,18 +767,42 @@ def _dart_throw_blue_noise(
 
     # ``state`` is indexed by sorted position; scattering the accepted flags through ``bucket``
     # permutes them back to pool order, which is what keeps the returned points in the pool's own
-    # order rather than the cell sort's.
-    accepted_mask = _launch.zeros(n_pool, dtype=wp.bool, device=device)
+    # order rather than the cell sort's. The flags are scanned in place (the survivor positions'
+    # buffer is free now) and one launch compacts the points and their faces together.
     _launch.launch(
-        kernel_blue_noise.dart_accepted_pool_mask,
+        kernel_blue_noise.dart_accepted_pool_flags,
         dim=n_pool,
-        inputs=[state, bucket, accepted_mask],
+        inputs=[state, bucket, positions],
         device=device,
     )
-    kept = flatnonzero(accepted_mask)
-    if kept.size == 0:
-        return empty
-    return gather(pool_points, kept), gather(pool_faces, kept)
+    return _emit_kept_samples(positions, pool_points, pool_faces)
+
+
+def _emit_kept_samples(
+    flags: wp.array[wp.int32], points: wp.array[wp.vec3], face_indices: wp.array[wp.int32]
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return the samples whose ``flags`` entry is 1, and their faces, in input order.
+
+    ``flags`` holds 0/1 keep flags and is scanned in place, so the caller must be done with it.
+    One scan, one readback for the kept count and one compaction launch writing both outputs.
+    """
+    device = points.device
+    n = points.size
+    _launch.array_scan(flags, out_array=flags, inclusive=True)
+    # The kept count sizes the outputs.
+    n_kept = int(read_scalar(flags, n - 1))
+    kept_points = _launch.empty(n_kept, dtype=wp.vec3, device=device)
+    kept_faces = _launch.empty(n_kept, dtype=wp.int32, device=device)
+    if n_kept > 0:
+        _launch.launch(
+            kernel_sample.emit_kept_samples,
+            dim=n,
+            inputs=[flags, points, face_indices],
+            outputs=[kept_points, kept_faces],
+            device=device,
+        )
+    return kept_points, kept_faces
 
 
 def sample_volume(

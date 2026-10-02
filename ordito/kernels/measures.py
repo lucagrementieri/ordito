@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.reduce import block_chunk_1d, commit_block_sum, commit_block_total, tile_chunk
+from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
 from ordito.kernels.triangles import (
     face_area_weighted_centroid,
     face_signed_volume,
@@ -148,12 +148,9 @@ def moment_integrals(
     #   int xy dV  = det * (2(a.x a.y + b.x b.y + c.x c.y)
     #                       + a.x b.y + b.x a.y + a.x c.y + c.x a.y + b.x c.y + c.x b.y) / 120
     chunk, lane = wp.tid()
-    offset, remaining = tile_chunk(faces.shape[0] // 3, chunk, chunk_faces)
-    if remaining <= 0:
+    offset, count = block_chunk(faces.shape[0] // 3, chunk, chunk_faces)
+    if count <= 0:
         return
-    # ``tile_chunk`` reports what is left to the end, not this block's share of it, so the ragged
-    # last chunk has to be clamped or block 0 walks the whole mesh.
-    count = wp.min(remaining, chunk_faces)
 
     volume = wp.float64(0.0)
     first = wp.vec3d()

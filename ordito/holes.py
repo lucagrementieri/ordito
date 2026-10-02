@@ -77,7 +77,7 @@ from warp._src.codegen import StructInstance
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import TOLERANCE_ZERO
 from ordito.kernels import holes as kernel_holes
 from ordito.kernels import scatter as kernel_scatter
@@ -3126,6 +3126,20 @@ class _JoinRim:
         self._vertex_labels = vertex_labels
         # The current component of each original one: equality is all the pairing reads.
         self._component = np.arange(n_labels, dtype=np.int64)
+        # The pairing's device buffers, kept across rounds: a join removes two rim rows and adds
+        # two chords, so the table's size does not change (rebuilt only if it ever does), and
+        # ``closest_pair_rows`` re-arms the best key as it decodes it.
+        self._buffers: (
+            tuple[
+                wp.array[wp.int32],
+                odt.Array2dInt32,
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+                wp.array[wp.int32],
+            ]
+            | None
+        ) = None
+        self._best: wp.array[wp.int64] | None = None
 
     @staticmethod
     def of(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> _JoinRim | None:
@@ -3171,11 +3185,18 @@ class _JoinRim:
         table[0 : 2 * n : 2] = self._tails
         table[1 : 2 * n : 2] = self._heads
         table[2 * n :] = self.row_components()
-        table_wp = _launch.array(table, dtype=wp.int32, device=device)
-        rows = odt.as_array2d(odt.as_dense(table_wp[: 2 * n]).reshape((n, 2)), wp.int32)
-        labels = odt.as_dense(table_wp[2 * n :])
-        best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=device)
-        partner = _launch.empty(n, dtype=wp.int32, device=device)
+        if self._buffers is None or self._buffers[0].size != 3 * n:
+            table_wp = _launch.empty(3 * n, dtype=wp.int32, device=device)
+            rows = odt.as_array2d(odt.as_dense(table_wp[: 2 * n]).reshape((n, 2)), wp.int32)
+            labels = odt.as_dense(table_wp[2 * n :])
+            partner = _launch.empty(n, dtype=wp.int32, device=device)
+            answer = _launch.empty(5, dtype=wp.int32, device=device)
+            self._buffers = (table_wp, rows, labels, partner, answer)
+            self._best = _launch.full(1, _NEAREST_KEY_SEED, dtype=wp.int64, device=device)
+        table_wp, rows, labels, partner, answer = self._buffers
+        best = self._best
+        assert best is not None
+        table_wp.assign(table)
         _launch.launch_tiled(
             kernel_holes.reduce_closest_cross_label_pair,
             dim=[n],
@@ -3184,14 +3205,13 @@ class _JoinRim:
             device=device,
         )
         # The winner decoded on the device into ``[found, a0, a1, b0, b1]``: one readback.
-        answer = _launch.empty(5, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_holes.closest_pair_rows,
             dim=1,
             inputs=[best, partner, rows, wp.int64(_NEAREST_KEY_SEED), answer],
             device=device,
         )
-        found, a0, a1, b0, b1 = (int(value) for value in answer.numpy())
+        found, a0, a1, b0, b1 = (int(value) for value in read_values(answer, 0, 5))
         if not found:
             return None
         return ((a0, a1), (b0, b1))

@@ -49,7 +49,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import element_priority, inverse_or_one, sqrt_abs
-from ordito.kernels.reduce import block_sum, tile_chunk
+from ordito.kernels.reduce import block_chunk, block_sum
 
 # Node states for the distance-2 maximal independent set. The encoding is ordered rather than
 # arbitrary: a root must win any maximum (it vetoes every node in its two-hop ball) and an excluded
@@ -201,11 +201,15 @@ def mis_propagate_states(
     scaled_diagonal: wp.array[wp.float64],
     theta: wp.float64,
     out_key: wp.array[wp.int64],
+    out_undecided: wp.array[wp.int32],
 ) -> None:
     # A round's first hop, reading every key straight from ``(state, priority, index)``: the packed
     # key is an elementwise function of the state, so no seeding pass writes it first.
-    # ``mis_propagate_decide`` is the round's second hop.
+    # ``mis_propagate_decide`` is the round's second hop; the undecided counter it increments is
+    # cleared here, the launch before, so no memset runs per round.
     i = wp.int32(wp.tid())
+    if i == 0:
+        out_undecided[0] = 0
     out_key[i] = mis_ball_max(
         i, wp.int32(1), out_key, state, priority, offsets, columns, values, scaled_diagonal, theta
     )
@@ -621,8 +625,7 @@ POWER_ROWS_PER_BLOCK = wp.constant(4 * TILE_1D)
 def power_block_rows(n: wp.int32, block: wp.int32) -> tuple[wp.int32, wp.int32]:
     # ``(offset, count)`` of the ``POWER_ROWS_PER_BLOCK`` rows block ``block`` owns, clamped to
     # its own share (``tile_chunk``'s ``remaining`` runs to the end of the array).
-    offset, remaining = tile_chunk(n, block, POWER_ROWS_PER_BLOCK)
-    return offset, wp.min(remaining, POWER_ROWS_PER_BLOCK)
+    return block_chunk(n, block, POWER_ROWS_PER_BLOCK)
 
 
 @wp.kernel

@@ -3125,7 +3125,9 @@ at 41 k and 1 M rows where 1 024 starved the grid and one row per lane contended
    the caller's job.** Tile-load factories satisfy it through a fixed `TILES_PER_BLOCK_1D` loop. A
    loop bounded by `remaining` (`for k in range(t, remaining, wp.block_dim())`) must write
    `remaining = wp.min(remaining, ITEMS_PER_BLOCK_1D)` or block 0 walks the whole array. It fails
-   loudly for sums and **silently for min/max/any/all** (idempotent re-reads). Changing a kernel's
+   loudly for sums and **silently for min/max/any/all** (idempotent re-reads). The clamped form
+   has one spelling, `reduce.block_chunk(n, block, width)` (`block_chunk_1d` is it at the fold
+   width); a kernel owning its own rows per block calls it rather than re-deriving the clamp. Changing a kernel's
    per-block contract silently breaks any other module that launches it with its own `dim`:
    `grep` for direct launches first, and reuse the exported block-count helper.
 
@@ -4420,6 +4422,8 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   devices), 1.43-1.48x / 1.62-1.65x against the per-insert form and faster than before it
   (48 vs 52.5 ms on `geodesic_ball[dragon]`). Bookkeeping in a BFS's innermost loop is a
   codegen-variance hazard (§14.2): carry the signal in a value the loop already updates.
+  Extracting the two phases' neighbour distance as `bfs.bfs_center_distance` is cost-neutral
+  (35.8 vs 35.8 ms at `dragon`, byte-identical on both devices).
 - **`geodesic_ball`'s chunk is its occupancy** (2026-10-02, `neighbors._GEODESIC_BALL_CHUNK`):
   the per-source walk is latency-bound and one launch holds a chunk of sources, so at `1 << 15`
   it ran under a tenth of the device's threads. `1 << 16`: 1.51x `bunny` (one launch instead of
@@ -4632,6 +4636,16 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   so that permutation *is* the cell order; permuting payloads once makes a cell's members the
   contiguous run its offsets name, every read stride 1. The tie-break stays byte-identical
   because the comparison still reads the original pool index, on the priority-tie branch only.
+- **The dart throw's setup writes every buffer the loop starts from** (2026-10-02): the permuted
+  points (no `gather`), the `ALIVE` state (no `wp.zeros`) and the identity work list (no
+  `arange`) ride `dart_point_setup`; the accepted set is int32 flags written through `bucket`
+  (a permutation, so no zeroed mask), scanned in the spent survivor-position buffer, and one
+  `sample.emit_kept_samples` launch writes points and faces (no `flatnonzero`, no two gathers).
+  The Poisson-disk elimination's tail takes the same kernel over its `alive` flags.
+  `sample_surface_blue_noise` 1.06-1.09x (`bunny`, `dragon` at half radius), Poisson-disk flat;
+  byte-identical on CPU and on CUDA at `bunny`. **At `dragon` the CUDA output is not
+  reproducible on the unchanged tree** (19 552 / 19 550 / 19 540 points over three runs of
+  HEAD): gate an A/B of this sampler on the CPU device.
 - `sample.apply_deletions` clears `alive` in the pass that subtracts the deleted points'
   contributions (one `wp.map` per elimination round); `homology.forest_link` clears
   `candidate[e]` for an accepted edge instead of writing an `in_forest` mask. Both are races only
@@ -5090,7 +5104,11 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   dependent chain) and one five-integer read; the patches are appended once. `open_parts_4 / 16 /
   64`: 1.51 -> 1.27, 6.15 -> 2.80, 25.9 -> 8.8 ms (2.9x at 64). The exact Kruskal-on-the-host batch
   (R28-2) was not needed for identity and is not built: per-round tie-breaks read row indices a
-  bridge renumbers, so a batched pick must reproduce the table anyway.
+  bridge renumbers, so a batched pick must reproduce the table anyway. The rim's row count is
+  constant across joins (two rows out, two chords in), so the table, partner, answer and best-key
+  buffers are allocated once and `closest_pair_rows` re-arms the key as it decodes it, read
+  through `read_values`: a further 1.45-1.49x on `open_parts_64` (9.25 -> 6.2 ms) and 1.36x on
+  `open_parts_16`, identical faces on both devices.
 - **The floor under every entry point is `boundary_loops_batched`, a flat ~2 ms** whatever the
   mesh (closed, §16.5): `fill_fan[holes_many]` is 2.2 ms of which 2.1 is that call. Bridge
   validation: §16.5.
@@ -5321,7 +5339,11 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       block folds them (fixed order; pre-folded past 4 096 partials), and the final spread hop
       counts the aggregate sizes: two operations fewer a level, bit-identical diagonals and labels
       at 40 k-2.6 M rows, the setup region 1.03x at 655 k and level at 40 k. Blocks own 256 rows,
-      not the `reduce` fold width of 1 024 (40 blocks at 40 k rows read ~2 % slower).
+      not the `reduce` fold width of 1 024 (40 blocks at 40 k rows read ~2 % slower). The root
+      flags are scanned in place, the first spread hop is written into the MIS loop's spent
+      `next_state`, the damped diagonal into the power iteration's spent `x`, and the undecided
+      counter is cleared by each round's first launch: three allocations and a memset per round
+      fewer, byte-identical preconditioner applies on both devices, flat on the clock.
       `_JacobiChebyshev` reads the diagonal and ratio from one row
       walk. **DECLINED: capturing the multigrid MIS loop** to drop its per-round readback (ceiling
       ~2 % of the preconditioner build vs a medium rewrite with a documented reverted precedent,

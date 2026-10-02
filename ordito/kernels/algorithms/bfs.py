@@ -101,6 +101,20 @@ def bfs_extras_pop_nearest(
 
 
 @wp.func
+def bfs_center_distance(
+    vertices: wp.array[wp.vec3], use_geometry: wp.bool, center: wp.vec3, neighbor: wp.int32
+) -> wp.float32:
+    # A newly visited neighbour's Euclidean distance to the source, the geodesic ball's predicate
+    # and the nearest fallback's key; ``0`` when the traversal is purely topological
+    # (``use_geometry`` false), so ``vertices`` is never read. One definition for the BFS phase and
+    # the fallback drain of ``per_source_bfs_collect``.
+    distance = wp.float32(0.0)
+    if use_geometry:
+        distance = wp.length(vertices[neighbor] - center)
+    return distance
+
+
+@wp.func
 def per_source_bfs_collect(
     i: wp.int32,
     vertices: wp.array[wp.vec3],
@@ -170,9 +184,7 @@ def per_source_bfs_collect(
             is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
-            distance = wp.float32(0.0)
-            if use_geometry:
-                distance = wp.length(vertices[neighbor] - center)
+            distance = bfs_center_distance(vertices, use_geometry, center, neighbor)
             if distance < radius:
                 if q_tail < queue_cap:
                     queue[q_tail] = neighbor
@@ -211,9 +223,7 @@ def per_source_bfs_collect(
             is_new, visited_n = bfs_visited_insert(visited, mask, neighbor, visited_n)
             if not is_new:
                 continue
-            distance = wp.float32(0.0)
-            if use_geometry:
-                distance = wp.length(vertices[neighbor] - center)
+            distance = bfs_center_distance(vertices, use_geometry, center, neighbor)
             ext_n = bfs_extras_push_nearest(ext_dist, ext_idx, distance, neighbor, ext_n)
 
     # A visited-table drop leaves ``visited_n`` one past the fill bound (``bfs_visited_insert``).

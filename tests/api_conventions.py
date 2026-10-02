@@ -409,6 +409,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # is the candidates the dual forest did not take, so ``candidate`` is input and result at once.
     ("homology", "forest_link"): frozenset({"candidate"}),
     ("holes", "fill_dp_span"): frozenset({"tables"}),
+    # ``join_closest_components``' running best key: decoded, then re-armed for the next round.
+    ("holes", "closest_pair_rows"): frozenset({"best"}),
     ("holes", "fill_dp_span_tiled"): frozenset({"tables"}),
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.

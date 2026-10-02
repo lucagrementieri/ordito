@@ -3566,7 +3566,8 @@ def _multigrid_aggregate(
     # Every node's root flag, written by the round that decides it (and every round it is still
     # undecided), so the scan below needs no map over the final state.
     flags = _launch.empty(n, dtype=wp.int32, device=device)
-    undecided = _launch.zeros(1, dtype=wp.int32, device=device)
+    # Cleared by every round's first launch.
+    undecided = _launch.empty(1, dtype=wp.int32, device=device)
     for _ in range(_MULTIGRID_MIS_ROUNDS):
         # Two launches a round: the first hop forms every key from the state as it reads it, the
         # second hop decides as it reduces.
@@ -3574,10 +3575,9 @@ def _multigrid_aggregate(
             kernel_mg.mis_propagate_states,
             dim=n,
             inputs=[state, priority, offsets, columns, values, scaled_diagonal, theta],
-            outputs=[key],
+            outputs=[key, undecided],
             device=device,
         )
-        _launch.zero_(undecided)
         _launch.launch(
             kernel_mg.mis_propagate_decide,
             dim=n,
@@ -3591,14 +3591,16 @@ def _multigrid_aggregate(
         if int(read_scalar(undecided, 0)) == 0:
             break
 
-    scan_pos = _launch.empty(n, dtype=wp.int32, device=device)
+    # The root flags are scanned in place: only their scan is read from here on.
+    scan_pos = flags
     _launch.array_scan(flags, scan_pos, inclusive=True)
     n_aggregates = int(read_scalar(scan_pos))
 
     # Two hops of the spread. The first reads each label straight from ``(state, scan_pos)`` (its
     # ``label`` argument is not read); the second reads the first's output.
     strong_graph = [offsets, columns, values, scaled_diagonal, theta]
-    hop = _launch.empty(n, dtype=wp.int32, device=device)
+    # ``next_state`` is the loop's spent ping-pong buffer, free to hold the first hop.
+    hop = next_state
     _launch.launch(
         kernel_mg.spread_aggregate_labels,
         dim=n,
@@ -3699,7 +3701,8 @@ def _multigrid_damped_diagonal(
             device=device,
         )
         partials = folded
-    damped = _launch.empty(n, dtype=wp.float64, device=device)
+    # The last step read ``x`` and wrote ``y``, so ``x`` is free to hold the result.
+    damped = x
     _launch.launch_tiled(
         kernel_mg.damped_inverse_diagonal,
         dim=[blocks],

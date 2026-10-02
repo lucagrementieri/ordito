@@ -190,15 +190,22 @@ def summarize_min_priority(
 @wp.kernel
 def dart_point_setup(
     seed: wp.int32,
+    pool_points: wp.array[wp.vec3],
     cell_ranks: wp.array[wp.int32],
     bucket: wp.array[wp.int32],
+    out_points: wp.array[wp.vec3],
     out_point_cell: wp.array[wp.int32],
     out_priority: wp.array[wp.uint32],
+    out_state: wp.array[wp.int32],
+    out_alive: wp.array[wp.int32],
     out_cell_min_priority: wp.array[wp.uint32],
 ) -> None:
     # Everything the dart loop keeps per pool point, written straight into the cell-sorted index
     # space it runs in, plus the first round's per-cell summary -- one launch over the pool:
     #
+    # - the point itself, permuted through ``bucket`` (the gather a separate copy would make), the
+    #   ``DART_ALIVE`` state and the first round's work list, which is the identity on the pool:
+    #   every buffer the loop starts from is written here rather than by a fill or an ``arange``;
     # - the compacted cell index of every point (its cell is occupied by construction):
     #   ``cell_ranks`` is the inclusive scan of the sorted keys' run starts, so
     #   ``cell_ranks[s] - 1`` is the rank of sorted position ``s``'s key among the distinct cells --
@@ -219,10 +226,14 @@ def dart_point_setup(
     #   been vetoed by it anyway. Every later round's summary is folded into the previous round's
     #   compaction, which already visits exactly the survivors.
     s = wp.int32(wp.tid())
+    p = bucket[s]
+    out_points[s] = pool_points[p]
     cell = cell_ranks[s] - 1
     out_point_cell[s] = cell
-    priority = element_priority(seed, bucket[s])
+    priority = element_priority(seed, p)
     out_priority[s] = priority
+    out_state[s] = DART_ALIVE
+    out_alive[s] = s
     wp.atomic_min(out_cell_min_priority, cell, priority)
 
 
@@ -362,12 +373,12 @@ def dart_compact_alive(
 
 
 @wp.kernel
-def dart_accepted_pool_mask(
-    state: wp.array[wp.int32], bucket: wp.array[wp.int32], out_mask: wp.array[wp.bool]
+def dart_accepted_pool_flags(
+    state: wp.array[wp.int32], bucket: wp.array[wp.int32], out_flags: wp.array[wp.int32]
 ) -> None:
-    # The accepted set as a pool-order mask, from the cell-sorted ``state``: ``bucket`` maps a
+    # The accepted set as pool-order 0/1 flags, from the cell-sorted ``state``: ``bucket`` maps a
     # sorted position back to its pool index, so the scatter *is* the inverse permutation and no
-    # inverse table or gather is built. The caller allocates ``out_mask`` zeroed.
+    # inverse table or gather is built. ``bucket`` is a permutation, so every flag is written and
+    # ``out_flags`` needs no zeroing; the caller scans it in place for ``sample.emit_kept_samples``.
     s = wp.int32(wp.tid())
-    if state[s] == DART_ACCEPTED:
-        out_mask[bucket[s]] = True
+    out_flags[bucket[s]] = wp.where(state[s] == DART_ACCEPTED, wp.int32(1), wp.int32(0))

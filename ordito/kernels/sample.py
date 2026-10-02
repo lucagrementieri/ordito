@@ -2,6 +2,7 @@ import math
 
 import warp as wp
 
+from ordito.kernels.array import scanned_count
 from ordito.kernels.triangles import face_vertices
 
 # Golden angle in radians: pi * (3 - sqrt(5)) ~ 2.399963. Successive multiples of this
@@ -215,3 +216,23 @@ def apply_deletions(
             continue
         contribution = _poisson_edge_weight(nbr_dists[k], r_max, r_min, alpha)
         wp.atomic_add(weights, j, -contribution)
+
+
+@wp.kernel
+def emit_kept_samples(
+    inclusive: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    face_indices: wp.array[wp.int32],
+    out_points: wp.array[wp.vec3],
+    out_face_indices: wp.array[wp.int32],
+) -> None:
+    # The kept samples and their faces, in input order, from the in-place inclusive scan of their
+    # 0/1 keep flags: sample ``i`` is kept exactly where the scan steps (``array.scanned_count``,
+    # ``scatter.scatter_index_where_scanned``'s rule) and lands at the exclusive value -- the index
+    # compaction and both gathers in one launch. Shared by the Poisson-disk elimination (its
+    # ``alive`` flags) and the blue-noise dart throw (``blue_noise.dart_accepted_pool_flags``).
+    i = wp.int32(wp.tid())
+    slot, count = scanned_count(inclusive, i)
+    if count != 0:
+        out_points[slot] = points[i]
+        out_face_indices[slot] = face_indices[i]

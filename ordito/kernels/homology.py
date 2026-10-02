@@ -71,7 +71,7 @@ import warp as wp
 from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND
-from ordito.kernels.reduce import block_chunk_1d, commit_block_sum, commit_block_total, tile_chunk
+from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
 
 # One past the largest edge index any proposal can hold, so ``wp.atomic_min`` starts empty. The
 # candidate count is bounded by the unique-edge count, which is well inside int32.
@@ -195,11 +195,9 @@ def dual_candidate_mask(
     # under one block per SM. Section 2.3's occupancy rule: a kernel that already has a per-element
     # dimension must not collapse it into ``block_dim`` lanes. One atomic per tile is still one per
     # block, which is the shape section 13.2 asks for.
-    offset, remaining = tile_chunk(unique_edges.shape[0], chunk, TILE_1D)
-    if remaining <= 0:
+    offset, n_rows = block_chunk(unique_edges.shape[0], chunk, TILE_1D)
+    if n_rows <= 0:
         return
-    # ``tile_chunk`` reports what is left to the end of the array, not this block's share of it.
-    n_rows = wp.min(remaining, TILE_1D)
 
     interior = wp.int32(0)
     for k in range(lane, n_rows, wp.block_dim()):

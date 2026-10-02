@@ -6,7 +6,7 @@ from ordito.constants import TILE_1D, TOLERANCE_ZERO_CONSTANT
 from ordito.kernels.array import lift_vec2
 from ordito.kernels.polyline import segment_displacement
 from ordito.kernels.predicates import orient2d
-from ordito.kernels.reduce import commit_block_total, tile_chunk
+from ordito.kernels.reduce import block_chunk, commit_block_total
 from ordito.kernels.triangles import corner_triple, face_vertices, write_corner_triple_reversible
 
 SQRT3 = wp.constant(wp.float32(math.sqrt(3.0)))
@@ -629,10 +629,9 @@ def lift_layers_and_signed_area(
     chunk, lane = wp.tid()
     n = vertices.shape[0]
     n_faces = faces.shape[0] // 3
-    offset, remaining = tile_chunk(wp.max(n, n_faces), chunk, TILE_1D)
+    offset, remaining = block_chunk(wp.max(n, n_faces), chunk, TILE_1D)
     if remaining <= 0:
         return
-    remaining = wp.min(remaining, TILE_1D)
     area = wp.float32(0.0)
     for k in range(lane, remaining, wp.block_dim()):
         i = offset + k

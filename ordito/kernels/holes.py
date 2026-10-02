@@ -1714,7 +1714,7 @@ def bridge_edge_census(
 CLOSEST_PAIR_BLOCK = 64
 
 
-@wp.kernel
+@wp.kernel(enable_backward=False)
 def reduce_closest_cross_label_pair(
     vertices: wp.array[wp.vec3],
     members: wp.array2d[wp.int32],
@@ -1740,9 +1740,9 @@ def reduce_closest_cross_label_pair(
     #
     # One block per query: ``B`` is a few hundred on the benchmarked inputs, so one thread per
     # query walking every member was a short grid of long dependent chains. The lanes stride the
-    # members by ``wp.block_dim()`` with the strict ``<`` of the serial walk, so each keeps the
-    # lowest index among its own ties, and ``block_argmin`` keeps the lowest across lanes -- the
-    # serial walk's answer exactly, on the one CPU lane too.
+    # members by ``wp.block_dim()`` with the serial walk's strict-``<`` ``update_argmin``, so each
+    # keeps the lowest index among its own ties, and ``block_argmin`` keeps the lowest across lanes
+    # -- the serial walk's answer exactly, on the one CPU lane too.
     i, lane = wp.tid()
     n = members.shape[0]
     position = vertices[members[i, 0]]
@@ -1752,10 +1752,7 @@ def reduce_closest_cross_label_pair(
     for j in range(lane, n, wp.block_dim()):
         if labels[j] == label:
             continue
-        distance_sq = wp.length_sq(vertices[members[j, 0]] - position)
-        if distance_sq < best_sq:
-            best_sq = distance_sq
-            best = j
+        update_argmin(best_sq, best, wp.length_sq(vertices[members[j, 0]] - position), j)
     best_sq, best = block_argmin(best_sq, best)
     if lane == 0:
         out_partner[i] = best
@@ -1784,8 +1781,10 @@ def closest_pair_rows(
     # Decode ``reduce_closest_cross_label_pair``'s answer into the five integers the host needs:
     # whether any pair was found, then the two edge rows it names -- the winning slot (the key's
     # low half) and that thread's partner. One small buffer, so the host reads the whole answer in
-    # one transfer instead of the key, then the partner, then the rows.
+    # one transfer instead of the key, then the partner, then the rows. ``best`` is re-armed to
+    # ``seed`` once read, so a caller reusing it for the next round needs no fill.
     key = best[0]
+    best[0] = seed
     if key == seed:
         out_rows[0] = 0
         return
