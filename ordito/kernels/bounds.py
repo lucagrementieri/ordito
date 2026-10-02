@@ -3,7 +3,7 @@ import math
 import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT
-from ordito.kernels.array import atomic_min_packed_box, scanned_count
+from ordito.kernels.array import RegisterBlockedTable, atomic_min_packed_box, scanned_count
 from ordito.kernels.predicates import TWO_PI_F64, is_in_aabb, is_in_obb
 from ordito.kernels.reduce import block_argmin
 
@@ -146,11 +146,10 @@ def oriented_box_refine_axes(
     out_axes[i] = delta * base
 
 
-# Candidate frames one ``oriented_box_extents`` thread may project into together -- the widest
-# that still leaves ``BOX_EXTENT_MIN_THREADS`` threads (``box_extent_width``), as in
-# ``kernels/points.hull_support_extremes``.
+# Candidate frames one ``oriented_box_extents`` thread may project into together; a launch takes
+# the widest ``RegisterBlockedTable.launch_shape`` allows, as
+# ``kernels/points.hull_support_extremes`` does.
 BOX_EXTENT_WIDTHS = (4, 2, 1)
-BOX_EXTENT_MIN_THREADS = 1 << 17
 
 
 def _oriented_box_extents_kernel(width: int) -> wp.Kernel:
@@ -208,15 +207,9 @@ def _oriented_box_extents_kernel(width: int) -> wp.Kernel:
     return wp.kernel(oriented_box_extents, name=f"oriented_box_extents_{width}")
 
 
-OBB_EXTENTS = {w: _oriented_box_extents_kernel(w) for w in BOX_EXTENT_WIDTHS}
-
-
-def box_extent_width(n_frames: int, n_slices: int) -> int:
-    """Return the widest ``BOX_EXTENT_WIDTHS`` entry keeping ``BOX_EXTENT_MIN_THREADS``."""
-    for width in BOX_EXTENT_WIDTHS:
-        if -(-n_frames // width) * n_slices >= BOX_EXTENT_MIN_THREADS:
-            return width
-    return 1
+OBB_EXTENTS = RegisterBlockedTable(
+    "oriented_box_extents", _oriented_box_extents_kernel, BOX_EXTENT_WIDTHS
+)
 
 
 BOX_OBJECTIVE_VOLUME = wp.constant(wp.int32(0))

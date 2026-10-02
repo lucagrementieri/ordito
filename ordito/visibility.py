@@ -587,10 +587,10 @@ def max_tangent_sphere(
     if k > 0:
         n_vert_slices = max(1, (n_verts + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
         packed_support = _launch.zeros(k, dtype=wp.uint64, device=device)
-        width = kernel_visibility.support_argmax_width(k, n_vert_slices)
+        kernel, dim = kernel_visibility.SUPPORT_ARGMAX_SLICED.launch_shape(k, n_vert_slices)
         _launch.launch(
-            kernel_visibility.SUPPORT_ARGMAX_SLICED[width],
-            dim=(-(-k // width), n_vert_slices),
+            kernel,
+            dim=dim,
             inputs=[
                 mesh.points,
                 wp.int32(n_verts),

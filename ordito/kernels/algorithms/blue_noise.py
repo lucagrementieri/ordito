@@ -60,7 +60,7 @@ counts.
 import warp as wp
 
 from ordito.kernels import array as kernel_array
-from ordito.kernels.array import element_priority, sorted_run_start
+from ordito.kernels.array import element_priority
 
 INVALID = wp.constant(wp.int32(-1))
 
@@ -113,7 +113,7 @@ def point_cell_key(
     point: wp.vec3, bbox_min: wp.vec3, inv_cell_size: wp.float32, grid_w: wp.int32
 ) -> wp.int64:
     # The background grid's cell key of ``point``: its ``grid_coord``, packed at ``grid_w`` cells a
-    # side. One map from the points, because ``grid_w`` is known before any coordinate is: every
+    # side. One pass over the points, because ``grid_w`` is known before any coordinate is: every
     # step of ``grid_coord`` is monotone in the point, so the largest coordinate is the one at the
     # bounding box's upper corner, which the caller evaluates in the same float32 arithmetic.
     coord = grid_coord(point, bbox_min, inv_cell_size)
@@ -122,32 +122,24 @@ def point_cell_key(
 
 
 @wp.kernel
-def cell_run_starts(sorted_keys: wp.array[wp.int64], out_is_start: wp.array[wp.bool]) -> None:
-    # Where each occupied cell's run begins in the cell-sorted pool. The keys arrive sorted, so the
-    # distinct cells and their bounds are the run starts -- no hash table and no second sort, which
-    # is what ``unique_1d(return_counts=True)`` followed by a counts scan cost for the same answer.
-    s = wp.int32(wp.tid())
-    out_is_start[s] = sorted_run_start(sorted_keys, s)
-
-
-@wp.kernel
-def cell_table(
-    sorted_keys: wp.array[wp.int64],
-    run_starts: wp.array[wp.int32],
-    n_pool: wp.int32,
-    out_unique_keys: wp.array[wp.int64],
-    out_cell_offsets: wp.array[wp.int32],
+def pool_cell_keys_and_order(
+    points: wp.array[wp.vec3],
+    bbox_min: wp.vec3,
+    inv_cell_size: wp.float32,
+    grid_w: wp.int32,
+    out_keys: wp.array[wp.int64],
+    out_order: wp.array[wp.int32],
 ) -> None:
-    # The distinct cell keys and the sentinel-terminated cell bounds, in one pass over the
-    # ``n_cells + 1`` run starts: slot ``n_cells`` is the terminator and owns no key.
-    c = wp.int32(wp.tid())
-    n_cells = run_starts.shape[0]
-    if c < n_cells:
-        start = run_starts[c]
-        out_unique_keys[c] = sorted_keys[start]
-        out_cell_offsets[c] = start
-    else:
-        out_cell_offsets[c] = n_pool
+    # Every pool point's ``point_cell_key`` and the identity payload, written straight into the
+    # leading halves of the radix sort's double-width buffers (``grouping.keys_and_identity``'s
+    # shape): no key buffer copied into the sort's, and no separate identity fill. Bucketing the
+    # pool by cell is then one sort, and the distinct cells and their sentinel-terminated bounds are
+    # its run starts (``grouping.mark_sorted_run_starts`` and ``emit_sorted_unique``) -- no hash
+    # table and no second sort, which is what ``unique_1d(return_counts=True)`` followed by a counts
+    # scan cost for the same answer.
+    p = wp.int32(wp.tid())
+    out_keys[p] = point_cell_key(points[p], bbox_min, inv_cell_size, grid_w)
+    out_order[p] = p
 
 
 @wp.kernel
@@ -198,8 +190,7 @@ def summarize_min_priority(
 @wp.kernel
 def dart_point_setup(
     seed: wp.int32,
-    sorted_keys: wp.array[wp.int64],
-    unique_keys: wp.array[wp.int64],
+    cell_ranks: wp.array[wp.int32],
     bucket: wp.array[wp.int32],
     out_point_cell: wp.array[wp.int32],
     out_priority: wp.array[wp.uint32],
@@ -208,10 +199,12 @@ def dart_point_setup(
     # Everything the dart loop keeps per pool point, written straight into the cell-sorted index
     # space it runs in, plus the first round's per-cell summary -- one launch over the pool:
     #
-    # - the compacted cell index of every point (its cell is occupied by construction). Reading the
-    #   *sorted* key rather than recomputing the point's key from its grid coordinate is what makes
-    #   the per-point table and the permutation through ``bucket`` one pass: ``sorted_keys[s]``
-    #   already is the key of pool point ``bucket[s]``;
+    # - the compacted cell index of every point (its cell is occupied by construction):
+    #   ``cell_ranks`` is the inclusive scan of the sorted keys' run starts, so
+    #   ``cell_ranks[s] - 1`` is the rank of sorted position ``s``'s key among the distinct cells --
+    #   the index a binary search of the distinct keys would find, with no search. Sorted position
+    #   ``s`` holds pool point ``bucket[s]``, so the per-point table and the permutation are one
+    #   pass;
     # - ``array.random_priorities`` drawn into sorted space: the draw is keyed on the point's
     #   *pool* index ``bucket[s]``, so each point holds exactly the priority the unsorted draw gave
     #   it;
@@ -226,7 +219,7 @@ def dart_point_setup(
     #   been vetoed by it anyway. Every later round's summary is folded into the previous round's
     #   compaction, which already visits exactly the survivors.
     s = wp.int32(wp.tid())
-    cell = lookup_cell(unique_keys, sorted_keys[s])
+    cell = cell_ranks[s] - 1
     out_point_cell[s] = cell
     priority = element_priority(seed, bucket[s])
     out_priority[s] = priority

@@ -413,6 +413,17 @@ def split_child_counts_and_midpoints(
         out_mid[offsets[t]] = edge_midpoint(vertices, unique_edges, t)
 
 
+@wp.func
+def edge_mean_sizing(
+    sizing: wp.array[wp.float32], unique_edges: wp.array2d[wp.int32], e: wp.int32
+) -> wp.float32:
+    # The sizing target of unique edge ``e``: the mean of its endpoints' values, the standard
+    # reading of a vertex-sampled sizing function and symmetric in the edge's orientation. One
+    # definition for the target ``mark_long_edges`` tests the edge against and the value
+    # ``fill_edge_mean_sizing`` carries to the midpoint that splits it.
+    return wp.float32(0.5) * (sizing[unique_edges[e, 0]] + sizing[unique_edges[e, 1]])
+
+
 @wp.kernel
 def fill_edge_mean_sizing(
     sizing: wp.array[wp.float32],
@@ -422,13 +433,10 @@ def fill_edge_mean_sizing(
     out_sizing: wp.array[wp.float32],
 ) -> None:
     # ``split_child_counts_and_midpoints``' midpoint for the sizing field rather than the position:
-    # the value carried to a
-    # new midpoint is the endpoint mean ``mark_long_edges`` tested the edge with.
+    # the value carried to a new midpoint is the target ``mark_long_edges`` tested the edge with.
     e = wp.int32(wp.tid())
     if split_mask[e]:
-        out_sizing[offsets[e]] = wp.float32(0.5) * (
-            sizing[unique_edges[e, 0]] + sizing[unique_edges[e, 1]]
-        )
+        out_sizing[offsets[e]] = edge_mean_sizing(sizing, unique_edges, e)
 
 
 @wp.func
@@ -452,15 +460,14 @@ def mark_long_edges(
 ) -> None:
     # ``length > target`` per unique edge, with the length computed here rather than read from a
     # separate length pass whose only consumer this is. The target is ``max_edge`` or, against a
-    # per-vertex sizing field, the mean of the endpoints' -- the standard reading of a
-    # vertex-sampled sizing function, and symmetric in the edge's orientation. One warp-uniform
+    # per-vertex sizing field, ``edge_mean_sizing``. One warp-uniform
     # branch rather than two kernels, since the two differ by a parameter; ``sizing`` is not read
     # (and may be a null array) when ``use_sizing`` is false. The verdict is written twice: as the
     # mask the split reads, and as the ``int32`` flag the caller scans in place into its ranks.
     e = wp.int32(wp.tid())
     target = max_edge
     if use_sizing:
-        target = wp.float32(0.5) * (sizing[unique_edges[e, 0]] + sizing[unique_edges[e, 1]])
+        target = edge_mean_sizing(sizing, unique_edges, e)
     is_long = unique_edge_length(vertices, unique_edges, e) > target
     out_long[e] = is_long
     out_flags[e] = wp.where(is_long, wp.int32(1), wp.int32(0))

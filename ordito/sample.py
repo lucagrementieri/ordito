@@ -41,6 +41,7 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
 from ordito.array import arange, flatnonzero, gather
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import sample as kernel_sample
 from ordito.kernels.algorithms import blue_noise as kernel_blue_noise
 from ordito.neighbors import query_ball_with_offsets
@@ -599,33 +600,43 @@ def _dart_throw_blue_noise(
     # corner's, evaluated here in the kernel's float32 arithmetic.
     span = np.asarray(bbox_max, dtype=np.float32) - np.asarray(bbox_min, dtype=np.float32)
     grid_w = int((span * inv_cell_size).astype(np.int32).max()) + 1
-    cell_keys = _launch.empty(n_pool, dtype=wp.int64, device=device)
-    _launch.map(
-        kernel_blue_noise.point_cell_key,
-        pool_points,
-        bbox_min,
-        wp.float32(float(inv_cell_size)),
-        wp.int32(grid_w),
-        out=cell_keys,
-    )
 
-    # Bucket the pool by cell: one radix sort gives both the per-cell membership lists and, through
-    # the run starts of the sorted keys, the sentinel-terminated bounds that index them.
-    # ``sort_and_argsort`` allocates its scratch per call, so its two views are this call's own and
-    # need no clone to stay valid for the rest of it.
-    sorted_keys, bucket = od.array.sort_and_argsort(cell_keys, fill_value=n_pool)
-    is_start = _launch.empty(n_pool, dtype=wp.bool, device=device)
+    # Bucket the pool by cell: one radix sort of the cell keys gives both the per-cell membership
+    # lists and, through the run starts of the sorted keys, the distinct cells and the
+    # sentinel-terminated bounds that index them. The keys and the identity payload are written
+    # straight into the sort's double-width buffers, and the sort orders only the bits a key below
+    # ``grid_w ** 3`` can set. The run marks and their scan live in the payload's upper half, free
+    # once the sort has run; the scan doubles as every sorted point's cell index.
+    keys = _launch.empty(2 * n_pool, dtype=wp.int64, device=device)
+    order = _launch.empty(2 * n_pool, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_blue_noise.cell_run_starts, dim=n_pool, inputs=[sorted_keys, is_start], device=device
+        kernel_blue_noise.pool_cell_keys_and_order,
+        dim=n_pool,
+        inputs=[pool_points, bbox_min, wp.float32(float(inv_cell_size)), wp.int32(grid_w)],
+        outputs=[keys, order],
+        device=device,
     )
-    run_starts = flatnonzero(is_start)
-    n_cells = run_starts.size
+    _launch.radix_sort_pairs(
+        keys, order, count=n_pool, end_bit=max(1, (grid_w**3 - 1).bit_length())
+    )
+    sorted_keys = odt.as_dense(keys[:n_pool])
+    bucket = odt.as_dense(order[:n_pool])
+    cell_ranks = odt.as_dense(order[n_pool:])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[wp.int64],
+        dim=n_pool,
+        inputs=[sorted_keys, cell_ranks],
+        device=device,
+    )
+    _launch.array_scan(cell_ranks, cell_ranks, inclusive=True)
+    # The distinct cell count sizes the cell tables.
+    n_cells = int(read_scalar(order, 2 * n_pool - 1))
     unique_keys = _launch.empty(n_cells, dtype=wp.int64, device=device)
     cell_offsets = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_blue_noise.cell_table,
-        dim=n_cells + 1,
-        inputs=[sorted_keys, run_starts, n_pool, unique_keys, cell_offsets],
+        kernel_grouping.EMIT_SORTED_UNIQUE[wp.int64],
+        dim=n_pool,
+        inputs=[sorted_keys, bucket, cell_ranks, unique_keys, None, cell_offsets, None],
         device=device,
     )
 
@@ -665,7 +676,7 @@ def _dart_throw_blue_noise(
     _launch.launch(
         kernel_blue_noise.dart_point_setup,
         dim=n_pool,
-        inputs=[wp.int32(seed), sorted_keys, unique_keys, bucket],
+        inputs=[wp.int32(seed), cell_ranks, bucket],
         outputs=[sorted_cell, priority, cell_min_priority],
         device=device,
     )

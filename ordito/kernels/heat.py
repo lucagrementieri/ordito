@@ -16,8 +16,7 @@ transport, extension and log map. They share `face_unit_gradient`, `tangent_to_w
 import warp as wp
 
 from ordito.constants import TOLERANCE_ZERO_CONSTANT
-from ordito.kernels.array import binary_search_index, cross2, to_vec2, to_vec2d
-from ordito.kernels.linalg import free_row
+from ordito.kernels.array import binary_search_index, cross2, to_vec2, to_vec2d, to_vec3, to_vec3d
 from ordito.kernels.predicates import (
     stable_length,
     stable_normalize,
@@ -288,35 +287,8 @@ def vertex_field_divergence(
         v = faces[f * 3 + k]
         total += tangent_to_world(to_vec2(stable_normalize(field[v])), basis_x[v], basis_y[v])
     tangential, _length = unit_tangent(total, normals[f], TOLERANCE_ZERO_CONSTANT)
-    x = -wp.vec3d(wp.float64(tangential[0]), wp.float64(tangential[1]), wp.float64(tangential[2]))
+    x = -to_vec3d(tangential)
     accumulate_face_divergence(vertices, faces, cot_entries, f, x, out_div)
-
-
-@wp.kernel
-def scatter_free_rhs(
-    fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    out_rhs: wp.array2d[wp.float64],
-) -> None:
-    # Compact a full-length right-hand side down to the unpinned degrees of freedom, in the layout
-    # ``linalg.solve_spd_columns`` expects (one row per right-hand side). ``values`` arrives
-    # already in the Poisson sign convention (``-div`` for the ``-L`` operator):
-    # ``vertex_field_divergence`` accumulates it negated.
-    #
-    # **Not factored with ``gather_free_solution`` below, deliberately.** After
-    # ``linalg.free_row`` -- already the shared guard -- each is *one assignment*, and the two run
-    # in *opposite directions*: this one **compacts** (full-length -> reduced) into a rank-2
-    # destination's row 0, where ``gather_free_solution`` **expands** (reduced -> full-length) and
-    # writes an explicit zero at every pinned entry, which is why it tests ``fixed_mask`` directly
-    # instead of calling ``free_row``. What is left to share after the guard is the direction and
-    # the pinned-entry policy, the whole of what distinguishes them. Recorded because a text-keyed
-    # duplicate scan cannot see a direction and will match this pair again.
-    i = wp.int32(wp.tid())
-    ri = free_row(fixed_mask, free_map, i)
-    if ri < 0:
-        return
-    out_rhs[0, ri] = values[i]
 
 
 @wp.kernel
@@ -457,7 +429,7 @@ def scatter_unit_gradient_to_vertices(
     f = wp.int32(wp.tid())
     x = face_unit_gradient(vertices, faces, normals, areas, values, f)
     area = areas[f]
-    value = wp.vec3(wp.float32(x[0]) * area, wp.float32(x[1]) * area, wp.float32(x[2]) * area)
+    value = to_vec3(x) * area
     add_corner_triple(out_vertex_field, faces, f, value, value, value)
 
 

@@ -312,31 +312,34 @@ def emit_sorted_unique(
 ) -> None:
     # ``unique_1d``'s returns from one sort of every value: ``ranks`` is the inclusive scan of
     # ``mark_sorted_run_starts``, so ``ranks[i] - 1`` is the ascending unique index of sorted
-    # position ``i``. A run's first position writes the value, where the run starts (for the
-    # counts) and the input index sorted there -- the class's *first* occurrence, because the sort
-    # is stable, which is what ``first_occurrence_indices`` computes. The start is re-derived from
-    # the keys, so the marks may be scanned in place. ``out_inverse``, ``out_starts`` and
-    # ``out_first`` may be null descriptors (``None`` at the launch).
+    # position ``i``. A run's first position writes the value, where the run starts and the input
+    # index sorted there -- the class's *first* occurrence, because the sort is stable, which is
+    # what ``first_occurrence_indices`` computes. ``out_starts`` is the ``n_unique + 1``
+    # total-terminated offsets of the runs (the last position writes the terminator), so run ``r``
+    # is ``out_starts[r] : out_starts[r + 1]`` of the sorted buffer: ``run_lengths``' counts, and
+    # ``sample``'s blue-noise cell bounds. Launched over the ``ranks.shape[0]`` sorted positions.
+    # The start is re-derived from the keys, so the marks may be scanned in place. Every output
+    # may be a null descriptor (``None`` at the launch).
     i = wp.int32(wp.tid())
     r = ranks[i] - 1
     if out_inverse.shape[0] > 0:
         out_inverse[order[i]] = r
     if sorted_run_start(sorted_keys, i):
-        out_unique[r] = sorted_keys[i]
+        if out_unique.shape[0] > 0:
+            out_unique[r] = sorted_keys[i]
         if out_starts.shape[0] > 0:
             out_starts[r] = i
         if out_first.shape[0] > 0:
             out_first[r] = order[i]
+    if i == ranks.shape[0] - 1 and out_starts.shape[0] > 0:
+        out_starts[r + 1] = i + 1
 
 
 @wp.kernel
-def run_lengths(starts: wp.array[wp.int32], n: wp.int32, out_counts: wp.array[wp.int32]) -> None:
-    # Each run's length from its start and the next one's (``n`` past the last run).
+def run_lengths(offsets: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
+    # Each run's length from the total-terminated run offsets ``emit_sorted_unique`` writes.
     r = wp.int32(wp.tid())
-    end = n
-    if r + 1 < starts.shape[0]:
-        end = starts[r + 1]
-    out_counts[r] = end - starts[r]
+    out_counts[r] = offsets[r + 1] - offsets[r]
 
 
 @wp.func
@@ -415,16 +418,22 @@ def pack_indices(
 
 
 @wp.kernel
-def pack_sorted_face_keys(
-    faces: wp.array[wp.int32], max_index: wp.uint64, out_packed: wp.array[wp.uint64]
+def pack_sorted_face_keys_and_order(
+    faces: wp.array[wp.int32],
+    max_index: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
 ) -> None:
     # A face's orientation-free key, ``array.pack_triangle_key``: its three corners in ascending
     # order, packed as ``pack_indices`` packs a three-column row. Sorting in registers and packing
     # in the same thread drops the ``(n, 3)`` table of sorted rows a separate sort launch would
-    # write for this one to read.
+    # write for this one to read. Written with the identity payload straight into the leading
+    # halves of the radix sort's double-width buffers, ``keys_and_identity``'s layout, so the keys
+    # are never copied into the sort's buffer.
     f = wp.int32(wp.tid())
     a, b, c = corner_triple(faces, f)
-    out_packed[f] = pack_triangle_key(a, b, c, max_index)
+    out_keys[f] = pack_triangle_key(a, b, c, max_index)
+    out_order[f] = f
 
 
 @wp.kernel

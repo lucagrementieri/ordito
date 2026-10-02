@@ -1,6 +1,6 @@
 import warp as wp
 
-from ordito.kernels.array import inverse_or_one, sort_segment, to_vec3d
+from ordito.kernels.array import inverse_or_one, sort_segment, to_vec3, to_vec3d
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
 from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
 from ordito.kernels.predicates import closest_point_on_segment, plane_basis
@@ -164,6 +164,7 @@ def free_degree(
 def free_pattern_counts(
     offsets: wp.array[wp.int32],
     incident: wp.array[wp.int32],
+    sort_incident: wp.int32,
     unique_edges: wp.array2d[wp.int32],
     free_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
@@ -172,27 +173,15 @@ def free_pattern_counts(
     # Row lengths of the free-free pattern -- the diagonal plus the free neighbours -- which is the
     # sparsity of the fixed-rim system ``D - W`` and of the smooth solve's square block ``L_ff``
     # alike. ``out_counts`` is the tail of the ``n_free + 1`` offsets buffer.
+    #
+    # With ``sort_incident`` set (warp-uniform) the same thread first puts vertex ``v``'s incidence
+    # in neighbour order (``array.sort_segment``, the ``sort_segments`` rule), in place: the count
+    # reads only ``v``'s own row, so a freshly scattered incidence is sorted and counted in one
+    # pass. Every row is sorted, free or not, because the incidence is reused by the region's
+    # other solve. Unset, ``incident`` arrives sorted and is only read.
     v = wp.int32(wp.tid())
-    ri = selected_row(free_mask, free_map, v)
-    if ri >= 0:
-        out_counts[ri] = free_degree(offsets, incident, unique_edges, free_mask, v)
-
-
-@wp.kernel
-def sort_incidence_and_count_free_pattern(
-    offsets: wp.array[wp.int32],
-    incident: wp.array[wp.int32],
-    unique_edges: wp.array2d[wp.int32],
-    free_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    out_counts: wp.array[wp.int32],
-) -> None:
-    # ``free_pattern_counts`` over an incidence this same thread first puts in neighbour order
-    # (``array.sort_segment``, the ``sort_segments`` rule): the count reads only vertex ``v``'s own
-    # row, so the sort and the count are one pass. Every row is sorted, free or not, because the
-    # incidence is reused by the region's other solve. ``incident`` is sorted in place.
-    v = wp.int32(wp.tid())
-    sort_segment(offsets, incident, v)
+    if sort_incident != 0:
+        sort_segment(offsets, incident, v)
     ri = selected_row(free_mask, free_map, v)
     if ri >= 0:
         out_counts[ri] = free_degree(offsets, incident, unique_edges, free_mask, v)
@@ -1385,14 +1374,14 @@ def equal_area_position(
         reduced = rhs - matrix * anchor
         solution = wp.inverse(planar) * wp.vec2d(wp.dot(reduced, basis_x), wp.dot(reduced, basis_y))
         target = anchor + basis_x * solution[0] + basis_y * solution[1]
-        return wp.vec3(wp.float32(target[0]), wp.float32(target[1]), wp.float32(target[2]))
+        return to_vec3(target)
 
     determinant = wp.determinant(matrix)
     trace = matrix[0, 0] + matrix[1, 1] + matrix[2, 2]
     if DOUBLE_EPSILON * wp.abs(trace * trace * trace) >= wp.abs(determinant):
         return current
     target = wp.inverse(matrix) * rhs
-    return wp.vec3(wp.float32(target[0]), wp.float32(target[1]), wp.float32(target[2]))
+    return to_vec3(target)
 
 
 @wp.kernel
@@ -1444,7 +1433,7 @@ def ring_push_forces(
     for slot in range(begin, end):
         total += to_vec3d(positions[columns[slot]])
     mean = total / wp.float64(end - begin)
-    average = wp.vec3(wp.float32(mean[0]), wp.float32(mean[1]), wp.float32(mean[2]))
+    average = to_vec3(mean)
     out_push[vertex] = (average - positions[vertex]) * force
 
 

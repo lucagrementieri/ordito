@@ -8,7 +8,7 @@ from ordito.kernels.predicates import (
     squared_edge_lengths,
     triangle_double_area,
 )
-from ordito.kernels.scatter import add_corner_triple
+from ordito.kernels.scatter import add_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d
 
 
@@ -372,14 +372,13 @@ def internal_angles_and_sums(
     # two per edge in arbitrary order, before any exit: the topology half of
     # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. That caller
     # validates edge-manifoldness first, so a third halfedge for one edge id is unreachable in
-    # practice; the ``slot < 2`` guard stays as a defensive bound against writing out of
-    # ``out_edge_halfedges``' row width rather than as a behavior any caller may rely on.
+    # practice; ``scatter.append_to_pair``'s two-slot bound stays as a defensive bound against
+    # writing out of ``out_edge_halfedges``' row width rather than as a behavior any caller may
+    # rely on.
     f = wp.int32(wp.tid())
     for k in range(3):
         h = 3 * f + k
-        slot = wp.atomic_add(edge_cursor, inverse[h], 1)
-        if slot < 2:
-            out_edge_halfedges[inverse[h], slot] = h
+        append_to_pair(inverse[h], h, edge_cursor, out_edge_halfedges)
     l2_0, l2_1, l2_2, dbl_area = triangle_geometry_f64(vertices, faces, f)
     zero = wp.float64(0.0)
     if dbl_area <= zero:

@@ -484,7 +484,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("algorithms.ball_pivoting", "rehash_edges"): frozenset(
         {"new_cand", "new_count", "new_opp", "new_src", "new_state", "new_tgt"}
     ),
-    ("energies", "internal_angles_and_sums"): frozenset({"edge_cursor"}),
     ("repair", "emit_degree3_replacement"): frozenset({"cursor"}),
     # The flip loop's incremental state, carried across rounds and kept current by the commit that
     # rewrites the faces: the row <-> halfedge maps and the tracked valences. Neither an input nor
@@ -504,10 +503,6 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # entry -- if the write ever comes back into a kernel body, add it again then.
     ("proximity", "face_to_mesh_distance"): frozenset({"counter", "overflow"}),
     ("grouping", "hash_insert"): frozenset({"slot_counts"}),
-    # ``values`` is the matrix whose rows this scales -- input and result in the same buffer, since
-    # the prolongation smoother's ``-w D^-1 (A P0)`` is a row scaling of a product that has just
-    # been built and is not needed unscaled.
-    ("algorithms.multigrid", "scale_rows"): frozenset({"values"}),
     # ``ecl_compress`` lowers each node of the union-find forest to its root in place, between the
     # pre-hook and the hook: ``parents`` is the forest itself, read and written by every launch on
     # it, and ``out_`` would read as write-only.

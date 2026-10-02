@@ -372,8 +372,8 @@ def test_float_sums_are_bit_identical_across_calls(device: str, n: int) -> None:
     rng = np.random.default_rng(7)
     values_np = rng.random(n, dtype=np.float32)
     weights_np = rng.random(n, dtype=np.float32)
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
+    values_wp: wp.array[wp.float32] = wp.array(values_np, dtype=wp.float32, device=device)
+    weights_wp: wp.array[wp.float32] = wp.array(weights_np, dtype=wp.float32, device=device)
     points_wp = wp.array(rng.random((n, 3), dtype=np.float32), dtype=wp.vec3, device=device)
 
     sums = {od_reduce.sum(values_wp) for _ in range(6)}

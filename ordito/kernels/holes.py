@@ -6,6 +6,7 @@ from ordito.constants import FLOAT32_INF_CONSTANT, INT32_MAX_CONSTANT
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import (
     loop_next_slot,
+    loop_point,
     loop_rim_edge_vertices,
     pack_nearest_key,
     update_argmin,
@@ -545,6 +546,48 @@ def apex_cost(
     return val
 
 
+@wp.func
+def relax_apex(
+    tables: HoleFillTables,
+    o: wp.int32,
+    b: wp.int32,
+    base: wp.int32,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+    is_top: wp.bool,
+    a_pos: wp.vec3,
+    c_pos: wp.vec3,
+    plane_normal: wp.vec3,
+    char_area: wp.float32,
+    bound: wp.float32,
+    best_val: wp.ref[wp.float32],
+    best_k: wp.ref[wp.int32],
+):
+    # One apex of the interval (i, j) under the branch and bound both span kernels run: an apex
+    # whose children alone reach the running best cannot win the strict-``<`` argmin
+    # (``apex_children``'s bound is exact, and an equal cost keeps the earlier ``k``), nor can one
+    # whose children exceed ``bound`` (the tiled kernel's block-shared best; infinity elsewhere), so
+    # its triangle and edge terms are never evaluated. The answer, ties included, is the exhaustive
+    # loop's. One rule for the serial loop and both rounds of the tiled one.
+    children = apex_children(tables, b, base, i, j, k)
+    if children < best_val and children <= bound:
+        val = apex_cost(
+            tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
+        )
+        update_argmin(best_val, best_k, val, k)
+
+
+@wp.func
+def interval_apex(value: wp.float32, apex: wp.int32) -> wp.int32:
+    # The apex both span kernels store beside interval cost ``value``. An infinite cost means every
+    # apex left available required at least one forbidden sub-chord (a genuinely infinite child
+    # cost propagates through the sum/max in ``apex_cost``, never a finite BAD_METRIC), so there is
+    # no legal triangulation of this span at all -- not merely a bad-looking one -- and the apex is
+    # ``-1``, which the traceback skips.
+    return wp.where(value >= FLOAT32_INF_CONSTANT, wp.int32(-1), apex)
+
+
 @wp.kernel(enable_backward=False)
 def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     # One thread per span-``span`` interval (i, j = i + span) of every loop at once; reads only
@@ -598,23 +641,25 @@ def fill_dp_span(tables: HoleFillTables, span_offset: wp.int32) -> None:
     best_val = FLOAT32_INF_CONSTANT
     best_k = wp.int32(-1)
     for k in range(i + 1, j):
-        # Branch and bound: an apex whose children alone reach the best cost so far cannot win the
-        # strict-``<`` argmin (``apex_children``'s bound is exact, and an equal cost keeps the
-        # earlier ``k``), so its triangle and edge terms are never evaluated. The answer, ties
-        # included, is the exhaustive loop's.
-        children = apex_children(tables, b, base, i, j, k)
-        if children < best_val:
-            val = apex_cost(
-                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
-            )
-            update_argmin(best_val, best_k, val, k)
+        relax_apex(
+            tables,
+            o,
+            b,
+            base,
+            i,
+            j,
+            k,
+            is_top,
+            a_pos,
+            c_pos,
+            plane_normal,
+            char_area,
+            FLOAT32_INF_CONSTANT,
+            best_val,
+            best_k,
+        )
     store_dp(tables, base, b, i, j, best_val)
-    # Every apex left available required at least one forbidden sub-chord (a genuinely infinite
-    # child cost propagates here through the sum/max in ``apex_cost``, never a finite BAD_METRIC),
-    # so there is no legal triangulation of this span at all — not merely a bad-looking one.
-    if best_val >= FLOAT32_INF_CONSTANT:
-        best_k = wp.int32(-1)
-    tables.prev[base + i * b + j] = best_k
+    tables.prev[base + i * b + j] = interval_apex(best_val, best_k)
 
 
 @wp.kernel(enable_backward=False)
@@ -682,32 +727,51 @@ def fill_dp_span_tiled(tables: HoleFillTables, span_offset: wp.int32) -> None:
     stride = wp.block_dim()
     k = i + 1 + t
     if k < j:
-        children = apex_children(tables, b, base, i, j, k)
-        if children < best_val:
-            val = apex_cost(
-                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
-            )
-            update_argmin(best_val, best_k, val, k)
+        relax_apex(
+            tables,
+            o,
+            b,
+            base,
+            i,
+            j,
+            k,
+            is_top,
+            a_pos,
+            c_pos,
+            plane_normal,
+            char_area,
+            FLOAT32_INF_CONSTANT,
+            best_val,
+            best_k,
+        )
         k += stride
     shared = FLOAT32_INF_CONSTANT
     if j - i - 1 > stride:
         # Block-uniform: ``i``, ``j`` and the stride are the block's, so every lane reaches it.
         shared = block_min(best_val)
     while k < j:
-        children = apex_children(tables, b, base, i, j, k)
-        if children < best_val and children <= shared:
-            val = apex_cost(
-                tables, o, b, base, i, j, k, is_top, a_pos, c_pos, plane_normal, char_area, children
-            )
-            update_argmin(best_val, best_k, val, k)
+        relax_apex(
+            tables,
+            o,
+            b,
+            base,
+            i,
+            j,
+            k,
+            is_top,
+            a_pos,
+            c_pos,
+            plane_normal,
+            char_area,
+            shared,
+            best_val,
+            best_k,
+        )
         k += stride
     block_val, block_k = block_argmin(best_val, best_k)
     if t == 0:
         store_dp(tables, base, b, i, j, block_val)
-        # Every remaining apex required a forbidden sub-chord — see ``fill_dp_span``.
-        if block_val >= FLOAT32_INF_CONSTANT:
-            block_k = wp.int32(-1)
-        tables.prev[base + i * b + j] = block_k
+        tables.prev[base + i * b + j] = interval_apex(block_val, block_k)
 
 
 @wp.kernel(enable_backward=False)
@@ -1010,7 +1074,7 @@ def loop_pair_cost(
     b = b_pos[j]
     if metric == LOOP_PAIR_SQ_DISTANCE:
         return wp.length_sq(a_pos[i] - b)
-    return wp.length(a_pos[i] - b) + wp.length(a_pos[_wrap(i + 1, n_a)] - b)
+    return wp.length(a_pos[i] - b) + wp.length(a_pos[loop_point(i + 1, n_a)] - b)
 
 
 # Lanes per row of ``row_argmin``.

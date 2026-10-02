@@ -336,6 +336,19 @@ def scatter_index_where_scanned(
 
 
 @wp.func
+def append_to_pair(
+    row: wp.int32, value: wp.int32, out_count: wp.array[wp.int32], out_pairs: wp.array2d[wp.int32]
+) -> None:
+    # Count ``value`` onto ``row`` and record it in the row's first two slots, in arbitrary order:
+    # the count doubles as the write cursor, and a third or later arrival is counted but not
+    # stored -- a defensive bound on the ``(n, 2)`` row width, whatever the caller's manifoldness
+    # guarantee. The rule behind every per-unique-edge "its two faces / halfedges" table.
+    slot = wp.atomic_add(out_count, row, 1)
+    if slot < 2:
+        out_pairs[row, slot] = value
+
+
+@wp.func
 def record_edge_incidence(
     e: wp.int32,
     corner: wp.int32,
@@ -343,10 +356,8 @@ def record_edge_incidence(
     out_edge_faces: wp.array2d[wp.int32],
 ) -> None:
     # Count corner ``corner``'s face onto unique edge ``e`` and record it in the edge's first two
-    # face slots; the count doubles as the write cursor (``scatter_edge_incidence`` below).
-    slot = wp.atomic_add(out_edge_face_count, e, 1)
-    if slot < 2:
-        out_edge_faces[e, slot] = corner // 3
+    # face slots (``append_to_pair``; ``scatter_edge_incidence`` below).
+    append_to_pair(e, corner // 3, out_edge_face_count, out_edge_faces)
 
 
 @wp.kernel

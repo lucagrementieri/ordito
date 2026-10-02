@@ -245,6 +245,47 @@ def test_assemble_interior_system_matches_a_numpy_partition(device: str) -> None
     )
 
 
+def test_assemble_interior_system_scales_and_adds_a_load(device: str) -> None:
+    """
+    Class A: ``scale`` and ``load`` extract ``scale * Q`` and ``b_u - scale * Q_ub bc``.
+
+    ``scale = -1`` is how the parametrization solvers take ``-L``'s block without a negated copy,
+    and ``load`` how the pinned Poisson solve compacts its divergence in the extraction's own row
+    pass. Both arms are checked against the dense partition: pinned values present (rows must
+    match) and absent (zero ``fixed_values`` rows read as every pinned value zero).
+    """
+    matrix_wp, fixed_wp, fixed_values_wp, dense_np, values_np, fixed_np = _pinned_system(device)
+    free_map_wp, n_free = od.linalg.free_partition(fixed_wp)
+    n = fixed_np.shape[0]
+    rng = np.random.default_rng(11)
+    load_np = rng.standard_normal((values_np.shape[0], n))
+    load_wp = odt.as_array2d(wp.array(load_np, dtype=wp.float64, device=device), wp.float64)
+    free_np = np.flatnonzero(~fixed_np)
+    pinned_np = np.flatnonzero(fixed_np)
+
+    q_uu, rhs_wp = od.linalg.assemble_interior_system(
+        matrix_wp, fixed_wp, free_map_wp, fixed_values_wp, n_free, scale=-1.0, load=load_wp
+    )
+
+    assert np.array_equal(bsr_to_dense(q_uu, n_free), -dense_np[np.ix_(free_np, free_np)])
+    expected_np = (
+        load_np[:, free_np] + (dense_np[np.ix_(free_np, pinned_np)] @ values_np[:, pinned_np].T).T
+    )
+    assert np.allclose(rhs_wp.numpy(), expected_np, rtol=1e-14, atol=1e-14)
+
+    no_values = odt.empty_2d((0, n), wp.float64, device=device)
+    _q_uu, rhs_wp = od.linalg.assemble_interior_system(
+        matrix_wp, fixed_wp, free_map_wp, no_values, n_free, load=load_wp
+    )
+    assert np.array_equal(rhs_wp.numpy(), load_np[:, free_np])
+
+    one_row = odt.as_array2d(wp.array(load_np[:1], dtype=wp.float64, device=device), wp.float64)
+    with pytest.raises(ValueError, match="load has 1 rows"):
+        od.linalg.assemble_interior_system(
+            matrix_wp, fixed_wp, free_map_wp, fixed_values_wp, n_free, load=one_row
+        )
+
+
 @pytest.mark.parity(
     "solve_spd_columns",
     "numpy",

@@ -47,7 +47,9 @@ from typing import Any
 
 import warp as wp
 
+from ordito.constants import TILE_1D
 from ordito.kernels.array import element_priority, inverse_or_one, sqrt_abs
+from ordito.kernels.reduce import block_sum, tile_chunk
 
 # Node states for the distance-2 maximal independent set. The encoding is ordered rather than
 # arbitrary: a root must win any maximum (it vetoes every node in its two-hop ball) and an excluded
@@ -80,6 +82,22 @@ def mg_is_strong(
     # explicit zero, since ``0 >= 0`` -- which is what makes the unfiltered aggregation the exact
     # ``theta = 0`` case of this one rather than a separate code path.
     return wp.abs(value) >= theta * scaled_diagonal_row * scaled_diagonal_column
+
+
+@wp.func
+def mg_strong_neighbor(
+    i: wp.int32,
+    j: wp.int32,
+    value: wp.float64,
+    scaled_diagonal: wp.array[wp.float64],
+    theta: wp.float64,
+) -> wp.bool:
+    # Whether row ``i``'s entry ``value`` at column ``j`` is an edge of the *strong off-diagonal*
+    # graph: the diagonal is skipped because a node is not its own neighbour, and a weak entry
+    # (``mg_is_strong``) is not an edge. The one definition of the graph both walks run on -- the
+    # independent set's propagation (``mis_ball_max``) and the label spread
+    # (``spread_aggregate_labels``) -- whose agreement is what makes the aggregates tile the graph.
+    return j != i and mg_is_strong(value, scaled_diagonal[i], scaled_diagonal[j], theta)
 
 
 @wp.func
@@ -156,9 +174,9 @@ def mis_ball_max(
     scaled_diagonal: wp.array[wp.float64],
     theta: wp.float64,
 ) -> wp.int64:
-    # One hop of the lexicographic maximum over the operator's *strong off-diagonal* graph -- the
-    # diagonal is skipped because a node is not its own neighbour, and the node's own key is folded
-    # in separately so the reduction is over the closed neighbourhood. Two hops give the maximum
+    # One hop of the lexicographic maximum over the operator's *strong off-diagonal* graph
+    # (``mg_strong_neighbor``) -- the node's own key is folded in separately so the reduction is
+    # over the closed neighbourhood. Two hops give the maximum
     # over the two-hop ball, which is the distance-2 test without a squared graph.
     #
     # The strength test is applied here rather than by materializing a filtered graph, so a level
@@ -168,7 +186,7 @@ def mis_ball_max(
     best = mis_entry_key(i, from_state, key, state, priority)
     for k in range(offsets[i], offsets[i + 1]):
         j = columns[k]
-        if j != i and mg_is_strong(values[k], scaled_diagonal[i], scaled_diagonal[j], theta):
+        if mg_strong_neighbor(i, j, values[k], scaled_diagonal, theta):
             best = wp.max(best, mis_entry_key(j, from_state, key, state, priority))
     return best
 
@@ -272,31 +290,62 @@ def spread_aggregate_labels(
     scaled_diagonal: wp.array[wp.float64],
     theta: wp.float64,
     out_label: wp.array[wp.int32],
+    out_sizes: wp.array[wp.int32],
 ) -> None:
     # An unlabelled node adopts a neighbour's aggregate, largest id winning so the choice does not
     # depend on thread order. Two launches cover the two hops the MIS guarantees are enough; the
     # first (warp-uniform ``from_state != 0``) reads every label straight from the root flags'
-    # scan, so no pass writes the labels first, and ``label`` is not read.
+    # scan, so no pass writes the labels first, and ``label`` is not read. The second hop, whose
+    # labels are final, also counts each aggregate's rows into the zeroed ``out_sizes`` (the first
+    # hop passes ``None`` and never reads it), so no separate counting pass runs over the labels.
     #
-    # The spread walks the same *strong* graph the independent set was selected on, which is what
-    # keeps the tiling consistent: every excluded node has a root within two strong hops precisely
-    # because the exclusion came from a strong-graph propagation.
+    # The spread walks the same *strong* graph the independent set was selected on
+    # (``mg_strong_neighbor``), which is what keeps the tiling consistent: every excluded node has
+    # a root within two strong hops precisely because the exclusion came from a strong-graph
+    # propagation.
     i = wp.int32(wp.tid())
     best = aggregate_entry_label(i, from_state, label, state, scan_pos)
-    if best != MG_UNAGGREGATED:
-        out_label[i] = best
-        return
-    for k in range(offsets[i], offsets[i + 1]):
-        j = columns[k]
-        if j != i and mg_is_strong(values[k], scaled_diagonal[i], scaled_diagonal[j], theta):
-            best = wp.max(best, aggregate_entry_label(j, from_state, label, state, scan_pos))
+    if best == MG_UNAGGREGATED:
+        for k in range(offsets[i], offsets[i + 1]):
+            j = columns[k]
+            if mg_strong_neighbor(i, j, values[k], scaled_diagonal, theta):
+                best = wp.max(best, aggregate_entry_label(j, from_state, label, state, scan_pos))
     out_label[i] = best
+    if from_state == 0 and best != MG_UNAGGREGATED:
+        wp.atomic_add(out_sizes, best, wp.int32(1))
 
 
-@wp.kernel
-def aggregate_sizes(label: wp.array[wp.int32], out_sizes: wp.array[wp.int32]) -> None:
-    i = wp.int32(wp.tid())
-    wp.atomic_add(out_sizes, label[i], wp.int32(1))
+@wp.func
+def tentative_norm(sizes: wp.array[wp.int32], aggregate: wp.int32) -> wp.float64:
+    # ``sqrt(|aggregate|)``, the norm of the constant near-nullspace vector over an aggregate's
+    # column: the tentative prolongator ``P0``'s entry in a row of that aggregate is its reciprocal.
+    # Returned undivided so a caller scaling by it divides once, as it always has.
+    return wp.sqrt(wp.float64(sizes[aggregate]))
+
+
+@wp.func
+def emit_scaled_row(
+    row: wp.int32,
+    weight: wp.float64,
+    begin: wp.int32,
+    end: wp.int32,
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    slot: wp.int32,
+    out_rows: wp.array[wp.int32],
+    out_cols: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> wp.int32:
+    # ``weight`` times the sparse row ``[begin, end)`` of a CSR, as triplets in output row ``row``
+    # from ``slot`` on; returns the slot after the last. The emission both row-local products below
+    # are made of: ``A P`` emits ``A_ij`` times ``P``'s row ``j`` into row ``i``, ``P^T (A P)``
+    # emits ``P_ik`` times ``A P``'s row ``i`` into row ``k``.
+    for b in range(begin, end):
+        out_rows[slot] = row
+        out_cols[slot] = columns[b]
+        out_values[slot] = weight * values[b]
+        slot += 1
+    return slot
 
 
 @wp.kernel
@@ -326,11 +375,11 @@ def smoothed_prolongator_triplets(
         aggregate = label[columns[e]]
         out_rows[e] = i
         out_cols[e] = aggregate
-        out_values[e] = scale * values[e] / wp.sqrt(wp.float64(sizes[aggregate]))
+        out_values[e] = scale * values[e] / tentative_norm(sizes, aggregate)
     own = offsets[n] + i
     out_rows[own] = i
     out_cols[own] = label[i]
-    out_values[own] = wp.float64(1.0) / wp.sqrt(wp.float64(sizes[label[i]]))
+    out_values[own] = wp.float64(1.0) / tentative_norm(sizes, label[i])
 
 
 @wp.kernel
@@ -374,12 +423,18 @@ def product_triplets(
     slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
     for e in range(a_offsets[i], a_offsets[i + 1]):
         j = a_columns[e]
-        weight = a_values[e]
-        for b in range(p_offsets[j], p_offsets[j + 1]):
-            out_rows[slot] = i
-            out_cols[slot] = p_columns[b]
-            out_values[slot] = weight * p_values[b]
-            slot += 1
+        slot = emit_scaled_row(
+            i,
+            a_values[e],
+            p_offsets[j],
+            p_offsets[j + 1],
+            p_columns,
+            p_values,
+            slot,
+            out_rows,
+            out_cols,
+            out_values,
+        )
 
 
 @wp.kernel
@@ -415,33 +470,18 @@ def galerkin_triplets(
     i = wp.int32(wp.tid())
     slot = wp.int32(starts[i])  # the wrapper capped the total below ``2^30``
     for a in range(p_offsets[i], p_offsets[i + 1]):
-        k = p_columns[a]
-        weight = p_values[a]
-        for b in range(ap_offsets[i], ap_offsets[i + 1]):
-            out_rows[slot] = k
-            out_cols[slot] = ap_columns[b]
-            out_values[slot] = weight * ap_values[b]
-            slot += 1
-
-
-@wp.kernel
-def scale_rows(
-    offsets: wp.array[wp.int32],
-    row_scale: wp.array[wp.float64],
-    factor: wp.float64,
-    invert: wp.int32,
-    values: wp.array[wp.float64],
-) -> None:
-    # Row-scale a matrix in place: the prolongation smoother needs ``-w D^-1 (A P0)``, and scaling
-    # the product's values is one pass where ``bsr_mm`` against a diagonal matrix would be another
-    # sparse product. ``values`` is both the input and the result. A nonzero ``invert`` (warp
-    # uniform) scales by ``inverse_or_one(row_scale[i])`` instead, so a caller holding ``D`` rather
-    # than ``D^-1`` (``linalg.squared_laplacian_preconditioner``) needs no map and no buffer first.
-    i = wp.int32(wp.tid())
-    raw = row_scale[i]
-    scale = factor * wp.where(invert != 0, inverse_or_one(raw), raw)
-    for k in range(offsets[i], offsets[i + 1]):
-        values[k] = values[k] * scale
+        slot = emit_scaled_row(
+            p_columns[a],
+            p_values[a],
+            ap_offsets[i],
+            ap_offsets[i + 1],
+            ap_columns,
+            ap_values,
+            slot,
+            out_rows,
+            out_cols,
+            out_values,
+        )
 
 
 @wp.func
@@ -567,9 +607,27 @@ def chebyshev_step(
     out_x[slot] = chebyshev_update(steps[index], x[slot], x_previous[slot], source[slot], ax)
 
 
+# Rows a block of ``power_step_partials`` / ``damped_inverse_diagonal`` owns, its ``TILE_1D``
+# lanes striding them. Four rows a lane rather than the ``reduce`` fold width
+# (``ITEMS_PER_BLOCK_1D``, sixteen): a level of 40 k rows then launches 160 blocks rather than 40
+# on a 170-SM part (the narrower block measured level at 40 k rows where sixteen read ~2 % slower).
+# Every ``damped_inverse_diagonal`` block folds all the partials, so the wrapper pre-folds them with
+# ``reduce.SUM1D_PARTIALS`` past ``4 * ITEMS_PER_BLOCK_1D`` (about 1 M rows): folding 2 560 per
+# block at 655 k rows was 1.03x the old inner-product pass, one pre-fold launch 1.02x.
+POWER_ROWS_PER_BLOCK = wp.constant(4 * TILE_1D)
+
+
+@wp.func
+def power_block_rows(n: wp.int32, block: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # ``(offset, count)`` of the ``POWER_ROWS_PER_BLOCK`` rows block ``block`` owns, clamped to
+    # its own share (``tile_chunk``'s ``remaining`` runs to the end of the array).
+    offset, remaining = tile_chunk(n, block, POWER_ROWS_PER_BLOCK)
+    return offset, wp.min(remaining, POWER_ROWS_PER_BLOCK)
+
+
 @wp.kernel
 def damped_inverse_diagonal(
-    growth: wp.array[wp.float64],
+    growth_partials: wp.array[wp.float64],
     start: wp.float64,
     exponent: wp.float64,
     factor: wp.float64,
@@ -580,20 +638,35 @@ def damped_inverse_diagonal(
     # on the device from the power iteration's growth rather than read back to the host. ``D^-1``
     # is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, as
     # ``power_step`` does.
+    #
+    # The growth arrives as ``power_step_partials``' per-block squared norms, and every block
+    # folds all of them itself (one ``block_sum`` over lanes striding the partials) before writing
+    # its ``power_block_rows``: the same fixed tree in every block, so the total is identical
+    # across blocks and runs, and no separate inner-product pass or ``dim=1`` launch runs. The
+    # wrapper first folds the partials with ``reduce.SUM1D_PARTIALS`` while there are more than
+    # ``4 * ITEMS_PER_BLOCK_1D``, so each block reads at most that many (``POWER_ROWS_PER_BLOCK``).
     # ``rho = sqrt(growth / start) ** exponent``, ``exponent`` being one over the step count, and
     # ``rho = 1`` when the growth is not a positive finite number (an operator the iteration cannot
-    # measure), which is the host form's guard verbatim. Every thread forms the same two scalars;
-    # that is cheaper than a ``dim=1`` launch and a second buffer.
+    # measure), which is the host form's guard verbatim.
     #
     # Pre-scaling changes no consumer's arithmetic: ``jacobi_sweep`` and ``scaled_diagonal_apply``
     # form ``factor * inv[row] * r`` left to right, so ``1 * (omega * inv[row]) * r`` is the same
     # product, and the prolongator's ``(-omega) * inv[row]`` is ``(-1) * (omega * inv[row])``.
-    i = wp.int32(wp.tid())
-    end = growth[0]
+    block, lane = wp.tid()
+    offset, count = power_block_rows(out_scaled.shape[0], block)
+    if count <= 0:
+        return
+    partial = wp.float64(0.0)
+    for k in range(lane, growth_partials.shape[0], wp.block_dim()):
+        partial += growth_partials[k]
+    end = block_sum(partial)
     rho = wp.float64(1.0)
     if start > wp.float64(0.0) and end > wp.float64(0.0) and wp.isfinite(end):
         rho = wp.pow(wp.sqrt(end / start), exponent)
-    out_scaled[i] = (factor / rho) * inverse_or_one(diagonal[i])
+    omega = factor / rho
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        out_scaled[i] = omega * inverse_or_one(diagonal[i])
 
 
 @wp.func
@@ -613,6 +686,36 @@ def random_sign(seed: wp.int32, index: wp.int32) -> wp.float64:
     )
 
 
+@wp.func
+def power_row(
+    seed: wp.int32,
+    from_signs: wp.int32,
+    diagonal: wp.array[wp.float64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    i: wp.int32,
+) -> wp.float64:
+    # Row ``i`` of ``y = D^-1 A x``, one whole step of the power iteration that estimates the
+    # spectral radius. It differs from ``csr_matvec`` above only in folding the diagonal scale in
+    # and in being single-column -- and that fusion is the point, because the setup is
+    # launch-bound: as a ``bsr_mv`` plus a ``scaled_diagonal_apply`` it is two launches, and an
+    # uncaptured ``bsr_mv`` costs a fixed host price whatever its nnz.
+    #
+    # ``D^-1`` is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, so no
+    # pass writes the inverse first. The first step (warp-uniform ``from_signs != 0``) draws its
+    # ``x`` from ``random_sign`` as it reads it and does not read ``x``; its row dot is
+    # ``csr_row_dot``'s, term for term.
+    total = wp.float64(0.0)
+    if from_signs != 0:
+        for k in range(offsets[i], offsets[i + 1]):
+            total += values[k] * random_sign(seed, columns[k])
+    else:
+        total = csr_row_dot(i, wp.int32(0), offsets, columns, values, x)
+    return inverse_or_one(diagonal[i]) * total
+
+
 @wp.kernel
 def power_step(
     seed: wp.int32,
@@ -624,25 +727,41 @@ def power_step(
     x: wp.array[wp.float64],
     out_y: wp.array[wp.float64],
 ) -> None:
-    # ``y = D^-1 A x``: one whole step of the power iteration that estimates the spectral radius, in
-    # one launch. It differs from ``csr_matvec`` above only in folding the diagonal scale in and in
-    # being single-column -- and that fusion is the point, because the setup is launch-bound: as a
-    # ``bsr_mv`` plus a ``scaled_diagonal_apply`` it is two launches, and an uncaptured ``bsr_mv``
-    # costs a fixed host price whatever its nnz. Writing a second buffer rather than updating ``x``
-    # in place is what lets it be one launch; the caller swaps the two.
-    #
-    # ``D^-1`` is ``array.inverse_or_one`` of the operator's diagonal, applied as it is read, so no
-    # pass writes the inverse first. The first step (warp-uniform ``from_signs != 0``) draws its
-    # ``x`` from ``random_sign`` as it reads it and does not read ``x``; its row dot is
-    # ``csr_row_dot``'s, term for term.
+    # One ``power_row`` per thread. Writing a second buffer rather than updating ``x`` in place is
+    # what lets a step be one launch; the caller swaps the two. The last step is
+    # ``power_step_partials``, which also measures the growth.
     i = wp.int32(wp.tid())
-    total = wp.float64(0.0)
-    if from_signs != 0:
-        for k in range(offsets[i], offsets[i + 1]):
-            total += values[k] * random_sign(seed, columns[k])
-    else:
-        total = csr_row_dot(i, wp.int32(0), offsets, columns, values, x)
-    out_y[i] = inverse_or_one(diagonal[i]) * total
+    out_y[i] = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
+
+
+@wp.kernel
+def power_step_partials(
+    seed: wp.int32,
+    from_signs: wp.int32,
+    diagonal: wp.array[wp.float64],
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    x: wp.array[wp.float64],
+    out_y: wp.array[wp.float64],
+    out_partials: wp.array[wp.float64],
+) -> None:
+    # ``power_step``'s last step, which also stores its block's share of ``|y|^2`` in the block's
+    # own slot: the growth ``damped_inverse_diagonal`` folds, in a fixed order, with no separate
+    # inner-product pass over ``y``. Launched tiled over ``POWER_ROWS_PER_BLOCK`` rows a block,
+    # lanes striding them by ``wp.block_dim()`` (so the one CPU lane walks them all, CLAUDE.md
+    # section 2.2).
+    block, lane = wp.tid()
+    offset, count = power_block_rows(out_y.shape[0], block)
+    partial = wp.float64(0.0)
+    for k in range(lane, count, wp.block_dim()):
+        i = offset + k
+        y = power_row(seed, from_signs, diagonal, offsets, columns, values, x, i)
+        out_y[i] = y
+        partial += y * y
+    total = block_sum(partial)
+    if lane == 0:
+        out_partials[block] = total
 
 
 @wp.kernel

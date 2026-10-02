@@ -183,17 +183,19 @@ def scatter_boundary_neighbors(
 
 
 @wp.func
-def boundary_neighbor(neighbors: wp.array2d[wp.int32], v: wp.int32, slot: wp.int32) -> wp.int32:
-    # Vertex ``v``'s boundary neighbour in ``slot``, with the two slots read in ascending order, so
-    # the dart numbering below does not depend on the order the scatter's atomics happened to run
-    # in. This is what makes the non-orientable answer reproducible: with no face winding to
-    # follow, slot 0 is the smaller neighbour by definition. Read sorted rather than sorted in
-    # place by a pass of its own; a lone neighbour (the other slot ``-1``) stays in slot 0.
+def sorted_boundary_neighbors(
+    neighbors: wp.array2d[wp.int32], v: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    # Vertex ``v``'s two boundary-neighbour slots in ascending order, so the dart numbering below
+    # does not depend on the order the scatter's atomics happened to run in. This is what makes the
+    # non-orientable answer reproducible: with no face winding to follow, slot 0 is the smaller
+    # neighbour by definition. Read sorted rather than sorted in place by a pass of its own; a lone
+    # neighbour (the other slot ``-1``) stays in slot 0.
     first = neighbors[v, 0]
     second = neighbors[v, 1]
     if first >= 0 and second >= 0 and second < first:
         first, second = second, first
-    return wp.where(slot == 0, first, second)
+    return first, second
 
 
 @wp.kernel
@@ -216,8 +218,9 @@ def dart_successors(
     e, end = wp.tid()
     v = boundary_edges[e, end]
     u = boundary_edges[e, 1 - end]
-    s = wp.where(boundary_neighbor(neighbors, v, 0) == u, wp.int32(0), wp.int32(1))
-    w = boundary_neighbor(neighbors, v, 1 - s)
+    slot0, slot1 = sorted_boundary_neighbors(neighbors, v)
+    s = wp.where(slot0 == u, wp.int32(0), wp.int32(1))
+    w = wp.where(s == 0, slot1, slot0)
     dart = 2 * v + s
     out_tails[2 * e + end] = dart
     if w < 0:
@@ -225,7 +228,8 @@ def dart_successors(
         # the ranking drops.
         out_next[dart] = -1
     else:
-        arriving = wp.where(boundary_neighbor(neighbors, w, 0) == v, wp.int32(0), wp.int32(1))
+        w_slot0, _w_slot1 = sorted_boundary_neighbors(neighbors, w)
+        arriving = wp.where(w_slot0 == v, wp.int32(0), wp.int32(1))
         out_next[dart] = 2 * w + arriving
 
 

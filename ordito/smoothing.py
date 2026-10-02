@@ -2126,10 +2126,10 @@ def _region_topology(
             device=device,
         )
         # The per-row sort rides the pattern count below.
-        count_kernel = kernel_smoothing.sort_incidence_and_count_free_pattern
+        sort_incident = 1
     else:
         incidence_offsets, incident_edges = incidence
-        count_kernel = kernel_smoothing.free_pattern_counts
+        sort_incident = 0
     # The free-free pattern, sized without a readback: a free row holds its diagonal and at most
     # its degree of neighbours, so ``n_free + 2 m`` bounds the whole. Every reader walks rows
     # through the offsets, so the unused tail is never touched.
@@ -2137,7 +2137,18 @@ def _region_topology(
     pattern_counts = odt.as_dense(pattern_offsets[1:])
     pattern_inputs = [incidence_offsets, incident_edges, unique_edges, free_mask, free_map]
     _launch.launch(
-        count_kernel, dim=n, inputs=pattern_inputs, outputs=[pattern_counts], device=device
+        kernel_smoothing.free_pattern_counts,
+        dim=n,
+        inputs=[
+            incidence_offsets,
+            incident_edges,
+            wp.int32(sort_incident),
+            unique_edges,
+            free_mask,
+            free_map,
+        ],
+        outputs=[pattern_counts],
+        device=device,
     )
     _launch.array_scan(pattern_counts, pattern_counts, inclusive=True)
     capacity = n_free + 2 * m

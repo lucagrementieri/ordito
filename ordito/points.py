@@ -1252,10 +1252,9 @@ def convex_subset_mask(
 
     n_dir = int(n_directions)
     directions = od.sample.sample_fibonacci_hemisphere(n_dir, device=device)
-    best_max, best_min, slices = _support_extremes(points, directions)
+    best_max, best_min, stride, slice_max, slice_min = _support_extremes(points, directions)
 
     out_mask = _launch.zeros(n_points, dtype=wp.bool, device=device)
-    stride = n_points if slices is None else slices[0].shape[1]
     _launch.launch(
         kernel_points.mark_hull_support,
         dim=(n_dir, stride),
@@ -1266,8 +1265,8 @@ def convex_subset_mask(
             best_min,
             wp.float32(tolerance),
             stride,
-            None if slices is None else slices[0],
-            None if slices is None else slices[1],
+            slice_max,
+            slice_min,
             out_mask,
         ],
         device=device,
@@ -1397,12 +1396,11 @@ def convex_superset_mask(
     directions, shell_faces = od.creation.icosphere(subdivisions=int(subdivisions), device=device)
     n_dir = directions.size
     n_tetra = shell_faces.size // 3
-    best_max, best_min, slices = _support_extremes(points, directions)
+    best_max, best_min, stride, slice_max, _slice_min = _support_extremes(points, directions)
 
     # Seeded with the last index rather than a sentinel: a direction that somehow marks nothing
     # then yields a real point, which keeps the gather in range and the tetrahedra valid.
     support = _launch.full(n_dir, value=n_points - 1, dtype=wp.int32, device=device)
-    stride = n_points if slices is None else slices[0].shape[1]
     _launch.launch(
         kernel_points.support_indices,
         dim=(n_dir, stride),
@@ -1413,7 +1411,7 @@ def convex_superset_mask(
             best_min,
             SUPPORT_TIE_SLACK,
             stride,
-            None if slices is None else slices[0],
+            slice_max,
             support,
         ],
         device=device,
@@ -1451,17 +1449,23 @@ def convex_superset_mask(
 def _support_extremes(
     points: wp.array[wp.vec3], directions: wp.array[wp.vec3]
 ) -> tuple[
-    wp.array[wp.float32], wp.array[wp.float32], tuple[odt.Array2dFloat32, odt.Array2dFloat32] | None
+    wp.array[wp.float32],
+    wp.array[wp.float32],
+    int,
+    odt.Array2dFloat32 | None,
+    odt.Array2dFloat32 | None,
 ]:
     """
     Per-direction maximum and minimum of the support function over ``points``, and per slice.
 
-    Returns ``(best_max, best_min, slices)``. From ``SUPPORT_SLICE_FILTER_FROM`` points
-    ``slices`` is ``(slice_max, slice_min)``, each ``(n_directions, n_slices)``: bounds on every
-    slice's own extremes, which let the threshold sweeps after this one walk only the slices that
-    can hold a point at a threshold. Below it, ``None``: the sweeps test every point in parallel,
-    which a cloud that small does not leave enough slices to beat. Each thread reduces a strided
-    slice of the cloud, so the launch is sized by
+    Returns ``(best_max, best_min, stride, slice_max, slice_min)``: the threshold sweeps after this
+    one launch ``(n_directions, stride)`` threads, thread ``(k, j)`` walking points ``j, j +
+    stride, ...``. From ``SUPPORT_SLICE_FILTER_FROM`` points ``stride`` is the slice count and
+    ``slice_max`` / ``slice_min``, each ``(n_directions, stride)``, bound every slice's own
+    extremes, which let the sweeps walk only the slices that can hold a point at a threshold.
+    Below it, ``stride`` is the point count and both tables are ``None``: the sweeps test every
+    point in parallel, which a cloud that small does not leave enough slices to beat. Each thread
+    reduces a strided slice of the cloud, so the launch is sized by
     [`items_per_slice`][ordito._device.items_per_slice] points per thread rather than by the point
     count -- enough parallelism to fill the device while keeping the number of atomics into the
     ``n_directions`` accumulator slots low. The same per-device slice length also backs three other
@@ -1475,28 +1479,20 @@ def _support_extremes(
 
     best_max = _launch.full(n_dir, value=-float("inf"), dtype=wp.float32, device=device)
     best_min = _launch.full(n_dir, value=float("inf"), dtype=wp.float32, device=device)
-    slices = None
+    stride = n_points
+    slice_max = slice_min = None
     if n_points >= SUPPORT_SLICE_FILTER_FROM:
-        slices = (
-            odt.empty_2d((n_dir, n_slices), wp.float32, device=device),
-            odt.empty_2d((n_dir, n_slices), wp.float32, device=device),
-        )
-    width = kernel_points.support_width(n_dir, n_slices)
+        stride = n_slices
+        slice_max = odt.empty_2d((n_dir, n_slices), wp.float32, device=device)
+        slice_min = odt.empty_2d((n_dir, n_slices), wp.float32, device=device)
+    kernel, dim = kernel_points.HULL_SUPPORT_EXTREMES.launch_shape(n_dir, n_slices)
     _launch.launch(
-        kernel_points.HULL_SUPPORT_EXTREMES[width],
-        dim=((n_dir + width - 1) // width, n_slices),
-        inputs=[
-            points,
-            directions,
-            n_slices,
-            best_max,
-            best_min,
-            None if slices is None else slices[0],
-            None if slices is None else slices[1],
-        ],
+        kernel,
+        dim=dim,
+        inputs=[points, directions, n_slices, best_max, best_min, slice_max, slice_min],
         device=device,
     )
-    return best_max, best_min, slices
+    return best_max, best_min, stride, slice_max, slice_min
 
 
 def vector_angle(a: wp.array[wp.vec3], b: wp.array[wp.vec3]) -> wp.array[wp.float32]:

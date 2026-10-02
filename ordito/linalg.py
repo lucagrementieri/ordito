@@ -399,9 +399,12 @@ def assemble_interior_system(
     free_map: wp.array[wp.int32],
     fixed_values: odt.Array2dFloat,
     n_free: int,
+    *,
+    scale: float = 1.0,
+    load: odt.Array2dFloat | None = None,
 ) -> tuple[odt.BsrMatrix[wp.float64], odt.Array2dFloat]:
     """
-    Extract the free-free block ``Q_uu`` and the constant right-hand side ``-Q_ub bc``.
+    Extract the free-free block ``Q_uu`` and the constant right-hand side ``b_u - Q_ub bc``.
 
     A **CSR-to-CSR** extraction in two launches over the ``n_dofs`` rows of ``q``: the first counts
     each free row's surviving entries (and accumulates the pinned-column contributions into the
@@ -433,6 +436,14 @@ def assemble_interior_system(
         ``(n_rhs, n_dofs)`` prescribed values.
     n_free
         Number of unpinned degrees of freedom.
+    scale
+        Factor applied to ``q`` as it is read, so the extraction is of ``scale * q`` (both the
+        block and the pinned-column term). ``-1.0`` extracts ``-L`` from a Laplacian without a
+        negated copy of it.
+    load
+        ``(n_rhs, n_dofs)`` linear term ``b``, compacted to its free entries and added to the
+        right-hand side. ``fixed_values`` may then have zero rows, which reads as every pinned value
+        zero. ``None`` (the default) is ``b = 0``.
 
     Returns
     -------
@@ -445,16 +456,28 @@ def assemble_interior_system(
     Raises
     ------
     RuntimeError
-        If ``fixed_mask``, ``free_map`` and ``fixed_values`` are not all on one device.
+        If ``fixed_mask``, ``free_map``, ``fixed_values`` and ``load`` are not all on one device.
+    ValueError
+        If ``load`` and ``fixed_values`` both have rows and their row counts differ.
 
     See Also
     --------
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]
     """
-    require_same_device(fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values)
+    require_same_device(
+        fixed_mask=fixed_mask, free_map=free_map, fixed_values=fixed_values, load=load
+    )
     device = fixed_mask.device
     n_dofs = fixed_mask.size
     n_rhs = int(fixed_values.shape[0])
+    if load is not None:
+        n_load = int(load.shape[0])
+        if n_rhs not in (0, n_load):
+            raise ValueError(
+                f"load has {n_load} rows but fixed_values has {n_rhs}; they must match, or "
+                "fixed_values must have none."
+            )
+        n_rhs = n_load
     # Every free row writes its own count exactly once (``free_map`` is a bijection onto
     # ``[0, n_free)``), so there is nothing to pre-zero.
     counts = _launch.empty(n_free, dtype=wp.int32, device=device)
@@ -462,7 +485,18 @@ def assemble_interior_system(
     _launch.launch(
         kernel_linalg.interior_row_counts,
         dim=n_dofs,
-        inputs=[q.offsets, q.columns, q.values, fixed_mask, free_map, fixed_values, counts, rhs],
+        inputs=[
+            q.offsets,
+            q.columns,
+            q.values,
+            fixed_mask,
+            free_map,
+            fixed_values,
+            wp.float64(scale),
+            load,
+            counts,
+            rhs,
+        ],
         device=device,
     )
     # The total-terminated form *is* the CSR offsets array, and the one host read it costs is what
@@ -473,7 +507,17 @@ def assemble_interior_system(
     _launch.launch(
         kernel_linalg.interior_system_csr,
         dim=n_dofs,
-        inputs=[q.offsets, q.columns, q.values, fixed_mask, free_map, row_offsets, columns, values],
+        inputs=[
+            q.offsets,
+            q.columns,
+            q.values,
+            fixed_mask,
+            free_map,
+            row_offsets,
+            wp.float64(scale),
+            columns,
+            values,
+        ],
         device=device,
     )
     # Hand the finished CSR to a compact ``BsrMatrix`` directly (``_bsr_over``).
@@ -3457,14 +3501,14 @@ def _multigrid_hierarchy(
         # allocation *and* a launch, so extracting it once here rather than once per consumer saves
         # a redundant diagonal extraction per level.
         diag = odt.bsr_get_diag(operator)
-        label, n_aggregates = _multigrid_aggregate(operator, diag, seed)
+        label, sizes, n_aggregates = _multigrid_aggregate(operator, diag, seed)
         if n_aggregates >= _MULTIGRID_MIN_COARSENING * level.n:
             break
         # ``omega D^-1``, the damping already folded in, so the smoother and the prolongator read
         # one scaled diagonal and no level reads its spectral radius back to the host.
         level.inverse_diagonal = _multigrid_damped_diagonal(operator, diag, seed)
         level.prolongator = _multigrid_prolongator(
-            operator, label, n_aggregates, level.inverse_diagonal
+            operator, label, sizes, n_aggregates, level.inverse_diagonal
         )
         level.restrictor = odt.bsr_transposed(level.prolongator)
         operator = _multigrid_galerkin(operator, level.prolongator)
@@ -3476,9 +3520,12 @@ def _multigrid_hierarchy(
 
 def _multigrid_aggregate(
     matrix: odt.BsrMatrix[wp.float64], diagonal: wp.array[wp.float64], seed: int
-) -> tuple[wp.array[wp.int32], int]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32], int]:
     """
     Aggregate label per row, from a distance-2 maximal independent set on the off-diagonal graph.
+
+    Returns ``(label, sizes, n_aggregates)``, ``sizes`` being each aggregate's row count, counted
+    by the spread's final hop.
 
     The selection is the randomized-priority pattern ``sample.dart_select_minima`` runs, lifted to
     distance 2 by propagating the packed ``(state, priority, index)`` maximum over one-hop
@@ -3551,18 +3598,19 @@ def _multigrid_aggregate(
         kernel_mg.spread_aggregate_labels,
         dim=n,
         inputs=[hop, state, scan_pos, wp.int32(1), *strong_graph],
-        outputs=[hop],
+        outputs=[hop, None],
         device=device,
     )
     label = _launch.empty(n, dtype=wp.int32, device=device)
+    sizes = _launch.zeros(n_aggregates, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_mg.spread_aggregate_labels,
         dim=n,
         inputs=[hop, state, scan_pos, wp.int32(0), *strong_graph],
-        outputs=[label],
+        outputs=[label, sizes],
         device=device,
     )
-    return label, n_aggregates
+    return label, sizes, n_aggregates
 
 
 def _multigrid_damped_diagonal(
@@ -3592,7 +3640,7 @@ def _multigrid_damped_diagonal(
     n = int(matrix.nrow)
     x = _launch.empty(n, dtype=wp.float64, device=device)
     y = _launch.empty(n, dtype=wp.float64, device=device)
-    for step in range(_MULTIGRID_POWER_STEPS):
+    for step in range(_MULTIGRID_POWER_STEPS - 1):
         _launch.launch(
             kernel_mg.power_step,
             dim=n,
@@ -3611,21 +3659,54 @@ def _multigrid_damped_diagonal(
         x, y = y, x
     # How much the iterate grew over ``K`` steps of ``D^-1 A`` is ``rho ** K`` to the accuracy this
     # needs, and it stays on the device. The start is exact: every entry of a sign vector is +-1,
-    # so its squared norm is exactly n.
-    growth = _launch.empty(1, dtype=wp.float64, device=device)
-    wp.utils.array_inner(x, x, out=growth)
-    damped = _launch.empty(n, dtype=wp.float64, device=device)
-    _launch.launch(
-        kernel_mg.damped_inverse_diagonal,
-        dim=n,
+    # so its squared norm is exactly n. The last step stores each block's share of the squared norm
+    # in its own slot; past ``4 * ITEMS_PER_BLOCK_1D`` of them they are folded in a fixed tree,
+    # and ``damped_inverse_diagonal`` folds the rest in every block, so the total is the same
+    # number on every run with no inner-product pass of its own.
+    blocks = -(-n // int(kernel_mg.POWER_ROWS_PER_BLOCK))
+    partials = _launch.empty(blocks, dtype=wp.float64, device=device)
+    _launch.launch_tiled(
+        kernel_mg.power_step_partials,
+        dim=[blocks],
         inputs=[
-            growth,
+            wp.int32(seed),
+            # Never the first step: ``_MULTIGRID_POWER_STEPS`` is well above one.
+            wp.int32(0),
+            diagonal,
+            matrix.offsets,
+            matrix.columns,
+            matrix.values,
+            x,
+        ],
+        outputs=[y, partials],
+        block_dim=TILE_1D,
+        device=device,
+    )
+    while partials.size > 4 * kernel_reduce.ITEMS_PER_BLOCK_1D:
+        folded = _launch.empty(
+            kernel_reduce.blocks_1d(partials.size), dtype=wp.float64, device=device
+        )
+        _launch.launch_tiled(
+            kernel_reduce.SUM1D_PARTIALS[wp.float64],
+            dim=[folded.size],
+            inputs=[partials, folded],
+            block_dim=TILE_1D,
+            device=device,
+        )
+        partials = folded
+    damped = _launch.empty(n, dtype=wp.float64, device=device)
+    _launch.launch_tiled(
+        kernel_mg.damped_inverse_diagonal,
+        dim=[blocks],
+        inputs=[
+            partials,
             wp.float64(n),
             wp.float64(1.0 / _MULTIGRID_POWER_STEPS),
             wp.float64(_MULTIGRID_JACOBI_FACTOR),
             diagonal,
         ],
         outputs=[damped],
+        block_dim=TILE_1D,
         device=device,
     )
     return damped
@@ -3634,6 +3715,7 @@ def _multigrid_damped_diagonal(
 def _multigrid_prolongator(
     matrix: odt.BsrMatrix[wp.float64],
     label: wp.array[wp.int32],
+    sizes: wp.array[wp.int32],
     n_aggregates: int,
     damped_inverse_diagonal: wp.array[wp.float64],
 ) -> odt.BsrMatrix[wp.float64]:
@@ -3647,8 +3729,6 @@ def _multigrid_prolongator(
     """
     device = matrix.device
     n = int(matrix.nrow)
-    sizes = _launch.zeros(n_aggregates, dtype=wp.int32, device=device)
-    _launch.launch(kernel_mg.aggregate_sizes, dim=n, inputs=[label, sizes], device=device)
     # The stored count, not ``matrix.nnz``: that field is a capacity after a triplet build, and the
     # triplets are laid out at the slots the entries occupy.
     count = int(read_scalar(matrix.offsets, n)) + n

@@ -1,4 +1,4 @@
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 import warp as wp
@@ -483,7 +483,7 @@ def sort_rows_insertion(data: wp.array2d[wp.Scalar]) -> None:
 def sort_segment(offsets: wp.array[wp.int32], data: wp.array[wp.int32], segment: wp.int32) -> None:
     # In-place ascending sort of ``data[offsets[segment] : offsets[segment + 1]]`` by one thread.
     # ``sort_segments`` below is the kernel and says why a shell sort; a kernel that also reads the
-    # sorted segment back (``smoothing.sort_incidence_and_count_free_pattern``) calls this first.
+    # sorted segment back (``smoothing.free_pattern_counts``) calls this first.
     start = offsets[segment]
     width = offsets[segment + 1] - start
     gap = wp.int32(1)
@@ -1091,6 +1091,41 @@ class OverloadTable(KernelTable):
         super().__init__(
             kernel.key, {key: wp.overload(kernel, list(types)) for key, types in signatures.items()}
         )
+
+
+# Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
+# items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
+# grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer
+# needs to save (CLAUDE.md section 14.12: a fixed ``width = 8`` cost a 36 k-point cloud 0.82x).
+REGISTER_BLOCK_MIN_THREADS = 1 << 17
+
+
+class RegisterBlockedTable(KernelTable):
+    """
+    Register-blocked instantiations of one ``(item, slice)`` reduction, keyed by items per thread.
+
+    The four strided slice reductions that reduce several outer items per thread from registers
+    (``points.hull_support_extremes``, ``bounds.oriented_box_extents``,
+    ``proximity.winding_number_tiled``, ``visibility.support_argmax_sliced``; CLAUDE.md section
+    14.12) launch thread ``(b, j)`` over items ``b * width ..`` and slice ``j``. Which width a
+    launch takes is one rule for all four, held here: the widest that still leaves
+    ``REGISTER_BLOCK_MIN_THREADS`` threads, else the narrowest.
+    """
+
+    def __init__(
+        self, owner: str, factory: Callable[[int], wp.Kernel], widths: Sequence[int]
+    ) -> None:
+        """Build ``factory(width)`` for every entry of ``widths``, kept widest first."""
+        super().__init__(owner, {w: factory(w) for w in sorted(widths, reverse=True)})
+
+    def launch_shape(self, n_items: int, n_slices: int) -> tuple[wp.Kernel, tuple[int, int]]:
+        """Return the kernel and ``(n_groups, n_slices)`` grid for ``n_items`` items."""
+        widths = list(self)
+        for width in widths:
+            n_groups = -(-n_items // width)
+            if n_groups * n_slices >= REGISTER_BLOCK_MIN_THREADS or width == widths[-1]:
+                return self[width], (n_groups, n_slices)
+        raise KeyError(f"{self._owner} has no register-blocked kernel")
 
 
 # The conversions ``array.astype`` launches as concrete kernels, keyed ``(source, target)``. The set

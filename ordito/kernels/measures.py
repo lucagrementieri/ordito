@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.constants import TILE_1D
 from ordito.kernels.array import OverloadTable
-from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_sum, tile_chunk
+from ordito.kernels.reduce import block_chunk_1d, commit_block_sum, commit_block_total, tile_chunk
 from ordito.kernels.triangles import (
     face_area_weighted_centroid,
     face_signed_volume,
@@ -27,9 +27,7 @@ def mesh_signed_volume(
     origin = vertices.dtype()
     for k in range(lane, count, wp.block_dim()):
         total += face_signed_volume(vertices, faces, offset + k, origin)
-    total = block_sum(total)
-    if lane == 0:
-        wp.atomic_add(out_volume, 0, total)
+    commit_block_total(lane, total, out_volume, 0)
 
 
 @wp.kernel

@@ -1043,10 +1043,10 @@ def winding_number(
     )
     if tiled:
         n_face_slices = max(1, (n_faces + ITEMS_PER_QUERY_SLICE - 1) // ITEMS_PER_QUERY_SLICE)
-        width = kernel_proximity.winding_width(n_queries, n_face_slices)
+        kernel, dim = kernel_proximity.WINDING_NUMBER_TILED.launch_shape(n_queries, n_face_slices)
         _launch.launch(
-            kernel_proximity.WINDING_NUMBER_TILED[width],
-            dim=(-(-n_queries // width), n_face_slices),
+            kernel,
+            dim=dim,
             inputs=[
                 vertices,
                 faces,

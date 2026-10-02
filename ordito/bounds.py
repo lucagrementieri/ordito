@@ -686,13 +686,8 @@ def oriented_bounding_box(
     # ``atomic_min``s into ``corners``, so it must arrive holding ``+inf``: both axes kernels seed a
     # candidate's slots as they write its frame, which is what lets the refinement reuse one
     # buffer across its rounds.
-    width = kernel_bounds.box_extent_width(int(axes.shape[0]), n_slices)
-    _launch.launch(
-        kernel_bounds.OBB_EXTENTS[width],
-        dim=(-(-int(axes.shape[0]) // width), n_slices),
-        inputs=[points, axes, n_slices, corners],
-        device=points.device,
-    )
+    kernel, dim = kernel_bounds.OBB_EXTENTS.launch_shape(rotations, n_slices)
+    _launch.launch(kernel, dim=dim, inputs=[points, axes, n_slices, corners], device=points.device)
 
     loss = _launch.empty(rotations, dtype=wp.float32, device=device)
     _launch.launch(
@@ -808,7 +803,7 @@ def _refine_box(
     # Start at the covering radius of the global grid: the sampled winner is at most about this
     # far from its basin's optimum, and each round shrinks the radius.
     sigma = 2.0 * (math.pi**2 / max(rotations, 2)) ** (1.0 / 3.0)
-    width = kernel_bounds.box_extent_width(total, n_slices)
+    extents_kernel, extents_dim = kernel_bounds.OBB_EXTENTS.launch_shape(total, n_slices)
     for _ in range(refine_iterations):
         _launch.launch(
             kernel_bounds.oriented_box_refine_axes,
@@ -823,8 +818,8 @@ def _refine_box(
             device=device,
         )
         _launch.launch(
-            kernel_bounds.OBB_EXTENTS[width],
-            dim=(-(-total // width), n_slices),
+            extents_kernel,
+            dim=extents_dim,
             inputs=[points, axes, n_slices, corners],
             device=points.device,
         )

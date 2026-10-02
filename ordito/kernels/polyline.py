@@ -27,6 +27,7 @@ from ordito.kernels.reduce import (
     block_min,
     block_sum,
     commit_block_sum,
+    commit_block_total,
 )
 
 
@@ -1105,9 +1106,7 @@ def radius_reduce(
         if lane == 0:
             wp.atomic_max(out_result, 0, block_high)
     else:
-        block_total = block_sum(total)
-        if lane == 0:
-            wp.atomic_add(out_result, 0, block_total)
+        commit_block_total(lane, total, out_result, 0)
 
 
 # --- polygon triangulation (parallel ear clipping); port of libigl ear_clipping.cpp ---
@@ -1638,9 +1637,7 @@ def polyline_total_length(
     for k in range(lane, remaining, wp.block_dim()):
         start = offset + k
         total += segment_length(points[start], points[loop_point(start + 1, n_points)])
-    block_total = block_sum(total)
-    if lane == 0:
-        wp.atomic_add(out_total, 0, block_total)
+    commit_block_total(lane, total, out_total, 0)
 
 
 @wp.kernel

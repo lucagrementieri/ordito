@@ -512,16 +512,16 @@ def _solve_poisson_zero_set(
 
     # No pinned-value right-hand side to assemble: the curve is pinned to zero, so ``-Q_ub bc``
     # vanishes and the extraction is asked for none. The system's one right-hand side is the
-    # compacted divergence, which writes every free row.
-    no_values = odt.empty_2d((0, n_vertices), wp.float64, device=device)
-    operator_uu, _ = twl.assemble_interior_system(operator, fixed_mask, free_map, no_values, n_free)
-    rhs = odt.empty_2d((1, n_free), wp.float64, device=device)
+    # divergence, compacted to the free rows by the extraction's own row pass (``load``).
     # ``divergence`` is already the -div right-hand side the -L operator takes.
-    _launch.launch(
-        kernel_heat.scatter_free_rhs,
-        dim=n_vertices,
-        inputs=[fixed_mask, free_map, divergence, rhs],
-        device=device,
+    no_values = odt.empty_2d((0, n_vertices), wp.float64, device=device)
+    operator_uu, rhs = twl.assemble_interior_system(
+        operator,
+        fixed_mask,
+        free_map,
+        no_values,
+        n_free,
+        load=odt.as_array2d(divergence.reshape((1, n_vertices)), wp.float64),
     )
 
     solution = _launch.zeros((1, n_free), dtype=wp.float64, device=device)

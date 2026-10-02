@@ -130,6 +130,20 @@ def commit_block_sum(lane: wp.int32, local: Any, out: wp.array[Any], base: wp.in
 
 
 @wp.func
+def commit_block_total(lane: wp.int32, local: Any, out: wp.array[Any], slot: wp.int32):
+    # The commit of a single-value block fold: each lane's register value (scalar, vector or
+    # matrix, matching ``out``'s dtype), folded by one ``block_sum`` (a barrier, so every lane runs
+    # it), then added whole by lane 0 into ``out[slot]`` -- one atomic per block.
+    # ``commit_block_sum`` is the packed sibling that spreads a vector's components over slots.
+    # Forward only: the taped ``metrics`` chamfer kernels keep the commit inline, because routing
+    # it through this ``@wp.func`` broke their ``wp.Tape`` gradient
+    # (``test_chamfer_points_to_points_loss_grad_on_either_backward_search``).
+    block = block_sum(local)
+    if lane == 0:
+        wp.atomic_add(out, slot, block)
+
+
+@wp.func
 def commit_sum_and_count(
     lane: wp.int32, total: wp.float64, count: wp.float64, out_sum_and_count: wp.array[wp.float64]
 ):

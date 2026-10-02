@@ -2,6 +2,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TILE_1D
 from ordito.kernels.array import (
+    RegisterBlockedTable,
     declare_map_signatures,
     map_probe,
     map_probe_single,
@@ -15,7 +16,7 @@ from ordito.kernels.predicates import point_plane_dot, triangle_normal
 from ordito.kernels.reduce import (
     block_chunk_1d,
     block_max,
-    block_sum,
+    commit_block_total,
     commit_sum_and_count,
     outer_sum_chunk,
     tile_chunk,
@@ -96,10 +97,7 @@ def centered_covariance(
     )
 
     # Block-collective, so it runs outside the ``lane == 0`` guard.
-    total = block_sum(m)
-
-    if lane == 0:
-        wp.atomic_add(out_cov, 0, total)
+    commit_block_total(lane, m, out_cov, 0)
 
 
 @wp.kernel
@@ -359,9 +357,7 @@ def local_outlier_factors(
         plof = local_outlier_factor(standard_distance, neighbor_idx, offset + k)
         out_plof[offset + k] = plof
         squares += plof * plof
-    squares = block_sum(squares)
-    if lane == 0:
-        wp.atomic_add(out_sum_squares, 0, squares)
+    commit_block_total(lane, squares, out_sum_squares, 0)
 
 
 @wp.func
@@ -454,9 +450,7 @@ def accumulate_counted_deviation(
     for k in range(lane, n_rows, wp.block_dim()):
         term = centered_square_if_counted(mean_distance[offset + k], count[offset + k], center)
         total = total + wp.float64(term)
-    block = block_sum(total)
-    if lane == 0:
-        wp.atomic_add(out_totals, 2, block)
+    commit_block_total(lane, total, out_totals, 2)
 
 
 @wp.kernel
@@ -648,12 +642,11 @@ def farthest_point_sample_block(
 # Directions one ``hull_support_extremes`` thread may reduce together: the point it loads is dotted
 # with each of them from registers, so the cloud is streamed ``n_directions / width`` times rather
 # than ``n_directions`` times -- the kernel is bound by that traffic, not by its arithmetic. Each
-# launch takes the widest that still leaves ``SUPPORT_MIN_THREADS`` threads (``support_width``),
-# since grouping directions divides the grid: 8 directions a thread is 2.7-3.1x on a 0.5 M-point
-# cloud and 4.5-11x on 14 M against one, 16 is slower than 8, and a 36 k-point cloud has too few
-# slices to group at all.
+# launch takes the widest that still leaves ``REGISTER_BLOCK_MIN_THREADS`` threads
+# (``RegisterBlockedTable.launch_shape``), since grouping directions divides the grid: 8 directions
+# a thread is 2.7-3.1x on a 0.5 M-point cloud and 4.5-11x on 14 M against one, 16 is slower than 8,
+# and a 36 k-point cloud has too few slices to group at all.
 SUPPORT_DIRECTION_WIDTHS = (8, 4, 2, 1)
-SUPPORT_MIN_THREADS = 1 << 17
 
 
 def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
@@ -741,24 +734,27 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
     return wp.kernel(hull_support_extremes, name=f"hull_support_extremes_{width}")
 
 
-HULL_SUPPORT_EXTREMES = {w: _hull_support_extremes_kernel(w) for w in SUPPORT_DIRECTION_WIDTHS}
-
-
-def support_width(n_directions: int, n_slices: int) -> int:
-    """Return the widest ``SUPPORT_DIRECTION_WIDTHS`` entry keeping ``SUPPORT_MIN_THREADS``."""
-    for width in SUPPORT_DIRECTION_WIDTHS:
-        if -(-n_directions // width) * n_slices >= SUPPORT_MIN_THREADS:
-            return width
-    return 1
+HULL_SUPPORT_EXTREMES = RegisterBlockedTable(
+    "hull_support_extremes", _hull_support_extremes_kernel, SUPPORT_DIRECTION_WIDTHS
+)
 
 
 @wp.func
-def support_slack(best_max: wp.float32, best_min: wp.float32, tolerance: wp.float32) -> wp.float32:
-    # Slack scales with the per-direction support extent so the test is scale-invariant and stays
-    # above the float32 dot-product noise floor. Shared by `mark_hull_support` and
-    # `support_indices`, which both tie-break against it: a future change to the formula (e.g. a
-    # different scale-invariance fix) has one definition to change rather than two that can drift.
-    return tolerance * (best_max - best_min)
+def support_thresholds(
+    best_max: wp.array[wp.float32],
+    best_min: wp.array[wp.float32],
+    tolerance: wp.float32,
+    k: wp.int32,
+) -> tuple[wp.float32, wp.float32]:
+    """Direction ``k``'s ``(upper, lower)`` support thresholds."""
+    # A point supports direction ``k`` when its support value reaches ``upper`` (along ``+n``) or
+    # ``lower`` (along ``-n``). The slack scales with the per-direction support extent so the test
+    # is scale-invariant and stays above the float32 dot-product noise floor. Shared by
+    # `mark_hull_support` and `support_indices`, which both tie-break against it: a future change
+    # to the formula (e.g. a different scale-invariance fix) has one definition to change rather
+    # than two that can drift.
+    slack = tolerance * (best_max[k] - best_min[k])
+    return best_max[k] - slack, best_min[k] + slack
 
 
 @wp.kernel
@@ -783,9 +779,7 @@ def mark_hull_support(
     # A hemisphere direction n covers both +n (max, supports the vertex farthest
     # along n) and -n (min, supports the vertex farthest along -n).
     direction = directions[k]
-    slack = support_slack(best_max[k], best_min[k], tolerance)
-    upper = best_max[k] - slack
-    lower = best_min[k] + slack
+    upper, lower = support_thresholds(best_max, best_min, tolerance, k)
     if slice_max.shape[0] > 0:
         if slice_max[k, j] < upper and slice_min[k, j] > lower:
             return
@@ -809,7 +803,7 @@ def support_indices(
     # ``mark_hull_support``'s two launch shapes, for the upper threshold alone, stopping at a
     # thread's first attaining point -- its points ascend, so that is its lowest.
     k, j = wp.tid()
-    upper = best_max[k] - support_slack(best_max[k], best_min[k], tolerance)
+    upper, _lower = support_thresholds(best_max, best_min, tolerance, k)
     if slice_max.shape[0] > 0:
         if slice_max[k, j] < upper:
             return

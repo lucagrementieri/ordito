@@ -71,7 +71,7 @@ import warp as wp
 from ordito.constants import INT32_MAX, TILE_1D
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND
-from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_block_sum, tile_chunk
+from ordito.kernels.reduce import block_chunk_1d, commit_block_sum, commit_block_total, tile_chunk
 
 # One past the largest edge index any proposal can hold, so ``wp.atomic_min`` starts empty. The
 # candidate count is bounded by the unique-edge count, which is well inside int32.
@@ -213,9 +213,7 @@ def dual_candidate_mask(
             interior = interior + 1
 
     # Block-collective, so it runs outside the ``lane == 0`` guard.
-    interior_total = block_sum(interior)
-    if lane == 0:
-        wp.atomic_add(out_counts, COUNT_INTERIOR_EDGES, interior_total)
+    commit_block_total(lane, interior, out_counts, COUNT_INTERIOR_EDGES)
 
 
 @wp.kernel

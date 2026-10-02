@@ -131,6 +131,8 @@ def interior_row_counts(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     fixed_values: wp.array2d[wp.float64],
+    scale: wp.float64,
+    load: wp.array2d[wp.float64],
     out_counts: wp.array[wp.int32],
     out_rhs: wp.array2d[wp.float64],
 ) -> None:
@@ -167,12 +169,21 @@ def interior_row_counts(
     # pass is still one launch against a conjugate-gradient solve whose iteration count dominates. A
     # register vector would also need a compile-time ``MAX_RHS`` cap, which is a new documented
     # limitation bought for nothing.
-    for c in range(fixed_values.shape[0]):
+    #
+    # ``scale`` multiplies ``Q`` as it is read (``-1`` extracts ``-L`` from a Laplacian with no
+    # negated copy; ``scale * q`` is exact for that), and an optional full-length ``load`` row --
+    # ``None`` reads as zero rows -- seeds the accumulator, so a linear term ``b_u`` is compacted in
+    # this launch rather than a scatter of its own. A right-hand-side row past either array's own
+    # row count reads that array as zero.
+    for c in range(out_rhs.shape[0]):
         acc = wp.float64(0.0)
-        for e in range(start, end):
-            j = columns[e]
-            if fixed_mask[j]:
-                acc -= values[e] * fixed_values[c, j]
+        if c < load.shape[0]:
+            acc = load[c, i]
+        if c < fixed_values.shape[0]:
+            for e in range(start, end):
+                j = columns[e]
+                if fixed_mask[j]:
+                    acc -= scale * values[e] * fixed_values[c, j]
         out_rhs[c, ri] = acc
 
 
@@ -184,6 +195,7 @@ def interior_system_csr(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],
     row_offsets: wp.array[wp.int32],
+    scale: wp.float64,
     out_columns: wp.array[wp.int32],
     out_values: wp.array[wp.float64],
 ) -> None:
@@ -202,7 +214,7 @@ def interior_system_csr(
         j = columns[e]
         if not fixed_mask[j]:
             out_columns[slot] = free_map[j]
-            out_values[slot] = values[e]
+            out_values[slot] = scale * values[e]
             slot += 1
 
 
@@ -361,16 +373,16 @@ def scaled_rows_and_abs_sums(
     out_ratio: wp.array[wp.float64],
 ) -> None:
     # One thread per row of a CSR ``L``, in one walk of the row: the values of ``D^-1 L`` (each
-    # row scaled by ``array.inverse_or_one`` of ``D_i``, ``algorithms/multigrid.scale_rows``' rule)
-    # and ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``,
-    # whose maximum bounds that operator's spectrum from above.
+    # row scaled by ``array.inverse_or_one`` of ``D_i``, so a zero weight scales by 1) and
+    # ``sum_j |L_ij| / D_i``, the Gershgorin radius plus centre of row ``i`` of ``D^-1 L``, whose
+    # maximum bounds that operator's spectrum from above.
     # ``linalg.SquaredLaplacianPreconditioner`` fits its polynomial to that bound. With ``D`` the
     # diagonal of ``L`` it is ``1 + offdiagonal_dominance_rows``' ratio; with any other positive
     # ``D`` -- ``sqrt(M)`` for the k = 2 harmonic operator ``L M^-1 L`` -- it is the bound that
     # ratio is not, and an interval fitted short of the spectrum amplifies what it should invert.
     i = wp.int32(wp.tid())
     weight = weight_sums[i]
-    scale = wp.float64(1.0) * inverse_or_one(weight)
+    scale = inverse_or_one(weight)
     total = wp.float64(0.0)
     for e in range(offsets[i], offsets[i + 1]):
         value = values[e]

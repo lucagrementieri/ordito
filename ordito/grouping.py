@@ -240,9 +240,7 @@ def unique_1d(
         raise ValueError(f"unique_1d requires length <= 2**30, got length {n}")
 
     if data.dtype in _SORTED_UNIQUE_DTYPES:
-        unique, inverse, counts, _first = _unique_sorted(
-            data, n, return_inverse, return_counts, end_bit
-        )
+        unique, inverse, counts = _unique_sorted(data, n, return_inverse, return_counts, end_bit)
         return _pack_unique_result(unique, inverse=inverse, counts=counts)
     mask = wp.int32(kernel_grouping.hash_table_mask(n))
 
@@ -271,23 +269,14 @@ _SORTED_UNIQUE_DTYPES = (wp.int32, wp.int64, wp.uint32, wp.uint64)
 
 
 def _unique_sorted(
-    data: wp.array[Any],
-    n: int,
-    return_inverse: bool,
-    return_counts: bool,
-    end_bit: int | None,
-    return_first: bool = False,
-) -> tuple[
-    wp.array[Any], wp.array[wp.int32] | None, wp.array[wp.int32] | None, wp.array[wp.int32] | None
-]:
+    data: wp.array[Any], n: int, return_inverse: bool, return_counts: bool, end_bit: int | None
+) -> tuple[wp.array[Any], wp.array[wp.int32] | None, wp.array[wp.int32] | None]:
     """
     [`unique_1d`][ordito.grouping.unique_1d] by one radix sort of an integer ``data``.
 
-    Returns ``(unique, inverse, counts, first)``, each optional one ``None`` unless asked for;
-    ``first`` is [`first_occurrence_indices`][ordito.grouping.first_occurrence_indices] of the
-    inverse, read off the stable sort. The keys and the identity payload are written into the
-    leading halves of the sort's double-width buffers; the run marks and their scan live in the
-    payload's upper half, which is free scratch once the sort has run. ``n > 0``.
+    Returns ``(unique, inverse, counts)``, each optional one ``None`` unless asked for. The keys and
+    the identity payload are written into the leading halves of the sort's double-width buffers,
+    and ``_unique_sorted_runs`` does the rest. ``n > 0``.
     """
     device = data.device
     dtype = data.dtype
@@ -296,34 +285,11 @@ def _unique_sorted(
     _launch.launch(
         kernel_grouping.KEYS_AND_IDENTITY[dtype], dim=n, inputs=[data, keys, order], device=device
     )
-    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
-    ranks = odt.as_dense(order[n:])
-    _launch.launch(
-        kernel_grouping.MARK_SORTED_RUN_STARTS[dtype], dim=n, inputs=[keys, ranks], device=device
+    unique, inverse, counts, _first = _unique_sorted_runs(
+        keys, order, n, True, return_inverse, return_counts, False, end_bit
     )
-    _launch.array_scan(ranks, ranks, inclusive=True)
-    # The distinct count sizes the outputs.
-    n_unique = int(read_scalar(order, 2 * n - 1))
-    unique_values = _launch.empty(n_unique, dtype=dtype, device=device)
-    inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
-    starts = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_counts else None
-    first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
-    _launch.launch(
-        kernel_grouping.EMIT_SORTED_UNIQUE[dtype],
-        dim=n,
-        inputs=[keys, order, ranks, unique_values, inverse, starts, first],
-        device=device,
-    )
-    counts = None
-    if starts is not None:
-        counts = _launch.empty(n_unique, dtype=wp.int32, device=device)
-        _launch.launch(
-            kernel_grouping.run_lengths,
-            dim=n_unique,
-            inputs=[starts, wp.int32(n), counts],
-            device=device,
-        )
-    return unique_values, inverse, counts, first
+    assert unique is not None
+    return unique, inverse, counts
 
 
 def _unique_hash(
@@ -695,48 +661,113 @@ def unique_faces(
         if min_index < 0:
             raise ValueError(f"faces must be non-negative, got a minimum of {min_index}")
         max_index = max_value + 1
-    row_keys = _launch.empty(n_faces, dtype=wp.uint64, device=device)
+    # The orientation-free face keys and the identity payload, written straight into the leading
+    # halves of the radix sort's double-width buffers.
+    keys = _launch.empty(2 * n_faces, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_grouping.pack_sorted_face_keys,
+        kernel_grouping.pack_sorted_face_keys_and_order,
         dim=n_faces,
-        inputs=[faces, wp.uint64(max_index), row_keys],
+        inputs=[faces, wp.uint64(max_index), keys, order],
         device=device,
     )
     # Not ``unique_rows`` on the sorted rows: that gathers the sorted rows by the first-occurrence
     # indices to build its own return, an answer this function has no use for -- it gathers the
     # unsorted faces by the same indices instead, to keep each representative's original winding.
     # Three sorted indices below ``max_index`` pack below ``max_index ** 3``.
-    inverse, first, _counts = _unique_keys_core(
-        row_keys, return_counts=False, max_value=min(max_index**3, 1 << 64) - 1
+    end_bit = max(1, (min(max_index**3, 1 << 64) - 1).bit_length())
+    _unique, inverse, _counts, first = _unique_sorted_runs(
+        keys, order, n_faces, False, return_inverse, False, True, end_bit
     )
+    assert first is not None
     unique_faces_out = gather(faces.reshape((-1, 3)), first).reshape((-1,))
     if return_inverse:
+        assert inverse is not None
         return unique_faces_out, inverse
     return unique_faces_out
 
 
 def _unique_keys_core(
-    row_keys: wp.array[wp.uint64], *, return_counts: bool, max_value: int | None = None
+    row_keys: wp.array[wp.uint64], *, return_counts: bool
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Shared core of [`unique_rows`][ordito.grouping.unique_rows]: dedup row keys, find first index.
 
-    Returns ``(inverse, first_idx, counts)``. Both callers deduplicate identically; they differ in
-    how they pack the keys and in what they gather with ``first_idx`` --
-    [`unique_rows`][ordito.grouping.unique_rows] gathers ``data`` itself, while
-    [`unique_faces`][ordito.grouping.unique_faces] gathers the un-sorted face buffer to preserve
-    each representative's original vertex order. Requires ``row_keys.shape[0] > 0``. ``max_value``
-    is ``unique_1d``'s key bound, for a caller that packed against a known radix.
+    Returns ``(inverse, first_idx, counts)``: ``unique_1d``'s sorted path, which reads each class's
+    first occurrence off its stable sort in the launch that writes the inverse -- no
+    ``first_occurrence_indices`` scatter after it -- and writes no unique key buffer, since
+    [`unique_rows`][ordito.grouping.unique_rows] gathers ``data`` itself by ``first_idx``.
+    Requires ``row_keys.shape[0] > 0``.
     """
-    # ``unique_1d``'s sorted path, which reads each class's first occurrence off its stable sort
-    # in the launch that writes the inverse -- no ``first_occurrence_indices`` scatter after it.
-    end_bit = None if max_value is None else max(1, int(max_value).bit_length())
-    _unique, inverse, counts, first_idx = _unique_sorted(
-        row_keys, row_keys.size, True, return_counts, end_bit, return_first=True
+    n = row_keys.size
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=row_keys.device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=row_keys.device)
+    _launch.launch(
+        kernel_grouping.KEYS_AND_IDENTITY[wp.uint64],
+        dim=n,
+        inputs=[row_keys, keys, order],
+        device=row_keys.device,
+    )
+    _unique, inverse, counts, first_idx = _unique_sorted_runs(
+        keys, order, n, False, True, return_counts, True, None
     )
     assert inverse is not None
     assert first_idx is not None
     return inverse, first_idx, counts
+
+
+def _unique_sorted_runs(
+    keys: wp.array[Any],
+    order: wp.array[wp.int32],
+    n: int,
+    return_values: bool,
+    return_inverse: bool,
+    return_counts: bool,
+    return_first: bool,
+    end_bit: int | None,
+) -> tuple[
+    wp.array[Any] | None,
+    wp.array[wp.int32] | None,
+    wp.array[wp.int32] | None,
+    wp.array[wp.int32] | None,
+]:
+    """
+    Sort the double-width ``keys`` / ``order`` buffers and emit their runs of equal keys.
+
+    The leading ``n`` entries of each hold the keys and the identity permutation. Returns
+    ``(unique, inverse, counts, first)``, each ``None`` unless asked for; ``first`` is
+    [`first_occurrence_indices`][ordito.grouping.first_occurrence_indices] of the inverse, read off
+    the stable sort. The run marks and their scan live in the payload's upper half, which is free
+    scratch once the sort has run. A producer that can write its keys straight into the sort's
+    buffers (``unique_faces``) skips ``_unique_sorted``'s copy. ``n > 0``.
+    """
+    device = keys.device
+    dtype = keys.dtype
+    _launch.radix_sort_pairs(keys, order, count=n, end_bit=end_bit)
+    ranks = odt.as_dense(order[n:])
+    _launch.launch(
+        kernel_grouping.MARK_SORTED_RUN_STARTS[dtype], dim=n, inputs=[keys, ranks], device=device
+    )
+    _launch.array_scan(ranks, ranks, inclusive=True)
+    # The distinct count sizes the outputs.
+    n_unique = int(read_scalar(order, 2 * n - 1))
+    unique_values = _launch.empty(n_unique, dtype=dtype, device=device) if return_values else None
+    inverse = _launch.empty(n, dtype=wp.int32, device=device) if return_inverse else None
+    starts = _launch.empty(n_unique + 1, dtype=wp.int32, device=device) if return_counts else None
+    first = _launch.empty(n_unique, dtype=wp.int32, device=device) if return_first else None
+    _launch.launch(
+        kernel_grouping.EMIT_SORTED_UNIQUE[dtype],
+        dim=n,
+        inputs=[keys, order, ranks, unique_values, inverse, starts, first],
+        device=device,
+    )
+    counts = None
+    if starts is not None:
+        counts = _launch.empty(n_unique, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_grouping.run_lengths, dim=n_unique, inputs=[starts, counts], device=device
+        )
+    return unique_values, inverse, counts, first
 
 
 def first_occurrence_indices(

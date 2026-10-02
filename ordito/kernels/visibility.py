@@ -1,6 +1,7 @@
 import warp as wp
 
 from ordito.constants import TOLERANCE_PLANAR_CONSTANT
+from ordito.kernels.array import RegisterBlockedTable
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
@@ -240,11 +241,10 @@ def pack_support_candidate(projection: wp.float32, index: wp.int32) -> wp.uint64
     return (wp.uint64(key) << wp.uint64(32)) | wp.uint64(~wp.uint32(index))
 
 
-# Deferred queries one ``support_argmax_sliced`` thread may reduce together -- the widest that
-# still leaves ``SUPPORT_ARGMAX_MIN_THREADS`` threads (``support_argmax_width``), as in
-# ``kernels/points.hull_support_extremes``.
+# Deferred queries one ``support_argmax_sliced`` thread may reduce together; a launch takes the
+# widest ``RegisterBlockedTable.launch_shape`` allows, as ``kernels/points.hull_support_extremes``
+# does.
 SUPPORT_ARGMAX_WIDTHS = (4, 2, 1)
-SUPPORT_ARGMAX_MIN_THREADS = 1 << 17
 
 
 def _support_argmax_sliced_kernel(width: int) -> wp.Kernel:
@@ -310,15 +310,9 @@ def _support_argmax_sliced_kernel(width: int) -> wp.Kernel:
     return wp.kernel(support_argmax_sliced, name=f"support_argmax_sliced_{width}")
 
 
-SUPPORT_ARGMAX_SLICED = {w: _support_argmax_sliced_kernel(w) for w in SUPPORT_ARGMAX_WIDTHS}
-
-
-def support_argmax_width(n_queries: int, n_slices: int) -> int:
-    """Return the widest ``SUPPORT_ARGMAX_WIDTHS`` entry keeping ``SUPPORT_ARGMAX_MIN_THREADS``."""
-    for width in SUPPORT_ARGMAX_WIDTHS:
-        if -(-n_queries // width) * n_slices >= SUPPORT_ARGMAX_MIN_THREADS:
-            return width
-    return 1
+SUPPORT_ARGMAX_SLICED = RegisterBlockedTable(
+    "support_argmax_sliced", _support_argmax_sliced_kernel, SUPPORT_ARGMAX_WIDTHS
+)
 
 
 @wp.kernel

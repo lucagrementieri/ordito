@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
-from ordito.kernels.array import lift_vec2
+from ordito.kernels.array import RegisterBlockedTable, lift_vec2
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
     attempt_radius,
@@ -675,11 +675,9 @@ def winding_number(
     out_winding[q] = w
 
 
-# Queries one ``winding_number_tiled`` thread may sum together -- the widest that still leaves
-# ``WINDING_MIN_THREADS`` threads (``winding_width``), as in
-# ``kernels/points.hull_support_extremes``.
+# Queries one ``winding_number_tiled`` thread may sum together; a launch takes the widest
+# ``RegisterBlockedTable.launch_shape`` allows, as ``kernels/points.hull_support_extremes`` does.
 WINDING_WIDTHS = (4, 2, 1)
-WINDING_MIN_THREADS = 1 << 17
 
 
 def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
@@ -737,15 +735,9 @@ def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
     return wp.kernel(winding_number_tiled, name=f"winding_number_tiled_{width}")
 
 
-WINDING_NUMBER_TILED = {w: _winding_number_tiled_kernel(w) for w in WINDING_WIDTHS}
-
-
-def winding_width(n_queries: int, n_slices: int) -> int:
-    """Return the widest ``WINDING_WIDTHS`` entry keeping ``WINDING_MIN_THREADS``."""
-    for width in WINDING_WIDTHS:
-        if -(-n_queries // width) * n_slices >= WINDING_MIN_THREADS:
-            return width
-    return 1
+WINDING_NUMBER_TILED = RegisterBlockedTable(
+    "winding_number_tiled", _winding_number_tiled_kernel, WINDING_WIDTHS
+)
 
 
 @wp.func

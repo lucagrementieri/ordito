@@ -10,6 +10,7 @@ from ordito.kernels.reduce import (
     block_chunk_1d,
     block_sum,
     commit_block_sum,
+    commit_block_total,
     commit_sum_and_count,
 )
 from ordito.kernels.transform import transform_point_mat44
@@ -626,9 +627,7 @@ def residual_moment(
             total += wp.where(centered != 0, d * d, d)
             kept += wp.float64(1.0)
     if centered != 0:
-        squares = block_sum(total)
-        if lane == 0:
-            wp.atomic_add(out_sums, 2, squares)
+        commit_block_total(lane, total, out_sums, 2)
     else:
         commit_sum_and_count(lane, total, kept, out_sums)
 

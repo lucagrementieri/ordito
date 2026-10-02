@@ -3530,9 +3530,9 @@ by the float-atomic commit order). Measured (2026-10-02):
 | `visibility.support_argmax_sliced` (deferred queries) | 4 | `max_tangent_sphere(inwards=False)` 1.30x at 0.87 M faces |
 
 - **Grouping divides the grid, so `W` is chosen per launch**: the widest of `(8|4, 2, 1)` whose
-  `ceil(n_items / W) * n_slices` still reaches `1 << 17` threads (`support_width`,
-  `box_extent_width`, `winding_width`, `support_argmax_width`). A fixed `W = 8` cost a 36 k-point
-  cloud 0.82x.
+  `ceil(n_items / W) * n_slices` still reaches `1 << 17` threads, one rule for all four
+  (`kernels/array.RegisterBlockedTable.launch_shape`, `REGISTER_BLOCK_MIN_THREADS`; each module
+  keeps its own `*_WIDTHS`). A fixed `W = 8` cost a 36 k-point cloud 0.82x.
 - **A matrix row held from a global load inside the loop** (`axes[k] * point`) was left to the
   compiler's loop-invariant motion and measured as fast as an explicit register copy; check the
   device time if a new site does the same.
@@ -5222,7 +5222,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       (`kernels/algorithms/multigrid.damped_inverse_diagonal`): no level reads its spectral radius
       back; every consumer's arithmetic is unchanged, byte-identical on CPU; on CUDA the device
       `pow` moves `omega` in its last bit. Flat on the clock (the removed sync was queued behind the
-      aggregation's count readback). `_JacobiChebyshev` reads the diagonal and ratio from one row
+      aggregation's count readback). The growth is no `wp.utils.array_inner` pass either (2026-10-02):
+      the last power step stores per-block `|y|^2` partials and every `damped_inverse_diagonal`
+      block folds them (fixed order; pre-folded past 4 096 partials), and the final spread hop
+      counts the aggregate sizes: two operations fewer a level, bit-identical diagonals and labels
+      at 40 k-2.6 M rows, the setup region 1.03x at 655 k and level at 40 k. Blocks own 256 rows,
+      not the `reduce` fold width of 1 024 (40 blocks at 40 k rows read ~2 % slower).
+      `_JacobiChebyshev` reads the diagonal and ratio from one row
       walk. **DECLINED: capturing the multigrid MIS loop** to drop its per-round readback (ceiling
       ~2 % of the preconditioner build vs a medium rewrite with a documented reverted precedent,
       §12.2, and a device-infinite-loop hazard where the round cap is a host `range`; the odd
