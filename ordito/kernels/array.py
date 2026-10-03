@@ -325,6 +325,26 @@ def to_vec3(v: wp.vec3d) -> wp.vec3:
 
 
 @wp.func
+def ordered_float_bits(x: wp.float32) -> wp.uint32:
+    """
+    ``x``'s bits as an unsigned key ordered like the float, for a radix sort.
+
+    Positive floats get the sign bit set, negative ones are inverted, so key order is float order.
+    ``-0.0`` maps onto ``+0.0`` and every ``NaN`` onto the one quiet ``NaN``, above ``+inf``: the
+    order ``numpy.sort`` gives, with equal values tying.
+    """
+    value = x
+    if value == wp.float32(0.0):
+        value = wp.float32(0.0)
+    if wp.isnan(value):
+        value = wp.float32(wp.nan)
+    bits = wp.cast(value, wp.uint32)
+    if (bits & wp.uint32(0x80000000)) != wp.uint32(0):
+        return ~bits
+    return bits | wp.uint32(0x80000000)
+
+
+@wp.func
 def to_vec2d(v: wp.vec2) -> wp.vec2d:
     return wp.vec2d(wp.float64(v[0]), wp.float64(v[1]))
 

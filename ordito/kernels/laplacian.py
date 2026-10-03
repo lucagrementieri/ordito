@@ -1,3 +1,5 @@
+from typing import Any
+
 import warp as wp
 
 from ordito.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
@@ -171,19 +173,22 @@ def operator_row(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     values: wp.array[wp.float32],
-    field: wp.array[wp.vec3d],
+    field: wp.array[Any],
     i: wp.int32,
 ) -> wp.vec3d:
+    # Row ``i`` of the operator applied to a ``wp.vec3d`` field -- or a ``wp.vec3`` one, widened
+    # exactly as each entry is read, so a caller holding ``float32`` positions gets the same sum as
+    # from their ``float64`` copy without materializing it.
     start = offsets[i]
     end = offsets[i + 1]
     if end == start:
         # Isolated vertex (empty row): the averaging operator acts as the identity so the
         # vertex does not drift toward the origin.
-        return field[i]
+        return wp.vec3d(field[i])
     acc = wp.vec3d(0.0, 0.0, 0.0)
     for k in range(start, end):
         w = wp.float64(values[k])
-        acc += w * field[columns[k]]
+        acc += w * wp.vec3d(field[columns[k]])
     return acc
 
 

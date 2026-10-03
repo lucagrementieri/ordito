@@ -19,10 +19,12 @@ from ordito.kernels.algorithms.conjugate_gradient import (
 from ordito.kernels.array import (
     is_positive_finite,
     lattice_position,
+    ordered_float_bits,
     pack_triangle_key,
     ravel_index,
     scanned_count,
     sorted_run_start,
+    to_vec2d,
     trilinear_cell,
     trilinear_corner,
     trilinear_weight,
@@ -80,14 +82,34 @@ def positive_finite_sum_and_count(
     commit_sum_and_count(t, total, count, out_sum_and_count)
 
 
+@wp.kernel
+def lexicographic_keys(
+    points: wp.array[wp.vec2], out_keys: wp.array[wp.uint64], out_order: wp.array[wp.int32]
+) -> None:
+    # The ``(x, y)`` lexicographic order as one sortable ``uint64`` key per point, written with the
+    # identity payload into a radix sort's double-width buffers: the stable sort is then
+    # ``numpy.lexsort((y, x))`` exactly, ties included. ``array.ordered_float_bits`` folds ``-0.0``
+    # onto ``+0.0`` and every ``NaN`` onto one key above ``+inf``, which is how ``lexsort`` compares
+    # them.
+    i = wp.int32(wp.tid())
+    p = points[i]
+    high = wp.uint64(ordered_float_bits(p[0]))
+    out_keys[i] = (high << wp.uint64(32)) | wp.uint64(ordered_float_bits(p[1]))
+    out_order[i] = i
+
+
+@wp.func
+def hull_slot(start: wp.int32, j: wp.int32, capacity: wp.int32) -> wp.int32:
+    # Physical slot of logical hull position ``j`` in ``lexicographic_triangulation``'s ring.
+    return (start + j) % capacity
+
+
 @wp.kernel(enable_backward=False)
 def lexicographic_triangulation(
-    points: wp.array[wp.vec2d],
+    points: wp.array[wp.vec2],
     order: wp.array[wp.int32],
     max_faces: wp.int32,
-    boundary: wp.array[wp.int32],
-    boundary_next: wp.array[wp.int32],
-    orientations: wp.array[wp.float64],
+    hull: wp.array[wp.int32],
     out_faces: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
 ) -> None:
@@ -95,7 +117,17 @@ def lexicographic_triangulation(
     # boundary, so there is nothing to parallelise. It is launched on the **CPU** device for the
     # same reason -- the identical sweep is two orders of magnitude cheaper on one CPU thread than
     # on one CUDA thread, and cheaper again than the Python loop it replaces. A single GPU thread is
-    # the wrong tool and the numbers say so.
+    # the wrong tool and the numbers say so. Positions are widened to ``float64`` as they are read.
+    #
+    # The boundary is a ring in ``hull`` (scratch, ``2 * (n + 1)`` slots): logical position ``j``
+    # lives at ``hull_slot(start, j, capacity)``. Each insertion evaluates every boundary edge's
+    # orientation once -- every visibility decision depends on all of them, which is what keeps a
+    # degenerate (non-contiguous) visible set handled exactly as an array sweep would -- and in
+    # the same pass emits the visible edges' triangles in logical order and finds the visible arc.
+    # The kept arc ``right .. left`` then becomes the new boundary by moving ``start`` to
+    # ``right``; only when it wraps past logical 0 is its head (``0 .. left``) copied after the
+    # tail. In a lex sweep the visible arc surrounds the last inserted vertex, at the logical end,
+    # so that copy is rare and an insertion costs one orientation pass.
     #
     # ``out_counts`` carries [faces written, faces wanted]. They differ only when a degenerate input
     # (duplicate or collinear points) drives the visible arc past the 2n bound a real triangulation
@@ -103,17 +135,19 @@ def lexicographic_triangulation(
     if wp.tid() != 0:
         return
     n = order.shape[0]
+    capacity = hull.shape[0]
     zero = wp.float64(0.0)
     n_faces = wp.int32(0)
     n_boundary = wp.int32(0)
+    start = wp.int32(0)
 
     for i in range(2, n):
         ci = order[i]
-        curr = points[ci]
+        curr = to_vec2d(points[ci])
 
         if n_boundary == 0:
             # Every point so far is collinear; the first off-line point fans the whole prefix.
-            side = orient2d(points[order[0]], points[order[1]], curr)
+            side = orient2d(to_vec2d(points[order[0]]), to_vec2d(points[order[1]]), curr)
             if side != zero:
                 for j in range(i - 1):
                     if n_faces < max_faces:
@@ -129,44 +163,43 @@ def lexicographic_triangulation(
                     # The prefix in lex order, plus ``curr``; reversed when ``curr`` is right of it,
                     # so the boundary comes out counter-clockwise either way.
                     if side > zero:
-                        boundary[j] = order[j]
+                        hull[j] = order[j]
                     else:
-                        boundary[j] = order[i - j]
+                        hull[j] = order[i - j]
                 n_boundary = i + 1
             continue
 
         nb = n_boundary
-        for j in range(nb):
-            following = j + 1
-            if following == nb:
-                following = 0
-            orientations[j] = orient2d(points[boundary[j]], points[boundary[following]], curr)
-
         # Every edge ``curr`` can see becomes a triangle, wound so the new face agrees with the
-        # boundary's orientation.
-        for j in range(nb):
-            if orientations[j] < zero:
-                following = j + 1
-                if following == nb:
-                    following = 0
-                if n_faces < max_faces:
-                    out_faces[3 * n_faces + 0] = boundary[following]
-                    out_faces[3 * n_faces + 1] = boundary[j]
-                    out_faces[3 * n_faces + 2] = ci
-                n_faces += 1
-
-        # The visible edges form one contiguous arc: ``left`` starts it, ``right`` ends it (the
-        # first kept vertex).
+        # boundary's orientation. The visible edges form one contiguous arc: ``left`` starts it,
+        # ``right`` ends it (the first kept vertex). Edge ``j`` runs from logical ``j`` to ``j + 1``
+        # (the last one closes the ring), and its predecessor's orientation decides both ends, so
+        # the closing edge is evaluated first as edge 0's predecessor.
+        first_vertex = hull[hull_slot(start, 0, capacity)]
+        last_vertex = hull[hull_slot(start, nb - 1, capacity)]
+        closing = orient2d(to_vec2d(points[last_vertex]), to_vec2d(points[first_vertex]), curr)
+        previous = closing
         left = wp.int32(-1)
         right = wp.int32(-1)
+        a = first_vertex
         for j in range(nb):
-            previous = j - 1
-            if previous < 0:
-                previous = nb - 1
-            if orientations[j] >= zero and orientations[previous] < zero:
+            b = first_vertex
+            orientation = closing
+            if j + 1 < nb:
+                b = hull[hull_slot(start, j + 1, capacity)]
+                orientation = orient2d(to_vec2d(points[a]), to_vec2d(points[b]), curr)
+            if orientation < zero:
+                if n_faces < max_faces:
+                    out_faces[3 * n_faces + 0] = b
+                    out_faces[3 * n_faces + 1] = a
+                    out_faces[3 * n_faces + 2] = ci
+                n_faces += 1
+            if orientation >= zero and previous < zero:
                 right = j
-            elif orientations[j] < zero and orientations[previous] >= zero:
+            elif orientation < zero and previous >= zero:
                 left = j
+            previous = orientation
+            a = b
         # No visible edge at all means a degenerate insertion (a duplicate point, since a lex sweep
         # always sees the hull from the new rightmost point otherwise). Both indices stay -1, which
         # in the Python original wrapped to the last boundary entry and broke the walk immediately;
@@ -187,21 +220,14 @@ def lexicographic_triangulation(
             left = nb - 1
 
         # Keep the non-visible arc right..left going forward, then insert ``curr`` after it.
-        n_kept = wp.int32(0)
-        k = right
-        for _ in range(nb):
-            boundary_next[n_kept] = boundary[k]
-            n_kept += 1
-            if k == left:
-                break
-            k += 1
-            if k == nb:
-                k = 0
-        boundary_next[n_kept] = ci
-        n_kept += 1
-        for j in range(n_kept):
-            boundary[j] = boundary_next[j]
-        n_boundary = n_kept
+        if left < right:
+            # The kept arc wraps past logical 0: move its head ``0 .. left`` after the tail.
+            for j in range(left + 1):
+                hull[hull_slot(start, nb + j, capacity)] = hull[hull_slot(start, j, capacity)]
+            left += nb
+        hull[hull_slot(start, left + 1, capacity)] = ci
+        n_boundary = left - right + 2
+        start = hull_slot(start, right, capacity)
 
     out_counts[0] = wp.min(n_faces, max_faces)
     out_counts[1] = n_faces

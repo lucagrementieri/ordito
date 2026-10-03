@@ -351,6 +351,21 @@ def hessian_energy_triplets(
 
 
 @wp.kernel
+def zero_at_boundary_edges(
+    unique_edges: wp.array2d[wp.int32],
+    halfedge_counts: wp.array[wp.int32],
+    out_values: wp.array[wp.float64],
+) -> None:
+    # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
+    # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather than
+    # a second sort of the halfedges (``energies._zero_at_boundary``'s route).
+    e = wp.int32(wp.tid())
+    if halfedge_counts[e] == 1:
+        out_values[unique_edges[e, 0]] = wp.float64(0.0)
+        out_values[unique_edges[e, 1]] = wp.float64(0.0)
+
+
+@wp.kernel
 def internal_angles_and_sums(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -370,11 +385,10 @@ def internal_angles_and_sums(
     #
     # The face's three halfedges are also recorded against their unique edges (``inverse``), up to
     # two per edge in arbitrary order, before any exit: the topology half of
-    # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. That caller
-    # validates edge-manifoldness first, so a third halfedge for one edge id is unreachable in
-    # practice; ``scatter.append_to_pair``'s two-slot bound stays as a defensive bound against
-    # writing out of ``out_edge_halfedges``' row width rather than as a behavior any caller may
-    # rely on.
+    # ``curved_hessian_energy``'s setup, riding the face pass it already pays for. The cursor counts
+    # every halfedge, so that caller validates edge-manifoldness from it afterwards (a count above
+    # two); ``scatter.append_to_pair``'s two-slot bound keeps a third halfedge from writing out of
+    # ``out_edge_halfedges``' row width before the check raises.
     f = wp.int32(wp.tid())
     for k in range(3):
         h = 3 * f + k

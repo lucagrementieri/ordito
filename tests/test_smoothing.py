@@ -510,6 +510,37 @@ def test_filter_spikes_return_count_shapes(torus_spikes: tuple[tm.Trimesh, wp.Me
     assert np.allclose(positions_only_wp.numpy(), positions_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
+def test_filter_spikes_spike_rows_match_the_whole_operator(
+    torus_spikes: tuple[tm.Trimesh, wp.Mesh], device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the two ways a pass reads the spikes' 1-rings agree exactly.
+
+    Below ``_FEW_SPIKES_RATIO`` a pass sorts only the spike rows' neighbour keys
+    (``_flatten_few_spikes``); above it, one whole-mesh operator serves every pass. Both must give
+    the same positions bit for bit, and the meshlib comparison above carries the oracle for the
+    flagging. The ratio is forced each way on the spiky torus, with an unreferenced vertex appended:
+    it is a spike under any threshold (no incident angle) with an empty 1-ring, which the spike-row
+    path never sees a key for and must leave where it is.
+    """
+    _, mesh_wp = torus_spikes
+    vertices_np = np.vstack([mesh_wp.points.numpy(), [[9.0, 9.0, 9.0]]]).astype(np.float32)
+    vertices_wp = wp.array(vertices_np, dtype=wp.vec3, device=device)
+    faces_wp = mesh_wp.indices
+    results = []
+    for ratio in (0, 1 << 30):
+        monkeypatch.setattr(od.smoothing, "_FEW_SPIKES_RATIO", ratio)
+        results.append(
+            od.smoothing.filter_spikes(vertices_wp, faces_wp, math.pi, return_count=True)
+        )
+    (rows_wp, rows_count), (operator_wp, operator_count) = results
+    assert rows_count > 1  # non-vacuity: real spikes besides the unreferenced vertex
+    assert rows_count == operator_count
+    assert np.array_equal(rows_wp.numpy(), operator_wp.numpy())
+    assert np.array_equal(rows_wp.numpy()[-1], vertices_np[-1])
+    assert not np.array_equal(rows_wp.numpy(), vertices_np)
+
+
 def test_filter_spikes_leaves_a_clean_mesh_alone(
     icosphere: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:

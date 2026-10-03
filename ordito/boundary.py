@@ -50,7 +50,8 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` vertex positions; only the device is read.
+        ``(n_vertices,)`` vertex positions; only the device and the length are read. Every face
+        index must be below ``n_vertices``.
     faces
         ``(3 * n_faces,)`` face index buffer.
 
@@ -66,7 +67,7 @@ def boundary_edges(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> od
         If ``vertices`` and ``faces`` are not on one device.
     """
     require_same_device(vertices=vertices, faces=faces)
-    return _boundary_edges_impl(faces, oriented=False)
+    return _boundary_edges_impl(faces, vertices.size, oriented=False)
 
 
 def oriented_boundary_edges(
@@ -81,7 +82,8 @@ def oriented_boundary_edges(
     Parameters
     ----------
     vertices
-        ``(n_vertices,)`` vertex positions; only the device is read.
+        ``(n_vertices,)`` vertex positions; only the device and the length are read. Every face
+        index must be below ``n_vertices``.
     faces
         ``(3 * n_faces,)`` face index buffer.
 
@@ -97,15 +99,21 @@ def oriented_boundary_edges(
         If ``vertices`` and ``faces`` are not on one device.
     """
     require_same_device(vertices=vertices, faces=faces)
-    return _boundary_edges_impl(faces, oriented=True)
+    return _boundary_edges_impl(faces, vertices.size, oriented=True)
 
 
-def _boundary_edges_impl(faces: wp.array[wp.int32], *, oriented: bool) -> odt.Array2dInt32:
-    """Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form."""
+def _boundary_edges_impl(
+    faces: wp.array[wp.int32], n_vertices: int, *, oriented: bool
+) -> odt.Array2dInt32:
+    """
+    Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form.
+
+    The vertex count is the key radix, so the sort orders only the bits a key can occupy.
+    """
     n_faces = faces.size // 3
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=faces.device)
-    return _BoundaryHalfedges(faces).edges(sort_pair=not oriented)
+    return _BoundaryHalfedges(faces, n_vertices or None).edges(sort_pair=not oriented)
 
 
 def boundary_loops(

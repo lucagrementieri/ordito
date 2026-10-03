@@ -34,7 +34,9 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_nonempty_mesh, require_same_device
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import graph as kernel_graph
+from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import intersection as kernel_intersections
+from ordito.kernels import points as kernel_points
 from ordito.kernels import predicates as kernel_predicates
 from ordito.kernels import triangles as kernel_triangles
 
@@ -1294,31 +1296,78 @@ def split_mesh_with_plane(
 
     vertex_dots = _plane_dots(vertices, plane_normal, plane_origin)
 
-    unique_edges, inverse = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)
-    n_edges = int(unique_edges.shape[0])
-    crossed = _launch.empty(n_edges, dtype=wp.bool, device=device)
-    crossed_flags = _launch.empty(n_edges, dtype=wp.int32, device=device)
+    # Each face's child count, scanned, is its first output row; ``row - f`` is then its first slot
+    # among the crossed halfedges, which are written densely and sorted alone. That numbers the
+    # crossed edges in the order ``edges.edges_unique`` lists them -- what ``remesh.split_edges``
+    # would number them by -- without grouping the whole mesh's edges.
+    tol = wp.float32(tolerance)
+    child_counts = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_intersections.plane_crossed_edge_mask,
-        dim=n_edges,
-        inputs=[unique_edges, vertex_dots, wp.float32(tolerance), crossed, crossed_flags],
+        kernel_intersections.plane_split_child_counts,
+        dim=n_faces,
+        inputs=[faces, vertex_dots, tol, child_counts],
         device=device,
     )
-    # ``split_edges`` scans the mask itself; this scan exists because the crossing points must be
-    # written at the slots that scan assigns, which is the ordering it documents for them.
-    offsets, n_crossed = od.array.counts_to_offsets(crossed_flags)
-
-    crossing_points = _launch.empty(n_crossed, dtype=wp.vec3, device=device)
-    if n_crossed > 0:
+    face_offsets, n_out = od.array.counts_to_offsets(child_counts)
+    n_halfedges = n_out - n_faces
+    if n_halfedges == 0:
+        new_vertices, new_faces = _launch.clone(vertices), _launch.clone(faces)
+    else:
+        key_base = wp.int64(n_vertices)
+        keys = _launch.empty(2 * n_halfedges, dtype=wp.int64, device=device)
+        halfedges = _launch.empty(2 * n_halfedges, dtype=wp.int32, device=device)
         _launch.launch(
-            kernel_intersections.plane_edge_crossing_points,
-            dim=n_edges,
-            inputs=[vertices, unique_edges, crossed_flags, offsets, vertex_dots, crossing_points],
+            kernel_intersections.plane_crossed_halfedge_keys,
+            dim=n_faces,
+            inputs=[faces, vertex_dots, tol, face_offsets, key_base, keys, halfedges],
             device=device,
         )
-    new_vertices, new_faces = od.remesh.split_edges(
-        vertices, faces, crossed, crossing_points, unique_edges=unique_edges, inverse=inverse
-    )
+        _launch.radix_sort_pairs(
+            keys, halfedges, n_halfedges, end_bit=max(1, (n_vertices * n_vertices).bit_length())
+        )
+        rank = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_intersections.split_crossed_edge_flags,
+            dim=n_halfedges,
+            inputs=[keys, key_base, rank],
+            device=device,
+        )
+        n_new = _scan_cut_flags(rank)
+        new_vertices = _launch.empty(n_vertices + n_new, dtype=wp.vec3, device=device)
+        cut_vertices = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+        # The same launch copies the input positions to the front of ``new_vertices``.
+        _launch.launch(
+            kernel_intersections.split_crossed_edge_vertices,
+            dim=max(n_halfedges, n_vertices),
+            inputs=[
+                vertices,
+                vertex_dots,
+                keys,
+                halfedges,
+                rank,
+                key_base,
+                wp.int32(n_vertices),
+                cut_vertices,
+                new_vertices,
+            ],
+            device=device,
+        )
+        new_faces = _launch.empty(3 * n_out, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_intersections.emit_plane_split_faces,
+            dim=n_faces,
+            inputs=[
+                faces,
+                vertex_dots,
+                tol,
+                cut_vertices,
+                face_offsets,
+                new_vertices,
+                new_faces.reshape((n_out, 3)),
+                None,
+            ],
+            device=device,
+        )
 
     n_out = new_faces.size // 3
     above = _launch.empty(n_out, dtype=wp.bool, device=device)
@@ -1365,12 +1414,13 @@ def clip_mesh_with_field(
         Level to clip at. A vertex whose value equals it counts as kept, matching
         [`marching_triangles`][ordito.intersection.marching_triangles].
     cap
-        When ``True``, weld the section rim and seal **every** boundary loop of the result with
-        [`fill_min_weight`][ordito.holes.fill_min_weight] — so a closed input gives a closed
-        output, and the returned vertices are the welded ones. On an input that already had a
-        boundary, that boundary is sealed too; clip first and cap yourself with
-        [`fill_loops_min_weight`][ordito.holes.fill_loops_min_weight] if only the section should
-        close.
+        When ``True``, seal the section: every closed loop of the level set is triangulated with
+        [`fill_loops_min_weight`][ordito.holes.fill_loops_min_weight]'s minimum-weight fill, so a
+        closed input gives a closed output. Only the section is sealed -- a boundary the input
+        already had stays open, and so does a section that runs into one -- and the input vertices
+        are returned exactly as given (coincident ones are not merged); only the crossing points
+        the cut appends are shared. Use [`fill_min_weight`][ordito.holes.fill_min_weight] on the
+        result to close every hole instead.
 
     Returns
     -------
@@ -1394,11 +1444,13 @@ def clip_mesh_with_field(
     The uncapped result is **cracked along the section**, like
     [`trimesh.intersections.slice_faces_plane`][]'s: each cut face writes its own copy of the
     crossing points, so a rim edge carries two coincident vertices. Those copies are bitwise equal
-    by construction, which is what makes ``cap=True``'s weld exact rather than a tolerance choice.
+    by construction (a crossing is interpolated from the endpoint that comes first by position), so
+    ``cap=True`` merges them by exact equality rather than by a tolerance, and merges nothing else.
 
     Equivalent to VTK's ``clip_scalar`` (uncapped) and ``clip_closed_surface`` (capped, over a
     plane's signed distance), which pyvista exposes on ``PolyData``; VTK's default keeps
-    ``scalar >= value`` as this does.
+    ``scalar >= value`` as this does, and its capped clip likewise closes only the cut and leaves
+    the input's points unmerged.
 
     Examples
     --------
@@ -1431,19 +1483,47 @@ def clip_mesh_with_field(
             0, dtype=wp.int32, device=device
         )
 
-    new_vertices, new_faces = _clip_with_vertex_field(
-        vertices, faces, _shifted_field(values, isovalue)
+    shifted = _shifted_field(values, isovalue)
+    if not cap:
+        return _clip_with_vertex_field(vertices, faces, shifted)
+    # The cut writes its crossing points per face, so a rim edge shared by two cut faces arrives as
+    # two bitwise-equal vertices; merging those (and only those -- the input vertices are kept as
+    # given) turns the section into real boundary loops.
+    new_vertices, new_faces, source = _clip_with_sources(
+        vertices, faces, shifted, merge_crossings=True
     )
-    if cap:
-        # The cut writes its crossing points per face, so a rim edge shared by two cut faces arrives
-        # as two coincident vertices and the section is a set of loose edges rather than a loop.
-        # They are *bitwise* equal by construction (the crossing is evaluated from the lower-
-        # numbered endpoint on both sides), so ``epsilon=0`` collapses exactly those and the filler
-        # then sees a real boundary loop.
-        new_vertices, _, _, new_faces = od.repair.remove_duplicated_vertices(
-            new_vertices, new_faces
-        )
-        new_faces = od.holes.fill_min_weight(new_vertices, new_faces)
+    assert source is not None
+    if new_faces.size == 0:
+        return new_vertices, new_faces
+    # The cap closes the section and nothing else, as VTK caps the cut's own polylines: the
+    # boundary edges with both ends on the level set (a crossing point, or an input vertex whose
+    # shifted value is exactly zero), chained into cycles. Any other boundary edge was the input's
+    # and stays open, and a section that runs into one is a chain, not a cycle, and stays open too.
+    on_section = _launch.empty(new_vertices.size, dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_intersections.section_vertex_mask,
+        dim=new_vertices.size,
+        inputs=[source, shifted, on_section],
+        device=device,
+    )
+    rim = od.boundary.oriented_boundary_edges(new_vertices, new_faces)
+    # Host bookkeeping over the rim alone: its edges and their endpoints' flags cross in two small
+    # copies, and the section edges go back in one.
+    rim_np = rim.numpy()
+    flags_np = on_section.numpy()
+    section_np = rim_np[flags_np[rim_np[:, 0]] & flags_np[rim_np[:, 1]]]
+    if section_np.shape[0] == 0:
+        return new_vertices, new_faces
+    section_edges = odt.as_array2d(
+        _launch.array(np.ascontiguousarray(section_np), dtype=wp.int32, device=device), wp.int32
+    )
+    cycles, offsets = od.graph.successor_cycles(section_edges, new_vertices.size, validate=False)
+    section_loops = od.array.split(cycles, offsets)
+    if not section_loops:
+        return new_vertices, new_faces
+    new_faces = od.holes.fill_loops_min_weight(
+        new_vertices, new_faces, section_loops, "plane_normalized", True
+    )
     return new_vertices, new_faces
 
 
@@ -1673,6 +1753,27 @@ def _clip_with_vertex_field(
     presence is the *only* difference between the two: a general field has no orientation to
     compare, so such a face is left in the ``ON_PLANE`` class, which no kept block claims.
     """
+    new_vertices, new_faces, _ = _clip_with_sources(vertices, faces, vertex_dots, plane_normal)
+    return new_vertices, new_faces
+
+
+def _clip_with_sources(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    plane_normal: wp.vec3 | None = None,
+    *,
+    merge_crossings: bool = False,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.int32] | None]:
+    """
+    ``_clip_with_vertex_field``, plus each output vertex's source when ``merge_crossings`` is set.
+
+    With ``merge_crossings`` the cut faces' crossing points that are bitwise equal -- the two copies
+    of every rim edge's crossing, evaluated from its lower-numbered endpoint on both sides -- become
+    one vertex, while the input vertices are left exactly as given; and the third return maps every
+    output vertex to its input vertex, or to an index ``>= vertices.size`` for a crossing point.
+    Without it the third return is ``None``.
+    """
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
@@ -1706,10 +1807,18 @@ def _clip_with_vertex_field(
 
     if n_quad + n_tri == 0:
         if n_in == 0:
-            return _launch.empty(0, dtype=wp.vec3, device=device), _launch.empty(
-                0, dtype=wp.int32, device=device
+            return (
+                _launch.empty(0, dtype=wp.vec3, device=device),
+                _launch.empty(0, dtype=wp.int32, device=device),
+                _launch.empty(0, dtype=wp.int32, device=device) if merge_crossings else None,
             )
-        return od.selection.submesh_from_face_indices(vertices, faces, inside_idx)
+        if not merge_crossings:
+            return (*od.selection.submesh_from_face_indices(vertices, faces, inside_idx), None)
+        kept_faces = od.array.gather(faces.reshape((-1, 3)), inside_idx).reshape(-1)
+        new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
+            vertices, kept_faces, return_inverse=True
+        )
+        return new_vertices, new_faces, source
 
     # Both cuts contribute two intersection points and keep the original vertices addressable, so
     # the un-compacted output is exactly this long -- allocated once, written in place.
@@ -1755,8 +1864,34 @@ def _clip_with_vertex_field(
         vertex_base += 2 * n_cut
         face_base += 3 * n_emitted
 
-    new_vertices, new_faces, _ = od.repair.remove_unreferenced_vertices(all_vertices, all_faces)
-    return new_vertices, new_faces
+    if not merge_crossings:
+        new_vertices, new_faces, _ = od.repair.remove_unreferenced_vertices(all_vertices, all_faces)
+        return new_vertices, new_faces, None
+    # Each crossing's class is found among the crossings alone (an exact-equality table, the
+    # ``points.point_duplicate_mask`` one) and every face index into the crossings is pointed at
+    # its class's first member; the copies are then unreferenced and the compaction drops them.
+    n_crossings = vertex_base - n_vertices
+    crossings = odt.as_dense(all_vertices[n_vertices:vertex_base])
+    slot_mask = kernel_grouping.hash_table_mask(n_crossings)
+    first = _launch.full(slot_mask + 1, -1, dtype=wp.int32, device=device)
+    slot = _launch.empty(n_crossings, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_points.point_duplicate_first,
+        dim=n_crossings,
+        inputs=[crossings, slot_mask],
+        outputs=[first, slot],
+        device=device,
+    )
+    _launch.launch(
+        kernel_intersections.remap_to_first_crossing,
+        dim=all_faces.size,
+        inputs=[first, slot, wp.int32(n_vertices), all_faces],
+        device=device,
+    )
+    new_vertices, new_faces, _, source = od.repair.remove_unreferenced_vertices(
+        all_vertices, all_faces, return_inverse=True
+    )
+    return new_vertices, new_faces, source
 
 
 def _slice_class_partition(

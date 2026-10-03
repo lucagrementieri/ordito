@@ -1,11 +1,12 @@
 import warp as wp
 
-from ordito.kernels.array import inverse_or_one, sort_segment, to_vec3, to_vec3d
+from ordito.kernels.array import greater, inverse_or_one, sort_segment, to_vec3, to_vec3d
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
 from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
-from ordito.kernels.predicates import closest_point_on_segment, plane_basis
+from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple
+from ordito.kernels.vertices import normalized_accumulated_row
 
 # Fixed-size float64 types for the 6-coefficient quadric fit in ``relax_approx``. The rest of the
 # kernel runs in float32; the least-squares solve is float64 for conditioning, and it runs through
@@ -800,7 +801,7 @@ def scatter_free_positions(
 @wp.func
 def rescale_about_center(position: wp.vec3d, center: wp.vec3d, scale: wp.float64) -> wp.vec3d:
     # (position - center) * scale + center: a uniform rescale about an arbitrary fixed point
-    # rather than the origin. ``smoothing._apply_volume_constraint`` needs this, not a bare
+    # rather than the origin. ``smoothing._VolumeConstraint`` needs this, not a bare
     # multiply, because the mesh being smoothed is rarely centred at the origin and
     # ``trimesh.smoothing.filter_laplacian`` rescales about the mesh's own (fixed, initial) centre
     # of mass -- multiplying by ``scale`` alone silently translates the whole mesh on every pass
@@ -809,37 +810,73 @@ def rescale_about_center(position: wp.vec3d, center: wp.vec3d, scale: wp.float64
 
 
 @wp.kernel
-def rescale_to_volume(
-    volume_initial: wp.float64,
-    volume_current: wp.array[wp.float64],
-    center: wp.vec3d,
-    out_positions: wp.array[wp.vec3d],
+def volume_rescale_parameters(
+    volume_current: wp.array[wp.float64], state: wp.array[wp.float64]
 ) -> None:
     """
-    Rescale every vertex about ``center`` so the signed volume returns to ``volume_initial``.
+    Form the volume constraint's scale and centre once on the device, for a whole pass.
 
-    The ratio is formed here rather than on the host because the only reason to read
-    ``volume_current`` back was to compute it: one host readback per smoothing pass, each of which
-    drains the device pipeline, for a cube root of two numbers. The skip conditions are the host
-    version's exactly -- a zero current volume, or a ratio that is not positive, which is an
-    inconsistently wound or non-watertight input whose "volume" no scale factor can restore. Both
-    leave the position untouched rather than approximated.
+    In place: ``state`` is ``[volume, centroid integrals x 4, scale, centre x 3]``. The first five
+    are written before the smoothing starts -- the signed volume of the input in ``float64``
+    (``measures.volume``'s kernel) and the first four of ``measures.moments``' integrals of its
+    ``float32`` copy -- and this kernel writes the last four from them and the current volume. The
+    centre is formed the way ``measures.moments`` forms it on the host -- first moment over volume
+    in ``float64``, rounded to ``float32``, ``NaN`` for a zero volume -- and stays the *initial*
+    one on every pass, as ``trimesh.smoothing.filter_laplacian`` rescales about that fixed point.
 
-    **The skip has to be a `return`, not a scale of 1.** On a mesh with no faces the caller's
-    ``center`` is itself ``NaN`` -- a centre of mass over nothing -- and rescaling about it by 1
-    is ``(p - NaN) + NaN``, which propagates rather than cancelling. The host version this replaced
-    never reached the rescale at all in that case, so writing the identity was a real regression
-    and not a cosmetic one.
+    The scale is the cube root of the volume ratio, written ``0`` (no positive scale is) where the
+    pass is skipped: a zero current volume, or a ratio that is not positive, which is an
+    inconsistently wound or non-watertight input whose "volume" no scale factor can restore. **The
+    skip has to leave positions untouched, not scale them by 1**: on a mesh with no faces the
+    centre is ``NaN``, and rescaling about it by 1 is ``(p - NaN) + NaN``, which propagates rather
+    than cancelling. One cube root a pass, not one a vertex: ``float64`` transcendentals run at a
+    small fraction of ``float32``'s rate on this class of device.
     """
-    v = wp.int32(wp.tid())
     current = volume_current[0]
-    if current == wp.float64(0.0):
-        return
-    ratio = volume_initial / current
-    if ratio <= wp.float64(0.0):
-        return
-    scale = wp.pow(ratio, wp.float64(1.0) / wp.float64(3.0))
-    out_positions[v] = rescale_about_center(out_positions[v], center, scale)
+    scale = wp.float64(0.0)
+    if current != wp.float64(0.0):
+        ratio = state[0] / current
+        if ratio > wp.float64(0.0):
+            scale = wp.pow(ratio, wp.float64(1.0) / wp.float64(3.0))
+    state[5] = scale
+    total = state[1]
+    center = wp.vec3d(wp.float64(wp.nan), wp.float64(wp.nan), wp.float64(wp.nan))
+    if total != wp.float64(0.0):
+        center = to_vec3d(
+            wp.vec3(
+                wp.float32(state[2] / total),
+                wp.float32(state[3] / total),
+                wp.float32(state[4] / total),
+            )
+        )
+    for k in range(3):
+        state[6 + k] = center[k]
+
+
+@wp.func
+def rescaled_to_volume(state: wp.array[wp.float64], position: wp.vec3d) -> wp.vec3d:
+    # ``position`` rescaled by the scale and about the centre ``volume_rescale_parameters`` wrote;
+    # a zero scale is the skip.
+    scale = state[5]
+    if scale == wp.float64(0.0):
+        return position
+    return rescale_about_center(position, wp.vec3d(state[6], state[7], state[8]), scale)
+
+
+@wp.kernel
+def rescale_to_volume(state: wp.array[wp.float64], out_positions: wp.array[wp.vec3d]) -> None:
+    # In place: the volume constraint applied to a ``float64`` iterate the smoothing continues from.
+    v = wp.int32(wp.tid())
+    out_positions[v] = rescaled_to_volume(state, out_positions[v])
+
+
+@wp.kernel
+def rescale_to_volume_narrowed(
+    state: wp.array[wp.float64], positions: wp.array[wp.vec3d], out_positions: wp.array[wp.vec3]
+) -> None:
+    # ``rescale_to_volume`` on a pass's last iterate, narrowed to ``float32`` as it is written.
+    v = wp.int32(wp.tid())
+    out_positions[v] = to_vec3(rescaled_to_volume(state, positions[v]))
 
 
 @wp.func
@@ -891,6 +928,139 @@ def neighborhood_average_pass(
     lv = operator_row(offsets, columns, values, positions, i)
     deg = wp.float64(offsets[i + 1] - offsets[i])
     out_next[i] = (positions[i] + deg * lv) / (deg + wp.float64(1.0))
+
+
+@wp.kernel
+def mark_spikes(
+    angle_sums: wp.array[wp.float32],
+    min_defect: wp.float32,
+    out_spikes: wp.array[wp.bool],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # A spike is a vertex whose angle *defect* ``2 pi - angle_sum`` exceeds ``min_defect``
+    # (``vertices.vertex_defects``' quantity, ``array.greater``'s test), counted into ``out_count``.
+    # In place: the sum is re-zeroed once read, so the next pass's scatter needs no fill.
+    v = wp.int32(wp.tid())
+    spike = greater(angle_defect(angle_sums[v]), min_defect)
+    angle_sums[v] = wp.float32(0.0)
+    out_spikes[v] = spike
+    if spike:
+        wp.atomic_add(out_count, 0, 1)
+
+
+@wp.kernel
+def flatten_spikes_pass(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float32],
+    spikes: wp.array[wp.bool],
+    positions: wp.array[wp.vec3],
+    out_next: wp.array[wp.vec3],
+) -> None:
+    # ``neighborhood_average_pass`` on the spikes alone, from ``float32`` positions widened as they
+    # are read and narrowed as the average is written -- the same arithmetic as one
+    # ``filter_neighborhood_average`` pass followed by a masked select, without the two
+    # whole-mesh conversions. Every other vertex is copied.
+    i = wp.int32(wp.tid())
+    if not spikes[i]:
+        out_next[i] = positions[i]
+        return
+    lv = operator_row(offsets, columns, values, positions, i)
+    deg = wp.float64(offsets[i + 1] - offsets[i])
+    out_next[i] = to_vec3((to_vec3d(positions[i]) + deg * lv) / (deg + wp.float64(1.0)))
+
+
+@wp.kernel
+def spike_neighbor_keys(
+    faces: wp.array[wp.int32],
+    spikes: wp.array[wp.bool],
+    base: wp.uint64,
+    out_count: wp.array[wp.int32],
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # The spike rows of ``laplacian.laplacian(symmetric=True)``'s pattern, as
+    # ``row * base + column`` keys: each corner on a spike contributes its face's other two
+    # corners, a degenerate face's repeated vertex its self-edge. Appended through ``out_count``'s
+    # cursor into a radix sort's double-width buffers (identity payload) while they have room; past
+    # it only the count grows, and the caller re-runs at the size it read.
+    f = wp.int32(wp.tid())
+    capacity = out_order.shape[0] // 2
+    for k in range(3):
+        v = faces[3 * f + k]
+        if spikes[v]:
+            slot = wp.atomic_add(out_count, 0, 2)
+            if slot + 2 <= capacity:
+                row = wp.uint64(v) * base
+                out_keys[slot] = row + wp.uint64(faces[3 * f + (k + 1) % 3])
+                out_keys[slot + 1] = row + wp.uint64(faces[3 * f + (k + 2) % 3])
+                out_order[slot] = slot
+                out_order[slot + 1] = slot + 1
+
+
+@wp.func
+def spike_row_entry(key: wp.uint64, row: wp.uint64, base: wp.uint64) -> tuple[wp.int32, wp.float32]:
+    # A spike row's column and its weight before normalization: ``laplacian_rows``' symmetric rule,
+    # ``1`` per unique edge and ``2`` for a degenerate face's self-edge.
+    column = key - row * base
+    weight = wp.where(column == row, wp.float32(2.0), wp.float32(1.0))
+    return wp.int32(column), weight
+
+
+@wp.kernel
+def average_spike_rows(
+    sorted_keys: wp.array[wp.uint64],
+    base: wp.uint64,
+    positions: wp.array[wp.vec3],
+    out_rows: wp.array[wp.int32],
+    out_positions: wp.array[wp.vec3],
+) -> None:
+    # ``flatten_spikes_pass`` on the rows ``spike_neighbor_keys`` collected, from their sorted keys
+    # instead of an assembled operator: the first position of each row walks its run twice, once
+    # for the unique columns' count and weight total (in column order, as ``laplacian_rows``
+    # normalizes) and once for the normalized average (``operator_row``'s arithmetic), so the result
+    # is the full operator's bit for bit. It is written beside its row at that position, for
+    # ``apply_spike_rows`` to scatter once every row has read the old positions.
+    i = wp.int32(wp.tid())
+    n = sorted_keys.shape[0]
+    key = sorted_keys[i]
+    row = key // base
+    out_rows[i] = -1
+    if i > 0 and sorted_keys[i - 1] // base == row:
+        return
+    total = wp.float32(0.0)
+    degree = wp.int32(0)
+    end = i
+    previous = key + wp.uint64(1)
+    while end < n and sorted_keys[end] // base == row:
+        if sorted_keys[end] != previous:
+            _column, weight = spike_row_entry(sorted_keys[end], row, base)
+            total += weight
+            degree += 1
+            previous = sorted_keys[end]
+        end += 1
+    acc = wp.vec3d(0.0, 0.0, 0.0)
+    previous = key + wp.uint64(1)
+    for j in range(i, end):
+        if sorted_keys[j] != previous:
+            column, weight = spike_row_entry(sorted_keys[j], row, base)
+            acc += wp.float64(weight / total) * to_vec3d(positions[column])
+            previous = sorted_keys[j]
+    v = wp.int32(row)
+    deg = wp.float64(degree)
+    out_rows[i] = v
+    out_positions[i] = to_vec3((to_vec3d(positions[v]) + deg * acc) / (deg + wp.float64(1.0)))
+
+
+@wp.kernel
+def apply_spike_rows(
+    rows: wp.array[wp.int32], averaged: wp.array[wp.vec3], out_positions: wp.array[wp.vec3]
+) -> None:
+    # In place: ``average_spike_rows``' results written back over the positions they read.
+    i = wp.int32(wp.tid())
+    v = rows[i]
+    if v >= 0:
+        out_positions[v] = averaged[i]
 
 
 @wp.kernel
@@ -1277,12 +1447,22 @@ def step_along_normal(position: wp.vec3, normal: wp.vec3, distance: wp.float32) 
     return position + normal * distance
 
 
-@wp.func
-def select_position(smoothed: wp.vec3, original: wp.vec3, replace: wp.bool) -> wp.vec3:
-    """Take the smoothed position only where the mask says to, leaving the rest untouched."""
-    if replace:
-        return smoothed
-    return original
+@wp.kernel
+def inflate_displace(
+    positions: wp.array[wp.vec3],
+    normal_sums: wp.array2d[wp.float64],
+    distance: wp.float32,
+    out_displaced: wp.array[wp.vec3],
+    out_displaced_wide: wp.array[wp.vec3d],
+) -> None:
+    # One inflation step: each vertex moved along its area-weighted normal, normalized as it is read
+    # from the scatter's accumulator (``vertices.normalize_accumulated_rows``' arithmetic, so the
+    # normals are never written), stored at both precisions -- the ``float32`` copy feeds the
+    # centre-of-mass integrals, the exact ``float64`` widening the diffusion and its volume.
+    v = wp.int32(wp.tid())
+    moved = step_along_normal(positions[v], normalized_accumulated_row(normal_sums, v), distance)
+    out_displaced[v] = moved
+    out_displaced_wide[v] = to_vec3d(moved)
 
 
 # ---------------------------------------------------------------------------
@@ -1384,6 +1564,13 @@ def equal_area_position(
     return to_vec3(target)
 
 
+@wp.func
+def in_region(region: wp.array[wp.bool], vertex: wp.int32) -> wp.bool:
+    # The relaxation family's region test. An empty ``region`` (the wrappers pass ``None`` when the
+    # caller gave no mask) means every vertex, so the default path allocates no all-``True`` mask.
+    return region.shape[0] == 0 or region[vertex]
+
+
 @wp.kernel
 def equalize_area_step(
     positions: wp.array[wp.vec3],
@@ -1402,7 +1589,7 @@ def equalize_area_step(
     # its own equal-area minimum, then clamp it back near where it started.
     vertex = wp.int32(wp.tid())
     current = positions[vertex]
-    if not region[vertex] or offsets[vertex] == offsets[vertex + 1]:
+    if not in_region(region, vertex) or offsets[vertex] == offsets[vertex + 1]:
         out_positions[vertex] = current
         return
     target = equal_area_position(
@@ -1426,7 +1613,7 @@ def ring_push_forces(
     vertex = wp.int32(wp.tid())
     begin = offsets[vertex]
     end = offsets[vertex + 1]
-    if not region[vertex] or begin == end:
+    if not in_region(region, vertex) or begin == end:
         out_push[vertex] = wp.vec3(0.0, 0.0, 0.0)
         return
     total = wp.vec3d()
@@ -1457,13 +1644,13 @@ def apply_push_keeping_volume(
     current = positions[vertex]
     begin = offsets[vertex]
     end = offsets[vertex + 1]
-    if not region[vertex] or begin == end:
+    if not in_region(region, vertex) or begin == end:
         out_positions[vertex] = current
         return
     total = wp.vec3()
     for slot in range(begin, end):
         neighbor = columns[slot]
-        if region[neighbor]:
+        if in_region(region, neighbor):
             total += push[neighbor]
     moved = current + push[vertex] - total / wp.float32(end - begin)
     out_positions[vertex] = limit_near_initial(moved, initial[vertex], max_displacement)
@@ -1521,7 +1708,7 @@ def relax_approx_step(
     current = positions[vertex]
     begin = neighbor_offsets[vertex]
     end = neighbor_offsets[vertex + 1]  # terminated (n + 1) CSR row bounds from ``geodesic_ball``
-    if not region[vertex] or end - begin < 6:
+    if not in_region(region, vertex) or end - begin < 6:
         out_positions[vertex] = current
         return
 

@@ -46,7 +46,6 @@ from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
 if TYPE_CHECKING:
     # Type-checking only: the adaptive-backend helpers import ``warp.fem`` lazily (inside the
     # functions) so ``import ordito`` never pays its tens-of-seconds first-call codegen unused.
-    import numpy.typing as npt
     import warp.fem as fem
 
 
@@ -144,41 +143,40 @@ def _lexicographic_triangulation(points: wp.array[wp.vec2]) -> np.ndarray:
     or an empty ``(0, 3)`` array when the points are collinear. The output is not yet Delaunay —
     the caller flips it to Delaunay on device.
 
-    The sweep itself runs in
+    The lex sort is a radix sort on the points' device; the sweep itself runs in
     [`lexicographic_triangulation`][ordito.kernels.reconstruction.lexicographic_triangulation]
-    on the CPU device, single-threaded; see that kernel for why. Only the lex sort stays in
-    NumPy, where it is one vectorised call.
+    on the CPU device, single-threaded; see that kernel for why.
     """
-    # See ``boundary._unoriented_boundary_cycles``: ``wp.array.numpy()`` has no return annotation
-    # and pyright infers an empty shape tuple for it. The cast names the ``(n, 2)`` float64 buffer
-    # the ``.astype`` produces.
-    points_np = cast("npt.NDArray[np.float64]", points.numpy().astype(np.float64))
-    n = points_np.shape[0]
-    order_np = np.lexsort((points_np[:, 1], points_np[:, 0])).astype(np.int32)
+    device = cast("wp.Device", points.device)
+    n = points.size
+    # The lex order is a stable radix sort of one packed sortable key per point, on the points'
+    # own device, which is ``numpy.lexsort((y, x))`` exactly.
+    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_reconstruction.lexicographic_keys, dim=n, inputs=[points, keys, order], device=device
+    )
+    _launch.radix_sort_pairs(keys, order, count=n)
+    # The sweep's inputs, on the CPU device it runs on (a no-op view when that is already theirs).
+    points_cpu = (
+        points if not device.is_cuda else _launch.array(points.numpy(), dtype=wp.vec2, device="cpu")
+    )
+    order_cpu = (
+        odt.as_dense(order[:n])
+        if not device.is_cuda
+        else _launch.array(order[:n].numpy(), dtype=wp.int32, device="cpu")
+    )
 
     # A triangulation of n points has 2n - 2 - h <= 2n - 5 triangles; 2n is the guard capacity.
     max_faces = 2 * n
-    points_cpu = _launch.array(np.ascontiguousarray(points_np), dtype=wp.vec2d, device="cpu")
-    order_cpu = _launch.array(order_np, dtype=wp.int32, device="cpu")
-    boundary = _launch.empty(n + 1, dtype=wp.int32, device="cpu")
-    boundary_next = _launch.empty(n + 1, dtype=wp.int32, device="cpu")
-    orientations = _launch.empty(n, dtype=wp.float64, device="cpu")
+    hull = _launch.empty(2 * (n + 1), dtype=wp.int32, device="cpu")
     faces_cpu = _launch.empty(3 * max_faces, dtype=wp.int32, device="cpu")
     counts = _launch.zeros(2, dtype=wp.int32, device="cpu")
 
     _launch.launch(
         kernel_reconstruction.lexicographic_triangulation,
         dim=1,
-        inputs=[
-            points_cpu,
-            order_cpu,
-            wp.int32(max_faces),
-            boundary,
-            boundary_next,
-            orientations,
-            faces_cpu,
-            counts,
-        ],
+        inputs=[points_cpu, order_cpu, wp.int32(max_faces), hull, faces_cpu, counts],
         device="cpu",
     )
 

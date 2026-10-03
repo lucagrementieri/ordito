@@ -393,10 +393,10 @@ def test_clip_mesh_with_field(bench_case: BenchCase, cap: bool) -> None:
 
     Timed against the plane's own signed distance so the work is identical to that group's and the
     two are directly comparable — the field costs one extra buffer read per vertex and saves the
-    per-edge dot products. ``cap=True`` adds the rim weld (a position hash over the result) plus the
-    ``O(B^3)`` min-weight fill of the section, which is why it is a separate case rather than a flag
-    folded into one row: on a scan mesh the section loop is long and the fill, not the clip, is what
-    is being measured.
+    per-edge dot products. ``cap=True`` adds the crossing merge (an exact-position hash over the
+    crossings) plus the ``O(B^3)`` min-weight fill of the section, which is why it is a separate
+    case rather than a flag folded into one row: on a scan mesh the section loop is long and the
+    fill, not the clip, is what is being measured.
 
     pyvista's counterpart is ``clip_scalar`` (``invert=False`` — its default keeps the *low* side).
     **The capped case has no reference row**: ``clip_closed_surface`` validates its input first and

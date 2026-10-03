@@ -2841,21 +2841,19 @@ def intrinsic_delaunay(
         return intrinsic_faces, lengths, 0
 
     n_half = n_faces * 3
-    # The one point in this loop where a vertex-pair-keyed adjacency table is trustworthy: the
-    # caller's input is still a simplicial complex, so ``_FlipTopology``'s ordinary rebuild can
-    # derive it, once. Every later round instead maintains ``twin`` in place, because a flip can
-    # make the vertex-pair key ambiguous (see ``kernel_remesh.build_intrinsic_twins``).
-    initial = _FlipTopology(intrinsic_faces, n_vertices)
-    m0 = initial.rebuild()
+    # The one point in this loop where a vertex-pair key is trustworthy: the caller's input is still
+    # a simplicial complex, so the twins are the sorted halfedge keys' runs of two, derived once.
+    # Every later round instead maintains ``twin`` in place, because a flip can make the
+    # vertex-pair key ambiguous (see ``kernel_remesh.pair_intrinsic_twins``).
+    sorted_keys, order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
     twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
-    if m0 > 0:
-        _launch.launch(
-            kernel_remesh.build_intrinsic_twins,
-            dim=m0,
-            inputs=[intrinsic_faces, initial.adjacency, initial.unshared, twin],
-            device=device,
-        )
-    del initial  # its vertex-pair-keyed tables cannot represent what a flip may do from here on
+    _launch.launch(
+        kernel_remesh.pair_intrinsic_twins,
+        dim=n_half,
+        inputs=[intrinsic_faces, sorted_keys, order, twin],
+        device=device,
+    )
+    del sorted_keys, order
 
     flip = _launch.empty(n_half, dtype=wp.bool, device=device)
     quad = odt.empty_2d((n_half, 4), wp.int32, device=device)

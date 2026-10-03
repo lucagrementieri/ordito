@@ -42,6 +42,26 @@ def max_corner_inverse_edge_length_sq(
     return wp.float32(0.0)
 
 
+@wp.func
+def normalized_accumulated_row(sums: wp.array2d[wp.Float], i: wp.int32) -> wp.vec3:
+    """
+    Row ``i`` of an ``(n, 3)`` normal accumulator, unit-normalized and narrowed to ``wp.vec3``.
+
+    The zero row comes back as the zero vector. Shared by ``normalize_accumulated_rows`` and by
+    the consumers that normalize on read (``smoothing.inflate_displace``) instead of materializing
+    the normals.
+    """
+    x = sums[i, 0]
+    y = sums[i, 1]
+    z = sums[i, 2]
+    length = wp.sqrt(x * x + y * y + z * z)
+    if length > sums.dtype(0.0):
+        x = x / length
+        y = y / length
+        z = z / length
+    return wp.vec3(wp.float32(x), wp.float32(y), wp.float32(z))
+
+
 @wp.kernel
 def normalize_accumulated_rows(sums: wp.array2d[wp.Float], out_normals: wp.array[wp.vec3]) -> None:
     """
@@ -65,15 +85,7 @@ def normalize_accumulated_rows(sums: wp.array2d[wp.Float], out_normals: wp.array
     contract the callers document.
     """
     i = wp.int32(wp.tid())
-    x = sums[i, 0]
-    y = sums[i, 1]
-    z = sums[i, 2]
-    length = wp.sqrt(x * x + y * y + z * z)
-    if length > sums.dtype(0.0):
-        x = x / length
-        y = y / length
-        z = z / length
-    out_normals[i] = wp.vec3(wp.float32(x), wp.float32(y), wp.float32(z))
+    out_normals[i] = normalized_accumulated_row(sums, i)
 
 
 @wp.func
@@ -121,6 +133,20 @@ def scatter_scaled_normals(
     f = wp.int32(wp.tid())
     value = face_normals[f] * face_areas[f]
     add_to_face_corners(out_sums, faces, f, value, value, value)
+
+
+@wp.kernel
+def scatter_corner_angles(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_angle_sums: wp.array[wp.float32]
+) -> None:
+    # Each vertex's sum of incident corner angles, the angles formed in the thread
+    # (``triangles.face_corner_angles``, the ``angles`` kernel's body) and added corner by corner in
+    # ``scatter.scatter_sum_scalar``'s order, so no ``(n_faces, 3)`` angle table is written.
+    f = wp.int32(wp.tid())
+    a0, a1, a2 = face_corner_angles(vertices, faces, f)
+    wp.atomic_add(out_angle_sums, faces[3 * f + 0], a0)
+    wp.atomic_add(out_angle_sums, faces[3 * f + 1], a1)
+    wp.atomic_add(out_angle_sums, faces[3 * f + 2], a2)
 
 
 @wp.kernel

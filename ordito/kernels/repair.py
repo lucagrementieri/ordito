@@ -441,7 +441,7 @@ def record_degree3_halfedge(
     counts: wp.array[wp.int32],
     link_sums: wp.array[wp.int32],
     fans: wp.array2d[wp.int32],
-) -> None:
+) -> wp.int32:
     # One halfedge's share of ``remove_degree3_vertices``' per-vertex tables, in place of a whole
     # one-ring CSR: its origin's corner count (its face count), the origin's first three outgoing
     # halfedges in arrival order, and a telescoping sum over its link.
@@ -462,6 +462,8 @@ def record_degree3_halfedge(
     if slot < 3:
         fans[v, slot] = h
     wp.atomic_add(link_sums, v, x - y)
+    # The arrival slot: ``0`` for exactly one halfedge of every referenced vertex.
+    return slot
 
 
 @wp.kernel
@@ -481,7 +483,10 @@ def degree3_fan_tables_input(
     # fixed-capacity face buffer (``out_faces``) and sets its kept flags, one store per face from
     # its first halfedge, in place of a copy and a fill; and it counts its position's twin defect
     # on the input's sorted halfedge keys into ``out_defects`` -- the input validation, riding on
-    # this launch and on the pass's one readback. ``degree3_fan_tables`` is every later pass.
+    # this launch and on the pass's one readback -- with, in its third slot, the input's referenced
+    # vertex count: each removal unreferences exactly its centre, so the output's vertex count is
+    # this less the removals and the final compaction needs no readback. ``degree3_fan_tables`` is
+    # every later pass.
     h = wp.int32(wp.tid())
     run = sorted_halfedge_run_class(faces, sorted_keys, order, h)
     if run == HALFEDGE_RUN_NON_MANIFOLD:
@@ -491,7 +496,8 @@ def degree3_fan_tables_input(
     out_faces[h] = faces[h]
     if h % 3 == 0:
         out_kept[h // 3] = 1
-    record_degree3_halfedge(faces, h, out_counts, out_link_sums, out_fans)
+    if record_degree3_halfedge(faces, h, out_counts, out_link_sums, out_fans) == 0:
+        wp.atomic_add(out_defects, 2, 1)
 
 
 @wp.kernel

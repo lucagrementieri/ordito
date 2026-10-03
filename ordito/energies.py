@@ -571,15 +571,7 @@ def curved_hessian_energy(
     if n_faces == 0:
         return od.array.empty_square_bsr(n_vertices, dtype, device)
 
-    if not od.validation.is_edge_manifold(faces, n_vertices=n_vertices, validate=False):
-        raise ValueError(
-            "mesh must be edge-manifold (every edge shared by at most two faces); the "
-            "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
-            "otherwise, like igl::curved_hessian_energy, which asserts it"
-        )
-
-    edges_sorted = od.edges.faces_to_edges(faces, sorted=True)
-    unique_edges, inverse = edges_unique(faces, edges_sorted, n_vertices=n_vertices, validate=False)
+    unique_edges, inverse = edges_unique(faces, n_vertices=n_vertices, validate=False)
     n_edges = int(unique_edges.shape[0])
 
     angles = _launch.empty((n_faces, 3), dtype=wp.float64, device=device)
@@ -594,11 +586,25 @@ def curved_hessian_energy(
         outputs=[angles, angle_sums, edge_halfedges],
         device=device,
     )
+    # ``cursor`` now counts each unique edge's halfedges, which settles the topology the rest
+    # needs: an edge on three or more faces fails the edge-manifold precondition, and an edge on one
+    # is a boundary edge.
+    if int(od.reduce.max(cursor)) > 2:
+        raise ValueError(
+            "mesh must be edge-manifold (every edge shared by at most two faces); the "
+            "Crouzeix-Raviart discretization curved_hessian_energy is built on is undefined "
+            "otherwise, like igl::curved_hessian_energy, which asserts it"
+        )
     # igl::cr_vector_curvature_correction's kappa scaling, ``angle_defect / angle_sum``, is zero
     # on the boundary (curvature is only corrected at interior vertices) and for a non-positive
     # angle sum: zeroing the boundary's *sums* gives that zero where the triplet kernel forms the
     # kappa as it reads it, and it forms each edge's inverse mass likewise.
-    _zero_at_boundary(vertices, faces, angle_sums)
+    _launch.launch(
+        kernel_energies.zero_at_boundary_edges,
+        dim=n_edges,
+        inputs=[unique_edges, cursor, angle_sums],
+        device=device,
+    )
     mass = _cr_mass_diagonal(vertices, faces, inverse, n_edges, wp.float64)
 
     vertex_slots = _launch.full((n_edges, 4), -1, dtype=wp.int32, device=device)

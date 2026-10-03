@@ -250,7 +250,7 @@ def moments(
     # no per-group reduction to launch. ``wp.zeros`` rather than ``wp.empty`` because the kernel
     # accumulates into it.
     totals = _launch.zeros(10, dtype=wp.float64, device=device)
-    chunk_faces = _moment_chunk_faces(n_faces)
+    chunk_faces = kernel_measures.moment_chunk_faces(n_faces)
     _launch.launch_tiled(
         kernel_measures.moment_integrals,
         dim=[(n_faces + chunk_faces - 1) // chunk_faces],
@@ -282,30 +282,6 @@ def moments(
         inertia = inertia - shift
 
     return total_volume, wp.vec3(*center), wp.mat33d(*inertia.ravel())
-
-
-# Blocks to aim for in ``moment_integrals``' grid. Below it the chunk stays one tile wide, so the
-# device fills; above it the chunk doubles instead, so the ten contended ``float64`` accumulator
-# slots do not collect an atomic from every one of tens of thousands of blocks. This is where the
-# measured table at the kernel crosses over -- the block count at which a wider chunk first stops
-# losing.
-_MOMENT_TARGET_BLOCKS = 1280
-# Widest chunk worth using: past this the grid stops filling the device before contention is the
-# problem, and the measured table is flat from here on.
-_MOMENT_MAX_CHUNK_FACES = 8 * TILE_1D
-
-
-def _moment_chunk_faces(n_faces: int) -> int:
-    """
-    Faces one block of [`kernels.measures.moment_integrals`] reduces, from the mesh size.
-
-    Doubles from one tile until the grid is no wider than ``_MOMENT_TARGET_BLOCKS``, then stops.
-    The measured device times this is derived from are tabulated at the kernel.
-    """
-    chunk = TILE_1D
-    while chunk < _MOMENT_MAX_CHUNK_FACES and -(-n_faces // chunk) > _MOMENT_TARGET_BLOCKS:
-        chunk *= 2
-    return chunk
 
 
 def euler_characteristic(faces: wp.array[wp.int32]) -> int:

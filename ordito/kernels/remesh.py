@@ -3,7 +3,12 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT, UINT64_MAX_CONSTANT
-from ordito.kernels.adjacency import edge_pair_topology, write_edge_row, write_face_edge_keys
+from ordito.kernels.adjacency import (
+    edge_pair_topology,
+    sorted_pair_slot,
+    write_edge_row,
+    write_face_edge_keys,
+)
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -473,30 +478,23 @@ def mark_long_edges(
     out_flags[e] = wp.where(is_long, wp.int32(1), wp.int32(0))
 
 
-@wp.kernel
-def emit_size_faces(
-    faces: wp.array[wp.int32],
-    corner_edge: wp.array[wp.int32],
-    split_mask: wp.array[wp.bool],
-    offsets: wp.array[wp.int32],
-    vertex_offset: wp.int32,
+@wp.func
+def write_split_children(
+    fv: wp.vec3i,
+    mv: wp.vec3i,
     vertices: wp.array[wp.vec3],
-    index_in: wp.array[wp.int32],
-    face_offsets: wp.array[wp.int32],
+    base: wp.int32,
+    src: wp.int32,
     out_faces: wp.array2d[wp.int32],
     out_index: wp.array[wp.int32],
 ) -> None:
-    # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
-    # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
-    # ``split_child_counts_and_midpoints``).
-    # The children come out in template order ``t0, t1, ..``, which is the order the fixed-slot
-    # form's compaction kept them in, so the output is the same buffer either way.
-    f = wp.int32(wp.tid())
-    src = index_in[f]
-
-    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
-    mv = split_corner_midpoints(corner_edge, split_mask, offsets, vertex_offset, f)
-
+    # The crack-free re-triangulation of a face ``fv`` by which of its edges carry a new vertex
+    # (``mv[k]``, the vertex on edge ``(fv[k], fv[k + 1])``, ``-1`` where unsplit), written into
+    # rows ``base ..`` of the compact output with provenance ``src`` (skipped when ``out_index`` is
+    # empty). Shared by ``emit_size_faces``, which numbers the new vertices by unique edge, and
+    # ``intersection.emit_plane_split_faces``, which numbers only the crossed ones; the templates
+    # never assume the new vertex is a midpoint. The children come out in template order ``t0, t1,
+    # ..``, which is the order the fixed-slot form's compaction kept them in.
     s0 = wp.where(mv[0] >= 0, wp.int32(1), wp.int32(0))
     s1 = wp.where(mv[1] >= 0, wp.int32(1), wp.int32(0))
     s2 = wp.where(mv[2] >= 0, wp.int32(1), wp.int32(0))
@@ -552,18 +550,46 @@ def emit_size_faces(
         # Three split edges: the regular 1 -> 4 split (matches subdivide).
         t0, t1, t2, t3 = split_face_four(fv, mv)
 
-    base = face_offsets[f]
     write_row_triple(out_faces, base, t0[0], t0[1], t0[2])
-    out_index[base] = src
+    if out_index.shape[0] > 0:
+        out_index[base] = src
     if count >= 1:
         write_row_triple(out_faces, base + 1, t1[0], t1[1], t1[2])
-        out_index[base + 1] = src
+        if out_index.shape[0] > 0:
+            out_index[base + 1] = src
     if count >= 2:
         write_row_triple(out_faces, base + 2, t2[0], t2[1], t2[2])
-        out_index[base + 2] = src
+        if out_index.shape[0] > 0:
+            out_index[base + 2] = src
     if count >= 3:
         write_row_triple(out_faces, base + 3, t3[0], t3[1], t3[2])
-        out_index[base + 3] = src
+        if out_index.shape[0] > 0:
+            out_index[base + 3] = src
+
+
+@wp.kernel
+def emit_size_faces(
+    faces: wp.array[wp.int32],
+    corner_edge: wp.array[wp.int32],
+    split_mask: wp.array[wp.bool],
+    offsets: wp.array[wp.int32],
+    vertex_offset: wp.int32,
+    vertices: wp.array[wp.vec3],
+    index_in: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    out_faces: wp.array2d[wp.int32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # Re-triangulate face ``f`` by how many of its edges are split, writing its children straight
+    # into rows ``face_offsets[f] ..`` of the compact output (the scanned counts of
+    # ``split_child_counts_and_midpoints``).
+    f = wp.int32(wp.tid())
+    src = index_in[f]
+
+    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
+    mv = split_corner_midpoints(corner_edge, split_mask, offsets, vertex_offset, f)
+
+    write_split_children(fv, mv, vertices, face_offsets[f], src, out_faces, out_index)
 
 
 # ---------------------------------------------------------------------------
@@ -2067,24 +2093,29 @@ def clamp_to_surface_band(
 
 
 @wp.kernel
-def build_intrinsic_twins(
+def pair_intrinsic_twins(
     faces: wp.array[wp.int32],
-    adjacency: wp.array2d[wp.int32],
-    unshared: wp.array2d[wp.int32],
+    sorted_keys: wp.array[wp.uint64],
+    order: wp.array[wp.int32],
     out_twin: wp.array[wp.int32],
 ) -> None:
-    # The *one* point in ``intrinsic_delaunay``'s loop where a vertex-pair-keyed adjacency table
-    # (``_FlipTopology``'s, built once from the caller's still-simplicial input) is trustworthy: a
-    # halfedge ``h = 3 * f + e`` opposite corner ``e`` (``edge_lengths``' own indexing) paired with
-    # its twin across each of ``adjacency``'s rows. Every flip after this one maintains ``out_twin``
-    # incrementally instead of re-deriving it, because a second flip can create a second edge
-    # between two already-adjacent vertices, and at that point no vertex-pair key can tell which of
-    # several same-key corners is which edge's true twin -- see ``intrinsic_delaunay_candidates``.
-    k = wp.int32(wp.tid())
-    f0 = adjacency[k, 0]
-    f1 = adjacency[k, 1]
-    corner0 = local_corner(faces, f0, unshared[k, 0])
-    corner1 = local_corner(faces, f1, unshared[k, 1])
+    # The *one* point in ``intrinsic_delaunay``'s loop where a vertex-pair key is trustworthy: the
+    # caller's input is still a simplicial complex, so a run of exactly two equal sorted halfedge
+    # keys (``adjacency.sorted_face_edge_keys``) is one interior edge, and its two halfedges are
+    # twins. Twins are indexed ``h = 3 * f + e`` opposite corner ``e`` (``edge_lengths``' own
+    # indexing), the corner found by first match on the face's opposite apex. Every flip after this
+    # one maintains ``out_twin`` incrementally instead of re-deriving it, because a second flip can
+    # create a second edge between two already-adjacent vertices, and at that point no vertex-pair
+    # key can tell which of several same-key corners is which edge's true twin -- see
+    # ``intrinsic_delaunay_candidates``. Launched over the sorted positions; the pair's first
+    # position writes both directions.
+    i = wp.int32(wp.tid())
+    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
+    if first != i:
+        return
+    _a, _b, f0, f1, apex0, apex1 = edge_pair_topology(faces, order[i], order[i + 1])
+    corner0 = local_corner(faces, f0, apex0)
+    corner1 = local_corner(faces, f1, apex1)
     if corner0 < 0 or corner1 < 0:
         return
     h0 = f0 * 3 + corner0

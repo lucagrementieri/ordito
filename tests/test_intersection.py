@@ -7,6 +7,7 @@ from typing import Any, cast
 
 import igl
 import numpy as np
+import numpy.typing as npt
 import potpourri3d as pp3d
 import pytest
 import pyvista as pv
@@ -15,6 +16,8 @@ import trimesh.intersections as tm_intersections
 import warp as wp
 from meshlib import mrmeshpy as mm
 from scipy.spatial import KDTree
+from vtkmodules.vtkCommonDataModel import vtkPlane, vtkPlaneCollection
+from vtkmodules.vtkFiltersGeneral import vtkClipClosedSurface
 
 import ordito as od
 from ordito.constants import TOLERANCE_MERGE
@@ -1609,36 +1612,159 @@ def test_clip_mesh_with_field_matches_pyvista_clip_scalar(device: str) -> None:
 
 
 @pytest.mark.parity("clip_mesh_with_field", "pyvista")
-def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(device: str) -> None:
+@pytest.mark.parametrize("subdivisions", [3, 4])
+@pytest.mark.parametrize("height_fraction", [0.3, 0.5, 0.81])
+def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(
+    device: str, subdivisions: int, height_fraction: float
+) -> None:
     """
-    Class A on the enclosed volume, against ``clip_closed_surface`` — VTK's capped plane clip.
+    Class A on the solid, against ``clip_closed_surface`` -- VTK's capped plane clip.
 
     The two cappers triangulate the section differently (a min-weight interval DP here, VTK's own
-    there), so the comparison is the *solid* rather than the triangles: measured the same 762 faces
-    and the same volume to seven digits on ``icosphere(3)`` at ``z = 0.1``. Watertightness is
-    asserted on both sides, which is the property the cap exists to restore and the one a cracked
-    section rim would break.
+    there), so the comparison is the vertex set, the face count and the *solid*: the same points
+    (matched both ways by nearest neighbour), the same count and the same volume to seven digits at
+    every level probed. Watertightness and edge-manifoldness are asserted on
+    both sides, which is what the cap exists to restore and what a cracked section rim would break.
+
+    The level is a height quantile, so it falls between vertices at irregular offsets: the case that
+    broke the earlier cap, which welded the clip's output with a relative-bucket tolerance and so
+    merged crossing points into input vertices a bucket away -- ``icosphere(4)`` at the 0.81
+    quantile came back with 136 open and 12 non-manifold edges and 142 faces short of VTK's.
     """
-    mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
+    mesh_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=1.0)
     mesh_wp = trimesh_to_warp(mesh_tm, device)
-    isovalue = 0.1
+    isovalue = float(np.quantile(mesh_tm.vertices[:, 2], height_fraction))
 
     capped_v, capped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue, cap=True
     )
     capped_tm = warp_to_trimesh(capped_v, capped_f)
     mesh_pv = trimesh_to_pyvista(mesh_tm)
-    closed_pv = mesh_pv.clip_closed_surface(normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, isovalue))
+    closed_pv = mesh_pv.clip_closed_surface(
+        normal=(0.0, 0.0, 1.0), origin=(0.0, 0.0, isovalue)
+    ).triangulate()
 
     assert closed_pv.n_open_edges == 0
     assert capped_tm.is_watertight
     assert od.validation.is_edge_manifold(capped_f, allow_boundary_edges=False)
+    assert len(capped_tm.faces) == closed_pv.n_faces
+    # Both caps reuse the section's own points, so the vertex sets are the same set: as many points
+    # on each side, and every point of each within float32 rounding of one of the other's.
+    points_np = capped_tm.vertices.astype(np.float64)
+    points_pv = np.asarray(closed_pv.points, dtype=np.float64)
+    assert len(points_np) == len(points_pv)
+    assert np.max(KDTree(points_pv).query(points_np)[0]) < 1e-5
+    assert np.max(KDTree(points_np).query(points_pv)[0]) < 1e-5
     assert np.isclose(capped_tm.volume, closed_pv.volume, rtol=1e-5)
     # The cap is not free: without it the same clip is open.
     _, uncapped_f = od.intersection.clip_mesh_with_field(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
     assert capped_f.size > uncapped_f.size
+
+
+def _vtk_clip_closed_surface(
+    mesh_tm: tm.Trimesh, origin: npt.ArrayLike, normal: npt.ArrayLike
+) -> pv.PolyData:
+    """
+    Run ``vtkClipClosedSurface`` itself, keeping the ``normal`` side of the plane, triangulated.
+
+    pyvista's ``clip_closed_surface`` refuses any input with an open edge before VTK sees it; the
+    VTK class accepts one, caps the cut's own loops and leaves every other boundary open, which is
+    the behaviour the open-input comparisons below are against.
+    """
+    plane = vtkPlane()
+    plane.SetOrigin(*np.asarray(origin, dtype=np.float64).tolist())
+    plane.SetNormal(*np.asarray(normal, dtype=np.float64).tolist())
+    planes = vtkPlaneCollection()
+    planes.AddItem(plane)
+    clipper = vtkClipClosedSurface()
+    clipper.SetClippingPlanes(planes)
+    clipper.SetInputData(trimesh_to_pyvista(mesh_tm))
+    clipper.Update()
+    return pv.wrap(clipper.GetOutput()).triangulate()
+
+
+@pytest.mark.parity("clip_mesh_with_field", "pyvista")
+def test_clip_mesh_with_field_capped_leaves_an_input_boundary_open(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Class A against ``vtkClipClosedSurface`` on an open input: only the section is sealed.
+
+    The cut is across the dome's axis, keeping the band next to the rim, so the kept region holds
+    the input's own boundary as well as the section. VTK caps the cut and leaves the rim open; this
+    must do the same -- same vertex and face counts, the same number of open edges (the rim's, all
+    of them), the same area (an open surface has no volume to compare). Sealing every boundary
+    loop instead would close the rim and fail the open-edge count.
+    """
+    mesh_tm, mesh_wp = hemisphere
+    device = str(mesh_wp.device)
+    # The fixture's dome axis and rim centre, as it rotates and translates a z-up hemisphere.
+    rim_np = mesh_tm.vertices[
+        np.unique(mesh_tm.edges[tm.grouping.group_rows(mesh_tm.edges_sorted, require_count=1)])
+    ]
+    center_np = rim_np.mean(axis=0)
+    axis_np = mesh_tm.vertices.mean(axis=0) - center_np
+    axis_np /= np.linalg.norm(axis_np)
+    height = 0.5
+    # Kept where the height above the rim plane is at most ``height``.
+    field_wp = wp.array(
+        np.ascontiguousarray(-(mesh_tm.vertices - center_np) @ axis_np, dtype=np.float32),
+        dtype=wp.float32,
+        device=device,
+    )
+    capped_v, capped_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, field_wp, -height, cap=True
+    )
+    capped_tm = warp_to_trimesh(capped_v, capped_f)
+    clipped_pv = _vtk_clip_closed_surface(mesh_tm, center_np + height * axis_np, -axis_np)
+
+    rim_edges = int(od.boundary.boundary_edges(capped_v, capped_f).shape[0])
+    assert rim_edges > 0  # non-vacuity: the input's rim survives the clip
+    assert rim_edges == clipped_pv.n_open_edges
+    assert len(capped_tm.vertices) == clipped_pv.n_points
+    assert len(capped_tm.faces) == clipped_pv.n_faces
+    assert np.isclose(capped_tm.area, clipped_pv.area, rtol=1e-5)
+
+
+@pytest.mark.parity("clip_mesh_with_field", "pyvista")
+def test_clip_mesh_with_field_capped_keeps_coincident_input_vertices(device: str) -> None:
+    """
+    Class A against ``vtkClipClosedSurface``: coincident input vertices are not merged.
+
+    Two closed icospheres placed so one vertex of each lands on the same point, each with its own
+    copy. VTK merges only the points the cut creates, so both copies survive and the parts stay
+    disjoint; this must return the same vertex count, face count and volume, and two components.
+    Merging the copies -- which the earlier cap's weld did -- would join the parts at a pinch vertex
+    and lose one vertex.
+    """
+    sphere_a = tm.creation.icosphere(subdivisions=2)
+    sphere_b = sphere_a.copy()
+    touching = sphere_a.vertices[:, 0].argmax()
+    sphere_b.apply_translation(
+        sphere_a.vertices[touching] - sphere_b.vertices[sphere_b.vertices[:, 0].argmin()]
+    )
+    mesh_tm = tm.Trimesh(
+        np.vstack([sphere_a.vertices, sphere_b.vertices]),
+        np.vstack([sphere_a.faces, sphere_b.faces + len(sphere_a.vertices)]),
+        process=False,
+    )
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    isovalue = -0.1
+    assert mesh_tm.vertices[touching, 2] > isovalue  # the coincident pair is kept
+
+    capped_v, capped_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue, cap=True
+    )
+    capped_tm = warp_to_trimesh(capped_v, capped_f)
+    clipped_pv = _vtk_clip_closed_surface(mesh_tm, (0.0, 0.0, isovalue), (0.0, 0.0, 1.0))
+
+    assert len(capped_tm.vertices) == clipped_pv.n_points
+    assert len(capped_tm.faces) == clipped_pv.n_faces
+    assert np.isclose(capped_tm.volume, clipped_pv.volume, rtol=1e-5)
+    assert capped_tm.is_watertight
+    assert len(capped_tm.split(only_watertight=False)) == 2
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
@@ -1957,7 +2083,7 @@ def test_split_faces_along_field_partitions_the_surface(
 
     The per-face crossing is the failure this excludes, and it is the natural implementation: it
     gives the right areas, the right face counts and a **non**-watertight result, which is why
-    ``clip_mesh_with_field(cap=True)`` has to weld before it can fill.
+    ``clip_mesh_with_field(cap=True)`` has to merge its crossings before it can fill.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     isovalue = _off_vertex_isovalue(mesh_tm)

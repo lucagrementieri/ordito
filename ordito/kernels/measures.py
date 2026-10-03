@@ -112,6 +112,42 @@ def centroid_sliced(
     wp.atomic_add(out_totals, 3, area_total)
 
 
+@wp.func
+def tetrahedron_first_integrals(
+    a: wp.vec3d, b: wp.vec3d, c: wp.vec3d
+) -> tuple[wp.float64, wp.float64, wp.vec3d]:
+    # The tetrahedron ``(0, a, b, c)``'s ``det = dot(a, cross(b, c))``, volume ``det / 6`` and first
+    # moment ``det * (a + b + c) / 24``: the leading integrals ``moment_integrals`` and
+    # ``centroid_integrals`` both sum, in one spelling so the two agree bit for bit.
+    det = wp.dot(a, wp.cross(b, c))
+    return det, det / wp.float64(6.0), det * (a + b + c) / wp.float64(24.0)
+
+
+# Blocks to aim for in ``moment_integrals``' grid. Below it the chunk stays one tile wide, so the
+# device fills; above it the chunk doubles instead, so the ten contended ``float64`` accumulator
+# slots do not collect an atomic from every one of tens of thousands of blocks. This is where the
+# measured table at the kernel crosses over -- the block count at which a wider chunk first stops
+# losing.
+MOMENT_TARGET_BLOCKS = 1280
+# Widest chunk worth using: past this the grid stops filling the device before contention is the
+# problem, and the measured table is flat from here on.
+MOMENT_MAX_CHUNK_FACES = 8 * TILE_1D
+
+
+def moment_chunk_faces(n_faces: int) -> int:
+    """
+    Faces one block of ``moment_integrals`` reduces, from the mesh size.
+
+    Doubles from one tile until the grid is no wider than ``MOMENT_TARGET_BLOCKS``, then stops.
+    The measured device times this is derived from are tabulated at the kernel. A host helper
+    beside its kernel because both ``measures.moments`` and ``smoothing.inflate`` launch it.
+    """
+    chunk = TILE_1D
+    while chunk < MOMENT_MAX_CHUNK_FACES and -(-n_faces // chunk) > MOMENT_TARGET_BLOCKS:
+        chunk *= 2
+    return chunk
+
+
 @wp.kernel
 def moment_integrals(
     vertices: wp.array[wp.vec3],
@@ -158,10 +194,9 @@ def moment_integrals(
     products = wp.vec3d()
     for k in range(lane, count, wp.block_dim()):
         a, b, c = face_vertices_vec3d(vertices, faces, offset + k)
-        det = wp.dot(a, wp.cross(b, c))
-
-        volume = volume + det / wp.float64(6.0)
-        first = first + det * (a + b + c) / wp.float64(24.0)
+        det, volume_term, first_term = tetrahedron_first_integrals(a, b, c)
+        volume = volume + volume_term
+        first = first + first_term
         squares = squares + det * wp.vec3d(
             a[0] * a[0] + b[0] * b[0] + c[0] * c[0] + a[0] * b[0] + a[0] * c[0] + b[0] * c[0],
             a[1] * a[1] + b[1] * b[1] + c[1] * c[1] + a[1] * b[1] + a[1] * c[1] + b[1] * c[1],
@@ -201,6 +236,32 @@ def moment_integrals(
         local[4 + j] = squares[j]
         local[7 + j] = products[j]
     commit_block_sum(lane, local, out_totals, 0)
+
+
+@wp.kernel
+def centroid_integrals(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    chunk_faces: wp.int32,
+    out_totals: wp.array[wp.float64],
+) -> None:
+    # The first four of ``moment_integrals``' ten totals -- volume and first moment, all a centre of
+    # mass needs -- with that kernel's chunking, per-face arithmetic and lane order, so on a
+    # deterministic device they are its totals bit for bit. Four contended ``float64`` slots per
+    # block instead of ten, and a third of the integrand: ``smoothing.inflate`` reads the centre of
+    # every pass's input from here.
+    chunk, lane = wp.tid()
+    offset, count = block_chunk(faces.shape[0] // 3, chunk, chunk_faces)
+    if count <= 0:
+        return
+    volume = wp.float64(0.0)
+    first = wp.vec3d()
+    for k in range(lane, count, wp.block_dim()):
+        a, b, c = face_vertices_vec3d(vertices, faces, offset + k)
+        _det, volume_term, first_term = tetrahedron_first_integrals(a, b, c)
+        volume = volume + volume_term
+        first = first + first_term
+    commit_block_sum(lane, wp.vec4d(volume, first[0], first[1], first[2]), out_totals, 0)
 
 
 # Keyed by the vertex dtype; the volume is accumulated in its scalar type, as

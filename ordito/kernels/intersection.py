@@ -14,6 +14,7 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.predicates import point_plane_dot, triangles_intersect
 from ordito.kernels.proximity import mesh_aabb_collect
+from ordito.kernels.remesh import write_split_children
 
 SLICE_SIGN_INSIDE = wp.constant(wp.int32(-1))
 SLICE_SIGN_OUTSIDE = wp.constant(wp.int32(1))
@@ -690,11 +691,23 @@ def scatter_slice_class(
 def canonical_edge_crossing(
     vertices: wp.array[wp.vec3], values: wp.array[wp.float32], i: wp.int32, j: wp.int32
 ) -> wp.vec3:
-    # Always interpolate from the lower-numbered endpoint, so the two faces sharing a cut edge
-    # evaluate the identical expression and land on **bitwise equal** points. That is what lets
-    # ``clip_mesh_with_field(cap=True)`` weld the section rim exactly rather than by tolerance.
-    a = wp.min(i, j)
-    b = wp.max(i, j)
+    # Always interpolate from the endpoint that comes first by *position* (lexicographic, the
+    # index breaking a tie between coincident endpoints), so every face that sees an edge -- the two
+    # faces sharing it, and the faces of a coincident duplicate of it whose vertices were never
+    # welded -- evaluates the identical expression and lands on a **bitwise equal** point. That is
+    # what lets ``clip_mesh_with_field(cap=True)`` merge the section rim's crossings exactly, as
+    # VTK's ``vtkClipClosedSurface`` merges its new points by position, without merging the input.
+    a = i
+    b = j
+    pa = vertices[i]
+    pb = vertices[j]
+    swap = pb[0] < pa[0] or (
+        pb[0] == pa[0]
+        and (pb[1] < pa[1] or (pb[1] == pa[1] and (pb[2] < pa[2] or (pb[2] == pa[2] and j < i))))
+    )
+    if swap:
+        a = j
+        b = i
     return edge_level_crossing(vertices[a], vertices[b], values[a], values[b])
 
 
@@ -758,12 +771,12 @@ def emit_cut_vertices(
     # table cost a launch, an ``(n_cut, 3)`` ``vec3`` allocation and a full round trip of it
     # through global memory -- and it computed **three** crossings per cut face where every caller
     # of this function uses exactly two, so the fused form does less arithmetic as well as less
-    # traffic. ``canonical_edge_crossing`` interpolates from the lower-numbered endpoint, so a
-    # crossing is bitwise identical however many times and from whichever face it is evaluated;
-    # that is what keeps the rim weldable and what makes recomputing it here free of consequence.
+    # traffic. ``canonical_edge_crossing`` interpolates from a canonical endpoint, so a crossing is
+    # bitwise identical however many times and from whichever face it is evaluated; that is what
+    # lets ``clip_mesh_with_field(cap=True)`` merge the rim's copies exactly and what makes
+    # recomputing it here free of consequence.
     #
-    # Measured, output byte-identical (including ``cap=True``, which welds the rim and so depends
-    # on that bitwise equality): 1.09x on ``clip_mesh_with_field``, 1.11x on
+    # Measured, output byte-identical: 1.09x on ``clip_mesh_with_field``, 1.11x on
     # ``slice_mesh_with_plane`` and 1.03x on ``split_mesh_with_plane``, two launches and two
     # allocations fewer. Predicted from the launch count alone it looked like 2 %; the extra came
     # from the arithmetic, since the tabulating pass computed three crossings per cut face to be
@@ -965,7 +978,7 @@ def split_crossed_edge_vertices(
     out_points: wp.array[wp.vec3],
 ) -> None:
     # Give every crossed cut-face halfedge its edge's new vertex, and have the first halfedge of
-    # each edge write the crossing point. ``canonical_edge_crossing`` interpolates from the lower
+    # each edge write the crossing point. ``canonical_edge_crossing`` interpolates from a canonical
     # endpoint, so both faces' views of the edge agree. ``out_points`` is the whole output vertex
     # buffer: the input's ``vertex_base`` positions, copied by the first threads of this launch (it
     # runs over ``max(n_halfedges, vertex_base)``), then the crossings.
@@ -1114,63 +1127,128 @@ def emit_split_faces(
     )
 
 
-@wp.kernel
-def plane_crossed_edge_mask(
-    unique_edges: wp.array2d[wp.int32],
+@wp.func
+def plane_crossed_halfedge(
+    faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
     tolerance: wp.float32,
-    out_crossed: wp.array[wp.bool],
-    out_flags: wp.array[wp.int32],
-) -> None:
-    # An edge needs a new vertex only when the plane passes through its *interior*: an endpoint
-    # already in the plane (within ``tolerance``) serves as the crossing itself, so splitting there
-    # would emit a duplicate. Strict opposite signs is therefore the condition, and it is also why
-    # at most two of a triangle's three edges can ever be flagged, for one of two reasons depending
-    # on the sign triple: a zero-valued corner caps its two incident edges at one crossing between
-    # them by itself (whichever of its two neighbours differs from it takes the one crossing; the
-    # other neighbour either agrees with it, or the zero blocks that edge's test outright), and
-    # with no zero present there are only two sign values among three corners, so a third crossing
-    # would need all three edges to alternate sign, which three values pulled from a two-value set
-    # cannot do. Either way ``emit_size_faces``' 3-split branch is unreachable from here.
-    e = wp.int32(wp.tid())
-    a = unique_edges[e, 0]
-    b = unique_edges[e, 1]
+    f: wp.int32,
+    k: wp.int32,
+) -> wp.bool:
+    # Whether the plane crosses the interior of face ``f``'s halfedge ``k`` (corner ``k`` to
+    # ``k + 1``). An edge needs a new vertex only when the plane passes through its *interior*: an
+    # endpoint already in the plane (within ``tolerance``) serves as the crossing itself, so
+    # splitting there would emit a duplicate. Strict opposite signs is therefore the condition, and
+    # it is also why at most two of a triangle's three edges can ever be crossed, for one of two
+    # reasons depending on the sign triple: a zero-valued corner caps its two incident edges at one
+    # crossing between them by itself (whichever of its two neighbours differs from it takes the
+    # one crossing; the other neighbour either agrees with it, or the zero blocks that edge's test
+    # outright), and with no zero present there are only two sign values among three corners, so a
+    # third crossing would need all three edges to alternate sign, which three values pulled from a
+    # two-value set cannot do. Either way ``remesh.write_split_children``' 3-split branch is
+    # unreachable from here. Both halfedges of an edge give the same verdict, so the crossing point
+    # is computed once per *edge* (``split_crossed_edge_vertices``) and the split is crack-free.
+    a = faces[3 * f + k]
+    b = faces[3 * f + (k + 1) % 3]
     sign_a = kernel_array.sign_with_tolerance(vertex_dots[a], tolerance)
     sign_b = kernel_array.sign_with_tolerance(vertex_dots[b], tolerance)
-    crossed = sign_a * sign_b < wp.int32(0)
-    # ``out_crossed`` is for a caller that needs the mask itself (``split_edges`` takes one); one
-    # that does not passes ``None``, whose shape reads 0. ``out_flags`` is the same verdict as the
-    # ``0`` / ``1`` count the caller scans for each crossing's slot, so it needs no conversion pass
-    # before the scan, and it is what ``plane_edge_crossing_points`` reads.
-    if out_crossed.shape[0] > 0:
-        out_crossed[e] = crossed
-    out_flags[e] = wp.where(crossed, wp.int32(1), wp.int32(0))
+    return sign_a * sign_b < wp.int32(0)
 
 
 @wp.kernel
-def plane_edge_crossing_points(
-    vertices: wp.array[wp.vec3],
-    unique_edges: wp.array2d[wp.int32],
-    crossed_flags: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
+def plane_split_child_counts(
+    faces: wp.array[wp.int32],
     vertex_dots: wp.array[wp.float32],
-    out_points: wp.array[wp.vec3],
+    tolerance: wp.float32,
+    out_counts: wp.array[wp.int32],
 ) -> None:
-    # ``remesh.split_child_counts_and_midpoints``' midpoint with the level-set crossing in its
-    # place. One point per *unique edge* rather than per cut face, which is what makes the split
-    # crack-free where ``_clip_with_vertex_field`` is cracked: the two faces sharing the edge
-    # address the same new vertex, where a per-face crossing would leave two coincident copies and
-    # a seam of loose edges (which is exactly why ``clip_mesh_with_field(cap=True)`` has to weld
-    # before it can fill).
-    #
-    # Launched over every unique edge and gated on the mask, writing each crossing at the slot the
-    # exclusive scan of that mask gave it -- so neither split needs the crossed edges' own index
-    # list, which would be a second compaction of the mask the scan already compacted.
-    e = wp.int32(wp.tid())
-    if crossed_flags[e] != 0:
-        out_points[offsets[e]] = canonical_edge_crossing(
-            vertices, vertex_dots, unique_edges[e, 0], unique_edges[e, 1]
-        )
+    # How many triangles face ``f`` becomes under the split templates: one more than its crossed
+    # edges (``remesh.split_child_counts_and_midpoints``' count). Scanned, it is each face's first
+    # output row, and ``row - f`` is its first crossed-halfedge slot.
+    f = wp.int32(wp.tid())
+    count = wp.int32(1)
+    for k in range(3):
+        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+            count += 1
+    out_counts[f] = count
+
+
+@wp.kernel
+def plane_crossed_halfedge_keys(
+    faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    tolerance: wp.float32,
+    face_offsets: wp.array[wp.int32],
+    key_base: wp.int64,
+    out_keys: wp.array[wp.int64],
+    out_halfedges: wp.array[wp.int32],
+) -> None:
+    # Every crossed halfedge's undirected edge key, in ``edges.edges_unique``' order, written into
+    # a radix sort's double-width buffer with its slot as payload. Slots are dense: face ``f``'s
+    # crossed halfedges start at ``face_offsets[f] - f``, the crossed count before it, so the buffer
+    # holds exactly the crossed halfedges and no marker.
+    f = wp.int32(wp.tid())
+    slot = face_offsets[f] - f
+    for k in range(3):
+        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+            a = faces[3 * f + k]
+            b = faces[3 * f + (k + 1) % 3]
+            out_keys[slot] = unique_edge_order_key(wp.int64(a), wp.int64(b), key_base)
+            out_halfedges[slot] = slot
+            slot += 1
+
+
+@wp.kernel
+def emit_plane_split_faces(
+    faces: wp.array[wp.int32],
+    vertex_dots: wp.array[wp.float32],
+    tolerance: wp.float32,
+    cut_vertices: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    vertices: wp.array[wp.vec3],
+    out_faces: wp.array2d[wp.int32],
+    out_index: wp.array[wp.int32],
+) -> None:
+    # ``remesh.emit_size_faces`` with each crossed halfedge's new vertex read from its dense slot
+    # (``plane_crossed_halfedge_keys``) rather than through a mesh-wide unique-edge table: the same
+    # templates, children and rows. ``out_index`` is ``None`` (no provenance) for the plane split.
+    f = wp.int32(wp.tid())
+    slot = face_offsets[f] - f
+    mv = wp.vec3i(-1, -1, -1)
+    for k in range(3):
+        if plane_crossed_halfedge(faces, vertex_dots, tolerance, f, k):
+            mv[k] = cut_vertices[slot]
+            slot += 1
+    fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
+    write_split_children(fv, mv, vertices, face_offsets[f], f, out_faces, out_index)
+
+
+@wp.kernel
+def remap_to_first_crossing(
+    first: wp.array[wp.int32],
+    slot: wp.array[wp.int32],
+    vertex_base: wp.int32,
+    out_faces: wp.array[wp.int32],
+) -> None:
+    # In place: a face index into the crossing points (those from ``vertex_base`` on) is pointed at
+    # the first crossing of its exact-position class (``points.point_duplicate_first``'s table),
+    # which is how ``clip_mesh_with_field(cap=True)`` merges a rim edge's two crossing copies
+    # without touching the input vertices.
+    k = wp.int32(wp.tid())
+    index = out_faces[k]
+    if index >= vertex_base:
+        out_faces[k] = vertex_base + first[slot[index - vertex_base]]
+
+
+@wp.kernel
+def section_vertex_mask(
+    source: wp.array[wp.int32], shifted: wp.array[wp.float32], out_on_section: wp.array[wp.bool]
+) -> None:
+    # Whether a clipped mesh's vertex lies on the level set: a crossing point (its source is past
+    # the input's vertices) or an input vertex whose re-zeroed value is exactly zero.
+    v = wp.int32(wp.tid())
+    origin = source[v]
+    out_on_section[v] = origin >= shifted.shape[0] or shifted[origin] == wp.float32(0.0)
 
 
 @wp.kernel
@@ -1239,6 +1317,12 @@ def marching_triangles_segments(
     out_segments: wp.array2d[wp.vec3],
     out_edges: wp.array2d[wp.int64],
 ) -> None:
+    # DECLINED: appending each cut face to a 1 024-record buffer through a cursor, so a small level
+    # set is read back once and linked with no scan or compaction (face ids restore scan order).
+    # Byte-identical, but 0.84-0.95x on ``sphere_med`` (742 to 26 k segments) and flat on
+    # ``sphere_small``: zeroing and reading the record buffer on every call costs more than the scan
+    # and 4-byte read it removes, and above the capacity it is pure overhead.
+    #
     # One thread per face. Each value is re-zeroed at ``isovalue`` in the field's own precision as
     # it is read, and a value of exactly zero counts as positive, so every cut face has exactly one
     # vertex alone in sign and yields exactly one segment: the two edges incident to that vertex

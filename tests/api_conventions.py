@@ -438,6 +438,12 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # fresh per-call answer.
     ("smoothing", "interior_mass_rhs_and_seed"): frozenset({"rhs"}),
     ("smoothing", "mut_dif_volume_correct"): frozenset({"slope"}),
+    # ``state`` is ``smoothing._VolumeConstraint``'s device state: the anchored volume and centroid
+    # integrals it reads, then the scale and centre it writes beside them for the rescale.
+    ("smoothing", "volume_rescale_parameters"): frozenset({"state"}),
+    # ``angle_sums`` is ``filter_spikes``' accumulator: read for the spike test, then re-zeroed in
+    # place for the next pass's scatter.
+    ("smoothing", "mark_spikes"): frozenset({"angle_sums"}),
     # ``filter_normals`` folds one pass's normalization into the next pass's seed, and both act on
     # the same accumulator slot: the thread reads its own entry and overwrites it in the same
     # launch, so ``out_`` would misread it as write-only. The answer is ``out_normals``.
@@ -461,14 +467,11 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # kernels. Neither an input nor the answer, so it keeps the name of what it holds.
     ("voxels", "insert_point_cells"): frozenset({"table"}),
     ("voxels", "assign_voxel_rows"): frozenset({"table"}),
-    # The hull sweep's working set: the boundary polygon it carries between insertions, the buffer
-    # it rebuilds that polygon into, and the per-boundary-edge orientations of one insertion.
-    # Caller-allocated because the sweep is one thread over an ``n``-sized problem, so none of the
-    # three can be a kernel local -- but none is an input or the answer either, so ``out_`` would
+    # The hull sweep's working set: the ring holding the boundary polygon it carries between
+    # insertions. Caller-allocated because the sweep is one thread over an ``n``-sized problem, so
+    # it cannot be a kernel local -- but it is neither an input nor the answer, so ``out_`` would
     # misread.
-    ("reconstruction", "lexicographic_triangulation"): frozenset(
-        {"boundary", "boundary_next", "orientations"}
-    ),
+    ("reconstruction", "lexicographic_triangulation"): frozenset({"hull"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through
     # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
     ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),

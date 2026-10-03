@@ -3969,6 +3969,17 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
     - **An intermittent `CUDA error 700` with clean memory tools was a host-side front-buffer
       swap desync**: when the memory tools come back clean on a memory-shaped symptom, instrument
       the control flow instead.
+- **`delaunay_triangulation`'s seed keeps the hull in a ring** (2026-10-03,
+  `kernels/reconstruction.lexicographic_triangulation`): one pass per insertion computes every
+  boundary orientation once (exactness rests on evaluating all of them: a degenerate visible set
+  is decided exactly as the array sweep decided it), emits and finds the arc in the same pass, and
+  the kept arc becomes the boundary by moving the ring's start, copying only when it wraps past
+  logical 0 (rare: the visible arc surrounds the last insertion). The lex order is a device radix
+  sort of a packed sortable key (`array.ordered_float_bits`, `-0.0` onto `+0.0`, `NaN` above
+  `+inf`), `numpy.lexsort`'s order exactly. Seed 6.8 -> 4.4 ms at 20 000 points, call 1.50x (1.12x
+  at 2 000); byte-identical on both devices over random, grid, duplicate, collinear, signed-zero
+  and cocircular inputs. Not proposed: an O(1) linked-list hull walk (it cannot evaluate every
+  orientation, so degenerate inputs could differ).
 - **`triangulate_point_cloud`**: the candidate grouping is one stable sort emitting runs of 2-3
   in key order, which *is* `resolve_duplicated_faces`' output order, so
   `_clean_reconstruction(deduplicate=False)` skips that stage (every face reaching it has a
@@ -4108,6 +4119,12 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
       passes at ~0.24 ms a replayed round; per-pass region-edge scatter and long-edge test are
       one launch (`mark_long_region_edges`); `_FlipTopology.edges_unique()` reads the keys off
       the flip sort instead of a whole-mesh `edges_unique`.
+- **`remove_degree3_vertices` reads no output count at the end** (2026-10-03): pass 0 counts the
+  input's referenced vertices (`record_degree3_halfedge` returns its arrival slot) and each
+  removal unreferences exactly its centre, so both output sizes are known; the state views come
+  from one `array.split`. 1.11x `bunny`, flat at `dragon` / `happy_buddha`; CPU byte-identical
+  (CUDA's face order varies run to run on the unchanged tree too). `boundary_edges` /
+  `oriented_boundary_edges` pass the vertex count as the key radix (`end_bit` sort): 1.22-1.35x.
 - **A fast path is checked against the general engine, not asserted, and the fallback must be
   measured live.** `_revolve_regular` returns `None` when the surviving triangles are not the
   regular pattern (10 of 27 probed configurations). Its profile cap
@@ -4358,6 +4375,33 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   lexicographic** (`hash_indices_rows` packs column 0 as the low digit), so a region sort meant to
   reproduce its numbering keys `max * base + min`. `split_faces_along_field` sorts only the cut
   faces' crossed halfedges and emits every class in one launch.
+- **`split_mesh_with_plane` numbers only the crossed edges** (2026-10-03): the child counts'
+  scan sizes the crossed-halfedge buffer exactly (`row - f` is a face's first slot), those keys
+  alone are sorted into `edges_unique`'s order, and `emit_plane_split_faces` runs
+  `remesh.write_split_children` (`emit_size_faces`' templates, now a shared `@wp.func`) on the
+  slots. Byte-identical on both devices (22 configurations, tolerance-band and on-vertex planes):
+  2.09x / 2.47x / 5.52x at `bunny` / `dragon` / `lucy`.
+- **`clip_mesh_with_field(cap=True)` follows `vtkClipClosedSurface`** (2026-10-03): the input
+  vertices are returned as given, only the crossing points are merged (exact-position classes,
+  `points.point_duplicate_first`, over the crossings alone), and only the section is sealed --
+  boundary edges with both ends on the level set chained by `graph.successor_cycles` (a section
+  that runs into an input boundary is a chain and stays open, as does the input's boundary).
+  `kernels/intersection.canonical_edge_crossing` interpolates from the endpoint first by
+  *position* (index on a tie), so a coincident duplicate edge's crossings are bitwise equal too;
+  that moved slice / split / clip crossings by at most an ulp (one quad-diagonal tie flipped in
+  two of 66 split cases). **The weld it replaced was a defect, not a convention**:
+  `remove_duplicated_vertices(epsilon=0)` buckets at ~2.4e-4 relative, so it merged crossings into
+  nearby input vertices -- `icosphere(4)` at the 0.81 height quantile came back with 136 open and
+  12 non-manifold edges, `dragon` at the median added no cap at all and returned 4 331 non-manifold
+  edges -- and it sealed every pre-existing hole. Now face counts and volumes equal
+  `clip_closed_surface` on every closed case probed, and open / touching-parts inputs equal the raw
+  VTK class (pyvista refuses any input with an open edge; on the open, non-manifold scans the raw
+  class is itself unreliable). The fill is real work now: `dragon` 1.26 -> 61 ms (3 710 cap
+  faces), `lucy` 671 ms; `bunny` 2.71x faster (its median section runs into holes: three chains,
+  nothing to cap).
+- **DECLINED: a record buffer for small `marching_triangles` level sets** (2026-10-03): 0.84-0.95x
+  on `sphere_med`, flat on `sphere_small`; the number is at `kernels/intersection.
+  marching_triangles_segments`.
   `marching_triangles_segments` re-zeros at the isovalue as it reads.
 - **`closed=True` wraps the index** in every `polyline_*` closure (`upsample`, `smooth_upsample`,
   `downsample`, `resample`, `point_distance`, `simplify`, `radius`): no `polyline_close` copy,
@@ -4431,6 +4475,21 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   `1 << 17` and `1 << 18` lose (0.84-0.70x at 3 %: the ~6.6 kB-a-source pools outgrow L2). CPU flat
   (0.97-1.04x). Outputs are per-source, so identical; `test_geodesic_ball_chunks_agree` forces
   the multi-chunk path no fixture reaches.
+- **The `1 << 16` chunk is not the best chunk everywhere, and the refill is not why** (2026-10-03,
+  R29-0). `principal_curvature[sphere_large r=3]` reads 0.85x against `1 << 15`, but the visited
+  pool's `fill_` is below the timer's resolution and the cost is elsewhere: the walk kernel itself
+  (1.73 -> 2.32 ms device over the call: a radius-3 walk touches ~2 KB of its rows, and 64 k
+  concurrent sources overflow the 96 MB L2 where 32 k fit) plus allocating the doubled pools in a
+  drained mempool (+0.6 ms host). Chunk sweeps disagree by mesh: `sphere_large` is fastest at 24-32
+  k at both radii (4.15-4.42 vs 5.59 ms at r=3), `bunny` / `dragon` at 64 k (tail-dominated,
+  irregular walks; `dragon` r=8 75.9 vs 88.9 ms at 32 k), so no single constant or size rule
+  serves both. **REFUTED by pricing: restoring each visited row on exit** to drop the refill (the
+  plan's R29-0): the inserted set is not recorded (out-of-ball neighbours are inserted but kept
+  nowhere), so a restore re-walks every queued vertex's adjacency, more than the memset it removes.
+  **REFUTED: a locality-preserving visited hash** (output-neutral, the drop rule is count-based):
+  an 8-slot-grouped Fibonacci hash (consecutive ids share a sector) helps `sphere_large` at 64 k
+  (4.85 vs 5.59 ms r=3, 20.5 vs 21.1 r=8) and loses on the scans (`bunny` r=8 0.87x, `dragon`
+  0.97x r=3, 0.83x r=8): linear probing over runs of consecutive ids lengthens the chains.
 - **DECLINED: a smaller visited row for small balls** (2026-10-02, R28-7). A source whose walk stays
   under a smaller row's fill bound inserts the same set, so a 512-slot row is exact for every
   source below 384 inserts (all of `bunny`'s at five mean edges, 98.9-99.4 % of `dragon` /
@@ -4683,9 +4742,38 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   offset of exactly zero): answer the skip-versus-identity question from the code replaced. Its
   three volumes are summed by `wp.utils.array_sum`, deliberately the same reduction (not
   `measures.volume`'s tiled one), because the correction is a difference of nearly equal volumes.
-- **`smoothing.inflate`'s inherited volume constraint costs ~2x and is load-bearing** (it
-  restores the volume the smoothing half-step removed); exposing it as a keyword was declined
-  (§4.2).
+- **`smoothing.inflate`'s inherited volume constraint is load-bearing** (it restores the volume
+  the smoothing half-step removed); exposing it as a keyword was declined (§4.2). **It is device
+  resident** (2026-10-03, `smoothing._VolumeConstraint`, shared with `filter_laplacian`): the
+  anchored volume (`MESH_SIGNED_VOLUME` on the `float64` copy) and the first four moment integrals
+  (`kernels/measures.centroid_integrals`, `moment_integrals`' chunking and per-face arithmetic
+  through `tetrahedron_first_integrals`, so its totals are bit-identical on CPU) go into one state
+  buffer; `volume_rescale_parameters` forms the scale and the `float32`-rounded centre once per
+  pass, so there is no readback and one `float64` cube root a pass rather than one a vertex (the
+  per-vertex `pow` was 1.95 ms of a `lucy` pass; the ten-integral `moments` kernel 6.9 ms, the
+  four-integral one 2.6). `inflate`'s pass is written out over buffers allocated once, normals
+  normalized as the displacement reads their accumulator (`vertices.normalized_accumulated_row`).
+  CPU byte-identical (explicit, fixed-point and BiCGSTAB paths): `inflate` 2.06x / 1.73x / 1.48x
+  and default `filter_laplacian` 1.17x / 1.49x / 1.39x at `bunny` / `dragon` / `lucy`. Remaining
+  `lucy` device time is the per-pass `face_signed_volumes` + `array_sum` over a 224 MB per-face
+  buffer; a tiled fold would drop the buffer but change the reduction order (outputs at rounding):
+  not taken.
+- **`filter_spikes` is three launches a pass** (2026-10-03): corner angles scattered as they are
+  formed (`vertices.scatter_corner_angles`), spikes marked and counted while re-zeroing the sums
+  (`smoothing.mark_spikes`), and only the spikes averaged into a reused buffer from `float32`
+  positions widened on read (`operator_row` is generic over `vec3` / `vec3d` fields). **Few spikes
+  need only their rows**: below `_FEW_SPIKES_RATIO = 64` vertices a spike, a pass sorts the spike
+  rows' neighbour keys and averages each row from them (`average_spike_rows`, the symmetric
+  operator's weights, normalization order and arithmetic), instead of building the whole-mesh
+  operator (32.8 ms at `lucy`, which flattens 3 vertices). Both paths byte-identical to the old
+  call on both devices; `test_filter_spikes_spike_rows_match_the_whole_operator` forces each way
+  (bites on a dropped dedupe). 2.74x `bunny`, 1.80x `dragon`, 2.10x `happy_buddha`, 10.6x `lucy`.
+- **`relax_keep_volume` builds sorted neighbour lists, not a CSR from triplets** (2026-10-03):
+  `edges_to_neighbor_lists(sort_rows=True)` is exactly `edges_to_csr`'s structure without sorting
+  every edge twice (4.1 vs 23.7 ms at `lucy`); the relaxation family reads a `None` region as all
+  vertices (`kernels/smoothing.in_region`) instead of allocating an all-`True` mask. 1.44x /
+  1.47x / 1.34x at `bunny` / `dragon` / `lucy`, byte-identical. The census found no other
+  `edges_unique` -> `edges_to_csr` site needing only structure (`graph.py`'s carries lengths).
 - **A `for` loop around a single-column solver, in a module whose siblings call the batched one,
   is the textual tell for a multi-column solve**: three position components share one operator.
 - **A helper returning the same sentinel for two different "nothing to do" cases is a defect
@@ -4746,6 +4834,16 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   edge between already-adjacent vertices). **Quoting a `min()` over a set whose members have two
   causes can size a fix by 100x the wrong number.** `laplacian.face_half_cotangents` is the shared
   run. The energies' sandwich products and hessians stay on `csr_from_triplets` (§16.9).
+  **`intrinsic_delaunay` derives its initial twins from one sort** (2026-10-03,
+  `kernels/remesh.pair_intrinsic_twins` over `adjacency.sorted_face_edge_keys`'s runs of two, the
+  `edge_pair_topology` + first-match `local_corner` rule), not a whole `_FlipTopology` rebuild
+  (row tables, quad table, a claim hash of `>= 4m` slots): `robust_laplacian` 1.21x / 1.15x /
+  1.11x, byte-identical twins, faces and lengths on both devices (degenerate and fin inputs
+  included). Declined: a device-side `mollify_intrinsic` for this caller (its two reads are ~3 ms
+  of an 80 ms `lucy` call). `curved_hessian_energy` validates edge-manifoldness and zeroes the
+  boundary from `internal_angles_and_sums`' halfedge cursor (`energies.zero_at_boundary_edges`)
+  instead of a second halfedge sort, `is_edge_manifold` and `boundary_vertex_indices` (1.02-1.05x:
+  the 20 ms is the triplet assembly).
 - **Mean edge length for `heat_operators`' timestep** and related: §16.10.
 
 ### 16.9 Sparse assembly: key-sorted CSR and mesh operator patterns
@@ -5109,6 +5207,10 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   buffers are allocated once and `closest_pair_rows` re-arms the key as it decodes it, read
   through `read_values`: a further 1.45-1.49x on `open_parts_64` (9.25 -> 6.2 ms) and 1.36x on
   `open_parts_16`, identical faces on both devices.
+- **VOID: sweeping `refill_region`'s `min_area` retry only to the failing loops' widest rim**
+  (2026-10-03, R29-8): on the benchmark's cap region every rim fails the primary metric at
+  `dragon` and `lucy`, the 2 765-vertex `lucy` rim included (and the longest rim on `bunny`), so
+  the retry needs the full width.
 - **The floor under every entry point is `boundary_loops_batched`, a flat ~2 ms** whatever the
   mesh (closed, §16.5): `fill_fan[holes_many]` is 2.2 ms of which 2.1 is that call. Bridge
   validation: §16.5.

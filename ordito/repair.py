@@ -1440,21 +1440,21 @@ def remove_degree3_vertices(
     # than those reads at the pass counts real meshes take (``kernels/repair.degree3_fan_tables``).
     n_slots = n_input + max(n_input // 2, 1)
     # One zeroed buffer: the kept flags; the referenced flags the final compaction scans with them
-    # (one in-place scan over both); the append cursor (the removed count, adjacent to the scan's
-    # tail so the final read takes both) and pass 0's two twin-defect counts; then, zeroed per
-    # pass, the next-pass candidate count and each vertex's corner count, link sum and decrement
-    # tally (``degree3_fan_tables`` and ``emit_degree3_replacement`` say what each means). The
-    # cursor through the candidate count is what each pass reads, in one copy.
+    # (one in-place scan over both); the append cursor (the removed count) and pass 0's two
+    # twin-defect counts and referenced vertex count; then, zeroed per pass, the next-pass
+    # candidate count and each vertex's corner count, link sum and decrement tally
+    # (``degree3_fan_tables`` and ``emit_degree3_replacement`` say what each means). The cursor
+    # through the candidate count is what each pass reads, in one copy. The views are stamped by
+    # one ``array.split`` rather than sliced one by one.
     tail = n_slots + n_vertices
-    per_pass = tail + 3
+    per_pass = tail + 4
     state = _launch.zeros(per_pass + 1 + 3 * n_vertices, dtype=wp.int32, device=device)
-    kept = state[:n_slots]
-    cursor, defects = state[tail : tail + 1], state[tail + 1 : tail + 3]
+    bounds = [0, n_slots, tail, tail + 1, per_pass, per_pass + 1]
+    bounds += [per_pass + 1 + n_vertices, per_pass + 1 + 2 * n_vertices, state.size]
+    kept, referenced, cursor, defects, next_candidates, counts, link_sums, lost = od.array.split(
+        state, bounds
+    )
     tables = state[per_pass:]
-    next_candidates = state[per_pass : per_pass + 1]
-    counts = state[per_pass + 1 : per_pass + n_vertices + 1]
-    link_sums = state[per_pass + n_vertices + 1 : per_pass + 2 * n_vertices + 1]
-    lost = state[per_pass + 2 * n_vertices + 1 :]
     fans = odt.empty_2d((n_vertices, 3), wp.int32, device=device)
     face_slots = _launch.empty(3 * n_slots, dtype=wp.int32, device=device)
     new_faces = odt.as_dense(face_slots[3 * n_input :]).reshape((n_slots - n_input, 3))
@@ -1483,7 +1483,7 @@ def remove_degree3_vertices(
     # ends the call when pass 0 found nothing and sizes the next pass, and the next-pass candidate
     # count, which skips the pass that would only learn it finds nothing. Pass 0's also carries the
     # input validation, whose failure discards that pass.
-    removed, n_nonmanifold, n_misoriented, n_next = read_values(state, tail, 4)
+    removed, n_nonmanifold, n_misoriented, n_referenced, n_next = read_values(state, tail, 5)
     _raise_degree3_defects(n_nonmanifold, n_misoriented)
     if removed == 0:
         return (vertices, faces, 0) if return_count else (vertices, faces)
@@ -1503,7 +1503,7 @@ def remove_degree3_vertices(
             inputs=emit_inputs,
             device=device,
         )
-        removed, _nonmanifold, _misoriented, n_next = read_values(state, tail, 4)
+        removed, _nonmanifold, _misoriented, _referenced, n_next = read_values(state, tail, 5)
     n_used = n_input + removed
     # Compacted **once**, after the loop rather than inside it -- the kept faces and, as
     # ``remove_unreferenced_vertices`` would, the vertices they reference. A dead vertex has an
@@ -1511,21 +1511,21 @@ def remove_degree3_vertices(
     _launch.launch(
         kernel_repair.mark_kept_face_vertices,
         dim=3 * n_used,
-        inputs=[face_slots, kept, state[n_slots:tail]],
+        inputs=[face_slots, kept, referenced],
         device=device,
     )
     scanned = state[:tail]
     _launch.array_scan(scanned, out_array=scanned, inclusive=True)
-    # The scan's tail is the kept total -- known -- plus the referenced count, which sizes the
-    # vertex output and is the call's last readback.
+    # Both output sizes are known: each removal drops two faces net and exactly one vertex, the
+    # fan's centre (the replacement face references the whole rim).
     n_kept = n_input - 2 * removed
-    n_referenced = int(read_scalar(state, tail - 1)) - n_kept
+    n_referenced -= removed
     out_vertices = _launch.empty(n_referenced, dtype=wp.vec3, device=device)
     out_faces = _launch.empty(3 * n_kept, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_repair.compact_kept_faces_and_vertices,
         dim=max(n_vertices, n_used),
-        inputs=[vertices, face_slots, kept, state[n_slots:tail], n_kept, out_vertices, out_faces],
+        inputs=[vertices, face_slots, kept, referenced, n_kept, out_vertices, out_faces],
         device=device,
     )
     return (out_vertices, out_faces, removed) if return_count else (out_vertices, out_faces)
