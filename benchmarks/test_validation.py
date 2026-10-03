@@ -220,21 +220,16 @@ def _run_topology_pml(bench_case: BenchCase) -> None:
 
 @pytest.mark.benchmark(group="is_watertight")
 @pytest.mark.benchaxis("overlap")
-@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab", "meshlib")
+@pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")
 def test_is_watertight(bench_case: BenchCase) -> None:
     """
     Edge counts plus a self-intersection pass: driven by collision density, not size.
 
-    meshlib's ``MeshTopology.isClosed`` answers the *closedness* clause alone -- the same weaker
-    question trimesh's ``is_watertight`` answers -- and it answers it off state the topology already
-    holds, so this row is a lower bound on the group rather than an equivalent computation. The
-    mesh build is outside the timed callable for that reason: with it inside, the row would time the
-    converter.
+    meshlib has no row here. Its ``MeshTopology.isClosed`` answers the *closedness* clause alone and
+    reads it off half-edge state the mesh already holds, so it returns in a few microseconds without
+    computing anything this group prices -- a lookup, not a comparison. It stays the correctness
+    oracle for that clause in ``tests/test_validation.py``.
     """
-    if bench_case.kind == "meshlib":
-        mesh_ml = bench_case.new_mesh_ml()
-        assert bench_case.run(mesh_ml.topology.isClosed) in (True, False)
-        return
     if bench_case.kind == "pymeshlab":
         _run_topology_pml(bench_case)
         return

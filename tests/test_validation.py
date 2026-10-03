@@ -1352,7 +1352,14 @@ def test_is_watertight_rejects_a_connected_surface_that_intersects_itself(
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
-@pytest.mark.parity("is_watertight", "meshlib")
+@pytest.mark.parity(
+    "is_watertight",
+    "meshlib",
+    benchmarked=False,
+    reason="MeshTopology.isClosed reads closedness off half-edge state the mesh already holds, "
+    "so a timed row would price a cached lookup against ordito's edge census plus "
+    "self-intersection pass; it is the oracle for the closedness clause only.",
+)
 def test_is_watertight_closedness_clause_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

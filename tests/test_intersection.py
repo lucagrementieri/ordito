@@ -1049,6 +1049,40 @@ def test_mesh_collision_pairs_matches_meshlib(
     assert set(pairs_np[:, 1].tolist()) == set(np.flatnonzero(box_ml).tolist())
 
 
+@pytest.mark.parametrize("box_first", [False, True], ids=["sphere_first", "box_first"])
+def test_mesh_collision_pairs_prebuilt_mesh_matches(
+    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh], box_first: bool
+) -> None:
+    """
+    Ordito against ordito: a prebuilt ``mesh_a`` / ``mesh_b`` gives the same pairs as the arrays.
+
+    The meshlib comparison above carries the oracle for the default path; this pins the prebuilt
+    path to it. Both argument orders, because only the side with fewer faces (the box) supplies the
+    BVH, so ``mesh_a`` is read in one order and ``mesh_b`` in the other. The prebuilt meshes come
+    from [`ordito.Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh], the documented source.
+    """
+    mesh_tm, _ = icosphere
+    box_tm = tm.creation.box(extents=[0.5, 0.5, 0.5])
+    box_tm.apply_translation([0.9, 0.0, 0.0])
+    sphere_wp = trimesh_to_warp(mesh_tm, device)
+    box_wp = trimesh_to_warp(box_tm, device)
+    first, second = (box_wp, sphere_wp) if box_first else (sphere_wp, box_wp)
+
+    default_np = od.intersection.mesh_collision_pairs(
+        first.points, first.indices, second.points, second.indices
+    ).numpy()
+    assert len(default_np) > 0  # non-vacuity: the two meshes cross
+    prebuilt_np = od.intersection.mesh_collision_pairs(
+        first.points,
+        first.indices,
+        second.points,
+        second.indices,
+        mesh_a=od.Trimesh(first.points, first.indices).warp_mesh,
+        mesh_b=od.Trimesh(second.points, second.indices).warp_mesh,
+    ).numpy()
+    assert np.array_equal(prebuilt_np, default_np)
+
+
 @pytest.mark.parity(
     "mesh_collision_pairs",
     "pymeshfix",

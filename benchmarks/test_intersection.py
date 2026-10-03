@@ -482,9 +482,19 @@ def test_mesh_with_mesh(bench_case: BenchCase, offset_fraction: float) -> None:
 @pytest.mark.benchmark(group="mesh_collision_pairs")
 @pytest.mark.benchlibs("ordito", "meshlib", "pyvista")
 @pytest.mark.parametrize("offset_fraction", _SELF_OFFSET_FRACTIONS, ids=["deep", "grazing"])
-def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> None:
+@pytest.mark.parametrize("setup", ["full", "amortized"])
+def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float, setup: str) -> None:
     """
     The same broad and narrow phase as ``mesh_with_mesh``, stopping before the segments.
+
+    ``setup`` says where the acceleration structure is built. ``full`` builds it inside the timed
+    callable: ordito's ``wp.Mesh`` BVH from the raw arrays, and VTK's OBB trees, which
+    ``PolyData.collision`` rebuilds on every call. ``amortized`` hoists it out: ordito queries the
+    BVH an [`ordito.Trimesh`][ordito.mesh.Trimesh] caches (``mesh_a=`` / ``mesh_b=``), and MeshLib
+    its AABB trees, which it builds lazily on first use and caches on each ``Mesh``. Each reference
+    has a row only at the setup it actually runs: MeshLib never rebuilds a cached tree and pyvista
+    cannot keep one, so a ``full`` MeshLib row would time the mesh converter and an ``amortized``
+    pyvista row would not be amortized.
 
     Read the two groups against each other: they share the broad phase (``_candidate_face_pairs``)
     verbatim and run the same narrow phase over its candidates, each compacting once, so the gap is
@@ -506,6 +516,10 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> 
     the one to watch if that ever changes.
     """
     skip_larger_than(bench_case, "bunny", "broad phase allocates 16 candidate slots per triangle")
+    if bench_case.kind == "pyvista" and setup == "amortized":
+        pytest.skip("PolyData.collision rebuilds its OBB trees on every call: no amortized form")
+    if bench_case.kind == "meshlib" and setup == "full":
+        pytest.skip("MeshLib caches its AABB trees on the Mesh: timed at setup=amortized")
     if bench_case.kind == "pyvista":
         # VTK's OBB collision does not survive ``bunny`` here: it answers at a few thousand faces
         # and does not return at all on two 70k-face copies overlapping deeply, which is the
@@ -521,6 +535,8 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> 
     if bench_case.kind == "meshlib":
         mesh_ml = _mesh_ml(bench_case)
         shifted_ml = _shifted_mesh_ml(bench_case, offset_fraction)
+        # Pre-warm both lazily built trees, so every timed round prices the query alone.
+        mm.findCollidingTriangleBitsets(mm.MeshPart(mesh_ml), mm.MeshPart(shifted_ml))
         masks_ml = bench_case.run(
             lambda: mm.findCollidingTriangleBitsets(mm.MeshPart(mesh_ml), mm.MeshPart(shifted_ml))
         )
@@ -528,9 +544,18 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float) -> 
         return
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     shifted = _shifted_vertices_wp(bench_case, offset_fraction)
-    pairs = bench_case.run(
-        lambda: od.intersection.mesh_collision_pairs(vertices, faces, shifted, faces)
-    )
+    if setup == "amortized":
+        mesh_a = od.Trimesh(vertices, faces).warp_mesh
+        mesh_b = od.Trimesh(shifted, faces).warp_mesh
+        pairs = bench_case.run(
+            lambda: od.intersection.mesh_collision_pairs(
+                vertices, faces, shifted, faces, mesh_a=mesh_a, mesh_b=mesh_b
+            )
+        )
+    else:
+        pairs = bench_case.run(
+            lambda: od.intersection.mesh_collision_pairs(vertices, faces, shifted, faces)
+        )
     assert pairs.shape[1] == 2
 
 

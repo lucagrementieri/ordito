@@ -783,6 +783,8 @@ def mesh_collision_pairs(
     faces_b: wp.array[wp.int32],
     *,
     max_triangle_collisions: int = 16,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> odt.Array2dInt32:
     """
     Which faces of two meshes cross each other, as index pairs.
@@ -804,6 +806,14 @@ def mesh_collision_pairs(
         Broad-phase candidate cap per query triangle. A pair beyond the cap is **dropped**, so raise
         it on meshes whose triangles pile into overlapping boxes; the answer is a subset, never a
         superset.
+    mesh_a, mesh_b
+        A ``wp.Mesh`` already built over ``vertices_a`` / ``faces_a`` (respectively ``vertices_b``
+        / ``faces_b``), to spare the BVH build this otherwise pays on every call. Only the mesh with
+        fewer faces (``a`` on a tie) supplies the BVH, so only that one is read; the other may be
+        passed and is ignored. Purely an optimization: the answer is identical either way, and it
+        is not checked against the arrays -- a mesh over *different* geometry silently answers for
+        that geometry. [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] is a cached property
+        and is what to pass.
 
     Returns
     -------
@@ -823,12 +833,20 @@ def mesh_collision_pairs(
     ValueError
         If ``max_triangle_collisions`` is less than 1.
     RuntimeError
-        If ``vertices_a``, ``faces_a``, ``vertices_b`` and ``faces_b`` are not all on one device.
+        If ``vertices_a``, ``faces_a``, ``vertices_b``, ``faces_b``, ``mesh_a`` and ``mesh_b`` are
+        not all on one device.
 
     Examples
     --------
     ```python
     pairs = od.intersection.mesh_collision_pairs(v, f, v, f)
+    ```
+
+    A mesh queried repeatedly keeps its BVH in an [`ordito.Trimesh`][ordito.mesh.Trimesh]:
+
+    ```python
+    mesh = od.Trimesh(v, f)
+    pairs = od.intersection.mesh_collision_pairs(v, f, v, f, mesh_a=mesh.warp_mesh)
     ```
 
     See Also
@@ -841,11 +859,23 @@ def mesh_collision_pairs(
         What to reach for when the meshes do *not* touch and the clearance is the question.
     """
     require_same_device(
-        vertices_a=vertices_a, faces_a=faces_a, vertices_b=vertices_b, faces_b=faces_b
+        vertices_a=vertices_a,
+        faces_a=faces_a,
+        vertices_b=vertices_b,
+        faces_b=faces_b,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     device = vertices_a.device
     crossing = _colliding_face_pairs(
-        vertices_a, faces_a, vertices_b, faces_b, max_triangle_collisions, "mesh_collision_pairs"
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        max_triangle_collisions,
+        "mesh_collision_pairs",
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     if crossing is None:
         return odt.empty_2d((0, 2), wp.int32, device=device)
@@ -859,6 +889,9 @@ def _colliding_face_pairs(
     faces_b: wp.array[wp.int32],
     max_triangle_collisions: int,
     caller: str,
+    *,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> odt.Array2dInt32 | None:
     """
     Broad phase plus narrow phase for two meshes: the crossing face pairs, or ``None`` if none.
@@ -873,7 +906,14 @@ def _colliding_face_pairs(
         If ``max_triangle_collisions`` is less than 1.
     """
     candidates = _candidate_face_pairs(
-        vertices_a, faces_a, vertices_b, faces_b, max_triangle_collisions, caller
+        vertices_a,
+        faces_a,
+        vertices_b,
+        faces_b,
+        max_triangle_collisions,
+        caller,
+        mesh_a=mesh_a,
+        mesh_b=mesh_b,
     )
     if candidates is None:
         return None
@@ -1028,6 +1068,9 @@ def _candidate_face_pairs(
     faces_b: wp.array[wp.int32],
     max_triangle_collisions: int,
     caller: str,
+    *,
+    mesh_a: wp.Mesh | None = None,
+    mesh_b: wp.Mesh | None = None,
 ) -> _Candidates | None:
     """
     Broad phase alone for two meshes: every candidate ``(query, target)`` pair, or ``None``.
@@ -1038,7 +1081,8 @@ def _candidate_face_pairs(
     the total and a second traversal to fill a packed list; a dead slot is skipped by every
     consumer. ``swapped`` says whether the query is mesh **b**: the smaller mesh supplies the BVH,
     so which input is the query depends on the face counts. Every caller runs its narrow phase in
-    the kernel that consumes the slots. ``None`` only when a mesh has no faces.
+    the kernel that consumes the slots. ``None`` only when a mesh has no faces. A prebuilt
+    ``mesh_a`` / ``mesh_b`` is used when it is the side that supplies the BVH, and built otherwise.
 
     Raises
     ------
@@ -1059,15 +1103,16 @@ def _candidate_face_pairs(
     # The smaller mesh supplies the BVH, so the larger one's faces are the queries.
     swapped = n_faces_a <= n_faces_b
     if swapped:
-        target_vertices, target_faces = vertices_a, faces_a
+        target_vertices, target_faces, target_mesh = vertices_a, faces_a, mesh_a
         query_vertices, query_faces = vertices_b, faces_b
     else:
-        target_vertices, target_faces = vertices_b, faces_b
+        target_vertices, target_faces, target_mesh = vertices_b, faces_b, mesh_b
         query_vertices, query_faces = vertices_a, faces_a
 
     n_query = query_faces.size // 3
-    require_nonempty_mesh(target_faces, caller)
-    target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
+    if target_mesh is None:
+        require_nonempty_mesh(target_faces, caller)
+        target_mesh = wp.Mesh(points=target_vertices, indices=target_faces)
 
     # One BVH walk per query face over its stored box, the walk ``validation``'s self-intersection
     # broad phase runs over one mesh.

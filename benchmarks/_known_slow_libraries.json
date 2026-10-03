@@ -3367,6 +3367,10 @@
     [
      "offset_fraction",
      "0.05"
+    ],
+    [
+     "setup",
+     "full"
     ]
    ],
    "library": "pyvista",
@@ -3379,6 +3383,10 @@
     [
      "offset_fraction",
      "0.6"
+    ],
+    [
+     "setup",
+     "full"
     ]
    ],
    "library": "pyvista",
