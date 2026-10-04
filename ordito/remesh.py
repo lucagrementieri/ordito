@@ -368,14 +368,16 @@ def isotropic_remesh(
             # the same faces, and the smooth step would otherwise hash and sort them a second time.
             if incidence is None:
                 incidence = _edge_incidence(current_faces, current_vertices.size)
-            codes, _boundary = _classify(current_vertices, current_faces, feature, incidence)
+            feature_count, _boundary = _classify(
+                current_vertices, current_faces, feature, incidence
+            )
             if smooth:
                 current_vertices = _smooth_pass(
-                    current_vertices, current_faces, codes, incidence.unique_edges
+                    current_vertices, current_faces, feature_count, incidence.unique_edges
                 )
             if reproject and original_mesh is not None:
                 current_vertices = _reproject_pass(
-                    current_vertices, codes, original_mesh, query_radius
+                    current_vertices, feature_count, original_mesh, query_radius
                 )
         if clamp_kernel is not None and original_mesh is not None and max_deviation is not None:
             bounded = _launch.empty_like(current_vertices)
@@ -444,11 +446,13 @@ def _classify(
     incidence: _EdgeIncidence | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.bool]]:
     """
-    Per-vertex FREE / CREASE / CORNER codes plus a boundary-vertex mask.
+    Per-vertex incident feature-edge counts plus a boundary-vertex mask.
 
     A boundary edge or an interior edge sharper than ``feature`` counts as one incident feature
     edge; a vertex with zero is FREE, exactly two is CREASE (a smooth feature/boundary line), and
-    anything else (a feature endpoint or a junction) is a frozen CORNER.
+    anything else (a feature endpoint or a junction) is a frozen CORNER. The counts are returned
+    rather than the codes: every reader applies ``kernel_remesh.finalize_vertex_codes`` as it loads
+    one, so no pass rewrites the table (a count of zero is a FREE vertex either way).
 
     Both questions are answered by **one launch** over ``incidence``, which the collapse passes
     have already built for their own scoring and pass in. That matters because computing the
@@ -469,7 +473,6 @@ def _classify(
     if m == 0:
         return _launch.zeros(n_vertices, dtype=wp.int32, device=device), boundary_vertex
 
-    # The feature counts become the codes in place.
     feature_count = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.scatter_feature_edge_counts,
@@ -486,7 +489,6 @@ def _classify(
         ],
         device=device,
     )
-    _launch.map(kernel_remesh.finalize_vertex_codes, feature_count, out=feature_count)
     return feature_count, boundary_vertex
 
 
@@ -569,7 +571,7 @@ def _collapse_pass(
         m = int(unique_edges.shape[0])
         if m == 0:
             break
-        codes, _boundary = _classify(vertices, faces, feature, incidence)
+        feature_count, _boundary = _classify(vertices, faces, feature, incidence)
         # Only the neighbour *sets* are read -- the link condition counts shared neighbours, the
         # band walks and the ring locks exit or take a minimum over a whole row -- so the rows need
         # no order, and a degree count and a cursor fill build them with no sort. The unique edges
@@ -601,7 +603,7 @@ def _collapse_pass(
                 unique_edges,
                 vertices,
                 faces,
-                codes,
+                feature_count,
                 incidence.face_count,
                 ring_offsets,
                 ring_neighbors,
@@ -697,7 +699,7 @@ def _valence_flip_pass(
     """
     device = faces.device
     n_vertices = vertices.size
-    _codes, boundary_vertex = _classify(vertices, faces, feature, incidence)
+    _feature_count, boundary_vertex = _classify(vertices, faces, feature, incidence)
 
     # Valence is the loop's own: seeded by its one build, from the keys that build radix-sorts,
     # and kept current by every committed flip (a flip moves one edge from ``a``, ``c`` to ``b``,
@@ -747,7 +749,7 @@ def _valence_flip_pass(
 def _smooth_pass(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    codes: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
     unique_edges: odt.Array2dInt32 | None = None,
 ) -> wp.array[wp.vec3]:
     """
@@ -785,7 +787,7 @@ def _smooth_pass(
         inputs=[
             vertices,
             faces,
-            codes,
+            feature_count,
             normals,
             ring_sum,
             ring_weight,
@@ -800,7 +802,10 @@ def _smooth_pass(
 
 
 def _reproject_pass(
-    vertices: wp.array[wp.vec3], codes: wp.array[wp.int32], original_mesh: wp.Mesh, max_dist: float
+    vertices: wp.array[wp.vec3],
+    feature_count: wp.array[wp.int32],
+    original_mesh: wp.Mesh,
+    max_dist: float,
 ) -> wp.array[wp.vec3]:
     """Snap free vertices onto the closest point of the original surface."""
     device = vertices.device
@@ -811,7 +816,7 @@ def _reproject_pass(
     _launch.map(
         kernel_remesh.reproject_vertices,
         vertices,
-        codes,
+        feature_count,
         wp.uint64(original_mesh.id),
         wp.float32(max_dist),
         out=out_positions,

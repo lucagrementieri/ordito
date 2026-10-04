@@ -202,16 +202,15 @@ def acc_vec3(acc: wp.array[wp.float32], base: wp.int32) -> wp.vec3:
     return wp.vec3(acc[base], acc[base + 1], acc[base + 2])
 
 
-@wp.kernel
-def build_procrustes_matrix(
+@wp.func
+def procrustes_matrix(
     a: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
     acc: wp.array[wp.float32],
     use_reflection: wp.bool,
     use_translation: wp.bool,
     use_scale: wp.bool,
-    out_matrix: wp.array[wp.mat44],
-) -> None:
+) -> wp.mat44:
     ws = acc[ACC_W_SUM]
     shift_a, shift_b = procrustes_shifts(a, b, use_translation)
 
@@ -284,40 +283,61 @@ def build_procrustes_matrix(
     if use_translation:
         t = bcenter - sR * acenter
 
-    out_matrix[0] = make_affine44(sR, t)
+    return make_affine44(sR, t)
 
 
 @wp.kernel
-def transform_and_accumulate_cost(
+def build_procrustes_matrix(
+    a: wp.array[wp.vec3],
+    b: wp.array[wp.vec3],
+    acc: wp.array[wp.float32],
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    use_scale: wp.bool,
+    out_matrix: wp.array[wp.mat44],
+) -> None:
+    out_matrix[0] = procrustes_matrix(a, b, acc, use_reflection, use_translation, use_scale)
+
+
+@wp.kernel
+def fit_transform_and_accumulate_cost(
     a: wp.array[wp.vec3],
     b: wp.array[wp.vec3],
     weights: wp.array[wp.float32],
-    matrix: wp.array[wp.mat44],
     acc: wp.array[wp.float32],
+    use_reflection: wp.bool,
+    use_translation: wp.bool,
+    use_scale: wp.bool,
+    out_matrix: wp.array[wp.mat44],
     out_transformed: wp.array[wp.vec3],
 ) -> None:
-    # Apply the fitted transform to ``a``, publish the moved points, and reduce the weighted mean
-    # squared residual against ``b`` into the packed accumulator's cost slot -- one pass, one
-    # launch. A zero-length ``weights`` means uniform (``sample_weight``), and a zero-length
-    # ``out_transformed`` publishes nothing: ``icp``'s device loop wants only the cost of a fit it
-    # may yet reject, and moves the points once, after the loop, by the transform it kept.
+    # Form the fit from the finished moments, apply it to ``a``, publish the moved points, and
+    # reduce the weighted mean squared residual against ``b`` into the packed accumulator's cost
+    # slot -- one pass, one launch. A zero-length ``weights`` means uniform (``sample_weight``), and
+    # a zero-length ``out_transformed`` publishes nothing: ``icp``'s device loop wants only the cost
+    # of a fit it may yet reject, and moves the points once, after the loop, by the transform it
+    # kept.
+    #
+    # Every lane forms the fit itself (``procrustes_matrix`` on the same ``acc``, so every lane
+    # holds the one matrix, bit for bit) and the first lane of block 0 publishes it, which is what
+    # ``build_procrustes_matrix`` writes when no cost is wanted. That replaced a ``dim=1`` fit
+    # launch between the moments and this pass: 1.04-1.07x on ``procrustes(return_cost=True)``
+    # from 16 k to 0.87 M points, level at 14 M, and 1.00-1.02x on ``icp``'s recorded rounds. The
+    # cost slot the reduction commits is not one the fit reads.
     #
     # The reduction is the lane-strided single-slot form of CLAUDE.md section 13.2, striding by
-    # ``wp.block_dim()`` so it needs no ``prefers_tiled_reduction`` branch.
-    #
-    # **The transform only became worth fusing in once the reduction was flat.** As one
-    # ``wp.atomic_add`` per thread to a constant slot the reduction dominated the pair and the
-    # fusion was declined on that; at a launch floor the pair is two floors and removing one is most
-    # of it (CLAUDE.md section 13.2's "re-read the declines either side"). Output is
-    # **bit-identical**: the fusion only removes a round trip of ``out_transformed`` through global
-    # memory, each lane keeping the point it just transformed in a register.
-    # ``apply_transform_mat44`` keeps its three other callers; the shared arithmetic is its own
+    # ``wp.block_dim()`` so it needs no ``prefers_tiled_reduction`` branch. The transform only
+    # became worth fusing in once that reduction was flat: as one ``wp.atomic_add`` per thread to a
+    # constant slot it dominated, and at a launch floor removing a launch is most of the pair.
+    # ``apply_transform_mat44`` keeps its other callers; the shared arithmetic is its own
     # ``transform_point_mat44`` helper, called here rather than copied.
     chunk, lane = wp.tid()
+    transform = procrustes_matrix(a, b, acc, use_reflection, use_translation, use_scale)
+    if chunk == 0 and lane == 0:
+        out_matrix[0] = transform
     offset, count = block_chunk_1d(a.shape[0], chunk)
     if count <= 0:
         return
-    transform = matrix[0]
     publish = out_transformed.shape[0] > 0
     local = wp.float32(0.0)
     for k in range(lane, count, wp.block_dim()):

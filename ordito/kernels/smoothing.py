@@ -4,6 +4,7 @@ from ordito.kernels.array import greater, inverse_or_one, sort_segment, to_vec3,
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
 from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
+from ordito.kernels.reduce import block_chunk, commit_block_total
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple
 from ordito.kernels.vertices import normalized_accumulated_row
@@ -1098,6 +1099,18 @@ def humphrey_update_pass(
     out_next[i] = lv[i] - wp.lerp(lb, b[i], beta)
 
 
+@wp.func
+def mut_dif_adil(normal: wp.vec3, position: wp.vec3d, lv: wp.vec3d) -> wp.float64:
+    # adil = 1 / max(1e-12, |N . (V - L.V)|), the reciprocal normal-residual magnitude per vertex.
+    # One spelling for the pass that sums it and the step that recomputes it from the same three
+    # values, so the step's coefficient is bit-identical to the one the mean was taken over.
+    residual = wp.abs(wp.dot(to_vec3d(normal), position - lv))
+    return wp.float64(1.0) / wp.max(wp.float64(1e-12), residual)
+
+
+MUT_DIF_ROWS_PER_BLOCK = wp.constant(256)
+
+
 @wp.kernel
 def mut_dif_adil_pass(
     offsets: wp.array[wp.int32],
@@ -1106,16 +1119,26 @@ def mut_dif_adil_pass(
     positions: wp.array[wp.vec3d],
     normals: wp.array[wp.vec3],
     out_lv: wp.array[wp.vec3d],
-    out_adil: wp.array[wp.float64],
+    out_adil_sum: wp.array[wp.float64],
 ) -> None:
-    # adil = 1 / max(1e-12, |N . (V - L.V)|), the reciprocal normal-residual magnitude per vertex.
-    # ``out_lv`` is still written because ``mut_dif_step_scaled`` reads it after the mean reduction
-    # this pass feeds; what the fusion removes is the separate apply launch, not the buffer.
-    i = wp.int32(wp.tid())
-    lv = operator_row(offsets, columns, values, positions, i)
-    out_lv[i] = lv
-    residual = wp.abs(wp.dot(to_vec3d(normals[i]), positions[i] - lv))
-    out_adil[i] = wp.float64(1.0) / wp.max(wp.float64(1e-12), residual)
+    # Applies the operator row and folds each vertex's ``mut_dif_adil`` straight into the mean's
+    # sum: ``MUT_DIF_ROWS_PER_BLOCK`` rows per block, lane-strided by ``wp.block_dim()`` (so the
+    # CPU device's single lane covers the block's rows), one ``float64`` atomic per block. The
+    # coefficient is not stored: ``mut_dif_step_scaled`` recomputes it at its own vertex from the
+    # ``out_lv`` row written here, which costs it a normal load against an ``(n,)`` buffer's write
+    # and read and the separate reduction launch. A narrower fold than the reduce module's because
+    # the kernel also writes per row (CLAUDE.md section 13.2).
+    chunk, lane = wp.tid()
+    offset, remaining = block_chunk(positions.shape[0], chunk, MUT_DIF_ROWS_PER_BLOCK)
+    if remaining <= 0:
+        return
+    total = wp.float64(0.0)
+    for r in range(lane, remaining, wp.block_dim()):
+        i = offset + r
+        lv = operator_row(offsets, columns, values, positions, i)
+        out_lv[i] = lv
+        total = total + mut_dif_adil(normals[i], positions[i], lv)
+    commit_block_total(lane, total, out_adil_sum, 0)
 
 
 @wp.func
@@ -1128,7 +1151,6 @@ def add_scaled_normal(v_prev: wp.vec3d, normal: wp.vec3, scale: wp.float64) -> w
 def mut_dif_step_scaled(
     positions: wp.array[wp.vec3d],
     lv: wp.array[wp.vec3d],
-    adil: wp.array[wp.float64],
     adil_sum: wp.array[wp.float64],
     inv_n: wp.float64,
     lamb: wp.float64,
@@ -1147,7 +1169,9 @@ def mut_dif_step_scaled(
     # has just computed rather than read back by a map of its own.
     i = wp.int32(wp.tid())
     mean_adil = adil_sum[0] * inv_n
-    stepped = mut_dif_step(positions[i], lv[i], adil[i], mean_adil, lamb)
+    position = positions[i]
+    row = lv[i]
+    stepped = mut_dif_step(position, row, mut_dif_adil(normals[i], position, row), mean_adil, lamb)
     out_next[i] = stepped
     if out_probe.shape[0] > 0:
         out_probe[i] = add_scaled_normal(stepped, normals[i], probe_scale)

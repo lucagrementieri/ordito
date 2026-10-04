@@ -350,7 +350,7 @@ _KERNEL_WRITE_CALLS = frozenset(
 # - **In-place**: the argument is both the input and the result -- an ``out_`` prefix would misread
 #   as write-only. ``sort_rows_insertion(data)``,
 #   ``offset_packed_faces(faces)``, the hole-filling DP tables (read at smaller spans, written at
-#   the current one) and ``transform_and_accumulate_cost(acc)``, which reads the packed
+#   the current one) and ``fit_transform_and_accumulate_cost(acc)``, which reads the packed
 #   accumulator's weight-sum slot while atomically adding into its cost slot.
 # - **Scratch / persistent state**: caller-allocated working memory carried across launches --
 #   cursors, stacks, open-addressing tables, the ear-clipping ring, ``ball_pivoting``'s
@@ -431,7 +431,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The other half of the same round's twin-table update: every halfedge not touched directly by
     # ``commit_intrinsic_flips`` reads and, where its neighbor moved, corrects its own twin pointer.
     ("remesh", "fixup_twin_remap"): frozenset({"twin"}),
-    ("registration", "transform_and_accumulate_cost"): frozenset({"acc"}),
+    ("registration", "fit_transform_and_accumulate_cost"): frozenset({"acc"}),
     # ``rhs`` arrives already holding ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (which
     # eliminates a quadratic form with no linear term of its own), and this kernel only ever
     # accumulates the linear term on top -- the same in-place shape as ``acc`` just above, not a

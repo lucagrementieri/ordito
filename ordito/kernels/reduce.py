@@ -174,7 +174,7 @@ def blocks_1d(n: int) -> int:
     correct while ``sum`` silently returned 16x its answer.
 
     It is also the launch width for the *lane-strided* reductions outside this module --
-    ``registration.transform_and_accumulate_cost`` / ``accumulate_procrustes_moments`` /
+    ``registration.fit_transform_and_accumulate_cost`` / ``accumulate_procrustes_moments`` /
     ``accumulate_point_to_plane``, ``points.centered_covariance``,
     ``polyline.accumulate_turning_angle`` /
     ``accumulate_radius_frame`` / ``accumulate_loop_frame`` -- which own the same

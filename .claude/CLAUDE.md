@@ -2895,6 +2895,7 @@ raising the threshold is 1.00-1.02x at small sizes and 1.4-1.7x on every multi-a
 from `dragon` (0.87 M faces) up (`face_adjacency`, `edges_unique`, `cotmatrix`, `crease_edges`),
 2.9x on the two-allocation `face_normals_and_areas` at `lucy`. ordito keeps Warp's default
 (the setting is process-wide; re-decided on those numbers); the lever is allocating less (§16.9).
+A scratch cache that keeps buffers reserved between calls is rejected for the same reason (§16.9).
 
 | primitive (correct regime) | cost |
 |---|---|
@@ -3417,6 +3418,28 @@ does not see intervening host work or replayed graphs entered through a helper
 (`run_device_loop`), mislabels a scatter-then-per-vertex pair at different `dim`s as a candidate,
 and a claim/commit independent-set pair is never fusible (commit must see every claim). Read both
 kernel bodies and the wrapper lines between.
+
+**The 2026-10-04 re-audit** (406 pairs after rounds 28-30) found nine fusible pairs and ten
+independent ones; the rest split as above. Landed, each byte-identical on CPU:
+
+| Fusion | Gain |
+|---|---|
+| `grouping.hash_vector_rows`: round and pack in one kernel (`round_pack_vec3`) | 1.13-1.59x, `remove_duplicated_vertices` 1.03-1.05x |
+| `filter_mut_dif_laplacian`: the mean's sum folded into `mut_dif_adil_pass` (256-row fold), `adil` recomputed by the step | 1.07-1.16x small meshes, flat at `dragon` / `lucy` |
+| `remesh._classify`: feature counts kept, every reader applies `finalize_vertex_codes` | `isotropic_remesh` 1.01-1.04x |
+| `split_mesh_with_plane`: the emit labels its own children (`plane_face_above`) | 1.02-1.06x |
+| `clip_mesh_with_field(cap=True)`: `on_level_set` read per corner, no per-vertex mask | 1.05x small meshes, flat large |
+| `procrustes(return_cost=True)` and `icp`'s rounds: every lane forms the fit (`fit_transform_and_accumulate_cost`) | 1.04-1.07x, `icp` 1.00-1.02x |
+
+Declined with numbers at the site: the oriented-box loss table in the seed block (0.90-1.01x), the
+loop frame inside `triangulate_rings` (0.90-0.97x), the shell centroid per tetrahedron thread
+(1.00-1.05x), and `zero_at_boundary_edges` on `cr_gradient_rows`' grid (1.00-1.01x). The last is
+the only grid-share measured. It saved one launch, about 1 % of a 0.5 ms call, and read flat.
+That prices the other nine grid-shares: each saves one launch, which is at most 1.4 % of its call
+(`subdivide_loop(return_operator=True)` at 0.37 ms) and under 0.5 % for the rest, so none was
+built. `repair._dilate_face_mask`'s ping-pong over `dilate_vertex_mask` trades a launch for a
+zeroed vertex buffer at the default `max_expand=1` (§13.1: 4.5 against 9.3 us), so it was not built
+either.
 
 The audit's verdicts that generalize:
 
@@ -4959,8 +4982,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   each wall. With the threshold raised the wall *is* the device time (17.6 -> 11.3, 37.6 -> 23.9,
   18.8 -> 10.2 ms); the device time is CUB's onesweep radix passes first (8.2 of 11.2 ms on
   `face_adjacency`). Warp's timer sees neither half, so these rows read "host-bound" with no
-  Python to remove. The remaining levers are bytes freed per call and an ordito-owned scratch
-  cache, which keeps memory reserved between calls (the objection the threshold was declined on).
+  Python to remove. The remaining lever is bytes freed per call.
+  **REJECTED by the owner (2026-10-04): an ordito-owned scratch cache** (R30-2: keep the radix
+  sort's double buffers and the sorted-key scratch resident between calls, in any form --
+  explicit release, scoped context manager or byte cap). It would speed the large-mesh rows
+  1.3-1.7x only by holding memory a real caller would not expect held, so the benchmark win is
+  not a fair one. Do not re-propose it, nor any other mechanism whose gain comes from keeping
+  memory reserved across calls (raising the pool's release threshold included).
 - **`cotmatrix` allocated 9.4 GB a call at `lucy`** for a matrix under 1 GB (three 1.28 GB
   12-triplet buffers and 5.2 GB of `bsr_from_triplets` scratch). It now emits six off-diagonal
   triplets per face plus one diagonal slot per vertex (the tail's rows prefilled with

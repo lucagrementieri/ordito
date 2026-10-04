@@ -825,6 +825,10 @@ def shell_bounds(
     # support sweep and the tetrahedron build in one launch chain with no host readback between.
     # ``shell_vertices`` is the points gathered through the support indices as a Python-scope
     # ``wp.indexedarray`` view, so neither this kernel nor ``tetrahedron_planes`` needs a copy.
+    #
+    # Forming the centroid in every ``tetrahedron_planes`` thread instead (broadcast loads, thread 0
+    # publishing the radius) was measured and declined: ``convex_superset_mask`` 1.00-1.05x from
+    # ``bunny_decimated`` to ``lucy`` at subdivisions 2 and 3, flat at most cells.
     n = shell_vertices.shape[0]
     total = wp.vec3(0.0, 0.0, 0.0)
     for i in range(n):

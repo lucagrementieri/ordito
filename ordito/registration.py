@@ -212,24 +212,22 @@ def _procrustes_into(
         block_dim=TILE_1D,
         device=device,
     )
-    _launch.launch(
-        kernel_registration.build_procrustes_matrix,
-        dim=1,
-        inputs=[a, b, acc, reflection, translation, scale, out_matrix],
-        device=device,
-    )
-
     if not return_cost:
+        _launch.launch(
+            kernel_registration.build_procrustes_matrix,
+            dim=1,
+            inputs=[a, b, acc, reflection, translation, scale, out_matrix],
+            device=device,
+        )
         return out_matrix
 
     out_transformed = workspace["transformed"]
     assert out_transformed is not None
-    # One launch, not two: this both writes ``out_transformed`` and reduces the residual against
-    # it. See the kernel for why fusing became worth it only after the reduction was flattened.
+    # One launch, not three: the fit, the moved points and the residual reduced against them.
     _launch.launch_tiled(
-        kernel_registration.transform_and_accumulate_cost,
+        kernel_registration.fit_transform_and_accumulate_cost,
         dim=kernel_reduce.blocks_1d(n),
-        inputs=[a, b, weights, out_matrix, acc, out_transformed],
+        inputs=[a, b, weights, acc, reflection, translation, scale, out_matrix, out_transformed],
         block_dim=TILE_1D,
         device=device,
     )
@@ -391,8 +389,17 @@ def icp(
         weights,
     ]
     moment_inputs = [a, closest, weights, translation, acc]
-    matrix_inputs = [a, closest, acc, reflection, translation, scale, fitted]
-    cost_inputs = [a, closest, weights, fitted, acc, _zero_length(wp.vec3, device)]
+    fit_inputs = [
+        a,
+        closest,
+        weights,
+        acc,
+        reflection,
+        translation,
+        scale,
+        fitted,
+        _zero_length(wp.vec3, device),
+    ]
     round_inputs = [wp.float64(threshold), wp.int32(max_iterations), fitted]
     round_outputs = [acc, total, state]
 
@@ -410,13 +417,10 @@ def icp(
             block_dim=TILE_1D,
             device=device,
         )
-        _launch.launch(
-            kernel_registration.build_procrustes_matrix, dim=1, inputs=matrix_inputs, device=device
-        )
         _launch.launch_tiled(
-            kernel_registration.transform_and_accumulate_cost,
+            kernel_registration.fit_transform_and_accumulate_cost,
             dim=blocks,
-            inputs=cost_inputs,
+            inputs=fit_inputs,
             block_dim=TILE_1D,
             device=device,
         )
@@ -460,7 +464,7 @@ def _zero_length(dtype: type[DType], device: wp.DeviceLike) -> wp.array[DType]:
 
     A zero-length ``weights`` means "every weight is 1" (``sample_weight``), so the common
     weightless call needs neither a ``wp.full(n, 1.0)`` allocation nor its fill, and a zero-length
-    ``out_transformed`` asks ``transform_and_accumulate_cost`` for the cost alone. The buffer
+    ``out_transformed`` asks ``fit_transform_and_accumulate_cost`` for the cost alone. The buffer
     carries no data, so one instance per device and dtype serves every caller.
     """
     key = (str(device), dtype)

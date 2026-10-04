@@ -1493,11 +1493,24 @@ COLLAPSE_FREE = wp.constant(wp.int32(2))  # the caller places it -- midpoint, or
 
 
 @wp.func
+def finalize_vertex_codes(feature_count: wp.int32) -> wp.int32:
+    # A vertex's code from its incident feature-edge count. ``scatter_feature_edge_counts`` stores
+    # only the counts, and every reader applies this as it loads one, so no pass rewrites the table.
+    # 0 feature edges -> FREE; exactly 2 -> CREASE (on a smooth feature/boundary line);
+    # anything else (1 = feature endpoint, >=3 = junction) -> CORNER (frozen).
+    code = CORNER_VERTEX
+    if feature_count == 0:
+        code = FREE_VERTEX
+    elif feature_count == 2:
+        code = CREASE_VERTEX
+    return code
+
+
+@wp.func
 def collapse_survivor_of_codes(
     cu: wp.int32, cv: wp.int32, u: wp.int32, v: wp.int32, is_boundary: wp.bool
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
-    # ``collapse_survivor`` with the two endpoint codes already in hand. The quadric pass derives
-    # them from the feature counts in the kernel that scores the edge, so it keeps no code table.
+    # ``collapse_survivor`` with the two endpoint codes already in hand.
     if cu == CORNER_VERTEX and cv == CORNER_VERTEX:
         # Two corners: the edge between two fixed points cannot shorten.
         return u, v, COLLAPSE_REJECTED
@@ -1516,7 +1529,7 @@ def collapse_survivor_of_codes(
 
 @wp.func
 def collapse_survivor(
-    codes: wp.array[wp.int32], u: wp.int32, v: wp.int32, is_boundary: wp.bool
+    feature_count: wp.array[wp.int32], u: wp.int32, v: wp.int32, is_boundary: wp.bool
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
     # Which endpoint of edge ``(u, v)`` survives the collapse, which one is removed, and whether
     # the survivor's position is pinned or free -- the feature rule alone, with no geometry in it.
@@ -1524,7 +1537,13 @@ def collapse_survivor(
     # One rule, two decimators: ``collapse_candidates`` and ``quadric_collapse_candidates`` differ
     # only in what they do with ``COLLAPSE_FREE`` -- one takes the midpoint, the other minimizes the
     # summed quadric.
-    return collapse_survivor_of_codes(codes[u], codes[v], u, v, is_boundary)
+    return collapse_survivor_of_codes(
+        finalize_vertex_codes(feature_count[u]),
+        finalize_vertex_codes(feature_count[v]),
+        u,
+        v,
+        is_boundary,
+    )
 
 
 @wp.func
@@ -1574,18 +1593,6 @@ def scatter_feature_edge_counts(
             # Every writer stores the same value, so the mask needs no atomic.
             out_boundary_vertex[v0] = True
             out_boundary_vertex[v1] = True
-
-
-@wp.func
-def finalize_vertex_codes(feature_count: wp.int32) -> wp.int32:
-    # 0 feature edges -> FREE; exactly 2 -> CREASE (on a smooth feature/boundary line);
-    # anything else (1 = feature endpoint, >=3 = junction) -> CORNER (frozen).
-    code = CORNER_VERTEX
-    if feature_count == 0:
-        code = FREE_VERTEX
-    elif feature_count == 2:
-        code = CREASE_VERTEX
-    return code
 
 
 @wp.func
@@ -1719,7 +1726,7 @@ def collapse_candidates(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    codes: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
     edge_face_count: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -1757,7 +1764,7 @@ def collapse_candidates(
 
     # Choose the surviving vertex and its target position; this decimator places a free collapse at
     # the edge midpoint, where ``quadric_collapse_candidates`` minimizes the summed quadric.
-    s, r, placement = collapse_survivor(codes, u, v, is_boundary)
+    s, r, placement = collapse_survivor(feature_count, u, v, is_boundary)
     if placement == COLLAPSE_REJECTED:
         return
     p = wp.lerp(vertices[u], vertices[v], 0.5)
@@ -2022,7 +2029,7 @@ def tangential_smooth_step(
 def smooth_free_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    codes: wp.array[wp.int32],
+    feature_count: wp.array[wp.int32],
     normals: wp.array[wp.vec3],
     ring_sum: wp.array[wp.vec3],
     ring_weight: wp.array[wp.float32],
@@ -2050,7 +2057,12 @@ def smooth_free_vertices(
     # vertex simply keeps its position, so the pass can never do worse than not running.
     v = wp.int32(wp.tid())
     proposed = tangential_smooth_step(
-        vertices[v], codes[v], normals[v], ring_sum[v], ring_weight[v], lam
+        vertices[v],
+        finalize_vertex_codes(feature_count[v]),
+        normals[v],
+        ring_sum[v],
+        ring_weight[v],
+        lam,
     )
     if move_flips_normal(vertices, faces, vertex_face_offsets, vertex_faces, v, -1, proposed):
         out_positions[v] = vertices[v]
@@ -2060,11 +2072,11 @@ def smooth_free_vertices(
 
 @wp.func
 def reproject_vertices(
-    vertex: wp.vec3, code: wp.int32, mesh_id: wp.uint64, max_dist: wp.float32
+    vertex: wp.vec3, feature_count: wp.int32, mesh_id: wp.uint64, max_dist: wp.float32
 ) -> wp.vec3:
     # Snap a free vertex back onto the closest point of the original surface, undoing the drift the
     # smoothing pass introduces. Pinned vertices and failed queries keep their position.
-    if code != FREE_VERTEX:
+    if finalize_vertex_codes(feature_count) != FREE_VERTEX:
         return vertex
     query = wp.mesh_query_point_no_sign(mesh_id, vertex, max_dist)
     if query.result:

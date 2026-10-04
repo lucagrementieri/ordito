@@ -1423,7 +1423,6 @@ def filter_mut_dif_laplacian(
     eps = 0.01 * float(od.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    adil = _launch.empty(n, dtype=wp.float64, device=device)
     adil_sum = _launch.zeros(1, dtype=wp.float64, device=device)
     nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
@@ -1445,22 +1444,17 @@ def filter_mut_dif_laplacian(
         scratch.accumulate(positions, faces, vol_ini)
         constraint = (probe, scratch, vol_ini, vol_probe, slope)
     inv_n = wp.float64(1.0 / n)
-    n_blocks = kernel_reduce.blocks_1d(n)
+    rows_per_block = kernel_smoothing.MUT_DIF_ROWS_PER_BLOCK
+    n_blocks = (n + rows_per_block - 1) // rows_per_block
     for index in range(iterations):
-        # The mean diffusion coefficient is reduced on device and consumed by the step kernel
-        # directly, so the loop body issues no host synchronisation.
-        _launch.launch(
-            kernel_smoothing.mut_dif_adil_pass,
-            dim=n,
-            inputs=[operator.offsets, operator.columns, operator.values, positions, normals],
-            outputs=[lv, adil],
-            device=device,
-        )
+        # The mean diffusion coefficient is summed on device by the pass that applies the operator
+        # and consumed by the step kernel directly, so the loop body issues no host synchronisation.
         _launch.zero_(adil_sum)
         _launch.launch_tiled(
-            kernel_reduce.SUM1D_TILED[wp.float64],
+            kernel_smoothing.mut_dif_adil_pass,
             dim=[n_blocks],
-            inputs=[adil, adil_sum],
+            inputs=[operator.offsets, operator.columns, operator.values, positions, normals],
+            outputs=[lv, adil_sum],
             block_dim=TILE_1D,
             device=device,
         )
@@ -1469,16 +1463,7 @@ def filter_mut_dif_laplacian(
         _launch.launch(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
-            inputs=[
-                positions,
-                lv,
-                adil,
-                adil_sum,
-                inv_n,
-                wp.float64(lamb),
-                normals,
-                wp.float64(eps),
-            ],
+            inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, wp.float64(eps)],
             outputs=[nxt, probe],
             device=device,
         )

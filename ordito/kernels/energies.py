@@ -359,6 +359,10 @@ def zero_at_boundary_edges(
     # Zero ``out_values`` at both endpoints of every unique edge with one halfedge -- every
     # boundary vertex, read off the halfedge counts ``internal_angles_and_sums`` leaves rather than
     # a second sort of the halfedges (``energies._zero_at_boundary``'s route).
+    #
+    # Riding this on ``cr_gradient_rows``' grid (same ``dim``, independent; a boundary edge is one
+    # whose second halfedge slot is ``-1``) was measured and declined: ``curved_hessian_energy``
+    # 1.00-1.01x on ``sphere_small`` / ``saddle`` / ``hemisphere`` / ``sphere_med``.
     e = wp.int32(wp.tid())
     if halfedge_counts[e] == 1:
         out_values[unique_edges[e, 0]] = wp.float64(0.0)

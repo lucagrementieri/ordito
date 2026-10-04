@@ -950,18 +950,19 @@ def hash_vector_rows(data: wp.array[wp.vec3], epsilon: float = 0.0) -> wp.array[
         # widest single extent rather than the whole diagonal, which matters because the row packing
         # is only injective while ``radix ** 3`` fits a ``uint64``.
         min_bound, max_bound = od.bounds.aabb(data)
-        rounded = odt.empty_2d((n, 3), wp.int32, device=data.device)
-        _launch.launch(
-            kernel_grouping.round_vec3_scaled,
-            dim=n,
-            inputs=[data, min_bound, wp.float32(1.0 / epsilon), rounded],
-            device=data.device,
-        )
         extent = max(float(max_bound[c]) - float(min_bound[c]) for c in range(3)) / epsilon
         # The device rounds a float32 product where this divides in float64; the relative slack plus
         # the half-cell of rounding covers the difference, and an over-wide radix is harmless.
         radix = int(extent * (1.0 + 1e-6)) + 3
-        return hash_indices_rows(rounded, max_index=radix, validate=False)
+        # Each vertex is rounded and packed in one pass; no ``(n, 3)`` cell table is written.
+        hashes = _launch.empty(n, dtype=wp.uint64, device=data.device)
+        _launch.launch(
+            kernel_grouping.round_pack_vec3,
+            dim=n,
+            inputs=[data, min_bound, wp.float32(1.0 / epsilon), wp.uint64(radix), hashes],
+            device=data.device,
+        )
+        return hashes
     hashes = _launch.empty(data.size, dtype=wp.uint64, device=data.device)
     _launch.map(kernel_grouping.pack_vec3, data, out=hashes)
     return hashes

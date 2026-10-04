@@ -1198,6 +1198,41 @@ def plane_crossed_halfedge_keys(
             slot += 1
 
 
+@wp.func
+def plane_face_above(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    tolerance: wp.float32,
+    f: wp.int32,
+) -> wp.bool:
+    # After the split no face straddles the plane, so the *largest-magnitude* vertex dot decides the
+    # side for the whole face. Reading the extremum rather than a sum or a centroid keeps a sliver
+    # face -- two crossing vertices at dot 0 and one real vertex just off the plane -- on the side
+    # its real vertex is on, where a centroid would divide the offset by three and a sum would let
+    # two rounding-level zeros outvote it. The dots are taken here, per corner, rather than read
+    # from a per-vertex buffer: the appended crossing points sit on the plane by construction, so a
+    # buffer over the grown vertex array would be one more map and allocation for the same values.
+    extreme = wp.float32(0.0)
+    for corner in range(3):
+        value = point_plane_dot(vertices[faces[f * 3 + corner]], plane_normal, plane_origin)
+        if wp.abs(value) > wp.abs(extreme):
+            extreme = value
+
+    side = kernel_array.sign_with_tolerance(extreme, tolerance)
+    if side != wp.int32(0):
+        return side > wp.int32(0)
+
+    # The face lies *in* the plane, so its vertices give no answer. Decide from its own normal, the
+    # same tie-break ``resolve_on_plane_faces`` applies (``on_plane_face_side``), so that the
+    # ``above`` block of this split holds exactly the faces ``slice_mesh_with_plane`` keeps. Unlike
+    # the clip, a split has nowhere to drop a degenerate face, so it goes to ``above`` by
+    # convention rather than being excluded.
+    is_below, degenerate = on_plane_face_side(vertices, faces, plane_normal, f)
+    return degenerate or is_below
+
+
 @wp.kernel
 def emit_plane_split_faces(
     faces: wp.array[wp.int32],
@@ -1206,12 +1241,21 @@ def emit_plane_split_faces(
     cut_vertices: wp.array[wp.int32],
     face_offsets: wp.array[wp.int32],
     vertices: wp.array[wp.vec3],
+    plane_normal: wp.vec3,
+    plane_origin: wp.vec3,
+    split_faces: wp.array[wp.int32],
     out_faces: wp.array2d[wp.int32],
     out_index: wp.array[wp.int32],
+    out_above: wp.array[wp.bool],
 ) -> None:
     # ``remesh.emit_size_faces`` with each crossed halfedge's new vertex read from its dense slot
     # (``plane_crossed_halfedge_keys``) rather than through a mesh-wide unique-edge table: the same
     # templates, children and rows. ``out_index`` is ``None`` (no provenance) for the plane split.
+    #
+    # Each child is labelled by ``plane_face_above`` as soon as this thread has written it, which
+    # is what ``label_faces_by_plane_side`` would answer for that row in a launch of its own: the
+    # label reads only the row's own corners and the finished ``vertices``. ``split_faces`` is
+    # ``out_faces``' flat buffer, the form the label (and the face normal under it) indexes.
     f = wp.int32(wp.tid())
     slot = face_offsets[f] - f
     mv = wp.vec3i(-1, -1, -1)
@@ -1220,7 +1264,12 @@ def emit_plane_split_faces(
             mv[k] = cut_vertices[slot]
             slot += 1
     fv = wp.vec3i(faces[f * 3 + 0], faces[f * 3 + 1], faces[f * 3 + 2])
-    write_split_children(fv, mv, vertices, face_offsets[f], f, out_faces, out_index)
+    first = face_offsets[f]
+    write_split_children(fv, mv, vertices, first, f, out_faces, out_index)
+    for row in range(first, face_offsets[f + 1]):
+        out_above[row] = plane_face_above(
+            vertices, split_faces, plane_normal, plane_origin, tolerance, row
+        )
 
 
 @wp.kernel
@@ -1240,30 +1289,46 @@ def remap_to_first_crossing(
         out_faces[k] = vertex_base + first[slot[index - vertex_base]]
 
 
-@wp.kernel
-def section_vertex_mask(
-    source: wp.array[wp.int32], shifted: wp.array[wp.float32], out_on_section: wp.array[wp.bool]
-) -> None:
+@wp.func
+def on_level_set(source: wp.array[wp.int32], shifted: wp.array[wp.float32], v: wp.int32) -> wp.bool:
     # Whether a clipped mesh's vertex lies on the level set: a crossing point (its source is past
-    # the input's vertices) or an input vertex whose re-zeroed value is exactly zero.
-    v = wp.int32(wp.tid())
+    # the input's vertices) or an input vertex whose re-zeroed value is exactly zero. Evaluated at
+    # each read rather than tabulated per vertex: its two readers touch only the section's faces
+    # and rim, and a table cost a launch and a mesh-sized allocation for them.
     origin = source[v]
-    out_on_section[v] = origin >= shifted.shape[0] or shifted[origin] == wp.float32(0.0)
+    return origin >= shifted.shape[0] or shifted[origin] == wp.float32(0.0)
 
 
 @wp.kernel
 def section_face_flags(
-    faces: wp.array[wp.int32], on_section: wp.array[wp.bool], out_flags: wp.array[wp.int32]
+    faces: wp.array[wp.int32],
+    source: wp.array[wp.int32],
+    shifted: wp.array[wp.float32],
+    out_flags: wp.array[wp.int32],
 ) -> None:
-    # 1 for a face with at least two corners on the level set (``section_vertex_mask``), else 0:
-    # every face holding an edge with both ends on the section, so the boundary status of such an
-    # edge is decided among these faces alone. Written straight into the scan's buffer.
+    # 1 for a face with at least two corners on the level set (``on_level_set``), else 0: every
+    # face holding an edge with both ends on the section, so the boundary status of such an edge
+    # is decided among these faces alone. Written straight into the scan's buffer.
     f = wp.int32(wp.tid())
     corners = wp.int32(0)
     for k in range(3):
-        if on_section[faces[3 * f + k]]:
+        if on_level_set(source, shifted, faces[3 * f + k]):
             corners += 1
     out_flags[f] = wp.where(corners >= 2, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def section_rim_edges(
+    rim: wp.array2d[wp.int32],
+    source: wp.array[wp.int32],
+    shifted: wp.array[wp.float32],
+    out_on_section: wp.array[wp.bool],
+) -> None:
+    # Whether rim edge ``e`` has both ends on the level set, i.e. is a section edge.
+    e = wp.int32(wp.tid())
+    out_on_section[e] = on_level_set(source, shifted, rim[e, 0]) and on_level_set(
+        source, shifted, rim[e, 1]
+    )
 
 
 @wp.kernel
@@ -1289,32 +1354,10 @@ def label_faces_by_plane_side(
     tolerance: wp.float32,
     out_above: wp.array[wp.bool],
 ) -> None:
-    # After the split no face straddles the plane, so the *largest-magnitude* vertex dot decides the
-    # side for the whole face. Reading the extremum rather than a sum or a centroid keeps a sliver
-    # face -- two crossing vertices at dot 0 and one real vertex just off the plane -- on the side
-    # its real vertex is on, where a centroid would divide the offset by three and a sum would let
-    # two rounding-level zeros outvote it. The dots are taken here, per corner, rather than read
-    # from a per-vertex buffer: the appended crossing points sit on the plane by construction, so a
-    # buffer over the grown vertex array would be one more map and allocation for the same values.
+    # ``plane_face_above`` per face, for the split that cut nothing; a split that cut labels each
+    # child in ``emit_plane_split_faces`` as it writes it.
     f = wp.int32(wp.tid())
-    extreme = wp.float32(0.0)
-    for corner in range(3):
-        value = point_plane_dot(vertices[faces[f * 3 + corner]], plane_normal, plane_origin)
-        if wp.abs(value) > wp.abs(extreme):
-            extreme = value
-
-    side = kernel_array.sign_with_tolerance(extreme, tolerance)
-    if side != wp.int32(0):
-        out_above[f] = side > wp.int32(0)
-        return
-
-    # The face lies *in* the plane, so its vertices give no answer. Decide from its own normal, the
-    # same tie-break ``resolve_on_plane_faces`` applies (``on_plane_face_side``), so that the
-    # ``above`` block of this split holds exactly the faces ``slice_mesh_with_plane`` keeps. Unlike
-    # the clip, a split has nowhere to drop a degenerate face, so it goes to ``above`` by
-    # convention rather than being excluded.
-    is_below, degenerate = on_plane_face_side(vertices, faces, plane_normal, f)
-    out_above[f] = degenerate or is_below
+    out_above[f] = plane_face_above(vertices, faces, plane_normal, plane_origin, tolerance, f)
 
 
 @wp.func

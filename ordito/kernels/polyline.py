@@ -1392,6 +1392,12 @@ def accumulate_loop_frames(
     # ``loop_frame`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]``, one block per
     # loop (``dim=(n_loops,)`` at ``LOOP_FRAME_BLOCK_DIM``), into row ``r`` of ``RING_SUMS_SIZE``
     # slots: each loop's frame is the one ``accumulate_loop_frame`` gives it alone, bit for bit.
+    #
+    # Folding this into ``triangulate_rings``' prologue (the frame over the first
+    # ``LOOP_FRAME_BLOCK_DIM`` of its lanes, the rest contributing nothing, so the same triangle
+    # sets) was measured and declined: ``polyline_triangulate_from_offsets`` 0.90-0.97x at 8 x 64,
+    # 64 x 200 and 512 x 30 points. The frame's ``float64`` reduction weighs on the 1 024-lane ear
+    # kernel more than the launch it saves.
     ring, lane = wp.tid()
     start = offsets[ring]
     n = offsets[ring + 1] - start

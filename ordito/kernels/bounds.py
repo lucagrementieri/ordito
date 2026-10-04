@@ -284,6 +284,11 @@ def oriented_box_losses(
     # Score every candidate's box under the requested objective, one thread per candidate. Keeps
     # the ``(n_candidates, 6)`` extent table on the device, where the only consumers -- the seeding
     # walk below and each refinement round -- already live.
+    #
+    # Scoring the table in ``oriented_box_seed_chains``' prologue instead (each lane its own stride,
+    # so no barrier) was measured and declined: 0.90-1.01x on ``oriented_bounding_box`` from
+    # ``bunny_decimated`` to ``dragon``, byte-identical. The one block's lanes score 4 096 boxes
+    # where this grid spreads them over the device, which costs what the launch saved.
     box = wp.int32(wp.tid())
     out_loss[box] = box_objective_loss(packed_box_sides(corners, box), objective)
 

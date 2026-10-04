@@ -1403,6 +1403,8 @@ def split_mesh_with_plane(
             device=device,
         )
         new_faces = _launch.empty(3 * n_out, dtype=wp.int32, device=device)
+        above = _launch.empty(n_out, dtype=wp.bool, device=device)
+        # The same launch labels each child as it writes it.
         _launch.launch(
             kernel_intersections.emit_plane_split_faces,
             dim=n_faces,
@@ -1413,18 +1415,22 @@ def split_mesh_with_plane(
                 cut_vertices,
                 face_offsets,
                 new_vertices,
+                plane_normal,
+                plane_origin,
+                new_faces,
                 new_faces.reshape((n_out, 3)),
                 None,
+                above,
             ],
             device=device,
         )
+        return new_vertices, new_faces, above
 
-    n_out = new_faces.size // 3
-    above = _launch.empty(n_out, dtype=wp.bool, device=device)
+    above = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.launch(
         kernel_intersections.label_faces_by_plane_side,
-        dim=n_out,
-        inputs=[new_vertices, new_faces, plane_normal, plane_origin, wp.float32(tolerance), above],
+        dim=n_faces,
+        inputs=[new_vertices, new_faces, plane_normal, plane_origin, tol, above],
         device=device,
     )
     return new_vertices, new_faces, above
@@ -1551,13 +1557,6 @@ def clip_mesh_with_field(
     # boundary edges with both ends on the level set (a crossing point, or an input vertex whose
     # shifted value is exactly zero), chained into cycles. Any other boundary edge was the input's
     # and stays open, and a section that runs into one is a chain, not a cycle, and stays open too.
-    on_section = _launch.empty(new_vertices.size, dtype=wp.bool, device=device)
-    _launch.launch(
-        kernel_intersections.section_vertex_mask,
-        dim=new_vertices.size,
-        inputs=[source, shifted, on_section],
-        device=device,
-    )
     # An edge with both ends on the section lies only in faces with two corners on it, so its
     # boundary status is decided among those faces: the rim is taken over them alone, not the whole
     # mesh, and only its section edges are kept.
@@ -1566,7 +1565,7 @@ def clip_mesh_with_field(
     _launch.launch(
         kernel_intersections.section_face_flags,
         dim=n_faces,
-        inputs=[new_faces, on_section, scanned],
+        inputs=[new_faces, source, shifted, scanned],
         device=device,
     )
     _launch.array_scan(scanned, scanned, inclusive=True)
@@ -1582,14 +1581,18 @@ def clip_mesh_with_field(
         device=device,
     )
     rim = od.boundary.oriented_boundary_edges(new_vertices, touching)
-    # Host bookkeeping over the touching faces' rim alone: its edges and their endpoints' flags
-    # cross in two small copies, and the section edges go back in one.
+    # Host bookkeeping over the touching faces' rim alone: its edges and their section flags cross
+    # in two small copies, and the section edges go back in one.
     if rim.shape[0] == 0:
         return new_vertices, new_faces
-    rim_np = rim.numpy()
-    rim_flat = cast("wp.array[wp.int32]", rim.flatten())
-    ends_np = cast("wp.array[wp.bool]", od.array.gather(on_section, rim_flat)).numpy()
-    section_np = rim_np[ends_np[0::2] & ends_np[1::2]]
+    on_section = _launch.empty(rim.shape[0], dtype=wp.bool, device=device)
+    _launch.launch(
+        kernel_intersections.section_rim_edges,
+        dim=rim.shape[0],
+        inputs=[rim, source, shifted, on_section],
+        device=device,
+    )
+    section_np = rim.numpy()[on_section.numpy()]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
     # The section's vertices are numbered compactly for the chaining, so its tables are sized by

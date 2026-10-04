@@ -437,22 +437,27 @@ def pack_sorted_face_keys_and_order(
 
 
 @wp.kernel
-def round_vec3_scaled(
+def round_pack_vec3(
     vertices: wp.array[wp.vec3],
     origin: wp.vec3,
     inv_epsilon: wp.float32,
-    out_rounded: wp.array2d[wp.int32],
+    max_index: wp.uint64,
+    out_packed: wp.array[wp.uint64],
 ) -> None:
     # Snapping relative to `origin` -- the data's own minimum corner -- rather than to the
     # coordinate origin does two things. The cell indices come out non-negative, which the row
     # packing needs since it treats a row as digits in a positive radix. And the product stays the
     # size of the data's *extent* instead of its distance from zero: float32 carries about 7 digits,
-    # so scaling a coordinate near 100 by 1e6 has already quantised away the low bits.
+    # so scaling a coordinate near 100 by 1e6 has already quantised away the low bits. The cell row
+    # is packed where it is rounded, through the same `pack_index_digit` `pack_indices` folds, so
+    # the key equals packing a stored `(n, 3)` cell table and no table is written.
     tid = wp.int32(wp.tid())
     v = (vertices[tid] - origin) * inv_epsilon
-    out_rounded[tid, 0] = wp.int32(wp.round(v[0]))
-    out_rounded[tid, 1] = wp.int32(wp.round(v[1]))
-    out_rounded[tid, 2] = wp.int32(wp.round(v[2]))
+    packed = wp.uint64(0)
+    power = wp.uint64(1)
+    for c in range(3):
+        packed, power = pack_index_digit(packed, power, wp.int32(wp.round(v[c])), max_index)
+    out_packed[tid] = packed
 
 
 # Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
