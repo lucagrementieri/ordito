@@ -1654,11 +1654,11 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(
     """
     Class A on the solid, against ``clip_closed_surface`` -- VTK's capped plane clip.
 
-    The two cappers triangulate the section differently (a min-weight interval DP here, VTK's own
-    there), so the comparison is the vertex set, the face count and the *solid*: the same points
-    (matched both ways by nearest neighbour), the same count and the same volume to seven digits at
-    every level probed. Watertightness and edge-manifoldness are asserted on
-    both sides, which is what the cap exists to restore and what a cracked section rim would break.
+    A height field's section is planar, so both cappers triangulate it as a polygon, each with its
+    own triangulator; the comparison is therefore the vertex set, the face count and the *solid*:
+    the same points (matched both ways by nearest neighbour), the same count and the same volume to
+    seven digits at every level probed. Watertightness and edge-manifoldness are asserted on both
+    sides, which is what the cap exists to restore and what a cracked section rim would break.
 
     The level is a height quantile, so it falls between vertices at irregular offsets: the case that
     broke the earlier cap, which welded the clip's output with a relative-bucket tolerance and so
@@ -1695,6 +1695,81 @@ def test_clip_mesh_with_field_capped_matches_pyvista_clip_closed_surface(
         mesh_wp.points, mesh_wp.indices, _height_field(mesh_tm, device), isovalue
     )
     assert capped_f.size > uncapped_f.size
+
+
+@pytest.mark.parametrize("height_fraction", [0.3, 0.81])
+def test_clip_mesh_with_field_planar_cap_matches_the_min_weight_cap(
+    device: str, height_fraction: float, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a planar section's ear clip closes the solid the min-weight fill does.
+
+    Forcing every loop through the min-weight fill (a negative planarity tolerance) is the second
+    entry point; the pyvista comparison above carries the oracle for the default one. Both caps
+    hold ``B - 2`` triangles per loop over the same points, so the face count, watertightness,
+    winding consistency and volume must agree; the triangles themselves differ.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    isovalue = float(np.quantile(mesh_tm.vertices[:, 2], height_fraction))
+    field = _height_field(mesh_tm, device)
+    fills: list[int] = []
+    fill = od.holes.fill_loops_min_weight
+
+    def counted_fill(*args: Any, **kwargs: Any) -> wp.array[wp.int32]:
+        fills.append(1)
+        return fill(*args, **kwargs)
+
+    monkeypatch.setattr(od.holes, "fill_loops_min_weight", counted_fill)
+    ear_v, ear_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, field, isovalue, cap=True
+    )
+    assert not fills  # a plane field's section never reaches the min-weight fill
+    monkeypatch.setattr(od.intersection, "_CAP_PLANAR_TOLERANCE", -1.0)
+    dp_v, dp_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, field, isovalue, cap=True
+    )
+    assert fills
+
+    ear_tm = warp_to_trimesh(ear_v, ear_f)
+    dp_tm = warp_to_trimesh(dp_v, dp_f)
+    assert ear_f.size == dp_f.size
+    assert ear_tm.is_watertight
+    assert ear_tm.is_winding_consistent
+    assert dp_tm.is_watertight
+    assert dp_tm.is_winding_consistent
+    assert np.isclose(ear_tm.volume, dp_tm.volume, rtol=1e-6)
+
+
+def test_clip_mesh_with_field_non_planar_section_takes_the_min_weight_cap(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: which cap a section gets is ordito's own dispatch.
+
+    A wavy level set's section is not planar, so the ear clip (which would triangulate a shadow of
+    it) must not be used; the min-weight fill must be, and must still close the solid.
+    """
+    mesh_tm = tm.creation.icosphere(subdivisions=4, radius=1.0)
+    mesh_wp = trimesh_to_warp(mesh_tm, device)
+    vertices_np = mesh_tm.vertices
+    wavy = vertices_np[:, 2] + 0.2 * np.sin(4.0 * vertices_np[:, 0])
+    field = wp.array(np.ascontiguousarray(wavy, dtype=np.float32), dtype=wp.float32, device=device)
+    fills: list[int] = []
+    fill = od.holes.fill_loops_min_weight
+
+    def counted_fill(*args: Any, **kwargs: Any) -> wp.array[wp.int32]:
+        fills.append(1)
+        return fill(*args, **kwargs)
+
+    monkeypatch.setattr(od.holes, "fill_loops_min_weight", counted_fill)
+    capped_v, capped_f = od.intersection.clip_mesh_with_field(
+        mesh_wp.points, mesh_wp.indices, field, 0.1, cap=True
+    )
+    assert fills
+    capped_tm = warp_to_trimesh(capped_v, capped_f)
+    assert capped_tm.is_watertight
+    assert capped_tm.is_winding_consistent
 
 
 def _vtk_clip_closed_surface(

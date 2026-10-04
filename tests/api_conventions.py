@@ -520,6 +520,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # incremented across launches -- the ``rdp_begin_round`` / ``rdp_split_spans`` case below,
     # under the same name.
     ("polyline", "ear_loop_continue"): frozenset({"state"}),
+    # ``compute_ears`` raises the round's "some ear is good" flag in the same carried ``state``
+    # (``select_independent`` reads it, ``ear_loop_continue`` lowers it); the answer is
+    # ``out_is_ear``.
+    ("polyline", "compute_ears"): frozenset({"state"}),
     # Round, pass 1 of 4 of the level-synchronous Ramer-Douglas-Peucker split: only arms the
     # per-span accumulators (``out_span_max`` / ``out_span_argmax``) and advances the loop's own
     # [rounds run, condition] pair -- the same ``state`` buffer ``rdp_split_spans`` and

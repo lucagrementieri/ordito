@@ -11,6 +11,7 @@ from ordito.kernels.array import (
     loop_point,
     lowbias32,
     scanned_count,
+    to_vec3d,
 )
 from ordito.kernels.predicates import (
     closest_point_on_segment,
@@ -1143,40 +1144,120 @@ def ring_point(points2d: wp.array[wp.vec2], k: wp.int32, mirror: wp.int32) -> wp
     return p
 
 
+# ``ear_grade``'s answers. ``EAR_THIN_ULPS`` is the height, in float32 ulps of the corner's 2D
+# coordinates, at or below which an ear counts as thin: where a strictly convex corner's orientation
+# stops being a property of the points and becomes one of their rounding. More than one ulp because
+# the points were rounded at their 3D magnitude, which a centred ring's coordinates understate.
+# Swept on planar sections of the scan meshes (slivers at most one ulp of the ring's scale, on
+# ``dragon`` / ``happy_buddha`` / ``lucy``): 1 ulp left 8 / 6 / 91, **4 left 0 / 1 / 10**, 16 left
+# 0 / 1 / 17 and 64 left 1 / 3 / 70 (deferring too much forces thin ears later); the min-weight
+# fill leaves 1 / 2 / 40 on the same loops.
+EAR_NONE = wp.constant(wp.int32(0))
+EAR_THIN = wp.constant(wp.int32(1))
+EAR_GOOD = wp.constant(wp.int32(2))
+EAR_THIN_ULPS = wp.constant(wp.float32(4.0))
+FLOAT32_EPS = wp.constant(wp.float32(1.1920929e-07))  # numpy.finfo(numpy.float32).eps
+
+
 @wp.func
-def is_ear_at(
+def corner_is_thin(pa: wp.vec2, pi: wp.vec2, pb: wp.vec2, twice_area: wp.float32) -> wp.bool:
+    # Whether triangle (a, i, b), of signed doubled area ``twice_area``, is at most
+    # ``EAR_THIN_ULPS`` float32 ulps of its coordinates' magnitude high over its longest side: its
+    # orientation is the points' rounding, not their geometry. One rule for the ear test
+    # (``ear_grade``) and the convex fast path (``accumulate_turning_angle``), whose fan would
+    # emit exactly these triangles as slivers.
+    # height <= bound  <=>  (2 * area)^2 <= bound^2 * longest^2, without a square root.
+    longest_sq = wp.max(wp.length_sq(pi - pa), wp.max(wp.length_sq(pb - pi), wp.length_sq(pa - pb)))
+    scale = wp.max(
+        wp.max(wp.max(wp.abs(pa[0]), wp.abs(pa[1])), wp.max(wp.abs(pi[0]), wp.abs(pi[1]))),
+        wp.max(wp.abs(pb[0]), wp.abs(pb[1])),
+    )
+    bound = EAR_THIN_ULPS * FLOAT32_EPS * scale
+    return twice_area * twice_area <= bound * bound * longest_sq
+
+
+# ``ear_corner``'s two answers that still need the containment test (``ear_grade`` /
+# ``ear_grade_grid`` resolve them to ``EAR_GOOD`` / ``EAR_THIN`` or ``EAR_NONE``).
+EAR_TEST_THIN = wp.constant(wp.int32(3))
+EAR_TEST_GOOD = wp.constant(wp.int32(4))
+
+
+@wp.func
+def ear_corner(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    check_thin: wp.int32,
+) -> wp.int32:
+    # Everything in corner (a, i, b)'s ear grade except the containment test: ``EAR_NONE`` /
+    # ``EAR_THIN`` when the corner alone decides it, else ``EAR_TEST_GOOD`` / ``EAR_TEST_THIN``,
+    # the grade it gets when no other active vertex lies inside triangle (a, i, b). Shared by the
+    # ring walk (``ear_grade``) and the grid walk (``ear_grade_grid``), which differ only in how
+    # they find the vertices to test.
+    #
+    # An ear is *thin* when its height over its longest side is within ``EAR_THIN_ULPS`` float32
+    # ulps of its coordinates' magnitude: three points collinear to the input's rounding, whose
+    # strict convexity is a rounding accident and whose triangle is a zero-area sliver with an
+    # arbitrary normal. A round clips thin ears only when it has no good one (``ear_selected``),
+    # so a sliver is emitted only where the ring leaves no other choice. Thinness is tested before
+    # the containment walk, and a thin corner skips the walk (reads ``EAR_NONE``) unless
+    # ``check_thin`` is set -- which the loop does only after a round that found no good ear, the
+    # one kind of round that could clip it. A thin corner would otherwise pay the walk in every
+    # round it sits deferred.
+    a = left[i]
+    b = right[i]
+    if a == b or a == i or b == i:
+        return EAR_NONE
+    pa = ring_point(points2d, a, mirror)
+    pi = ring_point(points2d, i, mirror)
+    pb = ring_point(points2d, b, mirror)
+    twice_area = orient2d(pa, pi, pb)
+    if twice_area <= 0:
+        # A corner on a neighbour (a zero-length side, so a zero area) is removable whatever
+        # surrounds it: its triangle is a segment, so retiring it leaves the polygon's shape
+        # unchanged. It is never strictly convex, so without this a ring holding such a pair
+        # stalls once nothing else is clippable; as a thin ear it goes only when nothing better
+        # is left.
+        if pi == pa or pi == pb:
+            return EAR_THIN
+        return EAR_NONE
+    if corner_is_thin(pa, pi, pb, twice_area):
+        if check_thin == 0:
+            return EAR_NONE
+        return EAR_TEST_THIN
+    return EAR_TEST_GOOD
+
+
+@wp.func
+def unblocked_grade(corner: wp.int32) -> wp.int32:
+    # The grade of a corner ``ear_corner`` sent to the containment test that found it empty.
+    return wp.where(corner == EAR_TEST_THIN, EAR_THIN, EAR_GOOD)
+
+
+@wp.func
+def ring_blocks_ear(
     points2d: wp.array[wp.vec2],
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
     i: wp.int32,
-    n: wp.int32,
     mirror: wp.int32,
 ) -> wp.bool:
-    # Corner (a, i, b) is an ear iff it is strictly convex and no other active vertex lies
-    # strictly inside triangle (a, i, b). Equivalent to libigl's edge-intersection walk for a
+    # Whether an active vertex other than the corner's own lies in triangle (a, i, b): a walk of
+    # the remaining ring from R[b] up to a. Equivalent to libigl's edge-intersection walk for a
     # simple polygon, but simpler to evaluate in parallel per corner.
     #
-    # This walk is O(active ring size) per convex candidate corner (a reflex one returns above,
-    # in O(1)), so the round with the most active convex candidates -- always round 0 on a ring
-    # that is not fully convex, since ``compute_ears`` is launched at ``dim=n`` -- costs O(n) per
-    # thread across up to n threads: **O(n^2) total device work**. Measured on a ring built to
-    # maximize it, ``polyline_triangulate`` stays close to linear in wall clock while the device
-    # still has spare resident threads to hide the O(n) longest thread behind, and turns quadratic
-    # past that point. Every polyline this package's own benchmark axis exercises sits inside the
-    # near-linear regime; a fix would need a spatially accelerated ear test (a real data structure
-    # over the active ring, not a topological linked-list walk) rather than a tuning constant, so
-    # this is left as a documented limitation rather than rewritten.
+    # O(active ring size) per convex candidate corner, so the round with the most active convex
+    # candidates -- always round 0 on a ring that is not fully convex -- costs O(n) per thread
+    # across up to n threads: O(n^2) total device work. ``ear_grade_grid`` replaces it with a walk
+    # of the cells the triangle's box overlaps on the multi-launch path.
     a = left[i]
     b = right[i]
-    if a == b or a == i or b == i:
-        return False
     pa = ring_point(points2d, a, mirror)
     pi = ring_point(points2d, i, mirror)
     pb = ring_point(points2d, b, mirror)
-    if orient2d(pa, pi, pb) <= 0:
-        return False
-    # Walk the remaining ring from R[b] up to a, skipping the ear's own vertices.
     j = right[b]
     while j != a:
         if (
@@ -1184,32 +1265,63 @@ def is_ear_at(
             and j != i
             and point_in_triangle(pa, pi, pb, ring_point(points2d, j, mirror))
         ):
-            return False
+            return True
         j = right[j]
-    return True
+    return False
 
 
 @wp.func
-def project_to_plane_2d(point: wp.vec3, center: wp.vec3, u: wp.vec3, v: wp.vec3) -> wp.vec2:
-    d = point - center
-    return wp.vec2(wp.dot(d, u), wp.dot(d, v))
+def ear_grade(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    check_thin: wp.int32,
+) -> wp.int32:
+    # ``EAR_GOOD`` / ``EAR_THIN`` / ``EAR_NONE`` for corner (a, i, b). It is an ear iff it is
+    # strictly convex (``ear_corner``) and no other active vertex lies inside triangle (a, i, b)
+    # (``ring_blocks_ear``).
+    corner = ear_corner(points2d, left, right, i, mirror, check_thin)
+    if corner < EAR_TEST_THIN:
+        return corner
+    if ring_blocks_ear(points2d, left, right, active, i, mirror):
+        return EAR_NONE
+    return unblocked_grade(corner)
 
 
 # Slot layout of the one float32 buffer ``polyline_triangulate`` / ``triangulate_polygon`` read
-# back once: the plane frame's seven sums (``accumulate_loop_frame``), then the ring's turning
+# back once: the plane frame (``accumulate_loop_frame``: Newell normal, length-weighted centre and
+# total length), then the ring's turning
 # angle and two reflex counts (``accumulate_turning_angle``), then the closing flag -- ``1.0`` when
-# the input's last point repeats its first and the ring is one point shorter. The flag rides in a
-# float slot so the whole prologue is one readback; a 0/1 value is exact in float32.
+# the input's last point repeats its first and the ring is one point shorter, then the ring's box
+# relative to its first point (``accumulate_turning_angle``), which sizes the ear grid. The flag
+# rides in a float slot so the whole prologue is one readback; a 0/1 value is exact in float32.
 FRAME_NORMAL = wp.constant(wp.int32(0))
-FRAME_WEIGHTED_MIDPOINT = wp.constant(wp.int32(3))
+FRAME_CENTER = wp.constant(wp.int32(3))
 FRAME_LENGTH = wp.constant(wp.int32(6))
 RING_TURNING = wp.constant(wp.int32(7))
 RING_CLOSING = wp.constant(wp.int32(10))
-RING_SUMS_SIZE = 11
+RING_EXTENT = wp.constant(wp.int32(11))
+RING_SUMS_SIZE = 15
 
 
-@wp.kernel
-def accumulate_loop_frame(polyline: wp.array[wp.vec3], out_sums: wp.array[wp.float32]) -> None:
+# Lanes of the single block ``accumulate_loop_frame`` runs as, and the seven ``float64`` sums it
+# reduces in one ``block_sum``.
+LOOP_FRAME_BLOCK_DIM = 256
+LoopFrameSums = wp.types.vector(length=7, dtype=wp.float64)
+
+
+@wp.func
+def loop_frame(
+    polyline: wp.array[wp.vec3],
+    start: wp.int32,
+    n: wp.int32,
+    lane: wp.int32,
+    out_sums: wp.array[wp.float32],
+    base: wp.int32,
+) -> None:
     # Over the loop of ``n_ring`` distinct vertices: the input minus a repeated closing point, which
     # this kernel detects itself (``ring_closing_flag``) and publishes in ``RING_CLOSING`` for the
     # caller's one readback, so the ring length never costs a readback of its own.
@@ -1217,43 +1329,97 @@ def accumulate_loop_frame(polyline: wp.array[wp.vec3], out_sums: wp.array[wp.flo
     # Newell's normal is cyclic -- element i takes the edge (i, (i + 1) % n_ring), so the
     # wrap-around edge is element n_ring - 1 and no closing vertex has to be appended first. The
     # length-weighted centroid deliberately is *not* cyclic: it runs over the n_ring - 1 open
-    # segments, which is what ``polyline_centroid`` (``closed=False``) computes and what this
-    # function has always used.
+    # segments, which is what ``polyline_centroid`` (``closed=False``) computes.
     #
-    # Lane-strided single-slot reduction -- see ``accumulate_radius_frame`` for the shape and why
-    # no device branch is needed. The two are not one kernel: this one wraps its Newell pairs over
-    # the ``n_ring`` distinct vertices, so a repeated closing point's pair ends on ``polyline[0]``,
-    # where that one ends on the repeated point itself -- equal only within ``allclose``'s
-    # tolerance, so the sums differ -- and it also publishes the closing flag.
-    chunk, lane = wp.tid()
-    n = polyline.shape[0]
-    closing = ring_closing_flag(polyline[0], polyline[n - 1])
+    # The frame decides every ear the clipper takes, so it must be the same frame on every run and
+    # accurate enough not to manufacture near-collinear corners. Hence three choices:
+    # - **One block** (launched ``dim=(1,)``, ``LOOP_FRAME_BLOCK_DIM`` lanes striding the whole
+    #   ring), reduced by one ``block_sum`` and stored, not committed: per-block partials committed
+    #   by float atomics summed in arrival order, so the frame (and with it the triangulation,
+    #   occasionally a partial one) moved from run to run.
+    # - **Relative to the ring's first point.** Both sums are translation-invariant
+    #   (``sum (p_i - o) x (p_{i+1} - o)`` is Newell's normal for any ``o``), and centring removes
+    #   the cancellation of cross products of large absolute coordinates.
+    # - **``float64`` accumulation**, narrowed to ``float32`` once at the store.
+    #
+    # The loop is ``polyline[start : start + n]`` and its sums go to ``out_sums[base:]``, one
+    # ``RING_SUMS_SIZE`` row: ``accumulate_loop_frame`` passes the whole input and row 0,
+    # ``accumulate_loop_frames`` one packed loop per block. Every lane of the block calls it.
+    closing = ring_closing_flag(polyline[start], polyline[start + n - 1])
     n_ring = n - closing
-    if chunk == 0 and lane == 0:
-        out_sums[RING_CLOSING] = wp.float32(closing)
-    offset, count = block_chunk_1d(n_ring, chunk)
-    if count <= 0:
-        return
-    normal = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    weighted = wp.vec3(wp.float32(0.0), wp.float32(0.0), wp.float32(0.0))
-    length_total = wp.float32(0.0)
-    for k in range(lane, count, wp.block_dim()):
-        i = offset + k
-        start = polyline[i]
-        normal += wp.cross(start, polyline[loop_point(i + 1, n_ring)])
+    origin = to_vec3d(polyline[start])
+    normal = wp.vec3d()
+    weighted = wp.vec3d()
+    length_total = wp.float64(0.0)
+    for i in range(lane, n_ring, wp.block_dim()):
+        p = to_vec3d(polyline[start + i]) - origin
+        normal += wp.cross(p, to_vec3d(polyline[start + loop_point(i + 1, n_ring)]) - origin)
         if i + 1 < n_ring:
-            midpoint, length = segment_midpoint_and_length(start, polyline[i + 1])
-            weighted += midpoint * length
+            end = to_vec3d(polyline[start + i + 1]) - origin
+            length = wp.length(end - p)
+            weighted += (p + end) * (wp.float64(0.5) * length)
             length_total += length
-    # All seven sums in one block reduction, into ``FRAME_NORMAL`` .. ``FRAME_LENGTH``.
-    commit_block_sum(
-        lane,
-        wp.vector(
+    sums = block_sum(
+        LoopFrameSums(
             normal[0], normal[1], normal[2], weighted[0], weighted[1], weighted[2], length_total
-        ),
-        out_sums,
-        FRAME_NORMAL,
+        )
     )
+    if lane == 0:
+        out_sums[base + RING_CLOSING] = wp.float32(closing)
+        for k in range(3):
+            out_sums[base + FRAME_NORMAL + k] = wp.float32(sums[k])
+        # A degenerate ring (no length) centres on its first point.
+        offset = wp.vec3d()
+        if sums[6] > wp.float64(0.0):
+            offset = wp.vec3d(sums[3], sums[4], sums[5]) / sums[6]
+        center = origin + offset
+        for k in range(3):
+            out_sums[base + FRAME_CENTER + k] = wp.float32(center[k])
+        out_sums[base + FRAME_LENGTH] = wp.float32(sums[6])
+
+
+@wp.kernel
+def accumulate_loop_frame(polyline: wp.array[wp.vec3], out_sums: wp.array[wp.float32]) -> None:
+    # ``loop_frame`` over the whole input, launched ``dim=(1,)`` at ``LOOP_FRAME_BLOCK_DIM``.
+    _block, lane = wp.tid()
+    loop_frame(polyline, 0, polyline.shape[0], lane, out_sums, 0)
+
+
+@wp.kernel
+def accumulate_loop_frames(
+    polylines: wp.array[wp.vec3], offsets: wp.array[wp.int32], out_sums: wp.array[wp.float32]
+) -> None:
+    # ``loop_frame`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]``, one block per
+    # loop (``dim=(n_loops,)`` at ``LOOP_FRAME_BLOCK_DIM``), into row ``r`` of ``RING_SUMS_SIZE``
+    # slots: each loop's frame is the one ``accumulate_loop_frame`` gives it alone, bit for bit.
+    ring, lane = wp.tid()
+    start = offsets[ring]
+    n = offsets[ring + 1] - start
+    if n < 3:
+        return
+    loop_frame(polylines, start, n, lane, out_sums, ring * RING_SUMS_SIZE)
+
+
+@wp.func
+def project_to_frame(p: wp.vec3, sums: wp.array[wp.float32], base: wp.int32) -> wp.vec2:
+    # ``p`` in the plane frame ``loop_frame`` stored at ``sums[base:]``: the centre and
+    # ``plane_basis``' ``(u, v)``, turned from the sums by every thread itself, so the frame never
+    # crosses to the host and no single-thread launch has to build it first. Every thread
+    # evaluates the same expressions on the same values, so all of them hold the one frame, bit
+    # for bit.
+    normal = wp.vec3(
+        sums[base + FRAME_NORMAL], sums[base + FRAME_NORMAL + 1], sums[base + FRAME_NORMAL + 2]
+    )
+    center = wp.vec3(
+        sums[base + FRAME_CENTER], sums[base + FRAME_CENTER + 1], sums[base + FRAME_CENTER + 2]
+    )
+    u, v = plane_basis(normal)
+    # In ``float64``, rounded once: the offset from the centre is exact there, so the only error in
+    # a 2D coordinate is its final rounding at the ring's own scale, not a ``float32`` subtraction
+    # at the coordinates' absolute magnitude -- which moved near-collinear corners enough to stall
+    # the clipper on a long section ring.
+    offset = to_vec3d(p) - to_vec3d(center)
+    return wp.vec2(wp.float32(wp.dot(offset, to_vec3d(u))), wp.float32(wp.dot(offset, to_vec3d(v))))
 
 
 @wp.kernel
@@ -1261,20 +1427,35 @@ def project_polyline_to_plane(
     polyline: wp.array[wp.vec3], sums: wp.array[wp.float32], out_points2d: wp.array[wp.vec2]
 ) -> None:
     # dim == n (the ring plus, when ``RING_CLOSING`` is set, the repeated closing point, whose
-    # projection nothing reads). Each thread turns ``accumulate_loop_frame``'s sums into the plane
-    # frame itself -- the centre and ``plane_basis``' ``(u, v)`` -- so the frame never crosses to
-    # the host and no single-thread launch has to build it first. Every thread evaluates the same
-    # expressions on the same values, so all of them hold the one frame, bit for bit.
+    # projection nothing reads): ``project_to_frame`` of every point.
     i = wp.int32(wp.tid())
-    normal = wp.vec3(sums[FRAME_NORMAL], sums[FRAME_NORMAL + 1], sums[FRAME_NORMAL + 2])
-    weighted_midpoint = wp.vec3(
-        sums[FRAME_WEIGHTED_MIDPOINT],
-        sums[FRAME_WEIGHTED_MIDPOINT + 1],
-        sums[FRAME_WEIGHTED_MIDPOINT + 2],
+    out_points2d[i] = project_to_frame(polyline[i], sums, 0)
+
+
+@wp.func
+def corner_turn(
+    points2d: wp.array[wp.vec2], start: wp.int32, i: wp.int32, n_ring: wp.int32
+) -> wp.vec3:
+    # Ring entry ``i``'s terms of ``accumulate_turning_angle``'s three sums, the ring being
+    # ``points2d[start : start + n_ring]``: the signed exterior angle between segments ``i`` and
+    # ``i + 1``, and whether the turn at vertex ``i + 1`` is reflex in the loop as it stands and in
+    # its mirror image (see ``accumulate_turning_angle``).
+    current = points2d[start + i]
+    i_next = loop_point(i + 1, n_ring)
+    nxt = points2d[start + i_next]
+    after = points2d[start + loop_point(i_next + 1, n_ring)]
+    d1 = nxt - current
+    d2 = after - nxt
+    # The turn at vertex ``i + 1``, whose ring neighbours are ``current`` and ``after``.
+    turn = orient2d(current, nxt, after)
+    thin = corner_is_thin(current, nxt, after, turn)
+    reflex = wp.where(turn < 0 or thin, wp.float32(1.0), wp.float32(0.0))
+    reflex_mirrored = wp.where(
+        orient2d(mirror_y(current), mirror_y(nxt), mirror_y(after)) < 0 or thin,
+        wp.float32(1.0),
+        wp.float32(0.0),
     )
-    u, v = plane_basis(normal)
-    center = weighted_midpoint / sums[FRAME_LENGTH]
-    out_points2d[i] = project_to_plane_2d(polyline[i], center, u, v)
+    return wp.vec3(wp.atan2(cross2(d1, d2), wp.dot(d1, d2)), reflex, reflex_mirrored)
 
 
 @wp.kernel
@@ -1292,18 +1473,20 @@ def accumulate_turning_angle(
     # evaluate. Otherwise (``polyline_triangulate``) ``accumulate_loop_frame`` already decided it on
     # the 3D input, and this kernel reads the flag it wrote.
     #
-    # The same pass counts the reflex vertices, so the convex test needs no launch of its own --
-    # and counts them twice, because which loop gets tested is not known until the total is:
-    # ``orient_ccw`` mirrors a clockwise loop in ``y`` afterwards. Slot ``RING_TURNING + 1`` counts
-    # the clockwise turns of the loop as it stands and ``RING_TURNING + 2`` those of its mirror
-    # image, each evaluated on exactly the operands ``orient_ccw`` would leave behind (a mirror is
-    # ``(x, -y)``, exact in float32), so the caller's pick -- the first when the total is ``>= 0``,
-    # the test that decides whether ``orient_ccw`` runs -- is the count of the oriented loop, bit
-    # for bit. ``-orient2d`` of the unmirrored loop is *not* a substitute: with FMA contraction on
-    # CUDA the two roundings differ, and near-collinear vertices of a fine convex ring then read as
-    # reflex. The counts are ``float32`` so every slot shares one buffer and one readback, which is
-    # exact for the only question asked of them: a sum of non-negative whole numbers is zero only
-    # when every term is.
+    # The same pass counts the reflex vertices, so the convex test needs no launch of its own. A
+    # corner too flat to orient (``corner_is_thin``, either sign) counts as reflex in both counts:
+    # the convex fast path fans from vertex 0, and a flat corner on that vertex's sides would give
+    # the fan zero-area triangles, which the ear loop defers instead. Counted twice, because which
+    # loop gets tested is not known until the total is: ``orient_ccw`` mirrors a clockwise loop in
+    # ``y`` afterwards. Slot ``RING_TURNING + 1`` counts the clockwise turns of the loop as it
+    # stands and ``RING_TURNING + 2`` those of its mirror image, each evaluated on exactly the
+    # operands ``orient_ccw`` would leave behind (a mirror is ``(x, -y)``, exact in float32), so the
+    # caller's pick -- the first when the total is ``>= 0``, the test that decides whether
+    # ``orient_ccw`` runs -- is the count of the oriented loop, bit for bit. ``-orient2d`` of the
+    # unmirrored loop is *not* a substitute: with FMA contraction on CUDA the two roundings differ,
+    # and near-collinear vertices of a fine convex ring then read as reflex. The counts are
+    # ``float32`` so every slot shares one buffer and one readback, which is exact for the only
+    # question asked of them: a sum of non-negative whole numbers is zero only when every term is.
     chunk, lane = wp.tid()
     n = points2d.shape[0]
     closing = wp.int32(0)
@@ -1321,21 +1504,28 @@ def accumulate_turning_angle(
     local = wp.float32(0.0)
     reflex = wp.float32(0.0)
     reflex_mirrored = wp.float32(0.0)
+    origin = points2d[0]
+    above = wp.vec2()
+    below = wp.vec2()
     for k in range(lane, count, wp.block_dim()):
         i = offset + k
         current = points2d[i]
-        i_next = loop_point(i + 1, n_ring)
-        nxt = points2d[i_next]
-        after = points2d[loop_point(i_next + 1, n_ring)]
-        d1 = nxt - current
-        d2 = after - nxt
-        local += wp.atan2(cross2(d1, d2), wp.dot(d1, d2))
-        # The turn at vertex ``i + 1``, whose ring neighbours are ``current`` and ``after``.
-        if orient2d(current, nxt, after) < 0:
-            reflex += wp.float32(1.0)
-        if orient2d(mirror_y(current), mirror_y(nxt), mirror_y(after)) < 0:
-            reflex_mirrored += wp.float32(1.0)
+        above = wp.max(above, current - origin)
+        below = wp.max(below, origin - current)
+        turn = corner_turn(points2d, 0, i, n_ring)
+        local += turn[0]
+        reflex += turn[1]
+        reflex_mirrored += turn[2]
     commit_block_sum(lane, wp.vec3(local, reflex, reflex_mirrored), out_sums, RING_TURNING)
+    # The ring's box relative to its first point, for the ear grid: ``max(p - p0)`` then
+    # ``max(p0 - p)``, both non-negative, so the zeroed slots are a correct seed for the
+    # ``atomic_max`` commit.
+    extent = wp.vec4(
+        block_max(above[0]), block_max(above[1]), block_max(below[0]), block_max(below[1])
+    )
+    if lane == 0:
+        for c in range(4):
+            wp.atomic_max(out_sums, RING_EXTENT + c, extent[c])
 
 
 @wp.kernel
@@ -1348,10 +1538,15 @@ def fan_triangulate(out_faces: wp.array2d[wp.int32]) -> None:
 
 
 # The ear loop's state buffer: ``array.LOOP_ROUND`` / ``LOOP_CONDITION``, then the running face
-# count ``clip_selected`` appends through. One buffer, seeded by ``init_ring``, so the loop needs no
-# host upload and no zero-fill of its own and the final count is a read of one slot.
+# count ``clip_selected`` appends through, then the round's "some ear is good" flag
+# (``compute_ears`` raises it, ``select_independent`` reads it, ``ear_loop_continue`` lowers it for
+# the next round), then whether the next round walks thin corners (set by ``ear_loop_continue``
+# after a round with no good ear; see ``ear_grade``). One buffer, seeded by ``init_ring``, so the
+# loop needs no host upload and no zero-fill of its own and the final count is a read of one slot.
 EAR_COUNT = wp.constant(wp.int32(2))
-EAR_STATE_SIZE = 3
+EAR_ANY_GOOD = wp.constant(wp.int32(3))
+EAR_CHECK_THIN = wp.constant(wp.int32(4))
+EAR_STATE_SIZE = 5
 
 
 @wp.func
@@ -1359,14 +1554,16 @@ def init_ring_slot(
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
+    start: wp.int32,
     i: wp.int32,
     n: wp.int32,
 ) -> None:
-    # Corner ``i`` of an ``n``-corner ring before any clip: linked to both neighbours and active.
-    # Shared by ``init_ring`` (one thread per corner) and ``ear_clip_block`` (one block).
-    left[i] = wp.where(i == 0, n - 1, i - 1)
-    right[i] = loop_point(i + 1, n)
-    active[i] = wp.int32(1)
+    # Corner ``i`` of the ``n``-corner ring at ``start`` before any clip: linked to both neighbours
+    # and active. Shared by ``init_ring`` (one thread per corner) and ``ear_clip_ring`` (one
+    # block).
+    left[start + i] = start + wp.where(i == 0, n - 1, i - 1)
+    right[start + i] = start + loop_point(i + 1, n)
+    active[start + i] = wp.int32(1)
 
 
 @wp.kernel
@@ -1381,7 +1578,164 @@ def init_ring(
         out_state[LOOP_ROUND] = wp.int32(0)
         out_state[LOOP_CONDITION] = wp.int32(1)
         out_state[EAR_COUNT] = wp.int32(0)
-    init_ring_slot(left, right, active, i, left.shape[0])
+        out_state[EAR_ANY_GOOD] = wp.int32(0)
+        out_state[EAR_CHECK_THIN] = wp.int32(0)
+    init_ring_slot(left, right, active, 0, i, left.shape[0])
+
+
+# The ear grid of the multi-launch clip: a uniform grid over the ring's 2D points, cells keyed in
+# row-major order and the points sorted by cell (``ear_grid_cells``, a radix sort,
+# ``ear_grid_starts``), so a corner's containment test walks only the cells its triangle's box
+# overlaps rather than the whole ring. The grid holds every ring vertex, not only the reflex ones
+# (only a reflex vertex can lie inside an ear of a simple polygon, but which corners read as reflex
+# is a property of their float32 rounding), so it tests exactly the vertices the ring walk would
+# and every ear comes out the same. ``EAR_GRID_CELLS_PER_POINT`` sets the cell count against the
+# ring length; ``EAR_GRID_PAD_ULPS`` pads a triangle's box by float32 ulps of its coordinates, the
+# margin by which a rounded ``point_in_triangle`` can accept a point outside the exact triangle.
+EAR_GRID_CELLS_PER_POINT = 2
+EAR_GRID_PAD_ULPS = wp.constant(wp.float32(64.0))
+
+
+@wp.func
+def ear_grid_cell(p: wp.vec2, origin: wp.vec2, inv_cell: wp.float32, dims: wp.vec2i) -> wp.vec2i:
+    # Grid cell of a raw (unmirrored) ring point, clamped into the grid.
+    x = wp.int32(wp.floor((p[0] - origin[0]) * inv_cell))
+    y = wp.int32(wp.floor((p[1] - origin[1]) * inv_cell))
+    return wp.vec2i(wp.clamp(x, 0, dims[0] - 1), wp.clamp(y, 0, dims[1] - 1))
+
+
+@wp.func
+def ear_grid_origin(points2d: wp.array[wp.vec2], shift: wp.vec2) -> wp.vec2:
+    # The grid's lower corner: the ring's first point less its extent below it
+    # (``accumulate_turning_angle``'s ``RING_EXTENT`` slots, which the host passes as ``shift``),
+    # formed on the device so the first point never crosses to the host. Every thread evaluates
+    # the same expression, so all hold the one origin.
+    return points2d[0] - shift
+
+
+@wp.kernel
+def ear_grid_cells(
+    points2d: wp.array[wp.vec2],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # dim == n_ring: each ring point's row-major cell key and its own index, written into the
+    # radix sort's double-width buffers.
+    i = wp.int32(wp.tid())
+    cell = ear_grid_cell(points2d[i], ear_grid_origin(points2d, shift), inv_cell, dims)
+    out_keys[i] = cell[1] * dims[0] + cell[0]
+    out_order[i] = i
+
+
+@wp.kernel
+def ear_grid_starts(
+    keys: wp.array[wp.int32], n_ring: wp.int32, out_starts: wp.array[wp.int32]
+) -> None:
+    # dim == n_ring over the sorted cell keys: ``out_starts[c]`` is the first sorted position of
+    # cell ``c`` (``n_cells + 1`` entries, the last ``n_ring``). Position ``k`` writes every cell in
+    # ``(keys[k - 1], keys[k]]``, the first the cells up to its key and the last the cells after
+    # its key, so each entry is written exactly once and empty cells need no pass of their own.
+    k = wp.int32(wp.tid())
+    key = keys[k]
+    previous = wp.where(k == 0, wp.int32(-1), keys[wp.max(k - 1, 0)])
+    for c in range(previous + 1, key + 1):
+        out_starts[c] = k
+    if k == n_ring - 1:
+        for c in range(key + 1, out_starts.shape[0]):
+            out_starts[c] = n_ring
+
+
+@wp.func
+def edge_slab_x_range(
+    p: wp.vec2, q: wp.vec2, y0: wp.float32, y1: wp.float32, x_range: wp.vec2
+) -> wp.vec2:
+    # ``x_range`` widened by the part of segment (p, q) inside the horizontal slab [y0, y1]: the
+    # segment's ends clamped into the slab along the segment (an empty overlap leaves it alone).
+    low = wp.max(y0, wp.min(p[1], q[1]))
+    high = wp.min(y1, wp.max(p[1], q[1]))
+    result = x_range
+    if low <= high:
+        dy = q[1] - p[1]
+        x_low = p[0]
+        x_high = q[0]
+        if dy != wp.float32(0.0):
+            slope = (q[0] - p[0]) / dy
+            x_low = p[0] + (low - p[1]) * slope
+            x_high = p[0] + (high - p[1]) * slope
+        result = wp.vec2(
+            wp.min(result[0], wp.min(x_low, x_high)), wp.max(result[1], wp.max(x_low, x_high))
+        )
+    return result
+
+
+@wp.func
+def ear_grade_grid(
+    points2d: wp.array[wp.vec2],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    active: wp.array[wp.int32],
+    i: wp.int32,
+    mirror: wp.int32,
+    check_thin: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+) -> wp.int32:
+    # ``ear_grade`` with the containment test walking grid cells instead of the ring. It tests the
+    # same vertices (every active one but a, i and b) with the same predicate, so it returns the
+    # same grade. Row by row it walks only the cells the triangle crosses -- the triangle's x
+    # extent over the row's slab, grown by the ``EAR_GRID_PAD_ULPS`` margin in both axes and by a
+    # hundredth of a cell in y against the rounding of the slab's bounds -- so a long thin ear
+    # across the polygon costs its area in cells, not its bounding box's.
+    corner = ear_corner(points2d, left, right, i, mirror, check_thin)
+    if corner < EAR_TEST_THIN:
+        return corner
+    a = left[i]
+    b = right[i]
+    pa = ring_point(points2d, a, mirror)
+    pi = ring_point(points2d, i, mirror)
+    pb = ring_point(points2d, b, mirror)
+    # The grid holds the raw points, so the walk runs on the raw triangle; the containment test
+    # reads the ring as the ear tests do.
+    ra = points2d[a]
+    ri = points2d[i]
+    rb = points2d[b]
+    lo = wp.min(ra, wp.min(ri, rb))
+    hi = wp.max(ra, wp.max(ri, rb))
+    scale = wp.max(wp.max(wp.abs(lo[0]), wp.abs(lo[1])), wp.max(wp.abs(hi[0]), wp.abs(hi[1])))
+    pad = EAR_GRID_PAD_ULPS * FLOAT32_EPS * scale
+    origin = ear_grid_origin(points2d, shift)
+    cell_size = wp.float32(1.0) / inv_cell
+    slack = pad + wp.float32(0.01) * cell_size
+    row_lo = ear_grid_cell(lo - wp.vec2(pad, pad), origin, inv_cell, dims)[1]
+    row_hi = ear_grid_cell(hi + wp.vec2(pad, pad), origin, inv_cell, dims)[1]
+    for cy in range(row_lo, row_hi + 1):
+        y0 = origin[1] + wp.float32(cy) * cell_size - slack
+        y1 = origin[1] + wp.float32(cy + 1) * cell_size + slack
+        empty = wp.vec2(hi[0], lo[0])
+        x_range = edge_slab_x_range(ra, ri, y0, y1, empty)
+        x_range = edge_slab_x_range(ri, rb, y0, y1, x_range)
+        x_range = edge_slab_x_range(rb, ra, y0, y1, x_range)
+        if x_range[0] <= x_range[1]:
+            c0 = ear_grid_cell(wp.vec2(x_range[0] - pad, y0), origin, inv_cell, dims)[0]
+            c1 = ear_grid_cell(wp.vec2(x_range[1] + pad, y0), origin, inv_cell, dims)[0]
+            row = cy * dims[0]
+            for k in range(cell_starts[row + c0], cell_starts[row + c1 + 1]):
+                j = cell_points[k]
+                if (
+                    j != i
+                    and j != a
+                    and j != b
+                    and active[j] == 1
+                    and point_in_triangle(pa, pi, pb, ring_point(points2d, j, mirror))
+                ):
+                    return EAR_NONE
+    return unblocked_grade(corner)
 
 
 @wp.func
@@ -1391,17 +1745,17 @@ def ear_flag(
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
     i: wp.int32,
-    n: wp.int32,
     mirror: wp.int32,
+    check_thin: wp.int32,
 ) -> wp.int32:
-    # ``1`` when corner ``i`` is an active ear. One round's first step, shared by ``compute_ears``
+    # Corner ``i``'s ``ear_grade``, ``EAR_NONE`` when it is inactive. One round's first step,
+    # shared by ``compute_ears``
     # (one thread per corner) and ``ear_clip_block`` (one block walks every corner).
     # Nested rather than ``and``-joined: an inactive corner's ``left`` / ``right`` are stale, so
     # its ring walk must never run.
-    flag = wp.int32(0)
+    flag = EAR_NONE
     if active[i] != 0:
-        if is_ear_at(points2d, left, right, active, i, n, mirror):
-            flag = wp.int32(1)
+        flag = ear_grade(points2d, left, right, active, i, mirror, check_thin)
     return flag
 
 
@@ -1412,10 +1766,37 @@ def compute_ears(
     right: wp.array[wp.int32],
     active: wp.array[wp.int32],
     mirror: wp.int32,
+    cell_starts: wp.array[wp.int32],
+    cell_points: wp.array[wp.int32],
+    shift: wp.vec2,
+    inv_cell: wp.float32,
+    dims: wp.vec2i,
+    state: wp.array[wp.int32],
     out_is_ear: wp.array[wp.int32],
 ) -> None:
+    # ``ear_flag`` with the grid's containment test (``ear_grade_grid``): the multi-launch path's
+    # grading step. ``state`` is the loop's carried scratch (``EAR_ANY_GOOD`` is raised here, every
+    # writer storing the same 1), not a fresh per-call answer.
     i = wp.int32(wp.tid())
-    out_is_ear[i] = ear_flag(points2d, left, right, active, i, points2d.shape[0], mirror)
+    grade = EAR_NONE
+    if active[i] != 0:
+        grade = ear_grade_grid(
+            points2d,
+            left,
+            right,
+            active,
+            i,
+            mirror,
+            state[EAR_CHECK_THIN],
+            cell_starts,
+            cell_points,
+            shift,
+            inv_cell,
+            dims,
+        )
+    out_is_ear[i] = grade
+    if grade == EAR_GOOD:
+        state[EAR_ANY_GOOD] = wp.int32(1)
 
 
 @wp.func
@@ -1438,8 +1819,20 @@ def ear_outranks(a: wp.int32, b: wp.int32) -> wp.bool:
 
 
 @wp.func
+def ear_eligible(is_ear: wp.array[wp.int32], i: wp.int32, any_good: wp.int32) -> wp.bool:
+    # A good ear always competes; a thin one only in a round that has no good ear anywhere.
+    grade = is_ear[i]
+    return grade == EAR_GOOD or (grade == EAR_THIN and any_good == 0)
+
+
+@wp.func
 def ear_selected(
-    is_ear: wp.array[wp.int32], left: wp.array[wp.int32], right: wp.array[wp.int32], i: wp.int32
+    is_ear: wp.array[wp.int32],
+    left: wp.array[wp.int32],
+    right: wp.array[wp.int32],
+    i: wp.int32,
+    any_good: wp.int32,
+    start: wp.int32,
 ) -> wp.int32:
     # Select ear i iff it outranks every ear within ring-distance 2. This keeps chosen ears >= 3
     # apart, so their clip footprints {L[i], i, R[i]} are disjoint and can be clipped concurrently.
@@ -1451,19 +1844,23 @@ def ear_selected(
     # round and the clipper runs its full ``n``-round cap. Comparing by an effectively random key
     # instead makes this the textbook maximal-independent-set rule, which retires a constant
     # fraction of the ears per round. Shared by ``select_independent`` and ``ear_clip_block``.
-    if is_ear[i] == 0:
+    #
+    # Only ``ear_eligible`` ears compete: a thin ear neither is selected nor suppresses a
+    # neighbour while the round has a good ear (``any_good``). Ranks are taken on the index within
+    # the ring at ``start``, so a packed ring (``triangulate_rings``) picks the ears it would alone.
+    if not ear_eligible(is_ear, i, any_good):
         return wp.int32(0)
     ll = left[left[i]]
     left_i = left[i]
     r = right[i]
     rr = right[right[i]]
-    if is_ear[ll] == 1 and ear_outranks(ll, i):
+    if ear_eligible(is_ear, ll, any_good) and ear_outranks(ll - start, i - start):
         return wp.int32(0)
-    if is_ear[left_i] == 1 and ear_outranks(left_i, i):
+    if ear_eligible(is_ear, left_i, any_good) and ear_outranks(left_i - start, i - start):
         return wp.int32(0)
-    if is_ear[r] == 1 and ear_outranks(r, i):
+    if ear_eligible(is_ear, r, any_good) and ear_outranks(r - start, i - start):
         return wp.int32(0)
-    if is_ear[rr] == 1 and ear_outranks(rr, i):
+    if ear_eligible(is_ear, rr, any_good) and ear_outranks(rr - start, i - start):
         return wp.int32(0)
     return wp.int32(1)
 
@@ -1473,10 +1870,11 @@ def select_independent(
     is_ear: wp.array[wp.int32],
     left: wp.array[wp.int32],
     right: wp.array[wp.int32],
+    state: wp.array[wp.int32],
     out_selected: wp.array[wp.int32],
 ) -> None:
     i = wp.int32(wp.tid())
-    out_selected[i] = ear_selected(is_ear, left, right, i)
+    out_selected[i] = ear_selected(is_ear, left, right, i, state[EAR_ANY_GOOD], 0)
 
 
 @wp.func
@@ -1528,6 +1926,8 @@ def ear_loop_continue(target: wp.int32, max_rounds: wp.int32, state: wp.array[wp
     # ``state`` is read-and-incremented round-index/loop-condition scratch carried across launches,
     # not a fresh per-call answer -- see ``rdp_begin_round``'s identical naming.
     state[LOOP_ROUND] = state[LOOP_ROUND] + 1
+    state[EAR_CHECK_THIN] = wp.where(state[EAR_ANY_GOOD] == 0, wp.int32(1), wp.int32(0))
+    state[EAR_ANY_GOOD] = wp.int32(0)
     if state[EAR_COUNT] < target and state[LOOP_ROUND] < max_rounds:
         state[LOOP_CONDITION] = wp.int32(1)
     else:
@@ -1535,17 +1935,74 @@ def ear_loop_continue(target: wp.int32, max_rounds: wp.int32, state: wp.array[wp
 
 
 # Rings up to this length are clipped by ``ear_clip_block`` -- the whole round loop as one block --
-# rather than by the captured four-launch round loop, on CUDA (the CPU device takes the block form
-# at every size: its launch grid is a serial loop anyway, and the block form is the same walk
-# without a launch and a readback per round, 1.15-1.97x from 512 to 8 192 corners, faces
-# byte-identical). At this size a round is too little work to fill the device, so what the
-# multi-launch form pays is recording and replaying its conditional graph, flat in ``n``; one block
-# of ``EAR_BLOCK_DIM`` lanes, one corner per lane at the cap, trades that for three block barriers
-# a round -- 3.0x at 64 corners, 1.46-1.73x at 512-1 024. Past the cap round 0's O(ring) ear test
-# runs several corners per lane serially and the device-wide form wins again: 1.06x at 1 500,
-# 0.88x at 2 048, 0.41x at 4 096.
-EAR_ONE_BLOCK_MAX = 1024
+# rather than by the captured four-launch round loop, on both devices. At this size a round is too
+# little work to fill the device, so what the multi-launch form pays is recording and replaying its
+# conditional graph, flat in ``n``; one block of ``EAR_BLOCK_DIM`` lanes trades that for three block
+# barriers a round. But the block walks the ring for every corner's containment test (O(n) each),
+# where the round loop walks the ear grid (``ear_grade_grid``), so the block loses from a few
+# hundred corners: on CUDA it is 2.5x the round loop's speed at 64 corners, level at 512, 0.6x at
+# 1 024 and 0.3x at 1 500 (random stars and wavy rings); on the CPU device, where a block is one
+# lane and a launch grid a serial loop, level at ~640 corners and 0.5x at 1 024, 0.1x at 4 096.
+EAR_ONE_BLOCK_MAX = 512
 EAR_BLOCK_DIM = 1024
+
+
+@wp.func
+def ear_clip_ring(
+    points2d: wp.array[wp.vec2],
+    start: wp.int32,
+    n: wp.int32,
+    mirror: wp.int32,
+    lane: wp.int32,
+    faces: wp.array2d[wp.int32],
+    ring: wp.array2d[wp.int32],
+    count: wp.array[wp.int32],
+    count_slot: wp.int32,
+) -> None:
+    # ``init_ring`` plus every round of ``compute_ears`` -> ``select_independent`` ->
+    # ``clip_selected`` -> ``ear_loop_continue`` on the ring ``points2d[start : start + n]``, by
+    # one block whose lanes stride the ring by ``wp.block_dim()`` -- so on the CPU device, where a
+    # block is one lane, it is the same serial walk the four launches make, corner by corner in
+    # index order. The block barriers are ``block_sum`` calls (Warp exposes no other): one after
+    # each step, the last of which also totals the round's clips, so the loop condition is
+    # block-uniform. The ear rule, the selection rule, the ring's initial links and the clip are
+    # the ``ear_flag`` / ``ear_selected`` / ``init_ring_slot`` / ``clip_ear`` the four launches
+    # call too; the containment test is the ring walk (``ear_grade``), not the grid.
+    #
+    # ``ring`` is ``(5, *)`` scratch indexed like ``points2d``: rows ``left``, ``right``,
+    # ``active``, ``is_ear``, ``selected``. Faces hold ``points2d`` indices and are appended at
+    # the slot ``count[count_slot]`` hands out, which the caller seeds before a barrier.
+    left = ring[0]
+    right = ring[1]
+    active = ring[2]
+    is_ear = ring[3]
+    selected = ring[4]
+    for i in range(lane, n, wp.block_dim()):
+        init_ring_slot(left, right, active, start, i, n)
+    clipped_total = block_sum(wp.int32(0))
+    rounds = wp.int32(0)
+    check_thin = wp.int32(0)
+    while clipped_total < n - 2 and rounds < n:
+        good = wp.int32(0)
+        for k in range(lane, n, wp.block_dim()):
+            i = start + k
+            grade = ear_flag(points2d, left, right, active, i, mirror, check_thin)
+            is_ear[i] = grade
+            if grade == EAR_GOOD:
+                good = wp.int32(1)
+        # The barrier after the grading, and the round's "some ear is good" for every lane.
+        any_good = wp.where(block_sum(good) > 0, wp.int32(1), wp.int32(0))
+        check_thin = 1 - any_good
+        for k in range(lane, n, wp.block_dim()):
+            selected[start + k] = ear_selected(is_ear, left, right, start + k, any_good, start)
+        block_barrier()
+        clipped = wp.int32(0)
+        for k in range(lane, n, wp.block_dim()):
+            if selected[start + k] != 0:
+                clip_ear(left, right, active, start + k, count, count_slot, faces)
+                clipped += 1
+        clipped_total += block_sum(clipped)
+        rounds += 1
 
 
 @wp.kernel(enable_backward=False)
@@ -1556,47 +2013,74 @@ def ear_clip_block(
     out_ring: wp.array2d[wp.int32],
     out_count: wp.array[wp.int32],
 ) -> None:
-    # ``init_ring`` plus every round of ``compute_ears`` -> ``select_independent`` ->
-    # ``clip_selected`` -> ``ear_loop_continue``, as one block whose lanes stride the ring by
-    # ``wp.block_dim()`` -- so on the CPU device, where a block is one lane, it is the same serial
-    # walk the four launches make, corner by corner in index order, and the faces come out
-    # byte-identical. The block barriers are ``block_sum`` calls (Warp exposes no other): one after
-    # each step, the last of which also totals the round's clips, so the loop condition is
-    # block-uniform. The ear rule, the selection rule, the ring's initial links and the clip are
-    # the ``ear_flag`` / ``ear_selected`` / ``init_ring_slot`` / ``clip_ear`` the four launches
-    # call too.
-    #
-    # ``out_ring`` is ``(5, n_ring)`` scratch: rows ``left``, ``right``, ``active``, ``is_ear``,
-    # ``selected``.
-    # ``out_count`` is zeroed here and ends holding the face count.
+    # ``ear_clip_ring`` over the whole ring, as one block: the faces come out byte-identical to the
+    # four launches'. ``out_ring`` is its ``(5, n_ring)`` scratch, whose width is the ring length
+    # (``points2d`` may exceed it by a repeated closing point). ``out_count`` is zeroed here and
+    # ends holding the face count.
     _block, lane = wp.tid()
-    left = out_ring[0]
-    right = out_ring[1]
-    active = out_ring[2]
-    is_ear = out_ring[3]
-    selected = out_ring[4]
-    # The ring length, which ``points2d`` may exceed by a repeated closing point.
-    n = out_ring.shape[1]
     if lane == 0:
         out_count[0] = wp.int32(0)
-    for i in range(lane, n, wp.block_dim()):
-        init_ring_slot(left, right, active, i, n)
-    count = block_sum(wp.int32(0))
-    rounds = wp.int32(0)
-    while count < n - 2 and rounds < n:
-        for i in range(lane, n, wp.block_dim()):
-            is_ear[i] = ear_flag(points2d, left, right, active, i, n, mirror)
-        block_barrier()
-        for i in range(lane, n, wp.block_dim()):
-            selected[i] = ear_selected(is_ear, left, right, i)
-        block_barrier()
-        clipped = wp.int32(0)
-        for i in range(lane, n, wp.block_dim()):
-            if selected[i] != 0:
-                clip_ear(left, right, active, i, out_count, 0, out_faces)
-                clipped += 1
-        count += block_sum(clipped)
-        rounds += 1
+    ear_clip_ring(points2d, 0, out_ring.shape[1], mirror, lane, out_faces, out_ring, out_count, 0)
+
+
+@wp.kernel(enable_backward=False)
+def triangulate_rings(
+    polylines: wp.array[wp.vec3],
+    offsets: wp.array[wp.int32],
+    face_bases: wp.array[wp.int32],
+    max_ring: wp.int32,
+    sums: wp.array[wp.float32],
+    out_points2d: wp.array[wp.vec2],
+    out_faces: wp.array2d[wp.int32],
+    out_ring: wp.array2d[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # ``polyline_triangulate`` of every packed loop ``polylines[offsets[r] : offsets[r + 1]]`` at
+    # once, one block per loop (``dim=(n_loops,)`` at ``EAR_BLOCK_DIM``), each loop's
+    # ``accumulate_loop_frames`` row read from ``sums``: the projection (``project_to_frame``), the
+    # orientation and reflex count (``corner_turn``), then the convex fan or ``ear_clip_ring``,
+    # with the decisions the single-loop wrapper takes on the host taken here on the same values.
+    # Each loop gets the triangles it would alone (as packed indices into ``polylines``); only its
+    # reflex count and turning sum are reduced in another order, which no decision reads beyond
+    # their sign and an exact zero test of whole numbers. Loop ``r``'s faces go to
+    # ``out_faces[face_bases[r]:]`` (the caller reserves ``n - 2`` rows for an ``n``-point loop)
+    # and ``out_count[r]`` ends holding that base plus its face count. A loop of fewer than three
+    # points or more than ``max_ring`` (left to the round loop) gets no faces here.
+    # ``out_points2d`` and ``out_ring`` (``(5, offsets[-1])``) are scratch indexed like
+    # ``polylines``.
+    ring_id, lane = wp.tid()
+    start = offsets[ring_id]
+    n = offsets[ring_id + 1] - start
+    face_base = face_bases[ring_id]
+    if lane == 0:
+        out_count[ring_id] = face_base
+    if n < 3 or n > max_ring:
+        return
+    base = ring_id * RING_SUMS_SIZE
+    n_ring = n - wp.int32(sums[base + RING_CLOSING])
+    for k in range(lane, n, wp.block_dim()):
+        out_points2d[start + k] = project_to_frame(polylines[start + k], sums, base)
+    block_barrier()
+    if n_ring < 3:
+        return
+    local = wp.vec3()
+    for k in range(lane, n_ring, wp.block_dim()):
+        local += corner_turn(out_points2d, start, k, n_ring)
+    turn = block_sum(local)
+    mirror = wp.where(turn[0] < wp.float32(0.0), wp.int32(1), wp.int32(0))
+    reflex = wp.where(mirror != 0, turn[2], turn[1])
+    if reflex == wp.float32(0.0):
+        # ``fan_triangulate``'s fan from the loop's first point.
+        for k in range(lane, n_ring - 2, wp.block_dim()):
+            out_faces[face_base + k, 0] = start
+            out_faces[face_base + k, 1] = start + k + 1
+            out_faces[face_base + k, 2] = start + k + 2
+        if lane == 0:
+            out_count[ring_id] = face_base + n_ring - 2
+    else:
+        ear_clip_ring(
+            out_points2d, start, n_ring, mirror, lane, out_faces, out_ring, out_count, ring_id
+        )
 
 
 @wp.kernel

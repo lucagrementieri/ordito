@@ -1252,6 +1252,35 @@ def section_vertex_mask(
 
 
 @wp.kernel
+def section_face_flags(
+    faces: wp.array[wp.int32], on_section: wp.array[wp.bool], out_flags: wp.array[wp.int32]
+) -> None:
+    # 1 for a face with at least two corners on the level set (``section_vertex_mask``), else 0:
+    # every face holding an edge with both ends on the section, so the boundary status of such an
+    # edge is decided among these faces alone. Written straight into the scan's buffer.
+    f = wp.int32(wp.tid())
+    corners = wp.int32(0)
+    for k in range(3):
+        if on_section[faces[3 * f + k]]:
+            corners += 1
+    out_flags[f] = wp.where(corners >= 2, wp.int32(1), wp.int32(0))
+
+
+@wp.kernel
+def emit_section_faces(
+    faces: wp.array[wp.int32], scanned: wp.array[wp.int32], out_faces: wp.array[wp.int32]
+) -> None:
+    # dim == n_faces over ``section_face_flags`` scanned inclusively in place: a flagged face
+    # (its rank stepped) writes its corners at its rank, keeping the input's face order.
+    f = wp.int32(wp.tid())
+    rank = scanned[f]
+    previous = wp.where(f == 0, wp.int32(0), scanned[wp.max(f - 1, 0)])
+    if rank != previous:
+        for k in range(3):
+            out_faces[3 * (rank - 1) + k] = faces[3 * f + k]
+
+
+@wp.kernel
 def label_faces_by_plane_side(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],

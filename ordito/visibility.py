@@ -17,9 +17,10 @@ The two outward fields integrate the same bundle of rays over the outward hemisp
 weighted by Lambert's cosine law, and differ only in what a blocked ray costs: ambient occlusion
 charges a hit its full weight however far away it is, obscurance discounts it by
 ``exp(-tau * distance)`` so that only nearby geometry darkens a point. Ambient occlusion is the
-``tau -> 0`` limit, which is why they share a kernel. Neither is normalized against a scene, so both
-are comparable across meshes and resolutions, and on a **convex** closed surface no ray can return
-and every point reads exactly ``0`` -- the cheapest available sanity check on a result.
+``tau -> 0`` limit of obscurance, and asks of each ray only whether it is blocked, not how far
+away. Neither is normalized against a scene, so both are comparable across meshes and resolutions,
+and on a **convex** closed surface no ray can return and every point reads exactly ``0`` -- the
+cheapest available sanity check on a result.
 
 The three inward measures differ in how much evidence they take.
 [`thickness`][ordito.visibility.thickness] is a dispatcher over the other two: one inward ray, or
@@ -52,6 +53,12 @@ from ordito.proximity import ITEMS_PER_QUERY_SLICE, normals_at_closest_faces
 # and large enough to clear float32 error on the starting triangle. The inward bundles offset
 # *below* the surface by the same fraction, for the same reason.
 _SURFACE_OFFSET = 1e-4
+
+# Point count from which ``ambient_occlusion`` traces a CUDA cloud in the point-major layout (a
+# block of Morton-consecutive points, a warp per ray direction; see ``kernels/visibility.py``)
+# rather than one block per point. Set by sweeping random vertex subsets of a 14 M-point scan at 64
+# rays: break-even at ~2-4 M points (0.96x at 1 M, 1.02x at 4 M, 1.16x at 14 M, sort included).
+_OCCLUSION_POINT_MAJOR_FROM = 4_000_000
 
 _WEIGHT_MODES: dict[str, wp.int32] = {
     "cosine": kernel_visibility.WEIGHT_COSINE,
@@ -232,8 +239,8 @@ def _occlusion_bundle(
     # bug independent of how many points there are, and `_resolve_normals_and_radius` handles
     # `m == 0` on its own (an empty `points` measures the mesh's own box alone).
     normals, diagonal = _resolve_normals_and_radius(mesh, points, normals, name)
-    # `wp.empty`, not `wp.zeros`: `obscurance` writes `out_occlusion[i]` unconditionally for every
-    # block, so nothing ever reads the zero-fill.
+    # `wp.empty`, not `wp.zeros`: either bundle kernel writes `out_occlusion[i]` unconditionally
+    # for every block, so nothing ever reads the zero-fill.
     out_occlusion = _launch.empty(m, dtype=wp.float32, device=device)
     if m == 0:
         return out_occlusion
@@ -241,24 +248,61 @@ def _occlusion_bundle(
     directions = od.sample.sample_fibonacci_hemisphere(n_rays, device=device)
     # One block per point, lanes over the bundle -- see ``kernel_visibility.BUNDLE_BLOCK`` for why
     # this wins over a thread per point, and why the width is 64.
+    # Binary occlusion asks only whether each ray is blocked (an any-hit trace); obscurance needs
+    # the nearest hit's distance.
+    trace = [
+        mesh.id,
+        points,
+        normals,
+        directions,
+        _WEIGHT_MODES[weight],
+        wp.float32(max_t if max_t is not None else diagonal),
+        wp.float32(_SURFACE_OFFSET * max(diagonal, 1e-12)),
+        out_occlusion,
+    ]
+    if tau > 0.0:
+        kernel, inputs = kernel_visibility.obscurance, [*trace[:4], wp.float32(tau), *trace[4:]]
+    elif m >= _OCCLUSION_POINT_MAJOR_FROM and wp.get_device(device).is_cuda:
+        _launch.launch_tiled(
+            kernel_visibility.occlusion_point_major,
+            dim=(-(-m // kernel_visibility.POINT_MAJOR_POINTS),),
+            inputs=[*trace[:3], _morton_order(points), *trace[3:]],
+            block_dim=kernel_visibility.POINT_MAJOR_BLOCK,
+            device=device,
+        )
+        return out_occlusion
+    else:
+        kernel, inputs = kernel_visibility.occlusion, trace
     _launch.launch_tiled(
-        kernel_visibility.obscurance,
-        dim=(m,),
-        inputs=[
-            mesh.id,
-            points,
-            normals,
-            directions,
-            wp.float32(tau),
-            _WEIGHT_MODES[weight],
-            wp.float32(max_t if max_t is not None else diagonal),
-            wp.float32(_SURFACE_OFFSET * max(diagonal, 1e-12)),
-            out_occlusion,
-        ],
-        block_dim=kernel_visibility.BUNDLE_BLOCK,
-        device=device,
+        kernel, dim=(m,), inputs=inputs, block_dim=kernel_visibility.BUNDLE_BLOCK, device=device
     )
     return out_occlusion
+
+
+def _morton_order(points: wp.array[wp.vec3]) -> wp.array[wp.int32]:
+    """
+    ``(m,)`` permutation of ``points`` into Morton (Z-order) order over their own box.
+
+    The order the point-major occlusion kernel walks a large cloud in, so a block's points are
+    spatial neighbours. Its first ``m`` entries are the permutation; the buffer is the radix sort's
+    double width.
+    """
+    device = points.device
+    m = points.size
+    lower, upper = od.bounds.aabb(points)
+    extent = [float(upper[k]) - float(lower[k]) for k in range(3)]
+    inv_extent = wp.vec3(*(1023.0 / e if e > 0.0 else 0.0 for e in extent))
+    keys = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    order = _launch.empty(2 * m, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_visibility.morton_point_order,
+        dim=m,
+        inputs=[points, lower, inv_extent],
+        outputs=[keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, count=m, end_bit=30)
+    return order
 
 
 def shape_diameter(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
 import numpy as np
 import pymeshlab as ml
@@ -243,6 +243,37 @@ def test_ambient_occlusion_uniform_weight_differs_from_cosine(
     # Grazing directions are the ones the cosine weight discounts, and in a cavity they are the
     # blocked ones, so uniform weighting reports more occlusion on average.
     assert uniform_np.mean() > cosine_np.mean()
+
+
+@pytest.mark.parametrize("weight", ["cosine", "uniform"])
+@pytest.mark.parametrize("n_rays", [7, 64, 300])
+def test_ambient_occlusion_point_major_matches_block_per_point(
+    torus: tuple[tm.Trimesh, wp.Mesh],
+    weight: Literal["cosine", "uniform"],
+    n_rays: int,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Ordito against ordito: the point-major layout against one block per point.
+
+    A CUDA cloud past ``_OCCLUSION_POINT_MAJOR_FROM`` points is traced 32 Morton-neighbouring
+    points to a block; forcing the threshold to zero must reproduce the default layout's field
+    (the same rays and tests, summed in another lane order: equal to float32 rounding). The ray
+    counts cover fewer rays than a block's four groups, a partial last group and several rays per
+    lane. On the CPU device the threshold has no effect and both arms are the default path. The
+    pymeshlab ranking test carries the oracle.
+    """
+    _mesh_tm, mesh_wp = torus
+    normals_wp = _vertex_normals_wp(mesh_wp)
+    default_np = od.visibility.ambient_occlusion(
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=n_rays, weight=weight
+    ).numpy()
+    monkeypatch.setattr(od.visibility, "_OCCLUSION_POINT_MAJOR_FROM", 0)
+    point_major_np = od.visibility.ambient_occlusion(
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=n_rays, weight=weight
+    ).numpy()
+    assert np.ptp(default_np) > 0.1  # non-vacuity: the torus's hole occludes some points
+    assert np.allclose(point_major_np, default_np, rtol=0.0, atol=1e-6)
 
 
 def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:

@@ -3161,6 +3161,18 @@ point, lanes over its ray bundle, 3.2-11.8x, `block_dim=64`), `shape_diameter` b
 striding the cloud, `wp.tile_max` over a packed key as both argmax and barrier, identical
 tie-break; `block_dim` 1024 on large clouds, 256 on small).
 
+**Binary occlusion traces any-hit, in its own kernel** (2026-10-04, R30-1, `occlusion`):
+`mesh_query_ray_anyhit` stops at the first hit, 1.06-1.14x on bunny / dragon / lucy at 64 / 256 rays,
+values identical on both devices; `obscurance` (`tau > 0`) keeps the closest hit. **A point-major
+layout** (`occlusion_point_major`: 32 Morton-consecutive points x 4 ray groups per 128-lane block,
+per-point sums one `block_sum` of a 32-vector) adds 1.28x / 1.19x at `lucy` (14 M points), values
+identical, from `visibility._OCCLUSION_POINT_MAJOR_FROM = 4 M` points on CUDA (sweep of vertex
+subsets: 0.96x at 1 M, 1.02x at 4 M). Reading the per-point sums off a lane-sized tile instead was
+0.89x. **Not for `shape_diameter`**: its inward bundle measured 0.65x point-major (scattered scratch
+rows) and 0.98x with a ray-major scratch, though an *outward* closest-hit bundle gains 1.25x there
+(price the actual rays). **Nor does its `(n, n_rays)` scratch cost anything** (15 GB at `lucy` and
+256 rays): register-held distances (one unrolled kernel per rays-per-lane bucket) were 0.97-0.98x.
+
 **FPS wins where the hole DP lost**: its per-iteration work is `n` distances, so one SM suffices and
 what it removes is two replayed kernels of launch latency per dependent round.
 
@@ -4399,6 +4411,77 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   class is itself unreliable). The fill is real work now: `dragon` 1.26 -> 61 ms (3 710 cap
   faces), `lucy` 671 ms; `bunny` 2.71x faster (its median section runs into holes: three chains,
   nothing to cap).
+- **A planar section loop is ear-clipped, not min-weight filled** (2026-10-04,
+  `intersection._cap_section_loops`): the min-weight DP was 86-99 % of a capped clip (`O(B^3)`,
+  issued one span a launch: 10 103 launches for `lucy`'s one 10 060-vertex loop). A loop within
+  `_CAP_PLANAR_TOLERANCE = 1e-5` of its extent from its best-fit plane is projected **on the host
+  in `float64`** and handed to `polyline.triangulate_polygon` (first version; since the frame fix
+  below it calls `polyline_triangulate` on the device, the host keeps only the planarity test);
+  non-planar loops and any loop whose clip returns fewer than `B - 2` triangles keep the DP.
+  Capped rows against the DP, final form: 1.6x / 2.7x / 2.8x / 3.2x / 18.6x (`bunny_decimated` /
+  `bunny` / `dragon` / `happy_buddha` / `lucy`, 1 100 -> 59 ms); same face counts, open edges and
+  cap area to six digits as the DP, no new duplicated directed edge, fewer slivers than the DP
+  (below). The pyvista parity test **did not catch a flipped cap winding** (its volume check
+  passed); `test_clip_mesh_with_field_planar_cap_matches_the_min_weight_cap` does (winding
+  consistency against the forced-DP cap).
+    - **The round loop's ear test walks a grid, not the ring** (2026-10-04, R30-0b,
+      `kernels/polyline.ear_grade_grid`): a uniform grid over **every** ring vertex (two cells a
+      point, cell keys radix-sorted, starts filled per sorted run), and per triangle row only the
+      cells its x extent over the row's slab crosses, padded by `EAR_GRID_PAD_ULPS = 64` float32
+      ulps. Only a reflex vertex can lie in an ear of a simple polygon, but which corners read as
+      reflex is their float32 rounding, so a reflex-only grid would not be byte-identical; this one
+      tests exactly the vertices the ring walk does. The box comes free with the turning-angle pass
+      (`RING_EXTENT`, `atomic_max` of `p - p0` / `p0 - p` into the zeroed sums, one readback). Faces
+      identical to the ring walk on every ring probed (random stars to 65 536, the scan sections):
+      the round loop 2.6x `dragon`'s 1 739-loop, 20x `lucy`'s 10 060-loop (180 -> 8.8 ms), random
+      star 23x at 65 536 (94 -> 4.0 ms). Walking the triangle's **box** instead of its row
+      crossings, with a ring-walk fallback past `n / 8` cells, was a 0.82x loss on the star (long
+      thin diagonal ears). `EAR_ONE_BLOCK_MAX` fell from 1 024 to 512 on both devices (below).
+      The pad is a margin no random ring reaches (deleting it changes no face); walking the
+      mirrored triangle's cells instead of the raw one's is what the single-block test catches.
+    - **Short loops share one launch** (`polyline.polyline_triangulate_from_offsets`, public):
+      one block per loop runs the frame (`accumulate_loop_frames`, the single-loop arithmetic bit
+      for bit), the projection, the turning/reflex sums, then the fan or `ear_clip_ring`
+      (`triangulate_rings`); ear ranks hash the index *within* the loop (`ear_selected(start=)`),
+      so each loop gets its alone-triangulation; loops past `EAR_ONE_BLOCK_MAX` keep the round
+      loop. The cap ear-clips every loop this way while the host tests planarity. Not taken: a
+      packed **round** loop for several long loops (`dragon`'s three over 512 points cost 4.5 ms in
+      sequence against ~2.2 for the longest; nothing else has two).
+    - **The section is found among the faces touching it**: an edge with both ends on the level
+      set lies only in faces with two such corners, so `oriented_boundary_edges` runs on those
+      (`section_face_flags`, scan, `emit_section_faces`) rather than the mesh (10.6 -> 0.2 ms at
+      `lucy`), and `successor_cycles` on the section's vertices numbered compactly (2.0 -> 0.7 ms).
+      Capped clip after R30-0a/b: 2.07 / 3.07 -> 3.2 / 9.3 / 5.2 / 19.6 ms (`bunny_decimated` /
+      `bunny` / `dragon` / `happy_buddha` / `lucy`), from 1 099 ms at `lucy` at round-30 HEAD.
+    - **`polyline_triangulate` frame and slivers, fixed 2026-10-04.** Its plane frame was summed
+      in `float32` by per-block atomics, uncentred: two distinct frames in 10 runs on a 10 060-point
+      ring and a *partial* triangulation (10 056 of 10 058) in 9 of 10. `accumulate_loop_frame` is
+      now one block (`LOOP_FRAME_BLOCK_DIM`), `float64` sums relative to the ring's first point
+      (both sums are translation-invariant), stored without atomics, and the projection subtracts
+      the centre in `float64`. That alone still stalled at 10 056: two ring vertices projected to
+      the same `float32` point (a zero-length side), never strictly convex and blocking every
+      neighbouring ear on the boundary. `kernels/polyline.ear_grade` now grades ears
+      `EAR_NONE` / `EAR_THIN` / `EAR_GOOD`: a corner on a neighbour, or one whose height over its
+      cut is within `EAR_THIN_ULPS = 4` float32 ulps of its coordinates (`corner_is_thin`), is thin
+      and competes only in a round with no good ear; the same rule sends a ring with such a corner
+      past the convex fan (whose triangles at vertex 0 would be exactly those slivers). Thin
+      corners skip the containment walk unless the previous round found no good ear
+      (`EAR_CHECK_THIN`). Slivers (height at most one ulp of the ring's scale) on the scan
+      sections, `bunny` / `dragon` / `happy_buddha` / `lucy`: ear clip before 0 / 12 / 13 / 216,
+      after **0 / 0 / 1 / 10**, the min-weight fill 0 / 1 / 2 / 40. Swept: 1 ulp left 8 / 6 / 91, 16
+      left 0 / 1 / 17, 64 left 1 / 3 / 70. The cost is rounds, not arithmetic: a run of
+      near-collinear points is retired from its ends, so `lucy`'s ring takes 205 rounds against 122
+      (`polyline_triangulate` 30 -> 41 ms there); the 1 024-point star rows are unchanged (1.00x,
+      after moving the coincident-neighbour test into the reject branch and gating the walk: each
+      added term in `ear_clip_block` cost ~0.045 ms on its own, a code-shape cost). Rejected: a
+      float64 longest-edge flip pass on the cap (left 61 at `lucy`, 25-80 ms of host Python) and
+      `remesh.flip_to_delaunay` (fixed point after one call, 5 faces still inverted). Pinned by
+      `test_triangulate_polygon_ring_with_a_repeated_corner_is_complete` /
+      `_leaves_no_rounding_level_slivers` (each fails on its own rule's removal, both clip paths)
+      and `test_polyline_triangulate_is_reproducible_far_from_the_origin`. A rounding-level
+      sliver's orientation is set by rounding, so a float64 re-projection reads some as
+      "inverted" against the float32 ring the clipper saw: check against that ring before calling
+      a face a fold.
 - **DECLINED: a record buffer for small `marching_triangles` level sets** (2026-10-03): 0.84-0.95x
   on `sphere_med`, flat on `sphere_small`; the number is at `kernels/intersection.
   marching_triangles_segments`.
@@ -4421,8 +4504,10 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 - **`polyline_downsample`'s pointer-doubled walk** and its crossover (2 048, CUDA only): §14.7.
 - **One-block loops** (crossover ~1 024 items, same reason as §16.16's one-block CG: a graph
   recorded per call is most of a small round loop): `triangulate_polygon`'s `ear_clip_block` (1
-  024 lanes, `block_sum` barriers) up to `EAR_ONE_BLOCK_MAX = 1024` on CUDA and every size on CPU
-  (3.4x at 64 corners, 1.66x at 1 024, 0.39x at 4 096); `polyline_simplify`'s
+  024 lanes, `block_sum` barriers) up to `EAR_ONE_BLOCK_MAX = 512` on both devices since the round
+  loop's grid ear test (2026-10-04): the block walks the ring per corner, so against the grid it is
+  2.5x at 64 corners, level at 512, 0.6x at 1 024 on CUDA; on CPU level at ~640, 0.5x at 1 024,
+  0.1x at 4 096 (it was every size on CPU while both walked the ring); `polyline_simplify`'s
   `rdp_simplify_block` up to `RDP_ONE_BLOCK_MAX = 4096` (CUDA 2.0-2.3x to 1 024 points, 1.28-
   1.30x at 4 096, 0.86-0.96x at 8 192; an RDP round is four streaming passes rather than an
   O(ring) test per corner; CPU wins at every size). Removing a step barrier **hangs** the ear
@@ -4774,6 +4859,19 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   vertices (`kernels/smoothing.in_region`) instead of allocating an all-`True` mask. 1.44x /
   1.47x / 1.34x at `bunny` / `dragon` / `lucy`, byte-identical. The census found no other
   `edges_unique` -> `edges_to_csr` site needing only structure (`graph.py`'s carries lengths).
+- **`equalize_triangle_areas` sums its ring in `float32`** (2026-10-04, R30-3,
+  `kernels/smoothing.equal_area_position`): the quadratic form needs only edges and the right-hand
+  side is taken relative to the free vertex, so the sums hold ring-scale differences; the 3x3 (or
+  tangent 2x2) solve stays `float64`, and a system whose determinant is under
+  `EQUAL_AREA_F32_CONDITION = 1e-4` of its trace's power is redone by the old `float64`
+  accumulation (`equal_area_position_f64`; 1e-6 let a dragon ring through 3e-6 off). The row is
+  summed in **ascending face order** (`next_row_entry`, an O(row) rescan, free): vertex-face rows
+  are unordered sets, and a `float32` sum in slot order made results differ run to run (the
+  region test's bit-identity assert caught it); a `float64` accumulation of the `float32` terms
+  instead cost 3x. Ten passes: 1.44x bunny, 2.9x dragon, 3.2x lucy (75.7 -> 23.6 ms), 1.8x with
+  `no_shrinkage` (its normals pass). One pass agrees with the `float64` path to the positions'
+  rounding; ten `no_shrinkage` passes fling ~500 dragon vertices past 0.01 on either path, and
+  those differ (they also differ run to run on the `float64` path).
 - **A `for` loop around a single-column solver, in a module whose siblings call the batched one,
   is the textual tell for a multi-column solve**: three position components share one operator.
 - **A helper returning the same sentinel for two different "nothing to do" cases is a defect

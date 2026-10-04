@@ -1379,6 +1379,65 @@ def test_triangulate_too_few_points(device: str) -> None:
     assert faces_wp.shape == (0, 3)
 
 
+def _sorted_rows(faces_np: np.ndarray) -> np.ndarray:
+    return faces_np[np.lexsort(faces_np.T[::-1])]
+
+
+@pytest.mark.parametrize("one_block_max", [512, 0])
+def test_triangulate_from_offsets_matches_each_loop(
+    device: str, one_block_max: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the packed triangulation against one call per loop.
+
+    `polyline_triangulate` carries the oracle for each loop (its meshlib and pyvista comparisons);
+    the packed form must give every loop the same triangle set, offset to packed indices. The
+    loops cover the block path's convex fan, a clockwise L, a star in a tilted plane, a loop
+    repeating its first point, one of two points (no faces) and a random star longer than the
+    one-block cap, which takes the round loop; ``one_block_max = 0`` sends every loop there.
+    """
+    monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", one_block_max)
+    rng = np.random.default_rng(7)
+    angle_np = np.sort(rng.uniform(0.0, 2.0 * np.pi, 700))
+    radius_np = rng.uniform(0.2, 1.0, 700)
+    long_np = np.column_stack(
+        (radius_np * np.cos(angle_np), radius_np * np.sin(angle_np), np.full(700, 0.5))
+    )
+    tilt_np = np.asarray(tm.transformations.rotation_matrix(0.6, [1.0, 1.0, 0.0]))[:3, :3]
+    loops_np = [
+        _convex_ngon(7),
+        _l_shape()[::-1].copy(),
+        _star(9) @ tilt_np.T + 3.0,
+        _closed_from(_star(5)),
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]),
+        long_np,
+    ]
+    offsets_np = np.concatenate(([0], np.cumsum([loop.shape[0] for loop in loops_np])))
+    faces_wp, face_offsets_wp = od.polyline.polyline_triangulate_from_offsets(
+        points_to_warp(np.concatenate(loops_np), device),
+        wp.array(offsets_np.astype(np.int32), dtype=wp.int32, device=device),
+    )
+    faces_np = faces_wp.numpy()
+    face_offsets_np = face_offsets_wp.numpy()
+    assert face_offsets_np.shape == (len(loops_np) + 1,)
+    assert face_offsets_np[-1] == faces_wp.shape[0]
+    for r, loop_np in enumerate(loops_np):
+        alone_np = od.polyline.polyline_triangulate(points_to_warp(loop_np, device)).numpy()
+        packed_np = faces_np[face_offsets_np[r] : face_offsets_np[r + 1]] - offsets_np[r]
+        assert np.array_equal(_sorted_rows(packed_np), _sorted_rows(alone_np))
+    assert face_offsets_np[5] - face_offsets_np[4] == 0
+    assert face_offsets_np[6] - face_offsets_np[5] == 698
+
+
+def test_triangulate_from_offsets_without_loops(device: str) -> None:
+    """Not a library comparison: no loops give no faces and the one-entry offsets."""
+    faces_wp, face_offsets_wp = od.polyline.polyline_triangulate_from_offsets(
+        points_to_warp(np.zeros((0, 3)), device), wp.zeros(1, dtype=wp.int32, device=device)
+    )
+    assert faces_wp.shape == (0, 3)
+    assert face_offsets_wp.numpy().tolist() == [0]
+
+
 # --- simplify (Ramer-Douglas-Peucker, NumPy reference) ---
 
 
@@ -1977,7 +2036,7 @@ def test_triangulate_polygon_leaves_a_clockwise_input_unchanged(device: str) -> 
     assert np.isclose(_tiled_area(before_np, faces_wp.numpy()), -_signed_ring_area(ring_np))
 
 
-@pytest.mark.parametrize("n", [64, 1500])
+@pytest.mark.parametrize("n", [64, 1500, 4096])
 @pytest.mark.parametrize("clockwise", [False, True])
 def test_triangulate_polygon_single_block_matches_round_loop(
     device: str, n: int, clockwise: bool, monkeypatch: pytest.MonkeyPatch
@@ -1985,12 +2044,14 @@ def test_triangulate_polygon_single_block_matches_round_loop(
     """
     Ordito against ordito: the single-block ear loop against the captured round loop.
 
-    A ring up to ``EAR_ONE_BLOCK_MAX`` corners is clipped on CUDA by one block that runs every
-    round itself, a longer one by the four-launch round loop; the trimesh cover test carries the
-    oracle for the first at its sizes, and nothing else reaches the second below the cap. Forcing
-    the cap both ways must give the same triangle set (row order is atomic-append order on CUDA)
-    on a random star, which has ears at every scale. On the CPU device the single block is taken
-    at every length, so both arms are that path and the ``n - 2`` / area asserts carry the test.
+    A ring up to ``EAR_ONE_BLOCK_MAX`` corners is clipped by one block that runs every round
+    itself, walking the ring for each ear test, a longer one by the four-launch round loop, whose
+    ear test walks the ear grid; the trimesh cover test carries the oracle for the first at its
+    sizes. Forcing the cap both ways must give the same triangle set (row order is atomic-append
+    order on CUDA) on a random star, which has ears at every scale and, in a clockwise ring, reads
+    the grid through the mirror: walking the cells of the mirrored triangle instead of the raw one
+    changes the faces. The grid walk's rounding pad is not reached by any random ring (deleting it
+    leaves these faces unchanged); it is a margin, not a tested branch.
     """
     rng = np.random.default_rng(n)
     angle_np = np.sort(rng.uniform(0.0, 2.0 * np.pi, n))
@@ -2008,6 +2069,97 @@ def test_triangulate_polygon_single_block_matches_round_loop(
     assert rows[0].shape == (n - 2, 3)
     assert np.array_equal(rows[0], rows[10**9])
     assert np.isclose(_tiled_area(ring_np, rows[0]), abs(_signed_ring_area(ring_np)), rtol=1e-5)
+
+
+def _slanted_ring(points_per_side: int) -> np.ndarray:
+    """
+    Build a convex hexagon far from the origin with many points per side, rounded to ``float32``.
+
+    Each side's interior points lie on a slanted line only up to ``float32`` rounding, so every
+    three consecutive ones are collinear to the rounding: the ring on which an ear clipper (or a
+    fan) emits rounding-level slivers.
+    """
+    angles_np = np.linspace(0.0, 2.0 * np.pi, 7)[:-1] + 0.3
+    corners_np = 1000.0 + 37.0 * np.column_stack((np.cos(angles_np), np.sin(angles_np)))
+    t_np = np.linspace(0.0, 1.0, points_per_side, endpoint=False)[:, None]
+    sides_np = [corners_np[k] + t_np * (corners_np[(k + 1) % 6] - corners_np[k]) for k in range(6)]
+    return np.vstack(sides_np).astype(np.float32)
+
+
+def _sliver_count(ring_np: np.ndarray, faces_np: np.ndarray, ulps: float) -> int:
+    """Faces whose height over their longest side is at most ``ulps`` float32 ulps of the ring."""
+    triangles_np = ring_np.astype(np.float64)[faces_np.reshape(-1, 3)]
+    edges_np = np.roll(triangles_np, -1, axis=1) - triangles_np
+    twice_area_np = np.abs(
+        edges_np[:, 0, 0] * edges_np[:, 1, 1] - edges_np[:, 0, 1] * edges_np[:, 1, 0]
+    )
+    height_np = twice_area_np / np.linalg.norm(edges_np, axis=2).max(axis=1)
+    bound = ulps * float(np.finfo(np.float32).eps) * float(np.abs(ring_np).max())
+    return int((height_np <= bound).sum())
+
+
+@pytest.mark.parametrize("cap", [0, 10**9], ids=["round_loop", "single_block"])
+def test_triangulate_polygon_ring_with_a_repeated_corner_is_complete(
+    device: str, cap: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: a ring holding a zero-length side still gets all ``n - 2`` faces.
+
+    Two consecutive equal points are neither convex nor removable by the strict ear test, and the
+    triangle of each neighbouring ear holds the duplicate on its boundary, so a clipper without a
+    rule for them stalls with the ring unfinished (a long planar section ring did, two faces
+    short). Both clipping paths are forced.
+    """
+    ring_np = np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [1.0, 1.0], [0.0, 1.0]])
+    monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", cap)
+    _, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    faces_np = faces_wp.numpy()
+    assert faces_np.size // 3 == ring_np.shape[0] - 2
+    assert np.isclose(_tiled_area(ring_np, faces_np), 1.0)
+
+
+@pytest.mark.parametrize("cap", [0, 10**9], ids=["round_loop", "single_block"])
+def test_triangulate_polygon_leaves_no_rounding_level_slivers(
+    device: str, cap: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: no face's height is at the ring's rounding level.
+
+    On ``_slanted_ring`` every interior side point makes a corner whose orientation is a rounding
+    accident. The ring is convex, so without the flat-corner rule it is fanned from vertex 0 and
+    the two sides at that vertex become zero-area faces; without the thin-ear deferral the ear
+    loop clips those corners as slivers. The tiling must still be complete and exact in area.
+    """
+    ring_np = _slanted_ring(40)
+    monkeypatch.setattr(kernel_polyline, "EAR_ONE_BLOCK_MAX", cap)
+    _, faces_wp = od.polyline.triangulate_polygon(points_to_warp_uv(ring_np, device))
+    faces_np = faces_wp.numpy()
+    assert faces_np.size // 3 == ring_np.shape[0] - 2
+    assert np.isclose(
+        _tiled_area(ring_np, faces_np), abs(_signed_ring_area(ring_np.astype(np.float64)))
+    )
+    assert _sliver_count(ring_np, faces_np, 1.0) == 0
+
+
+def test_polyline_triangulate_is_reproducible_far_from_the_origin(device: str) -> None:
+    """
+    Ordito against ordito: repeated calls on one long, tilted ring give one triangle set.
+
+    The plane frame decides every ear, so it must not depend on the order a reduction's partials
+    arrive in; a ring past the single-block cap and far from the origin is where a per-block,
+    ``float32`` frame moved between runs. Rows are compared as sets (their order is atomic-append
+    order on CUDA).
+    """
+    ring_np = _slanted_ring(400).astype(np.float64)
+    rotation_np = np.asarray(tm.transformations.rotation_matrix(0.7, [1.0, 2.0, 3.0]))[:3, :3]
+    loop_np = np.column_stack((ring_np, np.full(ring_np.shape[0], 250.0))) @ rotation_np.T
+    loop_wp = points_to_warp(loop_np, device)
+    sets = []
+    for _ in range(4):
+        faces_np = od.polyline.polyline_triangulate(loop_wp).numpy()
+        assert faces_np.shape == (ring_np.shape[0] - 2, 3)
+        sets.append(faces_np[np.lexsort(faces_np.T[::-1])])
+    assert all(np.array_equal(sets[0], other) for other in sets[1:])
 
 
 def test_polyline_radius_closed_three_points_raises(device: str) -> None:

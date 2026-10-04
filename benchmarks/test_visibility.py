@@ -29,8 +29,9 @@ Five functions, three shapes of work, and the split is what the rows are for.
   ``query_nearest_bvh_k7``. Read it against ``thickness_interior`` for the per-query cost and
   against MeshLib for the one fair CPU-versus-GPU comparison this module has.
 
-``volumetric_obscurance`` has **no group**. It shares ``ambient_occlusion``'s kernel and differs
-only in a per-hit ``exp(-tau * t)`` factor, so a group over it would re-measure the same axis;
+``volumetric_obscurance`` has **no group**. It shares ``ambient_occlusion``'s bundle and block
+layout and differs only in tracing to the nearest hit (``ambient_occlusion`` stops at any hit, 1.06-
+1.14x faster) and a per-hit ``exp(-tau * t)`` factor, so a group over it would re-measure the axis;
 MeshLab's
 ``compute_scalar_by_volumetric_obscurance`` would nonetheless be a real second reference, and that
 is a benchmark gap rather than an API one. Recorded in ``benchmarks/README.md``.

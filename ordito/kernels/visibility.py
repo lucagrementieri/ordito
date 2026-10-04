@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.constants import TOLERANCE_PLANAR_CONSTANT
-from ordito.kernels.array import RegisterBlockedTable
+from ordito.kernels.array import RegisterBlockedTable, morton_code_30
 from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
@@ -61,6 +61,70 @@ def hemisphere_frame(
     return axis, basis_x, basis_y, points[i] + axis * offset
 
 
+@wp.func
+def bundle_ray(
+    directions: wp.array[wp.vec3],
+    r: wp.int32,
+    weight_mode: wp.int32,
+    axis: wp.vec3,
+    basis_x: wp.vec3,
+    basis_y: wp.vec3,
+) -> tuple[wp.vec3, wp.float32]:
+    # Ray ``r`` of a point's hemisphere bundle: its direction and weight. A hemisphere lattice has
+    # ``local[2] == dot(direction, normal)`` by construction, so the cosine weight is already there
+    # and needs no dot product. Shared by ``occlusion`` and ``obscurance``.
+    local = directions[r]
+    weight = wp.where(weight_mode == WEIGHT_COSINE, local[2], wp.float32(1.0))
+    return bundle_direction(local, axis, basis_x, basis_y), weight
+
+
+@wp.func
+def commit_blocked_fraction(
+    lane: wp.int32,
+    i: wp.int32,
+    total_weight: wp.float32,
+    total_blocked: wp.float32,
+    out_occlusion: wp.array[wp.float32],
+) -> None:
+    # The block's weighted blocked fraction for point ``i``: every lane's two sums folded by one
+    # ``block_sum`` (a barrier, so every lane runs it), stored by lane 0. Shared by ``occlusion``
+    # and ``obscurance``.
+    block = block_sum(wp.vec2(total_weight, total_blocked))
+    if lane == 0:
+        out_occlusion[i] = wp.where(block[0] <= 0.0, wp.float32(0.0), block[1] / block[0])
+
+
+@wp.kernel
+def occlusion(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    directions: wp.array[wp.vec3],
+    weight_mode: wp.int32,
+    max_t: wp.float32,
+    offset: wp.float32,
+    out_occlusion: wp.array[wp.float32],
+) -> None:
+    # Weighted fraction of an outward hemisphere bundle that is blocked: binary ambient occlusion,
+    # where a hit at any distance blocks fully. A ray needs only whether it is blocked, so this is
+    # ``obscurance``'s loop with ``mesh_query_ray_anyhit``, which stops at the first hit rather
+    # than searching for the nearest: 1.10-1.17x on the scan meshes, values identical. Kept as its
+    # own kernel because compiling both queries behind a ``tau`` branch in one body lost 0.90x.
+    #
+    # One block per point, lanes striding the bundle (see ``BUNDLE_BLOCK``); each lane accumulates
+    # its rays and ``commit_blocked_fraction`` combines them.
+    i, t = wp.tid()
+    axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(1.0))
+    total_weight = wp.float32(0.0)
+    total_blocked = wp.float32(0.0)
+    for r in range(t, directions.shape[0], wp.block_dim()):
+        direction, weight = bundle_ray(directions, r, weight_mode, axis, basis_x, basis_y)
+        total_weight += weight
+        if wp.mesh_query_ray_anyhit(mesh_id, origin, direction, max_t):
+            total_blocked += weight
+    commit_blocked_fraction(t, i, total_weight, total_blocked, out_occlusion)
+
+
 @wp.kernel
 def obscurance(
     mesh_id: wp.uint64,
@@ -73,41 +137,133 @@ def obscurance(
     offset: wp.float32,
     out_occlusion: wp.array[wp.float32],
 ) -> None:
-    # Weighted fraction of an outward hemisphere bundle that is blocked.
-    #
-    # ``tau <= 0`` gives binary ambient occlusion (a hit at any distance blocks fully); a positive
-    # ``tau`` gives Iones et al.'s volumetric obscurance, where an occluder at distance ``t``
-    # contributes ``exp(-tau t)`` so a distant wall barely darkens the point. Binary occlusion is
-    # the ``tau -> 0`` limit of that, since a ray that escapes contributes nothing either way.
-    #
-    # One block per point, lanes striding the bundle (see ``BUNDLE_BLOCK``); each lane accumulates
-    # its rays and the two block sums below combine them.
+    # Iones et al.'s volumetric obscurance (``tau > 0``): an occluder at distance ``t`` contributes
+    # ``exp(-tau t)`` of its ray's weight, so a distant wall barely darkens the point. Binary
+    # occlusion is the ``tau -> 0`` limit, which ``occlusion`` traces with an any-hit query; this
+    # kernel needs the nearest hit's distance. Same bundle and block layout as ``occlusion``.
     i, t = wp.tid()
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(1.0))
-
-    n_rays = directions.shape[0]
     total_weight = wp.float32(0.0)
     total_blocked = wp.float32(0.0)
-    for r in range(t, n_rays, wp.block_dim()):
-        local = directions[r]
-        # A hemisphere lattice has ``local[2] == dot(direction, normal)`` by construction, so the
-        # cosine weight is already there and needs no dot product.
-        weight = wp.float32(1.0)
-        if weight_mode == WEIGHT_COSINE:
-            weight = local[2]
+    for r in range(t, directions.shape[0], wp.block_dim()):
+        direction, weight = bundle_ray(directions, r, weight_mode, axis, basis_x, basis_y)
         total_weight += weight
-        query = wp.mesh_query_ray(
-            mesh_id, origin, bundle_direction(local, axis, basis_x, basis_y), max_t
-        )
+        query = wp.mesh_query_ray(mesh_id, origin, direction, max_t)
         if query.result:
-            if tau > 0.0:
-                total_blocked += weight * wp.exp(-tau * query.t)
-            else:
-                total_blocked += weight
+            total_blocked += weight * wp.exp(-tau * query.t)
+    commit_blocked_fraction(t, i, total_weight, total_blocked, out_occlusion)
 
-    block = block_sum(wp.vec2(total_weight, total_blocked))
-    if t == 0:
-        out_occlusion[i] = wp.where(block[0] <= 0.0, wp.float32(0.0), block[1] / block[0])
+
+# The point-major layout of the bundle kernels for large clouds: a block of ``POINT_MAJOR_BLOCK``
+# lanes takes ``POINT_MAJOR_POINTS`` points that are consecutive in Morton order
+# (``morton_point_order``), lane ``t`` tracing point ``t % POINT_MAJOR_POINTS`` along ray group ``t
+# // POINT_MAJOR_POINTS``, so a warp traces 32 neighbouring points along one lattice direction and
+# their BVH walks share nodes. Per-point sums over the groups are one ``block_sum`` of a vector
+# holding each lane's sums in its own point's slot (reading them off a lane-sized ``(groups,
+# points)`` tile instead measured 0.89x / 0.87x at 64 / 256 rays on a 14 M-point scan). It pays only
+# once the cloud is dense enough for 32 Morton neighbours to be close
+# (``_OCCLUSION_POINT_MAJOR_FROM`` in ``ordito/visibility.py``); below that one block per point
+# wins. Binary occlusion only: the same layout for ``shape_diameter``'s inward closest-hit bundle
+# measured 0.65x (a row of scratch per point, scattered stores) and 0.98x with the scratch
+# ray-major, at 64 rays on a 14 M-point scan, though an outward closest-hit bundle gains 1.25x
+# there; inward rays all cross the volume. CUDA only: the CPU device runs one lane per block, which
+# this partition cannot cover.
+POINT_MAJOR_POINTS = 32
+POINT_MAJOR_BLOCK = 128
+PointMajorSums = wp.types.vector(length=POINT_MAJOR_POINTS, dtype=wp.float32)
+
+
+@wp.kernel
+def morton_point_order(
+    points: wp.array[wp.vec3],
+    lower: wp.vec3,
+    inv_extent: wp.vec3,
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # dim == n_points: each point's Morton code and its own index, written into the radix sort's
+    # double-width buffers.
+    i = wp.int32(wp.tid())
+    out_keys[i] = morton_code_30(points[i], lower, inv_extent)
+    out_order[i] = i
+
+
+@wp.kernel
+def occlusion_point_major(
+    mesh_id: wp.uint64,
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    order: wp.array[wp.int32],
+    directions: wp.array[wp.vec3],
+    weight_mode: wp.int32,
+    max_t: wp.float32,
+    offset: wp.float32,
+    out_occlusion: wp.array[wp.float32],
+) -> None:
+    # ``occlusion`` in the point-major layout (see ``POINT_MAJOR_POINTS``): the same rays and the
+    # same any-hit test, summed over a different lane partition, so a value can differ from
+    # ``occlusion``'s in its last bits. Launched ``dim=(ceil(n / POINT_MAJOR_POINTS),)`` at
+    # ``POINT_MAJOR_BLOCK`` lanes; ``order`` is the Morton permutation.
+    block, t = wp.tid()
+    p = t % POINT_MAJOR_POINTS
+    group = t // POINT_MAJOR_POINTS
+    slot = block * POINT_MAJOR_POINTS + p
+    total_weight = wp.float32(0.0)
+    total_blocked = wp.float32(0.0)
+    i = wp.int32(0)
+    if slot < points.shape[0]:
+        i = order[slot]
+        axis, basis_x, basis_y, origin = hemisphere_frame(
+            points, normals, i, offset, wp.float32(1.0)
+        )
+        groups = wp.block_dim() // POINT_MAJOR_POINTS
+        for r in range(group, directions.shape[0], groups):
+            direction, weight = bundle_ray(directions, r, weight_mode, axis, basis_x, basis_y)
+            total_weight += weight
+            if wp.mesh_query_ray_anyhit(mesh_id, origin, direction, max_t):
+                total_blocked += weight
+    weights = PointMajorSums()
+    blocked = PointMajorSums()
+    for k in range(POINT_MAJOR_POINTS):
+        if k == p:
+            weights[k] = total_weight
+            blocked[k] = total_blocked
+    weights = block_sum(weights)
+    blocked = block_sum(blocked)
+    if group == 0 and slot < points.shape[0]:
+        out_occlusion[i] = wp.where(weights[p] <= 0.0, wp.float32(0.0), blocked[p] / weights[p])
+
+
+@wp.func
+def inward_distance(
+    mesh_id: wp.uint64, origin: wp.vec3, direction: wp.vec3, max_t: wp.float32, offset: wp.float32
+) -> wp.float32:
+    # How far one inward ray travels before leaving the volume, ``inf`` when it never does; the ray
+    # started ``offset`` inside the surface, which the distance adds back. Shared by
+    # ``shape_diameter`` and ``shape_diameter_point_major``.
+    query = wp.mesh_query_ray(mesh_id, origin, direction, max_t)
+    distance = wp.float32(wp.inf)
+    if query.result:
+        distance = offset + query.t
+    return distance
+
+
+@wp.func
+def diameter_window(
+    total: wp.float32, total_sq: wp.float32, hits: wp.float32
+) -> tuple[wp.float32, wp.float32]:
+    # The mean distance of a point's hits and their deviation, from the first pass's sums (at least
+    # one hit).
+    mean = total / hits
+    return mean, wp.sqrt(wp.max(0.0, total_sq / hits - mean * mean))
+
+
+@wp.func
+def keeps_distance(
+    distance: wp.float32, mean: wp.float32, deviation: wp.float32, trim: wp.float32
+) -> wp.bool:
+    # The trimming rule: a hit within ``trim`` deviations of the mean is kept.
+    return not wp.isinf(distance) and wp.abs(distance - mean) <= trim * deviation
 
 
 @wp.kernel
@@ -133,6 +289,12 @@ def shape_diameter(
     #
     # One block per point, lanes striding the bundle in both passes (see ``BUNDLE_BLOCK``); the
     # per-lane sums are combined block-wide, so every lane holds the same mean and deviation.
+    #
+    # The ``(n_points, n_rays)`` scratch is not the cost, though it is gigabytes on a large mesh
+    # (15 GB at 14 M points and 256 rays): holding each lane's few distances in a register vector
+    # instead (one unrolled kernel per rays-per-lane bucket) measured 0.97-0.98x on bunny, dragon
+    # and lucy at 64 and 256 rays. Each lane writes and rereads its own contiguous slots, which
+    # the cache absorbs; the traced rays are the cost.
     i, t = wp.tid()
     # Inward, so the bundle's axis is ``-normal`` and the origin steps *below* the surface.
     axis, basis_x, basis_y, origin = hemisphere_frame(points, normals, i, offset, wp.float32(-1.0))
@@ -142,13 +304,10 @@ def shape_diameter(
     total_sq = wp.float32(0.0)
     hits = wp.float32(0.0)
     for r in range(t, n_rays, wp.block_dim()):
-        local = directions[r]
-        query = wp.mesh_query_ray(
-            mesh_id, origin, bundle_direction(local, axis, basis_x, basis_y), max_t
+        distance = inward_distance(
+            mesh_id, origin, bundle_direction(directions[r], axis, basis_x, basis_y), max_t, offset
         )
-        distance = wp.inf
-        if query.result:
-            distance = offset + query.t  # the ray started ``offset`` inside the surface
+        if not wp.isinf(distance):
             total += distance
             total_sq += distance * distance
             hits += 1.0
@@ -163,14 +322,13 @@ def shape_diameter(
         if t == 0:
             out_diameter[i] = wp.inf  # an open surface with nothing on the other side
         return
-    mean = total / hits
-    deviation = wp.sqrt(wp.max(0.0, total_sq / hits - mean * mean))
+    mean, deviation = diameter_window(total, total_sq, hits)
 
     kept = wp.float32(0.0)
     weighted = wp.float32(0.0)
     for r in range(t, n_rays, wp.block_dim()):
         distance = scratch[i, r]
-        if not wp.isinf(distance) and wp.abs(distance - mean) <= trim * deviation:
+        if keeps_distance(distance, mean, deviation, trim):
             weight = directions[r][2]  # cosine of the angle from the cone axis
             kept += weight
             weighted += weight * distance

@@ -1497,7 +1497,7 @@ def _rotate_corner_to_front(
 
 
 @wp.func
-def equal_area_position(
+def equal_area_position_f64(
     positions: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
@@ -1562,6 +1562,113 @@ def equal_area_position(
         return current
     target = wp.inverse(matrix) * rhs
     return to_vec3(target)
+
+
+@wp.func
+def next_row_entry(
+    values: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    previous_value: wp.int32,
+    previous_slot: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # The entry of ``values[begin:end]`` that follows ``(previous_value, previous_slot)`` in
+    # ``(value, slot)`` order -- a row visited in ascending value order whatever order it is
+    # stored in, a repeated value once per occurrence. Start from ``(-1, -1)``; an O(row) scan, for
+    # rows of a few entries.
+    best_value = wp.int32(2147483647)
+    best_slot = wp.int32(-1)
+    for slot in range(begin, end):
+        value = values[slot]
+        after = value > previous_value or (value == previous_value and slot > previous_slot)
+        if after and (value < best_value or (value == best_value and slot < best_slot)):
+            best_value = value
+            best_slot = slot
+    return best_value, best_slot
+
+
+# ``equal_area_position``'s float32 path is trusted while its system's determinant is at least this
+# fraction of the cubed (or, in the tangent plane, squared) trace -- an isotropic 3x3 reads 1/27 --
+# and the float64 accumulation is redone below it. Swept at 1e-6 / 1e-4 / 1e-2 on bunny, dragon and
+# lucy (one pass, against the float64 accumulation): 1e-6 still let a dragon ring through 3e-6
+# off, from 1e-4 the largest difference is the positions' own float32 rounding. Ten passes through
+# ``equalize_triangle_areas``: 1.44x bunny, 2.9x dragon, 3.2x lucy (1.8x with ``no_shrinkage``,
+# which recomputes normals each pass). With ``no_shrinkage`` the filter flings ~500 dragon vertices
+# beyond 0.01 of their start in ten passes on either accumulation, and those chaotic vertices
+# differ run to run on the float64 one too; everything else agrees to rounding.
+EQUAL_AREA_F32_CONDITION = wp.constant(wp.float64(1.0e-4))
+
+
+@wp.func
+def equal_area_position(
+    positions: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    vertex: wp.int32,
+    normal: wp.vec3,
+    no_shrinkage: wp.bool,
+) -> wp.vec3:
+    """
+    ``equal_area_position_f64``'s minimum, from ring sums accumulated in ``float32``.
+
+    The quadratic form depends on the edges alone and the right-hand side is taken relative to the
+    free vertex, so the sums hold differences at the ring's own scale rather than products of
+    absolute coordinates; the small system is then solved in ``float64`` for the displacement. A
+    sum of rank-deficient terms still loses its smallest eigenvalue in ``float32`` when the ring
+    is nearly degenerate, so a system whose determinant falls below ``EQUAL_AREA_F32_CONDITION``
+    of its trace's power is handed to ``equal_area_position_f64``, the exact ``float64``
+    accumulation, which then applies its own degeneracy test. On a well-conditioned ring the two
+    agree to the positions' ``float32`` rounding; ``float64`` arithmetic runs at a small fraction
+    of ``float32``'s on this hardware, and the ring walk is the whole kernel.
+
+    The row is summed in ascending face order (``next_row_entry``), not slot order: the vertex-face
+    rows are sets in arbitrary order, and a ``float32`` sum in that order would move the result's
+    last bit from run to run. Finding the next entry rereads the short row and measures free.
+    Accumulating each ``float32`` term in ``float64`` instead (order-free in practice) cost 3x.
+    """
+    current = positions[vertex]
+    matrix = wp.mat33()
+    rhs = wp.vec3()
+    begin = offsets[vertex]
+    end = offsets[vertex + 1]
+    face = wp.int32(-1)
+    face_slot = wp.int32(-1)
+    for _step in range(begin, end):
+        face, face_slot = next_row_entry(vertex_faces, begin, end, face, face_slot)
+        first, second, third = corner_triple(faces, face)
+        opposite_start, opposite_end = _rotate_corner_to_front(first, second, third, vertex)
+        relative_start = positions[opposite_start] - current
+        edge = positions[opposite_end] - positions[opposite_start]
+        term = wp.outer(edge, edge) - wp.identity(n=3, dtype=wp.float32) * wp.dot(edge, edge)
+        matrix += term
+        rhs += term * relative_start
+    wide = wp.mat33d(matrix)
+    wide_rhs = to_vec3d(rhs)
+    if no_shrinkage:
+        # The tangent plane through the current position: the displacement has no normal part.
+        axis_x, axis_y = plane_basis(normal)
+        basis_x = to_vec3d(axis_x)
+        basis_y = to_vec3d(axis_y)
+        mapped_x = wide * basis_x
+        mapped_y = wide * basis_y
+        off_diagonal = wp.dot(mapped_x, basis_y)
+        planar = wp.mat22d(
+            wp.dot(mapped_x, basis_x), off_diagonal, off_diagonal, wp.dot(mapped_y, basis_y)
+        )
+        trace = planar[0, 0] + planar[1, 1]
+        if wp.abs(wp.determinant(planar)) >= EQUAL_AREA_F32_CONDITION * trace * trace:
+            solution = wp.inverse(planar) * wp.vec2d(
+                wp.dot(wide_rhs, basis_x), wp.dot(wide_rhs, basis_y)
+            )
+            return to_vec3(to_vec3d(current) + basis_x * solution[0] + basis_y * solution[1])
+    else:
+        trace = wide[0, 0] + wide[1, 1] + wide[2, 2]
+        if wp.abs(wp.determinant(wide)) >= EQUAL_AREA_F32_CONDITION * wp.abs(trace * trace * trace):
+            return to_vec3(to_vec3d(current) + wp.inverse(wide) * wide_rhs)
+    return equal_area_position_f64(
+        positions, faces, offsets, vertex_faces, vertex, normal, no_shrinkage
+    )
 
 
 @wp.func

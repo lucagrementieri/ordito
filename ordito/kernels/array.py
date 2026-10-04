@@ -1137,6 +1137,21 @@ class OverloadTable(KernelTable):
         )
 
 
+@wp.func
+def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.int32:
+    # The 30-bit Morton (Z-order) code of ``point`` on a 1024^3 lattice over the box from
+    # ``lower`` with ``inv_extent = 1023 / (upper - lower)`` per axis: the bits of the three
+    # quantized coordinates interleaved ``x`` lowest. Sorting points by it puts spatial neighbours
+    # next to each other; a point outside the box clamps onto its face.
+    q = wp.cw_mul(point - lower, inv_extent)
+    code = wp.int32(0)
+    for axis in range(3):
+        cell = wp.int32(wp.clamp(q[axis], 0.0, 1023.0))
+        for bit in range(10):
+            code = code | (((cell >> bit) & 1) << (3 * bit + axis))
+    return code
+
+
 # Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
 # items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
 # grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer

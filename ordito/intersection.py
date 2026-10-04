@@ -48,6 +48,11 @@ DType = TypeVar("DType")
 # Segment count from which ``marching_triangles`` links its curves on the device.
 _LINK_ON_DEVICE_FROM = 1024
 
+# Largest distance from its best-fit plane, relative to the loop's extent, at which a capped clip's
+# section loop counts as planar and is ear-clipped. Crossing points of a plane field sit on the
+# plane to ``float32`` interpolation error, orders of magnitude below this.
+_CAP_PLANAR_TOLERANCE = 1e-5
+
 
 def segments_with_plane(
     start_points: wp.array[wp.vec3],
@@ -1459,13 +1464,15 @@ def clip_mesh_with_field(
         Level to clip at. A vertex whose value equals it counts as kept, matching
         [`marching_triangles`][ordito.intersection.marching_triangles].
     cap
-        When ``True``, seal the section: every closed loop of the level set is triangulated with
-        [`fill_loops_min_weight`][ordito.holes.fill_loops_min_weight]'s minimum-weight fill, so a
-        closed input gives a closed output. Only the section is sealed -- a boundary the input
-        already had stays open, and so does a section that runs into one -- and the input vertices
-        are returned exactly as given (coincident ones are not merged); only the crossing points
-        the cut appends are shared. Use [`fill_min_weight`][ordito.holes.fill_min_weight] on the
-        result to close every hole instead.
+        When ``True``, seal the section: every closed loop of the level set is triangulated, so a
+        closed input gives a closed output. A planar loop (any section of a plane field) is
+        ear-clipped in its plane as a polygon; any other loop gets
+        [`fill_loops_min_weight`][ordito.holes.fill_loops_min_weight]'s minimum-weight fill. Only
+        the section is sealed -- a boundary the input already had stays open, and so does a section
+        that runs into one -- and the input vertices are returned exactly as given (coincident ones
+        are not merged); only the crossing points the cut appends are shared. Use
+        [`fill_min_weight`][ordito.holes.fill_min_weight] on the result to close every hole
+        instead.
 
     Returns
     -------
@@ -1551,25 +1558,128 @@ def clip_mesh_with_field(
         inputs=[source, shifted, on_section],
         device=device,
     )
-    rim = od.boundary.oriented_boundary_edges(new_vertices, new_faces)
-    # Host bookkeeping over the rim alone: its edges and their endpoints' flags cross in two small
-    # copies, and the section edges go back in one.
+    # An edge with both ends on the section lies only in faces with two corners on it, so its
+    # boundary status is decided among those faces: the rim is taken over them alone, not the whole
+    # mesh, and only its section edges are kept.
+    n_faces = new_faces.size // 3
+    scanned = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_intersections.section_face_flags,
+        dim=n_faces,
+        inputs=[new_faces, on_section, scanned],
+        device=device,
+    )
+    _launch.array_scan(scanned, scanned, inclusive=True)
+    # Readback: the touching-face count sizes their buffer.
+    n_touching = int(read_scalar(scanned, n_faces - 1))
+    if n_touching == 0:
+        return new_vertices, new_faces
+    touching = _launch.empty(3 * n_touching, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_intersections.emit_section_faces,
+        dim=n_faces,
+        inputs=[new_faces, scanned, touching],
+        device=device,
+    )
+    rim = od.boundary.oriented_boundary_edges(new_vertices, touching)
+    # Host bookkeeping over the touching faces' rim alone: its edges and their endpoints' flags
+    # cross in two small copies, and the section edges go back in one.
+    if rim.shape[0] == 0:
+        return new_vertices, new_faces
     rim_np = rim.numpy()
-    flags_np = on_section.numpy()
-    section_np = rim_np[flags_np[rim_np[:, 0]] & flags_np[rim_np[:, 1]]]
+    rim_flat = cast("wp.array[wp.int32]", rim.flatten())
+    ends_np = cast("wp.array[wp.bool]", od.array.gather(on_section, rim_flat)).numpy()
+    section_np = rim_np[ends_np[0::2] & ends_np[1::2]]
     if section_np.shape[0] == 0:
         return new_vertices, new_faces
-    section_edges = odt.as_array2d(
-        _launch.array(np.ascontiguousarray(section_np), dtype=wp.int32, device=device), wp.int32
+    # The section's vertices are numbered compactly for the chaining, so its tables are sized by
+    # the section rather than the mesh; one upload carries the edges and the numbering back.
+    section_ids, compact_np = np.unique(section_np, return_inverse=True)
+    n_ids = section_ids.size
+    upload = _launch.array(
+        np.concatenate((section_ids, compact_np.reshape(-1))).astype(np.int32),
+        dtype=wp.int32,
+        device=device,
     )
-    cycles, offsets = od.graph.successor_cycles(section_edges, new_vertices.size, validate=False)
-    section_loops = od.array.split(cycles, offsets)
-    if not section_loops:
+    section_edges = odt.as_array2d(odt.as_dense(upload[n_ids:]).reshape((-1, 2)), wp.int32)
+    compact_cycles, offsets = od.graph.successor_cycles(section_edges, n_ids, validate=False)
+    if compact_cycles.size == 0:
         return new_vertices, new_faces
-    new_faces = od.holes.fill_loops_min_weight(
-        new_vertices, new_faces, section_loops, "plane_normalized", True
+    cycles = cast(
+        "wp.array[wp.int32]", od.array.gather(odt.as_dense(upload[:n_ids]), compact_cycles)
     )
-    return new_vertices, new_faces
+    return new_vertices, _cap_section_loops(new_vertices, new_faces, cycles, offsets)
+
+
+def _cap_section_loops(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    cycles: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+) -> wp.array[wp.int32]:
+    """
+    Append a cap for every section loop to ``faces``.
+
+    A planar loop is ear-clipped, any other gets the min-weight fill. A loop is planar when every
+    point lies within ``_CAP_PLANAR_TOLERANCE`` of the loop's extent from its best-fit plane, which
+    a plane field's section always does. Such a loop is a polygon, and is triangulated as one, as
+    VTK caps its clipped contours; a loop whose ear clip does not return the full ``B - 2``
+    triangles (a projection that is not a simple polygon) falls back to the min-weight fill with
+    the non-planar loops.
+    """
+    device = vertices.device
+    gathered = cast("wp.array[wp.vec3]", od.array.gather(vertices, cycles))
+    # Every loop is ear-clipped, all short ones in one launch, while the host tests which are
+    # planar; a non-planar loop's triangulation is then discarded.
+    triangulated, face_offsets = od.polyline.polyline_triangulate_from_offsets(gathered, offsets)
+    # Host bookkeeping over the section alone: the loops, their points and their caps cross in
+    # small copies.
+    cycles_np = cycles.numpy()
+    offsets_np = offsets.numpy()
+    points_np = gathered.numpy().astype(np.float64)
+    tri_np = triangulated.numpy()
+    face_offsets_np = face_offsets.numpy()
+
+    caps: list[np.ndarray] = []
+    fallback: list[wp.array[wp.int32]] = []
+    for r, (start, stop) in enumerate(
+        zip(offsets_np[:-1].tolist(), offsets_np[1:].tolist(), strict=True)
+    ):
+        size = stop - start
+        local = tri_np[face_offsets_np[r] : face_offsets_np[r + 1]] - start
+        if size >= 3 and local.shape[0] == size - 2 and _is_planar_loop(points_np[start:stop]):
+            # The loop runs the way its boundary edges do, so the cap must hold each ring edge
+            # the other way round: flip a triangulation that holds ring edge 0 -> 1.
+            following = np.roll(local, -1, axis=1)
+            if np.any((local == 0) & (following == 1)):
+                local = local[:, ::-1]
+            caps.append(cycles_np[start:stop][local])
+            continue
+        fallback.append(odt.as_dense(cycles[start:stop]))
+    if fallback:
+        faces = od.holes.fill_loops_min_weight(vertices, faces, fallback, "plane_normalized", True)
+    if not caps:
+        return faces
+    cap_faces = _launch.array(
+        np.ascontiguousarray(np.concatenate(caps).reshape(-1), dtype=np.int32),
+        dtype=wp.int32,
+        device=device,
+    )
+    out = _launch.empty(faces.size + cap_faces.size, dtype=wp.int32, device=device)
+    wp.copy(out, faces, count=faces.size)
+    wp.copy(out, cap_faces, dest_offset=faces.size, count=cap_faces.size)
+    return out
+
+
+def _is_planar_loop(points: np.ndarray) -> bool:
+    """Whether every point lies within ``_CAP_PLANAR_TOLERANCE`` of the extent from the best fit."""
+    centred = points - points.mean(axis=0)
+    extent = float(np.linalg.norm(np.ptp(points, axis=0)))
+    if extent == 0.0:
+        return False
+    # Ascending eigenvalues: the first vector is the plane normal.
+    _, vectors = np.linalg.eigh(centred.T @ centred)
+    return float(np.abs(centred @ vectors[:, 0]).max()) <= _CAP_PLANAR_TOLERANCE * extent
 
 
 def split_faces_along_field(

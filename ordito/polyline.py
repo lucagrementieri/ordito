@@ -1142,17 +1142,24 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     [`polyline_normal`][ordito.polyline.polyline_normal]) so any planar loop works, not only ones
     lying in the ``xy`` plane.
 
-    The implementation is a GPU-parallel port of ``ear_clipping.cpp`` from libigl: convex polygons
-    use a single fan, while non-convex polygons clip a maximal independent set of ears per round
+    The implementation is a GPU-parallel port of ``ear_clipping.cpp`` from libigl: a strictly
+    convex polygon uses a single fan, any other clips a maximal independent set of ears per round
     until the polygon is exhausted. Returned faces are consistently wound counter-clockwise with
     respect to the loop's turning direction; the exact set of triangles may differ from a sequential
-    ear clip, but every triangulation of a simple polygon has ``n - 2`` faces.
+    ear clip, but every triangulation of a simple polygon has ``n - 2`` faces. The result is the
+    same on every run.
+
+    An ear whose tip is collinear with its neighbours to within the points' ``float32`` rounding is
+    clipped only in a round with no other ear, so zero-area slivers appear only where the polygon
+    leaves no choice (a vertex on a zero-length side, or within rounding of a non-adjacent side).
 
     The cost is set by the **round count**, and the round count by how many ears the
     independent-set rule can retire at once. Competing ears are ranked by a bijective hash of their
     ring index rather than by the index itself, which is what keeps that logarithmic: under the raw
     index an alternating star lets the ear at ``i - 2`` suppress the ear at ``i`` for every ``i``,
-    so one ear is clipped per round and the loop runs its full ``n``-round cap.
+    so one ear is clipped per round and the loop runs its full ``n``-round cap. A long run of
+    near-collinear points is the exception: it can only be retired from its two ends, a vertex or
+    so a round.
 
     Parameters
     ----------
@@ -1170,12 +1177,13 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     Notes
     -----
     The whole clip runs **on device**. A short ring is clipped by a single block that runs every
-    round itself; a long one, whose rounds fill the device, by a round loop driven by
-    ``wp.capture_while`` over a device-side condition. On the CPU device the single-block form is
-    used at every length. Two readbacks are left in the whole function, both structural: one
-    carrying the ring length (whether the last point repeats the first), the loop's orientation and
-    its reflex count, which together decide every launch dimension and the convex fan fast path; and
-    the face count, which sizes the returned slice. The plane frame is accumulated and consumed on
+    round itself; a long one by a round loop driven by ``wp.capture_while`` over a device-side
+    condition, whose ear tests look up the vertices near each candidate ear in a uniform grid
+    rather than walking the whole ring, so a round costs about linear work. Two readbacks are left
+    in the whole function, both structural: one carrying the ring length (whether the last point
+    repeats the first), the loop's orientation, its reflex count and its bounding box, which
+    together decide every launch dimension, the grid and the convex fan fast path; and the face
+    count, which sizes the returned slice. The plane frame is accumulated and consumed on
     the device and never crosses to the host.
 
     Every path produces the same triangulation up to row order, and that row order is not stable on
@@ -1191,15 +1199,15 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     if n < 3:
         return odt.empty_2d((0, 3), wp.int32, device=device)
 
-    # The plane frame is built and consumed entirely on device: one accumulation pass, which also
-    # decides whether the last point repeats the first, then a projection whose threads each derive
-    # the frame from the accumulated sums.
+    # The plane frame is built and consumed entirely on device: one single-block accumulation, which
+    # also decides whether the last point repeats the first, then a projection whose threads each
+    # read the frame it stored.
     sums = _launch.zeros(kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device)
     _launch.launch_tiled(
         kernel_polyline.accumulate_loop_frame,
-        dim=kernel_reduce.blocks_1d(n),
+        dim=(1,),
         inputs=[polyline, sums],
-        block_dim=TILE_1D,
+        block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
         device=device,
     )
     points2d = _launch.empty(n, dtype=wp.vec2, device=device)
@@ -1211,6 +1219,120 @@ def polyline_triangulate(polyline: wp.array[wp.vec3]) -> odt.Array2dInt32:
     )
     _, faces = _triangulate_ring(points2d, sums, detect_closing=False)
     return faces
+
+
+def polyline_triangulate_from_offsets(
+    polylines: wp.array[wp.vec3], offsets: wp.array[wp.int32]
+) -> tuple[odt.Array2dInt32, wp.array[wp.int32]]:
+    """
+    Triangulate several packed closed 3D polylines at once (ear clipping), adding no new points.
+
+    Loop ``r`` is ``polylines[offsets[r] : offsets[r + 1]]``. Each loop gets the triangles
+    [`polyline_triangulate`][ordito.polyline.polyline_triangulate] gives it alone (up to row
+    order), but the short loops are triangulated together, one block per loop in a single launch,
+    rather than one call after another.
+
+    Parameters
+    ----------
+    polylines
+        ``(n,)`` points of every loop, packed loop after loop.
+    offsets
+        ``(n_loops + 1,)`` loop offsets into ``polylines``, total-terminated.
+
+    Returns
+    -------
+    faces : odt.Array2dInt32
+        ``(m, 3)`` triangle vertex indices into ``polylines`` (not into each loop), loop after
+        loop. A simple ``k``-point loop contributes ``k - 2``; a degenerate or self-intersecting
+        one may contribute fewer, and a loop of fewer than three points none.
+    face_offsets : wp.array[wp.int32]
+        ``(n_loops + 1,)`` offsets of each loop's rows in ``faces``, total-terminated.
+
+    Raises
+    ------
+    RuntimeError
+        If ``polylines`` and ``offsets`` are on different devices.
+
+    Notes
+    -----
+    Three readbacks: the offsets, which decide which loops share the launch and how many rows each
+    may write; the per-loop face counts; and the reserved face rows, which are compacted on the
+    host and uploaded once.
+
+    See Also
+    --------
+    [`polyline_triangulate`][ordito.polyline.polyline_triangulate]
+    """
+    require_same_device(polylines=polylines, offsets=offsets)
+    device = polylines.device
+    # Readback: the loop sizes decide which loops share the block launch and their face rows.
+    offsets_np = offsets.numpy().astype(np.int64)
+    n_loops = offsets_np.size - 1
+    if n_loops <= 0:
+        return (
+            odt.empty_2d((0, 3), wp.int32, device=device),
+            _launch.zeros(1, dtype=wp.int32, device=device),
+        )
+    sizes = np.diff(offsets_np)
+    reserved = np.maximum(sizes - 2, 0)
+    bases = np.concatenate(([0], np.cumsum(reserved)))
+    short = (sizes >= 3) & (sizes <= kernel_polyline.EAR_ONE_BLOCK_MAX)
+    loop_faces: list[np.ndarray] = [np.empty((0, 3), dtype=np.int32)] * n_loops
+    if short.any():
+        bases_wp = _launch.array(bases[:-1].astype(np.int32), dtype=wp.int32, device=device)
+        sums = _launch.zeros(
+            n_loops * kernel_polyline.RING_SUMS_SIZE, dtype=wp.float32, device=device
+        )
+        _launch.launch_tiled(
+            kernel_polyline.accumulate_loop_frames,
+            dim=(n_loops,),
+            inputs=[polylines, offsets, sums],
+            block_dim=kernel_polyline.LOOP_FRAME_BLOCK_DIM,
+            device=device,
+        )
+        n_points = int(offsets_np[-1])
+        points2d = _launch.empty(n_points, dtype=wp.vec2, device=device)
+        faces = odt.empty_2d((max(int(bases[-1]), 1), 3), wp.int32, device=device)
+        ring = odt.empty_2d((5, n_points), wp.int32, device=device)
+        counts = _launch.empty(n_loops, dtype=wp.int32, device=device)
+        _launch.launch_tiled(
+            kernel_polyline.triangulate_rings,
+            dim=(n_loops,),
+            inputs=[
+                polylines,
+                offsets,
+                bases_wp,
+                wp.int32(kernel_polyline.EAR_ONE_BLOCK_MAX),
+                sums,
+                points2d,
+                faces,
+                ring,
+                counts,
+            ],
+            block_dim=kernel_polyline.EAR_BLOCK_DIM,
+            device=device,
+        )
+        # Readbacks: each loop's face count, then the reserved rows, compacted below.
+        ends_np = counts.numpy()
+        faces_np = faces.numpy()
+        for r in np.flatnonzero(short).tolist():
+            loop_faces[r] = faces_np[bases[r] : ends_np[r]]
+    for r in np.flatnonzero(sizes > kernel_polyline.EAR_ONE_BLOCK_MAX).tolist():
+        start = int(offsets_np[r])
+        local = polyline_triangulate(odt.as_dense(polylines[start : int(offsets_np[r + 1])]))
+        loop_faces[r] = local.numpy() + start
+    face_counts = np.array([f.shape[0] for f in loop_faces], dtype=np.int64)
+    face_offsets_np = np.concatenate(([0], np.cumsum(face_counts))).astype(np.int32)
+    packed = np.concatenate(
+        (np.concatenate(loop_faces).reshape(-1).astype(np.int32), face_offsets_np)
+    )
+    # One upload carries the faces and their offsets; both are views of it.
+    upload = _launch.array(packed, dtype=wp.int32, device=device)
+    n_rows = int(face_offsets_np[-1])
+    if n_rows == 0:
+        return odt.empty_2d((0, 3), wp.int32, device=device), upload
+    out_faces = odt.as_array2d(odt.as_dense(upload[: 3 * n_rows]).reshape((n_rows, 3)), wp.int32)
+    return out_faces, odt.as_dense(upload[3 * n_rows :])
 
 
 def triangulate_polygon(polygon: wp.array[wp.vec2]) -> tuple[wp.array[wp.vec2], wp.array[wp.int32]]:
@@ -1287,9 +1409,9 @@ def _triangulate_ring(
     )
     # The only readback before the convex fast path returns: ring length, turning angle and the
     # reflex count of the oriented loop, all decided on device.
-    # The four slots are adjacent, ``RING_TURNING`` through ``RING_CLOSING``: one offset read.
-    turning, reflex, reflex_mirrored, closing = read_values(
-        sums, int(kernel_polyline.RING_TURNING), 4
+    # The eight slots are adjacent, ``RING_TURNING`` through the ring's box: one offset read.
+    turning, reflex, reflex_mirrored, closing, *extent = read_values(
+        sums, int(kernel_polyline.RING_TURNING), 8
     )
     n_ring = n - int(closing)
     if n_ring < 3:
@@ -1309,10 +1431,9 @@ def _triangulate_ring(
     # written mirrored, and a caller's ring needs no copy.
     mirror = wp.int32(1 if clockwise else 0)
 
-    # One block runs every round (see ``ear_clip_block``): no graph to record, one launch. On the
-    # CPU device a launch grid is a serial loop either way, so the block form does the same walk
-    # without a launch and a readback per round, and it is taken at every size.
-    if n_ring <= kernel_polyline.EAR_ONE_BLOCK_MAX or not wp.get_device(device).is_cuda:
+    # One block runs every round (see ``ear_clip_block``): no graph to record, one launch, but an
+    # O(ring) containment walk per corner, so only short rings take it (``EAR_ONE_BLOCK_MAX``).
+    if n_ring <= kernel_polyline.EAR_ONE_BLOCK_MAX:
         ring = odt.empty_2d((5, n_ring), wp.int32, device=device)
         count_wp = _launch.empty(1, dtype=wp.int32, device=device)
         _launch.launch_tiled(
@@ -1325,12 +1446,51 @@ def _triangulate_ring(
         count = int(read_scalar(count_wp, 0))
         return n_ring, odt.as_array2d(odt.as_dense(out_faces[0:count]), wp.int32)
 
+    # The ear grid (see ``kernels/polyline.ear_grade_grid``): square cells, about
+    # ``EAR_GRID_CELLS_PER_POINT`` per ring point over the ring's box, read back with the turning
+    # angle. A degenerate box (a ring on a line) still gets cells along its long side.
+    above_x, above_y, below_x, below_y = (float(e) for e in extent)
+    width = max(above_x + below_x, 0.0)
+    height = max(above_y + below_y, 0.0)
+    target = kernel_polyline.EAR_GRID_CELLS_PER_POINT * n_ring
+    cell = max(math.sqrt(width * height / target), max(width, height) / target)
+    if not cell > 0.0 or not math.isfinite(cell):
+        cell = 1.0
+    dims = (
+        min(max(1, math.ceil(width / cell)), target),
+        min(max(1, math.ceil(height / cell)), target),
+    )
+    n_cells = dims[0] * dims[1]
+    shift = wp.vec2(below_x, below_y)
+    inv_cell = wp.float32(1.0 / cell)
+    dims_wp = wp.vec2i(wp.int32(dims[0]), wp.int32(dims[1]))
+    cell_keys = _launch.empty(2 * n_ring, dtype=wp.int32, device=device)
+    cell_points = _launch.empty(2 * n_ring, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.ear_grid_cells,
+        dim=n_ring,
+        inputs=[points2d, shift, inv_cell, dims_wp],
+        outputs=[cell_keys, cell_points],
+        device=device,
+    )
+    _launch.radix_sort_pairs(
+        cell_keys, cell_points, count=n_ring, end_bit=max(1, (n_cells - 1).bit_length())
+    )
+    cell_starts = _launch.empty(n_cells + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_polyline.ear_grid_starts,
+        dim=n_ring,
+        inputs=[cell_keys, wp.int32(n_ring)],
+        outputs=[cell_starts],
+        device=device,
+    )
+
     left = _launch.empty(n_ring, dtype=wp.int32, device=device)
     right = _launch.empty(n_ring, dtype=wp.int32, device=device)
     active = _launch.empty(n_ring, dtype=wp.int32, device=device)
     is_ear = _launch.empty(n_ring, dtype=wp.int32, device=device)
     selected = _launch.empty(n_ring, dtype=wp.int32, device=device)
-    # [rounds run, loop condition, face count], seeded by ``init_ring``.
+    # [rounds run, loop condition, face count, some ear good], seeded by ``init_ring``.
     state = _launch.empty(kernel_polyline.EAR_STATE_SIZE, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_polyline.init_ring, dim=n_ring, inputs=[left, right, active, state], device=device
@@ -1340,13 +1500,26 @@ def _triangulate_ring(
         _launch.launch(
             kernel_polyline.compute_ears,
             dim=n_ring,
-            inputs=[points2d, left, right, active, mirror, is_ear],
+            inputs=[
+                points2d,
+                left,
+                right,
+                active,
+                mirror,
+                cell_starts,
+                cell_points,
+                shift,
+                inv_cell,
+                dims_wp,
+                state,
+                is_ear,
+            ],
             device=device,
         )
         _launch.launch(
             kernel_polyline.select_independent,
             dim=n_ring,
-            inputs=[is_ear, left, right, selected],
+            inputs=[is_ear, left, right, state, selected],
             device=device,
         )
         _launch.launch(
