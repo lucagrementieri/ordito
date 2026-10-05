@@ -31,8 +31,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
-from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX
-from ordito.kernels import adjacency as kernel_adjacency
+from ordito.constants import INT32_MAX
 from ordito.kernels import array as kernel_array
 from ordito.kernels import boundary as kernel_boundary
 from ordito.kernels import graph as kernel_graph
@@ -108,7 +107,8 @@ def _boundary_edges_impl(
     """
     Shared body of [`boundary_edges`][ordito.boundary.boundary_edges] and its oriented form.
 
-    The vertex count is the key radix, so the sort orders only the bits a key can occupy.
+    The vertex count bounds every index, so the pairing may bucket and the boundary rows' sort
+    orders only the bits a key can occupy.
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -242,7 +242,7 @@ def boundary_loops_with_offsets(
 
     n_vertices = vertices.size
     # One boundary detection for every edge view below; ``boundary_edges`` /
-    # ``oriented_boundary_edges`` / ``boundary_vertex_indices`` would each redo the key sort.
+    # ``oriented_boundary_edges`` / ``boundary_vertex_indices`` would each redo the pairing.
     boundary = _BoundaryHalfedges(faces, n_vertices)
     has_seam, has_pinch = _boundary_defects(boundary, n_vertices)
     if boundary.count() == 0:
@@ -287,10 +287,10 @@ def _boundary_defects(boundary: _BoundaryHalfedges, n_vertices: int) -> tuple[bo
     walk, which has nothing to offer a vertex of degree four.
 
     No pass and no readback of its own: the degree census rides in the launch that flags the
-    boundary runs (``kernels/boundary.mark_boundary_runs``), and its two bits come back in the one
-    readback that sizes the boundary. Neither flag needs a pass over the *vertices*: only a
-    boundary vertex ever has a non-zero degree, and the thread that pushes one past its threshold
-    learns so from the value its own ``wp.atomic_add`` returns.
+    boundary halfedges (``kernels/boundary.mark_boundary_halfedges``), and its two bits come back
+    in the one readback that sizes the boundary. Neither flag needs a pass over the *vertices*:
+    only a boundary vertex ever has a non-zero degree, and the thread that pushes one past its
+    threshold learns so from the value its own ``wp.atomic_add`` returns.
     """
     boundary.count(census=n_vertices)
     return boundary.defects
@@ -320,23 +320,14 @@ def _pinched_boundary_cycles(
     """
     faces = boundary.faces
     # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
-    # detection's own sort: the same keys against the same radix, sorted stably, so the mates are
-    # the ones ``halfedge.halfedge_mates`` would build and the mesh-sized key build and sort are not
-    # repeated. The defect counts are not read.
+    # detection's own mates, so the pairing is not repeated. The defect counts are not read.
     n = boundary.n
     device = faces.device
-    mates = _launch.empty(n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_halfedge.sorted_halfedge_mates,
-        dim=n,
-        inputs=[odt.as_dense(boundary.keys[:n]), boundary.order, mates],
-        device=device,
-    )
     twins = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_halfedge.twins_from_mates,
         dim=n,
-        inputs=[faces, mates, twins, _launch.zeros(2, dtype=wp.int32, device=device)],
+        inputs=[faces, boundary.mates, twins, _launch.zeros(2, dtype=wp.int32, device=device)],
         device=device,
     )
     tails, next_node = boundary.successors(n, twins=twins)
@@ -989,14 +980,12 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     if n_faces == 0:
         return empty, empty
 
-    # The mask is read straight off the sorted keys: no scan and no readback.
-    edge_boundary = _BoundaryHalfedges(faces).halfedge_mask()
+    # A boundary edge is a halfedge with no mate, read per corner: no mask, scan or readback.
+    mates = od.halfedge.halfedge_mates(faces)
 
     # Flag, scan in place, and emit at the scan's steps: ascending face order, one readback.
     inclusive = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_boundary.mark_ears, dim=n_faces, inputs=[edge_boundary, inclusive], device=device
-    )
+    _launch.launch(kernel_boundary.mark_ears, dim=n_faces, inputs=[mates, inclusive], device=device)
     _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
     # Sizes the output: the one host readback.
     n_ears = int(read_scalar(inclusive))
@@ -1007,7 +996,7 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
     _launch.launch(
         kernel_boundary.emit_ears,
         dim=n_faces,
-        inputs=[edge_boundary, inclusive, ear, ear_opp],
+        inputs=[mates, inclusive, ear, ear_opp],
         device=device,
     )
     return ear, ear_opp
@@ -1015,40 +1004,24 @@ def ears(faces: wp.array[wp.int32]) -> tuple[wp.array[wp.int32], wp.array[wp.int
 
 class _BoundaryHalfedges:
     """
-    The boundary halfedges of a mesh: one radix sort of every halfedge's undirected edge key.
+    The boundary halfedges of a mesh: the halfedges with no mate (``halfedge.halfedge_mates``).
 
-    A boundary edge is a key occurring exactly once, and the sort's payload is its halfedge index,
-    which is row ``h`` of [`faces_to_edges`][ordito.edges.faces_to_edges] -- so every view the
-    module needs (the undirected rows, the directed rows, the halfedge indices, the vertices, a
-    per-halfedge mask) is read off ``faces`` and the sorted keys without an edge table. The keys
-    pack against [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which orders
-    them exactly as the vertex count would and needs no bound -- or, where the caller already
-    relies on every index being below ``n_vertices``, against that count, so the sort orders only
-    the bits a key can occupy. Either radix gives the same key order.
+    A boundary halfedge is row ``h`` of [`faces_to_edges`][ordito.edges.faces_to_edges], so every
+    view the module needs (the undirected rows, the directed rows, the halfedge indices, the
+    vertices) is read off ``faces`` and the mates without an edge table. Only the edge rows have an
+    order to keep -- ascending undirected key, ``edges_unique``'s: where the mates came from the
+    key sort the flags are read in its order, and where they were bucketed only the boundary
+    halfedges are sorted. Where the caller already relies on every index being below
+    ``n_vertices``, the mates are built from that count (by buckets on a large CUDA mesh) and the
+    boundary sort orders only the bits a key can occupy.
     """
 
     def __init__(self, faces: wp.array[wp.int32], n_vertices: int | None = None) -> None:
-        device = faces.device
-        n = faces.size // 3 * 3
         self.faces = faces
-        self.n = n
-        self.keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-        self.order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-        radix = n_vertices if n_vertices else INDEX_RADIX_PAIR
-        base = wp.uint64(radix)
-        # The sort's double-width buffers are kept whole: every reader here passes ``n``, so the
-        # trimmed views ``adjacency.sorted_face_edge_keys`` hands back would be pure host cost.
-        _launch.launch(
-            kernel_adjacency.face_edge_keys_and_order,
-            dim=n // 3,
-            inputs=[faces, base, self.keys, self.order],
-            device=device,
-        )
-        _launch.radix_sort_pairs(
-            self.keys,
-            self.order,
-            count=n,
-            end_bit=min(64, max(1, (radix * radix - 1).bit_length())),
+        self.n = faces.size // 3 * 3
+        self.n_vertices = n_vertices
+        self.mates, self.key_order = od.halfedge.halfedge_mates(
+            faces, n_vertices, return_key_order=True
         )
         self._inclusive: wp.array[wp.int32] | None = None
         self._count = 0
@@ -1078,9 +1051,9 @@ class _BoundaryHalfedges:
                     odt.as_dense(flags[n + 2 :]).reshape((n_vertices, 2)), wp.int32
                 )
             _launch.launch(
-                kernel_boundary.mark_boundary_runs,
+                kernel_boundary.mark_boundary_halfedges,
                 dim=n,
-                inputs=[self.keys, self.order, wp.int32(n), self.faces, degrees, flags],
+                inputs=[self.mates, self.key_order, self.faces, degrees, flags],
                 device=device,
             )
             inclusive = flags if census is None else odt.as_dense(flags[:n])
@@ -1102,10 +1075,14 @@ class _BoundaryHalfedges:
         k = self.count()
         out_edges = odt.empty_2d((k, 2), wp.int32, device=device)
         if k > 0:
+            assert self._inclusive is not None
+            halfedges = od.halfedge.key_ordered_halfedges(
+                self.faces, self._inclusive, k, key_order=self.key_order, n_vertices=self.n_vertices
+            )
             _launch.launch(
                 kernel_boundary.emit_boundary_edges,
-                dim=self.n,
-                inputs=[self._inclusive, self.order, self.faces, sort_pair, out_edges],
+                dim=k,
+                inputs=[halfedges, self.faces, sort_pair, out_edges],
                 device=device,
             )
         return out_edges
@@ -1129,7 +1106,7 @@ class _BoundaryHalfedges:
         _launch.launch(
             kernel_boundary.emit_boundary_successors,
             dim=self.n,
-            inputs=[self._inclusive, self.order, self.faces, twins, tails, next_node],
+            inputs=[self._inclusive, self.key_order, self.faces, twins, tails, next_node],
             device=device,
         )
         return tails, next_node
@@ -1143,7 +1120,7 @@ class _BoundaryHalfedges:
         _launch.launch(
             kernel_boundary.mark_boundary_vertices,
             dim=self.n,
-            inputs=[self.keys, self.order, wp.int32(self.n), self.faces, flags],
+            inputs=[self.mates, self.faces, flags],
             device=device,
         )
         _launch.array_scan(flags, out_array=flags, inclusive=True)
@@ -1158,15 +1135,3 @@ class _BoundaryHalfedges:
                 device=device,
             )
         return out
-
-    def halfedge_mask(self) -> wp.array[wp.bool]:
-        """Per halfedge, whether its edge is a boundary edge; no scan and no readback."""
-        device = self.faces.device
-        mask = _launch.empty(self.n, dtype=wp.bool, device=device)
-        _launch.launch(
-            kernel_boundary.boundary_halfedge_mask,
-            dim=self.n,
-            inputs=[self.keys, self.order, wp.int32(self.n), mask],
-            device=device,
-        )
-        return mask

@@ -12,7 +12,6 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.halfedge import halfedge_twins, require_matching_twins
-from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels import scatter as kernel_scatter
 from ordito.kernels import selection as kernel_selection
@@ -40,10 +39,10 @@ def region_boundary_edges(
     face_mask
         ``(n_faces,)`` region mask.
     n_vertices
-        Optional exclusive bound on the vertex indices, used as the edge-key radix so the sort
-        orders only the bits a key can occupy. It is trusted, not checked. Without it the keys pack
-        against [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which needs no
-        bound and orders them identically.
+        Optional exclusive bound on the vertex indices, forwarded to
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it, and used
+        as the edge-key radix of the seam's sort. It does not change the answer, and it is
+        trusted, not checked: it must exceed every index.
     oriented
         Return each row as the **directed** pair belonging to its region face, instead of the
         ascending pair. That puts the region on the left of the contour, which is the orientation
@@ -79,29 +78,17 @@ def region_boundary_edges(
         )
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=device)
-    # One radix sort of every halfedge's edge key, payload its halfedge index: a seam edge is a run
-    # of exactly two keys whose faces straddle the region, and it is emitted from its region
-    # halfedge in ascending key order -- no unique-edge table, and one readback, of the seam size.
+    # The halfedge mates flag a seam edge on its lower halfedge (an edge of exactly two halfedges
+    # whose faces straddle the region), read in the key sort's order where the mates came from
+    # it, else only the seam's halfedges sorted: ascending key order either way, no unique-edge
+    # table, and one readback, of the seam size.
     n = 3 * n_faces
-    radix = n_vertices if n_vertices else INDEX_RADIX_PAIR
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_adjacency.face_edge_keys_and_order,
-        dim=n_faces,
-        inputs=[faces, wp.uint64(radix), keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (radix * radix - 1).bit_length()))
-    )
-    # The sort leaves its result in the leading halves, so the payload buffer's upper half is free
-    # scratch: the seam flags are written and scanned there instead of in a fresh ``n`` buffer.
-    inclusive = odt.as_dense(order[n:])
+    mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
+    inclusive = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_selection.mark_region_seam,
         dim=n,
-        inputs=[keys, order, face_mask, wp.int32(n), inclusive],
+        inputs=[mates, key_order, face_mask, inclusive],
         device=device,
     )
     _launch.array_scan(inclusive, out_array=inclusive, inclusive=True)
@@ -109,10 +96,13 @@ def region_boundary_edges(
     n_seam = int(read_scalar(inclusive))
     out_edges = odt.empty_2d((n_seam, 2), wp.int32, device=device)
     if n_seam > 0:
+        halfedges = od.halfedge.key_ordered_halfedges(
+            faces, inclusive, n_seam, key_order=key_order, n_vertices=n_vertices
+        )
         _launch.launch(
             kernel_selection.emit_region_seam,
-            dim=n,
-            inputs=[inclusive, order, faces, face_mask, oriented, out_edges],
+            dim=n_seam,
+            inputs=[halfedges, mates, faces, face_mask, oriented, out_edges],
             device=device,
         )
     return out_edges

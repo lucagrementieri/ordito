@@ -19,6 +19,7 @@ already imported from here.
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
+from ordito.kernels.array import pack_edge_key, scanned_count
 
 wp.set_module_options({"enable_backward": False})
 
@@ -342,6 +343,57 @@ def twins_from_mates(
     if defect != HALFEDGE_DEFECT_NONE:
         wp.atomic_add(out_defect_counts, defect, 1)
     out_twins[h] = twin
+
+
+@wp.func
+def key_ordered_halfedge(key_order: wp.array[wp.int32], i: wp.int32) -> wp.int32:
+    # The halfedge entry ``i`` of a flag table stands for: ``key_order[i]`` when the caller holds
+    # the edge-key sort's permutation (``halfedge.halfedge_mates(return_key_order=True)`` on its
+    # sort path), ``i`` itself when it does not (``None``). The one index rule every kernel that
+    # flags for ``halfedge.key_ordered_halfedges`` reads, so both spaces mean the same flags.
+    if key_order.shape[0] > 0:
+        return key_order[i]
+    return i
+
+
+@wp.kernel
+def flagged_key_ordered_halfedges(
+    inclusive: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
+    n: wp.int32,
+    out_halfedges: wp.array[wp.int32],
+) -> None:
+    # ``halfedge.key_ordered_halfedges`` with the sort's permutation: the flag table is already
+    # in key order, class row by class row, so the flagged halfedges are written at their ranks and
+    # nothing is sorted.
+    j = wp.int32(wp.tid())
+    slot, count = scanned_count(inclusive, j)
+    if count != 0:
+        out_halfedges[slot] = key_order[j % n]
+
+
+@wp.kernel
+def flagged_halfedge_keys(
+    faces: wp.array[wp.int32],
+    inclusive: wp.array[wp.int32],
+    n: wp.int32,
+    base: wp.uint64,
+    out_keys: wp.array[wp.uint64],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # ``halfedge.key_ordered_halfedges``' sorting compaction: one thread per entry of the caller's
+    # flattened ``(classes, n)`` flag table, scanned in place. Where the scan steps, the halfedge's
+    # undirected edge key (``adjacency.write_face_edge_keys``' packing), lifted by its class row so
+    # one sort keeps the classes apart, goes into the sort's input at its rank, the halfedge as the
+    # payload. The ranks ascend with the halfedge index, so the stable sort breaks key ties by it.
+    j = wp.int32(wp.tid())
+    slot, count = scanned_count(inclusive, j)
+    if count == 0:
+        return
+    h = j % n
+    a, b = halfedge_endpoints(faces, h)
+    out_keys[slot] = pack_edge_key(a, b, base) + wp.uint64(j // n) * base * base
+    out_order[slot] = h
 
 
 @wp.kernel

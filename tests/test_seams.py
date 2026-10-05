@@ -194,6 +194,30 @@ def test_crease_edges_include_boundary(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -
     assert mesh_tm.vertices.shape[0] > 0
 
 
+def test_crease_edges_bucketed_match_the_key_sort(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the bucketed mates give the key sort's creases and boundary, in order.
+
+    The sort path carries the oracles (pymeshlab, MeshLib, pyvista); on the bucket path only the
+    flagged halfedges are sorted, both classes in one sort, so each block -- creases, then the
+    boundary edges -- is pinned to strictly ascending ``(max, min)`` keys and the whole to the sort
+    path's rows.
+    """
+    _mesh_tm, mesh_wp = hemisphere
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    sorted_np = od.seams.crease_edges(vertices, faces, 10.0, include_boundary=True).numpy()
+    n_creases = od.seams.crease_edges(vertices, faces, 10.0).shape[0]
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    bucketed_np = od.seams.crease_edges(vertices, faces, 10.0, include_boundary=True).numpy()
+    assert 0 < n_creases < len(sorted_np)
+    _assert_edge_key_order(bucketed_np[:n_creases])
+    _assert_edge_key_order(bucketed_np[n_creases:])
+    assert np.array_equal(sorted_np, bucketed_np)
+
+
 def test_crease_edges_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     _mesh_tm, mesh_wp = icosahedron
     with pytest.raises(ValueError, match=r"angle must be in \[0, 180\]"):
@@ -1007,3 +1031,10 @@ def test_cut_along_edges_accepts_a_row_in_either_order(
     assert ascending_vertices_wp.size > vertices_wp.size
     assert np.array_equal(ascending_faces_wp.numpy(), descending_faces_wp.numpy())
     assert np.allclose(ascending_vertices_wp.numpy(), descending_vertices_wp.numpy())
+
+
+def _assert_edge_key_order(rows_np: np.ndarray) -> None:
+    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
+    high = rows_np.max(axis=1).astype(np.int64)
+    low = rows_np.min(axis=1).astype(np.int64)
+    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)

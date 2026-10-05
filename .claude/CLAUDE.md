@@ -4529,14 +4529,13 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 - **Boundary walks**: `boundary_loops_batched` walks a pinched rim as a successor graph over
   boundary halfedges (gated on the degree flag it already reads); the dart walk's mirror filter
   and the pinched walk's gather are on the device, and the pinched walk builds its twins off
-  `_BoundaryHalfedges`' own sort. Its seam/pinch census is **one zeroed buffer** holding the
+  `_BoundaryHalfedges`' own mates. Its seam/pinch census is **one zeroed buffer** holding the
   flags, two bits and the degree table, read through `read_values` (a census in a counting
   launch costs closed meshes two zeroed allocations and a 26 us slice read: 0.83x). Loops are the
   boundary of the surface with each pinch vertex split once per fan; a loop can pass a pinch
-  vertex twice where two holes touch. `boundary_edges` writes keys straight from faces;
-  `region_boundary_edges` sorts every halfedge key once (the seam is a run of two straddling the
-  region; one sort beat a mesh-wide hash, which lost 0.74x at `dragon`, §16.11). The sort's upper
-  half is scratch after the sort (§16.11).
+  vertex twice where two holes touch. The boundary family, `region_boundary_edges` and
+  `crease_edges` classify off `halfedge.halfedge_mates` and keep their ascending-key rows through
+  `halfedge.key_ordered_halfedges` (§16.11); a mesh-wide hash for the seam lost 0.74x at `dragon`.
 - **Tree-wide the floor under every `holes` entry point is `boundary_loops_batched`** (§16.12).
 
 #### marching triangles, polyline
@@ -5111,12 +5110,13 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   edge between already-adjacent vertices). **Quoting a `min()` over a set whose members have two
   causes can size a fix by 100x the wrong number.** `laplacian.face_half_cotangents` is the shared
   run. The energies' sandwich products and hessians stay on `csr_from_triplets` (§16.9).
-  **`intrinsic_delaunay` derives its initial twins from one sort** (2026-10-03,
-  `kernels/remesh.pair_intrinsic_twins` over `adjacency.sorted_face_edge_keys`'s runs of two, the
-  `edge_pair_topology` + first-match `local_corner` rule), not a whole `_FlipTopology` rebuild
-  (row tables, quad table, a claim hash of `>= 4m` slots): `robust_laplacian` 1.21x / 1.15x /
-  1.11x, byte-identical twins, faces and lengths on both devices (degenerate and fin inputs
-  included). Declined: a device-side `mollify_intrinsic` for this caller (its two reads are ~3 ms
+  **`intrinsic_delaunay` derives its initial twins from the halfedge mates** (2026-10-03 from
+  one sort, 2026-10-05 from `halfedge.halfedge_mates`: `kernels/remesh.pair_intrinsic_twins` over
+  each pair's lower halfedge, the `edge_pair_topology` + first-match `local_corner` rule), not a
+  whole `_FlipTopology` rebuild (row tables, quad table, a claim hash of `>= 4m` slots):
+  `robust_laplacian` 1.21x / 1.15x / 1.11x, byte-identical twins, faces and lengths on both
+  devices (degenerate and fin inputs included). The mates (bucketed at scale) add 1.05-1.08x at
+  `dragon` / `happy_buddha`, byte-identical; flat below the bucket gate. Declined: a device-side `mollify_intrinsic` for this caller (its two reads are ~3 ms
   of an 80 ms `lucy` call). `curved_hessian_energy` validates edge-manifoldness and zeroes the
   boundary from `internal_angles_and_sums`' halfedge cursor (`energies.zero_at_boundary_edges`)
   instead of a second halfedge sort, `is_edge_manifold` and `boundary_vertex_indices` (1.02-1.05x:
@@ -5414,6 +5414,36 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   neighbour sums move at rounding, and a non-orientable flip mask (best effort) may differ. Pinned by `test_halfedge_mates_*` (NumPy grouping oracle on both builders,
   defects whose non-manifold edge does not start at halfedge 0, a hub), which a bare `-2` code
   fails.
+- **Order is a contract only where code reproduces it, so an ordered edge list keeps its order
+  and sorts only its survivors** (2026-10-05). Every list built from the edge-key sort comes out
+  in ascending `(max, min)` key order (`constants.py`'s packing), and no reference comparison
+  reads that order (all sort rows or compare sets); what reads it is ordito itself:
+  `_FlipTopology.edges_unique` and `_DecimationBuffers._group_edges` rebuild it byte for byte,
+  `intersection.unique_edge_order_key`, `creation.ring_boundary_edge`, `holes._JoinRim` and the
+  remesh region sort reproduce it, and the remesh collapse lock key (`scramble_index(row)`), the
+  split / subdivide new-vertex numbering and `homology`'s lowest-edge tie-break read the row
+  index. So `edges_unique`'s order stays. Within a class each edge appears once in these lists,
+  so sorting only the selected halfedges reproduces the order exactly:
+  `halfedge.key_ordered_halfedges` takes the flag scan and either compacts it through the key
+  sort's permutation (`halfedge_mates(return_key_order=True)` on the sort path: nothing sorted)
+  or sorts only the flagged halfedges (bucket path), several classes in one sort with the class
+  above the key. Taken by `boundary_edges` / `oriented_boundary_edges` / `boundary_loops*` /
+  `boundary_vertex_indices` / `ears` (`_BoundaryHalfedges` is now the mates), the pinched walk's
+  twins, `region_boundary_edges` and `crease_edges`; byte-identical to the sort on both devices
+  (120 CUDA / 96 CPU arrays: scan meshes, a 327 k-face sphere with 512 holes, `mobius`, `boy`, a
+  pinched rim, a fin). CUDA against HEAD at `dragon` / `happy_buddha` / `lucy`: `boundary_edges`
+  1.4x / 2.0x / 2.1x, `boundary_loops_with_offsets` 1.56x / 1.95x / 1.58x,
+  `boundary_vertex_indices` 1.8x / 2.05x / 2.23x, `crease_edges` 1.33x / 1.45x / 2.0x,
+  `region_boundary_edges` 1.55x / 1.7x / 2.07x on a half-mesh region (1.22x / 1.3x / 1.58x on a
+  striped one whose seam is half the edges); the 327 k-face sphere 1.1-1.38x. **Prices, accepted
+  under §9**: below the bucket gate the mates pass and the compaction launch cost 15-25 us
+  (0.83-0.90x at 16-69 k faces); calls without `n_vertices` stay on the sort and pay the extra
+  pass (`ears` 0.89-0.98x, `region_boundary_edges` without it 0.94-0.96x at scale); CPU
+  0.79-1.0x (`crease_edges(include_boundary=True)` 1.09x). **Declined: `edges_unique` and
+  `face_adjacency`** keep the full sort: they keep about 1.5 halfedges per face, whose sort costs
+  about half the full one, and mates plus that sort is the full sort again (sort 0.341 vs mates
+  0.158 ms at `dragon`, 11.65 vs 5.10 at `lucy`). A lowest-halfedge numbering would drop that
+  sort but move every reproduction above and every remesh / homology answer.
 - **`halfedge_twins` / `vertex_one_rings` gained `validate=`** (pass-0-only validation in
   `remove_degree3_vertices`); `is_edge_manifold` / `edge_manifold_mask` share
   `adjacency.face_edge_keys`. **Face-hop vertex morphology** (`expand_vertex_mask` /

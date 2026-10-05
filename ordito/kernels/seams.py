@@ -16,8 +16,12 @@ from ordito.kernels.array import (
     pack_edge_key,
     scanned_count,
 )
-from ordito.kernels.grouping import sorted_run_of_length
-from ordito.kernels.halfedge import halfedge_next, halfedge_prev
+from ordito.kernels.halfedge import (
+    HALFEDGE_MATE_BOUNDARY,
+    halfedge_next,
+    halfedge_prev,
+    key_ordered_halfedge,
+)
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import face_normals_and_area
 
@@ -28,18 +32,18 @@ wp.set_module_options({"enable_backward": False})
 def crease_flags(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    n: wp.int32,
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
     threshold: wp.float32,
     out_flags: wp.array2d[wp.int32],
 ) -> None:
-    # One thread per position of the radix-sorted halfedge keys, whose payload is each halfedge's
-    # index (``adjacency.face_edge_keys_and_order``). Row 0 of ``out_flags``: 1 where a run of
-    # *exactly two* keys starts -- ``adjacency.face_adjacency``'s row, in the same ascending key
-    # order -- and its two faces meet at more than ``threshold``. Row 1, when the table has one:
-    # 1 where a run of exactly one key starts, a boundary edge. The caller scans the flattened
-    # table in place, so the boundary rows number on from the creases.
+    # One thread per halfedge, over its mate (``halfedge.halfedge_mates``). Row 0 of
+    # ``out_flags``: 1 on the lower halfedge of an edge carrying exactly two -- an
+    # ``adjacency.face_adjacency`` row -- whose two faces meet at more than ``threshold``. Row 1,
+    # when the table has one: 1 on a halfedge alone on its edge, a boundary edge. The caller scans
+    # the flattened table in place, so the boundary rows number on from the creases, and
+    # ``halfedge.key_ordered_halfedges`` puts each row in ascending key order. Entry ``i`` of a row
+    # stands for halfedge ``key_ordered_halfedge(key_order, i)``.
     #
     # The angle is ``adjacency.face_adjacency_angles``' exactly: the same unit normals (from
     # ``face_normals_and_area``, which ``triangles.face_normals_and_areas`` writes them with, formed
@@ -48,35 +52,29 @@ def crease_flags(
     # thresholding its output would be. Strictly greater, so a zero threshold selects every
     # non-coplanar interior edge.
     i = wp.int32(wp.tid())
+    h = key_ordered_halfedge(key_order, i)
+    mate = mates[h]
     crease = wp.int32(0)
-    if sorted_run_of_length(sorted_keys, n, i, 2):
-        face_a = order[i] // 3
-        face_b = order[i + 1] // 3
+    if mate > h:
+        face_a = h // 3
+        face_b = mate // 3
         normal_a, _area_a = face_normals_and_area(vertices, faces, wp.min(face_a, face_b))
         normal_b, _area_b = face_normals_and_area(vertices, faces, wp.max(face_a, face_b))
         crease = wp.where(vector_angle(normal_a, normal_b) > threshold, wp.int32(1), wp.int32(0))
     out_flags[0, i] = crease
     if out_flags.shape[0] > 1:
-        out_flags[1, i] = wp.where(
-            sorted_run_of_length(sorted_keys, n, i, 1), wp.int32(1), wp.int32(0)
-        )
+        out_flags[1, i] = wp.where(mate == HALFEDGE_MATE_BOUNDARY, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
 def emit_crease_edges(
-    inclusive: wp.array[wp.int32],
-    order: wp.array[wp.int32],
-    n: wp.int32,
-    faces: wp.array[wp.int32],
-    out_edges: wp.array2d[wp.int32],
+    halfedges: wp.array[wp.int32], faces: wp.array[wp.int32], out_edges: wp.array2d[wp.int32]
 ) -> None:
-    # One thread per entry of ``crease_flags``' table, flattened and scanned in place: where the
-    # scan steps, write the flagged run's first halfedge as its sorted endpoint pair -- the edge
-    # row ``face_adjacency(return_edges=True)`` and ``boundary_edges`` both write for it.
-    p = wp.int32(wp.tid())
-    row, flag = scanned_count(inclusive, p)
-    if flag != 0:
-        write_edge_row(faces, order[p % n], row, out_edges)
+    # One thread per flagged halfedge, creases then boundary edges, each block in ascending key
+    # order: its sorted endpoint pair -- the edge row ``face_adjacency(return_edges=True)`` and
+    # ``boundary_edges`` both write for it.
+    g = wp.int32(wp.tid())
+    write_edge_row(faces, halfedges[g], g, out_edges)
 
 
 @wp.func

@@ -35,7 +35,6 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.kernels import adjacency as kernel_adjacency
 from ordito.kernels import seams as kernel_seams
 
 # Whether the seam predicate compares coordinates rather than texcoord indices. A lookup rather than
@@ -106,29 +105,20 @@ def crease_edges(
     if n_faces == 0:
         return odt.empty_2d((0, 2), wp.int32, device=device)
 
-    # One radix sort of every halfedge's edge key, payload its halfedge index: an interior edge is
-    # a run of exactly two keys -- ``face_adjacency``'s row, in its order -- and a boundary edge a
-    # run of one, so both classes are flagged off the one sort, numbered by one scan of the flag
-    # table and emitted by one launch, creases first. A key is below ``n_vertices ** 2``, so only
+    # The halfedge mates classify every edge: an interior edge is a pair -- ``face_adjacency``'s
+    # row -- and a boundary edge a halfedge with no mate, so both classes are flagged off the one
+    # pairing, numbered by one scan of the flag table, creases first, each class in ascending key
+    # order: read in the key sort's order where the mates came from it, else only the flagged
+    # halfedges sorted. A key is below ``n_vertices ** 2``, so only
     # those bits are sorted.
     n_vertices = vertices.size
     n = 3 * n_faces
-    keys = _launch.empty(2 * n, dtype=wp.uint64, device=device)
-    order = _launch.empty(2 * n, dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_adjacency.face_edge_keys_and_order,
-        dim=n_faces,
-        inputs=[faces, wp.uint64(n_vertices), keys, order],
-        device=device,
-    )
-    _launch.radix_sort_pairs(
-        keys, order, count=n, end_bit=min(64, max(1, (n_vertices * n_vertices - 1).bit_length()))
-    )
+    mates, key_order = od.halfedge.halfedge_mates(faces, n_vertices, return_key_order=True)
     flags = odt.empty_2d((2 if include_boundary else 1, n), wp.int32, device=device)
     _launch.launch(
         kernel_seams.crease_flags,
         dim=n,
-        inputs=[vertices, faces, keys, order, n, wp.float32(math.radians(angle)), flags],
+        inputs=[vertices, faces, mates, key_order, wp.float32(math.radians(angle)), flags],
         device=device,
     )
     inclusive = flags.flatten()
@@ -137,10 +127,13 @@ def crease_edges(
     n_edges = int(read_scalar(inclusive))
     edges = odt.empty_2d((n_edges, 2), wp.int32, device=device)
     if n_edges > 0:
+        halfedges = od.halfedge.key_ordered_halfedges(
+            faces, inclusive, n_edges, key_order=key_order, n_vertices=n_vertices
+        )
         _launch.launch(
             kernel_seams.emit_crease_edges,
-            dim=inclusive.size,
-            inputs=[inclusive, order, n, faces, edges],
+            dim=n_edges,
+            inputs=[halfedges, faces, edges],
             device=device,
         )
     return edges

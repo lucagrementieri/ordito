@@ -3,12 +3,7 @@ from typing import Any
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT, TOLERANCE_ZERO_CONSTANT, UINT64_MAX_CONSTANT
-from ordito.kernels.adjacency import (
-    edge_pair_topology,
-    sorted_pair_slot,
-    write_edge_row,
-    write_face_edge_keys,
-)
+from ordito.kernels.adjacency import edge_pair_topology, write_edge_row, write_face_edge_keys
 from ordito.kernels.array import (
     LOOP_CONDITION,
     LOOP_ROUND,
@@ -2108,26 +2103,23 @@ def clamp_to_surface_band(
 
 @wp.kernel
 def pair_intrinsic_twins(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    out_twin: wp.array[wp.int32],
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], out_twin: wp.array[wp.int32]
 ) -> None:
     # The *one* point in ``intrinsic_delaunay``'s loop where a vertex-pair key is trustworthy: the
-    # caller's input is still a simplicial complex, so a run of exactly two equal sorted halfedge
-    # keys (``adjacency.sorted_face_edge_keys``) is one interior edge, and its two halfedges are
-    # twins. Twins are indexed ``h = 3 * f + e`` opposite corner ``e`` (``edge_lengths``' own
-    # indexing), the corner found by first match on the face's opposite apex. Every flip after this
-    # one maintains ``out_twin`` incrementally instead of re-deriving it, because a second flip can
+    # caller's input is still a simplicial complex, so an edge carrying exactly two halfedges (a
+    # ``halfedge.halfedge_mates`` partner) is one interior edge, and its two halfedges are twins.
+    # Twins are indexed ``h = 3 * f + e`` opposite corner ``e`` (``edge_lengths``' own indexing),
+    # the corner found by first match on the face's opposite apex. Every flip after this one
+    # maintains ``out_twin`` incrementally instead of re-deriving it, because a second flip can
     # create a second edge between two already-adjacent vertices, and at that point no vertex-pair
     # key can tell which of several same-key corners is which edge's true twin -- see
-    # ``intrinsic_delaunay_candidates``. Launched over the sorted positions; the pair's first
-    # position writes both directions.
-    i = wp.int32(wp.tid())
-    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
-    if first != i:
+    # ``intrinsic_delaunay_candidates``. Launched over the halfedges; the pair's lower halfedge
+    # writes both directions (the order the edge-key sort's stable runs held them in).
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate <= h:
         return
-    _a, _b, f0, f1, apex0, apex1 = edge_pair_topology(faces, order[i], order[i + 1])
+    _a, _b, f0, f1, apex0, apex1 = edge_pair_topology(faces, h, mate)
     corner0 = local_corner(faces, f0, apex0)
     corner1 = local_corner(faces, f1, apex1)
     if corner0 < 0 or corner1 < 0:

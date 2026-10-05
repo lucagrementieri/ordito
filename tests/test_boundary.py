@@ -70,6 +70,41 @@ def test_oriented_boundary_edges(request: pytest.FixtureRequest, mesh_name: str)
     assert np.array_equal(lexsort_rows(oriented_edges_wp.numpy()), lexsort_rows(oriented_edges_tm))
 
 
+@pytest.mark.parametrize("mesh_name", [*OPEN_MESHES, "mobius"])
+def test_boundary_queries_bucketed_match_the_key_sort(
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the bucketed mates give the key sort's boundary, row for row.
+
+    The sort path carries the oracles (``test_boundary_edges``, ``test_boundary_loops`` and the
+    rest); on the bucket path only the boundary halfedges are sorted, so the edge rows are pinned
+    to strictly ascending ``(max, min)`` keys and every query to the sort path's answer.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+
+    def queries() -> list[np.ndarray]:
+        values, offsets = od.boundary.boundary_loops_with_offsets(vertices, faces)
+        return [
+            od.boundary.boundary_edges(vertices, faces).numpy(),
+            od.boundary.oriented_boundary_edges(vertices, faces).numpy(),
+            values.numpy(),
+            offsets.numpy(),
+            od.boundary.boundary_vertex_indices(vertices, faces).numpy(),
+        ]
+
+    sorted_ = queries()
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    bucketed = queries()
+    assert len(mesh_tm.outline().entities) > 0
+    _assert_edge_key_order(bucketed[0])
+    _assert_edge_key_order(bucketed[1])
+    for sorted_np, bucketed_np in zip(sorted_, bucketed, strict=True):
+        assert np.array_equal(sorted_np, bucketed_np)
+
+
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
 @pytest.mark.parity("boundary_edges", "pymeshlab", "meshlib")
 def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -1018,3 +1053,10 @@ def test_loop_measures_empty(device: str) -> None:
 
 def _boundary_indices_tm(mesh_tm: tm.Trimesh) -> np.ndarray:
     return np.asarray(tm_grouping.group_rows(mesh_tm.edges_sorted, require_count=1))
+
+
+def _assert_edge_key_order(rows_np: np.ndarray) -> None:
+    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
+    high = rows_np.max(axis=1).astype(np.int64)
+    low = rows_np.min(axis=1).astype(np.int64)
+    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)

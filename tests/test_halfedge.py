@@ -737,3 +737,88 @@ def test_halfedge_mates_on_a_hub(
 def test_halfedge_mates_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert od.halfedge.halfedge_mates(faces_wp, 0).shape == (0,)
+
+
+@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere", "mobius"])
+def test_halfedge_mates_key_order_is_the_edge_key_sort(
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the key order is ordito's own sort, recomputed by NumPy.
+
+    On the sort path it is the stable argsort of each halfedge's ``min + max * n_vertices`` key
+    (``adjacency.sorted_face_edge_keys``' order); on the bucket path there is none. The mates are
+    the ones the plain call returns either way.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
+    n_vertices = len(mesh_tm.vertices)
+    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+    keys_np = edges_np[:, 0] + edges_np[:, 1] * n_vertices
+    mates, key_order = od.halfedge.halfedge_mates(
+        mesh_wp.indices, n_vertices, return_key_order=True
+    )
+    assert key_order is not None
+    assert np.array_equal(key_order.numpy(), np.argsort(keys_np, kind="stable"))
+    assert np.array_equal(mates.numpy(), _expected_mates(faces_np))
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    mates, key_order = od.halfedge.halfedge_mates(
+        mesh_wp.indices, n_vertices, return_key_order=True
+    )
+    assert key_order is None
+    assert np.array_equal(mates.numpy(), _expected_mates(faces_np))
+
+
+@pytest.mark.parametrize("n_classes", [1, 2])
+@pytest.mark.parametrize("given_order", [True, False], ids=["key-order", "sorted"])
+def test_key_ordered_halfedges_match_numpy(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], n_classes: int, given_order: bool
+) -> None:
+    """
+    Not a library comparison: the order is ordito's edge-key convention, recomputed by NumPy.
+
+    Random flags over every halfedge, so both halfedges of an edge are often flagged together and
+    the key ties have to break by halfedge index. Each class comes out in stable ascending key
+    order, class 0 first -- from the sort's permutation when it is given (nothing sorted), and by
+    sorting only the flagged halfedges when not.
+    """
+    mesh_tm, mesh_wp = icosphere
+    device = mesh_wp.indices.device
+    faces_np = np.asarray(mesh_tm.faces)
+    n_vertices = len(mesh_tm.vertices)
+    n = faces_np.size
+    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
+    keys_np = edges_np[:, 0] + edges_np[:, 1] * n_vertices
+    flags_np = (np.random.default_rng(7).random((n_classes, n)) < 0.4).astype(np.int32)
+    order_np = np.argsort(keys_np, kind="stable")
+    expected = np.concatenate([order_np[flags_np[c][order_np] == 1] for c in range(n_classes)])
+    _, key_order = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices, return_key_order=True)
+    assert key_order is not None
+    table_np = flags_np[:, key_order.numpy()] if given_order else flags_np
+    inclusive = wp.array(
+        np.cumsum(table_np.ravel()).astype(np.int32), dtype=wp.int32, device=device
+    )
+    halfedges = od.halfedge.key_ordered_halfedges(
+        mesh_wp.indices,
+        inclusive,
+        int(flags_np.sum()),
+        key_order=key_order if given_order else None,
+        n_vertices=n_vertices,
+    ).numpy()
+    assert np.any(np.diff(keys_np[expected]) == 0)
+    assert np.array_equal(halfedges, expected)
+
+
+def test_key_ordered_halfedges_validates(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = icosahedron
+    device = mesh_wp.indices.device
+    n = mesh_wp.indices.size
+    with pytest.raises(ValueError, match="whole number"):
+        od.halfedge.key_ordered_halfedges(
+            mesh_wp.indices, wp.zeros(n + 1, dtype=wp.int32, device=device), 0
+        )
+    with pytest.raises(ValueError, match="n_vertices is required"):
+        od.halfedge.key_ordered_halfedges(
+            mesh_wp.indices, wp.zeros(2 * n, dtype=wp.int32, device=device), 0
+        )

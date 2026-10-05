@@ -2847,18 +2847,16 @@ def intrinsic_delaunay(
 
     n_half = n_faces * 3
     # The one point in this loop where a vertex-pair key is trustworthy: the caller's input is still
-    # a simplicial complex, so the twins are the sorted halfedge keys' runs of two, derived once.
-    # Every later round instead maintains ``twin`` in place, because a flip can make the
-    # vertex-pair key ambiguous (see ``kernel_remesh.pair_intrinsic_twins``).
-    sorted_keys, order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    # a simplicial complex, so the twins are the halfedge mates' pairs, derived once. Every later
+    # round instead maintains ``twin`` in place, because a flip can make the vertex-pair key
+    # ambiguous (see ``kernel_remesh.pair_intrinsic_twins``).
     twin = _launch.full(n_half, -1, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_remesh.pair_intrinsic_twins,
         dim=n_half,
-        inputs=[intrinsic_faces, sorted_keys, order, twin],
+        inputs=[intrinsic_faces, od.halfedge.halfedge_mates(faces, n_vertices), twin],
         device=device,
     )
-    del sorted_keys, order
 
     flip = _launch.empty(n_half, dtype=wp.bool, device=device)
     quad = odt.empty_2d((n_half, 4), wp.int32, device=device)

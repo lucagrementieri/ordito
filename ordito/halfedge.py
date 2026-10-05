@@ -16,13 +16,15 @@ angles into a polar coordinate system on the tangent plane.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Literal, overload
 
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
-from ordito.constants import INT32_MAX
+from ordito.constants import INDEX_RADIX_PAIR, INT32_MAX
 from ordito.kernels import halfedge as kernel_halfedge
 from ordito.kernels import scatter as kernel_scatter
 
@@ -330,7 +332,24 @@ def vertex_one_rings(
     return ring_halfedges, offsets, is_boundary
 
 
-def halfedge_mates(faces: wp.array[wp.int32], n_vertices: int | None = None) -> wp.array[wp.int32]:
+@overload
+def halfedge_mates(
+    faces: wp.array[wp.int32],
+    n_vertices: int | None = None,
+    *,
+    return_key_order: Literal[False] = False,
+) -> wp.array[wp.int32]: ...
+
+
+@overload
+def halfedge_mates(
+    faces: wp.array[wp.int32], n_vertices: int | None = None, *, return_key_order: Literal[True]
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32] | None]: ...
+
+
+def halfedge_mates(
+    faces: wp.array[wp.int32], n_vertices: int | None = None, *, return_key_order: bool = False
+) -> wp.array[wp.int32] | tuple[wp.array[wp.int32], wp.array[wp.int32] | None]:
     """
     Every halfedge's partner on its undirected edge, whatever its direction, or how many share it.
 
@@ -355,23 +374,34 @@ def halfedge_mates(faces: wp.array[wp.int32], n_vertices: int | None = None) -> 
         device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the
         CPU, through a sort of the edge keys, which is correct for any non-negative indices
         without it. Both give the same table.
+    return_key_order
+        Also return the sort's permutation when the pairing sorted the edge keys, for a caller
+        that wants some of the halfedges in key order
+        ([`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]).
 
     Returns
     -------
-    wp.array[wp.int32]
+    mates : wp.array[wp.int32]
         ``(3 * n_faces,)`` mate codes on ``faces.device``.
+    key_order : wp.array[wp.int32] | None
+        Only with ``return_key_order``: ``(3 * n_faces,)`` halfedge indices in ascending
+        undirected key order, ties by index -- the order of
+        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] -- or ``None`` when the
+        pairing bucketed instead of sorting.
 
     See Also
     --------
     [`halfedge_twins`][ordito.halfedge.halfedge_twins]
+    [`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]
     [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
     mates = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    key_order: wp.array[wp.int32] | None = None
     if n_halfedges == 0:
-        return mates
-    if (
+        key_order = mates
+    elif (
         n_vertices is not None
         and n_halfedges >= _BUCKETED_MATES_FROM_HALFEDGES
         and _buckets_on(faces)
@@ -383,15 +413,109 @@ def halfedge_mates(faces: wp.array[wp.int32], n_vertices: int | None = None) -> 
             inputs=[faces, degrees, ends, buckets, mates],
             device=device,
         )
-        return mates
-    sorted_keys, order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    else:
+        sorted_keys, key_order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+        _launch.launch(
+            kernel_halfedge.sorted_halfedge_mates,
+            dim=n_halfedges,
+            inputs=[sorted_keys, key_order, mates],
+            device=device,
+        )
+    if return_key_order:
+        return mates, key_order
+    return mates
+
+
+def key_ordered_halfedges(
+    faces: wp.array[wp.int32],
+    inclusive: odt.ArrayNdInt32,
+    count: int,
+    *,
+    key_order: wp.array[wp.int32] | None = None,
+    n_vertices: int | None = None,
+) -> wp.array[wp.int32]:
+    """
+    Return the flagged halfedges, class by class, each class in ascending undirected key order.
+
+    The key is the one [`edges_unique`][ordito.edges.edges_unique] orders its rows by, so a
+    selection of one halfedge per edge comes back in that function's row order. Halfedges sharing
+    a key keep ascending index order. Given the sort's ``key_order``
+    ([`halfedge_mates`][ordito.halfedge.halfedge_mates]' second return), the flags are read in
+    that order and nothing is sorted; without it only the flagged halfedges are sorted, which is
+    cheap when they are few.
+
+    Parameters
+    ----------
+    faces
+        ``(3 * n_faces,)`` triangle index buffer.
+    inclusive
+        ``(n_classes * 3 * n_faces,)`` inclusive scan of 0/1 flags, row ``c`` of the flattened
+        ``(n_classes, 3 * n_faces)`` table flagging the halfedges of class ``c``: entry ``i`` of a
+        row flags halfedge ``key_order[i]`` when ``key_order`` is given, halfedge ``i`` otherwise.
+        Read, not modified.
+    count
+        The number of flagged entries, ``inclusive[-1]``, which the caller has already read back
+        to size its output.
+    key_order
+        ``(3 * n_faces,)`` halfedges in ascending key order, ties by index, or ``None``.
+    n_vertices
+        Total vertex count, which must exceed every index in ``faces``; the sort then orders only
+        the bits a key can occupy. Required to sort more than one class.
+
+    Returns
+    -------
+    wp.array[wp.int32]
+        ``(count,)`` halfedge indices on ``faces.device``.
+
+    Raises
+    ------
+    ValueError
+        If ``inclusive`` is not a whole number of halfedge rows, or several classes are to be
+        sorted and ``n_vertices`` is not given.
+
+    See Also
+    --------
+    [`halfedge_mates`][ordito.halfedge.halfedge_mates]
+    [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]
+    """
+    device = faces.device
+    n = faces.size // 3 * 3
+    if (n == 0 and inclusive.size > 0) or (n > 0 and inclusive.size % n != 0):
+        raise ValueError(
+            f"inclusive must hold a whole number of {n}-halfedge rows, got {inclusive.size}"
+        )
+    n_classes = inclusive.size // n if n > 0 else 0
+    if key_order is not None:
+        halfedges = _launch.empty(count, dtype=wp.int32, device=device)
+        if count > 0:
+            _launch.launch(
+                kernel_halfedge.flagged_key_ordered_halfedges,
+                dim=inclusive.size,
+                inputs=[inclusive, key_order, wp.int32(n), halfedges],
+                device=device,
+            )
+        return halfedges
+    if n_vertices is None:
+        if n_classes > 1:
+            raise ValueError("n_vertices is required to sort more than one class of halfedges")
+        n_vertices = INDEX_RADIX_PAIR
+    keys = _launch.empty(2 * count, dtype=wp.uint64, device=device)
+    order = _launch.empty(2 * count, dtype=wp.int32, device=device)
+    if count == 0:
+        return order
     _launch.launch(
-        kernel_halfedge.sorted_halfedge_mates,
-        dim=n_halfedges,
-        inputs=[sorted_keys, order, mates],
+        kernel_halfedge.flagged_halfedge_keys,
+        dim=inclusive.size,
+        inputs=[faces, inclusive, wp.int32(n), wp.uint64(n_vertices), keys, order],
         device=device,
     )
-    return mates
+    _launch.radix_sort_pairs(
+        keys,
+        order,
+        count=count,
+        end_bit=min(64, max(1, (n_classes * n_vertices * n_vertices - 1).bit_length())),
+    )
+    return odt.as_dense(order[:count])
 
 
 def _pair_halfedges(

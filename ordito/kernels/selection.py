@@ -14,8 +14,7 @@ from ordito.kernels.array import (
     pack_edge_key,
     scanned_count,
 )
-from ordito.kernels.grouping import sorted_run_of_length
-from ordito.kernels.halfedge import halfedge_endpoints
+from ordito.kernels.halfedge import halfedge_endpoints, key_ordered_halfedge
 from ordito.kernels.scatter import mark_corners
 from ordito.kernels.triangles import corner_triple
 
@@ -284,44 +283,41 @@ def mark_incident_vertices(
 
 @wp.kernel
 def mark_region_seam(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
-    n: wp.int32,
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # One thread per position of the radix-sorted halfedge keys, whose payload is each halfedge's
-    # index (``adjacency.face_edge_keys_and_order``): 1 where a run of *exactly two* halfedges
-    # starts -- an interior edge -- whose two faces sit on opposite sides of the region. That is
-    # the seam rule, read off the sort with no unique-edge table and no per-edge counts. The flags
-    # are the ``int32`` the caller scans in place.
+    # One thread per halfedge: 1 on the lower halfedge of an edge carrying exactly two
+    # (``halfedge.halfedge_mates``) -- an interior edge -- whose two faces sit on opposite sides of
+    # the region. That is the seam rule, read off the mates with no unique-edge table and no
+    # per-edge counts. The flags are the ``int32`` the caller scans in place, entry ``i`` standing
+    # for halfedge ``key_ordered_halfedge(key_order, i)``.
     i = wp.int32(wp.tid())
+    h = key_ordered_halfedge(key_order, i)
+    mate = mates[h]
     flag = wp.int32(0)
-    if sorted_run_of_length(sorted_keys, n, i, 2):
-        if face_mask[order[i] // 3] != face_mask[order[i + 1] // 3]:
-            flag = wp.int32(1)
+    if mate > h and face_mask[h // 3] != face_mask[mate // 3]:
+        flag = wp.int32(1)
     out_flags[i] = flag
 
 
 @wp.kernel
 def emit_region_seam(
-    inclusive: wp.array[wp.int32],
-    order: wp.array[wp.int32],
+    halfedges: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     face_mask: wp.array[wp.bool],
     oriented: wp.bool,
     out_edges: wp.array2d[wp.int32],
 ) -> None:
-    # Where ``mark_region_seam``'s in-place scan steps, write the seam edge at its rank: in
-    # ascending key order, the region face's halfedge -- directed when ``oriented``, which puts the
-    # region on its left, else ascending.
-    i = wp.int32(wp.tid())
-    g, count = scanned_count(inclusive, i)
-    if count == 0:
-        return
-    h = order[i]
+    # One thread per seam edge, its flagged halfedge already in ascending key order
+    # (``halfedge.key_ordered_halfedges``): write the region face's halfedge -- directed when
+    # ``oriented``, which puts the region on its left, else ascending.
+    g = wp.int32(wp.tid())
+    h = halfedges[g]
     if not face_mask[h // 3]:
-        h = order[i + 1]
+        h = mates[h]
     if oriented:
         a, b = halfedge_endpoints(faces, h)
         out_edges[g, 0] = a

@@ -8,16 +8,20 @@ from ordito.kernels.array import (
     scanned_count,
     wrap_index,
 )
-from ordito.kernels.grouping import sorted_run_of_length
-from ordito.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
+from ordito.kernels.halfedge import (
+    HALFEDGE_MATE_BOUNDARY,
+    halfedge_endpoints,
+    key_ordered_halfedge,
+    next_boundary_halfedge,
+)
 
 wp.set_module_options({"enable_backward": False})
 
-# Every boundary query here is one radix sort of the halfedges' undirected edge keys, carrying each
-# halfedge's index as the payload: a boundary edge is then a run of exactly one key, and its
-# payload names the halfedge -- which is row ``h`` of ``edges.faces_to_edges``, so the edge's
-# endpoints (sorted or directed) are read straight off ``faces`` and no ``(3F, 2)`` edge table is
-# ever built. The kernels below write the sort's input and read its verdict.
+# Every boundary query here reads the halfedge mates (``halfedge.halfedge_mates``): a boundary
+# edge is a halfedge with no mate, which names the halfedge -- row ``h`` of
+# ``edges.faces_to_edges`` -- so the edge's endpoints (sorted or directed) are read straight off
+# ``faces`` and no ``(3F, 2)`` edge table is ever built. The kernels below write the flags the
+# caller scans and read the verdict back out of the scan.
 
 
 @wp.func
@@ -31,21 +35,27 @@ def boundary_halfedge_pair(
     return halfedge_endpoints(faces, h)
 
 
+@wp.func
+def is_boundary_mate(mate: wp.int32) -> wp.bool:
+    # A halfedge alone on its edge: the boundary rule every kernel here reads off the mates.
+    return mate == HALFEDGE_MATE_BOUNDARY
+
+
 @wp.kernel
-def mark_boundary_runs(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    n: wp.int32,
+def mark_boundary_halfedges(
+    mates: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     out_degrees: wp.array2d[wp.int32],
     out_flags: wp.array[wp.int32],
 ) -> None:
-    # 1 where a sorted position holds a key occurring exactly once -- a boundary edge -- as the
-    # ``int32`` flag ``wp.utils.array_scan`` then scans in place, over ``out_flags``' first ``n``
-    # entries. With ``out_degrees`` (else ``None``), ``boundary_loops_with_offsets``' degree census
-    # of the directed rows (``halfedge_endpoints``) rides in the same launch, its two defect
-    # bits stamped into the zeroed ``out_flags[n]`` and ``out_flags[n + 1]`` -- the scan does not
-    # reach them, so the total and both bits come back in one readback.
+    # 1 where a halfedge spans its edge alone -- a boundary edge -- as the ``int32`` flag, entry
+    # ``i`` standing for halfedge ``key_ordered_halfedge(key_order, i)``
+    # ``wp.utils.array_scan`` then scans in place, over ``out_flags``' first ``n`` entries. With
+    # ``out_degrees`` (else ``None``), ``boundary_loops_with_offsets``' degree census of the
+    # directed rows (``halfedge_endpoints``) rides in the same launch, its two defect bits stamped
+    # into the zeroed ``out_flags[n]`` and ``out_flags[n + 1]`` -- the scan does not reach them, so
+    # the total and both bits come back in one readback.
     #
     # Degree column 0: how many boundary edges *leave* each vertex. Column 1: how many touch it at
     # all. One out-edge and two incidences is the well-behaved case. Two out-edges is the seam of a
@@ -59,10 +69,12 @@ def mark_boundary_runs(
     # pushes a vertex past the threshold is the one that knows it. Boundary vertices are the only
     # ones whose degrees are ever non-zero, so no pass over the vertices is needed.
     i = wp.int32(wp.tid())
-    boundary = sorted_run_of_length(sorted_keys, n, i, 1)
+    n = mates.shape[0]
+    h = key_ordered_halfedge(key_order, i)
+    boundary = is_boundary_mate(mates[h])
     out_flags[i] = wp.where(boundary, wp.int32(1), wp.int32(0))
     if boundary and out_degrees.shape[0] > 0:
-        tail, head = halfedge_endpoints(faces, order[i])
+        tail, head = halfedge_endpoints(faces, h)
         if wp.atomic_add(out_degrees, tail, 0, 1) >= 1:
             out_flags[n] = 1
         if wp.atomic_add(out_degrees, tail, 1, 1) >= 2:
@@ -73,65 +85,42 @@ def mark_boundary_runs(
 
 @wp.kernel
 def emit_boundary_edges(
-    inclusive: wp.array[wp.int32],
-    order: wp.array[wp.int32],
+    halfedges: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     sort_pair: wp.bool,
     out_edges: wp.array2d[wp.int32],
 ) -> None:
-    # One thread per sorted position; ``inclusive`` is ``mark_boundary_runs``' flags scanned in
-    # place, so a boundary edge is where the scan steps and its rank is the step's start. Rows come
-    # out in ascending key order -- the order ``grouping.group`` emitted them in -- read from
-    # ``faces`` (see ``boundary_halfedge_pair``).
-    i = wp.int32(wp.tid())
-    g, count = scanned_count(inclusive, i)
-    if count == 0:
-        return
-    a, b = boundary_halfedge_pair(faces, sort_pair, order[i])
+    # One thread per boundary halfedge, already in ascending key order
+    # (``halfedge.key_ordered_halfedges``) -- the order ``grouping.group`` emitted the rows in --
+    # each row read from ``faces`` (see ``boundary_halfedge_pair``).
+    g = wp.int32(wp.tid())
+    a, b = boundary_halfedge_pair(faces, sort_pair, halfedges[g])
     out_edges[g, 0] = a
     out_edges[g, 1] = b
 
 
 @wp.kernel
 def mark_boundary_vertices(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    n: wp.int32,
-    faces: wp.array[wp.int32],
-    out_flags: wp.array[wp.int32],
+    mates: wp.array[wp.int32], faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]
 ) -> None:
     # Flag both endpoints of every boundary edge in a zeroed per-vertex ``int32`` array, which the
     # caller scans in place: the sorted unique boundary vertices then come out of the scan's steps
     # with no edge list and no ``unique_1d``. Concurrent writers all store 1, so no atomic.
-    i = wp.int32(wp.tid())
-    if not sorted_run_of_length(sorted_keys, n, i, 1):
+    h = wp.int32(wp.tid())
+    if not is_boundary_mate(mates[h]):
         return
-    a, b = halfedge_endpoints(faces, order[i])
+    a, b = halfedge_endpoints(faces, h)
     out_flags[a] = 1
     out_flags[b] = 1
 
 
-@wp.kernel
-def boundary_halfedge_mask(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    n: wp.int32,
-    out_mask: wp.array[wp.bool],
-) -> None:
-    # Per halfedge: is its edge a boundary edge? ``order`` is a permutation of ``0 .. n - 1``, so
-    # every entry of ``out_mask`` is written exactly once and it needs no zero fill -- and there is
-    # no scan and no readback, since the mask's size is known.
-    i = wp.int32(wp.tid())
-    out_mask[order[i]] = sorted_run_of_length(sorted_keys, n, i, 1)
-
-
 @wp.func
-def ear_interior_corner(edge_boundary: wp.array[wp.bool], f: wp.int32) -> wp.int32:
+def ear_interior_corner(mates: wp.array[wp.int32], f: wp.int32) -> wp.int32:
     # The local index of face ``f``'s one interior edge when exactly two of its three edges are
     # boundary edges -- an ear -- else ``-1``.
-    b0 = edge_boundary[3 * f]
-    b1 = edge_boundary[3 * f + 1]
-    b2 = edge_boundary[3 * f + 2]
+    b0 = is_boundary_mate(mates[3 * f])
+    b1 = is_boundary_mate(mates[3 * f + 1])
+    b2 = is_boundary_mate(mates[3 * f + 2])
     if wp.int32(b0) + wp.int32(b1) + wp.int32(b2) != 2:
         return -1
     if not b0:
@@ -142,15 +131,15 @@ def ear_interior_corner(edge_boundary: wp.array[wp.bool], f: wp.int32) -> wp.int
 
 
 @wp.kernel
-def mark_ears(edge_boundary: wp.array[wp.bool], out_flags: wp.array[wp.int32]) -> None:
+def mark_ears(mates: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
     # 0/1 per face: is it an ear? The ``int32`` flag the caller scans in place.
     f = wp.int32(wp.tid())
-    out_flags[f] = wp.where(ear_interior_corner(edge_boundary, f) >= 0, wp.int32(1), wp.int32(0))
+    out_flags[f] = wp.where(ear_interior_corner(mates, f) >= 0, wp.int32(1), wp.int32(0))
 
 
 @wp.kernel
 def emit_ears(
-    edge_boundary: wp.array[wp.bool],
+    mates: wp.array[wp.int32],
     inclusive: wp.array[wp.int32],
     out_ear: wp.array[wp.int32],
     out_ear_opp: wp.array[wp.int32],
@@ -161,7 +150,7 @@ def emit_ears(
     slot, flag = scanned_count(inclusive, f)
     if flag != 0:
         out_ear[slot] = f
-        out_ear_opp[slot] = ear_interior_corner(edge_boundary, f)
+        out_ear_opp[slot] = ear_interior_corner(mates, f)
 
 
 @wp.kernel
@@ -238,24 +227,25 @@ def dart_successors(
 @wp.kernel
 def emit_boundary_successors(
     inclusive: wp.array[wp.int32],
-    order: wp.array[wp.int32],
+    key_order: wp.array[wp.int32],
     faces: wp.array[wp.int32],
     twins: wp.array[wp.int32],
     out_tails: wp.array[wp.int32],
     out_next: wp.array[wp.int32],
 ) -> None:
-    # The boundary as a successor graph, straight off the sorted keys (``emit_boundary_edges``'
-    # scan) with no edge rows in between: the ranked nodes in ``out_tails`` and their successors in
-    # the node-sized ``out_next``. Without ``twins`` (``None``) the nodes are the vertices, the
+    # The boundary as a successor graph, straight off ``mark_boundary_halfedges``' scanned flags
+    # with no edge rows in between: the ranked nodes in ``out_tails`` and their successors in the
+    # node-sized ``out_next``. Without ``twins`` (``None``) the nodes are the vertices, the
     # directed rows' tails (``halfedge_endpoints``). With it they are the boundary
     # *halfedges*, each followed by the boundary halfedge leaving its tip in its own sector: over
     # vertices a pinch point has two successors, over halfedges every node has one. A fan that
-    # does not close (a malformed twin table) maps to a self-loop, so the walk stays bounded.
+    # does not close (a malformed twin table) maps to a self-loop, so the walk stays bounded. The
+    # ranking names each cycle by its smallest node, so the order of ``out_tails`` is free.
     i = wp.int32(wp.tid())
     g, count = scanned_count(inclusive, i)
     if count == 0:
         return
-    h = order[i]
+    h = key_ordered_halfedge(key_order, i)
     if twins.shape[0] > 0:
         following = next_boundary_halfedge(faces, twins, h)
         out_tails[g] = h

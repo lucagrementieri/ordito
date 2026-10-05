@@ -235,6 +235,34 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     assert int(od.selection.faces_left_of_contour(faces_wp, unoriented_wp).numpy().sum()) == n_faces
 
 
+@pytest.mark.parametrize("oriented", [False, True])
+def test_region_boundary_edges_bucketed_match_the_key_sort(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], oriented: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the bucketed mates give the key sort's seam, row for row.
+
+    The sort path carries the oracles (``test_region_boundary_edges`` and the pyvista
+    comparison); on the bucket path only the seam's halfedges are sorted, so the rows are pinned to
+    strictly ascending ``(max, min)`` keys and to the sort path's rows.
+    """
+    mesh_tm, mesh_wp = icosphere
+    mask_np = mesh_tm.triangles_center[:, 0] < 0.2
+    face_mask = wp.array(mask_np, dtype=wp.bool, device=mesh_wp.indices.device)
+    n_vertices = len(mesh_tm.vertices)
+    sorted_np = od.selection.region_boundary_edges(
+        mesh_wp.indices, face_mask, n_vertices, oriented=oriented
+    ).numpy()
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    bucketed_np = od.selection.region_boundary_edges(
+        mesh_wp.indices, face_mask, n_vertices, oriented=oriented
+    ).numpy()
+    assert len(sorted_np) > 0
+    _assert_edge_key_order(bucketed_np)
+    assert np.array_equal(sorted_np, bucketed_np)
+
+
 def test_region_boundary_edges_rejects_mismatched_face_mask(device: str) -> None:
     """Not a parity assert: pins the ``ValueError`` guard against an out-of-bounds kernel read."""
     _vertices_np, faces_np = _grid_mesh(3)
@@ -1453,3 +1481,10 @@ def test_face_indices_from_vertex_indices_empty(device: str) -> None:
     vertex_indices_wp = warp_empty(0, wp.int32, device)
     face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, vertex_indices_wp)
     assert face_indices_wp.shape == (0,)
+
+
+def _assert_edge_key_order(rows_np: np.ndarray) -> None:
+    """Assert undirected rows strictly ascend by ``(max, min)``, ``edges_unique``'s key order."""
+    high = rows_np.max(axis=1).astype(np.int64)
+    low = rows_np.min(axis=1).astype(np.int64)
+    assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)
