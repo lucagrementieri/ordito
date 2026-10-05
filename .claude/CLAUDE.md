@@ -30,7 +30,7 @@ Part I with a cross-reference.
 1. [Kernel syntax and semantics](#1-kernel-syntax-and-semantics)
 2. [Kernel architecture and launches](#2-kernel-architecture-and-launches)
 3. [Python-scope wrappers](#3-python-scope-wrappers)
-4. [Evolving the public API](#4-evolving-the-public-api) (naming, signatures, the 29 checks)
+4. [Evolving the public API](#4-evolving-the-public-api) (naming, signatures, the 30 checks)
 5. [Function ordering within a module](#5-function-ordering-within-a-module)
 6. [Documentation](#6-documentation-zensical--mkdocstrings)
 7. [Testing](#7-testing) (parity gate, the nine reference libraries)
@@ -647,10 +647,18 @@ disk) with GPU time identical to a hand-written one; a cached call costs ~11 µs
 ### 3.6 Dtype conversion at Python scope
 
 `wp.cast(expr, TargetType)` is kernel / `@wp.func` scope only; there is no `wp.cast` on whole
-arrays. Allocate the destination and call **`wp.utils.array_cast(src, dst)`** (same device,
-matching shape). Do not add a `bool_to_int32`-style kernel. (`array_cast` costs 1.8x a launch
-— §13.1 — so hot paths with a hot dtype pair use `kernel_array.ASTYPE` or a purpose-written
-kernel such as `kernels/array.bool_flags`.)
+arrays. Convert with **`od.array.astype(src, dtype)`** (new array) or **`od.array.copyto(dst,
+src)`** (into a buffer you hold; a slice view writes into its parent). Do not add a
+`bool_to_int32`-style kernel.
+
+**Never call `wp.utils.array_cast` from `ordito/`** (check 30). Its kernel is `Any`-generic and
+lives in Warp's own `warp.utils` module, so every new dtype pair rebuilds that whole module (§2.5's
+mechanism, in a module ordito cannot register overloads for; measured in §12.6), and it costs 1.8x
+a launch besides (§13.1). `copyto` launches `kernel_array.cast_kernel(source, target)`: the hot
+pairs are `ASTYPE` entries built with `kernels/array`, any other pair is built on first use in a
+module of its own (`wp.kernel(..., module="unique")`), so building it rehashes nothing.
+**A kernel created lazily must go in its own module** for the same reason: added to an
+already-loaded module it changes the hash and recompiles every kernel there.
 
 ### 3.7 Sparse: assemble from keys, never through `bsr_from_triplets`; and `nnz` is a stale capacity
 
@@ -1021,7 +1029,7 @@ done until the whole suite has run.
 
 ### 4.5 The mechanical gate: `tests/api_conventions.py`
 
-**Twenty-nine checks**; they fail the default `pytest` run. Each carries a written allowlist —
+**Thirty checks**; they fail the default `pytest` run. Each carries a written allowlist —
 read the reason before adding an entry, and prefer fixing the code. The gate does not replace
 review: it cannot tell whether a *new* name is a good one.
 
@@ -1100,6 +1108,7 @@ review: it cannot tell whether a *new* name is a good one.
     whose description opens with `Length-`, `Shape ``(`, `Flat` or `Rank-N ``(` instead of its
     shape (§6). Empty allowlist. Reads the opening only: a shape buried later, a redundant dtype
     or an abbreviated size name is review's.
+30. A call to `warp.utils.array_cast` under `ordito/` (§3.6). Empty allowlist; tests may call it.
 
 Checks 16, 17, 18, 20, 22 and 26 are one family (§1.5): legal spellings with identical codegen,
 held only by a scan.
@@ -2702,6 +2711,18 @@ Rules: §1.3, §1.5, §1.6.
 - **A generic kernel's lazy overload instantiation rebuilds its whole module** (§2.5: 206 → 87
   module loads, suite 1 033 s → 29 s). **`wp.map` forks its generated module per call *signature***
   on axes wider than the dtype (§3.5: 182 → 143 loads, cold cache 2.1x).
+- **Warp's own generic kernels fork Warp's modules the same way** (2026-10-05, Warp 1.18).
+  `wp.utils.array_cast` was 17 of the 23 `Module hash changed, recompiling` lines of a CUDA suite
+  run, one per new dtype pair, each landing on whichever test reached the pair first (the "slow"
+  test moved between runs). Routed through `array.copyto` (§3.6): 0, and the CUDA pass 53.8 →
+  49.9 s. The sixth non-`warp.sparse` one was a *test* calling `wp.map(wp.mul, ...)` over `vec3`,
+  which forked the `map_mul` module the package declares at import: **a test's own `wp.map` of a
+  builtin shares the library's generated module**, so tests build such inputs on the host. The five
+  left are `warp.sparse`'s generic `_bsr_*` / `bsr_mv` kernels meeting a second dtype, four from
+  tests' own reference builds and one where ordito's float32 heavy-row CG and a test's float64
+  `matvec` share Warp's non-tiled `bsr_mv`; each loads from the cache in ~0.4 ms, and preventing
+  them would mean `wp.overload` on Warp-private factory kernels. **Census them with `wp.config.log_level = wp.LOG_DEBUG` under
+  `pytest -s`**: pytest captures Warp's log otherwise and the grep finds nothing.
 - **`import ordito` is expensive because `@wp.kernel` builds an `Adjoint` at import time for every
   decorated kernel**, and importing one submodule imports the parent package first. Fixed by a
   PEP 562 lazy `__init__` (§16.2).

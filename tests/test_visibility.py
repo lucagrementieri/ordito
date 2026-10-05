@@ -925,8 +925,9 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     _mesh_tm, mesh_wp = icosahedron
     points_wp = mesh_wp.points
     unit_normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
-    scaled_normals_wp = warp_empty(unit_normals_wp.size, wp.vec3, mesh_wp.device)
-    wp.map(wp.mul, unit_normals_wp, wp.float32(2.0), out=scaled_normals_wp)
+    # Scaled on the host: a ``wp.map(wp.mul, ...)`` over ``vec3`` here would add a signature to the
+    # ``map_mul`` module the package declares at import and rebuild it (CLAUDE.md section 3.5).
+    scaled_normals_wp = points_to_warp(unit_normals_wp.numpy() * 2.0, mesh_wp.device)
 
     centers_unit_wp, radii_unit_wp = od.visibility.max_tangent_sphere(
         mesh_wp, points_wp, normals=unit_normals_wp

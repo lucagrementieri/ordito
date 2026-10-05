@@ -388,7 +388,7 @@ def transfer_through_operator(
 
     The field's scalar must be ``float32`` because the operator's weights are: Warp requires both
     operands of a product to share a scalar type, so a ``wp.float64`` field does not compile against
-    a float32 operator. Cast it with ``wp.utils.array_cast`` if that is what you hold. The
+    a float32 operator. Cast it with [`astype`][ordito.array.astype] if that is what you hold. The
     restriction is honest rather than incidental -- these operators are assembled from float32
     vertex data, so carrying a float64 field through one would advertise precision the weights do
     not have.

@@ -1178,6 +1178,66 @@ def test_astype_uses_the_input_device(device: str) -> None:
     assert str(out.device) == str(values_wp.device)
 
 
+# Conversions outside ``kernels/array.ASTYPE``: each is built on demand in a module of its own.
+_OFF_TABLE_CASTS = [
+    (np.int8, wp.int8, wp.int32),
+    (np.uint16, wp.uint16, wp.uint32),
+    (np.float16, wp.float16, wp.float32),
+    (np.float64, wp.float64, wp.float32),
+    (np.float32, wp.float32, wp.int8),
+]
+
+
+@pytest.mark.parametrize(
+    ("dtype_np", "source", "target"),
+    _OFF_TABLE_CASTS,
+    ids=[f"{s.__name__}-{t.__name__}" for _, s, t in _OFF_TABLE_CASTS],
+)
+def test_copyto_matches_numpy_into_a_slice(
+    device: str, dtype_np: type, source: type, target: type, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A: ``copyto`` converts as ``numpy.ndarray.astype`` does, writing only the given view.
+
+    The pairs are outside ``ASTYPE``, so each takes ``cast_kernel``'s on-demand path, and
+    ``wp.utils.array_cast`` is patched to raise: launching its generic kernel at a new pair is what
+    rebuilt Warp's whole utility module, so no conversion may reach it. The kernel's module must be
+    its own, not ``kernels/array``, or building it would rebuild that module instead.
+    """
+    from ordito.kernels import array as kernel_array
+
+    def _forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("copyto reached wp.utils.array_cast")
+
+    monkeypatch.setattr(wp.utils, "array_cast", _forbidden)
+    rng = np.random.default_rng(5)
+    values_np = (rng.standard_normal(40) * 50.0).astype(dtype_np)
+    values_wp = wp.array(values_np, dtype=source, device=device)
+    parent_wp = wp.full(48, 7, dtype=target, device=device)
+
+    od.array.copyto(odt.as_dense(parent_wp[4:44]), values_wp)
+
+    expected_np = np.full(48, 7, dtype=wp.dtype_to_numpy(target))
+    expected_np[4:44] = values_np.astype(wp.dtype_to_numpy(target))
+    assert np.array_equal(parent_wp.numpy(), expected_np)
+    assert np.array_equal(
+        od.array.astype(values_wp, target).numpy(), values_np.astype(wp.dtype_to_numpy(target))
+    )
+    module = kernel_array.cast_kernel(source, target).module
+    assert module is not kernel_array.ASTYPE[wp.int32, wp.float32].module
+
+
+def test_copyto_with_a_matching_dtype_is_a_copy(device: str) -> None:
+    """Class A: a same-dtype ``copyto`` is ``numpy.copyto``, at rank 1 and rank 2."""
+    rng = np.random.default_rng(6)
+    table_np = rng.integers(0, 100, (5, 3)).astype(np.int32)
+    table_wp = wp.array(table_np, dtype=wp.int32, device=device)
+    out_wp = wp.zeros((5, 3), dtype=wp.int32, device=device)
+    od.array.copyto(out_wp, table_wp)
+    assert np.array_equal(out_wp.numpy(), table_np)
+    assert np.allclose(od.array.astype(table_wp, wp.float64).numpy(), table_np.astype(np.float64))
+
+
 @pytest.mark.parametrize(
     "data", bitcast_test_data, ids=[a.dtype.__name__ for a in bitcast_test_data]
 )
@@ -1520,6 +1580,8 @@ _INVALID_ARGUMENT_CASES = [
     "isin_mismatched_dtypes",
     "isin_non_integer_dtype",
     "flatnonzero_rank2",
+    "copyto_shape_mismatch",
+    "copyto_strided_rank2_conversion",
 ]
 
 
@@ -1529,7 +1591,8 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
     Not a library comparison: each guard names what it rejects.
 
     ``isin``'s two arrays must share one integer dtype because its kernels are instantiated per
-    dtype; ``flatnonzero`` is defined on rank-1 input only.
+    dtype; ``flatnonzero`` is defined on rank-1 input only; ``copyto`` writes element for element,
+    and converts a rank-2 array through flattened views.
     """
     if case == "arange_zero_step":
         with pytest.raises(ValueError, match="step must be non-zero"):
@@ -1555,10 +1618,22 @@ def test_invalid_arguments_raise(device: str, case: str) -> None:
         floats_wp = wp.array(np.zeros(3, np.float32), dtype=wp.float32, device=device)
         with pytest.raises(TypeError, match="integer dtype"):
             od.array.isin(floats_wp, floats_wp)
-    else:
+    elif case == "flatnonzero_rank2":
         values_wp = wp.array(np.zeros((3, 4), dtype=np.int32), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="1D"):
             od.array.flatnonzero(values_wp)
+    elif case == "copyto_shape_mismatch":
+        with pytest.raises(ValueError, match="matching shapes"):
+            od.array.copyto(
+                wp.zeros(4, dtype=wp.float32, device=device),
+                wp.zeros(3, dtype=wp.int32, device=device),
+            )
+    else:
+        table_wp = wp.zeros((3, 4), dtype=wp.int32, device=device)
+        with pytest.raises(ValueError, match="contiguous"):
+            od.array.copyto(
+                wp.zeros((3, 2), dtype=wp.float32, device=device), odt.as_dense(table_wp[:, ::2])
+            )
 
 
 @pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (4,), (0, 0, 2)])

@@ -186,11 +186,7 @@ def test_sortable_dtype_preserves_the_order_of_the_original_values(
         values_np = np.array([65535, 0, 1, 32768, 7], dtype=np.uint16)
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
 
-    widened_wp = warp_empty(values_np.size, sort_dtype, device)
-    if sort_dtype is dtype_wp:
-        wp.copy(widened_wp, values_wp)
-    else:
-        wp.utils.array_cast(values_wp, widened_wp)
+    widened_wp = od.array.astype(values_wp, sort_dtype)
 
     # One array of a union dtype, where the sort takes a union of arrays: dtype is invariant.
     sorted_wp, order_wp = od.array.sort_and_argsort(cast("odt.ArrayNdScalar", widened_wp))

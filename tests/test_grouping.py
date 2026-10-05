@@ -396,9 +396,14 @@ def test_first_occurrence_indices_picks_representatives_of_duplicate_rows(device
     assert np.array_equal(rows_np[first_wp.numpy()], unique_wp.numpy())
 
 
-@pytest.mark.parametrize("kind", ["vec3", "int32_rows", "float32_rows"])
+@pytest.mark.parametrize("kind", ["vec3", "int32_rows", "float32_rows", "strided_float32_rows"])
 def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> None:
-    """Class A: the dispatcher returns exactly what the function it forwards to returns."""
+    """
+    Class A: the dispatcher returns exactly what the function it forwards to returns.
+
+    The strided arm is a column-step view of a wider table, which a ``view`` cannot retype and
+    which used to raise from a flatten inside the conversion.
+    """
     positions_np = np.array([[0.0, 1.0, 2.0], [3.0, 4.0, 5.0], [0.0, 1.0, 2.0]], dtype=np.float32)
     if kind == "vec3":
         data_wp = points_to_warp(positions_np, device)
@@ -407,8 +412,14 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
         rows_np = np.array([[1, 2], [3, 4], [1, 2]], dtype=np.int32)
         data_wp = _int_rows(rows_np, device)
         expected_wp = od.grouping.hash_indices_rows(data_wp)
-    else:
+    elif kind == "float32_rows":
         data_wp = wp.array(np.ascontiguousarray(positions_np), dtype=wp.float32, device=device)
+        expected_wp = od.grouping.hash_vector_rows(points_to_warp(positions_np, device))
+    else:
+        wide_np = np.zeros((3, 6), dtype=np.float32)
+        wide_np[:, ::2] = positions_np
+        data_wp = odt.as_dense(wp.array(wide_np, dtype=wp.float32, device=device)[:, ::2])
+        assert not data_wp.is_contiguous
         expected_wp = od.grouping.hash_vector_rows(points_to_warp(positions_np, device))
 
     keys_np = od.grouping.hash_rows(data_wp).numpy()

@@ -1791,7 +1791,7 @@ class _BatchedCg:
         self._round_values = matrix.values
         if narrow_values and matrix.values.dtype == wp.float64 and not self._heavy:
             self._round_values = _launch.empty(matrix.values.shape, dtype=wp.float32, device=device)
-            wp.utils.array_cast(matrix.values, self._round_values)
+            od.array.copyto(self._round_values, matrix.values)
 
         self._rhs = rhs
         self._solution = solution
@@ -3156,8 +3156,8 @@ class SquaredLaplacianPreconditioner:
             factor_t = _launch.empty(
                 self._factor_t.values.size, dtype=wp.float32, device=self._device
             )
-            wp.utils.array_cast(self._factor.values.flatten(), factor)
-            wp.utils.array_cast(self._factor_t.values.flatten(), factor_t)
+            od.array.copyto(factor, self._factor.values.flatten())
+            od.array.copyto(factor_t, self._factor_t.values.flatten())
             self._narrowed = (factor, factor_t)
         return self._narrowed
 

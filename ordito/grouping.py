@@ -10,7 +10,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar
-from ordito.array import bitcast_from_int, bitcast_to_int, gather, sort_pair_indices
+from ordito.array import bitcast_from_int, bitcast_to_int, copyto, gather, sort_pair_indices
 from ordito.constants import INDEX_RADIX_PAIR
 from ordito.kernels import array as kernel_array
 from ordito.kernels import grouping as kernel_grouping
@@ -66,7 +66,7 @@ def group(values: wp.array[wp.Int], length: int) -> odt.Array2dInt32:
             device=device,
         )
     else:
-        wp.utils.array_cast(values, values_buffer, count=n)
+        copyto(odt.as_dense(values_buffer[:n]), values)
         indices_buffer = sort_pair_indices(n, -1, device)
     _launch.radix_sort_pairs(values_buffer, indices_buffer, count=n)
 
@@ -864,16 +864,12 @@ def hash_rows(
     if data.dtype == wp.int32:
         return hash_indices_rows(cast("odt.Array2dInt32", data))
     if data.dtype == wp.float32:
-        n = int(data.shape[0])
         if int(data.shape[1]) != 3:
             raise ValueError("float32 hash_rows currently requires width 3")
-        if data.is_contiguous:
-            # The ``(n, 3)`` rows *are* ``wp.vec3`` values in memory, so a zero-copy view reads
-            # them as such; the copy below is only for a strided table, which a view cannot retype.
-            return hash_vector_rows(data.view(wp.vec3))
-        vec = _launch.empty(n, dtype=wp.vec3, device=data.device)
-        wp.utils.array_cast(cast("wp.array[wp.float32]", data), vec)
-        return hash_vector_rows(vec)
+        # The ``(n, 3)`` rows *are* ``wp.vec3`` values in memory, so a zero-copy view reads them
+        # as such; a strided table, which a view cannot retype, is made contiguous first.
+        rows = data if data.is_contiguous else _launch.clone(data)
+        return hash_vector_rows(rows.view(wp.vec3))
     raise ValueError(f"hash_rows unsupported dtype {data.dtype}")
 
 

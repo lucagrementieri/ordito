@@ -1808,17 +1808,15 @@ def astype(values: odt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
     Element-wise dtype conversion, shape and rank preserved (``numpy.ndarray.astype``).
 
     The Python-scope counterpart of ``wp.cast``, which exists only inside a kernel. Allocates a
-    buffer of ``values``' shape on ``values``' device and fills it with the conversion
-    ``warp.utils.array_cast`` performs -- the pair this replaces at twenty-odd call sites -- through
-    a concrete kernel for the conversions the package reaches most, and through
-    ``warp.utils.array_cast`` itself for any other.
+    buffer of ``values``' shape on ``values``' device and fills it with
+    [`copyto`][ordito.array.copyto].
 
     Parameters
     ----------
     values
-        ``(n,)`` or ``(n, m)`` Warp array of any scalar dtype ``array_cast`` accepts.
+        ``(n,)`` or ``(n, m)`` Warp array of any scalar or vector dtype.
     dtype
-        Target scalar dtype.
+        Target dtype, of the same element shape as ``values.dtype``.
 
     Returns
     -------
@@ -1832,36 +1830,68 @@ def astype(values: odt.ArrayNd, dtype: type[DType]) -> wp.array[DType, Any]:
 
     Notes
     -----
-    ``warp.utils.array_cast``'s kernel is ``dest[i] = dest.dtype(src[i])``, which is a *scalar*
-    conversion -- handed a rank-2 array it fails to compile, because ``src[i]`` is a row. So rank-2
-    input is cast through paired ``flatten()`` views here rather than at each call site, which is
-    what several of them were doing by hand.
-
     The output keeps ``values``' shape, so this is not a reinterpretation that changes rank: an
-    ``(n, 3)`` ``float32`` read as ``(n,)`` ``wp.vec3`` is a different operation and still calls
-    ``wp.utils.array_cast`` directly, as [`hash_rows`][ordito.grouping.hash_rows] and
+    ``(n, 3)`` ``float32`` read as ``(n,)`` ``wp.vec3`` is a different operation, a ``view`` of a
+    contiguous table, as [`hash_rows`][ordito.grouping.hash_rows] and
     [`mean_vertex_normals`][ordito.vertices.mean_vertex_normals] do.
 
     See Also
     --------
+    [`copyto`][ordito.array.copyto]
+        The same conversion into a buffer the caller already holds.
     [`bitcast_to_int`][ordito.array.bitcast_to_int]
         Reinterpret the *bits* rather than convert the value.
     """
     out = _launch.empty(values.shape, dtype=dtype, device=values.device)
-    source, target = values, out
-    if int(values.ndim) != 1:
-        if not values.is_contiguous:
-            raise ValueError("astype requires a contiguous array for rank-2 input")
-        source, target = values.flatten(), out.flatten()
-    # The common conversions launch a concrete kernel; see ``kernels/array.ASTYPE`` for the census
-    # behind the table and why any other pair is left to ``wp.utils.array_cast``.
-    kernel = kernel_array.ASTYPE.get((values.dtype, dtype))
-    n = source.size
-    if kernel is None:
-        wp.utils.array_cast(source, target)
-    elif n > 0:
-        _launch.launch(kernel, dim=n, inputs=[source, target], device=values.device)
+    copyto(out, values)
     return out
+
+
+def copyto(dst: odt.ArrayNd, src: odt.ArrayNd) -> None:
+    """
+    Copy ``src`` into ``dst``, converting each element to ``dst``'s dtype (``numpy.copyto``).
+
+    A matching dtype is a plain copy. Otherwise every element is converted as ``wp.cast`` would at
+    kernel scope, through a concrete kernel built once per dtype pair -- never through
+    ``warp.utils.array_cast``, whose generic kernel rebuilds Warp's whole utility module the first
+    time it meets each new pair.
+
+    Parameters
+    ----------
+    dst
+        ``src.shape`` destination, on ``src.device``, of any scalar or vector dtype whose element
+        shape matches ``src.dtype``'s. A slice view writes into its parent.
+    src
+        ``(n,)`` or ``(n, m)`` source array.
+
+    Raises
+    ------
+    RuntimeError
+        If ``dst`` and ``src`` are on different devices.
+    ValueError
+        If the shapes differ, or if the dtypes differ and either array is rank-2 and not
+        contiguous, since the rank-2 conversion flattens.
+
+    See Also
+    --------
+    [`astype`][ordito.array.astype]
+        The same conversion into a new array.
+    """
+    require_same_device(dst=dst, src=src)
+    if tuple(dst.shape) != tuple(src.shape):
+        raise ValueError(f"copyto needs matching shapes, got {dst.shape} and {src.shape}")
+    if src.size == 0:
+        return
+    if dst.dtype == src.dtype:
+        _launch.copy(dst, src)
+        return
+    source, target = src, dst
+    if int(src.ndim) != 1:
+        if not (src.is_contiguous and dst.is_contiguous):
+            raise ValueError("copyto requires contiguous arrays to convert rank-2 input")
+        source, target = src.flatten(), dst.flatten()
+    kernel = kernel_array.cast_kernel(src.dtype, dst.dtype)
+    _launch.launch(kernel, dim=source.size, inputs=[source, target], device=src.device)
 
 
 def index_bound(indices: odt.ArrayNdInt, *, require_non_negative: bool = False) -> int:
@@ -2199,13 +2229,13 @@ def bitcast_to_int(
     copy_count = min(n, count)
     target = wp.int64 if n_bits > 32 else wp.int32
 
-    # ``count=0`` reaches ``wp.copy`` (and ``wp.utils.array_cast`` when the dtypes match, which
-    # routes through it) as *"copy the whole source"* -- a documented back-compatibility rule in
-    # Warp 1.18 (``if count == 0: count = src.size``), so the zero that means "nothing" and the zero
-    # that means "everything" are the same argument. Into a length-0 destination that is not even a
-    # clean refusal: it raises ``TypeError: unsupported operand type(s) for +: 'NoneType' and
-    # 'int'`` from inside the copy. Returning the empty allocation here is both the right answer and
-    # the only way to state it.
+    # ``count=0`` reaches ``wp.copy`` as *"copy the whole source"* -- a documented
+    # back-compatibility rule in Warp 1.18 (``if count == 0: count = src.size``), so the zero that
+    # means "nothing" and the zero that means "everything" are the same argument. Into a length-0
+    # destination that is not even a clean refusal: it raises ``TypeError: unsupported operand
+    # type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the empty allocation
+    # here is both the right answer and the only way to state it (a zero-length slice for the
+    # ``copyto`` paths below would raise too).
     if copy_count == 0:
         return cast(
             "wp.array[wp.int32] | wp.array[wp.int64]",
@@ -2222,10 +2252,10 @@ def bitcast_to_int(
         src = data
         if n_bits < 32:
             src = _launch.empty(copy_count, dtype=wp.float32, device=data.device)
-            wp.utils.array_cast(data, src, count=copy_count)
+            copyto(src, odt.as_dense(data[:copy_count]))
         _launch.copy(reinterpreted, src, count=copy_count)
     else:
-        wp.utils.array_cast(data, reinterpreted, count=copy_count)
+        copyto(odt.as_dense(reinterpreted[:copy_count]), odt.as_dense(data[:copy_count]))
     return reinterpreted
 
 
@@ -2278,10 +2308,10 @@ def bitcast_from_int(
         wide = _launch.empty(count, dtype=wide_dtype, device=data.device)
         _launch.copy(wide, data, count=copy_count)
         reinterpreted_casted = _launch.empty(count, dtype=dtype, device=data.device)
-        wp.utils.array_cast(wide, reinterpreted_casted, count=copy_count)
+        copyto(odt.as_dense(reinterpreted_casted[:copy_count]), odt.as_dense(wide[:copy_count]))
     else:
         reinterpreted_casted = _launch.empty(count, dtype=dtype, device=data.device)
-        wp.utils.array_cast(data, reinterpreted_casted, count=copy_count)
+        copyto(odt.as_dense(reinterpreted_casted[:copy_count]), odt.as_dense(data[:copy_count]))
     return reinterpreted_casted
 
 

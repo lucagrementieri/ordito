@@ -2528,3 +2528,39 @@ def shape_spelling_problems() -> list[str]:
                         "code span, e.g. ``(3 * n_faces,)`` flat triangle index buffer"
                     )
     return problems
+
+
+# --- check 30 -----------------------------------------------------------------------------------
+
+
+def array_cast_problems() -> list[str]:
+    """
+    Check 30: a call to ``warp.utils.array_cast`` anywhere under ``ordito/``.
+
+    Its kernel is ``Any``-generic and lives in Warp's own ``warp.utils`` module, so each dtype pair
+    it meets for the first time adds an overload, changes that module's hash and rebuilds every
+    kernel in it (CLAUDE.md section 2.5's mechanism, in a module ordito cannot register overloads
+    for). The package converts through ``array.copyto`` / ``array.astype`` instead, whose kernels
+    are concrete and built once per pair in a module of their own. Tests may still call it.
+
+    No allowlist: every site converted, including the casts inside ``bitcast_to_int`` /
+    ``bitcast_from_int`` and the two narrowing copies in ``linalg``.
+    """
+    problems: list[str] = []
+    for path in sorted(_PACKAGE_DIR.rglob("*.py")):
+        site = path.relative_to(_REPO_ROOT)
+        try:
+            tree = _parse_source(path)
+        except SyntaxError:
+            continue  # check 12 and the suite itself report an unparseable module
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if name == "array_cast":
+                problems.append(
+                    f"{site}:{node.lineno}: calls array_cast -- convert through array.copyto or "
+                    "array.astype"
+                )
+    return problems

@@ -663,7 +663,7 @@ def bool_flags(mask: wp.array[wp.bool], out_flags: wp.array[wp.int32]) -> None:
     out_flags[i] = wp.where(mask[i], 1, 0)
 
 
-def _astype_kernel(name: str, source: type, target: type) -> wp.Kernel:
+def _astype_kernel(name: str, source: type, target: type, *, own_module: bool = False) -> wp.Kernel:
     """Build one concrete ``out[i] = target(values[i])`` kernel: ``wp.utils.array_cast``'s body."""
 
     # ``wp.utils.array_cast`` launches its own ``Any``-generic ``_array_cast_kernel``, so every
@@ -676,6 +676,8 @@ def _astype_kernel(name: str, source: type, target: type) -> wp.Kernel:
 
     _k.__annotations__["values"] = wp.array[source]
     _k.__annotations__["out_values"] = wp.array[target]
+    if own_module:
+        return wp.kernel(_k, name=name, enable_backward=False, module="unique")
     return wp.kernel(_k, name=name)
 
 
@@ -1189,12 +1191,10 @@ class RegisterBlockedTable(KernelTable):
         raise KeyError(f"{self._owner} has no register-blocked kernel")
 
 
-# The conversions ``array.astype`` launches as concrete kernels, keyed ``(source, target)``. The set
-# is a census rather than a menu: instrumenting ``wp.utils.array_cast`` over the full test suite,
-# these four pairs are 97 % of the ``astype`` calls (the masks every compaction widens, the
-# ``float32`` areas an energy or mass assembly promotes, and the narrowing back to a mask). A pair
-# outside the table falls through to ``wp.utils.array_cast``, which is correct and merely pays the
-# generic dispatch; that is Warp's own module, so the fall-through forks nothing of this one.
+# The conversions ``array.copyto`` launches from this module, keyed ``(source, target)``: the pairs
+# the package reaches most (the masks every compaction widens, the ``float32`` areas an energy or
+# mass assembly promotes, the narrowing back to a mask, the ``float64`` smoothing seams). They are
+# built at import with the module; every other pair is ``cast_kernel``'s, below.
 # ``(wp.bool, wp.int32)`` is ``bool_flags`` itself -- identical bytes, one kernel.
 ASTYPE = KernelTable(
     "astype",
@@ -1209,6 +1209,28 @@ ASTYPE = KernelTable(
         (wp.vec3d, wp.vec3): _astype_kernel("astype_vec3d_vec3", wp.vec3d, wp.vec3),
     },
 )
+
+_CAST_KERNELS: dict[tuple[Any, Any], wp.Kernel] = {}
+
+
+def cast_kernel(source: Any, target: Any) -> wp.Kernel:
+    """
+    Return the concrete ``out[i] = target(values[i])`` kernel for one dtype pair.
+
+    A pair in ``ASTYPE`` is that table's kernel. Any other is built on first use, once per process,
+    in a module of its own (``module="unique"``). The own module is the point: adding a kernel to a
+    module after it has loaded changes its hash and rebuilds every kernel in it, so a pair built
+    lazily into this module would recompile ``kernels/array``, and launching
+    ``wp.utils.array_cast``'s ``Any``-generic kernel at a new pair recompiles all of
+    ``warp.utils`` for the same reason (CLAUDE.md section 2.5). A one-kernel module compiles in
+    isolation and is cached on disk like any other.
+    """
+    kernel = ASTYPE.get((source, target)) or _CAST_KERNELS.get((source, target))
+    if kernel is None:
+        name = f"cast_{wp.types.type_repr(source)}_{wp.types.type_repr(target)}"
+        kernel = _astype_kernel(name, source, target, own_module=True)
+        _CAST_KERNELS[source, target] = kernel
+    return kernel
 
 
 # The concrete handles ``wp.overload`` hands back, keyed by the caller's dtype -- see

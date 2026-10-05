@@ -47,6 +47,7 @@ from tests.api_conventions import (
     admonition_placement_problems,
     allocation_device_problems,
     array_annotation_style_problems,
+    array_cast_problems,
     bare_annotation_problems,
     bare_tid_problems,
     builtin_cast_problems,
@@ -1026,3 +1027,14 @@ def test_shape_spelling_scan_reads_entries_and_not_free_prose() -> None:
     ]
     flagged = [item for _, _, item, text in openings if _SHAPE_LATE_OPENINGS.match(text)]
     assert flagged == ["faces", "wp.array[wp.int32]"]
+
+
+def test_no_warp_array_cast_in_the_package() -> None:
+    """
+    No ``ordito/`` module calls ``warp.utils.array_cast``.
+
+    Not a library comparison: this is a property of ordito's own source. Check 30. The probe that
+    shows it bites: restoring the ``wp.utils.array_cast`` fallback in ``array.astype`` reports one
+    problem.
+    """
+    _fail("warp.utils.array_cast call(s) in the package:", array_cast_problems())
