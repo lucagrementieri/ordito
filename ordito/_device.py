@@ -221,7 +221,7 @@ def require_nonempty_mesh(faces: wp.array[wp.int32], name: str) -> None:
     if faces.size == 0:
         raise ValueError(
             f"{name} cannot build a warp.Mesh with zero triangles: this silently corrupts CUDA "
-            "state through Warp 1.17 (see the Warp issue tracker for wp.Mesh + empty BVH)."
+            "state through Warp 1.18 (see the Warp issue tracker for wp.Mesh + empty BVH)."
         )
 
 

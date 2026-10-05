@@ -53,7 +53,7 @@ keywords = [
 # ``numpy`` is core, not optional: 16 of the modules ``ordito/__init__.py`` imports eagerly use it
 # for host-side metadata math. It adds nothing to an install, since ``warp-lang`` itself declares an
 # unconditional ``Requires-Dist: numpy`` and ``import warp`` loads it before ordito gets a say.
-dependencies = ["numpy>=1.20", "warp-lang>=1.17"]
+dependencies = ["numpy>=1.20", "warp-lang>=1.18"]
 
 [project.urls]
 Documentation = "https://lucagrementieri.github.io/ordito/"

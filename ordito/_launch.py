@@ -85,7 +85,7 @@ class _Entry:
         self.key = (context, block_dim)
         self.n_args = len(kernel.adj.args)
         self.kernel_dim = kernel.adj.kernel_dim
-        self.tid_limit = kernel.adj.scalar_tid_extent_limit_candidate
+        self.tid_limit = kernel.adj.tid_extent_limit_candidate
         self.packers = tuple(_packer(kernel, arg) for arg in kernel.adj.args)
         block = _Block.build(kernel, self.kernel_dim)
         if block is not None:
@@ -617,7 +617,7 @@ def _extent(dim: Any, entry: _Entry) -> tuple[tuple[int, ...], int, int] | None:
 
     ``shape`` has the kernel's own rank: a shorter ``dim`` is padded with 1, a longer one folds its
     trailing extents into ``coord_mult``. ``None`` for anything that is not a tuple of positive
-    ints within the scalar ``wp.tid()`` limit.
+    ints within the ``wp.tid()`` extent limit.
     """
     kernel_dim = entry.kernel_dim
     if type(dim) is int:
@@ -632,12 +632,13 @@ def _extent(dim: Any, entry: _Entry) -> tuple[tuple[int, ...], int, int] | None:
     if n == 0 or n > 4:
         return None
     size = 1
+    limit = entry.tid_limit
     for extent in dim:
-        if type(extent) is not int or extent <= 0:
+        # Warp bounds every ``wp.tid()`` axis, not only the leading one; an oversized extent
+        # goes to ``wp.launch``, whose exact check decides whether it raises.
+        if type(extent) is not int or extent <= 0 or extent > limit:
             return None
         size *= extent
-    if dim[0] > entry.tid_limit:
-        return None
     if n == kernel_dim:
         return dim, size, 1
     if n < kernel_dim:
@@ -860,7 +861,13 @@ def array_scan(in_array: Any, out_array: Any, inclusive: bool = True) -> None:
         native = _scan_native(dtype)
         if native is not None:
             function, components, itemsize = native
-            function(in_array.ptr, out_array.ptr, size, itemsize, itemsize, components, inclusive)
+            # The CUDA scan returns ``False`` when it fails (an out-of-memory scratch allocation
+            # used to launch the scan on a null buffer and leave ``out_array`` partly unwritten);
+            # ``wp.utils.array_scan`` raises on it, and so does this path.
+            if not function(
+                in_array.ptr, out_array.ptr, size, itemsize, itemsize, components, inclusive
+            ):
+                raise RuntimeError(runtime.get_error_string())
             return
     wp.utils.array_scan(in_array, out_array, inclusive=inclusive)
 

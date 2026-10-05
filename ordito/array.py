@@ -696,7 +696,7 @@ def _tiled_span(
     then alias or copy depending on the allocator. Requiring a common base restricts the fast path
     to callers already holding aliases of one allocation -- exactly the ``split`` round trip.
 
-    ``_ref`` is Warp's own back-reference from a slice to the array it keeps alive (Warp 1.17); it
+    ``_ref`` is Warp's own back-reference from a slice to the array it keeps alive (Warp 1.18); it
     is read through ``getattr`` and every conclusion drawn from it is re-checked against the public
     ``ptr`` / ``shape`` / ``strides`` / ``dtype`` / ``device``, so a release that drops the
     attribute loses the fast path rather than the correctness. ``None`` when the segments are not
@@ -911,7 +911,12 @@ def sort_rows(data: odt.Array2dInt32 | odt.Array2dFloat32) -> None:
         )
         return
 
-    data_buffer = _launch.empty(n * 2, dtype=data.dtype, device=data.device)
+    # ``data.dtype`` is a union, so the buffer reads as an array of the union; Warp's stub wants one
+    # dtype per array, which the guard above already established.
+    data_buffer = cast(
+        "wp.array[wp.int32] | wp.array[wp.float32]",
+        _launch.empty(n * 2, dtype=data.dtype, device=data.device),
+    )
     _launch.copy(data_buffer, data, count=n)
     indices_buffer = sort_pair_indices(n, -1, data.device)
     segment_start_indices = arange(0, (n // n_cols + 1) * n_cols, n_cols, device=data.device)
@@ -2194,12 +2199,13 @@ def bitcast_to_int(
     copy_count = min(n, count)
     target = wp.int64 if n_bits > 32 else wp.int32
 
-    # ``count=0`` reaches ``wp.copy`` and ``wp.utils.array_cast`` as *"copy the whole source"* --
-    # a documented back-compatibility rule in Warp 1.17 (``if count == 0: count = src.size``), so
-    # the zero that means "nothing" and the zero that means "everything" are the same argument.
-    # Into a length-0 destination that is not even a clean refusal: it raises ``TypeError:
-    # unsupported operand type(s) for +: 'NoneType' and 'int'`` from inside the copy. Returning the
-    # empty allocation here is both the right answer and the only way to state it.
+    # ``count=0`` reaches ``wp.copy`` (and ``wp.utils.array_cast`` when the dtypes match, which
+    # routes through it) as *"copy the whole source"* -- a documented back-compatibility rule in
+    # Warp 1.18 (``if count == 0: count = src.size``), so the zero that means "nothing" and the zero
+    # that means "everything" are the same argument. Into a length-0 destination that is not even a
+    # clean refusal: it raises ``TypeError: unsupported operand type(s) for +: 'NoneType' and
+    # 'int'`` from inside the copy. Returning the empty allocation here is both the right answer and
+    # the only way to state it.
     if copy_count == 0:
         return cast(
             "wp.array[wp.int32] | wp.array[wp.int64]",

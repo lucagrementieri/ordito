@@ -71,7 +71,7 @@ import warp as wp
 
 # ``@wp.struct`` rebinds the decorated name to a ``Struct`` *value*, so the class itself is not
 # annotatable and a helper taking a bundle has to name the instance's base instead. Private on
-# Warp 1.17; an upgrade that moves it fails at import rather than silently.
+# Warp 1.18; an upgrade that moves it fails at import rather than silently.
 from warp._src.codegen import StructInstance
 
 import ordito as od

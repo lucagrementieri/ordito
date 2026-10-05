@@ -42,7 +42,8 @@ def centroid_tiled(
     # wp.tile_sum, and lane 0 commits four atomics per block (out-of-range lanes contribute zero).
     # CPU MUST NOT use this: the lanes partition the **outer** work (the face list), so the stride
     # is the constant `TILE_1D` and not `wp.block_dim()` -- and `wp.launch_tiled` runs one lane per
-    # block on the CPU device through Warp 1.17, where that lane would see one face per tile. This
+    # block on the CPU device through Warp 1.18 (unless the experimental
+    # `wp.config.enable_cpu_blocks` is set), where that lane would see one face per tile. This
     # is the constant-stride case of the rule in `.claude/CLAUDE.md` section 2.2, and it is why this
     # reduction keeps a device pair where `kernels/visibility.py::obscurance` needs only one
     # kernel. See `centroid_sliced` and `_device.prefers_tiled_reduction`.

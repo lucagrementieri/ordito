@@ -256,7 +256,7 @@ def update_argmin(
 ):
     # Running min-with-index update in place. Callers must be compiled with
     # ``enable_backward=False`` (``wp.ref`` helpers have no adjoint). Concrete ``float32``:
-    # ``wp.ref[wp.Scalar]`` generics do not instantiate through Warp 1.17 (a ``WarpCodegenError`` at
+    # ``wp.ref[wp.Scalar]`` generics do not instantiate through Warp 1.18 (a ``WarpCodegenError`` at
     # kernel parse), so float64 sites keep a hand-written loop; the index/tag stays ``int32``.
     if value < best_value:
         best_value = value
@@ -1629,11 +1629,12 @@ def lattice_position(
     # A **node** lattice, not a cell-centre one: there is no half-step shift, so a lattice of
     # ``dims`` nodes with ``step = extent / (dims - 1)`` spans its box inclusively at both ends.
     # Both callers want that -- ``reconstruction``'s signed-distance sample grid, in the row-major
-    # order ``wp.MarchingCubes`` expects, and ``voxels.lattice`` -- and neither is a candidate for
-    # ``wp.volume_index_to_world``, the spelling ``kernels/voxels.py``'s module docstring records
-    # as preferred: both run *before* any ``wp.Volume`` exists, so there is no volume id to pass.
-    # That is the same un-convertible half of the split that docstring names. Getting this wrong is
-    # a rigid half-diagonal offset, which is exactly the failure mode a half-step convention has.
+    # order ``IsoSurfaceMarchingCubes`` expects, and ``voxels.lattice`` -- and neither is a
+    # candidate for ``wp.volume_index_to_world``, the spelling ``kernels/voxels.py``'s module
+    # docstring records as preferred: both run *before* any ``wp.Volume`` exists, so there is no
+    # volume id to pass. That is the same un-convertible half of the split that docstring names.
+    # Getting this wrong is a rigid half-diagonal offset, which is exactly the failure mode a
+    # half-step convention has.
     #
     # It differs from the two kernels that share it only in the *destination's rank* -- a flat
     # row-major buffer against a ``wp.array3d`` -- so each keeps its own indexing and shares the

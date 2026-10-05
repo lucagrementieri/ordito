@@ -701,7 +701,7 @@ def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
         #
         # Lane-free because the threads partition the **outer** work -- the face list -- rather than
         # a sequence one block owns, so there is no `wp.block_dim()` to stride by; on the CPU
-        # device, where `wp.launch_tiled` runs one lane per block through Warp 1.17, that lane would
+        # device, where `wp.launch_tiled` runs one lane per block through Warp 1.18, that lane would
         # cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section 2.2, and
         # `face_to_mesh_distance_tiled` above for the other side of the rule.
         #

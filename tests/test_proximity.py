@@ -1724,7 +1724,7 @@ def test_winding_number_tiled_matches_igl_on_both_devices(kernel_device: str) ->
     """
     Class A: the tiled winding sum on the CPU device the ``device`` fixture never reaches.
 
-    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.17's CPU backend -- the lane
+    ``wp.launch_tiled`` executes exactly one lane per block on Warp 1.18's CPU backend -- the lane
     index from ``wp.tid()`` is always 0 -- so the block-wide ``wp.tile_sum`` this reduction used to
     perform summed one face per 64-face tile and returned a winding number off by up to 0.99 there,
     i.e. a whole turn. The reduction is lane-free now; this is the test that fails if it regresses.

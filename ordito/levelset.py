@@ -36,9 +36,10 @@ occupancy lattice, [`ordito.voxels`][ordito.voxels].
 from __future__ import annotations
 
 import math
-from typing import Literal
+from typing import Literal, cast
 
 import warp as wp
+from warp.geometry import IsoSurfaceMarchingCubes
 
 import ordito as od
 import ordito.typing as odt
@@ -130,10 +131,10 @@ def marching_cubes(
 
     Notes
     -----
-    A thin wrapper over Warp's own ``warp.MarchingCubes``, so the triangulation, its vertex
-    deduplication and its handling of the ambiguous cube cases are Warp's rather than ordito's. The
-    consequence worth knowing is that the result is **not guaranteed manifold** at an ambiguous
-    cell, and can carry duplicate vertices where two cells agree on a crossing —
+    A thin wrapper over Warp's own ``warp.geometry.IsoSurfaceMarchingCubes``, so the triangulation,
+    its vertex deduplication and its handling of the ambiguous cube cases are Warp's rather than
+    ordito's. The consequence worth knowing is that the result is **not guaranteed manifold** at an
+    ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
     [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform] runs
     [`ordito.repair`][ordito.repair] over it for exactly that reason.
     """
@@ -147,7 +148,9 @@ def marching_cubes(
         upper = wp.vec3(float(shape[0] - 1), float(shape[1] - 1), float(shape[2] - 1))
     else:
         lower, upper = bounds
-    return wp.MarchingCubes.extract_surface_marching_cubes(field, float(iso), lower, upper)
+    # Warp annotates the field ``wp.array3d``, a static helper no runtime array is typed as.
+    volume = cast("wp.array3d[wp.float32]", field)
+    return IsoSurfaceMarchingCubes.extract(volume, float(iso), lower=lower, upper=upper)
 
 
 def offset_mesh(

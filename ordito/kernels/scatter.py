@@ -21,7 +21,7 @@ def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) ->
     #
     # ``out_sum.dtype(...)`` is the conversion, and it is required rather than cosmetic: Warp does
     # **not** promote a float32 value into a float64 accumulator, and ``wp.atomic_add`` with the
-    # two mismatched fails at kernel-parse time (probed on Warp 1.17). Reading the array's dtype
+    # two mismatched fails at kernel-parse time (probed on Warp 1.18). Reading the array's dtype
     # in kernel scope costs nothing -- unlike ``type(out_sum[row, 0])(...)``, the other spelling
     # that works, which loads the element it is about to update just to name its type.
     #

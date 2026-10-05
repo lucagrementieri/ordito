@@ -465,14 +465,12 @@ def query_bvh_nearest_neighbors(
     out_distances_row = out_distances[tid]
 
     r_hard, r = search_radius_bounds(q, min_bound, max_bound, max_radius, initial_radius)
-    # This kernel used to carry a note saying it may hold exactly one ``wp.bvh_query_*`` call site,
-    # because ``bvh_query`` declares a large ``__shared__`` stack and a second textual call site
-    # would double it and fail to compile. **That was never true of the plain query.** In
-    # ``warp/native/bvh.h`` the ``__shared__`` declaration sits inside the *tiled* constructor;
-    # ``wp.bvh_query_aabb`` / ``_sphere`` use a per-thread ``int stack[BVH_QUERY_STACK_SIZE]`` in
-    # local storage. Verified: a kernel with four plain call sites compiles and runs at
-    # block_dim=256 on Warp 1.17 with zero local memory. The single call site here is just what the
-    # loop needs, not a constraint -- so a future edit needing a second one may add it.
+    # This kernel may hold more than one ``wp.bvh_query_*`` call site. ``warp/native/bvh.h`` gives
+    # the plain query a block-shared stack on CUDA (``__shared__ int
+    # stack[BVH_QUERY_STACK_SIZE * WP_TILE_BLOCK_DIM]``), but it is declared once per kernel, not
+    # per call site: one call site and four both report SHARED:34816 and LOCAL:0 at block_dim=256
+    # on Warp 1.18, and four compile and run. The single call site here is just what the loop
+    # needs, not a constraint -- so a future edit needing a second one may add it.
     for attempt in range(MAX_SEARCH_ATTEMPTS):
         r = attempt_radius(attempt, r, r_hard)
         worst = knn_bvh_scan(
@@ -880,7 +878,7 @@ def mesh_nearest_point(
     # recomputed with the ball searches' own ``wp.length`` so a row answers the same whichever
     # search decided it.
     #
-    # **This rests on a Warp implementation detail, read from ``native/mesh.h`` (Warp 1.17)**: the
+    # **This rests on a Warp implementation detail, read from ``native/mesh.h`` (Warp 1.18)**: the
     # leaf test skips a sliver when ``|n| / sum(|e|^2) < 1e-6``, which for a collapsed triangle is
     # ``0 / 0`` -- NaN, which compares false, so the triangle is *tested* rather than culled.
     # ``tests/test_neighbors.py::test_mesh_from_points_answers_the_nearest_point`` fails if a

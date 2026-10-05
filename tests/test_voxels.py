@@ -1759,7 +1759,7 @@ def test_every_entry_point_survives_an_empty_input(device: str):
     """
     An empty input returns an empty result rather than raising.
 
-    Warp 1.17 raises ``Failed to create volume`` on a zero-point build (1.15 aborted the process),
+    Warp 1.18 raises ``Failed to create volume`` on a zero-point build (1.15 aborted the process),
     so this is a contract every entry point has to hold up on its own.
     """
     no_points = wp.zeros(0, dtype=wp.vec3, device=device)

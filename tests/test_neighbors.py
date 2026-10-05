@@ -387,7 +387,7 @@ def test_query_bvh_box_matches_exact_containment(device: str) -> None:
     answers: NumPy's ``lower <= p <= upper`` and open3d's
     ``AxisAlignedBoundingBox.get_point_indices_within_bounding_box``. Both share Warp's
     **inclusive** convention, which is the one thing a caller can get wrong here -- measured on Warp
-    1.17 and open3d 0.19, a point exactly on a face is inside the box for both -- so the last case
+    1.18 and open3d 0.19, a point exactly on a face is inside the box for both -- so the last case
     below constructs one point on the lower face and one on the upper face rather than trusting
     random data to land there.
 

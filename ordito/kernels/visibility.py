@@ -428,7 +428,7 @@ def _support_argmax_sliced_kernel(width: int) -> wp.Kernel:
         # `wp.launch` and must stay lane-free, because the threads partition the **outer** work --
         # the vertex cloud -- rather than a sequence one block owns, so there is no `wp.block_dim()`
         # to stride by. On the CPU device, where `wp.launch_tiled` runs one lane per block through
-        # Warp 1.17, that lane would cover `1/block_dim` of the slice. See `.claude/CLAUDE.md`
+        # Warp 1.18, that lane would cover `1/block_dim` of the slice. See `.claude/CLAUDE.md`
         # section 2.2, and `obscurance` above for the other side of the rule -- one block per point,
         # striding by `wp.block_dim()`, `wp.tile_sum` on both devices.
         #

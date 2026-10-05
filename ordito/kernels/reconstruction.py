@@ -1199,9 +1199,9 @@ def lattice_points(
     resolution: wp.vec3i, origin: wp.vec3, spacing: wp.vec3, out_points: wp.array[wp.vec3]
 ) -> None:
     # World positions of a dense ``res_x * res_y * res_z`` node lattice, in the row-major order
-    # ``wp.MarchingCubes`` expects of a ``(nx, ny, nz)`` field: ``x`` is the slowest axis. The
-    # position itself is ``array.lattice_position``, shared with ``voxels.lattice_points``, which
-    # writes the same quantity into a ``wp.array3d`` instead of flattening.
+    # ``IsoSurfaceMarchingCubes`` expects of a ``(nx, ny, nz)`` field: ``x`` is the slowest axis.
+    # The position itself is ``array.lattice_position``, shared with ``voxels.lattice_points``,
+    # which writes the same quantity into a ``wp.array3d`` instead of flattening.
     i, j, k = wp.tid()
     index = (i * resolution[1] + j) * resolution[2] + k
     out_points[index] = lattice_position(origin, spacing, i, j, k)

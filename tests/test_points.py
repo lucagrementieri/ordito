@@ -1816,7 +1816,7 @@ def test_support_sweep_agrees_across_devices(mask_device: str) -> None:
     """
     Both hull filters must agree on CPU and CUDA, which is not automatic.
 
-    ``wp.launch_tiled`` runs exactly **one** lane per block on Warp 1.17's CPU backend -- the lane
+    ``wp.launch_tiled`` runs exactly **one** lane per block on Warp 1.18's CPU backend -- the lane
     index from ``wp.tid()`` is always 0 -- so the block-wide ``wp.tile_max`` reduction the support
     sweep originally used silently reduced over one point per 64-point tile there. That returned an
     under-estimated support maximum, which made ``convex_subset_mask`` mark interior points (its

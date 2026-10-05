@@ -1079,7 +1079,7 @@ def test_chamfer_losses_match_numpy_on_both_devices(kernel_device: str) -> None:
     """
     Pin both chamfer loss reductions on **both** devices against a closed-form NumPy sum.
 
-    ``wp.launch_tiled`` runs exactly one lane per block on Warp 1.17's CPU backend, so the
+    ``wp.launch_tiled`` runs exactly one lane per block on Warp 1.18's CPU backend, so the
     block-wide ``wp.tile_sum`` these losses used to perform accumulated one point per 64-point tile
     there and returned a loss roughly 64x too small -- measured 0.43 absolute on this size of cloud.
     Each term now has a lane-free ``*_sliced`` kernel for CPU and keeps the ``*_tiled`` one on CUDA,

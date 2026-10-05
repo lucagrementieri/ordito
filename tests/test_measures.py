@@ -112,7 +112,7 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
     """
     Class A on both devices: the area-weighted centroid sum on an asymmetric mesh.
 
-    Three things this guards. ``wp.launch_tiled`` runs exactly one lane per block on Warp 1.17's CPU
+    Three things this guards. ``wp.launch_tiled`` runs exactly one lane per block on Warp 1.18's CPU
     backend, so the block-wide ``wp.tile_sum`` this reduction used to perform accumulated one face
     per 64-face tile there. A *symmetric* mesh hides that completely -- the centroid of every 64th
     face of a sphere is still the sphere's centre -- which is why the mesh is stretched and sheared

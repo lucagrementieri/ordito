@@ -231,8 +231,8 @@ _MODULES_WITHOUT_KERNELS = frozenset({"constants", "io", "mesh", "typing"})
 # A Warp version claim, and the spelling is the convention: the word **Warp** immediately before
 # the number. Anything looser is unusable here -- this package writes measured ratios in the same
 # shape ("within 1.25x of best", "1.13x on CUDA at both sizes"), so a bare ``1.N`` token matches an
-# order of magnitude more ratios than real claims. A version claim says "Warp 1.17", never
-# "through 1.17" with the word three lines up.
+# order of magnitude more ratios than real claims. A version claim says "Warp 1.18", never
+# "through 1.18" with the word three lines up.
 _WARP_VERSION_CLAIM = re.compile(r"\bWarp\s+1\.(\d+)(?:\.(\d+))?\b")
 
 # Version claims that deliberately record history rather than describe the installed Warp. Keyed by
@@ -241,6 +241,46 @@ _WARP_VERSION_CLAIM = re.compile(r"\bWarp\s+1\.(\d+)(?:\.(\d+))?\b")
 # ``ordito/`` are keyed by their dotted name, everything else by its path
 # (``tests.api_conventions``, ``benchmarks.test_creation``).
 _WARP_VERSION_ALLOWLIST: dict[tuple[str, str], str] = {
+    # ---------------------------------------------------------------------------------------
+    # Added by the Warp 1.18 upgrade. Same two kinds as the 1.17 block below: measurement
+    # stamps nobody re-ran (the GPU was busy, so no clock reading was valid) and history.
+    #
+    # The mechanism claims beside them were re-probed on 1.18 and re-stamped: the CPU
+    # single-lane ``wp.launch_tiled`` (``wp.block_dim()`` reads 1 and a lane-built tile sum
+    # returns lane 0's value -- unless the experimental ``wp.config.enable_cpu_blocks`` is
+    # set, new in 1.18), the empty-``wp.Mesh`` CUDA corruption (10/10 throwaway subprocesses
+    # fail with CUDA error 700 on the next 4 MiB allocation; a one-triangle control passes),
+    # ``wp.ref[wp.Scalar]`` (``WarpCodegenError``, no overload), ``wp.copy(count=0)`` copying
+    # the whole source (and raising ``TypeError`` into a length-0 destination), kernel-scope
+    # ``and`` / ``or`` short-circuit (``emit_BoolOp`` unchanged), ``wp.constant`` as identity,
+    # a matrix's missing ``.shape``, one-argument ``wp.spatial_vector(x)`` and a float32 into
+    # float64 ``wp.atomic_add`` both failing at parse, ``2 * wp.PI`` bit-identical to the
+    # narrowed ``float64`` constant on both devices, ``iter_reverse`` and the mesh sliver cull
+    # unchanged in ``native/``, the slice ``_ref`` back-reference, ``StructInstance``'s
+    # private home, the radix key-dtype set, high-bit ``uint64`` keys, the inclusive BVH box
+    # test and ``wp.Volume``'s zero-point raise.
+    # ---------------------------------------------------------------------------------------
+    ("kernels.neighbors", "1.17"): (
+        "deliberate history and a measurement stamp: ``wp.BvhQuery`` (the common query type a "
+        "``@wp.func`` may take or return) arrived in 1.17; the box traversal costing several "
+        "times the ball query per candidate was measured on 1.17 and not re-run"
+    ),
+    ("kernels.points", "1.17"): (
+        "measurement stamp: the three-bracket ``farthest_point_sample_block`` width sweep was "
+        "taken on 1.17 and not re-run"
+    ),
+    ("kernels.proximity", "1.17"): (
+        "deliberate history: the version that supplied ``wp.bvh_query_sphere``, "
+        "``wp.mesh_get_bvh`` and the canonical ``wp.mesh_query_next`` iterator "
+        "(``wp.mesh_query_aabb_next`` is still bound as its alias on 1.18)"
+    ),
+    ("kernels.algorithms.ball_pivoting", "1.17"): (
+        "deliberate history: ``wp.bvh_query_sphere`` arrived in 1.17, when the pivot-search "
+        "conversion was built and reverted; the loss itself was measured on 1.17 and not re-run"
+    ),
+    ("tests.api_conventions", "1.17"): (
+        "deliberate history: the heading of the allowlist block the 1.17 upgrade added"
+    ),
     # ---------------------------------------------------------------------------------------
     # Added by the Warp 1.17 upgrade. Every entry below is one of two things, and neither is a
     # claim about the installed Warp:
@@ -2175,7 +2215,7 @@ def admonition_placement_problems() -> list[str]:
 
 # Warp's scalar, vector and matrix constructors. A value built by one of these is a
 # ``warp._src.types`` instance, *not* a Python number, and its operators route through Warp's
-# Python-scope builtin dispatch. ``wp.constant`` is deliberately absent: on Warp 1.17 it is
+# Python-scope builtin dispatch. ``wp.constant`` is deliberately absent: on Warp 1.18 it is
 # ``return x`` after a validity check, so ``wp.constant(7)`` is a plain ``int`` and only
 # ``wp.constant(wp.int32(7))`` is Warp-typed -- the check unwraps it and looks at what is inside.
 _WARP_TYPED_CONSTRUCTORS: frozenset[str] = frozenset(

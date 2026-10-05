@@ -21,7 +21,7 @@ Part I with a cross-reference.
   not re-derive it; do not re-propose it without new evidence.
 - **A Warp version claim is spelled `Warp 1.17`** (the word "Warp" immediately before the number).
   The staleness check (§4.5, check 9) reads only that anchored form, because measured ratios such
-  as `within 1.25x` share the bare `1.N` shape. Installed: **warp-lang 1.17.0** on an **RTX 5090**.
+  as `within 1.25x` share the bare `1.N` shape. Installed: **warp-lang 1.18.0** on an **RTX 5090**.
 
 ## Contents
 
@@ -138,13 +138,22 @@ Not supported inside `@wp.kernel` / `@wp.func`:
 
 ### 1.5 Arithmetic and conditional spellings
 
-- **`%` follows C++11** (sign of result = sign of dividend).
-- **`//` truncates toward zero like `/`, and on integers they are the same operation**
-  (`[-8, -7, -1, 0, 1, 7, 8] ÷ 3` gives `[-2, -2, 0, 0, 0, 2, 2]`; CPython's `//` differs).
+- **`%` follows C++11** (sign of result = sign of dividend), still on Warp 1.18.
+- **Since Warp 1.18 integer `//` floors (like CPython) while `/` and `%` still truncate**
+  (NVIDIA/warp GH-1918). `[-8, -7, -1, 0, 1, 7, 8]` gives `[-3, -3, -1, 0, 0, 2, 2]` under `//`
+  and `[-2, -2, 0, 0, 0, 2, 2]` under `/`, on both devices. So on a **negative** dividend `//` and
+  `/` are different operations, and `(a // b) * b + a % b == a` **fails**: `%` is no longer
+  `//`'s remainder. Warp 1.17 truncated both. An audit at the upgrade found no kernel-scope `//`
+  whose dividend can be negative where the result is used (`twin // 3` sites are guarded by
+  `twin >= 0`; `remesh`'s collapse budget is only read when `>= 1`); the `-(-n // c)` ceiling
+  idiom exists only at Python scope, where it always floored.
+- **The floor costs a sign correction on CUDA**: `floordiv_signed` is `a / b` plus a
+  remainder-sign fix-up, about 2 SASS instructions per site per entry even for a constant divisor
+  (408 vs 400 on a two-site probe). Unsigned `//` is the plain division.
 - **Spell integer division `//`** (check 17). `/` on two `int32`s only truncates because the
   operands are integers, so a reader must recover the types. Dividends here are non-negative
-  indices, where the conventions coincide; the hazard is *porting* a negative-dividend line
-  between host Python and kernel scope. The scan types an operand only **by declaration**
+  indices, where the conventions coincide; the hazard is a negative dividend, where `//` and `/`
+  now differ. The scan types an operand only **by declaration**
   (annotated `wp.int*` / `wp.uint*` / `wp.Int` parameter, element of an array of such dtype,
   integer module `wp.constant`, integer literal, `.shape[...]`, `wp.tid()`, integer constructor, or
   an integer-preserving expression over those), because a scan that misfires on float division
@@ -2495,8 +2504,11 @@ re-deriving a number.
 
 ### 12.2 `wp.launch_tiled` runs one lane per block on the CPU
 
-Still true on **Warp 1.17**: `wp.launch_tiled(kernel, dim=[...], block_dim=64)` executes **one
-thread per block** on the CPU backend; `wp.tid()`'s lane index is always 0.
+Still true by default on **Warp 1.18**: `wp.launch_tiled(kernel, dim=[...], block_dim=64)`
+executes **one thread per block** on the CPU backend; `wp.tid()`'s lane index is always 0. Warp 1.18
+adds the experimental opt-in `wp.config.enable_cpu_blocks = True` (NVIDIA/warp#1638), under which
+the CPU runs every lane and `wp.block_dim()` reports the launch's value; it is off by default and
+documented as substantially slower, so the `_sliced` siblings stay (re-pricing it is open).
 
 - **The obvious probe says "fixed", and that is the trap.** `wp.tile_load` reads a whole tile out
   of an array, is lane-independent and was never affected; only `wp.tile(x)` built from *per-lane*
@@ -2641,10 +2653,10 @@ Measured on Warp 1.16 (probe scripts must be files — Warp refuses `exec()`-def
   `float()` in a kernel commits its function to never being generic.
 - **No cast on a thread index is load-bearing**: a bare `wp.tid()` passes to a `wp.int32` parameter,
   a `wp.Scalar`-generic parameter and a kernel-scope slice.
-- **`//` is not CPython's `//`** (§1.5).
+- **`//` is CPython's `//` since Warp 1.18, `%` is not** (§1.5).
 - **At *Python* scope the same spellings behave oppositely.** `wp.int32(x)` is a constructor for a
   `warp._src.types.int32` whose arithmetic routes through Warp's builtin dispatch at ~10 µs per
-  operation (§13.1). `//` and `%` on it **raise `TypeError`**; `wp.float32(x)` does **not** round
+  operation (§13.1). `//` on it **raises `TypeError`** (`%` works since Warp 1.18); `wp.float32(x)` does **not** round
   (`scalar_base.__init__` is `self.value = x`); `int(x)` / `float(x)` are the *unwrap* (~0.08 µs),
   which is the fix. Check 26 (§4.5) scans for it.
 
@@ -2691,12 +2703,14 @@ Rules: §1.3, §1.5, §1.6.
   nvcc inlines it.** "Costs nothing" held for every extraction measured (byte-identical or smaller
   SASS) but is a claim to verify. A tuple return emits a `wp::copy` per component, also elided.
 - **Proving a `@wp.func` extraction cost-neutral is free, needs no clock, and suits a busy box
-  (§15.6).** Warp caches the `.cu` and `.ptx` per module under
+  (§15.6).** Warp caches the `.cu` and the compiled code per module under
   `~/.cache/warp/<version>/wp_<module>_<hash>/`. Recipe: load the module on `cuda:0` in each arm
   (new tree and a detached worktree), read the hash off
   `list(warp._src.context.get_module(name).hashers.values())[0].get_hash()`, and count instructions
   per `.visible .entry` in the PTX (strip the per-kernel `_<8 hex>_cuda_kernel_` infix; read only
   `_forward` entries).
+    - **Since Warp 1.18 (CUDA 13.4 NVRTC) the cache holds an `.sm120.cubin`, not `.ptx`**: run
+      `nvdisasm -c` on the cubin directly; the PTX steps below apply only to a PTX-emitting build.
     - **Go to SASS**: ptxas folds most of what a PTX diff reports (four kernels that moved in PTX
       were identical in SASS). Pipeline: `ptxas -arch=sm_120 -O3` plus `nvdisasm -c` from
       `/usr/local/cuda-12.8/bin` (not on `PATH`). That ptxas is one PTX version behind Warp's NVRTC
@@ -2765,8 +2779,9 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.mesh_query_point_sign_winding_number`** → `proximity.signed_distance_on_mesh(...,
   sign_mode="winding")`: exact where ray parity misclassifies on meshes with holes, at memory and
   runtime cost (parity stays the default). Traps: `support_winding_number=True` is required or the
-  builtin **silently returns the ray-parity answer**, and `wp.Mesh` does not retain the flag, so
-  only a function that builds its own mesh can guarantee it. Warp exposes only the thresholded
+  builtin **silently returns the ray-parity answer**. Through Warp 1.17 `wp.Mesh` did not retain
+  the flag, so only a function that built its own mesh could guarantee it; Warp 1.18 exposes
+  `wp.Mesh.support_winding_number` (GH-1824), so a supplied mesh can be checked (§16.6 lead). Warp exposes only the thresholded
   *sign*, so `proximity.winding_number` still needs a custom LBVH.
 - **`wp.bvh_query_sphere`** (Warp 1.17), in `kernels/neighbors.py` and
   `proximity.py::closest_point_on_edges`: a win where the enumeration radius is large relative to
@@ -2775,6 +2790,20 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   equals the hash-grid cell width** (the grid's best case: a small well-centred query reaches its
   cell by address arithmetic, a BVH pays a root-to-leaf descent); the same conversion in
   `ball_pivoting.ball_is_empty` was a loss.
+- **Warp 1.18 made `wp.bvh_query_sphere` 1.7-2.2x slower on surface point clouds** (packed-leaf
+  rewrite, GH-1840/1843): `dragon` vertices, self queries, r = 2 mean edges, 0.551 -> 1.197 ms with
+  identical counts; 1.35x slower on a uniform volumetric cloud. The box walk is unchanged on surface
+  clouds (3.2x faster on the uniform one). ordito's BVH ball queries lost a median 0.70x
+  (`query_ball_count`) / 0.81x (`_with_offsets`); the hash grid did not move, so the `hashgrid`
+  default stands with a wider margin (it wins 49 of 54 public ball cells on 1.18 against 27 on
+  1.17, where the BVH won 20). Independently of the version, the BVH leaf size wants opposite things per query (sweep over 8 k
+  to 14 M points, public calls, build included): **ball queries are fastest at leaf 1 at every
+  size** (1.07-1.35x over leaf 4, growing with the radius; every larger leaf is slower), while
+  **k-NN's optimum grows with size and `k`** (8-16 at 8 k points, 16-32 at 0.4-1 M, 32-64 from
+  4 M; up to 1.59x over leaf 4). A gate of 16 below ~100 k points, 32 to ~2 M and 64 above stays
+  within 0.97x of best everywhere measured, where a fixed 16 or 32 drops to 0.85x. The leaf size
+  does not matter to the default hash-grid k-NN (within 1.03x). Re-run the backend sweep if upstream
+  fixes the sphere walk: on 1.17 it beat the grid off-surface.
 - **`wp.bvh_query_sphere` as a broad phase over *bounds***: `curvature.discrete_mean_curvature` won
   2-4x over a cube `wp.bvh_query_aabb`. **`wp.bvh_query_aabb`'s traversal costs several times
   `wp.bvh_query_sphere`'s per candidate on the same BVH, even at equal candidate count**, so a cube
@@ -2840,8 +2869,8 @@ volume-backed module need not be CUDA-only. An empty point set raises `RuntimeEr
 
 ### 12.10 Upgrade discipline and the workaround table
 
-Status of every version-stamped workaround (last full re-probe on Warp 1.16, Warp 1.17 deltas
-noted):
+Status of every version-stamped workaround (last full re-probe on Warp 1.16, Warp 1.17 and
+Warp 1.18 deltas noted):
 
 | Workaround | Status |
 |---|---|
@@ -2850,8 +2879,11 @@ noted):
 | `bsr_mm` nondeterministic on a chained triple product | **REFUTED — never a Warp bug** (§3.7) |
 | `bsr_compress` illegal memory access (#1769) | **FIXED in 1.17** (§12.7) |
 | `bsr_mm` structural superset | **still present on 1.17**, not #1769 (§12.7) |
-| `wp.launch_tiled` one lane per block on CPU | **still broken on 1.17** (§12.2) |
-| empty `wp.Mesh` corrupts the CUDA allocator | **still broken** (10/10 subprocesses died on the next 4 MiB alloc, §12.1) |
+| `wp.launch_tiled` one lane per block on CPU | **still the default on 1.18**; the experimental `wp.config.enable_cpu_blocks = True` (#1638) runs every lane (a lane-constructed `tile_sum` over 4 blocks of 64 correct, `block_dim()` reads 64), "substantially slower" per the changelog (§12.2) |
+| fast launcher's tid-extent guard | **renamed on 1.18**: `adj.scalar_tid_extent_limit_candidate` became `tid_extent_limit_candidate` and every `wp.tid()` axis is bounded by 2³¹, not only the leading one; `_launch._extent` defers any oversized axis to `wp.launch` |
+| `_launch.array_scan`'s native fast path | **must check the status on 1.18**: the CUDA `wp_array_scan_*_device` natives now return `False` on failure (GH-1894: an OOM scratch allocation used to scan a null buffer and leave the output partly unwritten) and `wp.utils.array_scan` raises; the fast path called the native directly and dropped the status, so it now raises `RuntimeError(runtime.get_error_string())` too. The radix-sort natives still return nothing |
+| `.nnz` after `bsr_mm` / `bsr_axpy` / `bsr_transposed` / `bsr_copy` | unchanged on 1.18 despite "no eager block-count transfer" (GH-1792): identical values to 1.17 on both devices (a capacity, §3.7) |
+| empty `wp.Mesh` corrupts the CUDA allocator | **still broken on 1.18** (NVIDIA/warp#1765 open; 10/10 subprocesses at 0 and 3 points die on the next alloc with error 700; on 1.18 the constructor itself now logs OOM / radix-sort / error-700 lines to stderr but still raises nothing and returns a valid id; a one-triangle control passes, §12.1) |
 | `wp.ref[wp.Scalar]` generics | **still broken** — `WarpCodegenError` at kernel parse (§12.3) |
 | radix key dtypes | unchanged: int32/int64/uint32/uint64/float32/float64, 4- or 8-byte values; `segmented_sort_pairs` takes int32/float32 keys only |
 | no sparse triangular solve | unchanged |

@@ -90,7 +90,7 @@ or with `pip`:
 pip install ordito
 ```
 
-Requires Python ≥ 3.11 and `warp-lang` ≥ 1.17. A CUDA-capable GPU is recommended but not
+Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not
 required — every function also runs on Warp's CPU backend. Mesh file I/O via
 [meshio](https://github.com/nschloe/meshio) is an optional extra: `pip install ordito[io]`.
 

@@ -865,7 +865,7 @@ def solve_spd6(a: wp.spatial_matrix, b: wp.spatial_vector) -> wp.spatial_vector:
     asymmetry is Warp's, not a style slip: a one-argument ``wp.spatial_vector(x)`` binds ``x`` to
     the *templated* ``vec_t``'s ``dtype`` parameter and fails to parse -- *"Remove the extraneous
     ``dtype`` parameter when calling the templated version of ``wp.vec_t()``"*, still true in Warp
-    1.17. There is no broadcast-fill spelling for it, so do not collapse these.
+    1.18. There is no broadcast-fill spelling for it, so do not collapse these.
     """
     lower = wp.spatial_matrix(wp.float32(0.0))
     for j in range(6):

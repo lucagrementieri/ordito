@@ -418,15 +418,15 @@ def screened_poisson(
 
     GPU-native reimplementation of the screened-Poisson filter (PyMeshLab's
     ``generate_surface_reconstruction_screened_poisson``, ``open3d``'s
-    ``create_from_point_cloud_poisson``).
-    A dense node-centered grid over a padded bounding cube is used instead of PoissonRecon's octree:
-    the oriented normals are trilinearly splatted into a smoothed vector field ``V`` (with a density
-    weight ``W``), the indicator function ``x`` is recovered by solving the screened-Poisson system
-    ``(L_N + point_weight * W) x = -div V`` matrix-free with a Jacobi-preconditioned conjugate
-    gradient, and the iso-surface is extracted with ``warp.MarchingCubes`` at the iso-value given by
-    the average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule solves the
-    system from ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's
-    initial guess (mirroring PoissonRecon's multigrid hierarchy).
+    ``create_from_point_cloud_poisson``). A dense node-centered grid over a padded bounding cube is
+    used instead of PoissonRecon's octree: the oriented normals are trilinearly splatted into a
+    smoothed vector field ``V`` (with a density weight ``W``), the indicator function ``x`` is
+    recovered by solving the screened-Poisson system ``(L_N + point_weight * W) x = -div V``
+    matrix-free with a Jacobi-preconditioned conjugate gradient, and the iso-surface is extracted
+    with ``warp.geometry.IsoSurfaceMarchingCubes`` at the iso-value given by the average of ``x``
+    over the input points. A **cascadic** coarse-to-fine schedule solves the system from
+    ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's initial
+    guess (mirroring PoissonRecon's multigrid hierarchy).
 
     ``normals`` are **required** and must be globally consistently oriented (all pointing outward or
     all inward): the reconstruction encodes the surface orientation in the sign of the vector field,
@@ -1290,12 +1290,13 @@ def _extract_poisson_surface_fem(
     """
     Sample the adaptive ``field`` onto a dense lattice and marching-cube the ``iso`` surface.
 
-    The lattice resolution is capped at ``2**min(depth, 9) + 1``: ``warp.MarchingCubes`` needs about
-    nine times the field bytes in scratch, so a full-cube call overflows above depth 9. A
-    slab-chunked pass would lift that cap, but ``warp.MarchingCubes`` is crack-free only within a
-    single grid -- its per-cell face triangulation is not consistent across independent invocations,
-    so welding independent slabs leaves non-manifold seams -- and depth 9-10 already oversamples the
-    spacing-capped solve, so the simple capped extraction is used.
+    The lattice resolution is capped at ``2**min(depth, 9) + 1``:
+    ``warp.geometry.IsoSurfaceMarchingCubes`` needs about nine times the field bytes in scratch, so
+    a full-cube call overflows above depth 9. A slab-chunked pass would lift that cap, but the
+    extractor is crack-free only within a single grid -- its per-cell face triangulation is not
+    consistent across independent invocations, so welding independent slabs leaves non-manifold
+    seams -- and depth 9-10 already oversamples the spacing-capped solve, so the simple capped
+    extraction is used.
     """
     # Deferred: importing ``warp.fem`` adds to ``import ordito``'s cost, and the kernel module
     # below imports it at module scope, so both stay behind the one adaptive-Poisson path.

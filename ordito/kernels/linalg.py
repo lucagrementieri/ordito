@@ -61,7 +61,7 @@ def solve_normal_equations(matrix: Any, rhs: Any) -> tuple[Any, wp.bool]:
     for ``curvature``'s quadric fit and a 6x6 for ``smoothing``'s area-equalizing solve, because the
     singularity test was a ``for k in range(5)`` / ``range(6)`` loop and a generic matrix has no
     readable rank in kernel scope -- ``r.shape[0]`` is a ``WarpCodegenAttributeError`` at parse time
-    on Warp 1.17. ``wp.min(wp.abs(wp.get_diag(r)))`` asks the identical question ("is some
+    on Warp 1.18. ``wp.min(wp.abs(wp.get_diag(r)))`` asks the identical question ("is some
     diagonal below tolerance") with no loop and no rank, which is what let the two collapse into
     one. Verified against ``numpy.linalg.solve`` at both ranks, and the two singularity predicates
     compared directly over hundreds of matrices per rank spanning fourteen orders of conditioning:

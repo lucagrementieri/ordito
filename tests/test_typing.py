@@ -142,7 +142,7 @@ def test_sortable_dtype_is_exactly_what_warp_can_radix_sort(device: str) -> None
     widened target must sort. So a Warp release that grows the accepted set fails here -- which is
     the only way anyone would notice that the table had become unnecessarily lossy.
 
-    Measured on Warp 1.17, both devices: ``int32`` / ``uint32`` / ``int64`` / ``uint64`` /
+    Measured on Warp 1.18, both devices: ``int32`` / ``uint32`` / ``int64`` / ``uint64`` /
     ``float32`` / ``float64`` are accepted, and ``int8`` / ``uint8`` / ``int16`` / ``uint16`` /
     ``float16`` raise ``Unsupported keys and values data types``.
     """

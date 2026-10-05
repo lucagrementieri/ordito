@@ -208,7 +208,7 @@ def count_mispaired_twins(
     #
     # The range test has to run *before* the gathers it guards: an out-of-range twin would
     # otherwise index the face buffer, which on the CPU device is a host-heap read rather than a
-    # fault. (Kernel-scope ``or`` does short-circuit on Warp 1.17 -- ``emit_BoolOp`` guards each
+    # fault. (Kernel-scope ``or`` does short-circuit on Warp 1.18 -- ``emit_BoolOp`` guards each
     # operand -- but the separate ``if``s keep the order explicit.)
     #
     # That range test is against ``twins.shape[0]`` and **not** ``faces.shape[0]``, which are not

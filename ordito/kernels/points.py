@@ -679,7 +679,7 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
         # Lane-free because the threads partition the **outer** work -- the cloud this reduction is
         # over -- rather than a sequence one block owns, so there is no `wp.block_dim()` for them to
         # stride by and a `wp.tile_max(wp.tile(...))` cannot be reached from here without changing
-        # the launch. `wp.launch_tiled` runs one lane per block on the CPU device through Warp 1.17,
+        # the launch. `wp.launch_tiled` runs one lane per block on the CPU device through Warp 1.18,
         # and that lane would then cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section
         # 2.2; `farthest_point_sample_block` below is the other side of the rule, and reduces with
         # `wp.tile_max` on both devices because its stride *is* `wp.block_dim()`.
