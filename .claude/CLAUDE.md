@@ -2876,9 +2876,21 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.mesh_get_bvh`** (Warp 1.17): `proximity.mesh_to_mesh_distance` builds one structure over
   mesh B instead of two.
 - **`wp.volume_index_to_world`**: adopted for the convention (perf-neutral).
-- **`warp.geometry.sparse_marching_cubes`** (Warp 1.18) in `levelset.offset_mesh`: a Lipschitz
-  octree brackets the level set and only the kept cells' corners are queried. Gated on lattice
-  size (`levelset._SPARSE_OFFSET_FROM_NODES = 2**21`: 0.84-0.93x on `dragon` at 0.6-0.7 M nodes,
+- **`warp.geometry.delaunay_edge_flip`** (Warp 1.18) as the *start* of
+  `reconstruction.delaunay_triangulation`'s flip phase, from `_NATIVE_DELAUNAY_FLIP_FROM = 2**19`
+  points on CUDA, with ordito's float64 flip loop finishing from its output. Alone it is not exact
+  (at 1 M random points it leaves two edges that fail the in-circle test under exact rational
+  arithmetic, where the loop leaves none) but about twice as fast as the loop from 0.5 M points
+  (31 vs 64 ms at 1 M, 84 vs 163 at 2 M); the loop then repairs what it left, so the faces are the
+  loop's own (identical at 0.1-2 M, pinned by `test_delaunay_native_flip_start_changes_nothing`).
+  Whole call 0.90x / 1.04x / 1.08x / 1.10x at 0.1 / 0.5 / 1 / 2 M points: the single-threaded seed
+  (283 of 347 ms at 1 M) is most of it. Also a Class A test oracle from the same seed at 200 and
+  20 000 points (`test_delaunay_matches_warp_edge_flip_from_the_same_seed`).
+- **`warp.geometry.sparse_marching_cubes`** (Warp 1.18) behind
+  `levelset.signed_distance_level_set`, the one extraction `offset_mesh`, `resample_uniform` and
+  `fix_self_intersections(method="voxel")` share: a Lipschitz octree brackets the level set and
+  only the kept cells' corners are queried. Gated on lattice
+  size (`levelset._SPARSE_LEVEL_SET_FROM_NODES = 2**21`: 0.84-0.93x on `dragon` at 0.6-0.7 M nodes,
   1.95x at 2.4 M, 4.5x at 9 M; 5.7-11.8x on a 20 k-face sphere at 10-37 M) **and on a closed,
   consistently wound input**. On an open or non-orientable one the winding-signed distance jumps
   away from the surface, across the region a hole spans, so it is not 1-Lipschitz and the octree
@@ -2887,9 +2899,14 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   order except at a node whose distance rounds onto the level: the two extractions place a node one
   rounding apart, so a lattice-aligned input (an axis-aligned box) triangulates such ties
   differently; `test_offset_mesh_sparse_extraction_matches_the_dense_lattice` rotates `cave_cube`
-  for that reason. Its octree reads back one count per level. `repair.fix_self_intersections`'
-  voxel path and `reconstruction.resample_uniform` still march a dense lattice: open lead, each
-  needs the same closedness gate (a closed self-intersecting input is still Lipschitz).
+  for that reason. Its octree reads back one count per level. Sparse against dense, forced by the
+  gate constant: `resample_uniform` on `happy_buddha` 0.28x / 0.42x / 1.04x / 2.86x at 0.03 /
+  0.17 / 1.1 / 7.9 M nodes, on a 20 k-face sphere 2.75x at 1.9 M and 7.0x at 13.5 M;
+  `fix_self_intersections(method="voxel")` on the tangled tori 0.41-0.54x at `diag / 128`,
+  1.28-1.46x at 256, 4.85-4.95x at 512, identical counts (a closed self-intersecting input is still
+  1-Lipschitz: its winding sign changes only on the surface). The defaults of all three stay under
+  the gate on the benchmark meshes (flat in the harness, 0.98-1.04x), so the gain is at finer cells.
+  `kernels/reconstruction.lattice_points` went with the move (`grid_points` samples the lattice).
 
 **Rejected on measured evidence — do not re-propose without new data:**
 
@@ -2908,18 +2925,23 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.volume_voxel_count`** is a capacity (§3.7).
 - **`dense_chol` / `dense_subs` / `dense_solve`** are `hidden: True` / `doc: "WIP"` and take
   `wp.array[float32]` where the caller holds a `wp.spatial_matrix` in registers: a 2x loss (§2.9).
-- **`warp.geometry.delaunay_edge_flip`** (Warp 1.18) for `reconstruction.delaunay_triangulation`:
-  from the same lexicographic seed it is 0.37x / 0.60x / 0.88x / 1.03x / 1.10x at 2 k / 20 k /
-  100 k / 500 k / 1 M random points, **and not exact at the top**: at 1 M points it leaves two edges
-  that violate the in-circle test under exact rational arithmetic, where ordito's `float64`
-  predicate leaves none. It is a test oracle instead (Class A at 200 and 20 000 points,
-  `test_delaunay_matches_warp_edge_flip_from_the_same_seed`).
 - **`warp.geometry.tri_tri_adjacency`** (Warp 1.18) for `halfedge.halfedge_twins`: a different
   contract (it pairs an edge whose two faces are wound against each other, which `halfedge_twins`
   rejects; on non-manifold input the two disagree), so a test oracle on edge-manifold, consistently
   wound fixtures (`test_halfedge_twins_matches_warp_tri_tri_adjacency`, Class B). It is faster at
-  scale (0.426 vs 0.493 ms at `dragon`, 9.7 vs 17.9 ms at `lucy`, slower below 0.1 M faces): a lead
-  for §16.11's sort, not a substitute.
+  scale (0.426 vs 0.493 ms at `dragon`, 9.7 vs 17.9 ms at `lucy`, slower below 0.1 M faces), but it
+  cannot replace the default path: every in-repo caller runs `halfedge_twins` with `validate=True`,
+  whose rejections ride the pairing sort, and Warp's output cannot carry them (on an edge with three
+  faces a third halfedge reads as a boundary, so the defect is invisible without counting the
+  run, which is the sort). A lead for §16.11's sort, not a substitute.
+  **Also refuted for the `validate=False` path alone** (2026-10-05, built and reverted): Warp's
+  pairing is one thread per vertex scanning that vertex's bucket (every halfedge whose *lower*
+  endpoint it is) pairwise, so it is quadratic in the largest bucket: a cone fan with its hub at a
+  low index cost 38 / 147 / 600 / 3 000 ms at 512 / 1 024 / 2 048 / 4 096 spokes against the
+  sort's 0.4-0.9 ms. Scan meshes are safe (largest bucket 22 on `dragon`, 24 on `lucy`), where it
+  was 0.44-0.58x up to 0.33 M faces and 1.53x / 1.75x / 2.2x at `dragon` / `happy_buddha` / `lucy`.
+  A bucket-size guard needs a readback. **What was adopted instead is its counting sort with a
+  different owner and matcher** (§16.11): ordito's own buckets beat both, on validated calls too.
 - **`warp.geometry.swept_volume_mesh`** (Warp 1.18): no ordito counterpart and no caller (§4.2).
 
 ### 12.9 `wp.Volume` as a voxel-set container
@@ -5344,6 +5366,25 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   array twice; `triangulate_point_cloud` sorted and hashed the same rows twice; `isotropic_remesh`
   built an edge grouping its next stage rebuilt; `voxel_down_sample` probed slots pooling had just
   probed. Grep a wrapper for two calls fed the same arguments before anything cleverer.
+- **`halfedge_twins` pairs through per-vertex edge buckets on CUDA** (2026-10-05,
+  `halfedge._pair_bucketed_halfedges`, whenever `n_vertices` is given, which every in-repo caller
+  does): a counting sort of the halfedges by their edge's lower-*degree* endpoint (ties to the lower
+  index; corner counts are one `count_occurrences` launch), then one thread per halfedge scanning
+  its bucket for the run `sorted_halfedge_run_class` would see -- same twins, same two defect
+  counts, each defect counted once by its run's lowest halfedge. Warp's `tri_tri_adjacency` has the
+  bucketing but keys the *lower index* and matches one thread per vertex, a quadratic cliff on any
+  hub (§12.8); the degree owner keeps a hub's edges in its spokes' buckets and the per-halfedge
+  matcher makes a large bucket parallel work. Against the radix sort, unvalidated: 1.04-1.07x up
+  to 82 k faces, 1.24x at 0.33 M, 2.35x / 2.23x / 2.58x at `dragon` / `happy_buddha` / `lucy`
+  (0.36 -> 0.15 ms at `dragon`, ahead of Warp's 0.23), 1.26x on an 800 k-face fan with its
+  400 000-spoke hub numbered first; validated (one readback either way) 1.02-1.35x below 0.33 M and
+  2.06-2.15x at 0.87-1.1 M. Tables and counts identical everywhere probed, non-manifold
+  `bunny_decimated` / `lucy` included. **The CPU keeps the sort**: the buckets lose 0.29-0.57x
+  there at every size (`_BUCKETED_TWINS_ON_CPU`, which the equivalence tests force on).
+  `n_vertices` now sizes buffers on this path, so it must bound every index (it already did for
+  `vertex_one_rings`). Pinned by `test_bucketed_twins_match_the_sorted_twins_on_*` and
+  `test_bucketed_twins_on_a_hub`; double-counting a run or matching on the halfedge alone fails
+  them.
 - **`halfedge_twins` / `vertex_one_rings` gained `validate=`** (pass-0-only validation in
   `remove_degree3_vertices`); `is_edge_manifold` / `edge_manifold_mask` share
   `adjacency.face_edge_keys`. **Face-hop vertex morphology** (`expand_vertex_mask` /

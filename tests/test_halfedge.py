@@ -255,6 +255,101 @@ def test_validate_false_skips_only_the_check(
         assert np.array_equal(unchecked_wp.numpy(), checked_wp.numpy())
 
 
+def _sorted_and_bucketed_pairings(
+    faces_wp: wp.array[wp.int32], n_vertices: int, monkeypatch: pytest.MonkeyPatch
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Twins and defect counts from the key sort (no vertex count) and the buckets (forced on)."""
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_TWINS_ON_CPU", True)
+    pairings = []
+    for bound in (None, n_vertices):
+        defect_counts = wp.zeros(2, dtype=wp.int32, device=faces_wp.device)
+        twins = od.halfedge._pair_halfedges(faces_wp, bound, defect_counts)  # pyright: ignore[reportPrivateUsage]
+        pairings.append((twins.numpy(), defect_counts.numpy()))
+    (sorted_twins, sorted_defects), (bucketed_twins, bucketed_defects) = pairings
+    return sorted_twins, sorted_defects, bucketed_twins, bucketed_defects
+
+
+@pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
+def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the per-vertex bucket pairing reproduces the key-sort pairing.
+
+    The sort carries the oracle (the tests above); CUDA takes the buckets whenever the vertex count
+    is known and the CPU only when forced, so this pins the two to each other on both devices,
+    defect counts included. ``boy_surface`` and ``mobius`` are the arms where the counts are not
+    zero (edges wound the same way), so the comparison is not of two empty answers.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
+        mesh_wp.indices, len(mesh_tm.vertices), monkeypatch
+    )
+    assert np.array_equal(bucketed_twins, sorted_twins)
+    assert np.array_equal(bucketed_defects, sorted_defects)
+    if mesh_name in ("boy_surface", "mobius"):
+        assert sorted_defects[1] > 0
+
+
+@pytest.mark.parametrize(
+    ("faces", "n_vertices", "expected_defects"),
+    [
+        pytest.param([0, 1, 2, 0, 1, 3, 0, 1, 4], 5, [1, 0], id="three-faces-on-an-edge"),
+        pytest.param([0, 1, 2, 0, 1, 3, 1, 0, 4, 1, 0, 5], 6, [1, 0], id="four-faces-on-an-edge"),
+        pytest.param([0, 1, 2, 1, 2, 3], 4, [0, 1], id="pair-wound-the-same-way"),
+        pytest.param([0, 1, 2, 0, 1, 2], 3, [0, 3], id="duplicated-face"),
+        pytest.param([0, 0, 1], 2, [0, 0], id="repeated-vertex"),
+    ],
+)
+def test_bucketed_twins_match_the_sorted_twins_on_defects(
+    faces: list[int],
+    n_vertices: int,
+    expected_defects: list[int],
+    device: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """
+    Ordito against ordito: the buckets classify each defect as the sort's runs do, counted once.
+
+    A run of three or more halfedges is one non-manifold edge, however many faces; a same-way pair
+    is one misoriented edge, and a duplicated face is three. A face repeating a vertex has a
+    self-edge that matches nothing, as in the sort.
+    """
+    faces_wp = wp.array(np.array(faces, dtype=np.int32), dtype=wp.int32, device=device)
+    sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
+        faces_wp, n_vertices, monkeypatch
+    )
+    assert np.array_equal(sorted_defects, expected_defects)
+    assert np.array_equal(bucketed_defects, sorted_defects)
+    assert np.array_equal(bucketed_twins, sorted_twins)
+
+
+@pytest.mark.parametrize("hub_first", [True, False])
+def test_bucketed_twins_on_a_hub(
+    hub_first: bool, device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a high-valence vertex pairs as the sort pairs it, numbered either way.
+
+    The bucket owner is the lower-*degree* endpoint, so the hub's spokes hold its edges whether the
+    hub is numbered below every spoke (``hub_first``, the case a lower-*index* owner would pile
+    into one bucket) or above.
+    """
+    cone_tm = tm.creation.cone(radius=1.0, height=1.0, sections=512)
+    faces_np = np.asarray(cone_tm.faces, dtype=np.int32)
+    valence = np.bincount(faces_np.ravel(), minlength=len(cone_tm.vertices))
+    order = np.argsort(-valence if hub_first else valence, kind="stable")
+    renumber = np.empty_like(order)
+    renumber[order] = np.arange(len(order))
+    faces_wp = wp.array(renumber[faces_np].ravel().astype(np.int32), dtype=wp.int32, device=device)
+    sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
+        faces_wp, len(cone_tm.vertices), monkeypatch
+    )
+    assert valence.max() == 512
+    assert np.array_equal(bucketed_twins, sorted_twins)
+    assert np.array_equal(bucketed_defects, sorted_defects)
+
+
 def test_halfedge_twins_empty(device: str) -> None:
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert od.halfedge.halfedge_twins(faces_wp, n_vertices=0).shape == (0,)

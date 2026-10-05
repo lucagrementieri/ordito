@@ -2155,10 +2155,10 @@ def fix_self_intersections(
         spacing = voxel_size
         if spacing is None:
             spacing = float(od.bounds.enclosing_diagonal(vertices)) / _VOXEL_REBUILD_RESOLUTION
-        field, box = od.proximity.signed_distance_grid(
-            vertices, faces, spacing, pad=2, sign_mode="winding"
+        shape, box = od.proximity.signed_distance_lattice(vertices, spacing, pad=2)
+        return od.levelset.signed_distance_level_set(
+            vertices, faces, 0.0, shape, bounds=box, sign_mode="winding"
         )
-        return od.levelset.marching_cubes(field, 0.0, bounds=box)
 
     # The input buffers are only read until the first refill replaces them, so the copy a clean
     # input is owed is taken at the end rather than paid on every call.

@@ -532,7 +532,7 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
         calls.append(1)
         return sparse(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
-    monkeypatch.setattr(od.levelset, "_SPARSE_OFFSET_FROM_NODES", 0)
+    monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
     monkeypatch.setattr(od.levelset, "sparse_marching_cubes", counted)
     sparse_vertices_wp, sparse_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, voxel_size
@@ -564,6 +564,71 @@ def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) 
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
     with pytest.raises(ValueError, match="at least one face"):
         od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
+
+
+@pytest.mark.parametrize("iso", [0.0, 0.05, -0.05])
+def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch, iso: float
+) -> None:
+    """
+    Ordito against ordito: both extractions equal ``marching_cubes`` of the sampled field.
+
+    The dense path is checked against composing the public parts by hand (sample the lattice with
+    ``grid_points``, sign it with ``signed_distance_on_mesh``, march it), and the sparse path --
+    forced by lowering the node gate -- against the dense one, on a lattice whose spacing differs
+    per axis, the shape ``reconstruction.resample_uniform`` builds. Vertices are matched by nearest
+    neighbour with a bijection check and faces compared with their winding.
+    """
+    _mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    shape = (41, 29, 53)
+    bounds = (wp.vec3(-1.3, -1.25, -1.35), wp.vec3(1.3, 1.25, 1.35))
+
+    samples_wp = od.voxels.grid_points(shape, bounds=bounds, device=mesh_wp.device)
+    field_wp = od.proximity.signed_distance_on_mesh(
+        vertices_wp, faces_wp, samples_wp, sign_mode="winding"
+    )
+    composed_vertices_wp, composed_faces_wp = od.levelset.marching_cubes(
+        odt.as_array3d(field_wp.reshape(shape), wp.float32), iso, bounds=bounds
+    )
+    dense_vertices_wp, dense_faces_wp = od.levelset.signed_distance_level_set(
+        vertices_wp, faces_wp, iso, shape, bounds=bounds
+    )
+    assert np.array_equal(dense_vertices_wp.numpy(), composed_vertices_wp.numpy())
+    assert np.array_equal(dense_faces_wp.numpy(), composed_faces_wp.numpy())
+
+    monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
+    sparse_vertices_wp, sparse_faces_wp = od.levelset.signed_distance_level_set(
+        vertices_wp, faces_wp, iso, shape, bounds=bounds
+    )
+    assert dense_vertices_wp.size > 100, "the level set has a surface to compare"
+    assert sparse_vertices_wp.size == dense_vertices_wp.size
+    gap_np, to_dense_np = map(
+        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
+    )
+    assert gap_np.max() < 1e-5
+    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
+    assert_unordered_rows_equal(
+        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
+        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
+    )
+
+
+def test_signed_distance_level_set_guards(
+    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """Not a library comparison: the two documented value guards."""
+    mesh_tm, _ = icosphere
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
+    )
+    bounds = (wp.vec3(-1.5, -1.5, -1.5), wp.vec3(1.5, 1.5, 1.5))
+    with pytest.raises(ValueError, match="at least one face"):
+        od.levelset.signed_distance_level_set(
+            vertices_wp, warp_empty(0, wp.int32, device), 0.0, (8, 8, 8), bounds=bounds
+        )
+    with pytest.raises(ValueError, match="at least 2"):
+        od.levelset.signed_distance_level_set(vertices_wp, faces_wp, 0.0, (8, 1, 8), bounds=bounds)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse", "unit_box"])

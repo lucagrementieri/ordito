@@ -194,6 +194,106 @@ def pair_sorted_halfedges(
         out_twins[h1] = h0
 
 
+@wp.func
+def edge_bucket_owner(degrees: wp.array[wp.int32], a: wp.int32, b: wp.int32) -> wp.int32:
+    # The endpoint whose bucket holds the undirected edge ``{a, b}``: the one with fewer incident
+    # corners, ties to the lower index, so both halfedges of an edge agree on it. Bucketing under
+    # the *lower-degree* end is what keeps a hub's bucket small -- a valence-``d`` hub's edges go to
+    # its spokes -- where Warp's ``tri_tri_adjacency`` buckets under the lower *index* and a hub
+    # numbered below its spokes holds every one of its ``2d`` halfedges.
+    da = degrees[a]
+    db = degrees[b]
+    if da < db or (da == db and a < b):
+        return a
+    return b
+
+
+@wp.kernel
+def count_edge_buckets(
+    faces: wp.array[wp.int32], degrees: wp.array[wp.int32], out_ends: wp.array[wp.int32]
+) -> None:
+    # Bucket sizes of ``pair_bucketed_halfedges``, counted into ``out_ends[owner + 1]`` so an
+    # inclusive scan over ``out_ends[1:]`` leaves ``out_ends[v]`` / ``out_ends[v + 1]`` as bucket
+    # ``v``'s bounds.
+    h = wp.int32(wp.tid())
+    a, b = halfedge_endpoints(faces, h)
+    wp.atomic_add(out_ends, edge_bucket_owner(degrees, a, b) + 1, 1)
+
+
+@wp.kernel
+def scatter_edge_buckets(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    cursors: wp.array[wp.int32],
+    out_buckets: wp.array[wp.vec2i],
+) -> None:
+    # Each halfedge as ``(other endpoint, halfedge)`` in its owner's bucket. ``cursors`` holds the
+    # bucket starts and is advanced in place, so afterwards ``cursors[v]`` is bucket ``v``'s *end*,
+    # which is all ``pair_bucketed_halfedges`` reads (bucket ``v`` starts where ``v - 1`` ends).
+    # Slot order inside a bucket is atomic arrival order; the pairing does not depend on it.
+    h = wp.int32(wp.tid())
+    a, b = halfedge_endpoints(faces, h)
+    owner = edge_bucket_owner(degrees, a, b)
+    other = wp.where(owner == a, b, a)
+    out_buckets[wp.atomic_add(cursors, owner, 1)] = wp.vec2i(other, h)
+
+
+@wp.kernel
+def pair_bucketed_halfedges(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.vec2i],
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> None:
+    # The twin table from per-vertex edge buckets, the sibling of ``pair_sorted_halfedges`` under
+    # the same rule (``sorted_halfedge_run_class``): every halfedge of an undirected edge sits in
+    # one bucket, so one thread per halfedge scans it for the others and knows the run's length --
+    # one is a boundary, three or more non-manifold, a pair twins unless both halfedges share an
+    # origin. Each defect is counted once, by the run's lowest halfedge, into the same two slots,
+    # and every entry is written, so ``out_twins`` needs no fill.
+    #
+    # One thread per *halfedge* rather than Warp's one per *vertex*: a bucket of ``B`` costs each
+    # of its ``B`` threads ``B`` loads in parallel, not one thread ``B^2 / 2`` (Warp's matcher was
+    # ~3 300x the sort on a 4 096-spoke fan, quadratic in the spokes). With the lower-degree owner
+    # the buckets of a mesh stay a few dozen.
+    #
+    # Against the radix sort on CUDA, identical tables and defect counts: 1.04-1.07x up to 82 k
+    # faces, 1.24x at 0.33 M, 2.2-2.6x from 0.87 M to 28 M, 1.26x on a 400 000-spoke hub; with the
+    # validating readback 1.02-1.35x below 0.33 M and 2.1x at 0.87-1.1 M. It also beats Warp's
+    # ``tri_tri_adjacency`` (which cannot validate) by 1.5x at 0.87 M. On the CPU it loses at every
+    # size (0.29-0.57x: the sort's passes are cheap serial loops there, the bucket scans are not),
+    # so the CPU keeps the sort (``halfedge._BUCKETED_TWINS_ON_CPU``).
+    h = wp.int32(wp.tid())
+    a, b = halfedge_endpoints(faces, h)
+    owner = edge_bucket_owner(degrees, a, b)
+    other = wp.where(owner == a, b, a)
+    start = wp.int32(0)
+    if owner > 0:
+        start = ends[owner - 1]
+    matches = wp.int32(0)
+    partner = wp.int32(-1)
+    lowest = h
+    for slot in range(start, ends[owner]):
+        entry = buckets[slot]
+        if entry[0] == other and entry[1] != h:
+            matches += 1
+            partner = entry[1]
+            lowest = wp.min(lowest, entry[1])
+    twin = wp.int32(-1)
+    if matches >= 2:
+        if lowest == h:
+            wp.atomic_add(out_defect_counts, 0, 1)
+    elif matches == 1:
+        if faces[partner] == a:
+            if h < partner:
+                wp.atomic_add(out_defect_counts, 1, 1)
+        else:
+            twin = partner
+    out_twins[h] = twin
+
+
 @wp.kernel
 def count_mispaired_twins(
     faces: wp.array[wp.int32], twins: wp.array[wp.int32], out_mispaired: wp.array[wp.int32]

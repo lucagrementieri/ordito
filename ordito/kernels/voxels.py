@@ -347,9 +347,8 @@ def pack_cell_keys(
 
 @wp.kernel
 def lattice_points(lower: wp.vec3, step: wp.vec3, out_points: wp.array3d[wp.vec3]) -> None:
-    # A dense node lattice, rank-2 destination. The position is ``array.lattice_position``, shared
-    # with ``reconstruction.lattice_points``, which writes the same quantity into a flat row-major
-    # buffer instead. This is one of the two sites this module's docstring names as running before
+    # A dense node lattice, rank-3 destination; the position is ``array.lattice_position``. This
+    # is one of the two sites this module's docstring names as running before
     # a ``wp.Volume`` exists, so ``wp.volume_index_to_world`` is not available to it.
     i, j, k = wp.tid()
     out_points[i, j, k] = lattice_position(lower, step, i, j, k)

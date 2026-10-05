@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Literal, NamedTuple, cast
 
 import numpy as np
 import warp as wp
+from warp.geometry import delaunay_edge_flip
 
 import ordito as od
 import ordito.typing as odt
@@ -47,6 +48,15 @@ if TYPE_CHECKING:
     # Type-checking only: the adaptive-backend helpers import ``warp.fem`` lazily (inside the
     # functions) so ``import ordito`` never pays its tens-of-seconds first-call codegen unused.
     import warp.fem as fem
+
+
+# Points from which the CUDA flip phase starts with Warp's own ``delaunay_edge_flip`` and lets the
+# float64 flip loop below finish from its output. Warp's pass alone is about twice as fast as the
+# loop from 0.5 M points but not exact (at 1 M random points it left two edges that fail the exact
+# in-circle test); the loop that follows repairs them, so the answer is the loop's own, face for
+# face. Whole call: 0.90x at 0.1 M points, 1.04x at 0.5 M, 1.08x at 1 M, 1.10x at 2 M (the
+# single-threaded seed is most of it).
+_NATIVE_DELAUNAY_FLIP_FROM = 1 << 19
 
 
 def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> wp.array[wp.int32]:
@@ -131,6 +141,9 @@ def delaunay_triangulation(points: wp.array[wp.vec2], max_iter: int = 1000) -> w
             device=device,
         )
 
+    if wp.get_device(device).is_cuda and n >= _NATIVE_DELAUNAY_FLIP_FROM:
+        # Warp annotates the triangles ``wp.array2d``, a static helper no runtime array is typed as.
+        delaunay_edge_flip(points, cast("wp.array2d[wp.int32]", faces.reshape((-1, 3))))
     od.remesh._flip_interior_edges(faces, n, launch, max_iter)  # pyright: ignore[reportPrivateUsage]
     return faces
 
@@ -1397,7 +1410,6 @@ def resample_uniform(
     padding is why the memory cost is a little above ``(extent / voxel_size) ** 3``.
     """
     require_same_device(vertices=vertices, faces=faces)
-    device = vertices.device
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.clone(vertices), _launch.clone(faces)
@@ -1427,27 +1439,13 @@ def resample_uniform(
         max(2, math.ceil((grid_upper_f[axis] - grid_lower_f[axis]) / voxel_size) + 1)
         for axis in range(3)
     )
-    resolution = wp.vec3i(wp.int32(n_x), wp.int32(n_y), wp.int32(n_z))
-    spacing = wp.vec3(
-        *(
-            (grid_upper_f[axis] - grid_lower_f[axis]) / float(extent - 1)
-            for axis, extent in enumerate((n_x, n_y, n_z))
-        )
-    )
-
-    n_points = n_x * n_y * n_z
-    points = _launch.empty(n_points, dtype=wp.vec3, device=device)
-    _launch.launch(
-        kernel_reconstruction.lattice_points,
-        dim=(n_x, n_y, n_z),
-        inputs=[resolution, grid_lower, spacing, points],
-        device=device,
-    )
-    field = od.proximity.signed_distance_on_mesh(vertices, faces, points, sign_mode=sign_mode)
-    out_vertices, out_faces = od.levelset.marching_cubes(
-        odt.as_array3d(field.reshape((n_x, n_y, n_z)), wp.float32),
-        iso=offset,
+    out_vertices, out_faces = od.levelset.signed_distance_level_set(
+        vertices,
+        faces,
+        offset,
+        (n_x, n_y, n_z),
         bounds=(grid_lower, grid_upper),
+        sign_mode=sign_mode,
     )
     # Warp's extractor emits a vertex per crossing per cell, so coincident duplicates are normal
     # rather than exceptional; welding them is what makes the result a closed surface. Hole filling

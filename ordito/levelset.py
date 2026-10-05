@@ -75,14 +75,15 @@ _MIN_AUTO_RESOLUTION = 64
 # find the level set at all.
 _SAMPLES_PER_DISTANCE = 3
 
-# Lattice nodes from which an offset of a closed, consistently wound mesh extracts its level set
+# Lattice nodes from which a closed, consistently wound mesh's distance level set is extracted
 # sparsely -- a Lipschitz octree brackets the surface and the distance is queried only at the
-# corners of the cells it keeps -- instead of sampling every node. See ``offset_mesh``'s Notes for
-# why the input has to be closed. Measured on CUDA against the dense lattice: 0.84-0.93x on
-# ``dragon`` at 0.6-0.7 M nodes, 1.95x at 2.4 M and 4.5x at 9 M, 1.84x on ``happy_buddha`` at the
-# benchmark's finest cell, 5.7-11.8x on a 20 k-face sphere at 10-37 M nodes. The closedness test it
-# pays on an open input is two key sorts, 0.98x at worst (``lucy``, 28 M faces).
-_SPARSE_OFFSET_FROM_NODES = 1 << 21
+# corners of the cells it keeps -- instead of sampling every node. See
+# ``signed_distance_level_set``'s Notes for why the input has to be closed. Measured on CUDA
+# against the dense lattice through ``offset_mesh``: 0.84-0.93x on ``dragon`` at 0.6-0.7 M nodes,
+# 1.95x at 2.4 M and 4.5x at 9 M, 1.84x on ``happy_buddha`` at the benchmark's finest cell,
+# 5.7-11.8x on a 20 k-face sphere at 10-37 M nodes. The closedness test it pays on an open input
+# is two key sorts, 0.98x at worst (``lucy``, 28 M faces).
+_SPARSE_LEVEL_SET_FROM_NODES = 1 << 21
 
 
 def marching_cubes(
@@ -245,17 +246,9 @@ def offset_mesh(
 
     Accuracy is the lattice's, improved by marching cubes' linear interpolation across a cell.
 
-    On a large lattice a closed, consistently wound input is not sampled on every node: an octree
-    over the lattice discards every cell whose centre is farther from the level set than the cell
-    is wide -- sound because a signed distance changes no faster than the distance travelled --
-    and the distance is evaluated only at the corners of the cells left, so the cost follows the
-    offset surface's area rather than the lattice's volume. The surface is the dense lattice's, up
-    to the order of its vertices and faces -- except where a lattice node's distance rounds onto
-    the offset level itself, which the two place one rounding apart and so can triangulate
-    differently, equally validly. An input with a boundary keeps the dense lattice: there
-    the sign of its distance can jump away from the surface, across the region a hole spans, and
-    such a field is not bounded by the distance travelled, so the octree could discard cells the
-    dense extraction keeps.
+    The extraction is
+    [`signed_distance_level_set`][ordito.levelset.signed_distance_level_set], which on a large
+    lattice samples a closed input only near the offset surface.
 
     See Also
     --------
@@ -297,7 +290,85 @@ def offset_mesh(
     if bounds is None:
         bounds = od.bounds.aabb(vertices)
     shape, box = od.proximity.signed_distance_lattice(vertices, spacing, bounds=bounds, pad=pad)
-    if math.prod(shape) >= _SPARSE_OFFSET_FROM_NODES and _is_closed_and_consistent(vertices, faces):
+    return signed_distance_level_set(
+        vertices, faces, distance, shape, bounds=box, sign_mode=sign_mode
+    )
+
+
+def signed_distance_level_set(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    iso: float,
+    shape: tuple[int, int, int],
+    *,
+    bounds: tuple[wp.vec3, wp.vec3],
+    sign_mode: Literal["parity", "winding"] = "winding",
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Extract the ``iso`` level set of a mesh's signed distance, sampled on a corner lattice.
+
+    The surface [`marching_cubes`][ordito.levelset.marching_cubes] extracts from the field
+    [`ordito.voxels.grid_points`][ordito.voxels.grid_points] and
+    [`ordito.proximity.signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] would
+    sample on the lattice of ``shape`` spanning ``bounds`` -- without necessarily sampling all of
+    it. It is the extraction behind [`offset_mesh`][ordito.levelset.offset_mesh],
+    [`ordito.reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform] and
+    [`ordito.repair.fix_self_intersections`][ordito.repair.fix_self_intersections]'s voxel method.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions.
+    faces
+        ``(3 * n_faces,)`` flat triangle index buffer, at least one face.
+    iso
+        Signed distance of the level to extract (Warp's convention: positive outside).
+    shape
+        ``(nx, ny, nz)`` lattice samples per axis, each at least 2.
+    bounds
+        ``(lower, upper)`` corners the lattice spans: sample ``(0, 0, 0)`` sits on ``lower`` and
+        sample ``(nx - 1, ny - 1, nz - 1)`` on ``upper``. The spacing may differ per axis.
+    sign_mode
+        How the distance is signed, as in
+        [`ordito.proximity.signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh].
+
+    Returns
+    -------
+    tuple[wp.array[wp.vec3], wp.array[wp.int32]]
+        ``(m,)`` vertices and ``(3 * k,)`` faces of the level set, ``m`` and ``k`` its vertex and
+        face counts, on ``vertices.device``. Empty where the lattice holds no point at distance
+        ``iso``.
+
+    Raises
+    ------
+    ValueError
+        If ``faces`` is empty or any of ``shape`` is below 2.
+    RuntimeError
+        If ``vertices`` and ``faces`` are not on one device.
+
+    Notes
+    -----
+    On a large lattice a closed, consistently wound input is not sampled on every node: an octree
+    over the lattice discards every cell whose centre is farther from the level set than the cell
+    is wide -- sound because a signed distance changes no faster than the distance travelled --
+    and the distance is evaluated only at the corners of the cells left, so the cost follows the
+    surface's area rather than the lattice's volume. The surface is the dense lattice's, up to the
+    order of its vertices and faces -- except where a lattice node's distance rounds onto the level
+    itself, which the two place one rounding apart and so can triangulate differently, equally
+    validly. An input with a boundary or an inconsistent winding keeps the dense lattice: there the
+    sign of its distance can jump away from the surface, across the region a hole spans, and such a
+    field is not bounded by the distance travelled, so the octree could discard cells the dense
+    extraction keeps.
+    """
+    require_same_device(vertices=vertices, faces=faces)
+    if faces.size == 0:
+        raise ValueError("signed_distance_level_set needs at least one face")
+    if min(shape) < 2:
+        raise ValueError(f"shape must be at least 2 along every axis, got {shape}")
+    lower, upper = bounds
+    if math.prod(shape) >= _SPARSE_LEVEL_SET_FROM_NODES and _is_closed_and_consistent(
+        vertices, faces
+    ):
         mesh = wp.Mesh(
             points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
         )
@@ -307,7 +378,6 @@ def offset_mesh(
                 vertices, faces, points, sign_mode=sign_mode, mesh=mesh
             )
 
-        lower, upper = box
         # Typed as a union with the ``return_stats=True`` triple, which is not asked for here.
         return cast(
             "tuple[wp.array[wp.vec3], wp.array[wp.int32]]",
@@ -316,15 +386,15 @@ def offset_mesh(
                 *shape,
                 lower=lower,
                 upper=upper,
-                threshold=distance,
+                threshold=iso,
                 device=vertices.device,
             ),
         )
 
-    field, box = od.proximity.signed_distance_grid(
-        vertices, faces, spacing, bounds=bounds, pad=pad, sign_mode=sign_mode
-    )
-    return od.levelset.marching_cubes(field, distance, bounds=box)
+    samples = od.voxels.grid_points(shape, bounds=bounds, device=vertices.device)
+    distances = od.proximity.signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode)
+    field = odt.as_array3d(distances.reshape(shape), wp.float32)
+    return od.levelset.marching_cubes(field, iso, bounds=bounds)
 
 
 def _is_closed_and_consistent(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> bool:

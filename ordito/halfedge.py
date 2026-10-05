@@ -24,6 +24,12 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.constants import INT32_MAX
 from ordito.kernels import halfedge as kernel_halfedge
+from ordito.kernels import scatter as kernel_scatter
+
+# Whether a twin build with a known vertex count pairs through per-vertex edge buckets on the CPU
+# device too, as it does on CUDA; otherwise the CPU sorts the edge keys. Both build the same table
+# and count the same defects; the device split is cost alone (kernels/halfedge.py).
+_BUCKETED_TWINS_ON_CPU = False
 
 
 def halfedge_twins(
@@ -45,20 +51,24 @@ def halfedge_twins(
     same edge, seen from the other side", and there is no other side to see when both halfedges
     face the same way.
 
-    Undirected edges are matched by packing each sorted endpoint pair into one key
-    ([`hash_indices_rows`][ordito.grouping.hash_indices_rows]), radix-sorting the keys with the
-    halfedge index as payload, and pairing up the runs of equal keys — the same mechanism behind
-    [`edges_unique`][ordito.edges.edges_unique] and
+    On a CUDA device with ``n_vertices`` given, undirected edges are matched by a counting sort of
+    the halfedges into per-vertex buckets, each edge under its lower-degree endpoint so that a
+    high-valence vertex keeps a small bucket, and each halfedge scans its bucket for the others.
+    Otherwise each sorted endpoint pair is packed into one key
+    ([`hash_indices_rows`][ordito.grouping.hash_indices_rows]), the keys are radix-sorted with the
+    halfedge index as payload, and the runs of equal keys are paired up -- the same mechanism
+    behind [`edges_unique`][ordito.edges.edges_unique] and
     [`face_adjacency`][ordito.adjacency.face_adjacency], without materializing the unique edge
-    list.
+    list. Both give the same table and reject the same meshes.
 
     Parameters
     ----------
     faces
         ``(3 * n_faces,)`` triangle index buffer.
     n_vertices
-        Total vertex count. It is only ever the key radix here, so passing it is an optimization
-        rather than a requirement: when ``None`` the keys pack against
+        Total vertex count, which must exceed every index in ``faces``: it sizes the per-vertex
+        buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:
+        when ``None`` the keys pack against
         [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which bounds every
         ``int32`` index without a reduction and orders the keys the same way.
     validate
@@ -327,6 +337,12 @@ def _pair_halfedges(
     """
     device = faces.device
     n_halfedges = faces.size // 3 * 3
+    if (
+        n_vertices is not None
+        and n_halfedges > 0
+        and (wp.get_device(device).is_cuda or _BUCKETED_TWINS_ON_CPU)
+    ):
+        return _pair_bucketed_halfedges(faces, n_vertices, defect_counts)
     twins = _launch.full(n_halfedges, -1, dtype=wp.int32, device=device)
     if n_halfedges == 0:
         return twins
@@ -346,6 +362,51 @@ def _pair_halfedges(
         kernel_halfedge.pair_sorted_halfedges,
         dim=n_halfedges,
         inputs=[faces, sorted_keys, order, twins, defect_counts],
+        device=device,
+    )
+    return twins
+
+
+def _pair_bucketed_halfedges(
+    faces: wp.array[wp.int32], n_vertices: int, defect_counts: wp.array[wp.int32]
+) -> wp.array[wp.int32]:
+    """
+    Build the twin table from per-vertex edge buckets, with the sort path's rule and defect counts.
+
+    A counting sort of the halfedges by the lower-degree endpoint of their edge (the bucketing of
+    ``warp.geometry.tri_tri_adjacency``, keyed so that a hub's bucket stays small), then one thread
+    per halfedge scanning its bucket. ``n_vertices`` sizes the buckets, so it must exceed every
+    index in ``faces``.
+    """
+    device = faces.device
+    n_halfedges = faces.size // 3 * 3
+    degrees = _launch.zeros(n_vertices, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_scatter.count_occurrences, dim=n_halfedges, inputs=[faces, degrees], device=device
+    )
+    # Bucket ``v`` is counted into ``cursors[v + 1]``; the inclusive scan in place turns the counts
+    # into bucket ends there, which leaves ``cursors[v]`` holding bucket ``v``'s start for the
+    # scatter to advance.
+    cursors = _launch.zeros(n_vertices + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_halfedge.count_edge_buckets,
+        dim=n_halfedges,
+        inputs=[faces, degrees, cursors],
+        device=device,
+    )
+    _launch.array_scan(cursors[1:], out_array=cursors[1:], inclusive=True)
+    buckets = _launch.empty(n_halfedges, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_halfedge.scatter_edge_buckets,
+        dim=n_halfedges,
+        inputs=[faces, degrees, cursors, buckets],
+        device=device,
+    )
+    twins = _launch.empty(n_halfedges, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_halfedge.pair_bucketed_halfedges,
+        dim=n_halfedges,
+        inputs=[faces, degrees, cursors, buckets, twins, defect_counts],
         device=device,
     )
     return twins

@@ -208,6 +208,36 @@ def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str, n_point
     )
 
 
+@pytest.mark.parametrize("layout", ["random", "perturbed_grid"])
+def test_delaunay_native_flip_start_changes_nothing(
+    device: str, monkeypatch: pytest.MonkeyPatch, layout: str
+):
+    """
+    Ordito against ordito: starting the flips from Warp's own pass returns the same faces.
+
+    Past ``_NATIVE_DELAUNAY_FLIP_FROM`` points on CUDA, ``warp.geometry.delaunay_edge_flip`` runs
+    before the exact flip loop, which then repairs whatever that faster pass left; the scipy
+    comparison above carries the oracle for the loop. The threshold is forced to zero here so a
+    small input takes that path, on a random cloud and on a jittered grid whose near-cocircular
+    quads are where two in-circle predicates disagree.
+    """
+    rng = np.random.default_rng(3)
+    if layout == "random":
+        points_np = rng.random((20_000, 2)).astype(np.float32)
+    else:
+        grid_np = np.stack(np.meshgrid(np.arange(60.0), np.arange(60.0)), axis=-1).reshape(-1, 2)
+        points_np = (grid_np + rng.normal(0.0, 1e-3, grid_np.shape)).astype(np.float32)
+    points_wp = points_to_warp_uv(points_np, device)
+
+    faces_loop = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    monkeypatch.setattr(od.reconstruction, "_NATIVE_DELAUNAY_FLIP_FROM", 0)
+    faces_native = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    assert faces_loop.shape[0] > 1000
+    assert np.array_equal(
+        lexsort_rows(np.sort(faces_loop, axis=1)), lexsort_rows(np.sort(faces_native, axis=1))
+    )
+
+
 def test_delaunay_no_violations(device: str):
     rng = np.random.default_rng(7)
     points_np = rng.random((150, 2)).astype(np.float32)
