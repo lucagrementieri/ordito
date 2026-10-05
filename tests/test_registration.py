@@ -78,21 +78,69 @@ def _run_both(
     return matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od
 
 
-def test_procrustes_default(device: str) -> None:
+@pytest.mark.parametrize(
+    ("seed", "weights", "flags"),
+    [
+        (0, None, {}),
+        (1, "uniform", {}),
+        (2, "binary", {}),
+        (12, "fractional", {}),
+        (3, None, {"reflection": False}),
+        (4, None, {"translation": False}),
+        (5, None, {"scale": False}),
+    ],
+    ids=[
+        "default",
+        "uniform_weights",
+        "binary_weights",
+        "fractional_weights",
+        "no_reflection",
+        "no_translation",
+        "no_scale",
+    ],
+)
+@pytest.mark.parity("procrustes", "trimesh")
+def test_procrustes_matches_trimesh(
+    device: str, seed: int, weights: str | None, flags: dict[str, bool]
+) -> None:
     """
     Class A: the transform, the transformed cloud and the cost against ``trimesh.registration``.
 
     All three returns are compared, not just the matrix: a transposed rotation still gives a
-    plausible matrix and a wrong cloud. The clouds are related by a known rigid motion, so the
-    optimum is unique and the comparison can be elementwise.
+    plausible matrix and a wrong cloud. trimesh exposes the identical weights and switches, so
+    every arm stays elementwise. What each arm catches:
+
+    - ``uniform_weights``: an all-ones weight vector must reproduce the unweighted answer. The
+      degenerate case of the weighted path, and the one that catches a normalization missing from
+      the weighted moments -- it would still converge, just to a different scale.
+    - ``binary_weights``: zero weights must exclude their points. Half the cloud is weighted out, so
+      an implementation that ignores weights fits a different optimum and fails; the cloud is
+      compared on the retained half.
+    - ``fractional_weights``: with non-binary weights, the masked covariance and weighted moments
+      agree.
+    - ``no_reflection`` / ``no_translation`` / ``no_scale``: one arm per flag because each changes
+      the SVD post-processing rather than the input. ``reflection=False`` constrains the rotation
+      to det = +1; ``translation=False`` does not centre the clouds first, the branch where a
+      mistakenly-subtracted centroid would still produce a valid-looking rotation;
+      ``scale=False`` fixes the scale factor at one.
     """
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     a_np, b_np = _make_point_clouds(rng)
+    n = a_np.shape[0]
+    weights_np = None
+    if weights == "uniform":
+        weights_np = np.ones(n, dtype=np.float64)
+    elif weights == "binary":
+        weights_np = np.zeros(n, dtype=np.float64)
+        weights_np[: n // 2] = 1.0
+    elif weights == "fractional":
+        weights_np = rng.uniform(0.1, 3.0, size=n)
     matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device
+        a_np, b_np, device, weights_np=weights_np, **flags
     )
+    kept = slice(0, n // 2) if weights == "binary" else slice(None)
     assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
+    assert np.allclose(transformed_wp.numpy()[kept], transformed_tm[kept], rtol=1e-4, atol=1e-4)
     assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
 
 
@@ -132,14 +180,7 @@ def test_procrustes_matches_meshlib(device: str) -> None:
             mm.Vector3d(*source_point_np.tolist()), mm.Vector3d(*target_point_np.tolist()), 1.0
         )
     transform_ml = aligner_ml.findBestRigidXf()
-    rotation_ml = np.array(
-        [
-            [transform_ml.A.x.x, transform_ml.A.x.y, transform_ml.A.x.z],
-            [transform_ml.A.y.x, transform_ml.A.y.y, transform_ml.A.y.z],
-            [transform_ml.A.z.x, transform_ml.A.z.y, transform_ml.A.z.z],
-        ]
-    )
-    translation_ml = np.array([transform_ml.b.x, transform_ml.b.y, transform_ml.b.z])
+    rotation_ml, translation_ml = _affine_ml_to_numpy(transform_ml)
 
     # Non-vacuity: the reference recovered the planted motion, so it is not returning the identity.
     assert np.allclose(rotation_ml, rotation_np, rtol=1e-5, atol=1e-5)
@@ -151,11 +192,14 @@ def test_procrustes_matches_meshlib(device: str) -> None:
 
 def test_procrustes_return_cost_arity(device: str) -> None:
     """
-    Class A: the bare call returns its documented three-tuple, ``return_cost=False`` one array.
+    Ordito against ordito: the bare call returns its three-tuple, ``return_cost=False`` one array.
 
     The overloads used to declare ``return_cost: Literal[False] = False`` first, so a checker
     resolved the bare ``procrustes(a, b)`` to the matrix-only signature while the implementation
-    returned the tuple. Nothing exercised the *bare* default, which is why it went unnoticed.
+    returned the tuple. Nothing exercised the *bare* default, which is why it went unnoticed. The
+    matrix-only form must be exactly the matrix the tuple carries -- a signature claim rather than a
+    numerical one, the matrix's oracle being [`test_procrustes_matches_trimesh`] -- which catches a
+    return that changed shape silently.
     """
     rng = np.random.default_rng(7)
     a_np, b_np = _make_point_clouds(rng)
@@ -171,98 +215,9 @@ def test_procrustes_return_cost_arity(device: str) -> None:
 
     matrix_only = od.registration.procrustes(a_wp, b_wp, return_cost=False)
     assert isinstance(matrix_only, wp.array)
+    assert matrix_only.shape == (1,)
+    assert matrix_only.dtype == wp.mat44
     assert np.allclose(matrix_only.numpy(), matrix_wp.numpy(), rtol=1e-5, atol=1e-5)
-
-
-def test_procrustes_uniform_weights(device: str) -> None:
-    """
-    Class A: an all-ones weight vector must reproduce the unweighted answer exactly.
-
-    The degenerate case of the weighted path, and the one that catches a normalization missing
-    from the weighted moments -- it would still converge, just to a different scale.
-    """
-    rng = np.random.default_rng(1)
-    a_np, b_np = _make_point_clouds(rng)
-    n = a_np.shape[0]
-    weights_np = np.ones(n, dtype=np.float64)
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, weights_np=weights_np
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_procrustes_binary_weights(device: str) -> None:
-    """
-    Class A: zero weights must exclude their points, matching trimesh on the retained half.
-
-    Half the cloud is weighted out, so an implementation that ignores weights fits a different
-    optimum and fails. trimesh takes the same weights, so this stays elementwise.
-    """
-    rng = np.random.default_rng(2)
-    a_np, b_np = _make_point_clouds(rng)
-    n = a_np.shape[0]
-    weights_np = np.zeros(n, dtype=np.float64)
-    weights_np[: n // 2] = 1.0
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, weights_np=weights_np
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(
-        transformed_wp.numpy()[: n // 2], transformed_tm[: n // 2], rtol=1e-4, atol=1e-4
-    )
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_procrustes_no_reflection(device: str) -> None:
-    """
-    Class A on the ``reflection=False`` branch, where the rotation is constrained to det = +1.
-
-    A separate test per flag because each changes the SVD post-processing rather than the
-    input; trimesh exposes the identical switch.
-    """
-    rng = np.random.default_rng(3)
-    a_np, b_np = _make_point_clouds(rng)
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, reflection=False
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_procrustes_no_translation(device: str) -> None:
-    """
-    Class A on the ``translation=False`` branch: the clouds are not centred first.
-
-    Same reasoning as the flag above -- and this is the branch where a mistakenly-subtracted
-    centroid would still produce a valid-looking rotation.
-    """
-    rng = np.random.default_rng(4)
-    a_np, b_np = _make_point_clouds(rng)
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, translation=False
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_procrustes_no_scale(device: str) -> None:
-    """
-    Class A on the ``scale=False`` branch, which fixes the scale factor at one.
-
-    Completes the three flags. Compared elementwise against trimesh's identical switch.
-    """
-    rng = np.random.default_rng(5)
-    a_np, b_np = _make_point_clouds(rng)
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, scale=False
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
 
 
 def test_procrustes_far_from_origin(device: str) -> None:
@@ -298,54 +253,24 @@ def test_procrustes_far_from_origin(device: str) -> None:
     assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
 
 
-def test_procrustes_fractional_weights(device: str) -> None:
-    """Class A: with non-binary weights, the masked covariance and weighted moments agree."""
-    rng = np.random.default_rng(12)
-    a_np, b_np = _make_point_clouds(rng)
-    weights_np = rng.uniform(0.1, 3.0, size=a_np.shape[0])
-    matrix_tm, transformed_tm, cost_tm, matrix_od, transformed_wp, cost_od = _run_both(
-        a_np, b_np, device, weights_np=weights_np
-    )
-    assert np.allclose(matrix_od, matrix_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(transformed_wp.numpy(), transformed_tm, rtol=1e-4, atol=1e-4)
-    assert np.allclose(cost_od, cost_tm, rtol=1e-4, atol=1e-4)
-
-
-@pytest.mark.parity("procrustes", "trimesh")
-def test_procrustes_return_matrix_only(device: str) -> None:
+@pytest.mark.parametrize(
+    ("n_b", "weights", "message"),
+    [(11, None, "same length"), (10, 5, "same length"), (10, 10, "sum to zero")],
+    ids=["points_length", "weights_length", "all_zero_weights"],
+)
+def test_procrustes_validates_its_input(
+    device: str, n_b: int, weights: int | None, message: str
+) -> None:
     """
-    Ordito against ordito: ``return_cost=False`` returns only the matrix it otherwise would.
+    The two clouds and the weights must match in length, and the weights may not sum to zero.
 
-    A signature claim rather than a numerical one -- the matrix's oracle is
-    [`test_procrustes_default`] -- and what it catches is a return tuple that changed shape
-    silently.
+    An all-zero, non-empty ``weights`` must raise rather than silently return NaN.
     """
-    rng = np.random.default_rng(6)
-    a_np, b_np = _make_point_clouds(rng)
-    a_wp = points_to_warp(a_np, device)
-    b_wp = points_to_warp(b_np, device)
-
-    result = od.registration.procrustes(a_wp, b_wp, return_cost=False)
-    assert isinstance(result, wp.array)
-    assert result.shape == (1,)
-    assert result.dtype == wp.mat44
-
-    matrix_tm, _, _ = tm_reg.procrustes(a_np, b_np)
-    assert np.allclose(result.numpy()[0], matrix_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_procrustes_length_mismatch(device: str) -> None:
-    a_wp = points_to_warp(np.random.default_rng(20).standard_normal((10, 3)), device)
-    b_wp = points_to_warp(np.random.default_rng(21).standard_normal((11, 3)), device)
-    with pytest.raises(ValueError, match="same length"):
-        od.registration.procrustes(a_wp, b_wp)
-
-
-def test_procrustes_weights_length_mismatch(device: str) -> None:
-    a_wp = points_to_warp(np.random.default_rng(22).standard_normal((10, 3)), device)
-    b_wp = points_to_warp(np.random.default_rng(23).standard_normal((10, 3)), device)
-    weights_wp = wp.zeros(5, dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="same length"):
+    rng = np.random.default_rng(20)
+    a_wp = points_to_warp(rng.standard_normal((10, 3)), device)
+    b_wp = points_to_warp(rng.standard_normal((n_b, 3)), device)
+    weights_wp = None if weights is None else wp.zeros(weights, dtype=wp.float32, device=device)
+    with pytest.raises(ValueError, match=message):
         od.registration.procrustes(a_wp, b_wp, weights=weights_wp)
 
 
@@ -366,15 +291,6 @@ def test_procrustes_scale_on_duplicated_points(device: str) -> None:
     matrix_wp, _transformed_wp, cost_od = od.registration.procrustes(a_wp, b_wp, scale=True)
     assert np.all(np.isfinite(matrix_wp.numpy()))
     assert np.isfinite(cost_od)
-
-
-def test_procrustes_all_zero_weights(device: str) -> None:
-    """An all-zero, non-empty ``weights`` must raise rather than silently return NaN."""
-    a_wp = points_to_warp(np.random.default_rng(24).standard_normal((10, 3)), device)
-    b_wp = points_to_warp(np.random.default_rng(25).standard_normal((10, 3)), device)
-    weights_wp = wp.zeros(10, dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="sum to zero"):
-        od.registration.procrustes(a_wp, b_wp, weights=weights_wp)
 
 
 def test_procrustes_empty(device: str) -> None:
@@ -411,6 +327,21 @@ def _rms(points_a: np.ndarray, points_b: np.ndarray) -> float:
 
 def _mesh_vertices_faces(mesh_tm: tm.Trimesh) -> tuple[np.ndarray, np.ndarray]:
     return mesh_tm.vertices.astype(np.float32), mesh_tm.faces.reshape(-1).astype(np.int32)
+
+
+def _affine_ml_to_numpy(
+    transform_ml: mm.AffineXf3d | mm.AffineXf3f,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Unpack a MeshLib affine transform into ``(rotation (3, 3), translation (3,))``."""
+    linear_ml, shift_ml = transform_ml.A, transform_ml.b
+    rotation_np = np.array(
+        [
+            [linear_ml.x.x, linear_ml.x.y, linear_ml.x.z],
+            [linear_ml.y.x, linear_ml.y.y, linear_ml.y.z],
+            [linear_ml.z.x, linear_ml.z.y, linear_ml.z.z],
+        ]
+    )
+    return rotation_np, np.array([shift_ml.x, shift_ml.y, shift_ml.z])
 
 
 @pytest.mark.parity("procrustes", "open3d")
@@ -546,10 +477,12 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     """
     ICP against both references by the recovered *transform*, not by each side's own cost.
 
-    ``test_icp_point_to_point_cloud`` checks that ordito and trimesh each reach a low cost, which
-    is two independent self-consistency checks rather than a comparison -- both could converge to
-    different transforms and still pass. Here the three transforms are applied to the same source
-    and the resulting point clouds compared directly, which is what "the same registration" means.
+    Each side reaching a low cost on its own is two independent self-consistency checks rather than
+    a comparison -- both could converge to different transforms and still pass. Here the three
+    transforms are applied to the same source and the resulting point clouds compared directly,
+    which is what "the same registration" means. The target is a transformed copy of the source,
+    so the answer is also known in closed form, and ordito must recover it exactly (a near-zero
+    cost and RMS): that is what would catch a converged-but-wrong fit.
 
     Class C only in that a small rigid offset is required for it to be well posed: nearest-neighbour
     correspondence has to be unique, or the three solvers may legitimately land in different local
@@ -563,7 +496,7 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     rotation_np, translation_np = _rigid_transform(0.15, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
     source_np = (target_np @ rotation_np.T + translation_np).astype(np.float32)
 
-    _matrix_wp, transformed_wp, _cost_wp = od.registration.icp(
+    _matrix_wp, transformed_wp, cost_wp = od.registration.icp(
         points_to_warp(source_np, device),
         points_to_warp(target_np, device),
         None,
@@ -596,6 +529,7 @@ def test_icp_point_to_point_matches_open3d_and_trimesh(device: str) -> None:
     assert np.allclose(transformed_wp.numpy(), moved_tm, rtol=1e-4, atol=1e-4)
     # All three land on the target itself, so none of the above is a comparison of two failures.
     assert _rms(transformed_wp.numpy(), target_np) < 1e-3
+    assert cost_wp < 1e-6
 
 
 @pytest.mark.parity("icp_point_cloud", "meshlib")
@@ -651,14 +585,7 @@ def test_icp_point_to_point_matches_meshlib(device: str) -> None:
     properties_ml.method = mm.ICPMethod.PointToPoint  # its default is point-to-plane
     icp_ml.setParams(properties_ml)
     transform_ml = icp_ml.calculateTransformation()
-    rotation_ml = np.array(
-        [
-            [transform_ml.A.x.x, transform_ml.A.x.y, transform_ml.A.x.z],
-            [transform_ml.A.y.x, transform_ml.A.y.y, transform_ml.A.y.z],
-            [transform_ml.A.z.x, transform_ml.A.z.y, transform_ml.A.z.z],
-        ]
-    )
-    translation_ml = np.array([transform_ml.b.x, transform_ml.b.y, transform_ml.b.z])
+    rotation_ml, translation_ml = _affine_ml_to_numpy(transform_ml)
 
     # Non-vacuity: the reference actually moved the cloud, and by more than a rounding error.
     assert np.abs(rotation_ml - np.eye(3)).max() > 1e-3
@@ -829,14 +756,7 @@ def test_icp_point_to_plane_matches_meshlib(
     icp_ml.setParams(properties_ml)
     assert icp_ml.getParams().method == mm.ICPMethod.PointToPlane  # its default, unchanged
     transform_ml = icp_ml.calculateTransformation()
-    rotation_ml = np.array(
-        [
-            [transform_ml.A.x.x, transform_ml.A.x.y, transform_ml.A.x.z],
-            [transform_ml.A.y.x, transform_ml.A.y.y, transform_ml.A.y.z],
-            [transform_ml.A.z.x, transform_ml.A.z.y, transform_ml.A.z.z],
-        ]
-    )
-    translation_ml = np.array([transform_ml.b.x, transform_ml.b.y, transform_ml.b.z])
+    rotation_ml, translation_ml = _affine_ml_to_numpy(transform_ml)
     moved_ml = source_np @ rotation_ml.T + translation_ml
 
     assert _rms(source_np, target_np) > 1e-2  # non-vacuity: the clouds start apart
@@ -846,35 +766,6 @@ def test_icp_point_to_plane_matches_meshlib(
     # Both converged, rather than agreeing on a transform that fits nothing.
     assert _rms(transformed_wp.numpy(), target_np) < 1e-4
     assert _rms(moved_ml, target_np) < 1e-4
-
-
-def test_icp_point_to_point_cloud(device: str) -> None:
-    """
-    Not a library comparison: ICP must recover a known rigid motion it was given exactly.
-
-    The target is a transformed copy of the source, so the answer is known in closed form and
-    no reference is needed; [`test_icp_point_to_point_matches_open3d_and_trimesh`] is the
-    cross-library comparison. This is the test that would catch a converged-but-wrong fit.
-    """
-    rng = np.random.default_rng(10)
-    target_np = rng.standard_normal((300, 3)).astype(np.float32)
-    rotation_np, translation_np = _rigid_transform(0.15, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
-    source_np = (target_np @ rotation_np.T + translation_np).astype(np.float32)
-
-    source_wp = points_to_warp(source_np, device)
-    target_wp = points_to_warp(target_np, device)
-
-    _, transformed_wp, cost_od = od.registration.icp(
-        source_wp, target_wp, None, max_iterations=100, reflection=False, scale=False
-    )
-
-    # Small rigid offset keeps nearest-neighbor correspondence unique -> exact recovery.
-    assert _rms(transformed_wp.numpy(), target_np) < 1e-3
-    assert cost_od < 1e-6
-
-    # trimesh reaches a comparably low per-point cost on the same problem.
-    _, _, cost_tm = tm_reg.icp(source_np.astype(np.float64), target_np.astype(np.float64))
-    assert cost_tm / len(source_np) < 1e-3
 
 
 def test_icp_point_to_point_mesh(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1000,14 +891,16 @@ def test_icp_transformed_is_matrix_image(
 
 
 @pytest.mark.parametrize("angle", [0.15, 0.30])
-@pytest.mark.parity("icp_mesh", "pymeshlab")
-def test_icp_mesh_matches_pymeshlab(device: str, angle: float) -> None:
+@pytest.mark.parity("icp_mesh", "pymeshlab", "pyvista")
+def test_icp_mesh_matches_pymeshlab_and_pyvista(device: str, angle: float) -> None:
     """
-    Class B: both recover the exact alignment, and agree to **0.0** RMS at both offsets.
+    Mesh-target ICP against MeshLab's and VTK's: all three recover the exact alignment.
 
-    ``compute_matrix_by_icp_between_meshes`` runs its correspondences against the reference *mesh*
-    rather than a point cloud, which is what makes it the equivalent of the mesh-target ``icp``
-    rather than of ``icp_point_cloud``. Three named transforms, all of them plumbing:
+    **pymeshlab, Class B**: both recover the exact alignment, and agree to **0.0** RMS at both
+    offsets. ``compute_matrix_by_icp_between_meshes`` runs its correspondences against the
+    reference *mesh* rather than a point cloud, which is what makes it the equivalent of the
+    mesh-target ``icp`` rather than of ``icp_point_cloud``. Three named transforms, all of them
+    plumbing:
 
     * The filter returns ``None`` and **does not move the vertices**. It writes the source layer's
       *transformation matrix*, so ``vertex_matrix()`` reads back byte-identical to the input -- the
@@ -1018,12 +911,23 @@ def test_icp_mesh_matches_pymeshlab(device: str, angle: float) -> None:
     * ``samplenum`` is matched to the vertex count so both sides minimize over the same number of
       correspondences.
 
+    **pyvista, Class C**: both solvers recover the same rigid motion, compared through the aligned
+    positions. A derived scalar rather than an element-wise match on the *matrix*, because ICP's
+    answer is a transform and two implementations that converge to the same alignment can differ
+    in the last digits of the rotation while agreeing on where every point lands. So the assert is
+    on the RMS to the reference, on both sides, plus that the two aligned clouds agree with each
+    other. ``align(return_matrix=True)`` returns ``(aligned_mesh, 4x4 matrix)`` -- and unlike
+    MeshLab it *does* move the points, so the aligned mesh's ``points`` is the answer rather than a
+    layer transform. Measured mean residual **4.8e-04** recovering a 10-degree rotation of the
+    notched cube.
+
     **The fixture is chosen so the problem is well posed.** ICP has no unique answer on a
     rotationally symmetric shape: on an ``icosphere`` any rotation maps the surface onto itself, and
     measured there ordito reduces the RMS only 0.141 -> 0.124 while MeshLab's own result is equally
     arbitrary -- neither is wrong and the comparison is meaningless. A **notched** cube breaks every
     symmetry, and on it both solvers drive the RMS to zero exactly. MeshLab also needs enough
-    samples: at 64 vertices the filter raises, so the cube is subdivided twice to 256.
+    samples: at 64 vertices the filter raises, so the cube is subdivided twice to 256. The starting
+    RMS is asserted large, so no comparison below is two failures agreeing.
 
     Two offsets, 0.15 and 0.30 rad, so the assert is not resting on one starting point.
     """
@@ -1050,53 +954,6 @@ def test_icp_mesh_matches_pymeshlab(device: str, angle: float) -> None:
         np.linalg.det(np.asarray(meshset_pml.current_mesh().transform_matrix())[:3, :3]), 1.0
     )
 
-    _matrix_wp, transformed_wp, _cost_wp = od.registration.icp(
-        points_to_warp(source_np, device),
-        points_to_warp(vertices_np, device),
-        wp.array(faces_np.reshape(-1), dtype=wp.int32, device=device),
-        max_iterations=100,
-        threshold=-np.inf,
-        reflection=False,
-        scale=False,
-    )
-    moved_wp = transformed_wp.numpy().astype(np.float64)
-
-    # Both land on the reference itself, so neither comparison below is two failures agreeing.
-    assert _rms(source_np, vertices_np) > 0.1
-    assert _rms(moved_pml, vertices_np) < 1e-4
-    assert _rms(moved_wp, vertices_np) < 1e-4
-    assert np.allclose(moved_wp, moved_pml, rtol=1e-4, atol=1e-4)
-
-
-@pytest.mark.parametrize("angle", [0.15, 0.30])
-@pytest.mark.parity("icp_mesh", "pyvista")
-def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
-    """
-    Class C: both solvers recover the same rigid motion, compared through the aligned positions.
-
-    A derived scalar rather than an element-wise match on the *matrix*, because ICP's answer is a
-    transform and two implementations that converge to the same alignment can differ in the last
-    digits of the rotation while agreeing on where every point lands. So the assert is on the RMS
-    to the reference, on both sides, plus that the two aligned clouds agree with each other.
-
-    ``align(return_matrix=True)`` returns ``(aligned_mesh, 4x4 matrix)`` -- and unlike MeshLab it
-    *does* move the points, so the aligned mesh's ``points`` is the answer rather than a layer
-    transform. Measured mean residual **4.8e-04** recovering a 10-degree rotation of the notched
-    cube.
-
-    Same fixture and same reason as the pymeshlab test above: a rotationally symmetric shape makes
-    ICP's answer non-unique, so a notched cube is used and the starting RMS is asserted large before
-    the two results are compared to it.
-    """
-    mesh_tm = tm.boolean.difference(
-        [tm.creation.box(extents=[1.0, 1.0, 1.0]), tm.creation.box(extents=[0.4, 0.4, 2.0])]
-    ).subdivide()
-    mesh_tm = mesh_tm.subdivide()
-    vertices_np = mesh_tm.vertices.astype(np.float64)
-    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
-    rotation_np, translation_np = _rigid_transform(angle, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
-    source_np = vertices_np @ rotation_np.T.astype(np.float64) + translation_np
-
     source_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(source_np), faces_np)
     target_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(vertices_np), faces_np)
     aligned_pv, matrix_pv = cast(
@@ -1116,10 +973,11 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     )
     moved_wp = transformed_wp.numpy().astype(np.float64)
 
-    # Neither result is two failures agreeing: the input starts far from the reference.
     assert _rms(source_np, vertices_np) > 0.1
+    assert _rms(moved_pml, vertices_np) < 1e-4
+    assert _rms(moved_wp, vertices_np) < 1e-4
+    assert np.allclose(moved_wp, moved_pml, rtol=1e-4, atol=1e-4)
     assert _rms(moved_pv, vertices_np) < 1e-2
-    assert _rms(moved_wp, vertices_np) < 1e-2
     assert _rms(moved_wp, moved_pv) < 1e-2
 
 
@@ -1186,14 +1044,7 @@ def test_icp_point_to_plane_mesh_matches_meshlib(
     icp_ml.setParams(properties_ml)
     assert icp_ml.getParams().method == mm.ICPMethod.PointToPlane  # its default, unchanged
     transform_ml = icp_ml.calculateTransformation()
-    rotation_ml = np.array(
-        [
-            [transform_ml.A.x.x, transform_ml.A.x.y, transform_ml.A.x.z],
-            [transform_ml.A.y.x, transform_ml.A.y.y, transform_ml.A.y.z],
-            [transform_ml.A.z.x, transform_ml.A.z.y, transform_ml.A.z.z],
-        ]
-    )
-    translation_ml = np.array([transform_ml.b.x, transform_ml.b.y, transform_ml.b.z])
+    rotation_ml, translation_ml = _affine_ml_to_numpy(transform_ml)
     moved_ml = source_np @ rotation_ml.T + translation_ml
 
     assert _rms(source_np, vertices_np) > 1e-2  # non-vacuity: the clouds start apart
@@ -1675,66 +1526,60 @@ def test_icp_empty_source(device: str) -> None:
     assert not np.isfinite(cost_od)
 
 
-def test_icp_point_to_plane_requires_normals(device: str) -> None:
-    rng = np.random.default_rng(14)
+@pytest.mark.parametrize("n_normals", [None, 40], ids=["missing", "length_mismatch"])
+def test_icp_point_to_plane_validates_target_normals(device: str, n_normals: int | None) -> None:
+    """A point-cloud target needs one normal per point: none at all, or 40 of 50, raises."""
+    rng = np.random.default_rng(16)
     target_wp = points_to_warp(rng.standard_normal((50, 3)), device)
     source_wp = points_to_warp(rng.standard_normal((50, 3)), device)
+    normals_wp = (
+        None if n_normals is None else points_to_warp(rng.standard_normal((n_normals, 3)), device)
+    )
     with pytest.raises(ValueError, match="target_normals"):
-        od.registration.icp_point_to_plane(source_wp, target_wp, None)
+        od.registration.icp_point_to_plane(source_wp, target_wp, None, target_normals=normals_wp)
 
 
-@pytest.mark.parametrize("max_iterations", [1, 2, 10])
-def test_icp_max_distance_all_rejected(device: str, max_iterations: int) -> None:
+@pytest.mark.parametrize(
+    ("method", "max_iterations"),
+    [("point", 1), ("point", 2), ("point", 10), ("plane", 10)],
+    ids=["point-1", "point-2", "point-10", "plane-10"],
+)
+def test_icp_max_distance_all_rejected(device: str, method: str, max_iterations: int) -> None:
     """
     Not a library comparison: a first fit with no weight is not kept, at every loop shape.
 
     Every correspondence is beyond ``max_distance``, so the first fit divides by a zero weight sum
     and is a matrix of NaN. One iteration decides that in the device round alone, and more read
-    the round counter after the recording and skip the replay; both must return the seed, its
-    image and ``inf``. Mutation probe: letting ``point_to_point_round`` keep a weightless fit fails
-    all three arms on the matrix.
+    the round counter after the recording and skip the replay; both must return the seed and
+    ``inf`` -- point-to-point also the seed's image. Point-to-plane must likewise bail out on the
+    first iteration rather than read a zeroed accumulator as a converged ``cost=0.0`` fit. Mutation
+    probe: letting ``point_to_point_round`` keep a weightless fit fails all three point arms on the
+    matrix.
     """
-    rng = np.random.default_rng(15)
+    rng = np.random.default_rng(15 if method == "point" else 17)
     target_np = rng.standard_normal((100, 3)).astype(np.float32)
     source_np = (target_np + np.array([5.0, 5.0, 5.0], dtype=np.float32)).astype(np.float32)
     source_wp = points_to_warp(source_np, device)
     target_wp = points_to_warp(target_np, device)
 
-    matrix_wp, transformed_wp, cost = od.registration.icp(
-        source_wp, target_wp, None, max_iterations=max_iterations, max_distance=1e-6
-    )
+    if method == "point":
+        matrix_wp, transformed_wp, cost = od.registration.icp(
+            source_wp, target_wp, None, max_iterations=max_iterations, max_distance=1e-6
+        )
+        assert np.array_equal(transformed_wp.numpy(), source_np)
+    else:
+        normals_np = target_np / np.linalg.norm(target_np, axis=1, keepdims=True)
+        matrix_wp, _, cost = od.registration.icp_point_to_plane(
+            source_wp,
+            target_wp,
+            None,
+            target_normals=points_to_warp(normals_np, device),
+            max_iterations=max_iterations,
+            max_distance=1e-6,
+        )
     assert np.isfinite(matrix_wp.numpy()).all()
     assert np.allclose(matrix_wp.numpy()[0], np.eye(4), atol=1e-6)
-    assert np.array_equal(transformed_wp.numpy(), source_np)
     assert cost == np.inf
-
-
-def test_icp_point_to_plane_target_normals_length_mismatch(device: str) -> None:
-    rng = np.random.default_rng(16)
-    target_wp = points_to_warp(rng.standard_normal((50, 3)), device)
-    source_wp = points_to_warp(rng.standard_normal((50, 3)), device)
-    normals_wp = points_to_warp(rng.standard_normal((40, 3)), device)
-    with pytest.raises(ValueError, match="target_normals"):
-        od.registration.icp_point_to_plane(source_wp, target_wp, None, target_normals=normals_wp)
-
-
-def test_icp_point_to_plane_max_distance_all_rejected(device: str) -> None:
-    rng = np.random.default_rng(17)
-    target_np = rng.standard_normal((100, 3)).astype(np.float32)
-    normals_np = target_np / np.linalg.norm(target_np, axis=1, keepdims=True)
-    source_np = (target_np + np.array([5.0, 5.0, 5.0], dtype=np.float32)).astype(np.float32)
-    source_wp = points_to_warp(source_np, device)
-    target_wp = points_to_warp(target_np, device)
-    normals_wp = points_to_warp(normals_np, device)
-
-    # Every correspondence is beyond max_distance -> the loop must bail out on the first
-    # iteration rather than read a zeroed accumulator as a converged cost=0.0 fit.
-    matrix_wp, _, cost_od = od.registration.icp_point_to_plane(
-        source_wp, target_wp, None, target_normals=normals_wp, max_iterations=10, max_distance=1e-6
-    )
-    assert np.isfinite(matrix_wp.numpy()).all()
-    assert np.allclose(matrix_wp.numpy()[0], np.eye(4), atol=1e-6)
-    assert not np.isfinite(cost_od)
 
 
 def test_icp_point_to_plane_tukey_all_weights_zero(device: str) -> None:

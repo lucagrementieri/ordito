@@ -333,18 +333,6 @@ def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     )
 
 
-def test_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
-    """
-    Class A: the three corner angles per face against ``Trimesh.face_angles``, in corner order.
-
-    Column order is part of the claim -- angle ``i`` is at corner ``i`` -- because the
-    cotangent Laplacian and the angle defect both index it that way.
-    """
-    mesh_tm, mesh_wp = half_torus
-    angles_wp = od.triangles.face_angles(mesh_wp.points, mesh_wp.indices)
-    assert np.allclose(angles_wp.numpy(), mesh_tm.face_angles, rtol=1e-5, atol=1e-5)
-
-
 @pytest.mark.parametrize(
     ("metric", "filter_metric"),
     [
@@ -968,7 +956,7 @@ def test_face_signed_volumes(request: pytest.FixtureRequest, mesh_name: str):
 
 
 def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
-    device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
+    icosphere_coarse: tuple[tm.Trimesh, wp.Mesh],
 ):
     """
     Moving the apex changes every per-face volume and leaves the closed-mesh total alone.
@@ -978,13 +966,8 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
     a real parameter rather than a decoration, and it is the axis ``sample.sample_volume`` uses --
     it fans from the surface centroid precisely so that no entry comes out negative.
     """
-    mesh_tm, _mesh_tm_wp = icosphere_coarse
-    vertices_wp = points_to_warp(mesh_tm.vertices, device)
-    faces_wp = wp.array(
-        np.ascontiguousarray(mesh_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    _, mesh_wp = icosphere_coarse
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     at_origin_np = od.triangles.face_signed_volumes(vertices_wp, faces_wp).numpy()
     shifted_np = od.triangles.face_signed_volumes(
@@ -995,20 +978,15 @@ def test_face_signed_volumes_apex_shifts_each_face_but_not_the_sum(
     assert np.isclose(at_origin_np.sum(), shifted_np.sum(), rtol=1e-4)
 
 
-def test_face_signed_volumes_follows_the_input_dtype(
-    device: str, icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]
-):
+def test_face_signed_volumes_follows_the_input_dtype(icosphere_coarse: tuple[tm.Trimesh, wp.Mesh]):
     """``vec3d`` in, ``float64`` out -- the axis ``smoothing``'s volume constraint needs."""
-    mesh_tm, _mesh_tm_wp = icosphere_coarse
-    faces_wp = wp.array(
-        np.ascontiguousarray(mesh_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    mesh_tm, mesh_wp = icosphere_coarse
+    faces_wp, vertices_f32_wp = mesh_wp.indices, mesh_wp.points
     vertices_f64_wp = wp.array(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), dtype=wp.vec3d, device=device
+        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+        dtype=wp.vec3d,
+        device=mesh_wp.points.device,
     )
-    vertices_f32_wp = points_to_warp(mesh_tm.vertices, device)
 
     volumes_f64_wp = od.triangles.face_signed_volumes(vertices_f64_wp, faces_wp)
     volumes_f32_wp = od.triangles.face_signed_volumes(vertices_f32_wp, faces_wp)

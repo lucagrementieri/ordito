@@ -31,6 +31,14 @@ group_test_data = (
 )
 
 
+def _int_rows(rows_np: np.ndarray | list[list[int]], device: str) -> odt.Array2dInt32:
+    """Upload host integer rows as a rank-2 ``int32`` array on ``device``."""
+    return odt.as_array2d(
+        wp.array(np.ascontiguousarray(rows_np, dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )
+
+
 @pytest.mark.parametrize(("values_np", "length", "expected_rows"), group_test_data)
 def test_group(
     device: str, values_np: np.ndarray, length: int, expected_rows: list[list[int]]
@@ -81,42 +89,53 @@ def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -
 
 
 def test_group_int_rows(device: str) -> None:
+    """
+    Class B (order within a group): ``trimesh.grouping.group_rows`` at the same multiplicity.
+
+    Ordito against ordito for the unvalidated arm: with a ``max_value`` bound, ``validate=False``
+    skips the range check and must return the validated groups unchanged.
+    """
     data_np = np.array([[1, 2], [3, 4], [1, 2], [2, 1], [3, 4], [0, 1], [3, 4]], dtype=np.int32)
     length = 2
     groups_np = np.sort(tm.grouping.group_rows(data_np, require_count=length), axis=1)
 
-    data_wp = odt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
+    data_wp = _int_rows(data_np, device)
     groups_wp = od.grouping.group_int_rows(data_wp, length)
     assert np.array_equal(np.sort(groups_wp.numpy(), axis=1), groups_np)
 
+    bounded_wp = od.grouping.group_int_rows(data_wp, length, max_value=7)
+    unvalidated_wp = od.grouping.group_int_rows(data_wp, length, max_value=7, validate=False)
+    assert np.array_equal(np.sort(bounded_wp.numpy(), axis=1), groups_np)
+    assert np.array_equal(unvalidated_wp.numpy(), bounded_wp.numpy())
 
-def test_unique_1d(device: str):
-    data_np = np.array([0, 1, 20, 3, 1, 3, 10, 20], dtype=np.int32)
-    unique_np = np.unique(data_np)
 
-    data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp = od.grouping.unique_1d(data_wp)
+@pytest.mark.parametrize(
+    ("dtype", "data_list"),
+    [
+        pytest.param(wp.int32, [0, 1, 20, 3, 1, 3, 10, 20], id="int32"),
+        pytest.param(wp.float32, [20.0, 10.0, 2.0, 3.0, 1.0, 3.0, 10.0, 20.0], id="float32"),
+        pytest.param(wp.int64, [20, 10, 2, 3, 1, 3, 10, 20], id="int64"),
+        pytest.param(wp.uint64, [20, 10, 20, 3, 1, 3, 10, 20], id="uint64"),
+    ],
+)
+def test_unique_1d(device: str, dtype: type, data_list: list[float]) -> None:
+    """
+    Class A against ``numpy.unique``: values alone, then with the inverse and the counts.
+
+    One arm per dtype the radix sort takes, the ``float32`` arm being the one that keeps the hash
+    table rather than the sort.
+    """
+    data_np = np.array(data_list, dtype=wp.dtype_to_numpy(dtype))
+    unique_np, inverse_np, counts_np = np.unique(data_np, return_inverse=True, return_counts=True)
+
+    data_wp = wp.array(data_np, dtype=dtype, device=device)
+    assert np.array_equal(od.grouping.unique_1d(data_wp).numpy(), unique_np)
+    unique_wp, inverse_wp, counts_wp = od.grouping.unique_1d(
+        data_wp, return_inverse=True, return_counts=True
+    )
     assert np.array_equal(unique_wp.numpy(), unique_np)
-
-
-def test_unique_1d_counts(device: str):
-    data_np = np.array([20.0, 10.0, 2.0, 3.0, 1.0, 3.0, 10.0, 20.0], dtype=np.float32)
-    unique_np, counts_np = np.unique(data_np, return_counts=True)
-
-    data_wp = wp.array(data_np, dtype=wp.float32, device=device)
-    unique_wp, counts_wp = od.grouping.unique_1d(data_wp, return_counts=True)
-    assert np.array_equal(unique_wp.numpy(), unique_np)
+    assert np.array_equal(inverse_wp.numpy(), inverse_np.ravel())
     assert np.array_equal(counts_wp.numpy(), counts_np)
-
-
-def test_unique_1d_inverse(device: str):
-    data_np = np.array([20, 10, 2, 3, 1, 3, 10, 20], dtype=np.int64)
-    unique_np, inverse_np = np.unique(data_np, return_inverse=True)
-
-    data_wp = wp.array(data_np, dtype=wp.int64, device=device)
-    unique_wp, inverse_wp = od.grouping.unique_1d(data_wp, return_inverse=True)
-    assert np.array_equal(unique_wp.numpy(), unique_np)
-    assert np.array_equal(inverse_wp.numpy(), inverse_np)
 
 
 def test_unique_1d_inverse_float_with_nan(device: str):
@@ -138,19 +157,6 @@ def test_unique_1d_inverse_float_with_nan(device: str):
     unique_wp, inverse_wp = od.grouping.unique_1d(data_wp, return_inverse=True)
     assert np.array_equal(unique_wp.numpy(), unique_np, equal_nan=True)
     assert np.array_equal(inverse_wp.numpy(), inverse_np.ravel())
-
-
-def test_unique_1d_inverse_counts(device: str):
-    data_np = np.array([20, 10, 20, 3, 1, 3, 10, 20], dtype=np.uint64)
-    unique_np, inverse_np, counts_np = np.unique(data_np, return_inverse=True, return_counts=True)
-
-    data_wp = wp.array(data_np, dtype=wp.uint64, device=device)
-    unique_wp, inverse_wp, counts_wp = od.grouping.unique_1d(
-        data_wp, return_inverse=True, return_counts=True
-    )
-    assert np.array_equal(unique_wp.numpy(), unique_np)
-    assert np.array_equal(inverse_wp.numpy(), inverse_np)
-    assert np.array_equal(counts_wp.numpy(), counts_np)
 
 
 @pytest.mark.parametrize("dtype", [wp.int32, wp.uint64])
@@ -185,17 +191,6 @@ def test_unique_1d_max_value_invalid(device: str) -> None:
         od.grouping.unique_1d(ints_wp, max_value=-1)
     with pytest.raises(ValueError, match="integer data only"):
         od.grouping.unique_1d(floats_wp, max_value=3)
-
-
-def test_unique_rows_int32(device: str):
-    data_np = np.array([[1, 2, 3], [4, 5, 6], [1, 2, 3], [4, 5, 7]], dtype=np.int32)
-    data_wp = wp.array(data_np, dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = od.grouping.unique_rows(data_wp, return_inverse=True)
-
-    unique_np = np.unique(data_np, axis=0)
-    assert np.array_equal(lexsort_rows(unique_wp.numpy()), lexsort_rows(unique_np))
-    for i in range(data_np.shape[0]):
-        assert np.array_equal(unique_wp.numpy()[inverse_wp.numpy()[i]], data_np[i])
 
 
 def test_unique_rows_inverse_counts(device: str):
@@ -251,29 +246,31 @@ def test_unique_rows_vec3(device: str):
         )
 
 
-def test_unique_rows_empty_unsupported_dtype_raises(device: str) -> None:
+@pytest.mark.parametrize(
+    ("dtype", "row_shape", "error", "message"),
+    [
+        pytest.param(wp.int64, (3,), ValueError, "unsupported dtype", id="unsupported-dtype"),
+        pytest.param(wp.int32, (), TypeError, None, id="rank-1-not-vec3"),
+    ],
+)
+def test_unique_rows_rejects_empty_and_non_empty_alike(
+    device: str,
+    dtype: type,
+    row_shape: tuple[int, ...],
+    error: type[Exception],
+    message: str | None,
+) -> None:
     """
-    The ``n == 0`` branch must validate the same way ``hash_rows`` does on non-empty input.
+    An input ``unique_rows`` cannot hash raises the same whether or not it is empty.
 
-    Before this test, an empty, unsupported-dtype array silently fell into the ``float32`` guess
-    rather than raising, so an empty input and a non-empty one disagreed about the same bad dtype.
+    The ``n == 0`` branch must validate the way ``hash_rows`` does on non-empty input: an
+    unsupported dtype, and a rank-1 array that is not ``vec3``, each in both sizes.
     """
-    empty_wp = warp_empty((0, 3), wp.int64, device)
-    non_empty_wp = wp.array([[1, 2, 3]], dtype=wp.int64, device=device)
-    with pytest.raises(ValueError, match="unsupported dtype"):
-        od.grouping.unique_rows(empty_wp)  # pyright: ignore[reportArgumentType, reportCallIssue]
-    with pytest.raises(ValueError, match="unsupported dtype"):
-        od.grouping.unique_rows(non_empty_wp)
-
-
-def test_unique_rows_empty_wrong_rank_raises(device: str) -> None:
-    """A rank-1, non-``vec3`` array must raise consistently whether or not it is empty."""
-    empty_wp = warp_empty(0, wp.int32, device)
-    non_empty_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
-    with pytest.raises(TypeError):
-        od.grouping.unique_rows(empty_wp)
-    with pytest.raises(TypeError):
-        od.grouping.unique_rows(non_empty_wp)
+    empty_wp = warp_empty((0, *row_shape), dtype, device)
+    non_empty_wp = wp.ones((1, *row_shape), dtype=dtype, device=device)
+    for data_wp in (empty_wp, non_empty_wp):
+        with pytest.raises(error, match=message):
+            od.grouping.unique_rows(data_wp)
 
 
 @pytest.mark.parity("unique_faces", "igl", "trimesh")
@@ -336,11 +333,27 @@ def test_unique_faces(device: str):
     assert same_partition(inverse, np.asarray(inverse_igl).ravel())
 
 
-def test_unique_faces_empty(device: str):
-    faces_wp = warp_empty(0, wp.int32, device)
-    unique_wp, inverse_wp = od.grouping.unique_faces(faces_wp, return_inverse=True)
+def test_row_operations_on_empty_input(device: str) -> None:
+    """
+    Empty faces and empty rows reach each function's own empty-input path.
+
+    ``hash_indices_rows`` must not reach ``reduce.minmax``, which raises on an empty array, and
+    ``group_int_rows`` must not crash inside that default validation on its way to ``group``.
+    """
+    unique_wp, inverse_wp = od.grouping.unique_faces(
+        warp_empty(0, wp.int32, device), return_inverse=True
+    )
     assert unique_wp.size == 0
     assert inverse_wp.size == 0
+
+    empty_wp = odt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
+    packed_wp = od.grouping.hash_indices_rows(empty_wp)
+    assert packed_wp.shape == (0,)
+    assert packed_wp.dtype == wp.uint64
+    packed_unvalidated_wp = od.grouping.hash_indices_rows(empty_wp, max_index=5, validate=False)
+    assert packed_unvalidated_wp.shape == (0,)
+
+    assert od.grouping.group_int_rows(empty_wp, 2).shape == (0, 2)
 
 
 def test_first_occurrence_indices_matches_numpy_return_index(device: str) -> None:
@@ -392,9 +405,7 @@ def test_hash_rows_dispatches_to_the_typed_hashers(device: str, kind: str) -> No
         expected_wp = od.grouping.hash_vector_rows(data_wp)
     elif kind == "int32_rows":
         rows_np = np.array([[1, 2], [3, 4], [1, 2]], dtype=np.int32)
-        data_wp = odt.as_array2d(
-            wp.array(np.ascontiguousarray(rows_np), dtype=wp.int32, device=device), wp.int32
-        )
+        data_wp = _int_rows(rows_np, device)
         expected_wp = od.grouping.hash_indices_rows(data_wp)
     else:
         data_wp = wp.array(np.ascontiguousarray(positions_np), dtype=wp.float32, device=device)
@@ -491,7 +502,7 @@ def test_hash_indices_rows_valid(device: str) -> None:
     packed_np = _pack_indices_rows_np(indices_np, max_index)
     packed_default_np = _pack_indices_rows_np(indices_np)
 
-    indices_wp = odt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
+    indices_wp = _int_rows(indices_np, device)
     packed_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
     packed_default_wp = od.grouping.hash_indices_rows(indices_wp)
     assert np.array_equal(packed_wp.numpy(), packed_np)
@@ -500,26 +511,20 @@ def test_hash_indices_rows_valid(device: str) -> None:
 
 def test_hash_indices_rows_invalid(device: str) -> None:
     max_index = 8
-    indices_wp = odt.as_array2d(
-        wp.array([[0, 1, 2], [-3, 4, 1]], dtype=wp.int32, device=device), wp.int32
-    )
+    indices_wp = _int_rows([[0, 1, 2], [-3, 4, 1]], device)
 
     with pytest.raises(ValueError, match="data must be non-negative, got a minimum of -3"):
         _ = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
 
-    indices_oob = odt.as_array2d(
-        wp.array([[0, 1, 2], [3, 8, 1]], dtype=wp.int32, device=device), wp.int32
-    )
+    indices_oob = _int_rows([[0, 1, 2], [3, 8, 1]], device)
     with pytest.raises(ValueError, match="data must be less than max_index 8, got a maximum of 8"):
         _ = od.grouping.hash_indices_rows(indices_oob, max_index=max_index)
 
     with pytest.raises(ValueError, match="max_index must be positive, got 0"):
         _ = od.grouping.hash_indices_rows(indices_wp, max_index=0)
 
-    indices_ok = odt.as_array2d(
-        wp.array([[0, 1, 2], [3, 4, 5]], dtype=wp.int32, device=device), wp.int32
-    )
     indices_np_ok = np.array([[0, 1, 2], [3, 4, 5]], dtype=np.int32)
+    indices_ok = _int_rows(indices_np_ok, device)
     packed_np = _pack_indices_rows_np(indices_np_ok, max_index)
     packed_wp = od.grouping.hash_indices_rows(indices_ok, max_index=max_index)
     assert np.array_equal(packed_wp.numpy(), packed_np)
@@ -529,7 +534,7 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     rng = np.random.default_rng(11)
     max_index = 23
     indices_np = rng.integers(0, max_index, size=(64, 2), dtype=np.int32)
-    indices_wp = odt.as_array2d(wp.array(indices_np, dtype=wp.int32, device=device), wp.int32)
+    indices_wp = _int_rows(indices_np, device)
 
     # Skipping validation must not change the keys, only the range check that produces them.
     validated_wp = od.grouping.hash_indices_rows(indices_wp, max_index=max_index)
@@ -553,41 +558,9 @@ def test_hash_indices_rows_unvalidated(device: str) -> None:
     assert len(np.unique(indices_np[:, 1])) > 1
 
     # A wider row still needs one, because its radix has to keep ``radix ** w`` inside a uint64.
-    wide_wp = odt.as_array2d(
-        wp.array(rng.integers(0, max_index, size=(64, 3), dtype=np.int32), device=device), wp.int32
-    )
+    wide_wp = _int_rows(rng.integers(0, max_index, size=(64, 3), dtype=np.int32), device)
     with pytest.raises(ValueError, match="validate=False requires an explicit max_index"):
         _ = od.grouping.hash_indices_rows(wide_wp, validate=False)
-
-
-def test_hash_indices_rows_empty(device: str) -> None:
-    """An empty ``data`` must not reach ``reduce.minmax``, which raises on an empty array."""
-    empty_wp = odt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
-    packed_wp = od.grouping.hash_indices_rows(empty_wp)
-    assert packed_wp.shape == (0,)
-    assert packed_wp.dtype == wp.uint64
-
-    packed_unvalidated_wp = od.grouping.hash_indices_rows(empty_wp, max_index=5, validate=False)
-    assert packed_unvalidated_wp.shape == (0,)
-
-
-def test_group_int_rows_unvalidated(device: str) -> None:
-    data_np = np.array([[1, 2], [3, 4], [1, 2], [3, 4], [5, 6]], dtype=np.int32)
-    data_wp = odt.as_array2d(wp.array(data_np, dtype=wp.int32, device=device), wp.int32)
-    groups_wp = od.grouping.group_int_rows(data_wp, 2, max_value=7)
-    groups_unvalidated_wp = od.grouping.group_int_rows(data_wp, 2, max_value=7, validate=False)
-    assert np.array_equal(groups_unvalidated_wp.numpy(), groups_wp.numpy())
-
-
-def test_group_int_rows_empty(device: str) -> None:
-    """
-    An empty ``data`` must reach ``group``'s own empty-input path.
-
-    Not crash inside ``hash_indices_rows``'s default validation on the way there.
-    """
-    empty_wp = odt.as_array2d(warp_empty((0, 3), wp.int32, device), wp.int32)
-    groups_wp = od.grouping.group_int_rows(empty_wp, 2)
-    assert groups_wp.shape == (0, 2)
 
 
 def _pack_vec3_np(vectors_np: np.ndarray) -> np.ndarray:

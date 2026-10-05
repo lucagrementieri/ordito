@@ -66,6 +66,44 @@ def assert_unordered_rows_equal(rows_a: np.ndarray, rows_b: np.ndarray) -> None:
     assert np.array_equal(sorted_a, sorted_b)
 
 
+def assert_nearest_bijection(
+    points_np: np.ndarray, reference_np: np.ndarray, max_distance: float
+) -> np.ndarray:
+    """
+    Assert two point sets match one to one by nearest neighbour, and return the match.
+
+    The class-B transform for *coordinate* rows (vertices, face centroids) whose two sides number
+    the same points in different orders. [`lexsort_rows`][tests.comparisons.lexsort_rows] is not
+    usable there: float32 ties differ in float64, so two correct answers order their tied rows
+    differently and the compare fails by the full coordinate range. Each of ``points_np`` is
+    matched to its nearest ``reference_np`` row; the two sets must be the same size, every match
+    closer than ``max_distance`` (exactly ``0.0`` when ``max_distance`` is zero), and no reference
+    row matched twice -- the check that stops the match hiding a missing or duplicated point.
+
+    The arrays are queried at the dtype they arrive in, so a caller pinning an exact match keeps
+    both sides in the same precision.
+
+    Returns
+    -------
+    np.ndarray
+        ``(n,)`` the reference row each of ``points_np`` matched, a permutation of ``range(n)``.
+    """
+    assert len(points_np) == len(reference_np), (
+        f"point counts differ: {len(points_np)} vs {len(reference_np)}"
+    )
+    distance_np, match_np = cKDTree(reference_np).query(points_np)
+    worst = float(np.max(distance_np, initial=0.0))
+    if max_distance == 0.0:
+        assert worst == 0.0, f"points differ by up to {worst:.3e}"
+    else:
+        assert worst < max_distance, f"points differ by up to {worst:.3e}"
+    match_np = np.asarray(match_np)
+    assert np.unique(match_np).size == match_np.size, (
+        "the nearest-neighbour match is not a bijection"
+    )
+    return match_np
+
+
 def assert_nonconstant(values: np.ndarray, tol: float) -> None:
     """
     Assert a numeric field actually varies, guarding a comparison against passing vacuously.
@@ -153,8 +191,8 @@ def boundary_loop_sizes(faces_np: np.ndarray, min_size: int = 3) -> list[int]:
 
     Sizes come back sorted, so this is for *counts* and *multisets* of sizes only. A test pairing a
     loop's size with another per-loop quantity needs them in one consistent order and should read
-    both off ``boundary_loops`` (see ``test_fill_fan_preserve_largest``, which indexes sizes by the
-    argmax of the perimeters).
+    both off ``boundary_loops`` (see ``test_holes.py::test_fill_preserve_largest``, which indexes
+    sizes by the argmax of the perimeters).
 
     Parameters
     ----------

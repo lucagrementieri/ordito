@@ -76,6 +76,15 @@ def pytest_addoption(parser: pytest.Parser) -> None:
         "for tiled kernels, not a speed setting; run it through `python -m tests.devices "
         "--cpu-blocks`.",
     )
+    parser.getgroup("ordito").addoption(
+        "--skip-device-agnostic",
+        action="store_true",
+        default=False,
+        help="deselect the device_agnostic tests that do not use the device fixture: the static "
+        "scans of the source tree, which give the same answer in every process. "
+        "`python -m tests.devices` passes it to its CPU passes so they do not repeat the CUDA "
+        "pass's scans.",
+    )
 
 
 def pytest_configure(config: pytest.Config) -> None:
@@ -110,6 +119,12 @@ def pytest_configure(config: pytest.Config) -> None:
         "``cpu`` parametrization is skipped unless --device=both. It still runs on CUDA, where the "
         "same test costs under a second. Reserved for the handful of tests that dominate a CPU "
         "run -- see the comment above for the measurements and why the cut sits where it does.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "device_agnostic: a static scan of the source tree whose answer does not depend on the "
+        "device or the process. --skip-device-agnostic deselects it unless it uses the device "
+        "fixture (test_docstring_examples_run does), so a second device pass does not repeat it.",
     )
 
 
@@ -183,7 +198,24 @@ def pytest_generate_tests(metafunc: pytest.Metafunc) -> None:
 
 
 def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
-    """Drop the ``cpu`` parametrization of the ``slow_cpu`` tests unless --device=both."""
+    """
+    Deselect repeated static scans, and skip the ``slow_cpu`` tests' ``cpu`` half.
+
+    The scans go only under --skip-device-agnostic, and only those not reaching the ``device``
+    fixture: a docstring example runs on the device and so belongs to every pass. The
+    ``slow_cpu`` skip applies unless --device=both.
+    """
+    if config.getoption("--skip-device-agnostic"):
+        dropped = [
+            item
+            for item in items
+            if item.get_closest_marker("device_agnostic") is not None
+            and "device" not in getattr(item, "fixturenames", ())
+        ]
+        if dropped:
+            config.hook.pytest_deselected(items=dropped)
+            kept = set(map(id, dropped))
+            items[:] = [item for item in items if id(item) not in kept]
     if str(config.getoption("--device")) == "both":
         return
     for item in items:
@@ -576,6 +608,19 @@ def folded_patch() -> tuple[np.ndarray, np.ndarray]:
     )
     faces = np.array([[0, 1, 2], [1, 3, 2], [3, 1, 4]], dtype=np.int32)
     return vertices, faces
+
+
+@pytest.fixture
+def force_halfedge_buckets(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Route every halfedge pairing given a vertex count through the per-vertex edge buckets.
+
+    The buckets run on CUDA from a halfedge-count gate and never on the CPU device; this opens
+    both gates, so a test runs the bucket path on both devices and at fixture size. A call without
+    a vertex count still takes the key sort.
+    """
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
 
 
 CACHED_TRIMESH_KEYS = frozenset(

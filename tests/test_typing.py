@@ -39,20 +39,31 @@ _INT_WP_TO_NUMPY: tuple[tuple[type, type[np.integer]], ...] = (
 _FLOAT_DTYPES: tuple[type, ...] = (wp.float16, wp.float32, wp.float64)
 
 
-def test_dtype_max() -> None:
-    for wp_dt, np_ic in _INT_WP_TO_NUMPY:
-        np_dtype = np.dtype(np_ic)
-        assert odt.dtype_max(wp_dt) == np.iinfo(np_dtype).max
-    for wp_dt in _FLOAT_DTYPES:
-        assert np.isposinf(odt.dtype_max(wp_dt))
+@pytest.mark.parametrize(
+    "dtype_wp",
+    [dtype for dtype, _ in _INT_WP_TO_NUMPY] + list(_FLOAT_DTYPES),
+    ids=lambda d: d.__name__,
+)
+def test_dtype_limits_and_zero(dtype_wp: type) -> None:
+    """
+    ``dtype_max`` / ``dtype_min`` are numpy's ``iinfo`` bounds on integers and ``+-inf`` on floats.
 
-
-def test_dtype_min() -> None:
-    for wp_dt, np_ic in _INT_WP_TO_NUMPY:
-        np_dtype = np.dtype(np_ic)
-        assert odt.dtype_min(wp_dt) == np.iinfo(np_dtype).min
-    for wp_dt in _FLOAT_DTYPES:
-        assert np.isneginf(odt.dtype_min(wp_dt))
+    ``dtype_zero`` splits integer and float types like Python: a plain ``int`` (never a ``bool``)
+    for the former and a ``float`` for the latter, not merely something ``== 0``.
+    """
+    integer_np = dict(_INT_WP_TO_NUMPY).get(dtype_wp)
+    zero = odt.dtype_zero(dtype_wp)
+    if integer_np is not None:
+        assert odt.dtype_max(dtype_wp) == np.iinfo(np.dtype(integer_np)).max
+        assert odt.dtype_min(dtype_wp) == np.iinfo(np.dtype(integer_np)).min
+        assert zero == 0
+        assert isinstance(zero, int)
+        assert not isinstance(zero, bool)
+    else:
+        assert np.isposinf(odt.dtype_max(dtype_wp))
+        assert np.isneginf(odt.dtype_min(dtype_wp))
+        assert zero == 0.0
+        assert isinstance(zero, float)
 
 
 _ALLOCATOR_DTYPES = [wp.int32, wp.float32, wp.float64, wp.bool, wp.vec3, wp.mat33]
@@ -92,29 +103,6 @@ def test_the_empty_family_rejects_a_shape_of_the_wrong_rank(device: str) -> None
         odt.empty_2d((2, 3, 4), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
     with pytest.raises(ValueError, match="3D shape must have length 3"):
         odt.empty_3d((2, 3), wp.int32, device=device)  # pyright: ignore[reportArgumentType]  # the wrong rank under test
-
-
-def test_dtype_zero_splits_int_and_float_like_python() -> None:
-    """Integer types give a Python ``int`` and float ones a ``float``, not merely ``== 0``."""
-    for dtype_wp, _np_dtype in _INT_WP_TO_NUMPY:
-        zero = odt.dtype_zero(dtype_wp)
-        assert zero == 0
-        assert isinstance(zero, int)
-        assert not isinstance(zero, bool)
-    for dtype_wp in _FLOAT_DTYPES:
-        zero = odt.dtype_zero(dtype_wp)
-        assert zero == 0.0
-        assert isinstance(zero, float)
-
-
-@pytest.mark.parametrize("dtype_wp", [wp.float32, wp.bool])
-def test_empty_3d_shape(device: str, dtype_wp: type) -> None:
-    """The rank-3 allocator over both dtypes its overloads admit, on the caller's device."""
-    arr = odt.empty_3d((2, 3, 4), dtype_wp, device=device)
-    assert arr.shape == (2, 3, 4)
-    assert arr.ndim == 3
-    assert arr.dtype == dtype_wp
-    assert str(arr.device) == device
 
 
 _SCALAR_DTYPES: tuple[type, ...] = (

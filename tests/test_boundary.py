@@ -35,39 +35,58 @@ from tests.conversions import (
 
 # Open-surface fixtures that actually have a boundary (watertight solids do not).
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-@pytest.mark.parity("boundary_edges", "trimesh")
-def test_boundary_edges(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parity("boundary_edges", "trimesh", "pyvista", "igl")
+def test_boundary_edges_match_trimesh_pyvista_and_igl(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
-    Class B (row-set canonicalization): trimesh's multiplicity-1 edge rows, both sides lexsorted.
+    Class B against all three references: the same edge set after a canonical row order.
 
-    Neither library defines the order in which boundary edges come back, so the sets are
-    compared rather than the sequences; the rows themselves are already min-first on both
-    sides, which is what makes the lexsort sufficient.
+    Neither side defines the order in which boundary edges come back, so every comparison is a
+    lexsort of the rows.
+
+    - **trimesh**: its multiplicity-1 rows of ``edges_sorted``. The rows are min-first on both
+      sides, which is what makes the lexsort sufficient.
+    - **pyvista**: ``extract_feature_edges(boundary_edges=True)`` with the other three classes off,
+      after the index remap of VTK's renumbered output (as in ``tests/test_seams.py``). The flags
+      matter more here than anywhere else in the suite, because VTK's default turns on the
+      *feature* edges too and the count would then include every crease. **Do not map
+      ``PolyData.n_open_edges`` to this quantity**: it is ``vtkFeatureEdges`` with boundary **and
+      non-manifold** edges on, so on three faces sharing one edge it reads 7 where ordito counts 6
+      boundary edges. Only ``is_manifold`` (``n_open_edges == 0``) maps cleanly, and that is
+      ``tests/test_validation.py``'s row.
+    - **igl**: ``igl.boundary_facets`` returns the same edge list plus the incident face of each
+      edge and that edge's corner index -- strictly more than ordito's two columns, and the
+      benchmark reads its row that way. Only the first return is compared. igl's edges come out
+      **oriented** (they carry the incident face's winding), so they are sorted within each row
+      for the undirected set and compared unsorted against
+      [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges], which agrees with igl's
+      orientation vertex for vertex. That directed compare, where only the row order is
+      canonicalized, is what catches a reversed half-edge.
+
+    Both fixtures are open, so the references are non-empty by construction -- asserted anyway,
+    since running this on a closed mesh would compare two empty sets and pass.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
+    edges_pv = pyvista_edges_to_indices(
+        trimesh_to_pyvista(mesh_tm).extract_feature_edges(
+            boundary_edges=True, feature_edges=False, non_manifold_edges=False, manifold_edges=False
+        ),
+        mesh_tm.vertices,
+    )
+    edges_igl, _face_igl, _corner_igl = igl.boundary_facets(mesh_tm.faces.astype(np.int64))
+    assert len(edges_pv) > 0
+
     boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
+    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
-    assert np.array_equal(lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(boundary_edges_tm))
-
-
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-def test_oriented_boundary_edges(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B, and the transform is *weaker* than the one above -- deliberately.
-
-    These edges are directed, so the rows must not be sorted within themselves: only the row
-    order is canonicalized. That is the whole difference from [`test_boundary_edges`], and it
-    is what makes this the test that would catch a reversed half-edge.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-
-    oriented_edges_tm = mesh_tm.edges[_boundary_indices_tm(mesh_tm)]
-    oriented_edges_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
-
-    # Directed edges: compare as a set without sorting within each row.
-    assert np.array_equal(lexsort_rows(oriented_edges_wp.numpy()), lexsort_rows(oriented_edges_tm))
+    canonical_wp = lexsort_rows(boundary_edges_wp.numpy())
+    assert np.array_equal(canonical_wp, lexsort_rows(boundary_edges_tm))
+    assert np.array_equal(canonical_wp, lexsort_rows(edges_pv))
+    assert np.array_equal(canonical_wp, lexsort_rows(np.sort(edges_igl, axis=1)))
+    assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(np.asarray(edges_igl)))
 
 
 @pytest.mark.parametrize("mesh_name", [*OPEN_MESHES, "mobius"])
@@ -77,7 +96,8 @@ def test_boundary_queries_bucketed_match_the_key_sort(
     """
     Ordito against ordito: the bucketed mates give the key sort's boundary, row for row.
 
-    The sort path carries the oracles (``test_boundary_edges``, ``test_boundary_loops`` and the
+    The sort path carries the oracles (``test_boundary_edges_match_trimesh_pyvista_and_igl``,
+    ``test_boundary_loops`` and the
     rest); on the bucket path only the boundary halfedges are sorted, so the edge rows are pinned
     to strictly ascending ``(max, min)`` keys and every query to the sort path's answer.
     """
@@ -126,6 +146,10 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     because it excludes the mesh's own boundary by construction. It is the oracle for
     [`region_boundary_edges`][ordito.selection.region_boundary_edges] instead, where
     tests/test_selection.py pins it.
+
+    [`boundary_vertices`][ordito.boundary.boundary_vertices] is checked on the same fixtures as the
+    *positions* gathered on the trimesh side, ``vertices[unique(edges)]``, which also fixes the
+    order since ordito returns ascending indices too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
@@ -147,73 +171,10 @@ def test_boundary_vertex_indices(request: pytest.FixtureRequest, mesh_name: str)
     # And the edges themselves project onto the same vertex set.
     edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
     assert np.array_equal(np.unique(edges_wp.numpy()), np.flatnonzero(selection_pml))
-
-
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-@pytest.mark.parity("boundary_edges", "pyvista")
-def test_boundary_edges_match_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B: ``extract_feature_edges(boundary_edges=True)`` with the other three classes off.
-
-    The named transform is the index remap of VTK's renumbered output plus the row ordering, as in
-    ``tests/test_seams.py``. The flags matter more here than anywhere else in the suite, because
-    VTK's default turns on the *feature* edges too and the count would then include every crease.
-
-    **Do not map ``PolyData.n_open_edges`` to this quantity**: it is ``vtkFeatureEdges`` with
-    boundary **and non-manifold** edges on, so on three faces sharing one edge it reads 7 where
-    ordito counts 6 boundary edges. Only ``is_manifold`` (``n_open_edges == 0``) maps cleanly, and
-    that is ``tests/test_validation.py``'s row.
-
-    Both fixtures are open, so the reference is non-empty by construction -- asserted anyway, since
-    running this on a closed mesh would compare two empty sets and pass.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edges_pv = pyvista_edges_to_indices(
-        trimesh_to_pyvista(mesh_tm).extract_feature_edges(
-            boundary_edges=True, feature_edges=False, non_manifold_edges=False, manifold_edges=False
-        ),
-        mesh_tm.vertices,
-    )
-    assert len(edges_pv) > 0
-
-    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
-    assert np.array_equal(lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(edges_pv))
-
-
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-def test_boundary_vertices(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B: the *positions* of the boundary vertices, gathered on the reference side.
-
-    trimesh returns boundary *edges*, so the named transform is ``vertices[unique(edges)]`` --
-    which also fixes the order, since ``np.unique`` sorts and ordito returns ascending indices
-    too.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-
-    boundary_edges_tm = mesh_tm.edges_sorted[_boundary_indices_tm(mesh_tm)]
-    vertices_tm = mesh_tm.vertices[np.unique(boundary_edges_tm)]
     vertices_wp = od.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices)
-
-    assert np.allclose(vertices_wp.numpy(), vertices_tm, rtol=1e-4, atol=1e-4)
-
-
-def test_boundary_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
-    assert od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
-    assert od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices).shape == (0, 2)
-    assert od.boundary.boundary_vertex_indices(mesh_wp.points, mesh_wp.indices).shape == (0,)
-    assert od.boundary.boundary_vertices(mesh_wp.points, mesh_wp.indices).shape == (0,)
-
-
-def test_boundary_empty(device: str) -> None:
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-
-    assert od.boundary.boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
-    assert od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
-    assert od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).shape == (0,)
-    assert od.boundary.boundary_vertices(vertices_wp, faces_wp).shape == (0,)
+    assert np.allclose(
+        vertices_wp.numpy(), mesh_tm.vertices[vertex_indices_tm], rtol=1e-4, atol=1e-4
+    )
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
@@ -494,25 +455,26 @@ def test_boundary_loop_sizes_refuses_a_pinched_rim() -> None:
     failure mode an oracle can least afford. Built by opening two holes in an icosphere that share a
     vertex -- reachable from ordinary face deletion, not a contrived mesh.
     """
-    sphere_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
-    centers_np = sphere_tm.triangles_center
-    keep_np = np.ones(sphere_tm.faces.shape[0], dtype=bool)
-    keep_np[np.argsort(-centers_np[:, 2])[:6]] = False
-    keep_np[np.argsort(centers_np[:, 2])[:2]] = False
-    holed_tm = tm.Trimesh(sphere_tm.vertices, sphere_tm.faces[keep_np], process=False)
+    _, faces_np = _pinched_icosphere()
 
     with pytest.raises(ValueError, match="two incident boundary edges"):
-        boundary_loop_sizes(np.asarray(holed_tm.faces))
+        boundary_loop_sizes(faces_np)
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
 def test_boundary_loops_with_offsets_matches_boundary_loops(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
-    """Ordito against ordito: the list form is the packed form split, loop for loop."""
+    """
+    Ordito against ordito: the list form is the packed form split, loop for loop.
+
+    The default list is views into one shared buffer; ``copy=True`` must give the same loops in
+    independent storage.
+    """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
+    copies_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices, copy=True)
     flat_wp, offsets_wp = od.boundary.boundary_loops_with_offsets(mesh_wp.points, mesh_wp.indices)
 
     offsets_np = offsets_wp.numpy()
@@ -523,25 +485,15 @@ def test_boundary_loops_with_offsets_matches_boundary_loops(
         begin, end = int(offsets_np[i]), int(offsets_np[i + 1])
         assert np.array_equal(loop_wp.numpy(), flat_wp.numpy()[begin:end])
 
-
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-def test_boundary_loops_copy_detaches_from_packed_buffer(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    # The default is a view into one shared buffer; ``copy=True`` must give independent storage.
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    views = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
-    copies = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices, copy=True)
-
-    assert len(views) == len(copies)
-    for view_wp, copy_wp in zip(views, copies, strict=True):
+    assert len(copies_wp) == len(loops_wp)
+    for view_wp, copy_wp in zip(loops_wp, copies_wp, strict=True):
         assert np.array_equal(view_wp.numpy(), copy_wp.numpy())
-    if len(views) > 1:
-        assert views[0].ptr is not None
-        assert views[1].ptr is not None
-        assert views[0].ptr != views[1].ptr
+    if len(loops_wp) > 1:
+        assert loops_wp[0].ptr is not None
+        assert loops_wp[1].ptr is not None
+        assert loops_wp[0].ptr != loops_wp[1].ptr
         # Adjacent views share one allocation; the copies do not.
-        assert views[1].ptr - views[0].ptr == 4 * views[0].size
+        assert loops_wp[1].ptr - loops_wp[0].ptr == 4 * loops_wp[0].size
 
 
 @pytest.mark.parametrize("rim", [7, 8, 9, 15, 16, 17, 63, 64, 65, 255, 256, 257, 4095, 4097])
@@ -610,17 +562,12 @@ def test_boundary_loops_walk_a_pinched_rim_edge_by_edge(device: str) -> None:
     transform is from consecutive loop pairs to directed edges; the claim is that they are exactly
     the oriented boundary edges, which ``trimesh`` reads off the faces with no loop walk at all.
     """
-    sphere_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
-    centers_np = sphere_tm.triangles_center
-    keep_np = np.ones(sphere_tm.faces.shape[0], dtype=bool)
-    keep_np[np.argsort(-centers_np[:, 2])[:6]] = False
-    keep_np[np.argsort(centers_np[:, 2])[:2]] = False
-    faces_np = sphere_tm.faces[keep_np]
-    holed_tm = tm.Trimesh(sphere_tm.vertices, faces_np, process=False)
+    vertices_np, faces_np = _pinched_icosphere()
+    holed_tm = tm.Trimesh(vertices_np, faces_np, process=False)
     # Non-vacuity: the rim really is pinched -- more boundary edges touch some vertex than two.
     boundary_np = holed_tm.edges[tm_grouping.group_rows(holed_tm.edges_sorted, require_count=1)]
     assert np.bincount(boundary_np.ravel()).max() > 2
-    vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, faces_np, device)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
 
     loops_wp = od.boundary.boundary_loops(vertices_wp, faces_wp)
 
@@ -700,49 +647,6 @@ def test_boundary_loop(request: pytest.FixtureRequest, mesh_name: str) -> None:
     loop_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
 
     assert np.array_equal(loop_wp.numpy(), loop_igl)
-
-
-def test_boundary_loops_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
-    assert od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices) == []
-    assert od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).shape == (0,)
-
-
-def test_boundary_loops_empty(device: str) -> None:
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-
-    assert od.boundary.boundary_loops(vertices_wp, faces_wp) == []
-    assert od.boundary.longest_boundary_loop(vertices_wp, faces_wp).shape == (0,)
-
-
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-@pytest.mark.parity("boundary_edges", "igl")
-def test_boundary_edges_match_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B (row order): ``igl.boundary_facets`` returns the same edge set plus two extra columns.
-
-    Its three returns are the ``(n_boundary, 2)`` edge list, the incident face of each edge and that
-    edge's corner index within the face -- so it computes strictly more than ordito's two columns,
-    and the benchmark reads its row that way. Only the first return is compared here, after a
-    canonical row sort, since neither side defines an order over boundary edges.
-
-    igl's edges come out **oriented** (they carry the incident face's winding), so the rows are
-    sorted within themselves before the set comparison -- the same transform the trimesh test
-    above applies. ``oriented_boundary_edges`` is the ordito function whose *direction* is
-    comparable, and it agrees with igl's orientation vertex for vertex, which the second assert
-    pins.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edges_igl, _face_igl, _corner_igl = igl.boundary_facets(mesh_tm.faces.astype(np.int64))
-
-    boundary_edges_wp = od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices)
-    oriented_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
-
-    assert np.array_equal(
-        lexsort_rows(boundary_edges_wp.numpy()), lexsort_rows(np.sort(edges_igl, axis=1))
-    )
-    assert np.array_equal(lexsort_rows(oriented_wp.numpy()), lexsort_rows(np.asarray(edges_igl)))
 
 
 @pytest.mark.parametrize(
@@ -834,18 +738,17 @@ def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name:
     assert ear_opp_wp.shape == (0,)
 
 
-def test_ears_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_boundary_queries_watertight(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a library comparison: a closed mesh has no boundary edges, vertices, loops or ears."""
     _, mesh_wp = icosahedron
-    ear_wp, ear_opp_wp = od.boundary.ears(mesh_wp.indices)
-    assert ear_wp.shape == (0,)
-    assert ear_opp_wp.shape == (0,)
+    _assert_no_boundary(mesh_wp.points, mesh_wp.indices)
 
 
-def test_ears_empty(device: str) -> None:
+def test_boundary_queries_empty(device: str) -> None:
+    """Not a library comparison: a mesh with no vertices or faces answers every query empty."""
+    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    ear_wp, ear_opp_wp = od.boundary.ears(faces_wp)
-    assert ear_wp.shape == (0,)
-    assert ear_opp_wp.shape == (0,)
+    _assert_no_boundary(vertices_wp, faces_wp)
 
 
 @pytest.mark.parity("loop_perimeters", "meshlib")
@@ -1060,3 +963,26 @@ def _assert_edge_key_order(rows_np: np.ndarray) -> None:
     high = rows_np.max(axis=1).astype(np.int64)
     low = rows_np.min(axis=1).astype(np.int64)
     assert np.all(np.diff(high * (int(high.max(initial=0)) + 1) + low) > 0)
+
+
+def _pinched_icosphere() -> tuple[np.ndarray, np.ndarray]:
+    """``icosphere(2)`` with two holes opened that share one vertex: a pinched rim."""
+    sphere_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
+    centers_np = sphere_tm.triangles_center
+    keep_np = np.ones(sphere_tm.faces.shape[0], dtype=bool)
+    keep_np[np.argsort(-centers_np[:, 2])[:6]] = False
+    keep_np[np.argsort(centers_np[:, 2])[:2]] = False
+    return np.asarray(sphere_tm.vertices), np.asarray(sphere_tm.faces[keep_np])
+
+
+def _assert_no_boundary(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]) -> None:
+    """Assert every boundary query answers empty on a mesh with no boundary."""
+    assert od.boundary.boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
+    assert od.boundary.oriented_boundary_edges(vertices_wp, faces_wp).shape == (0, 2)
+    assert od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).shape == (0,)
+    assert od.boundary.boundary_vertices(vertices_wp, faces_wp).shape == (0,)
+    assert od.boundary.boundary_loops(vertices_wp, faces_wp) == []
+    assert od.boundary.longest_boundary_loop(vertices_wp, faces_wp).shape == (0,)
+    ear_wp, ear_opp_wp = od.boundary.ears(faces_wp)
+    assert ear_wp.shape == (0,)
+    assert ear_opp_wp.shape == (0,)

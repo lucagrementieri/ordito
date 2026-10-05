@@ -11,7 +11,7 @@ both rasterizers cover the pixel (the interpolated field is continuous, so value
 from __future__ import annotations
 
 import textwrap
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import Literal
 
 import moderngl
@@ -167,6 +167,18 @@ def _interior_mask(n: int) -> npt.NDArray[np.bool_]:
     return (rows > 0) & (rows < n - 1) & (cols > 0) & (cols < n - 1)
 
 
+def _upload_uv_mesh(
+    uv_np: npt.NDArray[np.float32], faces_np: npt.NDArray[np.int32], device: str
+) -> tuple[wp.array[wp.vec2], wp.array[wp.int32]]:
+    """Upload a UV lattice and its flat face buffer."""
+    return points_to_warp_uv(uv_np, device), wp.array(faces_np, dtype=wp.int32, device=device)
+
+
+def _float_rows(values_np: npt.NDArray[np.float32], device: str) -> odt.Array2dFloat32:
+    """Upload a ``(rows, channels)`` float32 attribute table."""
+    return odt.as_array2d(wp.array(values_np, dtype=wp.float32, device=device), wp.float32)
+
+
 # --------------------------------------------------------------------------------------------
 # Forward rasterization vs OpenGL
 # --------------------------------------------------------------------------------------------
@@ -223,11 +235,8 @@ def test_rasterize_attribute_matches_opengl(
         gl_context, uv_np, faces_np.reshape(-1, 3), attribute_np, resolution
     )
 
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    attribute_wp = odt.as_array2d(
-        wp.array(attribute_np, dtype=wp.float32, device=device), wp.float32
-    )
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
+    attribute_wp = _float_rows(attribute_np, device)
     image_wp = od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution).numpy()
 
     covered_gl = image_gl[:, :, 0] > 0.5
@@ -286,8 +295,7 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Contex
     class_gl = np.argmax(one_hot_image, axis=-1).astype(np.int32)
     class_gl[~covered_gl] = -1
 
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     labels_wp = wp.array(labels_np, dtype=wp.int32, device=device)
     class_wp = od.texture.rasterize_discrete_attribute(
         uv_wp, faces_wp, labels_wp, resolution
@@ -322,14 +330,18 @@ def test_rasterize_discrete_attribute_matches_opengl(gl_context: moderngl.Contex
     "parametrization. benchmarks/test_texture.py carries that decline.",
 )
 @pytest.mark.parametrize("order", [0, 1])
-@pytest.mark.parametrize("n_channels", [1, 3])
-def test_remap_attribute_matches_scipy(device: str, order: Literal[0, 1], n_channels: int):
+@pytest.mark.parametrize("n_channels", [None, 1, 3], ids=["rank2_image", "1ch", "3ch"])
+def test_remap_attribute_matches_scipy(device: str, order: Literal[0, 1], n_channels: int | None):
     """
     Class A against ``scipy.ndimage.map_coordinates``, on both interpolation orders.
 
     One test covers two benchmark groups because ``order`` is exactly what separates them:
     ``order=1`` is ``remap_attribute_from_uv_linear`` and ``order=0`` is ``..._nearest``, so both
     markers sit here rather than one of them borrowing the other's oracle.
+
+    ``n_channels=None`` is a bare ``(height, width)`` image, a separate branch of the wrapper: it
+    returns a ``(n, 1)`` column as the one-channel image does, and the reference helper promotes
+    it with ``image[:, :, None]``.
 
     The reference has to be *constructed* to agree, and that construction is the content of the
     comparison: ``_remap_attribute_scipy`` maps UV to pixel coordinates as
@@ -348,50 +360,24 @@ def test_remap_attribute_matches_scipy(device: str, order: Literal[0, 1], n_chan
     to **0.75-0.97**, the full range of the data, so the bound clears the mutation by four orders of
     magnitude.
     """
-    rng = np.random.default_rng(7 * order + n_channels)
+    rng = np.random.default_rng(7 * order + (n_channels or 0))
     height, width = 40, 48
-    image_np = rng.random((height, width, n_channels), dtype=np.float32)
+    image_shape = (height, width) if n_channels is None else (height, width, n_channels)
+    image_np = rng.random(image_shape, dtype=np.float32)
     uv_np = rng.random((200, 2), dtype=np.float32)
 
     values_np = _remap_attribute_scipy(uv_np, image_np, order)
 
     uv_wp = points_to_warp_uv(uv_np, device)
-    image_wp = odt.as_array3d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
+    image_wp = (
+        _float_rows(image_np, device)
+        if n_channels is None
+        else odt.as_array3d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
+    )
     values_wp = od.texture.remap_attribute_from_uv(uv_wp, image_wp, order=order).numpy()
 
-    assert values_wp.shape == (200, n_channels)
+    assert values_wp.shape == (200, n_channels or 1)
     assert np.allclose(values_wp, values_np, rtol=1e-4, atol=1e-4)
-
-
-@pytest.mark.parity(
-    "remap_attribute_from_uv_linear",
-    "scipy",
-    benchmarked=False,
-    reason="scipy.ndimage.map_coordinates samples a plain grid and knows nothing about UV space or "
-    "mesh topology, so it is the right oracle for the interpolation and the wrong baseline for "
-    "the operation -- a row would time a host grid sampler against a device gather over a "
-    "parametrization. benchmarks/test_texture.py carries that decline.",
-)
-def test_remap_attribute_2d_image(device: str):
-    """
-    Class A: the rank-2 image path, which the parametrized test above never reaches.
-
-    ``remap_attribute_from_uv`` accepts a bare ``(height, width)`` image as well as
-    ``(height, width, channels)`` and returns a ``(n, 1)`` column either way; the reference helper
-    promotes the 2-D case with ``image[:, :, None]``. That promotion is the only difference from
-    [`test_remap_attribute_matches_scipy`], and it is a real branch in the wrapper rather than a
-    convenience, which is why it has its own comparison at ``order=1``.
-    """
-    rng = np.random.default_rng(3)
-    image_np = rng.random((32, 32), dtype=np.float32)
-    uv_np = rng.random((50, 2), dtype=np.float32)
-    values_np = _remap_attribute_scipy(uv_np, image_np, order=1)
-
-    uv_wp = points_to_warp_uv(uv_np, device)
-    image_wp = odt.as_array2d(wp.array(image_np, dtype=wp.float32, device=device), wp.float32)
-    values_wp = od.texture.remap_attribute_from_uv(uv_wp, image_wp, order=1).numpy()
-    assert values_wp.shape == (50, 1)
-    assert np.allclose(values_wp[:, 0], values_np[:, 0], rtol=1e-4, atol=1e-4)
 
 
 @pytest.mark.parity(
@@ -466,11 +452,8 @@ def test_rasterize_remap_roundtrip_linear(device: str):
     attribute_np = np.stack([u, v, u + v], axis=1).astype(np.float32)
     resolution = 128
 
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    attribute_wp = odt.as_array2d(
-        wp.array(attribute_np, dtype=wp.float32, device=device), wp.float32
-    )
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
+    attribute_wp = _float_rows(attribute_np, device)
     image = od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, resolution)
     recovered = od.texture.remap_attribute_from_uv(uv_wp, image, order=1).numpy()
 
@@ -485,8 +468,7 @@ def test_rasterize_remap_roundtrip_discrete(device: str):
     labels_np = rng.integers(0, 5, size=uv_np.shape[0]).astype(np.int32)
     resolution = 128
 
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    uv_wp, faces_wp = _upload_uv_mesh(uv_np, faces_np, device)
     labels_wp = wp.array(labels_np, dtype=wp.int32, device=device)
     class_image = od.texture.rasterize_discrete_attribute(uv_wp, faces_wp, labels_wp, resolution)
     recovered = od.texture.remap_discrete_attribute_from_uv(uv_wp, class_image).numpy()
@@ -538,73 +520,108 @@ def test_empty_faces(device: str):
     assert np.all(class_image == -1)
 
 
-def test_invalid_resolution(device: str):
-    uv_wp = wp.array(np.array([[0.5, 0.5]], dtype=np.float32), dtype=wp.vec2, device=device)
-    faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = odt.as_array2d(
-        wp.array(np.zeros((1, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
-    )
-    with pytest.raises(ValueError, match="Resolution must be positive"):
-        od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 0)
+def _point_uv(device: str, rows: list[list[float]]) -> wp.array[wp.vec2]:
+    return points_to_warp_uv(np.array(rows, dtype=np.float32), device)
 
 
-def test_uv_out_of_range(device: str):
-    uv_np = np.array([[0.5, 0.5], [1.5, 0.2]], dtype=np.float32)
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(np.zeros(0, dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = odt.as_array2d(
-        wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
-    )
-    with pytest.raises(ValueError, match=r"\[0, 1\]"):
-        od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 8)
+def _no_faces(device: str) -> wp.array[wp.int32]:
+    return wp.zeros(0, dtype=wp.int32, device=device)
 
 
-def test_discrete_negative_labels(device: str):
-    uv_np = np.array([[0.5, 0.5], [0.2, 0.2], [0.8, 0.8]], dtype=np.float32)
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    labels_wp = wp.array(np.array([0, -1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="greater than or equal to 0"):
-        od.texture.rasterize_discrete_attribute(uv_wp, faces_wp, labels_wp, 8)
+def _one_face(device: str) -> wp.array[wp.int32]:
+    return wp.array([0, 1, 2], dtype=wp.int32, device=device)
 
 
-def test_rasterize_row_count_mismatch(device: str):
+_THREE_UV = [[0.5, 0.5], [0.2, 0.2], [0.8, 0.8]]
+_OUT_OF_RANGE_UV = [[0.5, 0.5], [1.5, 0.2]]
+
+_VALIDATION_CASES: list[tuple[str, Callable[[str], object], str]] = [
+    (
+        "rasterize_zero_resolution",
+        lambda device: od.texture.rasterize_attribute(
+            _point_uv(device, [[0.5, 0.5]]),
+            _no_faces(device),
+            _float_rows(np.zeros((1, 1), dtype=np.float32), device),
+            0,
+        ),
+        "Resolution must be positive",
+    ),
+    (
+        "rasterize_uv_out_of_range",
+        lambda device: od.texture.rasterize_attribute(
+            _point_uv(device, _OUT_OF_RANGE_UV),
+            _no_faces(device),
+            _float_rows(np.zeros((2, 1), dtype=np.float32), device),
+            8,
+        ),
+        r"\[0, 1\]",
+    ),
+    (
+        "rasterize_discrete_negative_label",
+        lambda device: od.texture.rasterize_discrete_attribute(
+            _point_uv(device, _THREE_UV),
+            _one_face(device),
+            wp.array([0, -1, 2], dtype=wp.int32, device=device),
+            8,
+        ),
+        "greater than or equal to 0",
+    ),
+    (
+        "rasterize_row_count_mismatch",
+        lambda device: od.texture.rasterize_attribute(
+            _point_uv(device, _THREE_UV),
+            _one_face(device),
+            _float_rows(np.zeros((2, 1), dtype=np.float32), device),
+            8,
+        ),
+        "row count mismatch",
+    ),
+    (
+        "rasterize_discrete_row_count_mismatch",
+        lambda device: od.texture.rasterize_discrete_attribute(
+            _point_uv(device, _THREE_UV),
+            _one_face(device),
+            wp.zeros(2, dtype=wp.int32, device=device),
+            8,
+        ),
+        "row count mismatch",
+    ),
+    (
+        "remap_uv_out_of_range",
+        lambda device: od.texture.remap_attribute_from_uv(
+            _point_uv(device, _OUT_OF_RANGE_UV),
+            odt.as_array2d(wp.zeros((4, 4), dtype=wp.float32, device=device), wp.float32),
+        ),
+        r"\[0, 1\]",
+    ),
+    (
+        "remap_discrete_uv_out_of_range",
+        lambda device: od.texture.remap_discrete_attribute_from_uv(
+            _point_uv(device, _OUT_OF_RANGE_UV),
+            odt.as_array2d(wp.zeros((4, 4), dtype=wp.int32, device=device), wp.int32),
+        ),
+        r"\[0, 1\]",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "match"),
+    [pytest.param(call, match, id=case_id) for case_id, call, match in _VALIDATION_CASES],
+)
+def test_rejects_invalid_arguments(device: str, call: Callable[[str], object], match: str) -> None:
     """
-    Not a library comparison: an argument-validation guard, which no reference library exposes.
+    Not a library comparison: argument-validation guards, which no reference library exposes.
 
-    Both rasterizers document a ``ValueError`` when ``uv`` and ``attribute`` disagree on their row
-    count. Without it the rasterizing kernel indexes the shorter buffer out of range, which on the
-    cpu device is host-heap corruption rather than a wrong answer (CLAUDE.md section 12.1).
+    Each documented ``ValueError`` of the four entry points. The row-count guard matters more than
+    its message: without it the rasterizing kernel indexes the shorter buffer out of range, which
+    on the cpu device is host-heap corruption rather than a wrong answer (CLAUDE.md section 12.1).
+    ``remap_discrete_attribute_from_uv`` reaches its ``[0, 1]`` guard only *indirectly*, through
+    its ``remap_attribute_from_uv`` call, so its documented ``Raises`` entry is a claim about a
+    guard it does not itself run -- the kind that goes stale unnoticed.
     """
-    uv_np = np.array([[0.5, 0.5], [0.2, 0.2], [0.8, 0.8]], dtype=np.float32)
-    uv_wp = points_to_warp_uv(uv_np, device)
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    attribute_wp = odt.as_array2d(
-        wp.array(np.zeros((2, 1), dtype=np.float32), dtype=wp.float32, device=device), wp.float32
-    )
-    with pytest.raises(ValueError, match="row count mismatch"):
-        od.texture.rasterize_attribute(uv_wp, faces_wp, attribute_wp, 8)
-    labels_wp = wp.array(np.zeros(2, dtype=np.int32), dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="row count mismatch"):
-        od.texture.rasterize_discrete_attribute(uv_wp, faces_wp, labels_wp, 8)
-
-
-def test_remap_uv_out_of_range(device: str):
-    """
-    Not a library comparison: an argument-validation guard, which no reference library exposes.
-
-    Both samplers document the same ``[0, 1]`` ``ValueError`` the rasterizers raise, and
-    ``remap_discrete_attribute_from_uv`` reaches it only *indirectly*, through its
-    ``remap_attribute_from_uv`` call -- so its documented ``Raises`` entry is a claim about a
-    guard it does not itself run, which is exactly the kind that goes stale unnoticed.
-    """
-    uv_wp = points_to_warp_uv(np.array([[0.5, 0.5], [1.5, 0.2]], dtype=np.float32), device)
-    image_wp = odt.as_array2d(wp.zeros((4, 4), dtype=wp.float32, device=device), wp.float32)
-    with pytest.raises(ValueError, match=r"\[0, 1\]"):
-        od.texture.remap_attribute_from_uv(uv_wp, image_wp)
-    class_image_wp = odt.as_array2d(wp.zeros((4, 4), dtype=wp.int32, device=device), wp.int32)
-    with pytest.raises(ValueError, match=r"\[0, 1\]"):
-        od.texture.remap_discrete_attribute_from_uv(uv_wp, class_image_wp)
+    with pytest.raises(ValueError, match=match):
+        call(device)
 
 
 def test_remap_rejects_an_off_menu_order(device: str):

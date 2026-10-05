@@ -31,6 +31,7 @@ from ordito import _launch
 from ordito.constants import TOLERANCE_MERGE
 from ordito.kernels import proximity as kernel_proximity
 from tests.conversions import (
+    mesh_igl,
     meshlib_scalars_to_numpy,
     numpy_to_warp,
     points_to_pytorch3d,
@@ -67,6 +68,37 @@ def _queries_in_bounds_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
     lower_np, upper_np = mesh_tm.bounds
     margin_np = 0.2 * (upper_np - lower_np)
     return np.random.default_rng(seed).uniform(lower_np - margin_np, upper_np + margin_np, (n, 3))
+
+
+def _random_queries_np(seed: int = 42, n: int = 200) -> np.ndarray:
+    """Draw ``n`` queries uniformly from the cube ``[-2, 2]**3``."""
+    return np.random.default_rng(seed).random((n, 3), dtype=np.float64) * 4.0 - 2.0
+
+
+def _queries_in_box_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
+    """Draw ``n`` queries uniformly from the mesh's own (ungrown) bounding box."""
+    lower_np, upper_np = mesh_tm.bounds
+    return lower_np + np.random.default_rng(seed).random((n, 3)) * (upper_np - lower_np)
+
+
+def _upload(
+    mesh_tm: tm.Trimesh, device: wp.DeviceLike
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Upload a trimesh mesh as ordito's ``(vertices, flat faces)`` pair on ``device``."""
+    return numpy_to_warp(
+        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces).ravel().astype(np.int32), device
+    )
+
+
+def _meshlib_distance(a_tm: tm.Trimesh, b_tm: tm.Trimesh) -> float:
+    """MeshLib's exact minimum distance between two meshes, ``findDistance`` with no transform."""
+    result_ml = mm.findDistance(
+        mm.MeshPart(trimesh_to_meshlib(a_tm)),
+        mm.MeshPart(trimesh_to_meshlib(b_tm)),
+        None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
+        float(np.finfo(np.float32).max),
+    )
+    return float(np.sqrt(result_ml.distSq))
 
 
 def test_query_mesh_aabb_with_offsets(device: str) -> None:
@@ -111,59 +143,65 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
-def test_closest_point_on_mesh_random(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class A on the distance, Class C on the point: ties make the closest *point* ambiguous.
-
-    200 random queries against ``trimesh.proximity.closest_point``. The distance is the well-
-    defined quantity and is compared directly; a query equidistant from two faces has two valid
-    closest points, and section 6 records the same divergence against Open3D at ~2e-4. Warp's
-    own ``mesh_query_point_no_sign`` is off by up to 2.1e-5, which sets the floor here.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
-
-    closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
-
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    closest_wp, distance_wp, _triangle_id_wp = od.proximity.closest_point_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp
-    )
-
-    assert np.allclose(closest_wp.numpy(), closest_tm, rtol=1e-5, atol=1e-5)
-    assert np.allclose(distance_wp.numpy(), distance_tm, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
-@pytest.mark.parity("closest_point_on_mesh", "meshlib")
-def test_closest_point_on_mesh_matches_meshlib(
+@pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
+def test_closest_point_on_mesh_matches_references(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A on the distance, Class C on the point, and the face index is a *tie-break gauge*.
+    200 random queries against trimesh, MeshLib and pyvista: distance, point and face index.
 
-    ``findProjection`` returns a ``MeshProjectionResult`` carrying the squared distance, the
-    projected point and the ``FaceId`` it landed on -- so it is the only reference in this module
-    that reports all three. It is per query, so this loops on the MeshLib side and batches on
-    ordito's; the benchmark rows do the same, which is why the row prices a Python loop and says
-    so.
+    **trimesh, Class A on the distance, Class C on the point**: ties make the closest *point*
+    ambiguous. The distance is the well-defined quantity and is compared directly; a query
+    equidistant from two faces has two valid closest points, and section 6 records the same
+    divergence against Open3D at ~2e-4. Warp's own ``mesh_query_point_no_sign`` is off by up to
+    2.1e-5, which sets the floor here.
 
+    **MeshLib, Class A on the distance, Class C on the point, and the face index is a tie-break
+    gauge.** ``findProjection`` returns a ``MeshProjectionResult`` carrying the squared distance,
+    the projected point and the ``FaceId`` it landed on -- so it is the only reference in this
+    module that reports all three. It is per query, so this loops on the MeshLib side and batches on
+    ordito's; the benchmark rows do the same, which is why the row prices a Python loop and says so.
     The distances agree to **1.2e-07** and the points to **1.6e-04** on a unit-radius fixture, the
     latter being Warp's own ``mesh_query_point_no_sign`` floor rather than a disagreement about
-    geometry (section 6 records the same magnitude against Open3D).
+    geometry (section 6 records the same magnitude against Open3D). The face index is the
+    interesting part and it is why this pair is worth having. It differs on **39 %** of 200 random
+    queries, and every one of those is a genuine tie: the two faces always share at least one corner
+    (57 of 78 share two, i.e. an edge) and the distances differ by at most 1.2e-07. So the assert is
+    not "the same face" -- which would be wrong to demand -- but "any disagreement is a tie", which
+    is a real constraint a mis-indexed lookup would fail.
 
-    The face index is the interesting part and it is why this pair is worth having. It differs on
-    **39 %** of 200 random queries, and every one of those is a genuine tie: the two faces always
-    share at least one corner (57 of 78 share two, i.e. an edge) and the distances differ by at most
-    1.2e-07. So the assert is not "the same face" -- which would be wrong to demand -- but "any
-    disagreement is a tie", which is a real constraint a mis-indexed lookup would fail.
+    **pyvista, Class A on the distance and the point; the cell index is not comparable.**
+    ``find_closest_cell(..., return_closest_point=True)`` walks a ``vtkStaticCellLocator`` and is
+    exact in float64 -- against ``igl.point_mesh_squared_distance`` on these same queries it agrees
+    to **4.4e-16** (icosahedron) and **8.9e-16** (hemisphere) on both the distance and the point --
+    so it is the most accurate closest-point reference in this module. Against ordito: distances to
+    1.8e-07 / 2.7e-07 and points to 1.6e-07 / 9.0e-07, the ``float32`` floor. The point residual is
+    fixture-dependent and reaches **2.2e-04** on a subdivided icosphere with queries drawn from a
+    wider box, which is Warp's own ``mesh_query_point_no_sign`` limit and the same magnitude the
+    MeshLib and Open3D pairings record -- so a comparison on another fixture must not tighten this
+    tolerance without re-measuring. igl and pyvista agree on the geometry to 1e-16 and still
+    disagree on the cell for 37% / 42% of these queries, and on ``icosphere(3)`` every disagreeing
+    query's closest point has a minimum barycentric coordinate of ~1e-16: it lies exactly on a
+    shared edge. That is structural rather than a fixture accident -- for a query far outside a
+    convex mesh the nearest point is a *vertex*, since the vertex normal fans exhaust the sphere of
+    directions (their angular defects sum to 4 pi) -- so the tie fraction grows with the query
+    radius. The index is therefore left to the MeshLib pair, whose ``findProjection`` reports the
+    face on ordito's own soup numbering.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
+    points_np = _random_queries_np()
     points_wp = points_to_warp(points_np, mesh_wp.device)
+    closest_wp, distances_wp, faces_wp = od.proximity.closest_point_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp
+    )
+    closest_np, distances_np, faces_np = closest_wp.numpy(), distances_wp.numpy(), faces_wp.numpy()
 
+    # trimesh.
+    closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
+    assert np.allclose(closest_np, closest_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(distances_np, distance_tm, rtol=1e-5, atol=1e-5)
+
+    # MeshLib.
     mesh_part_ml = mm.MeshPart(trimesh_to_meshlib(mesh_tm))
     projections_ml = [
         mm.findProjection(mm.Vector3f(*point_np.tolist()), mesh_part_ml) for point_np in points_np
@@ -176,76 +214,31 @@ def test_closest_point_on_mesh_matches_meshlib(
     )
     distances_ml = np.sqrt(np.array([result.distSq for result in projections_ml]))
     faces_ml = np.array([int(result.proj.face) for result in projections_ml], dtype=np.int32)
-
-    closest_wp, distances_wp, faces_wp = od.proximity.closest_point_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp
-    )
-
-    assert np.allclose(distances_wp.numpy(), distances_ml, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_wp.numpy(), points_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(distances_np, distances_ml, rtol=1e-5, atol=1e-5)
+    assert np.allclose(closest_np, points_ml, rtol=1e-4, atol=1e-4)
 
     # Every face disagreement is a tie: the same distance, on a face sharing a corner or an edge.
-    disagree_np = faces_wp.numpy() != faces_ml
-    assert np.allclose(distances_wp.numpy()[disagree_np], distances_ml[disagree_np], atol=1e-5)
+    disagree_np = faces_np != faces_ml
+    assert np.allclose(distances_np[disagree_np], distances_ml[disagree_np], atol=1e-5)
     shared_np = np.array(
         [
             len(set(mesh_tm.faces[face_wp]) & set(mesh_tm.faces[face_ml]))
-            for face_wp, face_ml in zip(
-                faces_wp.numpy()[disagree_np], faces_ml[disagree_np], strict=True
-            )
+            for face_wp, face_ml in zip(faces_np[disagree_np], faces_ml[disagree_np], strict=True)
         ]
     )
-    assert (faces_wp.numpy() == faces_ml).any()  # non-vacuity: the indices do line up in general
+    assert (faces_np == faces_ml).any()  # non-vacuity: the indices do line up in general
     assert shared_np.size == 0 or shared_np.min() >= 1
 
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
-@pytest.mark.parity("closest_point_on_mesh", "pyvista")
-def test_closest_point_on_mesh_matches_pyvista(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A on the distance and the point; the cell index is **not** comparable.
-
-    ``find_closest_cell(..., return_closest_point=True)`` walks a ``vtkStaticCellLocator`` and is
-    exact in float64 -- against ``igl.point_mesh_squared_distance`` on these same queries it agrees
-    to **4.4e-16** (icosahedron) and **8.9e-16** (hemisphere) on both the distance and the point --
-    so it is the most accurate closest-point reference in this module. Against ordito: distances to
-    1.8e-07 / 2.7e-07 and points to 1.6e-07 / 9.0e-07, the ``float32`` floor. The point residual is
-    fixture-dependent and reaches **2.2e-04** on a subdivided icosphere with queries drawn from a
-    wider box, which is Warp's own ``mesh_query_point_no_sign`` limit and the same magnitude the
-    MeshLib and Open3D pairings record -- so a comparison on another fixture must not tighten this
-    tolerance without re-measuring.
-
-    **The cell index is a tie and cannot be asserted, unlike the MeshLib pairing's "any
-    disagreement is a tie" form.** igl and pyvista agree on the geometry to 1e-16 and still disagree
-    on the cell for 37% / 42% of these queries, and on ``icosphere(3)`` every disagreeing query's
-    closest point has a minimum barycentric coordinate of ~1e-16: it lies exactly on a shared edge.
-    That is structural rather than a fixture accident -- for a query far outside a convex mesh the
-    nearest point is a *vertex*, since the vertex normal fans exhaust the sphere of directions
-    (their angular defects sum to 4 pi) -- so the tie fraction grows with the query radius. This
-    test therefore asserts the distance and the point, and leaves the index to the MeshLib pair,
-    whose ``findProjection`` reports the face on ordito's own soup numbering.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-
+    # pyvista.
     _cells_pv, closest_pv = cast(
         "tuple[object, NDArray[np.float64]]",
         trimesh_to_pyvista(mesh_tm).find_closest_cell(points_np, return_closest_point=True),
     )
     closest_pv = np.asarray(closest_pv)
     distances_pv = np.linalg.norm(points_np - closest_pv, axis=1)
-
-    closest_wp, distances_wp, _faces_wp = od.proximity.closest_point_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp
-    )
-
     assert distances_pv.min() > 0.0  # non-vacuity: no query sits on the surface
-    assert np.allclose(distances_wp.numpy(), distances_pv, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_wp.numpy(), closest_pv, rtol=1e-5, atol=1e-5)
+    assert np.allclose(distances_np, distances_pv, rtol=1e-5, atol=1e-5)
+    assert np.allclose(closest_np, closest_pv, rtol=1e-5, atol=1e-5)
 
 
 def test_closest_point_on_mesh_ambiguous_edge(device: str) -> None:
@@ -317,21 +310,6 @@ def test_closest_point_on_mesh_unreferenced_vertex(device: str) -> None:
     assert np.array_equal(triangle_id_wp.numpy(), triangle_id_tm)
 
 
-def test_closest_point_on_mesh_empty_faces(device: str) -> None:
-    vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = warp_empty(0, wp.int32, device)
-    points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    closest_wp, distance_wp, triangle_id_wp = od.proximity.closest_point_on_mesh(
-        vertices, faces, points
-    )
-    assert closest_wp.shape == (2,)
-    assert distance_wp.shape == (2,)
-    assert triangle_id_wp.shape == (2,)
-    assert np.all(np.isnan(closest_wp.numpy()))
-    assert np.all(np.isinf(distance_wp.numpy()))
-    assert np.all(triangle_id_wp.numpy() == -1)
-
-
 def _closest_on_edges_np(
     vertices_np: np.ndarray, edges_np: np.ndarray, queries_np: np.ndarray
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -381,12 +359,8 @@ def test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins(
     vertex-free, which is the only way these asserts could become trivial.
     """
     lower_tm, upper_tm = _crossed_bars(angle_degrees)
-    lower_vertices_wp, lower_faces_wp = numpy_to_warp(
-        np.asarray(lower_tm.vertices), np.asarray(lower_tm.faces).ravel().astype(np.int32), device
-    )
-    upper_vertices_wp, upper_faces_wp = numpy_to_warp(
-        np.asarray(upper_tm.vertices), np.asarray(upper_tm.faces).ravel().astype(np.int32), device
-    )
+    lower_vertices_wp, lower_faces_wp = _upload(lower_tm, device)
+    upper_vertices_wp, upper_faces_wp = _upload(upper_tm, device)
     distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
         lower_vertices_wp, lower_faces_wp, upper_vertices_wp, upper_faces_wp
     )
@@ -409,13 +383,8 @@ def test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins(
     )
     assert vertex_bound > distance + 1e-4  # non-vacuity: no vertex achieves the minimum
 
-    result_ml = mm.findDistance(
-        mm.MeshPart(trimesh_to_meshlib(lower_tm)),
-        mm.MeshPart(trimesh_to_meshlib(upper_tm)),
-        None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
-        float(np.finfo(np.float32).max),
-    )
-    assert np.isclose(distance, float(np.sqrt(result_ml.distSq)), rtol=1e-5, atol=1e-6)
+    distance_ml = _meshlib_distance(lower_tm, upper_tm)
+    assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
     assert 0 <= face_a < len(lower_tm.faces)
     assert 0 <= face_b < len(upper_tm.faces)
 
@@ -450,23 +419,14 @@ def test_mesh_to_mesh_distance_gap_overlap_and_contact(device: str) -> None:
     cases.append((box_tm, corner_tm, 0.2 * np.sqrt(2.0)))
 
     for a_tm, b_tm, expected in cases:
-        a_vertices_wp, a_faces_wp = numpy_to_warp(
-            np.asarray(a_tm.vertices), np.asarray(a_tm.faces).ravel().astype(np.int32), device
-        )
-        b_vertices_wp, b_faces_wp = numpy_to_warp(
-            np.asarray(b_tm.vertices), np.asarray(b_tm.faces).ravel().astype(np.int32), device
-        )
+        a_vertices_wp, a_faces_wp = _upload(a_tm, device)
+        b_vertices_wp, b_faces_wp = _upload(b_tm, device)
         distance, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
             a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
         )
-        result_ml = mm.findDistance(
-            mm.MeshPart(trimesh_to_meshlib(a_tm)),
-            mm.MeshPart(trimesh_to_meshlib(b_tm)),
-            None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
-            float(np.finfo(np.float32).max),
-        )
+        distance_ml = _meshlib_distance(a_tm, b_tm)
         assert np.isclose(distance, expected, rtol=1e-5, atol=1e-6)
-        assert np.isclose(distance, float(np.sqrt(result_ml.distSq)), rtol=1e-5, atol=1e-6)
+        assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parity("mesh_to_mesh_distance", "meshlib")
@@ -488,30 +448,17 @@ def test_mesh_to_mesh_distance_when_the_vertex_bound_is_the_answer(device: str) 
     for gap in (0.5, 0.1, 0.01, 0.0, -0.05):
         shifted_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
         shifted_tm.apply_translation([2.0 + gap, 0.0, 0.0])
-        a_vertices_wp, a_faces_wp = numpy_to_warp(
-            np.asarray(sphere_tm.vertices),
-            np.asarray(sphere_tm.faces).ravel().astype(np.int32),
-            device,
-        )
-        b_vertices_wp, b_faces_wp = numpy_to_warp(
-            np.asarray(shifted_tm.vertices),
-            np.asarray(shifted_tm.faces).ravel().astype(np.int32),
-            device,
-        )
+        a_vertices_wp, a_faces_wp = _upload(sphere_tm, device)
+        b_vertices_wp, b_faces_wp = _upload(shifted_tm, device)
         distance, face_a, face_b = od.proximity.mesh_to_mesh_distance(
             a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
         )
-        result_ml = mm.findDistance(
-            mm.MeshPart(trimesh_to_meshlib(sphere_tm)),
-            mm.MeshPart(trimesh_to_meshlib(shifted_tm)),
-            None,  # pyright: ignore[reportArgumentType]  # nullptr is the identity; the stub drops Optional
-            float(np.finfo(np.float32).max),
-        )
+        distance_ml = _meshlib_distance(sphere_tm, shifted_tm)
         assert np.isfinite(distance), f"gap {gap} pruned the pair achieving the bound"
         assert face_a >= 0
         assert face_b >= 0
         assert np.isclose(distance, max(gap, 0.0), rtol=1e-5, atol=1e-6)
-        assert np.isclose(distance, float(np.sqrt(result_ml.distSq)), rtol=1e-5, atol=1e-6)
+        assert np.isclose(distance, distance_ml, rtol=1e-5, atol=1e-6)
 
 
 def test_mesh_to_mesh_distance_face_a_tie_break_is_the_lowest_index(device: str) -> None:
@@ -556,11 +503,7 @@ def test_mesh_to_mesh_distance_face_a_tie_break_is_the_lowest_index(device: str)
     assert tied_faces_a.size > 1  # a real multi-face tie, not a vacuous single-face one
 
     a_vertices_wp, a_faces_wp = numpy_to_warp(vertices_a, faces_a.ravel().astype(np.int32), device)
-    b_vertices_wp, b_faces_wp = numpy_to_warp(
-        np.asarray(shifted_tm.vertices),
-        np.asarray(shifted_tm.faces).ravel().astype(np.int32),
-        device,
-    )
+    b_vertices_wp, b_faces_wp = _upload(shifted_tm, device)
     for _ in range(5):
         distance, face_a, _face_b = od.proximity.mesh_to_mesh_distance(
             a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
@@ -606,6 +549,10 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
     ``findDistance`` remains the oracle for
     [`test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins`][tests.test_proximity.test_mesh_to_mesh_distance_matches_meshlib_where_no_vertex_wins].
 
+    Hence ``samplenum=1000``: measured on all four arms, the reference's ``min`` at 1 000 samples
+    is the same double as at 3 000, 10 000 and 100 000, so the margins asserted below are unchanged
+    by the smaller count.
+
     !!! warning "`maxdist` silently returns `inf` past its default cap"
         The default ``maxdist`` is a percentage of the bounding-box diagonal, and a pair separated
         further than it comes back with ``min`` of ``inf`` -- no exception, no warning. Measured:
@@ -625,12 +572,8 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
         else:
             b_tm.apply_translation([4.0 if configuration == "vertex_witness" else 1.0, 0.0, 0.0])
 
-    a_vertices_wp, a_faces_wp = numpy_to_warp(
-        np.asarray(a_tm.vertices), np.asarray(a_tm.faces).ravel().astype(np.int32), device
-    )
-    b_vertices_wp, b_faces_wp = numpy_to_warp(
-        np.asarray(b_tm.vertices), np.asarray(b_tm.faces).ravel().astype(np.int32), device
-    )
+    a_vertices_wp, a_faces_wp = _upload(a_tm, device)
+    b_vertices_wp, b_faces_wp = _upload(b_tm, device)
     distance, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
         a_vertices_wp, a_faces_wp, b_vertices_wp, b_faces_wp
     )
@@ -650,7 +593,7 @@ def test_mesh_to_mesh_distance_matches_pymeshlab(
             samplevert=True,
             sampleedge=True,
             sampleface=True,
-            samplenum=100000,
+            samplenum=1000,
             maxdist=ml.PureValue(1.0e6),
         )["min"]
     )
@@ -688,14 +631,8 @@ def test_mesh_to_mesh_distance_tiled_pass_agrees_with_the_capped_one(
     sphere_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     shifted_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     shifted_tm.apply_translation([2.05, 0.3, 0.0])
-    a_vertices_wp, a_faces_wp = numpy_to_warp(
-        np.asarray(sphere_tm.vertices), np.asarray(sphere_tm.faces).ravel().astype(np.int32), device
-    )
-    b_vertices_wp, b_faces_wp = numpy_to_warp(
-        np.asarray(shifted_tm.vertices),
-        np.asarray(shifted_tm.faces).ravel().astype(np.int32),
-        device,
-    )
+    a_vertices_wp, a_faces_wp = _upload(sphere_tm, device)
+    b_vertices_wp, b_faces_wp = _upload(shifted_tm, device)
     tiled_launches = []
     tiled_kernel = kernel_proximity.face_to_mesh_distance_tiled
 
@@ -805,12 +742,8 @@ def test_mesh_to_mesh_distance_upper_bound_and_edge_cases(device: str) -> None:
     ``inf`` with no witness.
     """
     lower_tm, upper_tm = _crossed_bars(45.0)
-    lower_vertices_wp, lower_faces_wp = numpy_to_warp(
-        np.asarray(lower_tm.vertices), np.asarray(lower_tm.faces).ravel().astype(np.int32), device
-    )
-    upper_vertices_wp, upper_faces_wp = numpy_to_warp(
-        np.asarray(upper_tm.vertices), np.asarray(upper_tm.faces).ravel().astype(np.int32), device
-    )
+    lower_vertices_wp, lower_faces_wp = _upload(lower_tm, device)
+    upper_vertices_wp, upper_faces_wp = _upload(upper_tm, device)
     exact, _face_a, _face_b = od.proximity.mesh_to_mesh_distance(
         lower_vertices_wp, lower_faces_wp, upper_vertices_wp, upper_faces_wp
     )
@@ -1142,45 +1075,79 @@ def test_normals_at_closest_faces_empty_mesh() -> None:
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
-def test_signed_distance_on_mesh_random(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
-
-    expected_np = -tm_proximity.signed_distance(mesh_tm, points_np)
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    signed_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
-    assert np.allclose(signed_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
-@pytest.mark.parity("signed_distance_on_mesh", "pymeshlab")
-def test_signed_distance_on_mesh_matches_pymeshlab(
+def test_signed_distance_on_mesh_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Class A: a **third** sign convention that nevertheless returns the same number.
+    Class B (a sign negation): both sign modes against trimesh's opposite convention.
 
-    ordito's default mode casts perturbed parity rays and MeshLab signs by the dot product with the
-    *closest point's normal*, so a priori this is the pair most at risk of a systematic sign flip --
-    the plan flagged it as needing thought for that reason. It does not flip: measured on all three
+    trimesh is positive *inside*, ordito negative, so the reference is negated -- the named
+    transform. On a watertight mesh the ray-parity default and ``sign_mode="winding"`` must both
+    match it, and between themselves only the sign may differ: the unsigned distance is the same
+    query (ordito against ordito).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    points_np = _random_queries_np()
+    expected_np = -tm_proximity.signed_distance(mesh_tm, points_np)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+
+    parity_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
+    winding_wp = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
+    )
+    assert np.allclose(parity_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(winding_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(np.abs(parity_wp.numpy()), np.abs(winding_wp.numpy()), rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
+@pytest.mark.parity("signed_distance_on_mesh", "pymeshlab", "igl", "open3d")
+def test_signed_distance_on_mesh_matches_pymeshlab_igl_and_open3d(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Three more sign rules that nevertheless return the same signed number on watertight input.
+
+    The fixture set is chosen to put the normal-based rules under load rather than to flatter them:
+    ``cave_cube`` is non-convex, so points inside the cavity have a nearest face whose normal faces
+    the other way from the outer shell's, and ``torus`` is genus 1, where a point in the hole is
+    outside the solid but surrounded by surface. Both are exactly where a normal-based sign is
+    supposed to be unreliable -- and where a parity rule is exactly what should *not* fail. Every
+    comparison asserts the signs equal, then the values.
+
+    **pymeshlab, Class A**: a **third** sign convention. ordito's default mode casts perturbed
+    parity rays and MeshLab signs by the dot product with the *closest point's normal*, so a priori
+    this is the pair most at risk of a systematic sign flip. It does not flip: measured on all three
     fixtures, sign agreement is **400 / 400** and the signed values match to **3.3e-07 / 1.5e-08 /
-    1.9e-07**, so the assert is a direct ``allclose`` with no transform on the value at all.
-
-    The fixture set is chosen to put the closest-point-normal rule under load rather than to flatter
-    it: ``cave_cube`` is non-convex, so points inside the cavity have a nearest face whose normal
-    faces the other way from the outer shell's, and ``torus`` is genus 1, where a point in the hole
-    is outside the solid but surrounded by surface. Both are exactly where a normal-based sign is
-    supposed to be unreliable.
-
-    Two named transforms on the *plumbing*, not the value: the query points go in as a second,
+    1.9e-07**, so the assert is a direct ``allclose`` with no transform on the value at all. Two
+    named transforms on the *plumbing*, not the value: the query points go in as a second,
     face-less mesh (``measuremesh=1``, ``refmesh=0``) and the answer is read off that mesh's
     ``vertex_scalar_array()``. ``signeddist=True`` is what makes it signed rather than absolute, and
     is the parameter the benchmark passes.
+
+    **igl, Class B (a named sign-rule choice)**: a direct ``allclose`` against the pseudonormal
+    sign type. igl's angle-weighted pseudonormal sign is a *fourth* rule beside ordito's parity
+    rays, trimesh's and MeshLab's closest-point normal, and on these three watertight fixtures it
+    agrees with ordito exactly -- so the value comparison needs no transform. The named choice is
+    *which* ``sign_type`` is the oracle, and it is not free: for both ``WINDING_NUMBER`` and
+    ``FAST_WINDING_NUMBER`` igl returns ``(1 - 2 * w) * d`` with ``w`` the **continuous** winding
+    number, not ``sign(1 - 2 * w) * d``. Its magnitude is therefore ``|d|`` only where ``w`` is
+    exactly 0 or 1 and is scaled down near the surface -- measured on ``bunny_decimated``, ``|S|``
+    departs from the pseudonormal type's by 2.7e-2 of the bbox diagonal where the pseudonormal type
+    agrees with ordito to 8e-8. So the winding types cannot be compared on value at all, and the
+    benchmark's ``sign_mode="winding"`` igl row is a cost comparison only.
+
+    **open3d, Class A**: Embree's ``compute_signed_distance`` signs by counting ray crossings --
+    the same rule as ordito's default ``"parity"`` mode -- and uses the same Warp-SDF orientation
+    (negative inside), so no transform is needed on either the sign or the value. Probed to 1.8e-7
+    agreement on an icosphere.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(4)
-    points_np = mesh_tm.bounds[0] + rng.random((400, 3)) * (mesh_tm.bounds[1] - mesh_tm.bounds[0])
+    points_np = _queries_in_box_np(mesh_tm, 400, seed=4)
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    signed_np = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp
+    ).numpy()
 
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.add_mesh(ml.Mesh(vertex_matrix=np.ascontiguousarray(points_np)))
@@ -1188,12 +1155,22 @@ def test_signed_distance_on_mesh_matches_pymeshlab(
         measuremesh=1, refmesh=0, signeddist=True
     )
     signed_pml = np.asarray(meshset_pml.current_mesh().vertex_scalar_array())
+    assert np.array_equal(np.sign(signed_np), np.sign(signed_pml))
+    assert np.allclose(signed_np, signed_pml, rtol=1e-5, atol=1e-5)
 
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    signed_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
+    signed_igl, _, _, _ = igl.signed_distance(
+        np.ascontiguousarray(points_np), *mesh_igl(mesh_tm), igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL
+    )
+    assert np.array_equal(np.sign(signed_np), np.sign(signed_igl))
+    assert np.allclose(signed_np, signed_igl, rtol=1e-5, atol=1e-5)
 
-    assert np.array_equal(np.sign(signed_wp.numpy()), np.sign(signed_pml))
-    assert np.allclose(signed_wp.numpy(), signed_pml, rtol=1e-5, atol=1e-5)
+    scene_o3d = o3d.t.geometry.RaycastingScene()
+    scene_o3d.add_triangles(trimesh_to_open3d_t(mesh_tm))
+    signed_o3d = scene_o3d.compute_signed_distance(
+        o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+    ).numpy()
+    assert np.array_equal(np.sign(signed_np), np.sign(signed_o3d))
+    assert np.allclose(signed_np, signed_o3d, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
@@ -1239,80 +1216,6 @@ def test_signed_distance_on_mesh_matches_meshlib(
 
 
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
-@pytest.mark.parity("signed_distance_on_mesh", "igl")
-def test_signed_distance_on_mesh_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B (a named sign-rule choice): a direct ``allclose`` against the pseudonormal sign type.
-
-    igl's angle-weighted pseudonormal sign is a *fourth* rule beside ordito's parity rays,
-    trimesh's and MeshLab's closest-point normal, and on these three watertight fixtures it agrees
-    with ordito exactly -- so the value comparison needs no transform.
-
-    The named choice is *which* ``sign_type`` is the oracle, and it is not free: for both
-    ``WINDING_NUMBER`` and ``FAST_WINDING_NUMBER`` igl returns ``(1 - 2 * w) * d`` with ``w`` the
-    **continuous** winding number, not ``sign(1 - 2 * w) * d``. Its magnitude is therefore ``|d|``
-    only where ``w`` is exactly 0 or 1 and is scaled down near the surface -- measured on
-    ``bunny_decimated``, ``|S|`` departs from the pseudonormal type's by 2.7e-2 of the bbox diagonal
-    where the pseudonormal type agrees with ordito to 8e-8. So the winding types cannot be compared
-    on value at all, and the benchmark's ``sign_mode="winding"`` igl row is a cost comparison only.
-
-    ``cave_cube`` and ``torus`` are here for the same reason they are in the pymeshlab test: a
-    normal-based sign rule is supposed to be unreliable in a cavity and in a genus-1 hole.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(4)
-    points_np = mesh_tm.bounds[0] + rng.random((400, 3)) * (mesh_tm.bounds[1] - mesh_tm.bounds[0])
-
-    signed_igl, _, _, _ = igl.signed_distance(
-        np.ascontiguousarray(points_np),
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
-        igl.SIGNED_DISTANCE_TYPE_PSEUDONORMAL,
-    )
-
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    signed_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
-
-    assert np.array_equal(np.sign(signed_wp.numpy()), np.sign(signed_igl))
-    assert np.allclose(signed_wp.numpy(), signed_igl, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
-@pytest.mark.parity("signed_distance_on_mesh", "open3d")
-def test_signed_distance_on_mesh_matches_open3d(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A: Embree's ``compute_signed_distance`` shares ordito's parity sign and its convention.
-
-    Open3D signs by counting ray crossings -- the same rule as ordito's default ``"parity"`` mode
-    -- and uses the same Warp-SDF orientation (negative inside), so no transform is needed on
-    either the sign or the value. Probed to 1.8e-7 agreement on an icosphere before this test was
-    written. ``cave_cube`` and ``torus`` ride along because a parity rule is exactly what should
-    *not* fail in a cavity or through a genus-1 hole, unlike the normal-based rules in the
-    pymeshlab test above.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(4)
-    points_np = mesh_tm.bounds[0] + rng.random((400, 3)) * (mesh_tm.bounds[1] - mesh_tm.bounds[0])
-
-    mesh_t = trimesh_to_open3d_t(mesh_tm)
-    scene_o3d = o3d.t.geometry.RaycastingScene()
-    scene_o3d.add_triangles(mesh_t)
-    signed_o3d = scene_o3d.compute_signed_distance(
-        o3d.core.Tensor(np.ascontiguousarray(points_np, dtype=np.float32))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
-    ).numpy()
-
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    signed_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
-
-    assert np.array_equal(np.sign(signed_wp.numpy()), np.sign(signed_o3d))
-    assert np.allclose(signed_wp.numpy(), signed_o3d, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES_TORUS)
 @pytest.mark.parity("signed_distance_on_mesh", "pyvista")
 def test_signed_distance_on_mesh_matches_pyvista(
     request: pytest.FixtureRequest, mesh_name: str
@@ -1329,8 +1232,8 @@ def test_signed_distance_on_mesh_matches_pyvista(
     tangent-plane point-cloud estimator that correlates 0.956 with a max absolute difference of
     0.375 on the same input, and is a class-D row rather than this one.
 
-    The three fixtures are the ones a parity sign rule must not fail on, as in the open3d test
-    above; ``cave_cube``'s interior cavity is signed *outside* by both libraries.
+    The three fixtures are the ones a parity sign rule must not fail on, as in the open3d
+    comparison above; ``cave_cube``'s interior cavity is signed *outside* by both libraries.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(5)
@@ -1352,23 +1255,6 @@ def test_signed_distance_on_mesh_matches_pyvista(
 
     assert np.array_equal(np.sign(signed_wp.numpy()), np.sign(signed_pv))
     assert np.allclose(signed_wp.numpy(), signed_pv, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
-def test_signed_distance_on_mesh_winding_matches_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """Class B (sign only): winding parity against trimesh's on a watertight mesh."""
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    points_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
-
-    distance_tm = -tm_proximity.signed_distance(mesh_tm, points_np)
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    distance_wp = od.proximity.signed_distance_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
-    )
-    assert np.allclose(distance_wp.numpy(), distance_tm, rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus"])
@@ -1397,20 +1283,6 @@ def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
         od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, points_wp).numpy() > 0.5
     )
     assert np.array_equal(inside_wp, inside_exact)
-
-
-def test_signed_distance_on_mesh_winding_unsigned_matches_parity(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """Only the sign may differ between the two modes; the unsigned distance is the same query."""
-    _, mesh_wp = icosahedron
-    rng = np.random.default_rng(11)
-    points_wp = points_to_warp(rng.uniform(-2.0, 2.0, size=(200, 3)), mesh_wp.device)
-    parity_wp = od.proximity.signed_distance_on_mesh(mesh_wp.points, mesh_wp.indices, points_wp)
-    winding_wp = od.proximity.signed_distance_on_mesh(
-        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
-    )
-    assert np.allclose(np.abs(parity_wp.numpy()), np.abs(winding_wp.numpy()), rtol=1e-5, atol=1e-5)
 
 
 def test_signed_distance_on_mesh_rejects_unknown_sign_mode(
@@ -1502,22 +1374,6 @@ def test_signed_distance_on_mesh_winding_accepts_only_a_flagged_mesh(
         assert not np.array_equal(np.sign(parity), np.sign(supplied))
 
 
-def test_signed_distance_on_mesh_sign_direction(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
-    outside_np = np.asarray([mesh_tm.bounds[0] + [100.0, 100.0, 100.0]], dtype=np.float32)
-    inside_np = np.asarray([mesh_tm.center_mass], dtype=np.float32)
-    outside_wp = points_to_warp(outside_np, mesh_wp.device)
-    inside_wp = points_to_warp(inside_np, mesh_wp.device)
-    outside_signed_wp = od.proximity.signed_distance_on_mesh(
-        mesh_wp.points, mesh_wp.indices, outside_wp
-    )
-    inside_signed_wp = od.proximity.signed_distance_on_mesh(
-        mesh_wp.points, mesh_wp.indices, inside_wp
-    )
-    assert (outside_signed_wp.numpy() > 0.0).all()
-    assert (inside_signed_wp.numpy() < 0.0).all()
-
-
 @pytest.mark.parametrize("mesh_name", _SIGNED_DISTANCE_MESHES)
 def test_signed_distance_on_mesh_coplanar(request: pytest.FixtureRequest, mesh_name: str) -> None:
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
@@ -1551,15 +1407,6 @@ def test_signed_distance_contains_points_consistency(
     contains_np = od.ray.contains_points(mesh_wp, points_wp).numpy()
     off_surface = np.abs(signed_np) > TOLERANCE_MERGE
     assert np.array_equal(contains_np[off_surface], signed_np[off_surface] < 0.0)
-
-
-def test_signed_distance_on_mesh_empty_faces(device: str) -> None:
-    vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = warp_empty(0, wp.int32, device)
-    points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    signed_wp = od.proximity.signed_distance_on_mesh(vertices, faces, points)
-    assert signed_wp.shape == (2,)
-    assert np.all(np.isinf(signed_wp.numpy()))
 
 
 @pytest.mark.parity("signed_distance_grid", "open3d")
@@ -1669,12 +1516,9 @@ def test_winding_number_random(request: pytest.FixtureRequest, mesh_name: str, t
     surface.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    query_np = rng.random((200, 3), dtype=np.float64) * 4.0 - 2.0
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
+    query_np = _random_queries_np()
 
-    winding_igl = igl.winding_number(vertices_np, faces_np, query_np)
+    winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
     query_wp = points_to_warp(query_np, mesh_wp.device)
     winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=tiled)
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
@@ -1736,8 +1580,7 @@ def test_winding_number_tiled_matches_exact(icosahedron: tuple[tm.Trimesh, wp.Me
     assert np.allclose(tiled_wp.numpy(), exact_wp.numpy(), rtol=1e-6, atol=1e-6)
 
 
-@pytest.mark.parametrize("kernel_device", ["cpu", "cuda:0"])
-def test_winding_number_tiled_matches_igl_on_both_devices(kernel_device: str) -> None:
+def test_winding_number_tiled_matches_igl_on_the_cpu() -> None:
     """
     Class A: the tiled winding sum on the CPU device the ``device`` fixture never reaches.
 
@@ -1745,35 +1588,18 @@ def test_winding_number_tiled_matches_igl_on_both_devices(kernel_device: str) ->
     index from ``wp.tid()`` is always 0 -- so the block-wide ``wp.tile_sum`` this reduction used to
     perform summed one face per 64-face tile and returned a winding number off by up to 0.99 there,
     i.e. a whole turn. The reduction is lane-free now; this is the test that fails if it regresses.
+    The CUDA tiled path is held to igl by ``test_winding_number_random[True-*]``.
     """
-    if kernel_device.startswith("cuda") and not wp.is_cuda_available():
-        pytest.skip("no CUDA device")
-
+    kernel_device = "cpu"
     mesh_tm = tm.creation.icosphere(subdivisions=2)
     mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
     rng = np.random.default_rng(43)
     query_np = rng.random((200, 3), dtype=np.float64) * 3.0 - 1.5
 
-    winding_igl = igl.winding_number(
-        np.array(mesh_tm.vertices, dtype=np.float64),
-        np.array(mesh_tm.faces, dtype=np.int64),
-        query_np,
-    )
+    winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
     query_wp = points_to_warp(query_np, kernel_device)
     winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=True)
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
-
-
-def test_winding_number_inside_outside(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    mesh_tm, mesh_wp = icosahedron
-    outside_np = np.asarray([mesh_tm.bounds[0] + [100.0, 100.0, 100.0]], dtype=np.float32)
-    inside_np = np.asarray([mesh_tm.center_mass], dtype=np.float32)
-    outside_wp = points_to_warp(outside_np, mesh_wp.device)
-    inside_wp = points_to_warp(inside_np, mesh_wp.device)
-    outside_winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, outside_wp)
-    inside_winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, inside_wp)
-    assert np.allclose(outside_winding_wp.numpy(), 0.0, atol=1e-3)
-    assert np.allclose(inside_winding_wp.numpy(), 1.0, atol=1e-3)
 
 
 def test_winding_number_cave_cube_origin(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1812,13 +1638,45 @@ def test_proximity_empty_points_is_a_noop(
         assert result_wp.shape == (0,)
 
 
-def test_winding_number_empty_faces(device: str) -> None:
+# Each wrapper's answer on a mesh with no faces, one fill value per returned array: no closest
+# point (NaN), at infinite distance, on no face (-1); and nothing to wind around (0).
+_PROXIMITY_EMPTY_FACES_CASES = [
+    (
+        "closest_point_on_mesh",
+        lambda v, f, p: od.proximity.closest_point_on_mesh(v, f, p),
+        (math.nan, math.inf, -1),
+    ),
+    (
+        "signed_distance_on_mesh",
+        lambda v, f, p: (od.proximity.signed_distance_on_mesh(v, f, p),),
+        (math.inf,),
+    ),
+    ("winding_number", lambda v, f, p: (od.proximity.winding_number(v, f, p),), (0.0,)),
+]
+
+
+@pytest.mark.parametrize(
+    ("proximity_fn", "fills"),
+    [(case[1], case[2]) for case in _PROXIMITY_EMPTY_FACES_CASES],
+    ids=[case[0] for case in _PROXIMITY_EMPTY_FACES_CASES],
+)
+def test_proximity_empty_faces(
+    device: str,
+    proximity_fn: Callable[
+        [wp.array[wp.vec3], wp.array[wp.int32], wp.array[wp.vec3]], tuple[wp.array[object], ...]
+    ],
+    fills: tuple[float, ...],
+) -> None:
+    """Not a library comparison: a face-less mesh answers every query with the empty-mesh fill."""
     vertices = wp.zeros(1, dtype=wp.vec3, device=device)
     faces = warp_empty(0, wp.int32, device)
     points = wp.array(np.zeros((2, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    winding_wp = od.proximity.winding_number(vertices, faces, points)
-    assert winding_wp.shape == (2,)
-    assert np.allclose(winding_wp.numpy(), 0.0)
+    results = proximity_fn(vertices, faces, points)
+    assert len(results) == len(fills)
+    for result_wp, fill in zip(results, fills, strict=True):
+        assert result_wp.shape == (2,)
+        values_np = np.asarray(result_wp.numpy(), dtype=np.float64)
+        assert np.all(np.isnan(values_np)) if math.isnan(fill) else np.all(values_np == fill)
 
 
 # --------------------------------------------------------------------------------------
@@ -1844,15 +1702,24 @@ def _triangular_lattice_np(rows: int = 26, cols: int = 30) -> np.ndarray:
     )
 
 
-@pytest.mark.parity("containing_faces_2d", "scipy")
-def test_containing_faces_2d_matches_scipy(device: str) -> None:
+@pytest.mark.parity("containing_faces_2d", "scipy", "pyvista")
+def test_containing_faces_2d_matches_scipy_and_pyvista(device: str) -> None:
     """
-    Class A: the same triangle index as ``scipy.spatial.Delaunay.find_simplex``, exactly.
+    Class A: the same triangle index as ``Delaunay.find_simplex`` and ``find_containing_cell``.
 
-    Both sides are given the *same* triangulation -- scipy's own ``simplices`` are what ordito
-    locates against -- so the face numbering is shared and the comparison is an integer array
+    Both references are given the *same* triangulation -- scipy's own ``simplices`` are what ordito
+    locates against -- so the face numbering is shared and each comparison is an integer array
     equality, ``-1`` for outside included, with no transform at all. Measured agreement is
-    ``1.0000000`` over 40 000 queries.
+    ``1.0000000`` over the 40 000 queries against scipy; pyvista is compared on the first 10 000,
+    where it measured **1.0000**, with the batched call and a per-point loop giving byte-identical
+    answers and no false ``-1``. VTK's only transform is the embedding: it locates in 3-D, so the
+    lattice and the queries get a zero ``z``.
+
+    Worth stating explicitly because the neighbouring reference is the opposite: section 6 records
+    ``igl.in_element`` as *unusable* for this question -- it never reports element 0 for a query
+    inside it, returns different answers for the same query depending on the batch size, and aborts
+    with ``malloc(): invalid size`` on a 200-point Delaunay. VTK's locator has none of those
+    defects, so a reader generalizing from libigl would skip a reference that works.
 
     Non-vacuous in both directions by construction: the query box overhangs the lattice, so roughly
     72% of queries land inside and 28% outside, and both counts are asserted before comparing. An
@@ -1867,51 +1734,22 @@ def test_containing_faces_2d_matches_scipy(device: str) -> None:
     vertices_wp = points_to_warp_uv(points_np, device)
     faces_wp = wp.array(faces_np.ravel(), dtype=wp.int32, device=device)
     queries_wp = points_to_warp_uv(queries_np, device)
-
-    faces_wp_np = od.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp).numpy()
+    located_wp = od.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp).numpy()
 
     faces_sp = triangulation_sp.find_simplex(queries_np)
     assert (faces_sp >= 0).sum() > 20_000, "the reference places most queries inside"
     assert (faces_sp < 0).sum() > 5_000, "and a substantial minority outside"
-    assert np.array_equal(faces_wp_np, faces_sp)
+    assert np.array_equal(located_wp, faces_sp)
 
-
-@pytest.mark.parity("containing_faces_2d", "pyvista")
-def test_containing_faces_2d_matches_pyvista(device: str) -> None:
-    """
-    Class A: ``find_containing_cell`` returns the same triangle index, ``-1`` outside included.
-
-    The transform is only the embedding -- VTK locates in 3-D, so the lattice and the queries get a
-    zero ``z`` -- and the numbering is shared because both sides are handed scipy's own
-    ``simplices``. Measured **1.0000** agreement over 10 000 queries on the lattice, with the
-    batched call and a per-point loop giving byte-identical answers and no false ``-1``.
-
-    Worth stating explicitly because the neighbouring reference is the opposite: section 6 records
-    ``igl.in_element`` as *unusable* for this question -- it never reports element 0 for a query
-    inside it, returns different answers for the same query depending on the batch size, and aborts
-    with ``malloc(): invalid size`` on a 200-point Delaunay. VTK's locator has none of those
-    defects, so a reader generalizing from libigl would skip a reference that works.
-    """
-    points_np = _triangular_lattice_np()
-    triangulation_sp = Delaunay(points_np)
-    faces_np = np.ascontiguousarray(triangulation_sp.simplices, dtype=np.int32)
-    rng = np.random.default_rng(11)
-    queries_np = rng.random((10_000, 2)) * np.array([34.0, 26.0]) - 2.0
-
-    vertices_wp = points_to_warp_uv(points_np, device)
-    faces_wp = wp.array(faces_np.ravel(), dtype=wp.int32, device=device)
-    queries_wp = points_to_warp_uv(queries_np, device)
-    located_wp = od.proximity.containing_faces_2d(vertices_wp, faces_wp, queries_wp).numpy()
-
+    n_pv = 10_000
     mesh_pv = pv.PolyData.from_regular_faces(
         np.column_stack([points_np, np.zeros(points_np.shape[0])]), faces_np
     )
-    queries_3d_np = np.column_stack([queries_np, np.zeros(queries_np.shape[0])])
+    queries_3d_np = np.column_stack([queries_np[:n_pv], np.zeros(n_pv)])
     located_pv = np.asarray(mesh_pv.find_containing_cell(queries_3d_np))
-
     assert (located_pv >= 0).sum() > 5_000, "the reference places most queries inside"
     assert (located_pv < 0).sum() > 1_000, "and a substantial minority outside"
-    assert np.array_equal(located_wp, located_pv)
+    assert np.array_equal(located_wp[:n_pv], located_pv)
 
 
 def test_containing_faces_2d_locates_every_triangle_from_its_centroid(device: str) -> None:

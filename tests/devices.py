@@ -18,8 +18,9 @@ and invisible to both a CUDA-only run (devices matched) and a ``CUDA_VISIBLE_DEV
 Usage
 -----
 ``uv run python -m tests.devices``
-    CUDA pass, then a CUDA-hidden CPU pass with the ``slow_cpu`` tests skipped. The everyday
-    both-device check.
+    CUDA pass, then a CUDA-hidden CPU pass with the ``slow_cpu`` tests skipped and the
+    ``device_agnostic`` source scans deselected (the CUDA pass ran them). The everyday both-device
+    check.
 ``uv run python -m tests.devices --slow-cpu``
     Same, but the CPU pass runs ``--device=both``, which in a CUDA-hidden process means "all of CPU,
     skip nothing" -- the ``slow_cpu`` Poisson tests included.
@@ -76,16 +77,17 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
+    # The static scans of the source tree (``device_agnostic``) answer the same in every process,
+    # and they were a fifth of the CPU pass's wall clock; only the CUDA pass runs them.
+    cpu_extra = ["--skip-device-agnostic", *args.pytest_args]
     results = [
         _run("cuda pass", "cuda", hide_cuda=False, extra=args.pytest_args),
         # ``both`` in a CUDA-hidden process resolves to ["cpu"] and disables the slow_cpu skip, so
         # it is how this runner says "all of CPU" without needing a second flag in conftest.
-        _run(
-            "cpu pass", "both" if args.slow_cpu else "cpu", hide_cuda=True, extra=args.pytest_args
-        ),
+        _run("cpu pass", "both" if args.slow_cpu else "cpu", hide_cuda=True, extra=cpu_extra),
     ]
     if args.cpu_blocks:
-        cpu_blocks = ["--cpu-blocks", *args.pytest_args]
+        cpu_blocks = ["--cpu-blocks", *cpu_extra]
         results.append(_run("cpu-blocks pass", "cpu", hide_cuda=True, extra=cpu_blocks))
 
     print("\n=== summary")

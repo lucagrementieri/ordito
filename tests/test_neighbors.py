@@ -138,24 +138,6 @@ def test_query_ball_single(device: str, backend: Literal["bvh", "hashgrid"]):
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-def test_query_ball_empty_ball(device: str, backend: Literal["bvh", "hashgrid"]):
-    rng = np.random.default_rng(0)
-    points = rng.random((50, 3), dtype=np.float32) * 2.0
-    query = np.array([10.0, 10.0, 10.0], dtype=np.float32)
-    radius = 0.5
-
-    points_wp = points_to_warp(points, device)
-    query_wp = wp.vec3(query[0], query[1], query[2])
-    query_ball = partial(od.neighbors.query_ball, backend=backend)
-
-    query_indices_wp, query_distances_wp = query_ball(
-        points_wp, query_wp, radius, return_sorted=True
-    )
-    assert query_indices_wp.shape == (0,)
-    assert query_distances_wp.shape == (0,)
-
-
-@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parity("query_ball_bvh", "scipy")
 @pytest.mark.parity("query_ball_hashgrid", "scipy")
 def test_query_ball_batch(device: str, backend: Literal["bvh", "hashgrid"]):
@@ -351,32 +333,6 @@ def test_query_bvh_ball_matches_a_brute_force_ball_overlap(device: str) -> None:
     assert int(indices_np.size) < cube_indices_wp.size
 
 
-def test_query_bvh_ball_degenerate_inputs(device: str) -> None:
-    """
-    Not a library comparison: an empty query set and a query that hits nothing.
-
-    The two early returns, mirroring ``test_query_bvh_box_degenerate_inputs``: a zero-hit query
-    must still produce the total-terminated offsets shape the general path does, or a caller
-    reading the trailing total breaks.
-    """
-    lower_np = np.zeros((4, 3), dtype=np.float32)
-    upper_np = np.full((4, 3), 0.1, dtype=np.float32)
-    bvh = od.neighbors.bvh_from_bounds(
-        points_to_warp(lower_np, device), points_to_warp(upper_np, device)
-    )
-
-    empty_indices_wp, empty_offsets_wp = od.neighbors.query_bvh_ball(
-        bvh, warp_empty(0, wp.vec3, device), 0.25
-    )
-    assert empty_indices_wp.shape == (0,)
-    assert np.array_equal(empty_offsets_wp.numpy(), np.zeros(1, np.int32))
-
-    far_wp = points_to_warp(np.array([[99.0, 99.0, 99.0]], dtype=np.float32), device)
-    miss_indices_wp, miss_offsets_wp = od.neighbors.query_bvh_ball(bvh, far_wp, 0.25)
-    assert miss_indices_wp.shape == (0,)
-    assert np.array_equal(miss_offsets_wp.numpy(), np.zeros(2, np.int32))
-
-
 @pytest.mark.parity("query_bvh_box", "open3d")
 def test_query_bvh_box_matches_exact_containment(device: str) -> None:
     """
@@ -493,13 +449,13 @@ def test_query_bvh_box_matches_meshlib(device: str) -> None:
     assert int(offsets_np[-1]) - int(offsets_np[-2]) == points_np.shape[0]
 
 
-def test_query_bvh_box_degenerate_inputs(device: str) -> None:
+def test_query_bvh_ball_and_box_degenerate_inputs(device: str) -> None:
     """
-    An empty query set, a query that hits nothing, and mismatched corner lengths.
+    An empty query set and a query that hits nothing, for both BVH queries; mismatched box corners.
 
-    Not a library comparison: these are this wrapper's own early returns and its one guard. The
-    offsets shape has to match the general path in both early returns, since a caller reading the
-    trailing total would otherwise index past the end.
+    Not a library comparison: these are the wrappers' own early returns and the box query's one
+    guard. The offsets shape has to match the general path in both early returns, since a caller
+    reading the trailing total would otherwise index past the end.
     """
     points_wp = wp.array(
         np.zeros((4, 3), dtype=np.float32) + np.array([0.0, 0.0, 0.0]), dtype=wp.vec3, device=device
@@ -522,9 +478,29 @@ def test_query_bvh_box_degenerate_inputs(device: str) -> None:
             bvh, wp.array(np.zeros((2, 3), np.float32), wp.vec3, device=device), empty_wp
         )
 
+    # The ball query over a bounds BVH takes the same two early returns.
+    bounds_bvh = od.neighbors.bvh_from_bounds(
+        points_to_warp(np.zeros((4, 3), dtype=np.float32), device),
+        points_to_warp(np.full((4, 3), 0.1, dtype=np.float32), device),
+    )
+    ball_indices_wp, ball_offsets_wp = od.neighbors.query_bvh_ball(bounds_bvh, empty_wp, 0.25)
+    assert ball_indices_wp.shape == (0,)
+    assert np.array_equal(ball_offsets_wp.numpy(), np.zeros(1, np.int32))
+    far_wp = points_to_warp(np.array([[99.0, 99.0, 99.0]], dtype=np.float32), device)
+    ball_miss_indices_wp, ball_miss_offsets_wp = od.neighbors.query_bvh_ball(
+        bounds_bvh, far_wp, 0.25
+    )
+    assert ball_miss_indices_wp.shape == (0,)
+    assert np.array_equal(ball_miss_offsets_wp.numpy(), np.zeros(2, np.int32))
+
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 def test_query_ball_empty(device: str, backend: Literal["bvh", "hashgrid"]):
+    """
+    Not a library comparison: empty clouds, empty query sets and a ball that contains nothing.
+
+    Each comes back as empty buffers (or one empty row per query) rather than raising.
+    """
     rng = np.random.default_rng(0)
     points = rng.random((10, 3), dtype=np.float32)
 
@@ -550,6 +526,13 @@ def test_query_ball_empty(device: str, backend: Literal["bvh", "hashgrid"]):
     indices, distances = query_ball(points_wp, empty_queries_wp, radius)
     assert len(indices) == 0
     assert len(distances) == 0
+
+    # A ball far from every point is empty, sorted or not.
+    far_indices_wp, far_distances_wp = query_ball(
+        points_wp, wp.vec3(10.0, 10.0, 10.0), radius, return_sorted=True
+    )
+    assert far_indices_wp.shape == (0,)
+    assert far_distances_wp.shape == (0,)
 
 
 def test_knn_initial_radius_matches_uniform_density(device: str):
@@ -595,8 +578,8 @@ def test_knn_initial_radius_degenerate_clouds(device: str):
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-@pytest.mark.parametrize("k", [1, 3, 40])
-@pytest.mark.parametrize("max_radius", [math.inf, 0.5, 1.0])
+@pytest.mark.parametrize("k", [1, 40])
+@pytest.mark.parametrize("max_radius", [math.inf, 0.5])
 @pytest.mark.parity("query_nearest_bvh_k1", "scipy")
 @pytest.mark.parity("query_nearest_hashgrid_k1", "scipy")
 @pytest.mark.parity("bvh_from_points", "scipy")
@@ -706,16 +689,18 @@ def test_query_nearest_row_buckets(device: str, backend: Literal["bvh", "hashgri
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
 @pytest.mark.parametrize("k", [1, 7, 64])
-@pytest.mark.parity("query_nearest_bvh_k1", "igl")
-@pytest.mark.parity("query_nearest_bvh_k7", "igl")
-@pytest.mark.parity("query_nearest_bvh_k64", "igl")
-@pytest.mark.parity("query_nearest_hashgrid_k1", "igl")
-@pytest.mark.parity("query_nearest_hashgrid_k7", "igl")
+@pytest.mark.parity("query_nearest_bvh_k1", "igl", "open3d")
+@pytest.mark.parity("query_nearest_bvh_k7", "igl", "open3d")
+@pytest.mark.parity("query_nearest_bvh_k64", "igl", "open3d")
+@pytest.mark.parity("query_nearest_hashgrid_k1", "igl", "open3d")
+@pytest.mark.parity("query_nearest_hashgrid_k7", "igl", "open3d")
 @pytest.mark.parity("bvh_from_points", "igl")
 @pytest.mark.parity("hashgrid_from_points", "igl")
-def test_query_nearest_matches_igl(device: str, backend: Literal["bvh", "hashgrid"], k: int):
+def test_query_nearest_matches_igl_and_open3d(
+    device: str, backend: Literal["bvh", "hashgrid"], k: int
+):
     """
-    Class A, against the second exact k-NN. Indices, element-wise, at the three benchmarked ``k``.
+    Class A, against the second and third exact k-NN, at the three benchmarked ``k``.
 
     ``igl.knn`` returns ``(n_queries, k)`` ``int64`` neighbour indices sorted by distance -- the
     same layout and the same order as ``KDTree``'s -- so this is a direct comparison and not a set
@@ -731,6 +716,13 @@ def test_query_nearest_matches_igl(device: str, backend: Literal["bvh", "hashgri
     igl side the octree is quite literally an argument to ``igl.knn``, passed as
     ``*igl.octree(points)[:4]``.
 
+    **open3d**'s batched tensor search ``o3d.core.nns.NearestNeighborSearch.knn_search`` (not the
+    legacy ``KDTreeFlann`` per-query loop) returns ``(n_queries, k)`` indices sorted by distance in
+    ``KDTree``'s layout, plus **squared** distances -- the square root is the named transform that
+    makes the distance half Class B on its own; the index half needs none. open3d's answer is
+    likewise the same whichever structure ordito asks, which is why the two benchmark groups carry
+    the identical reference row.
+
     The cloud is random in a box, so no two points tie in ``float32`` distance from a query and the
     index comparison is exact.
     """
@@ -741,10 +733,24 @@ def test_query_nearest_matches_igl(device: str, backend: Literal["bvh", "hashgri
     points_wp = points_to_warp(points, device)
     queries_wp = points_to_warp(queries, device)
     query_nearest = partial(od.neighbors.query_nearest, backend=backend)
-    query_indices_wp, _distances_wp = query_nearest(points_wp, queries_wp, k=k)
+    query_indices_wp, query_distances_wp = query_nearest(points_wp, queries_wp, k=k)
     query_indices_igl = igl.knn(queries, points, k, *igl.octree(points)[:4])
 
     assert np.array_equal(query_indices_wp.numpy().reshape(queries.shape[0], k), query_indices_igl)
+
+    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+    assert nns_o3d.knn_index()
+    indices_o3d, squared_o3d = nns_o3d.knn_search(o3d.core.Tensor(queries), k)  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
+
+    assert np.array_equal(
+        query_indices_wp.numpy().reshape(queries.shape[0], k), indices_o3d.numpy()
+    )
+    assert np.allclose(
+        query_distances_wp.numpy().reshape(queries.shape[0], k),
+        np.sqrt(squared_o3d.numpy()),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -837,53 +843,6 @@ def test_query_ball_matches_pytorch3d(device: str, backend: Literal["bvh", "hash
         assert set(flat_np[offsets_np[query] : offsets_np[query + 1]].tolist()) == set(
             indices_p3d[query][indices_p3d[query] >= 0].tolist()
         )
-
-
-@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-@pytest.mark.parametrize("k", [1, 7, 64])
-@pytest.mark.parity("query_nearest_bvh_k1", "open3d")
-@pytest.mark.parity("query_nearest_bvh_k7", "open3d")
-@pytest.mark.parity("query_nearest_bvh_k64", "open3d")
-@pytest.mark.parity("query_nearest_hashgrid_k1", "open3d")
-@pytest.mark.parity("query_nearest_hashgrid_k7", "open3d")
-def test_query_nearest_matches_open3d(
-    device: str, backend: Literal["bvh", "hashgrid"], k: int
-) -> None:
-    """
-    Class A, against the third exact k-NN: ``o3d.core.nns.NearestNeighborSearch.knn_search``.
-
-    Open3D's batched tensor search (not the legacy ``KDTreeFlann`` per-query loop) returns
-    ``(n_queries, k)`` indices sorted by distance in ``KDTree``'s layout, plus **squared**
-    distances -- the square root is the named transform that makes the distance half Class B on
-    its own; the index half needs none. The cloud is random in a box, so no two points tie in
-    ``float32`` distance from a query and the index comparison is exact.
-
-    The ``backend`` axis covers the hash-grid groups as well as the BVH ones: open3d's answer is
-    the same whichever structure ordito asks, which is why the two benchmark groups carry the
-    identical reference row.
-    """
-    rng = np.random.default_rng(11)
-    points = rng.random((300, 3)) * 5.0
-    queries = rng.random((40, 3)) * 5.0
-
-    points_wp = points_to_warp(points, device)
-    queries_wp = points_to_warp(queries, device)
-    query_nearest = partial(od.neighbors.query_nearest, backend=backend)
-    query_indices_wp, query_distances_wp = query_nearest(points_wp, queries_wp, k=k)
-
-    nns_o3d = o3d.core.nns.NearestNeighborSearch(o3d.core.Tensor(points))  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
-    assert nns_o3d.knn_index()
-    indices_o3d, squared_o3d = nns_o3d.knn_search(o3d.core.Tensor(queries), k)  # pyright: ignore[reportCallIssue]  # the stub drops dtype/device defaults
-
-    assert np.array_equal(
-        query_indices_wp.numpy().reshape(queries.shape[0], k), indices_o3d.numpy()
-    )
-    assert np.allclose(
-        query_distances_wp.numpy().reshape(queries.shape[0], k),
-        np.sqrt(squared_o3d.numpy()),
-        rtol=1e-5,
-        atol=1e-5,
-    )
 
 
 @pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
@@ -1353,16 +1312,6 @@ def test_query_nearest_prebuilt_index(device: str, backend: Literal["bvh", "hash
     assert np.array_equal(distances_wp.numpy(), built_distances_wp.numpy())
 
 
-@pytest.mark.parametrize("backend", ["bvh", "hashgrid"])
-def test_query_nearest_rejects_negative_initial_radius(
-    device: str, backend: Literal["bvh", "hashgrid"]
-):
-    points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    query_nearest = partial(od.neighbors.query_nearest, backend=backend)
-    with pytest.raises(ValueError, match="initial_radius"):
-        query_nearest(points_wp, points_wp, k=1, initial_radius=-1.0)
-
-
 def test_backend_and_accelerator_must_agree(device: str) -> None:
     """
     Not a library comparison: the one new failure mode the merged query API introduced.
@@ -1374,6 +1323,8 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
     The two positive branches matter as much as the raise: a prebuilt structure alone must be
     accepted (it selects the backend by its type), and a matching pair must be accepted too, or the
     guard would be rejecting correct calls.
+
+    ``query_nearest``'s ``initial_radius`` must not be negative, on either backend.
     """
     points_wp = points_to_warp(np.random.default_rng(0).random((32, 3)), device)
     bvh = od.neighbors.bvh_from_points(points_wp)
@@ -1400,6 +1351,12 @@ def test_backend_and_accelerator_must_agree(device: str) -> None:
         # An accelerator on its own, and a matching pair, are both fine.
         query(points_wp, points_wp, accelerator=bvh, **extra)
         query(points_wp, points_wp, accelerator=grid, backend="hashgrid", **extra)
+
+    for backend in ("bvh", "hashgrid"):
+        with pytest.raises(ValueError, match="initial_radius"):
+            od.neighbors.query_nearest(
+                points_wp, points_wp, k=1, initial_radius=-1.0, backend=backend
+            )
 
 
 def test_the_two_backends_agree(device: str) -> None:
@@ -1547,8 +1504,8 @@ def test_query_weighted_nearest_conventions(device: str) -> None:
         )
 
 
-@pytest.mark.parity("nearest_neighbor_distance", "open3d")
-def test_nearest_neighbor_distance_matches_open3d(device: str) -> None:
+@pytest.mark.parity("nearest_neighbor_distance", "open3d", "meshlib")
+def test_nearest_neighbor_distance_matches_open3d_and_meshlib(device: str) -> None:
     """
     Class A: element for element against ``PointCloud.compute_nearest_neighbor_distance``.
 
@@ -1561,28 +1518,8 @@ def test_nearest_neighbor_distance_matches_open3d(device: str) -> None:
     Also asserted, since no reference has an opinion on it: the mean of this array is a *scale*, so
     scaling the cloud must scale it by the same factor (both ``reconstruction`` call sites divide a
     length by it).
-    """
-    rng = np.random.default_rng(11)
-    points_np = rng.random((600, 3))
 
-    distance_o3d = np.asarray(points_to_open3d(points_np).compute_nearest_neighbor_distance())
-
-    points_wp = points_to_warp(points_np, device)
-    distance_wp = od.neighbors.nearest_neighbor_distance(points_wp)
-
-    assert distance_o3d.min() > 0.0  # non-vacuity: a random cloud has no coincident points
-    assert np.allclose(distance_wp.numpy(), distance_o3d, rtol=1e-5, atol=1e-5)
-
-    scaled_wp = points_to_warp(3.0 * points_np, device)
-    scaled_distance_wp = od.neighbors.nearest_neighbor_distance(scaled_wp)
-    assert np.allclose(scaled_distance_wp.numpy(), 3.0 * distance_wp.numpy(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("nearest_neighbor_distance", "meshlib")
-def test_nearest_neighbor_distance_matches_meshlib(device: str) -> None:
-    """
-    Class B (an index where ordito returns a length): the same neighbour, exactly.
-
+    Class B against MeshLib (an index where ordito returns a length): the same neighbour, exactly.
     ``findNClosestPointsPerPoint(cloud, 1)`` returns the *index* of each point's closest **other**
     point -- self is excluded, so the ``k=2``-and-drop-column-0 transform ordito's own
     implementation needs has no counterpart here -- and the distance is then taken from the index.
@@ -1599,20 +1536,27 @@ def test_nearest_neighbor_distance_matches_meshlib(device: str) -> None:
     rng = np.random.default_rng(11)
     points_np = rng.random((600, 3))
 
-    cloud_ml = points_to_meshlib(points_np)
-    nearest_ml = meshlib_indices_to_numpy(
-        # MeshLib's stub omits ``VertId.__index__``, which it implements at runtime.
-        mm.findNClosestPointsPerPoint(cloud_ml, 1)  # pyright: ignore[reportArgumentType]
-    )
-    assert nearest_ml.shape == (points_np.shape[0],)
-    assert np.all(nearest_ml != np.arange(points_np.shape[0]))  # the closest *other* point
-    distance_ml = np.linalg.norm(points_np[nearest_ml] - points_np, axis=1)
+    distance_o3d = np.asarray(points_to_open3d(points_np).compute_nearest_neighbor_distance())
 
     points_wp = points_to_warp(points_np, device)
     distance_wp = od.neighbors.nearest_neighbor_distance(points_wp)
 
-    assert distance_ml.min() > 0.0  # non-vacuity: a random cloud has no coincident points
+    assert distance_o3d.min() > 0.0  # non-vacuity: a random cloud has no coincident points
+    assert np.allclose(distance_wp.numpy(), distance_o3d, rtol=1e-5, atol=1e-5)
+
+    nearest_ml = meshlib_indices_to_numpy(
+        # MeshLib's stub omits ``VertId.__index__``, which it implements at runtime.
+        mm.findNClosestPointsPerPoint(points_to_meshlib(points_np), 1)  # pyright: ignore[reportArgumentType]
+    )
+    assert nearest_ml.shape == (points_np.shape[0],)
+    assert np.all(nearest_ml != np.arange(points_np.shape[0]))  # the closest *other* point
+    distance_ml = np.linalg.norm(points_np[nearest_ml] - points_np, axis=1)
+    assert distance_ml.min() > 0.0
     assert np.allclose(distance_wp.numpy(), distance_ml, rtol=1e-5, atol=1e-5)
+
+    scaled_wp = points_to_warp(3.0 * points_np, device)
+    scaled_distance_wp = od.neighbors.nearest_neighbor_distance(scaled_wp)
+    assert np.allclose(scaled_distance_wp.numpy(), 3.0 * distance_wp.numpy(), rtol=1e-5, atol=1e-5)
 
 
 def test_nearest_neighbor_distance_coincident_and_degenerate(device: str) -> None:

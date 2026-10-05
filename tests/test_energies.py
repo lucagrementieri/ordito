@@ -23,28 +23,15 @@ import pytorch3d.loss as p3d_loss
 import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
-import warp.sparse as wps
 
 import ordito as od
-import ordito.typing as odt
-from tests.conversions import bsr_to_csr, mesh_igl, numpy_to_warp, trimesh_to_pytorch3d
-
-
-def _upload_bsr_float64(
-    matrix_sp: sp.csc_matrix | sp.csr_matrix, device: wp.DeviceLike
-) -> odt.BsrMatrix[wp.float64]:
-    """Upload a scipy sparse matrix as a float64 1x1-block BSR on ``device``."""
-    coo = matrix_sp.tocoo()
-    matrix_wp = wps.bsr_from_triplets(
-        coo.shape[0],
-        coo.shape[1],
-        wp.array(coo.row.astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(coo.col.astype(np.int32), dtype=wp.int32, device=device),
-        wp.array(coo.data.astype(np.float64), dtype=wp.float64, device=device),
-        prune_numerical_zeros=False,
-    )
-    assert odt.has_blocks(matrix_wp, wp.float64)
-    return matrix_wp
+from tests.conversions import (
+    bsr_to_csr,
+    mesh_igl,
+    numpy_to_warp,
+    scipy_to_bsr,
+    trimesh_to_pytorch3d,
+)
 
 
 @pytest.mark.parametrize("target_length", [0.0, 0.3])
@@ -202,7 +189,7 @@ def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, 
     mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC)
     q_igl = igl.harmonic_integrated_from_laplacian_and_mass(laplacian_igl, mass_igl, k).toarray()
 
-    laplacian_wp = _upload_bsr_float64(laplacian_igl, mesh_wp.device)
+    laplacian_wp = scipy_to_bsr(laplacian_igl, mesh_wp.device)
     mass_wp = wp.array(mass_igl.diagonal(), dtype=wp.float64, device=mesh_wp.device)
     q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, mass_wp, k=k)).toarray()
 
@@ -222,7 +209,7 @@ def test_k_harmonic_identity_mass_and_power_guard(hemisphere: tuple[tm.Trimesh, 
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
-    laplacian_wp = _upload_bsr_float64(laplacian_igl, mesh_wp.device)
+    laplacian_wp = scipy_to_bsr(laplacian_igl, mesh_wp.device)
     q_wp = bsr_to_csr(od.energies.k_harmonic(laplacian_wp, k=2)).toarray()
     q_sp = (laplacian_igl @ laplacian_igl).toarray()
     assert np.allclose(q_wp, q_sp, rtol=1e-9, atol=1e-9 * np.abs(q_sp).max())
@@ -231,29 +218,58 @@ def test_k_harmonic_identity_mass_and_power_guard(hemisphere: tuple[tm.Trimesh, 
         od.energies.k_harmonic(laplacian_wp, k=0)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
+_HESSIAN_ENERGIES = {
+    "hessian_energy": (od.energies.hessian_energy, igl.hessian_energy),
+    "curved_hessian_energy": (od.energies.curved_hessian_energy, igl.curved_hessian_energy),
+}
+
+
+@pytest.mark.parametrize(
+    ("energy", "mesh_name"),
+    [
+        *(("hessian_energy", name) for name in ("icosahedron", "hemisphere", "half_torus")),
+        *(
+            ("curved_hessian_energy", name)
+            for name in ("icosahedron", "hemisphere", "half_torus", "torus")
+        ),
+    ],
+)
 @pytest.mark.parity("hessian_energy", "igl")
-def test_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parity("curved_hessian_energy", "igl")
+def test_hessian_energies_match_igl(
+    request: pytest.FixtureRequest, energy: str, mesh_name: str
+) -> None:
     """
-    Class A on the assembled ``(n_vertices, n_vertices)`` matrix.
+    Class A on the assembled ``(n_vertices, n_vertices)`` matrix, for both Hessian energies.
 
     igl is handed the float32-rounded vertices ordito actually computes from, so the comparison
     isolates the operator assembly (the two-ring contraction, the Voronoi mass, the boundary
     kill) from input precision; entries scale as the inverse fourth power of the mesh size, which
     would otherwise let vertex rounding dominate the tolerance. The open fixtures are the ones
     that exercise the killed boundary degrees of freedom.
+
+    ``curved_hessian_energy``'s per-face contraction of ``D^T Mi (L + K) Mi D`` must agree with
+    igl's chained sparse products. ordito numbers and orients its unique edges differently from
+    ``igl::orient_halfedges`` (min-vertex-first instead of first-occurrence-first), and the
+    agreement here is what shows the energy is invariant to that gauge. ``torus`` is the
+    curvature-rich closed case where the ``K`` correction actually contributes. Its closed arms
+    also check, as an invariant rather than a comparison, that constants have zero curved energy:
+    every Crouzeix-Raviart gradient row sums to zero by construction.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int64)
+    energy_od, energy_igl = _HESSIAN_ENERGIES[energy]
 
-    q_igl = igl.hessian_energy(vertices_np, faces_np).toarray()
-    q_wp = bsr_to_csr(od.energies.hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
+    q_igl = energy_igl(vertices_np, faces_np).toarray()
+    q_wp = bsr_to_csr(energy_od(mesh_wp.points, mesh_wp.indices)).toarray()
 
     assert q_wp.shape == q_igl.shape
     assert np.abs(q_igl).max() > 0.0
     scale = np.abs(q_igl).max()
     assert np.allclose(q_wp, q_igl, rtol=1e-7, atol=1e-7 * scale)
+    if energy == "curved_hessian_energy" and mesh_name in ("icosahedron", "torus"):
+        assert np.abs(q_wp @ np.ones(q_wp.shape[0])).max() < 1e-9 * np.abs(q_wp).max()
 
 
 def test_hessian_energy_annihilates_linear_fields_where_biharmonic_does_not(device: str) -> None:
@@ -286,44 +302,6 @@ def test_hessian_energy_annihilates_linear_fields_where_biharmonic_does_not(devi
     assert residual_biharmonic > 1e-3 * scale
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
-@pytest.mark.parity("curved_hessian_energy", "igl")
-def test_curved_hessian_energy_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class A on the assembled ``(n_vertices, n_vertices)`` matrix.
-
-    The per-face contraction of ``D^T Mi (L + K) Mi D`` must agree with igl's chained sparse
-    products; igl gets the float32-rounded vertices for the same reason as ``hessian_energy``'s
-    test. ordito numbers and orients its unique edges differently from ``igl::orient_halfedges``
-    (min-vertex-first instead of first-occurrence-first), and the agreement here is what shows the
-    energy is invariant to that gauge. ``torus`` is the curvature-rich closed case where the
-    ``K`` correction actually contributes.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.ascontiguousarray(mesh_wp.points.numpy(), dtype=np.float64)
-    faces_np = np.ascontiguousarray(mesh_wp.indices.numpy().reshape(-1, 3), dtype=np.int64)
-
-    q_igl = igl.curved_hessian_energy(vertices_np, faces_np).toarray()
-    q_wp = bsr_to_csr(od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
-
-    assert q_wp.shape == q_igl.shape
-    assert np.abs(q_igl).max() > 0.0
-    scale = np.abs(q_igl).max()
-    assert np.allclose(q_wp, q_igl, rtol=1e-7, atol=1e-7 * scale)
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "torus"])
-def test_curved_hessian_energy_annihilates_constants(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """Constants have zero energy by construction: every CR gradient row sums to zero."""
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    q_wp = bsr_to_csr(od.energies.curved_hessian_energy(mesh_wp.points, mesh_wp.indices)).toarray()
-    ones = np.ones(q_wp.shape[0])
-    assert np.abs(q_wp).max() > 0.0
-    assert np.abs(q_wp @ ones).max() < 1e-9 * np.abs(q_wp).max()
-
-
 def _igl_edge_arguments(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
     """
     Ordito's ``edges_unique`` numbering in the ``(E, EMAP)`` layout igl's CR bindings take.
@@ -340,58 +318,38 @@ def _igl_edge_arguments(mesh_wp: wp.Mesh) -> tuple[np.ndarray, np.ndarray]:
     return unique_edges_wp.numpy().astype(np.int64), edge_map_igl
 
 
+_CROUZEIX_RAVIART = {
+    "cotmatrix": (od.energies.crouzeix_raviart_cotmatrix, igl.crouzeix_raviart_cotmatrix),
+    "massmatrix": (od.energies.crouzeix_raviart_massmatrix, igl.crouzeix_raviart_massmatrix),
+}
+
+
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
+@pytest.mark.parametrize("operator", list(_CROUZEIX_RAVIART))
 @pytest.mark.parity("crouzeix_raviart_cotmatrix", "igl")
-def test_crouzeix_raviart_cotmatrix_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
+@pytest.mark.parity("crouzeix_raviart_massmatrix", "igl")
+def test_crouzeix_raviart_operators_match_igl(
+    request: pytest.FixtureRequest, operator: str, mesh_name: str
 ) -> None:
     """
     Class B; the named transform is the edge numbering, handed *to* igl.
 
-    ``igl.crouzeix_raviart_cotmatrix`` accepts an explicit ``(E, EMAP)``, so feeding it ordito's
-    ``edges_unique`` numbering makes the two ``(n_edges, n_edges)`` matrices directly comparable —
-    no row permutation is applied to either side's output.
+    ``igl.crouzeix_raviart_cotmatrix`` and ``igl.crouzeix_raviart_massmatrix`` accept an explicit
+    ``(E, EMAP)``, so feeding them ordito's ``edges_unique`` numbering makes the two
+    ``(n_edges, n_edges)`` matrices directly comparable -- no row permutation is applied to either
+    side's output. Asserted on the dense form so a stray off-diagonal triplet in the mass matrix is
+    visible, exactly like ``test_mass_matrix_assembled_matches_igl``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
+    operator_od, operator_igl = _CROUZEIX_RAVIART[operator]
 
     edges_igl, edge_map_igl = _igl_edge_arguments(mesh_wp)
-    matrix_igl = igl.crouzeix_raviart_cotmatrix(
-        vertices_np, faces_np, edges_igl, edge_map_igl
-    ).toarray()
-    matrix_wp = bsr_to_csr(
-        od.energies.crouzeix_raviart_cotmatrix(mesh_wp.points, mesh_wp.indices)
-    ).toarray()
+    matrix_igl = operator_igl(vertices_np, faces_np, edges_igl, edge_map_igl).toarray()
+    matrix_wp = bsr_to_csr(operator_od(mesh_wp.points, mesh_wp.indices)).toarray()
 
     assert matrix_wp.shape == matrix_igl.shape == (len(edges_igl), len(edges_igl))
-    assert np.allclose(matrix_wp, matrix_igl, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
-@pytest.mark.parity("crouzeix_raviart_massmatrix", "igl")
-def test_crouzeix_raviart_massmatrix_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B via the same handed-to-igl edge numbering as the cotmatrix test.
-
-    Asserted on the dense form so a stray off-diagonal triplet is visible, exactly like
-    ``test_mass_matrix_assembled_matches_igl``.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
-
-    edges_igl, edge_map_igl = _igl_edge_arguments(mesh_wp)
-    matrix_igl = igl.crouzeix_raviart_massmatrix(
-        vertices_np, faces_np, edges_igl, edge_map_igl
-    ).toarray()
-    matrix_wp = bsr_to_csr(
-        od.energies.crouzeix_raviart_massmatrix(mesh_wp.points, mesh_wp.indices)
-    ).toarray()
-
-    assert matrix_wp.shape == matrix_igl.shape
     assert np.allclose(matrix_wp, matrix_igl, rtol=1e-5, atol=1e-5)
 
 
@@ -452,36 +410,38 @@ def test_curved_hessian_and_crouzeix_raviart_cotmatrix_reject_non_edge_manifold(
         od.energies.crouzeix_raviart_cotmatrix(vertices_wp, faces_wp)
 
 
+def _lscm_q_igl(mesh_tm: tm.Trimesh) -> sp.csr_matrix:
+    """
+    Return igl's LSCM Hessian ``Q``, which it exposes only as ``igl.lscm``'s second return.
+
+    ``Q`` does not depend on the pins (they only constrain the solve), so two arbitrary ones do.
+    """
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    pins_np = np.array([0, 1], dtype=np.int64)
+    pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
+    _, hessian_igl = igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
+    return hessian_igl.tocsr()
+
+
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
+def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
 
     The named transform is the extraction, not a value change: igl's ``Q`` is exactly
     ``-repdiag(L, 2) - 2A``, the same matrix ordito assembles, and both are densified before
-    comparing because the two builds order their CSR entries differently.
+    comparing because the two builds order their CSR entries differently. This builds the Hessian
+    only, no conjugate-gradient solve.
     """
-    # No CPU skip: this builds the Hessian only, no conjugate-gradient solve.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = mesh_wp.points.size
-
-    # igl.lscm returns (V_uv, Q); its Q equals -repdiag(L, 2) - 2A exactly.
-    pins_np = np.array([0, 1], dtype=np.int64)
-    pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-    _, hessian_igl = igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
-
-    hessian_wp = od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices)
-    hessian_dense = sp.csr_matrix(
-        (hessian_wp.values.numpy(), hessian_wp.columns.numpy(), hessian_wp.offsets.numpy()),
-        shape=(2 * n_vertices, 2 * n_vertices),
-    ).toarray()
-
-    assert np.allclose(hessian_dense, hessian_igl.toarray(), rtol=1e-5, atol=1e-5)
+    hessian_wp = bsr_to_csr(od.energies.lscm_hessian(mesh_wp.points, mesh_wp.indices)).toarray()
+    assert np.allclose(hessian_wp, _lscm_q_igl(mesh_tm).toarray(), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_vector_area_matrix_matches_igl_derived(request: pytest.FixtureRequest, mesh_name: str):
+def test_vector_area_matrix_matches_igl_derived(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     Class B: ``vector_area_matrix`` is unbound, so it is solved for from two functions that are.
 
@@ -490,23 +450,13 @@ def test_vector_area_matrix_matches_igl_derived(request: pytest.FixtureRequest, 
     compared against separately, so the derivation does not smuggle in ordito's own answer.
     Section 6 lists this among the C++ functions with no Python binding.
     """
-    # The bindings do not expose vector_area_matrix; derive it from A = (-repdiag(L,2) - Q) / 2.
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = mesh_wp.points.size
-
-    pins_np = np.array([0, 1], dtype=np.int64)
-    pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float64)
-    _, hessian_igl = igl.lscm(vertices_np, faces_np, pins_np, pins_uv_np)
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
     area_igl = (
-        cast(sp.csr_matrix, -sp.block_diag([laplacian_igl, laplacian_igl]) - hessian_igl) / 2.0
+        cast(sp.csr_matrix, -sp.block_diag([laplacian_igl, laplacian_igl]) - _lscm_q_igl(mesh_tm))
+        / 2.0
     )
 
-    area_wp = od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)
-    area_dense = sp.csr_matrix(
-        (area_wp.values.numpy(), area_wp.columns.numpy(), area_wp.offsets.numpy()),
-        shape=(2 * n_vertices, 2 * n_vertices),
-    ).toarray()
-
-    assert np.allclose(area_dense, area_igl.toarray(), rtol=1e-5, atol=1e-5)
+    area_wp = bsr_to_csr(od.energies.vector_area_matrix(mesh_wp.points, mesh_wp.indices)).toarray()
+    assert np.allclose(area_wp, area_igl.toarray(), rtol=1e-5, atol=1e-5)

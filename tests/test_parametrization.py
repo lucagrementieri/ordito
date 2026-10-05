@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
 import igl
@@ -29,6 +30,41 @@ def _random_2d_mesh(rng: np.random.Generator, n_faces: int):
     return vertices_np, faces_np
 
 
+def _circle_boundary(mesh_wp: wp.Mesh) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
+    """Return the longest boundary loop and its arc-length map onto the unit circle."""
+    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
+    return boundary_wp, od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+
+
+def _harmonic_warm_start(
+    mesh_wp: wp.Mesh,
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec2], wp.array[wp.vec2]]:
+    """Return the circle boundary plus the harmonic map it pins, ARAP's warm start."""
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
+    uv_init_wp = od.parametrization.harmonic(
+        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
+    )
+    return boundary_wp, boundary_uv_wp, uv_init_wp
+
+
+def _two_rim_pins(mesh_wp: wp.Mesh) -> tuple[np.ndarray, wp.array[wp.int32]]:
+    """Two pins half a loop apart on the longest rim, as ``int32`` host and device indices."""
+    loop_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
+    pins_np = np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int32)
+    return pins_np, wp.array(pins_np, dtype=wp.int32, device=mesh_wp.device)
+
+
+def _unit_quad(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Return the two-triangle unit square in the ``z = 0`` plane."""
+    vertices = wp.array(
+        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
+        dtype=wp.vec3,
+        device=device,
+    )
+    faces = wp.array(np.array([0, 1, 2, 1, 3, 2], dtype=np.int32), dtype=wp.int32, device=device)
+    return vertices, faces
+
+
 def test_flipped_faces_random_mixed(device: str):
     rng = np.random.default_rng(0)
     vertices_np, faces_np = _random_2d_mesh(rng, n_faces=64)
@@ -48,50 +84,32 @@ def test_flipped_faces_random_mixed(device: str):
     )
 
 
-def test_face_flipped_mask_index_consistency(device: str):
-    rng = np.random.default_rng(1)
-    vertices_np, faces_np = _random_2d_mesh(rng, n_faces=32)
-    vertices_wp, faces_wp = numpy_to_warp_uv(vertices_np, faces_np, device)
+_SINGLE_TRIANGLE_NP = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
 
-    mask_wp = od.parametrization.face_flipped_mask(vertices_wp, faces_wp)
+
+@pytest.mark.parametrize(
+    ("vertices_np", "faces_np", "expected_np"),
+    [
+        (_SINGLE_TRIANGLE_NP, np.array([[0, 1, 2]]), np.array([False])),
+        (_SINGLE_TRIANGLE_NP, np.array([[2, 1, 0]]), np.array([True])),
+        # Zero area: the strict ``< 0`` means a collinear triangle is not flagged.
+        (np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]]), np.array([[0, 1, 2]]), np.array([False])),
+        (np.zeros((0, 2)), np.zeros((0, 3), dtype=np.int64), np.zeros(0, dtype=bool)),
+    ],
+    ids=["ccw", "cw", "collinear", "empty"],
+)
+def test_flipped_faces_on_known_windings(
+    device: str, vertices_np: np.ndarray, faces_np: np.ndarray, expected_np: np.ndarray
+):
+    """Not a library comparison: the winding of each triangle is known by construction."""
+    vertices_wp, faces_wp = numpy_to_warp_uv(vertices_np, faces_np, device)
+    assert np.array_equal(
+        od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy(), expected_np
+    )
     assert np.array_equal(
         od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy(),
-        np.flatnonzero(mask_wp.numpy()),
+        np.flatnonzero(expected_np),
     )
-
-
-def test_flipped_faces_all_and_none(device: str):
-    # A single CCW (positive-area) triangle: not flipped.
-    ccw_np = np.array([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], dtype=np.float64)
-    faces_np = np.array([[0, 1, 2]], dtype=np.int64)
-    vertices_wp, faces_wp = numpy_to_warp_uv(ccw_np, faces_np, device)
-    assert od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy().size == 0
-    assert not od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy().any()
-
-    # Reverse the winding of every triangle: all flipped.
-    cw_faces_np = faces_np[:, ::-1].copy()
-    vertices_wp, cw_faces_wp = numpy_to_warp_uv(ccw_np, cw_faces_np, device)
-    assert np.array_equal(
-        od.parametrization.face_flipped_indices(vertices_wp, cw_faces_wp).numpy(),
-        np.arange(cw_faces_np.shape[0], dtype=np.int64),
-    )
-    assert od.parametrization.face_flipped_mask(vertices_wp, cw_faces_wp).numpy().all()
-
-
-def test_flipped_faces_degenerate_not_flagged(device: str):
-    # Collinear (zero-area) triangle: strict "< 0" means it is not flagged.
-    collinear_np = np.array([[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]], dtype=np.float64)
-    faces_np = np.array([[0, 1, 2]], dtype=np.int64)
-    vertices_wp, faces_wp = numpy_to_warp_uv(collinear_np, faces_np, device)
-    assert not od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy().any()
-    assert od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy().size == 0
-
-
-def test_flipped_faces_empty_mesh(device: str):
-    vertices_wp = warp_empty(0, wp.vec2, device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    assert od.parametrization.face_flipped_mask(vertices_wp, faces_wp).numpy().size == 0
-    assert od.parametrization.face_flipped_indices(vertices_wp, faces_wp).numpy().size == 0
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
@@ -168,8 +186,7 @@ def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     boundary_np = boundary_wp.numpy().astype(np.int64)
     boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
 
@@ -189,8 +206,7 @@ def test_biharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name:
     vertices_np, faces_np = mesh_igl(mesh_tm)
     n_vertices = mesh_wp.points.size
 
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     boundary_np = boundary_wp.numpy().astype(np.int64)
     boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
 
@@ -226,8 +242,7 @@ def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     # tail to ``bsr_from_triplets``, manifesting as ~1e22 / NaN corruption; a tight tolerance (well
     # above conjugate-gradient's ~1e-8 atomic last-ULP jitter) reliably catches a regression.
     _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     first = od.parametrization.harmonic(
         mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
     ).numpy()
@@ -236,43 +251,6 @@ def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
             mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
         ).numpy()
         assert np.allclose(again, first, rtol=1e-5, atol=1e-5)
-
-
-def test_harmonic_cpu_matches_cuda():
-    """Class A: the CPU interior solve is the CUDA one (two-triangle quad, three pinned corners)."""
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to compare them")
-
-    uv = {}
-    for device in ("cpu", "cuda:0"):
-        vertices = wp.array(
-            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
-            dtype=wp.vec3,
-            device=device,
-        )
-        faces = wp.array(
-            np.array([0, 1, 2, 1, 3, 2], dtype=np.int32), dtype=wp.int32, device=device
-        )
-        boundary = wp.array(np.array([0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device)
-        boundary_uv = wp.array(
-            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], dtype=np.float32),
-            dtype=wp.vec2,
-            device=device,
-        )
-        uv[device] = od.parametrization.harmonic(vertices, faces, boundary, boundary_uv).numpy()
-
-    assert np.isfinite(uv["cpu"]).all()
-    assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=1e-5, atol=1e-5)
-
-
-def test_harmonic_boundary_uv_length_mismatch_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    # boundary_indices/boundary_uv feed a scatter kernel indexed by boundary_indices' own length;
-    # a shorter boundary_uv would otherwise be an out-of-bounds read.
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    short_uv = wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="same length"):
-        od.parametrization.harmonic(mesh_wp.points, mesh_wp.indices, boundary_wp, short_uv)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
@@ -289,8 +267,7 @@ def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: 
     _, faces_np = mesh_igl(mesh_tm)
     n_vertices = mesh_wp.points.size
 
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     boundary_np = boundary_wp.numpy().astype(np.int64)
     boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
 
@@ -317,8 +294,7 @@ def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: 
 def test_tutte_disk_is_fold_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     # A disk-topology mesh with a convex (circle) boundary yields a bijective, fold-free Tutte map.
     _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
     uv_wp = od.parametrization.tutte(mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp)
     assert od.parametrization.face_flipped_indices(uv_wp, mesh_wp.indices).numpy().size == 0
 
@@ -354,13 +330,9 @@ def test_arap_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
     # Full boundary loop pinned to the unit circle; identical harmonic warm start fed to both sides.
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
+    boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
     boundary_np = boundary_wp.numpy().astype(np.int64)
     boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
-    uv_init_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
-    )
     uv_init_np = uv_init_wp.numpy().astype(np.float64)
 
     uv_wp = od.parametrization.arap(
@@ -382,17 +354,11 @@ def test_arap_free_boundary_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     mesh_tm, mesh_wp = hemisphere
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
-    )
+    _, _, uv_init_wp = _harmonic_warm_start(mesh_wp)
     uv_init_np = uv_init_wp.numpy().astype(np.float64)
 
-    loop_np = boundary_wp.numpy()
-    fixed_np = np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int32)
+    fixed_np, fixed_wp = _two_rim_pins(mesh_wp)
     fixed_uv_np = uv_init_np[fixed_np]
-    fixed_wp = wp.array(fixed_np, dtype=wp.int32, device=mesh_wp.device)
     fixed_uv_wp = points_to_warp_uv(fixed_uv_np, mesh_wp.device)
 
     uv_wp = od.parametrization.arap(
@@ -407,13 +373,10 @@ def test_arap_free_boundary_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
 def test_arap_default_tolerance_tracks_a_tight_solve(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     # ``arap`` defaults its inner CG to 1e-7 rather than the 1e-8 the other solvers use: its global
     # solves are inner steps of a truncated outer iteration. Guard that the looser default still
-    # tracks a tight solve two orders below it, far inside the 1e-4 gate the igl oracles use.
+    # tracks a tight solve two orders below it, far inside the 1e-4 gate the igl oracles use. The
+    # pinned rows must equal the prescribed UV exactly (they are re-enforced every iteration).
     _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
-    )
+    boundary_wp, boundary_uv_wp, uv_init_wp = _harmonic_warm_start(mesh_wp)
 
     uv_default_wp = od.parametrization.arap(
         mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp, max_iterations=10
@@ -428,34 +391,7 @@ def test_arap_default_tolerance_tracks_a_tight_solve(hemisphere: tuple[tm.Trimes
         tolerance=1e-9,
     )
     assert np.allclose(uv_default_wp.numpy(), uv_tight_wp.numpy(), rtol=1e-5, atol=1e-5)
-
-
-def test_arap_fixed_vertices_pinned(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    # The pinned rows must equal the prescribed UV exactly (they are re-enforced every iteration).
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
-    )
-
-    uv_wp = od.parametrization.arap(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp, max_iterations=10
-    )
-    assert np.array_equal(uv_wp.numpy()[boundary_wp.numpy()], boundary_uv_wp.numpy())
-
-
-def test_arap_disk_is_finite(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp
-    )
-    uv_wp = od.parametrization.arap(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init_wp, max_iterations=10
-    )
-    assert np.isfinite(uv_wp.numpy()).all()
+    assert np.array_equal(uv_default_wp.numpy()[boundary_wp.numpy()], boundary_uv_wp.numpy())
 
 
 def test_arap_all_vertices_fixed(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
@@ -475,87 +411,6 @@ def test_arap_all_vertices_fixed(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(uv_wp.numpy(), fixed_uv_np)
 
 
-def test_arap_empty_fixed_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    # Interior vertices but no pins: the ARAP global system is singular; raised pre-solve (CPU-ok).
-    _, mesh_wp = hemisphere
-    empty_fixed = warp_empty(0, wp.int32, mesh_wp.device)
-    empty_uv = warp_empty(0, wp.vec2, mesh_wp.device)
-    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="at least one fixed vertex"):
-        od.parametrization.arap(mesh_wp.points, mesh_wp.indices, empty_fixed, empty_uv, uv_init)
-
-
-def test_arap_fixed_uv_length_mismatch_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    # fixed_indices/fixed_uv feed a scatter kernel indexed by fixed_indices' own length; a shorter
-    # fixed_uv would otherwise be an out-of-bounds read.
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    short_uv = wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
-    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="same length"):
-        od.parametrization.arap(mesh_wp.points, mesh_wp.indices, boundary_wp, short_uv, uv_init)
-
-
-def test_arap_bad_iterations_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="max_iterations"):
-        od.parametrization.arap(
-            mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init, max_iterations=0
-        )
-
-
-def test_arap_bad_tolerance_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = hemisphere
-    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
-    boundary_uv_wp = od.parametrization.map_vertices_to_circle(mesh_wp.points, boundary_wp)
-    uv_init = wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="tolerance"):
-        od.parametrization.arap(
-            mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, uv_init, tolerance=0.0
-        )
-
-
-def test_arap_cpu_matches_cuda():
-    """Class A: the CPU local/global alternation is the CUDA one (quad, three pinned corners)."""
-    if not wp.is_cuda_available():
-        pytest.skip("needs both devices to compare them")
-
-    uv = {}
-    for device in ("cpu", "cuda:0"):
-        vertices = wp.array(
-            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
-            dtype=wp.vec3,
-            device=device,
-        )
-        faces = wp.array(
-            np.array([0, 1, 2, 1, 3, 2], dtype=np.int32), dtype=wp.int32, device=device
-        )
-        fixed = wp.array(np.array([0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device)
-        fixed_uv = wp.array(
-            np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]], dtype=np.float32),
-            dtype=wp.vec2,
-            device=device,
-        )
-        uv_init = wp.zeros(4, dtype=wp.vec2, device=device)
-        uv[device] = od.parametrization.arap(vertices, faces, fixed, fixed_uv, uv_init).numpy()
-
-    assert np.isfinite(uv["cpu"]).all()
-    assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=1e-5, atol=1e-5)
-
-
-def test_arap_empty_mesh(device: str):
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    fixed_wp = warp_empty(0, wp.int32, device)
-    fixed_uv_wp = warp_empty(0, wp.vec2, device)
-    uv_init_wp = warp_empty(0, wp.vec2, device)
-    uv_wp = od.parametrization.arap(vertices_wp, faces_wp, fixed_wp, fixed_uv_wp, uv_init_wp)
-    assert uv_wp.numpy().size == 0
-
-
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
@@ -569,10 +424,8 @@ def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     vertices_np, faces_np = mesh_igl(mesh_tm)
 
     # Pin two boundary vertices to (0, 0) and (1, 0), the libigl tutorial-502 convention.
-    loop_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
-    pins_np = np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int32)
+    pins_np, pins_wp = _two_rim_pins(mesh_wp)
     pins_uv_np = np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32)
-    pins_wp = wp.array(pins_np, dtype=wp.int32, device=mesh_wp.device)
     pins_uv_wp = points_to_warp_uv(pins_uv_np, mesh_wp.device)
 
     uv_wp = od.parametrization.lscm(mesh_wp.points, mesh_wp.indices, pins_wp, pins_uv_wp)
@@ -611,29 +464,12 @@ def test_lscm_closed_mesh_matches_igl(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 def test_lscm_is_fold_free(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     # LSCM of a disk-topology open surface with two pins is conformal and fold-free.
     _, mesh_wp = hemisphere
-    loop_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
-    pins_wp = wp.array(
-        np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int32),
-        dtype=wp.int32,
-        device=mesh_wp.device,
-    )
+    _, pins_wp = _two_rim_pins(mesh_wp)
     pins_uv_wp = wp.array(
         np.array([[0.0, 0.0], [1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=mesh_wp.device
     )
     uv_wp = od.parametrization.lscm(mesh_wp.points, mesh_wp.indices, pins_wp, pins_uv_wp)
     assert od.parametrization.face_flipped_indices(uv_wp, mesh_wp.indices).numpy().size == 0
-
-
-@pytest.mark.parametrize("n_pins", [0, 1])
-def test_lscm_too_few_pins_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh], n_pins: int):
-    # Fewer than two pins leaves the similarity-transform null space; raised pre-solve (CPU-safe).
-    _, mesh_wp = hemisphere
-    pins_wp = wp.array(np.arange(n_pins, dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
-    pins_uv_wp = wp.array(
-        np.zeros((n_pins, 2), dtype=np.float32), dtype=wp.vec2, device=mesh_wp.device
-    )
-    with pytest.raises(ValueError, match="at least two pinned vertices"):
-        od.parametrization.lscm(mesh_wp.points, mesh_wp.indices, pins_wp, pins_uv_wp)
 
 
 def test_lscm_waives_pin_count_below_two_vertices(device: str):
@@ -647,50 +483,145 @@ def test_lscm_waives_pin_count_below_two_vertices(device: str):
     assert np.isfinite(uv_wp.numpy()).all()
 
 
-def test_lscm_pinned_uv_length_mismatch_raises(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
-    # pinned_indices/pinned_uv feed a scatter kernel indexed by pinned_indices' own length; a
-    # shorter pinned_uv would otherwise be an out-of-bounds read.
-    _, mesh_wp = hemisphere
-    loop_np = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices).numpy()
-    pins_wp = wp.array(
-        np.array([loop_np[0], loop_np[len(loop_np) // 2]], dtype=np.int32),
-        dtype=wp.int32,
-        device=mesh_wp.device,
-    )
-    short_uv = wp.zeros(1, dtype=wp.vec2, device=mesh_wp.device)
-    with pytest.raises(ValueError, match="same length"):
-        od.parametrization.lscm(mesh_wp.points, mesh_wp.indices, pins_wp, short_uv)
+def _harmonic_on_quad(device: str) -> wp.array[wp.vec2]:
+    vertices, faces = _unit_quad(device)
+    boundary = wp.array(np.array([0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device)
+    boundary_uv = points_to_warp_uv(np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]), device)
+    return od.parametrization.harmonic(vertices, faces, boundary, boundary_uv)
 
 
-def test_lscm_cpu_matches_cuda():
-    """Class A: the CPU free-vertex solve is the CUDA one (two-triangle quad, two pins)."""
+def _arap_on_quad(device: str) -> wp.array[wp.vec2]:
+    vertices, faces = _unit_quad(device)
+    fixed = wp.array(np.array([0, 1, 3], dtype=np.int32), dtype=wp.int32, device=device)
+    fixed_uv = points_to_warp_uv(np.array([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0]]), device)
+    uv_init = wp.zeros(4, dtype=wp.vec2, device=device)
+    return od.parametrization.arap(vertices, faces, fixed, fixed_uv, uv_init)
+
+
+def _lscm_on_quad(device: str) -> wp.array[wp.vec2]:
+    vertices, faces = _unit_quad(device)
+    pins = wp.array(np.array([0, 3], dtype=np.int32), dtype=wp.int32, device=device)
+    pins_uv = points_to_warp_uv(np.array([[0.0, 0.0], [1.0, 1.0]]), device)
+    return od.parametrization.lscm(vertices, faces, pins, pins_uv)
+
+
+@pytest.mark.parametrize(
+    "solve",
+    [_harmonic_on_quad, _arap_on_quad, _lscm_on_quad],
+    ids=["harmonic_three_pins", "arap_three_pins", "lscm_two_pins"],
+)
+def test_solvers_cpu_match_cuda(solve: Callable[[str], wp.array[wp.vec2]]):
+    """
+    Class A: each CPU solve is the CUDA one, on the two-triangle unit quad.
+
+    Covers the harmonic interior solve, the ARAP local/global alternation and the LSCM free-vertex
+    solve, each under the pins its arm names.
+    """
     if not wp.is_cuda_available():
         pytest.skip("needs both devices to compare them")
 
-    uv = {}
-    for device in ("cpu", "cuda:0"):
-        vertices = wp.array(
-            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]),
-            dtype=wp.vec3,
-            device=device,
-        )
-        faces = wp.array(
-            np.array([0, 1, 2, 1, 3, 2], dtype=np.int32), dtype=wp.int32, device=device
-        )
-        pins = wp.array(np.array([0, 3], dtype=np.int32), dtype=wp.int32, device=device)
-        pins_uv = wp.array(
-            np.array([[0.0, 0.0], [1.0, 1.0]], dtype=np.float32), dtype=wp.vec2, device=device
-        )
-        uv[device] = od.parametrization.lscm(vertices, faces, pins, pins_uv).numpy()
+    uv = {device: solve(device).numpy() for device in ("cpu", "cuda:0")}
 
     assert np.isfinite(uv["cpu"]).all()
     assert np.allclose(uv["cpu"], uv["cuda:0"], rtol=1e-5, atol=1e-5)
 
 
-def test_lscm_empty_mesh(device: str):
+@pytest.mark.parametrize("solver", ["arap", "lscm"])
+def test_solvers_on_an_empty_mesh(device: str, solver: str):
+    """Not a library comparison: no vertices, no pins, an empty UV buffer rather than a raise."""
     vertices_wp = warp_empty(0, wp.vec3, device)
     faces_wp = warp_empty(0, wp.int32, device)
     pins_wp = warp_empty(0, wp.int32, device)
     pins_uv_wp = warp_empty(0, wp.vec2, device)
-    uv_wp = od.parametrization.lscm(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
+    if solver == "arap":
+        uv_init_wp = warp_empty(0, wp.vec2, device)
+        uv_wp = od.parametrization.arap(vertices_wp, faces_wp, pins_wp, pins_uv_wp, uv_init_wp)
+    else:
+        uv_wp = od.parametrization.lscm(vertices_wp, faces_wp, pins_wp, pins_uv_wp)
     assert uv_wp.numpy().size == 0
+
+
+def _short_boundary_uv(mesh_wp: wp.Mesh) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
+    boundary_wp = od.boundary.longest_boundary_loop(mesh_wp.points, mesh_wp.indices)
+    return boundary_wp, wp.zeros(boundary_wp.size - 1, dtype=wp.vec2, device=mesh_wp.device)
+
+
+def _uv_init(mesh_wp: wp.Mesh) -> wp.array[wp.vec2]:
+    return wp.zeros(mesh_wp.points.size, dtype=wp.vec2, device=mesh_wp.device)
+
+
+def _pins_and_zero_uv(
+    mesh_wp: wp.Mesh, n_pins: int
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
+    pins_wp = wp.array(np.arange(n_pins, dtype=np.int32), dtype=wp.int32, device=mesh_wp.device)
+    return pins_wp, wp.zeros(n_pins, dtype=wp.vec2, device=mesh_wp.device)
+
+
+_GUARD_CASES: list[tuple[str, Callable[[wp.Mesh], object], str]] = [
+    # The index/UV pairs feed a scatter kernel indexed by the indices' own length; a shorter UV
+    # buffer would otherwise be an out-of-bounds read.
+    (
+        "harmonic_short_boundary_uv",
+        lambda m: od.parametrization.harmonic(m.points, m.indices, *_short_boundary_uv(m)),
+        "same length",
+    ),
+    # Interior vertices but no pins: the ARAP global system is singular; raised pre-solve.
+    (
+        "arap_no_fixed",
+        lambda m: od.parametrization.arap(
+            m.points, m.indices, *_pins_and_zero_uv(m, 0), _uv_init(m)
+        ),
+        "at least one fixed vertex",
+    ),
+    (
+        "arap_short_fixed_uv",
+        lambda m: od.parametrization.arap(m.points, m.indices, *_short_boundary_uv(m), _uv_init(m)),
+        "same length",
+    ),
+    (
+        "arap_zero_iterations",
+        lambda m: od.parametrization.arap(
+            m.points, m.indices, *_circle_boundary(m), _uv_init(m), max_iterations=0
+        ),
+        "max_iterations",
+    ),
+    (
+        "arap_zero_tolerance",
+        lambda m: od.parametrization.arap(
+            m.points, m.indices, *_circle_boundary(m), _uv_init(m), tolerance=0.0
+        ),
+        "tolerance",
+    ),
+    # Fewer than two pins leaves the similarity-transform null space; raised pre-solve.
+    (
+        "lscm_no_pins",
+        lambda m: od.parametrization.lscm(m.points, m.indices, *_pins_and_zero_uv(m, 0)),
+        "at least two pinned vertices",
+    ),
+    (
+        "lscm_one_pin",
+        lambda m: od.parametrization.lscm(m.points, m.indices, *_pins_and_zero_uv(m, 1)),
+        "at least two pinned vertices",
+    ),
+    (
+        "lscm_short_pinned_uv",
+        lambda m: od.parametrization.lscm(
+            m.points, m.indices, _two_rim_pins(m)[1], wp.zeros(1, dtype=wp.vec2, device=m.device)
+        ),
+        "same length",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [(call, message) for _, call, message in _GUARD_CASES],
+    ids=[name for name, _, _ in _GUARD_CASES],
+)
+def test_solvers_reject_malformed_constraints(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], call: Callable[[wp.Mesh], object], message: str
+):
+    """Not a parity assert: every guard raises before any solve, so each runs on the CPU too."""
+    _, mesh_wp = hemisphere
+    with pytest.raises(ValueError, match=message):
+        call(mesh_wp)

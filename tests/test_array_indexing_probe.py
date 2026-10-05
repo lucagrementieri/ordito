@@ -21,6 +21,7 @@ this is noticed rather than silently relied upon. See ``.claude/CLAUDE.md`` sect
 from __future__ import annotations
 
 import numpy as np
+import pytest
 import warp as wp
 
 import ordito as od
@@ -28,32 +29,27 @@ import ordito.typing as odt
 from tests.conversions import warp_empty
 
 
-def test_column_view_is_a_correct_array_on_its_own(device: str) -> None:
-    """A strided column view reads back correctly -- which is what makes the hazard invisible."""
-    edges_np = np.array([[0, 10], [1, 11], [2, 12], [3, 13], [4, 14]], dtype=np.int32)
-    edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
-    column_wp = edges_wp[:, 0]
-
-    assert not column_wp.is_contiguous
-    assert np.array_equal(column_wp.numpy(), edges_np[:, 0])
-
-
 def test_gather_through_a_column_view_ignores_the_stride(device: str) -> None:
     """
     The finding: ``payload[edges[:, 0]]`` returns the flattened buffer's leading entries.
 
-    No exception and no warning -- the gather reads ``[0, 10, 1, 11, 2]`` where the column says
-    ``[0, 1, 2, 3, 4]``. The two asserts are written as "is the flat prefix" rather than "is not the
-    column" so this test *inverts* into a fix notification: if a Warp release starts honouring the
-    stride, this fails and section 3.4's rule can be revisited rather than silently kept.
+    The column view itself is a correct array (it reads back as column 0), which is what makes the
+    hazard invisible. No exception and no warning -- the gather reads ``[0, 10, 1, 11, 2]`` where
+    the column says ``[0, 1, 2, 3, 4]``. The two gather asserts are written as "is the flat prefix"
+    rather than "is not the column" so this test *inverts* into a fix notification: if a Warp
+    release starts honouring the stride, this fails and section 3.4's rule can be revisited rather
+    than silently kept.
     """
     payload_np = np.arange(20, dtype=np.float32)
     edges_np = np.array([[0, 10], [1, 11], [2, 12], [3, 13], [4, 14]], dtype=np.int32)
     payload_wp = wp.array(payload_np, dtype=wp.float32, device=device)
     edges_wp = wp.array(edges_np, dtype=wp.int32, device=device)
+    column_wp = edges_wp[:, 0]
+    assert not column_wp.is_contiguous
+    assert np.array_equal(column_wp.numpy(), edges_np[:, 0])
 
     gathered_wp = warp_empty(edges_np.shape[0], wp.float32, device)
-    wp.copy(gathered_wp, payload_wp[edges_wp[:, 0]])  # pyright: ignore[reportArgumentType]  # wp.copy takes an indexedarray; its stub says array
+    wp.copy(gathered_wp, payload_wp[column_wp])  # pyright: ignore[reportArgumentType]  # wp.copy takes an indexedarray; its stub says array
 
     flat_prefix_np = payload_np[edges_np.reshape(-1)[: edges_np.shape[0]]]
     assert np.array_equal(gathered_wp.numpy(), flat_prefix_np)
@@ -112,7 +108,7 @@ def test_indexed_assignment_is_unsupported(device: str) -> None:
     """
     values_wp = wp.zeros(8, dtype=wp.float32, device=device)
     indices_wp = wp.array(np.array([1, 3, 5], dtype=np.int32), dtype=wp.int32, device=device)
-    # Deliberately a bare ``Exception``: what is being probed is *whether* it raises at all, and
-    # pinning the type would make this fail on a Warp release that merely reworded the error.
-    with np.testing.assert_raises(Exception):
+    # ``TypeError`` is Python's own answer for an object without ``__setitem__``; what is probed is
+    # *whether* it raises, so the message is not matched.
+    with pytest.raises(TypeError):
         values_wp[indices_wp] = 1.0  # pyright: ignore[reportIndexIssue]  # the probed absence

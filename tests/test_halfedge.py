@@ -11,39 +11,11 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
-from tests.conftest import MESHES
+from tests.conftest import MESHES, OPEN_MESHES
 
 # ---------------------------------------------------------------------------
 # halfedge_twins
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_halfedge_twins_are_a_symmetric_pairing(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Not a library comparison: trimesh has no halfedge structure, so the oracle is the algebra.
-
-    Three properties that together pin the pairing without a reference implementation -- it is an
-    involution, no halfedge is its own twin, and twins run over the same undirected edge (that last
-    is where ``trimesh.geometry.faces_to_edges`` comes in, as a *definition* of the edge a halfedge
-    spans rather than as a second answer).
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    twins_wp = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))
-
-    twins = twins_wp.numpy()
-    assert twins.shape == (3 * len(mesh_tm.faces),)
-    interior = np.flatnonzero(twins >= 0)
-    # Involution: crossing an edge twice returns to the same halfedge.
-    assert np.array_equal(twins[twins[interior]], interior)
-    # A halfedge is never its own twin, and twins run over the same undirected edge.
-    halfedge_endpoints_tm = tm.geometry.faces_to_edges(mesh_tm.faces)
-    assert np.array_equal(
-        np.sort(halfedge_endpoints_tm[interior], axis=1),
-        np.sort(halfedge_endpoints_tm[twins[interior]], axis=1),
-    )
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
@@ -52,6 +24,10 @@ def test_halfedge_twins_matches_warp_tri_tri_adjacency(
 ) -> None:
     """
     Class B: the twins are ``warp.geometry.tri_tri_adjacency``'s neighbours after a named transform.
+
+    Not a library comparison, for the pairing's own algebra: it is an involution, no halfedge is its
+    own twin, and twins run over the same undirected edge (``trimesh.geometry.faces_to_edges`` is
+    there as a *definition* of the edge a halfedge spans, not as a second answer).
 
     Warp reports, per face and local vertex ``j``, the face across the edge *opposite* ``j``;
     halfedge ``3 * f + k`` runs from corner ``k`` to ``k + 1``, so it is the edge opposite corner
@@ -74,6 +50,17 @@ def test_halfedge_twins_matches_warp_tri_tri_adjacency(
     )
 
     twins = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=n_vertices).numpy()
+    assert twins.shape == (3 * len(mesh_tm.faces),)
+    interior = np.flatnonzero(twins >= 0)
+    # Involution: crossing an edge twice returns to the same halfedge.
+    assert np.array_equal(twins[twins[interior]], interior)
+    # A halfedge is never its own twin, and twins run over the same undirected edge.
+    halfedge_endpoints_tm = tm.geometry.faces_to_edges(mesh_tm.faces)
+    assert np.array_equal(
+        np.sort(halfedge_endpoints_tm[interior], axis=1),
+        np.sort(halfedge_endpoints_tm[twins[interior]], axis=1),
+    )
+
     neighbors_od = np.empty((len(mesh_tm.faces), 3), dtype=np.int32)
     for k in range(3):
         twin = twins[k::3]
@@ -82,19 +69,16 @@ def test_halfedge_twins_matches_warp_tri_tri_adjacency(
     assert np.array_equal(neighbors_od, neighbors_warp.numpy())
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
-def test_halfedge_twins_has_no_boundary_on_closed_mesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    twins_wp = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))
-    assert (twins_wp.numpy() >= 0).all()
-
-
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", MESHES)
 def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
+    """
+    Ordito against ordito: the halfedges without a twin are ``oriented_boundary_edges``.
+
+    Over closed and open fixtures: a closed mesh has every halfedge paired and an open one has a
+    non-empty boundary, so the set comparison is never of two empty answers on the open arms.
+    """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     twins = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=len(mesh_tm.vertices)).numpy()
 
@@ -102,7 +86,7 @@ def test_halfedge_twins_boundary_matches_oriented_boundary_edges(
     boundary_from_twins = np.asarray(halfedge_endpoints_tm)[twins < 0]
     boundary_wp = od.boundary.oriented_boundary_edges(mesh_wp.points, mesh_wp.indices)
 
-    assert len(boundary_from_twins) > 0
+    assert (len(boundary_from_twins) > 0) == (mesh_name in OPEN_MESHES)
     assert {tuple(edge) for edge in boundary_from_twins} == {
         tuple(edge) for edge in boundary_wp.numpy()
     }
@@ -217,7 +201,7 @@ def test_vertex_one_rings_rejects_a_pinched_vertex(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", MESHES)
 def test_validate_false_skips_only_the_check(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """
     Ordito against ordito: ``validate=False`` changes whether the mesh is checked, not the answer.
@@ -239,16 +223,14 @@ def test_validate_false_skips_only_the_check(
         readbacks.append(self.shape)
         return original(self, _suppress_bfloat16_warning=_suppress_bfloat16_warning)
 
-    wp.array.numpy = counting_numpy
-    try:
+    with monkeypatch.context() as patch:
+        patch.setattr(wp.array, "numpy", counting_numpy)
         unchecked_twins_wp = od.halfedge.halfedge_twins(
             faces_wp, n_vertices=n_vertices, validate=False
         )
         unchecked_rings_wp = od.halfedge.vertex_one_rings(
             faces_wp, n_vertices=n_vertices, validate=False
         )
-    finally:
-        wp.array.numpy = original
     assert readbacks == []
     assert np.array_equal(unchecked_twins_wp.numpy(), twins_wp.numpy())
     for unchecked_wp, checked_wp in zip(unchecked_rings_wp, rings_wp, strict=True):
@@ -256,10 +238,13 @@ def test_validate_false_skips_only_the_check(
 
 
 def _sorted_and_bucketed_pairings(
-    faces_wp: wp.array[wp.int32], n_vertices: int, monkeypatch: pytest.MonkeyPatch
+    faces_wp: wp.array[wp.int32], n_vertices: int
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Twins and defect counts from the key sort (no vertex count) and the buckets (forced on)."""
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    """
+    Twins and defect counts from the key sort (no vertex count) and the buckets.
+
+    The buckets are reached on the CPU device only under ``force_halfedge_buckets``.
+    """
     pairings = []
     for bound in (None, n_vertices):
         defect_counts = wp.zeros(2, dtype=wp.int32, device=faces_wp.device)
@@ -269,9 +254,10 @@ def _sorted_and_bucketed_pairings(
     return sorted_twins, sorted_defects, bucketed_twins, bucketed_defects
 
 
+@pytest.mark.usefixtures("force_halfedge_buckets")
 @pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
 def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
-    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Ordito against ordito: the per-vertex bucket pairing reproduces the key-sort pairing.
@@ -283,7 +269,7 @@ def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
-        mesh_wp.indices, len(mesh_tm.vertices), monkeypatch
+        mesh_wp.indices, len(mesh_tm.vertices)
     )
     assert np.array_equal(bucketed_twins, sorted_twins)
     assert np.array_equal(bucketed_defects, sorted_defects)
@@ -301,12 +287,9 @@ def test_bucketed_twins_match_the_sorted_twins_on_fixtures(
         pytest.param([0, 0, 1], 2, [0, 0], id="repeated-vertex"),
     ],
 )
+@pytest.mark.usefixtures("force_halfedge_buckets")
 def test_bucketed_twins_match_the_sorted_twins_on_defects(
-    faces: list[int],
-    n_vertices: int,
-    expected_defects: list[int],
-    device: str,
-    monkeypatch: pytest.MonkeyPatch,
+    faces: list[int], n_vertices: int, expected_defects: list[int], device: str
 ) -> None:
     """
     Ordito against ordito: the buckets classify each defect as the sort's runs do, counted once.
@@ -317,68 +300,58 @@ def test_bucketed_twins_match_the_sorted_twins_on_defects(
     """
     faces_wp = wp.array(np.array(faces, dtype=np.int32), dtype=wp.int32, device=device)
     sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
-        faces_wp, n_vertices, monkeypatch
+        faces_wp, n_vertices
     )
     assert np.array_equal(sorted_defects, expected_defects)
     assert np.array_equal(bucketed_defects, sorted_defects)
     assert np.array_equal(bucketed_twins, sorted_twins)
 
 
-@pytest.mark.parametrize("hub_first", [True, False])
-def test_bucketed_twins_on_a_hub(
-    hub_first: bool, device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+@pytest.mark.usefixtures("force_halfedge_buckets")
+@pytest.mark.parametrize("hub_first", [True, False], ids=["hub-first", "hub-last"])
+def test_bucketed_pairings_on_a_hub(hub_first: bool, device: str) -> None:
     """
-    Ordito against ordito: a high-valence vertex pairs as the sort pairs it, numbered either way.
+    Ordito against ordito: a 512-valence hub pairs as the sort pairs it, numbered either way.
 
-    The bucket owner is the lower-*degree* endpoint, so the hub's spokes hold its edges whether the
-    hub is numbered below every spoke (``hub_first``, the case a lower-*index* owner would pile
-    into one bucket) or above.
+    The sort carries the oracle (the twin tests above, ``test_halfedge_mates_match_numpy_edge_
+    grouping`` for the mates); this pins the buckets to it, twins with their defect counts and
+    mates both. The bucket owner is the lower-*degree* endpoint, so the hub's spokes hold its edges
+    whether the hub is numbered below every spoke (``hub_first``, the case a lower-*index* owner
+    would pile into one bucket) or above.
     """
     cone_tm = tm.creation.cone(radius=1.0, height=1.0, sections=512)
     faces_np = np.asarray(cone_tm.faces, dtype=np.int32)
-    valence = np.bincount(faces_np.ravel(), minlength=len(cone_tm.vertices))
+    n_vertices = len(cone_tm.vertices)
+    valence = np.bincount(faces_np.ravel(), minlength=n_vertices)
     order = np.argsort(-valence if hub_first else valence, kind="stable")
     renumber = np.empty_like(order)
     renumber[order] = np.arange(len(order))
     faces_wp = wp.array(renumber[faces_np].ravel().astype(np.int32), dtype=wp.int32, device=device)
     sorted_twins, sorted_defects, bucketed_twins, bucketed_defects = _sorted_and_bucketed_pairings(
-        faces_wp, len(cone_tm.vertices), monkeypatch
+        faces_wp, n_vertices
     )
     assert valence.max() == 512
     assert np.array_equal(bucketed_twins, sorted_twins)
     assert np.array_equal(bucketed_defects, sorted_defects)
+    bucketed_mates = od.halfedge.halfedge_mates(faces_wp, n_vertices).numpy()
+    sorted_mates = od.halfedge.halfedge_mates(faces_wp).numpy()
+    assert np.array_equal(bucketed_mates, sorted_mates)
 
 
-def test_halfedge_twins_empty(device: str) -> None:
+def test_halfedge_builders_empty(device: str) -> None:
+    """Twins, one-rings and mates of an empty face buffer: empty, rings with their one offset."""
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert od.halfedge.halfedge_twins(faces_wp, n_vertices=0).shape == (0,)
+    ring_wp, offsets_wp, is_boundary_wp = od.halfedge.vertex_one_rings(faces_wp, n_vertices=0)
+    assert offsets_wp.shape == (1,)
+    assert ring_wp.shape == (0,)
+    assert is_boundary_wp.shape == (0,)
+    assert od.halfedge.halfedge_mates(faces_wp, 0).shape == (0,)
 
 
 # ---------------------------------------------------------------------------
 # vertex_one_rings
 # ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_vertex_one_ring_sizes_match_incident_face_counts(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A after a named transform (Class B): ring sizes are the incident-face-corner counts.
-
-    One outgoing halfedge per incident corner, so ``np.bincount`` over the flat face buffer is the
-    reference -- exact, no tolerance. The second assert is what makes it a *partition*: every
-    halfedge appears in exactly one ring, which a size check alone would not catch.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = len(mesh_tm.vertices)
-    ring_wp, offsets_wp, _ = od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=n_vertices)
-
-    # One outgoing halfedge per incident face-corner.
-    incident_faces_tm = np.bincount(mesh_tm.faces.reshape(-1), minlength=n_vertices)
-    assert np.array_equal(np.diff(offsets_wp.numpy()), incident_faces_tm)
-    assert np.array_equal(np.sort(ring_wp.numpy()), np.arange(3 * len(mesh_tm.faces)))
 
 
 @pytest.mark.parity(
@@ -411,13 +384,24 @@ def test_vertex_one_ring_neighbor_counts_match_trimesh(
     The transform is the definitional difference between the two structures, not a fudge: a ring
     holds one halfedge per incident *face*, which is one fewer than the neighbour count exactly when
     the fan is open. Folding ``is_boundary`` into the comparison means it also tests that flag,
-    which is why it is asserted here as an addend rather than masked out.
+    which is why it is asserted here as an addend rather than masked out; with the ring sizes pinned
+    by the first assert, the flag is the neighbour count minus the incident-face count exactly.
+
+    Class B too, the ring sizes: one outgoing halfedge per incident corner, so ``np.bincount`` over
+    the flat face buffer is the reference -- exact, no tolerance. The sort assert is what makes the
+    rings a *partition*: every halfedge appears in exactly one ring, which a size check alone would
+    not catch.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = len(mesh_tm.vertices)
-    _, offsets_wp, is_boundary_wp = od.halfedge.vertex_one_rings(
+    ring_wp, offsets_wp, is_boundary_wp = od.halfedge.vertex_one_rings(
         mesh_wp.indices, n_vertices=n_vertices
     )
+
+    # One outgoing halfedge per incident face-corner.
+    incident_faces_tm = np.bincount(mesh_tm.faces.reshape(-1), minlength=n_vertices)
+    assert np.array_equal(np.diff(offsets_wp.numpy()), incident_faces_tm)
+    assert np.array_equal(np.sort(ring_wp.numpy()), np.arange(3 * len(mesh_tm.faces)))
 
     # A ring holds one halfedge per incident face, so it is one short of the neighbor count at a
     # boundary vertex (whose fan is open) and equal to it in the interior.
@@ -464,28 +448,6 @@ def test_vertex_one_rings_are_rotationally_ordered(
         assert (twins[previous] == ring_halfedges[0]) != bool(is_boundary[vertex])
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_vertex_one_rings_boundary_flags_match_trimesh(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B: trimesh's multiplicity-1 edge grouping, reduced to a per-vertex boolean.
-
-    ``group_rows(..., require_count=1)`` gives the boundary *edges*; the named transform is taking
-    the unique vertices they touch. Only the open fixtures, because the flag is uniformly ``False``
-    on a closed mesh and the comparison would hold for a constant.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = len(mesh_tm.vertices)
-    _, _, is_boundary_wp = od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=n_vertices)
-
-    boundary_vertices_tm = np.zeros(n_vertices, dtype=bool)
-    boundary_vertices_tm[
-        np.unique(mesh_tm.edges[tm.grouping.group_rows(mesh_tm.edges_sorted, require_count=1)])
-    ] = True
-    assert np.array_equal(is_boundary_wp.numpy(), boundary_vertices_tm)
-
-
 def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:
     # Vertex 3 is unreferenced: it gets an empty ring rather than a bogus one.
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
@@ -494,14 +456,6 @@ def test_vertex_one_rings_isolated_vertex_is_empty(device: str) -> None:
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 1, 2, 3, 3]))
     assert np.array_equal(np.sort(ring_wp.numpy()), np.array([0, 1, 2]))
     assert np.array_equal(is_boundary_wp.numpy(), np.array([True, True, True, False]))
-
-
-def test_vertex_one_rings_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    ring_wp, offsets_wp, is_boundary_wp = od.halfedge.vertex_one_rings(faces_wp, n_vertices=0)
-    assert offsets_wp.shape == (1,)
-    assert ring_wp.shape == (0,)
-    assert is_boundary_wp.shape == (0,)
 
 
 def test_require_matching_twins_rejects_a_table_from_another_mesh(
@@ -654,10 +608,11 @@ def _expected_mates(faces_np: np.ndarray) -> np.ndarray:
     return expected
 
 
+@pytest.mark.usefixtures("force_halfedge_buckets")
 @pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
 @pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
 def test_halfedge_mates_match_numpy_edge_grouping(
-    request: pytest.FixtureRequest, mesh_name: str, bounded: bool, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest, mesh_name: str, bounded: bool
 ) -> None:
     """
     Class B: the mates are NumPy's grouping of trimesh's halfedge rows by undirected edge.
@@ -670,8 +625,6 @@ def test_halfedge_mates_match_numpy_edge_grouping(
     wound the same way, which a mate keeps and a twin does not.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
     n_vertices = len(mesh_tm.vertices) if bounded else None
     mates = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices).numpy()
     expected = _expected_mates(np.asarray(mesh_tm.faces))
@@ -690,8 +643,9 @@ def test_halfedge_mates_match_numpy_edge_grouping(
         pytest.param([0, 0, 1], 2, id="repeated-vertex"),
     ],
 )
+@pytest.mark.usefixtures("force_halfedge_buckets")
 def test_halfedge_mates_on_defects(
-    faces: list[int], n_vertices: int, bounded: bool, device: str, monkeypatch: pytest.MonkeyPatch
+    faces: list[int], n_vertices: int, bounded: bool, device: str
 ) -> None:
     """
     Class B: on each defect the mates are NumPy's grouping, by both builders.
@@ -701,47 +655,15 @@ def test_halfedge_mates_on_defects(
     halfedge 0, where a bare ``-2`` would read the same); the same-way pair and the duplicated face
     are pairs, where ``halfedge_twins`` would reject them.
     """
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
     faces_np = np.array(faces, dtype=np.int32)
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
     mates = od.halfedge.halfedge_mates(faces_wp, n_vertices if bounded else None).numpy()
     assert np.array_equal(mates, _expected_mates(faces_np))
 
 
-@pytest.mark.parametrize("hub_first", [True, False])
-def test_halfedge_mates_on_a_hub(
-    hub_first: bool, device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Ordito against ordito: a 512-valence hub pairs as the sort pairs it, numbered either way.
-
-    The sort carries the oracle (``test_halfedge_mates_match_numpy_edge_grouping``); this pins the
-    buckets to it where a lower-*index* owner would pile every spoke into one bucket.
-    """
-    cone_tm = tm.creation.cone(radius=1.0, height=1.0, sections=512)
-    faces_np = np.asarray(cone_tm.faces, dtype=np.int32)
-    valence = np.bincount(faces_np.ravel(), minlength=len(cone_tm.vertices))
-    order = np.argsort(-valence if hub_first else valence, kind="stable")
-    renumber = np.empty_like(order)
-    renumber[order] = np.arange(len(order))
-    faces_wp = wp.array(renumber[faces_np].ravel().astype(np.int32), dtype=wp.int32, device=device)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
-    bucketed = od.halfedge.halfedge_mates(faces_wp, len(cone_tm.vertices)).numpy()
-    sorted_ = od.halfedge.halfedge_mates(faces_wp).numpy()
-    assert valence.max() == 512
-    assert np.array_equal(bucketed, sorted_)
-
-
-def test_halfedge_mates_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert od.halfedge.halfedge_mates(faces_wp, 0).shape == (0,)
-
-
 @pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere", "mobius"])
 def test_halfedge_mates_key_order_is_the_edge_key_sort(
-    request: pytest.FixtureRequest, mesh_name: str, monkeypatch: pytest.MonkeyPatch
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Not a library comparison: the key order is ordito's own sort, recomputed by NumPy.
@@ -761,8 +683,7 @@ def test_halfedge_mates_key_order_is_the_edge_key_sort(
     assert key_order is not None
     assert np.array_equal(key_order.numpy(), np.argsort(keys_np, kind="stable"))
     assert np.array_equal(mates.numpy(), _expected_mates(faces_np))
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    request.getfixturevalue("force_halfedge_buckets")
     mates, key_order = od.halfedge.halfedge_mates(
         mesh_wp.indices, n_vertices, return_key_order=True
     )

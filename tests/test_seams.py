@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import cast
 
 import igl
@@ -44,34 +45,28 @@ def _face_component_count(
     )
 
 
-def test_crease_edges_finds_a_cube_edges(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """A unit cube has exactly 12 crease edges at 90 degrees, and its 6 face diagonals are flat."""
-    box_tm, box_wp = unit_box
-    vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    creases_np = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0).numpy()
-    assert creases_np.shape == (12, 2)
+@pytest.mark.parametrize(
+    ("angle", "n_creases"), [(0.0, 12), (30.0, 12), (89.0, 12), (91.0, 0), (180.0, 0)]
+)
+def test_crease_edges_thresholds(
+    unit_box: tuple[tm.Trimesh, wp.Mesh], angle: float, n_creases: int
+) -> None:
+    """
+    A unit cube has exactly 12 crease edges at 90 degrees, and its 6 face diagonals are flat.
 
-    # Every selected edge joins two cube corners one unit apart; a face diagonal would be sqrt(2).
+    The comparison is strict, so ``0`` selects every *non-coplanar* interior edge: on a cube that
+    is the 12 cube edges and not the 6 face diagonals, whose dihedral is exactly zero -- which is
+    the useful reading of "all of them", and the reason the test pins ``0`` rather than treating it
+    as a synonym for the whole 18-edge set. Every selected edge joins two cube corners one unit
+    apart; a face diagonal would be ``sqrt(2)``.
+    """
+    box_tm, box_wp = unit_box
+    creases_np = od.seams.crease_edges(box_wp.points, box_wp.indices, angle=angle).numpy()
+    assert creases_np.shape == (n_creases, 2)
     lengths_np = np.linalg.norm(
         box_tm.vertices[creases_np[:, 0]] - box_tm.vertices[creases_np[:, 1]], axis=1
     )
     assert np.allclose(lengths_np, 1.0, rtol=1e-5)
-
-
-def test_crease_edges_thresholds(unit_box: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    The comparison is strict, so ``0`` selects every *non-coplanar* interior edge.
-
-    On a cube that is the 12 cube edges and not the 6 face diagonals, whose dihedral is exactly zero
-    — which is the useful reading of "all of them", and the reason the test pins ``0`` rather than
-    treating it as a synonym for the whole 18-edge set.
-    """
-    _box_tm, box_wp = unit_box
-    vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=0.0).shape[0]) == 12
-    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=89.0).shape[0]) == 12
-    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=91.0).shape[0]) == 0
-    assert int(od.seams.crease_edges(vertices_wp, faces_wp, angle=180.0).shape[0]) == 0
 
 
 @pytest.mark.parity("crease_edges", "pymeshlab")
@@ -216,39 +211,6 @@ def test_crease_edges_bucketed_match_the_key_sort(
     _assert_edge_key_order(bucketed_np[:n_creases])
     _assert_edge_key_order(bucketed_np[n_creases:])
     assert np.array_equal(sorted_np, bucketed_np)
-
-
-def test_crease_edges_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
-    with pytest.raises(ValueError, match=r"angle must be in \[0, 180\]"):
-        od.seams.crease_edges(mesh_wp.points, mesh_wp.indices, angle=-1.0)
-
-
-def test_crease_edges_empty(device: str) -> None:
-    vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    assert od.seams.crease_edges(vertices_wp, faces_wp).shape == (0, 2)
-
-
-def test_cut_along_edges_separates_the_faces_of_a_cube(
-    unit_box: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Cutting every crease of a cube leaves six disconnected quads, sharing no vertex.
-
-    The counts are exact and worth stating: each of the 8 corners is incident to 3 of the 6 quads
-    and every crease through it is cut, so it becomes 3 vertices — 24 in all — while the 12 faces
-    and their winding are untouched.
-    """
-    _box_tm, box_wp = unit_box
-    vertices_wp, faces_wp = box_wp.points, box_wp.indices
-    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-
-    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
-    assert cut_vertices_wp.size == 24
-    assert cut_faces_wp.size == faces_wp.size
-    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
-    assert od.validation.is_winding_consistent(cut_faces_wp)
 
 
 def test_cut_along_edges_is_geometrically_a_noop(device: str) -> None:
@@ -473,22 +435,52 @@ def test_cut_along_edges_matches_meshlib(icosphere_coarse: tuple[tm.Trimesh, wp.
     assert cut_faces_wp.size // 3 == cut_tm.faces.shape[0] == mesh_tm.faces.shape[0]
 
 
-@pytest.mark.parity("cut_along_edges", "pymeshlab")
-def test_cut_along_edges_matches_pymeshlab_topology(
+@pytest.mark.parity("cut_along_edges", "pymeshlab", "igl")
+def test_cut_along_edges_matches_pymeshlab_and_igl(
     unit_box: tuple[tm.Trimesh, wp.Mesh], device: str
 ) -> None:
     """
-    Class B (topology only): MeshLab opens the same seams, but re-welds some vertices.
+    Cutting every crease of a cube leaves six disconnected quads; against MeshLab and igl.
 
-    On a cube cut at every crease both sides produce 6 face-connected components, 12 faces and the
-    same surface area — the whole content of the operation. **ordito emits 24 vertices and MeshLab
-    32**: 24 is minimal (each of the 8 corners is incident to 3 quads, so it needs exactly 3 copies)
-    and MeshLab's 32 carries 8 redundant duplicates, apparently from splitting per face corner and
-    re-welding only some of them. So the count is asserted as an inequality in ordito's favour
-    rather than as a match; the topology is asserted exactly.
+    Each of the 8 corners is incident to 3 of the 6 quads and every crease through it is cut, so it
+    becomes 3 vertices -- **24 in all**, which is minimal -- while the 12 faces and their winding
+    are untouched.
+
+    **Class B (topology only) against MeshLab**, which opens the same seams but re-welds some
+    vertices: both sides produce 6 face-connected components, 12 faces and the same surface area --
+    the whole content of the operation -- but MeshLab emits **32** vertices, carrying 8 redundant
+    duplicates, apparently from splitting per face corner and re-welding only some of them. So the
+    count is asserted as an inequality in ordito's favour rather than as a match; the topology is
+    asserted exactly.
+
+    **Class B (an edge set becomes a per-corner mask) against igl**, which **settles** that
+    disagreement. ``igl.cut_mesh(V, F, C)`` takes ``C`` as a ``(n_faces, 3)`` **bool** per-corner
+    mask rather than an edge list, so the named transform is to mark ``C[f, i]`` for every
+    face-corner whose edge is in ordito's cut set. igl emits **24 vertices, exactly ordito's
+    answer**, so MeshLab's extra 8 are its own.
+
+    **The corner numbering is ``(i, i + 1)`` here, unlike ``igl.ears``.** ``cut_mesh``'s edge ``i``
+    of face ``f`` is ``(F[f, i], F[f, (i + 1) % 3])`` -- the same convention ordito uses -- where
+    ``igl.ears`` inherits ``igl::on_boundary``'s *opposite-vertex* numbering. The two conventions
+    coexist inside one library, so the mask is built with the ``(i, i + 1)`` rule and the
+    alternative is checked to be wrong rather than assumed: it yields 28 vertices, so a
+    convention slip would fail this test rather than pass it.
     """
     box_tm, _box_wp = unit_box
     angle = 30.0
+    vertices_np = np.ascontiguousarray(box_tm.vertices, dtype=np.float64)
+    faces_np = np.ascontiguousarray(box_tm.faces, dtype=np.int64)
+
+    vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
+    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=angle)
+    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
+    cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
+    assert cut_vertices_wp.size == 24
+    assert cut_faces_wp.size == faces_wp.size
+    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
+    assert od.validation.is_winding_consistent(cut_faces_wp)
+    assert np.isclose(cut_tm.area, box_tm.area, rtol=1e-5)
+
     meshset_pml = trimesh_to_pymeshlab(box_tm)
     meshset_pml.meshing_cut_along_crease_edges(angledeg=angle)
     mesh_pml = meshset_pml.current_mesh()
@@ -499,46 +491,10 @@ def test_cut_along_edges_matches_pymeshlab_topology(
             mesh_cut_pml.face_adjacency, nodes=np.arange(faces_pml.shape[0])
         )
     )
-
-    vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=angle)
-    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
-    cut_vertices_wp = cut_vertices_wp  # a vec3 input cuts to vec3
-    cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
-
     assert cut_faces_wp.size // 3 == faces_pml.shape[0]
-    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == components_pml == 6
-    assert np.isclose(cut_tm.area, box_tm.area, rtol=1e-5)
+    assert components_pml == 6
     assert np.isclose(mesh_cut_pml.area, box_tm.area, rtol=1e-5)
-    assert cut_vertices_wp.size == 24 < mesh_pml.vertex_number()
-
-
-@pytest.mark.parity("cut_along_edges", "igl")
-def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
-    """
-    Class B (an edge set becomes a per-corner mask), and it **settles** the MeshLab disagreement.
-
-    ``igl.cut_mesh(V, F, C)`` takes ``C`` as a ``(n_faces, 3)`` **bool** per-corner mask rather than
-    an edge list, so the named transform is to mark ``C[f, i]`` for every face-corner whose edge is
-    in ordito's cut set. On the cube cut at every crease igl emits **24 vertices, exactly ordito's
-    answer**, against MeshLab's 32 -- which is the point of having a third implementation on this
-    group: 24 is minimal and now independently confirmed, so MeshLab's extra 8 are its own.
-
-    **The corner numbering is ``(i, i + 1)`` here, unlike ``igl.ears``.** ``cut_mesh``'s edge ``i``
-    of face ``f`` is ``(F[f, i], F[f, (i + 1) % 3])`` -- the same convention ordito uses -- where
-    ``igl.ears`` inherits ``igl::on_boundary``'s *opposite-vertex* numbering. The two conventions
-    coexist inside one library, so the mask is built with the ``(i, i + 1)`` rule and the
-    alternative is checked to be wrong rather than assumed: it yields 28 vertices, so a
-    convention slip would fail this test rather than pass it.
-    """
-    box_tm, _box_wp = unit_box
-    vertices_np = np.ascontiguousarray(box_tm.vertices, dtype=np.float64)
-    faces_np = np.ascontiguousarray(box_tm.faces, dtype=np.int64)
-
-    vertices_wp, faces_wp = numpy_to_warp(box_tm.vertices, box_tm.faces, device)
-    creases_wp = od.seams.crease_edges(vertices_wp, faces_wp, angle=30.0)
-    cut_vertices_wp, cut_faces_wp = od.seams.cut_along_edges(vertices_wp, faces_wp, creases_wp)
-    cut_vertices_wp = cut_vertices_wp  # a vec3 input cuts to vec3
+    assert cut_vertices_wp.size < mesh_pml.vertex_number()
 
     cut_set = {tuple(sorted(pair)) for pair in creases_wp.numpy().tolist()}
     corner_mask_igl = np.array(
@@ -554,16 +510,12 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
     assert int(corner_mask_igl.sum()) == 2 * len(cut_set), (
         "every cut edge is marked from both sides"
     )
-
     vertices_cut_igl, faces_cut_igl = map(
         np.asarray, igl.cut_mesh(vertices_np, faces_np, corner_mask_igl)[:2]
     )
-
-    assert vertices_cut_igl.shape[0] == cut_vertices_wp.size == 24
+    assert vertices_cut_igl.shape[0] == cut_vertices_wp.size
     assert faces_cut_igl.shape[0] == cut_faces_wp.size // 3
-    cut_tm = warp_to_trimesh(cut_vertices_wp, cut_faces_wp)
     mesh_cut_igl = tm.Trimesh(vertices_cut_igl, faces_cut_igl, process=False)
-    assert _face_component_count(cut_vertices_wp, cut_faces_wp) == 6
     assert np.isclose(mesh_cut_igl.area, cut_tm.area, rtol=1e-5)
     # The opposite-vertex convention is genuinely a different answer, so the mask above is a choice.
     opposite_mask_igl = np.array(
@@ -578,24 +530,6 @@ def test_cut_along_edges_matches_igl(unit_box: tuple[tm.Trimesh, wp.Mesh], devic
         dtype=bool,
     )
     assert np.asarray(igl.cut_mesh(vertices_np, faces_np, opposite_mask_igl)[0]).shape[0] == 28
-
-
-def test_cut_along_edges_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
-    with pytest.raises(ValueError, match=r"edges must have shape \(k, 2\)"):
-        od.seams.cut_along_edges(
-            mesh_wp.points, mesh_wp.indices, odt.empty_2d((3, 3), wp.int32, device=mesh_wp.device)
-        )
-
-
-def test_cut_along_edges_empty(device: str) -> None:
-    vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    out_vertices_wp, out_faces_wp = od.seams.cut_along_edges(
-        vertices_wp, faces_wp, odt.empty_2d((0, 2), wp.int32, device=device)
-    )
-    assert out_vertices_wp.size == 0
-    assert out_faces_wp.size == 0
 
 
 def _spherical_wedge_atlas(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
@@ -913,39 +847,6 @@ def test_seam_edge_vertices_feeds_cut_along_edges(icosahedron: tuple[tm.Trimesh,
     assert int(od.boundary.boundary_edges(cut_vertices_wp, cut_faces_wp).shape[0]) > 0
 
 
-def test_uv_seam_edges_rejects_index_match_without_face_texcoords(device: str) -> None:
-    faces_wp, _faces_np = _quad_mesh(device)
-    with pytest.raises(ValueError, match="match='index' needs face_texcoords"):
-        od.seams.uv_seam_edges(
-            faces_wp, points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device), match="index"
-        )
-
-
-def test_uv_seam_edges_rejects_mismatched_buffers(device: str) -> None:
-    faces_wp, _faces_np = _quad_mesh(device)
-    with pytest.raises(ValueError, match="one entry per face corner"):
-        od.seams.uv_seam_edges(
-            faces_wp,
-            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
-            wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device),
-        )
-    with pytest.raises(ValueError, match="texcoords must be per-corner"):
-        od.seams.uv_seam_edges(
-            faces_wp, points_to_warp_uv(np.zeros((4, 2), dtype=np.float32), device)
-        )
-
-
-def test_uv_seam_edges_nonmanifold_raises(device: str) -> None:
-    """Three faces on one edge: "the other side" is undefined, as it is for the cut."""
-    faces_wp = wp.array(
-        np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32), dtype=wp.int32, device=device
-    )
-    with pytest.raises(ValueError, match="edge-manifold"):
-        od.seams.uv_seam_edges(
-            faces_wp, points_to_warp_uv(np.zeros((9, 2), dtype=np.float32), device), n_vertices=5
-        )
-
-
 def test_uv_seam_edges_single_triangle(device: str) -> None:
     """Every edge is a boundary, and neither seam nor foldover can exist without a second face."""
     faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
@@ -961,20 +862,6 @@ def test_uv_seam_edges_single_triangle(device: str) -> None:
         (1, 2),
         (0, 2),
     }
-
-
-def test_uv_seam_edges_empty_mesh(device: str) -> None:
-    faces_wp = warp_empty(0, wp.int32, device)
-    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
-        faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0
-    )
-    assert seams_wp.shape == (0, 4)
-    assert boundaries_wp.shape == (0, 2)
-    assert foldovers_wp.shape == (0, 4)
-    assert (
-        od.seams.uv_seam_vertex_mask(faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0).size
-        == 0
-    )
 
 
 def test_uv_seam_match_rejects_an_off_menu_mode(device: str) -> None:
@@ -1031,6 +918,95 @@ def test_cut_along_edges_accepts_a_row_in_either_order(
     assert ascending_vertices_wp.size > vertices_wp.size
     assert np.array_equal(ascending_faces_wp.numpy(), descending_faces_wp.numpy())
     assert np.allclose(ascending_vertices_wp.numpy(), descending_vertices_wp.numpy())
+
+
+def _quad_vertices(device: str) -> wp.array[wp.vec3]:
+    """Return the four corners of [`_quad_mesh`], a unit square in the ``z = 0`` plane."""
+    corners_np = np.array([[0, 0, 0], [1, 0, 0], [0, 1, 0], [1, 1, 0]], dtype=np.float32)
+    return wp.array(corners_np, dtype=wp.vec3, device=device)
+
+
+_INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
+    "crease_angle_below_zero": (
+        lambda device: od.seams.crease_edges(
+            _quad_vertices(device), _quad_mesh(device)[0], angle=-1.0
+        ),
+        r"angle must be in \[0, 180\]",
+    ),
+    "cut_edges_not_pairs": (
+        lambda device: od.seams.cut_along_edges(
+            _quad_vertices(device),
+            _quad_mesh(device)[0],
+            odt.empty_2d((3, 3), wp.int32, device=device),
+        ),
+        r"edges must have shape \(k, 2\)",
+    ),
+    "uv_index_match_without_face_texcoords": (
+        lambda device: od.seams.uv_seam_edges(
+            _quad_mesh(device)[0],
+            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
+            match="index",
+        ),
+        "match='index' needs face_texcoords",
+    ),
+    "uv_face_texcoords_not_per_corner": (
+        lambda device: od.seams.uv_seam_edges(
+            _quad_mesh(device)[0],
+            points_to_warp_uv(np.zeros((6, 2), dtype=np.float32), device),
+            wp.array(np.arange(3, dtype=np.int32), dtype=wp.int32, device=device),
+        ),
+        "one entry per face corner",
+    ),
+    "uv_texcoords_not_per_corner": (
+        lambda device: od.seams.uv_seam_edges(
+            _quad_mesh(device)[0], points_to_warp_uv(np.zeros((4, 2), dtype=np.float32), device)
+        ),
+        "texcoords must be per-corner",
+    ),
+    # Three faces on one edge: "the other side" is undefined, as it is for the cut.
+    "uv_nonmanifold": (
+        lambda device: od.seams.uv_seam_edges(
+            wp.array(
+                np.array([0, 1, 2, 0, 1, 3, 0, 1, 4], dtype=np.int32), dtype=wp.int32, device=device
+            ),
+            points_to_warp_uv(np.zeros((9, 2), dtype=np.float32), device),
+            n_vertices=5,
+        ),
+        "edge-manifold",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_INVALID_CALLS))
+def test_invalid_arguments_raise(device: str, case: str) -> None:
+    """Not a library comparison: each documented ``ValueError``, with its message."""
+    call, message = _INVALID_CALLS[case]
+    with pytest.raises(ValueError, match=message):
+        call(device)
+
+
+def test_empty_mesh(device: str) -> None:
+    """Not a library comparison: every entry point answers a face-less mesh with empty buffers."""
+    vertices_wp = wp.zeros(0, dtype=wp.vec3, device=device)
+    faces_wp = warp_empty(0, wp.int32, device)
+    assert od.seams.crease_edges(vertices_wp, faces_wp).shape == (0, 2)
+
+    out_vertices_wp, out_faces_wp = od.seams.cut_along_edges(
+        vertices_wp, faces_wp, odt.empty_2d((0, 2), wp.int32, device=device)
+    )
+    assert out_vertices_wp.size == 0
+    assert out_faces_wp.size == 0
+
+    seams_wp, boundaries_wp, foldovers_wp = od.seams.uv_seam_edges(
+        faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0
+    )
+    assert seams_wp.shape == (0, 4)
+    assert boundaries_wp.shape == (0, 2)
+    assert foldovers_wp.shape == (0, 4)
+    assert (
+        od.seams.uv_seam_vertex_mask(faces_wp, warp_empty(0, wp.vec2, device), n_vertices=0).size
+        == 0
+    )
 
 
 def _assert_edge_key_order(rows_np: np.ndarray) -> None:

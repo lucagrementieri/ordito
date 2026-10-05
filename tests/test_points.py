@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import cast
 
 import numpy as np
@@ -192,27 +193,26 @@ def test_gram_matrix(device: str) -> None:
     assert np.allclose(od.gram_matrix(points_wp).numpy()[0], gram_np, rtol=1e-4, atol=1e-4)
 
 
-def test_gram_matrix_empty(device: str) -> None:
-    points_wp = warp_empty(0, wp.vec3, device)
-    assert np.allclose(od.gram_matrix(points_wp).numpy()[0], np.zeros((3, 3)))
-
-
+@pytest.mark.parametrize(("n_points", "seed"), [(200, 2), (5000, 5)], ids=["small", "multi_tile"])
 @pytest.mark.parity("fit_line", "trimesh")
-def test_fit_line(device: str) -> None:
+def test_fit_line(device: str, n_points: int, seed: int) -> None:
     """
     Class B (sign fix): the major axis against ``trimesh.points.major_axis``, up to direction.
 
     An eigenvector is defined only up to sign, so the comparison goes through
     [`tests.comparisons.assert_same_up_to_sign`][]. The cloud is elongated 1000:1 so the axis
     itself is well determined -- on an isotropic cloud there would be nothing to compare.
+
+    The 5 000-point arm (``5000 = 78 * 64 + 8``) runs past the tiled reduction's tile size and
+    exercises both the multi-tile path and its remainder branch, which 200 points do not reach.
     """
-    rng = np.random.default_rng(2)
+    rng = np.random.default_rng(seed)
     # points strongly elongated along a known direction so the major axis
     # is well-defined and robust to the SVD sign convention.
     direction_np = rng.standard_normal(3)
     direction_np /= np.linalg.norm(direction_np)
-    t_np = rng.uniform(-10.0, 10.0, size=200)
-    points_np = t_np[:, None] * direction_np[None, :] + 0.01 * rng.standard_normal((200, 3))
+    t_np = rng.uniform(-10.0, 10.0, size=n_points)
+    points_np = t_np[:, None] * direction_np[None, :] + 0.01 * rng.standard_normal((n_points, 3))
 
     axis_tm = tm.major_axis(points_np)
 
@@ -225,23 +225,27 @@ def test_fit_line(device: str) -> None:
     assert np.isclose(np.abs(np.dot(np.array(axis_wp), direction_np)), 1.0, atol=1e-3)
 
 
-def test_centered_covariance(device: str) -> None:
-    points_np = _random_points(200, seed=11)
-    points_wp = points_to_warp(points_np, device)
-    centered_np = points_np - points_np.mean(axis=0)
-    scatter_np = centered_np.T @ centered_np
-    cov_wp = od.centered_covariance(points_wp)
-    assert np.allclose(cov_wp.numpy()[0], scatter_np, rtol=1e-4, atol=1e-4)
+@pytest.mark.parametrize("precomputed_center", [False, True], ids=["derived", "precomputed"])
+def test_centered_covariance(device: str, precomputed_center: bool) -> None:
+    """
+    Not a library comparison: the scatter matrix about the mean, against its numpy definition.
 
-
-def test_centered_covariance_precomputed_center(device: str) -> None:
-    points_np = _random_points(150, seed=12)
+    The ``center=`` arm hands the mean in rather than letting the function derive it, which must
+    give the same matrix.
+    """
+    points_np = _random_points(
+        150 if precomputed_center else 200, seed=12 if precomputed_center else 11
+    )
     points_wp = points_to_warp(points_np, device)
     mean_np = points_np.mean(axis=0)
-    center_wp = points_to_warp(mean_np.reshape(1, 3), device)
     centered_np = points_np - mean_np
     scatter_np = centered_np.T @ centered_np
-    cov_wp = od.centered_covariance(points_wp, center=center_wp)
+    if precomputed_center:
+        cov_wp = od.centered_covariance(
+            points_wp, center=points_to_warp(mean_np.reshape(1, 3), device)
+        )
+    else:
+        cov_wp = od.centered_covariance(points_wp)
     assert np.allclose(cov_wp.numpy()[0], scatter_np, rtol=1e-4, atol=1e-4)
 
 
@@ -446,8 +450,9 @@ def test_principal_axes_empty_and_single(device: str) -> None:
     assert np.allclose(np.array(centroid_wp), np.array([1.0, 2.0, 3.0]))
 
 
+@pytest.mark.parametrize(("n_points", "seed"), [(80, 3), (5000, 6)], ids=["small", "multi_tile"])
 @pytest.mark.parity("fit_plane", "trimesh", "pymeshlab")
-def test_fit_plane(device: str) -> None:
+def test_fit_plane(device: str, n_points: int, seed: int) -> None:
     """
     Class B against both references, each needing one named transform.
 
@@ -459,9 +464,13 @@ def test_fit_plane(device: str) -> None:
     it takes a face-less MeshSet, which is what these bare points are. Both references leave the
     normal
     **sign** free (it is a covariance eigenvector), so all three are compared up to sign.
+
+    The 5 000-point arm runs past the tiled reduction's tile size, the multi-tile motivation of
+    [`test_fit_line`]. The centroid needs no sign fix and is compared directly, which is what
+    separates a reduction bug from an eigenvector one.
     """
-    rng = np.random.default_rng(3)
-    points_np = rng.standard_normal((80, 3))
+    rng = np.random.default_rng(seed)
+    points_np = rng.standard_normal((n_points, 3))
 
     centroid_tm, normal_tm = tm.plane_fit(points_np)
 
@@ -551,56 +560,6 @@ def test_covariance(device: str) -> None:
     assert np.allclose(od.covariance(points_wp).numpy()[0], cov_np, rtol=1e-4, atol=1e-4)
 
 
-def test_covariance_too_few_points_raises(device: str) -> None:
-    points_wp = wp.zeros(1, dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="ddof"):
-        od.covariance(points_wp)
-
-
-def test_fit_line_large(device: str) -> None:
-    """
-    Class B (sign fix): the same comparison at 5 000 points, past the tiled reduction's tile size.
-
-    ``5000 = 78 * 64 + 8`` exercises both the multi-tile path and its remainder branch, which
-    the 200-point test above does not reach at all.
-    """
-    # n far larger than TILE_1D (64) to exercise the multi-tile reduction path
-    # and the remainder branch (5000 = 78 * 64 + 8).
-    rng = np.random.default_rng(5)
-    direction_np = rng.standard_normal(3)
-    direction_np /= np.linalg.norm(direction_np)
-    t_np = rng.uniform(-10.0, 10.0, size=5000)
-    points_np = t_np[:, None] * direction_np[None, :] + 0.01 * rng.standard_normal((5000, 3))
-
-    axis_tm = tm.major_axis(points_np)
-
-    points_wp = points_to_warp(points_np, device)
-    axis_wp = od.fit_line(points_wp)
-
-    assert np.isclose(np.abs(np.dot(np.array(axis_wp), axis_tm)), 1.0, atol=1e-4)
-    assert np.isclose(np.abs(np.dot(np.array(axis_wp), direction_np)), 1.0, atol=1e-3)
-
-
-def test_fit_plane_large(device: str) -> None:
-    """
-    Class B (sign fix on the normal): ``trimesh.points.plane_fit`` at 5 000 points.
-
-    Same multi-tile motivation as the line fit above. The centroid needs no sign fix and is
-    compared directly, which is what separates a reduction bug from an eigenvector one.
-    """
-    # n far larger than TILE_1D (64) to exercise the multi-tile reduction path.
-    rng = np.random.default_rng(6)
-    points_np = rng.standard_normal((5000, 3))
-
-    centroid_tm, normal_tm = tm.plane_fit(points_np)
-
-    points_wp = points_to_warp(points_np, device)
-    normal_wp, centroid_wp = od.fit_plane(points_wp)
-
-    assert np.allclose(np.array(centroid_wp), centroid_tm, rtol=1e-4, atol=1e-4)
-    assert np.isclose(np.abs(np.dot(np.array(normal_wp), normal_tm)), 1.0, atol=1e-4)
-
-
 def test_point_plane_distance_no_origin(device: str) -> None:
     """
     Class A: the default-origin overload, where the plane passes through the world origin.
@@ -621,16 +580,20 @@ def test_point_plane_distance_no_origin(device: str) -> None:
     assert np.allclose(distances_wp.numpy(), distances_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("with_start", [False, True], ids=["default_start", "given_start"])
 @pytest.mark.parity("radial_sort", "trimesh")
-def test_radial_sort(device: str) -> None:
+def test_radial_sort(device: str, with_start: bool) -> None:
     """
-    Class A: the angular order against a numpy ``arctan2`` argsort, index for index.
+    Class A: the angular order against ``trimesh.points.radial_sort``, index for index.
 
     The angles are evenly spaced by construction, which is what makes an exact index comparison
     sound: with random angles two neighbours can differ by less than ``float32`` resolves and
     the orders diverge legitimately (section 6's note on ``lexsort`` and float ties).
+
+    The ``start`` arm rotates the order to begin at a supplied direction. The input is permuted
+    first, so a function ignoring ``start`` and returning the input order cannot pass.
     """
-    rng = np.random.default_rng(7)
+    rng = np.random.default_rng(8 if with_start else 7)
     n = 256
     # evenly spaced angles so the radial order is unambiguous and float32 cannot
     # flip the order of neighboring points relative to the float64 reference.
@@ -642,12 +605,16 @@ def test_radial_sort(device: str) -> None:
     points_np = points_np[rng.permutation(n)]
     origin_np = np.array([0.0, 0.0, 0.0])
     normal_np = np.array([0.0, 0.0, 1.0])
+    start_np = np.array([1.0, 0.0, 0.0]) if with_start else None
 
-    ordered_tm = tm.radial_sort(points_np, origin=origin_np, normal=normal_np)
+    ordered_tm = tm.radial_sort(points_np, origin=origin_np, normal=normal_np, start=start_np)
 
     points_wp = points_to_warp(points_np, device)
     ordered_wp = od.radial_sort(
-        points_wp, wp.vec3(*origin_np.tolist()), wp.vec3(*normal_np.tolist())
+        points_wp,
+        wp.vec3(*origin_np.tolist()),
+        wp.vec3(*normal_np.tolist()),
+        start=None if start_np is None else wp.vec3(*start_np.tolist()),
     )
 
     assert np.allclose(ordered_wp.numpy(), ordered_tm, rtol=1e-5, atol=1e-5)
@@ -696,38 +663,6 @@ def test_radial_sort_perpendicular_to_a_tilted_normal(device: str) -> None:
     # same sign; the old, collapsed-key order does not, since every key tied to the same value
     # leaves the points in their permuted input order instead.
     assert np.all(deltas > 0.0) or np.all(deltas < 0.0)
-
-
-def test_radial_sort_with_start(device: str) -> None:
-    """
-    Class A: the same order rotated to begin at a supplied start direction.
-
-    The input is permuted first, so a function ignoring ``start`` and returning the input order
-    cannot pass. The reference rotation is computed in numpy from the same start vector.
-    """
-    rng = np.random.default_rng(8)
-    n = 256
-    theta_np = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
-    radius_np = rng.uniform(0.1, 2.0, n)
-    points_np = np.column_stack(
-        (np.cos(theta_np) * radius_np, np.sin(theta_np) * radius_np, np.zeros(n))
-    )
-    points_np = points_np[rng.permutation(n)]
-    origin_np = np.array([0.0, 0.0, 0.0])
-    normal_np = np.array([0.0, 0.0, 1.0])
-    start_np = np.array([1.0, 0.0, 0.0])
-
-    ordered_tm = tm.radial_sort(points_np, origin=origin_np, normal=normal_np, start=start_np)
-
-    points_wp = points_to_warp(points_np, device)
-    ordered_wp = od.radial_sort(
-        points_wp,
-        wp.vec3(*origin_np.tolist()),
-        wp.vec3(*normal_np.tolist()),
-        start=wp.vec3(*start_np.tolist()),
-    )
-
-    assert np.allclose(ordered_wp.numpy(), ordered_tm, rtol=1e-5, atol=1e-5)
 
 
 def test_radial_sort_parallel_start_raises(device: str) -> None:
@@ -937,18 +872,6 @@ def test_estimate_normals_rejects_a_table_that_is_not_one_row_per_point(device: 
     assert od.estimate_normals(points_wp, matching_wp).shape == (10,)
 
 
-def test_estimate_normals_mutually_exclusive_orientation(device: str) -> None:
-    points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=8, backend="bvh")
-    with pytest.raises(ValueError, match=r"at most one"):
-        od.estimate_normals(
-            points_wp,
-            neighbor_idx_wp,
-            orient_reference=wp.vec3(0.0, 0.0, 1.0),
-            camera_location=wp.vec3(0.0, 0.0, 0.0),
-        )
-
-
 def _cloud_with_outliers(seed: int = 3, n_inliers: int = 400, n_outliers: int = 15) -> np.ndarray:
     """Build a tight Gaussian blob plus far stragglers, which land last in the array."""
     rng = np.random.default_rng(seed)
@@ -967,22 +890,14 @@ def _loop_reference(points_np: np.ndarray, k: int, scale: float = 3.0) -> np.nda
     return np.maximum(0.0, erf(plof_np / (normalizer * np.sqrt(2.0))))
 
 
-def test_outlier_probability_matches_scipy(device: str) -> None:
-    k = 32
-    points_np = _cloud_with_outliers()
-    probability_np = _loop_reference(points_np, k)
-
-    points_wp = points_to_warp(points_np, device)
-    neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
-        points_wp, points_wp, k=k, backend="bvh"
-    )
-    probability_wp = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
-    assert np.allclose(probability_wp.numpy(), probability_np, rtol=1e-4, atol=1e-4)
-
-
 @pytest.mark.parity("outlier_probability", "pymeshlab")
 def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
-    """Class C (a ranking plus a subset): the 15 planted outliers must score highest."""
+    """
+    Class A against a float64 scipy port of LoOP, Class C (a ranking plus a subset) on top.
+
+    The scores match the [`_loop_reference`] oracle element-wise; the 15 planted outliers must
+    then score highest, and pymeshlab's selection is compared as a set.
+    """
     k = 32
     n_inliers, n_outliers = 400, 15
     points_np = _cloud_with_outliers(n_inliers=n_inliers, n_outliers=n_outliers)
@@ -992,6 +907,7 @@ def test_outlier_probability_ranks_the_planted_outliers(device: str) -> None:
         points_wp, points_wp, k=k, backend="bvh"
     )
     probability_wp = od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
+    assert np.allclose(probability_wp.numpy(), _loop_reference(points_np, k), rtol=1e-4, atol=1e-4)
     ranked = np.argsort(-probability_wp.numpy())
     assert set(ranked[:n_outliers].tolist()) == set(range(n_inliers, n_inliers + n_outliers))
 
@@ -1018,23 +934,6 @@ def test_outlier_probability_is_scale_invariant(device: str) -> None:
         )
         scores.append(od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp).numpy())
     assert np.allclose(scores[0], scores[1], rtol=1e-4, atol=1e-4)
-
-
-def test_outlier_probability_invalid_scale(device: str) -> None:
-    points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, neighbor_distance_wp = od_neighbors.query_nearest(
-        points_wp, points_wp, k=4, backend="bvh"
-    )
-    with pytest.raises(ValueError, match="scale must be positive"):
-        od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp, scale=0.0)
-
-
-def test_outlier_probability_shape_mismatch(device: str) -> None:
-    points_wp = points_to_warp(_fibonacci_sphere(16), device)
-    neighbor_idx_wp, _ = od_neighbors.query_nearest(points_wp, points_wp, k=4, backend="bvh")
-    _, neighbor_distance_wp = od_neighbors.query_nearest(points_wp, points_wp, k=5, backend="bvh")
-    with pytest.raises(ValueError, match="same shape"):
-        od.outlier_probability(neighbor_idx_wp, neighbor_distance_wp)
 
 
 @pytest.mark.parity("statistical_outlier_mask", "open3d")
@@ -1122,11 +1021,6 @@ def test_statistical_outlier_mask_matches_meshlib(device: str) -> None:
     assert (outlier_wp & ~outlier_ml).sum() == 0  # ordito's set is contained in MeshLib's
 
 
-def test_statistical_outlier_mask_empty(device: str) -> None:
-    neighbor_distance_wp = odt.empty_2d((0, 8), wp.float32, device=device)
-    assert od.statistical_outlier_mask(neighbor_distance_wp).shape == (0,)
-
-
 def test_statistical_outlier_mask_flags_coincident_and_empty_rows_below_two_counted(
     device: str,
 ) -> None:
@@ -1187,16 +1081,6 @@ def test_radius_outlier_mask_matches_open3d(device: str) -> None:
         assert np.array_equal(outlier_wp.numpy().astype(bool), outlier_o3d)
 
 
-def test_radius_outlier_mask_invalid_arguments(device: str) -> None:
-    points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="radius"):
-        od.radius_outlier_mask(points_wp, 0.0, 2)
-    with pytest.raises(ValueError, match="min_neighbors"):
-        od.radius_outlier_mask(points_wp, 1.0, 0)
-    empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert od.radius_outlier_mask(empty_wp, 1.0, 2).shape == (0,)
-
-
 @pytest.mark.parity(
     "point_finite_mask",
     "open3d",
@@ -1236,55 +1120,23 @@ def test_point_finite_mask_matches_open3d(device: str) -> None:
     assert od.point_finite_mask(empty_wp).shape == (0,)
 
 
-@pytest.mark.parity("point_duplicate_mask", "open3d")
-def test_point_duplicate_mask_matches_open3d(device: str) -> None:
+@pytest.mark.parity("point_duplicate_mask", "open3d", "meshlib")
+def test_point_duplicate_mask_matches_open3d_and_meshlib(device: str) -> None:
     """
-    Class B (mask against a kept subset): ``remove_duplicated_points``'s survivors, in order.
+    Class B against both references, each a different readout of the same first-occurrence rule.
 
-    Open3D returns the deduplicated cloud, so the comparison is its rows against the rows the
-    complement of this mask selects — which also pins the *first-occurrence* rule, since keeping the
-    last occurrence instead would reorder the survivors. ``-0.0`` against ``+0.0`` is planted
-    deliberately: IEEE-754 equality holds between them, so the reference merges them and a raw
-    bit-pattern key would not.
-    """
-    rng = np.random.default_rng(0)
-    base_np = rng.random((20, 3)).astype(np.float32)
-    points_np = np.concatenate(
-        [
-            base_np,
-            base_np[:5],
-            base_np[10:15],
-            np.array([[-0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], dtype=np.float32),
-        ]
-    )
+    **Open3D (mask against a kept subset)**: ``remove_duplicated_points`` returns the deduplicated
+    cloud, so the comparison is its rows against the rows the complement of this mask selects --
+    which also pins the *first-occurrence* rule, since keeping the last occurrence instead would
+    reorder the survivors. ``-0.0`` against ``+0.0`` is planted deliberately: IEEE-754 equality
+    holds between them, so the reference merges them and a raw bit-pattern key would not.
 
-    kept_o3d = np.asarray(
-        points_to_open3d(points_np).remove_duplicated_points().points, dtype=np.float32
-    )
-
-    points_wp = points_to_warp(points_np, device)
-    duplicate_wp = od.point_duplicate_mask(points_wp).numpy().astype(bool)
-
-    # non-vacuity: 10 repeats plus the second zero row, so both the mask and its complement matter
-    assert duplicate_wp.sum() == 11
-    assert kept_o3d.shape[0] == 21
-    assert np.array_equal(points_np[~duplicate_wp], kept_o3d)
-
-    empty_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert od.point_duplicate_mask(empty_wp).shape == (0,)
-
-
-@pytest.mark.parity("point_duplicate_mask", "meshlib")
-def test_point_duplicate_mask_matches_meshlib(device: str) -> None:
-    """
-    Class B (a representative map against a mask): ``map != index`` is exactly this mask.
-
+    **MeshLib (a representative map against a mask)**: ``map != index`` is exactly this mask.
     ``findSmallestCloseVertices(cloud, 0.0)`` sends every point to the **smallest-indexed** point
     within ``closeDist``, itself when it is the first of its class -- so the two conventions line
     up without a choice being made: the entries it moves are precisely the repeats this flags, and
-    the first-occurrence rule is the same one. Element for element on the fixture the open3d pair
-    above uses, ``-0.0`` row included, which the reference merges with ``+0.0`` because their
-    distance is zero.
+    the first-occurrence rule is the same one. The ``-0.0`` row is merged with ``+0.0`` there too,
+    because their distance is zero.
 
     ``closeDist=0.0`` is an exact-equality request rather than a degenerate tolerance -- MeshLib's
     test is inclusive at the radius, so a zero radius matches coincident points and nothing else,
@@ -1304,6 +1156,9 @@ def test_point_duplicate_mask_matches_meshlib(device: str) -> None:
         ]
     )
 
+    kept_o3d = np.asarray(
+        points_to_open3d(points_np).remove_duplicated_points().points, dtype=np.float32
+    )
     representative_ml = meshlib_indices_to_numpy(
         # MeshLib's stub omits ``VertId.__index__``, which it implements at runtime.
         mm.findSmallestCloseVertices(points_to_meshlib(points_np), 0.0)  # pyright: ignore[reportArgumentType]
@@ -1313,7 +1168,11 @@ def test_point_duplicate_mask_matches_meshlib(device: str) -> None:
     points_wp = points_to_warp(points_np, device)
     duplicate_wp = od.point_duplicate_mask(points_wp).numpy().astype(bool)
 
-    assert duplicate_ml.sum() == 11  # non-vacuity: the mask and its complement both matter
+    # non-vacuity: 10 repeats plus the second zero row, so both the mask and its complement matter
+    assert duplicate_wp.sum() == 11
+    assert kept_o3d.shape[0] == 21
+    assert duplicate_ml.sum() == 11
+    assert np.array_equal(points_np[~duplicate_wp], kept_o3d)
     assert np.array_equal(duplicate_wp, duplicate_ml)
 
 
@@ -1480,17 +1339,6 @@ def test_farthest_point_sample_sequence_and_coverage(device: str, start: int) ->
     assert radii[0] >= radii[1] >= radii[2]
 
 
-def test_farthest_point_sample_invalid_arguments(device: str) -> None:
-    points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert od.farthest_point_sample(points_wp, 0).shape == (0,)
-    with pytest.raises(ValueError, match="count"):
-        od.farthest_point_sample(points_wp, 5)
-    with pytest.raises(ValueError, match="count"):
-        od.farthest_point_sample(points_wp, -1)
-    with pytest.raises(ValueError, match="start"):
-        od.farthest_point_sample(points_wp, 2, start=4)
-
-
 @pytest.mark.parity("vector_angle", "trimesh")
 def test_vector_angle(device: str) -> None:
     """
@@ -1514,13 +1362,6 @@ def test_vector_angle(device: str) -> None:
     vecs_b_wp = points_to_warp(vecs_b_np, device)
     angles_wp = od.vector_angle(vecs_a_wp, vecs_b_wp)
     assert np.allclose(angles_wp.numpy(), angles_tm, rtol=1e-5, atol=1e-5)
-
-
-def test_vector_angle_empty(device: str) -> None:
-    vecs_a_wp = warp_empty(0, wp.vec3, device)
-    vecs_b_wp = warp_empty(0, wp.vec3, device)
-    angles_wp = od.vector_angle(vecs_a_wp, vecs_b_wp)
-    assert angles_wp.shape == (0,)
 
 
 @pytest.mark.parity("convex_subset_mask", "trimesh", "open3d", "pymeshlab")
@@ -1597,18 +1438,6 @@ def test_convex_subset_mask_against_the_three_qhull_backends(device: str) -> Non
         assert len(selected & hull) / len(hull) > 0.70, f"{name}: recall too low"
 
 
-def test_convex_subset_mask_sound(device: str) -> None:
-    rng = np.random.default_rng(0)
-    points_np = rng.standard_normal((500, 3)).astype(np.float64)
-    points_wp = points_to_warp(points_np, device)
-
-    mask_wp = od.convex_subset_mask(points_wp, n_directions=256)
-    selected = np.flatnonzero(mask_wp.numpy())
-
-    hull_scipy = scipy.spatial.ConvexHull(points_np)
-    assert set(selected.tolist()) <= set(hull_scipy.vertices.tolist())
-
-
 def test_convex_subset_mask_scale_invariant(device: str) -> None:
     rng = np.random.default_rng(7)
     points_np = rng.standard_normal((500, 3)).astype(np.float64)
@@ -1682,12 +1511,6 @@ def test_convex_masks_slice_filter_matches_exhaustive(
         assert np.array_equal(filtered_mask, exhaustive_mask)
 
 
-def test_convex_subset_mask_empty(device: str) -> None:
-    points_wp = warp_empty(0, wp.vec3, device)
-    mask_wp = od.convex_subset_mask(points_wp)
-    assert mask_wp.shape == (0,)
-
-
 def _cloud(kind: str, n: int, seed: int) -> np.ndarray:
     """Build one of the point distributions the superset filter behaves differently on."""
     rng = np.random.default_rng(seed)
@@ -1757,20 +1580,6 @@ def test_convex_superset_mask_tightens_with_subdivisions(device: str, kind: str)
     assert counts[-1] >= len(hull_scipy)
 
 
-def test_convex_superset_mask_contains_the_subset_mask(device: str) -> None:
-    """The two one-sided filters bracket the hull: subset ``<=`` hull vertices ``<=`` superset."""
-    points_np = _cloud("gaussian", 5_000, seed=13)
-    points_wp = points_to_warp(points_np, device)
-
-    subset_np = od.convex_subset_mask(points_wp, n_directions=256).numpy()
-    superset_np = od.convex_superset_mask(points_wp, subdivisions=3).numpy()
-    hull_scipy = set(scipy.spatial.ConvexHull(points_np).vertices.tolist())
-
-    assert set(np.flatnonzero(subset_np).tolist()) <= hull_scipy
-    assert hull_scipy <= set(np.flatnonzero(superset_np).tolist())
-    assert np.array_equal(subset_np & superset_np, subset_np)
-
-
 def test_convex_superset_mask_scale_invariant(device: str) -> None:
     """The flatness and margin tests are relative, so scaling the cloud cannot change the mask."""
     points_np = _cloud("gaussian", 5_000, seed=14)
@@ -1805,12 +1614,6 @@ def test_convex_superset_mask_degenerate_keeps_everything(device: str, kind: str
     assert od.convex_superset_mask(points_wp).numpy().all()
 
 
-def test_convex_superset_mask_empty(device: str) -> None:
-    points_wp = warp_empty(0, wp.vec3, device)
-    mask_wp = od.convex_superset_mask(points_wp)
-    assert mask_wp.shape == (0,)
-
-
 @pytest.mark.parametrize("mask_device", ["cpu", "cuda:0"])
 def test_support_sweep_agrees_across_devices(mask_device: str) -> None:
     """
@@ -1838,3 +1641,118 @@ def test_support_sweep_agrees_across_devices(mask_device: str) -> None:
     assert hull_scipy <= set(np.flatnonzero(superset_np).tolist())
     # The tile bug's signature was a wildly less selective filter, not a wrong-shaped one.
     assert superset_np.mean() < 0.05
+
+
+def _sphere_knn(device: str, k: int) -> tuple[odt.Array2dInt32, odt.Array2dFloat32]:
+    """Return the ``k``-nearest table of a 16-point Fibonacci sphere, the raise cases' input."""
+    points_wp = points_to_warp(_fibonacci_sphere(16), device)
+    return od_neighbors.query_nearest(points_wp, points_wp, k=k, backend="bvh")
+
+
+def _four_zeros(device: str) -> wp.array[wp.vec3]:
+    return wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+
+
+_INVALID_CALLS: dict[str, tuple[Callable[[str], object], str]] = {
+    "covariance_too_few_points": (
+        lambda device: od.covariance(wp.zeros(1, dtype=wp.vec3, device=device)),
+        "ddof",
+    ),
+    "estimate_normals_two_orientations": (
+        lambda device: od.estimate_normals(
+            points_to_warp(_fibonacci_sphere(16), device),
+            _sphere_knn(device, 8)[0],
+            orient_reference=wp.vec3(0.0, 0.0, 1.0),
+            camera_location=wp.vec3(0.0, 0.0, 0.0),
+        ),
+        "at most one",
+    ),
+    "outlier_probability_zero_scale": (
+        lambda device: od.outlier_probability(*_sphere_knn(device, 4), scale=0.0),
+        "scale must be positive",
+    ),
+    "outlier_probability_shape_mismatch": (
+        lambda device: od.outlier_probability(_sphere_knn(device, 4)[0], _sphere_knn(device, 5)[1]),
+        "same shape",
+    ),
+    "radius_outlier_zero_radius": (
+        lambda device: od.radius_outlier_mask(_four_zeros(device), 0.0, 2),
+        "radius",
+    ),
+    "radius_outlier_zero_min_neighbors": (
+        lambda device: od.radius_outlier_mask(_four_zeros(device), 1.0, 0),
+        "min_neighbors",
+    ),
+    "farthest_point_count_above_n": (
+        lambda device: od.farthest_point_sample(_four_zeros(device), 5),
+        "count",
+    ),
+    "farthest_point_negative_count": (
+        lambda device: od.farthest_point_sample(_four_zeros(device), -1),
+        "count",
+    ),
+    "farthest_point_start_out_of_range": (
+        lambda device: od.farthest_point_sample(_four_zeros(device), 2, start=4),
+        "start",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_INVALID_CALLS))
+def test_invalid_arguments_raise(device: str, case: str) -> None:
+    """Not a library comparison: each documented ``ValueError``, with its message."""
+    call, message = _INVALID_CALLS[case]
+    with pytest.raises(ValueError, match=message):
+        call(device)
+
+
+def _empty_cloud(device: str) -> wp.array[wp.vec3]:
+    return warp_empty(0, wp.vec3, device)
+
+
+_EMPTY_CALLS: dict[str, tuple[Callable[[str], np.ndarray], np.ndarray]] = {
+    # The sum over no points is the zero matrix, not garbage.
+    "gram_matrix": (
+        lambda device: od.gram_matrix(_empty_cloud(device)).numpy()[0],
+        np.zeros((3, 3)),
+    ),
+    "vector_angle": (
+        lambda device: od.vector_angle(_empty_cloud(device), _empty_cloud(device)).numpy(),
+        np.zeros(0),
+    ),
+    "statistical_outlier_mask": (
+        lambda device: od.statistical_outlier_mask(
+            odt.empty_2d((0, 8), wp.float32, device=device)
+        ).numpy(),
+        np.zeros(0),
+    ),
+    "radius_outlier_mask": (
+        lambda device: od.radius_outlier_mask(_empty_cloud(device), 1.0, 2).numpy(),
+        np.zeros(0),
+    ),
+    "point_duplicate_mask": (
+        lambda device: od.point_duplicate_mask(_empty_cloud(device)).numpy(),
+        np.zeros(0),
+    ),
+    "farthest_point_sample_zero_count": (
+        lambda device: od.farthest_point_sample(_four_zeros(device), 0).numpy(),
+        np.zeros(0),
+    ),
+    "convex_subset_mask": (
+        lambda device: od.convex_subset_mask(_empty_cloud(device)).numpy(),
+        np.zeros(0),
+    ),
+    "convex_superset_mask": (
+        lambda device: od.convex_superset_mask(_empty_cloud(device)).numpy(),
+        np.zeros(0),
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_EMPTY_CALLS))
+def test_empty_input(device: str, case: str) -> None:
+    """Not a library comparison: an empty input (or a zero count) gives an empty answer."""
+    call, expected = _EMPTY_CALLS[case]
+    result_np = call(device)
+    assert result_np.shape == expected.shape
+    assert np.array_equal(result_np, expected)

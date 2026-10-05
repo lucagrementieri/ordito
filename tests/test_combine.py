@@ -27,29 +27,36 @@ from tests.conversions import (
     warp_empty,
 )
 
+MeshPair = tuple[tm.Trimesh, wp.Mesh]
+
+
+@pytest.fixture
+def three_parts(
+    icosahedron: MeshPair, hemisphere: MeshPair, half_torus: MeshPair
+) -> list[MeshPair]:
+    """Return the three disjoint fixtures (20, 168 and 1 024 faces) the multi-part tests combine."""
+    return [icosahedron, hemisphere, half_torus]
+
+
+def _concatenate_parts(parts: Sequence[MeshPair]) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    return od.combine.concatenate([(mesh_wp.points, mesh_wp.indices) for _, mesh_wp in parts])
+
 
 @pytest.mark.parity("concatenate", "trimesh")
-def test_concatenate_meshes(request: pytest.FixtureRequest) -> None:
+@pytest.mark.parametrize("n_parts", [1, 3], ids=["one_mesh", "three_meshes"])
+def test_concatenate_meshes(three_parts: list[MeshPair], n_parts: int) -> None:
     """
-    Class A: three meshes packed against ``trimesh.util.concatenate``, positions and indices.
+    Class A: meshes packed against ``trimesh.util.concatenate``, positions and indices.
 
     The index *offsetting* is the whole operation, so comparing elementwise rather than as a
     set is the point: a wrong offset would still give a valid-looking mesh with the right
-    counts.
+    counts. The one-mesh arm checks that a one-element list comes back with the input's own
+    values, not merely an equivalent mesh.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
-
-    concat_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    parts = three_parts[:n_parts]
+    concat_tm = tm.util.concatenate([mesh_tm for mesh_tm, _ in parts])
     assert isinstance(concat_tm, tm.Trimesh)
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
-        [
-            (mesh_a_wp.points, mesh_a_wp.indices),
-            (mesh_b_wp.points, mesh_b_wp.indices),
-            (mesh_c_wp.points, mesh_c_wp.indices),
-        ]
-    )
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(parts)
     assert np.allclose(concat_vertices_wp.numpy(), concat_tm.vertices)
     assert np.array_equal(concat_faces_wp.numpy(), concat_tm.faces.reshape(-1))
 
@@ -119,22 +126,6 @@ def test_concatenate_matches_pytorch3d(request: pytest.FixtureRequest, device: s
     assert np.array_equal(faces_wp.numpy().reshape(-1, 3), faces_p3d.numpy())
 
 
-def test_concatenate_single_mesh(request: pytest.FixtureRequest) -> None:
-    """
-    Class A: a one-element list must come back unchanged, not merely equivalent.
-
-    The single-mesh path returns the caller's own buffers rather than copying
-    (``test_concatenate_single_returns_input`` pins that), so this checks the values are the
-    input's and not a rebuild.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
-        [(mesh_wp.points, mesh_wp.indices)]
-    )
-    assert np.allclose(concat_vertices_wp.numpy(), mesh_tm.vertices)
-    assert np.array_equal(concat_faces_wp.numpy(), mesh_tm.faces.reshape(-1))
-
-
 def test_concatenate_empty() -> None:
     vertices_wp, faces_wp = od.combine.concatenate([])
     assert vertices_wp.shape == (0,)
@@ -142,7 +133,7 @@ def test_concatenate_empty() -> None:
 
 
 @pytest.mark.parity("split", "trimesh")
-def test_split_meshes(request: pytest.FixtureRequest) -> None:
+def test_split_meshes(three_parts: list[MeshPair]) -> None:
     """
     Ordito against ordito: ``split`` inverts ``concatenate`` on three known components.
 
@@ -151,16 +142,7 @@ def test_split_meshes(request: pytest.FixtureRequest) -> None:
     component comes back with its own vertices renumbered consistently. ``concatenate`` has its
     own trimesh oracle above, so the loop is not closed on an untested function.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
-
-    meshes_wp = [
-        (mesh_a_wp.points, mesh_a_wp.indices),
-        (mesh_b_wp.points, mesh_b_wp.indices),
-        (mesh_c_wp.points, mesh_c_wp.indices),
-    ]
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(meshes_wp)
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(three_parts)
 
     split_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
     assert len(split_wp) == 3
@@ -170,55 +152,12 @@ def test_split_meshes(request: pytest.FixtureRequest) -> None:
     assert np.array_equal(roundtrip_faces_wp.numpy(), concat_faces_wp.numpy())
 
     split_wp_sorted = sorted(split_wp, key=lambda mesh: mesh[1].size)
-    meshes_tm_sorted = sorted([mesh_a_tm, mesh_b_tm, mesh_c_tm], key=lambda mesh: len(mesh.faces))
+    meshes_tm_sorted = sorted(
+        [mesh_tm for mesh_tm, _ in three_parts], key=lambda mesh: len(mesh.faces)
+    )
     for (vertices_wp, faces_wp), mesh_tm in zip(split_wp_sorted, meshes_tm_sorted, strict=True):
         assert np.allclose(vertices_wp.numpy(), mesh_tm.vertices, rtol=1e-5, atol=1e-5)
         assert np.array_equal(faces_wp.numpy(), mesh_tm.faces.reshape(-1))
-
-
-@pytest.mark.parity("split", "meshlib")
-def test_split_matches_meshlib(request: pytest.FixtureRequest) -> None:
-    """
-    Class B on the partition: ``getAllComponents`` returns the components as face bitsets.
-
-    MeshLib splits in two steps where ordito's ``split`` is one call -- ``getAllComponents`` labels
-    them and ``cloneRegion`` extracts each into its own object -- so the shared quantity is the
-    *partition*, and the extraction is compared through the face counts it would produce rather
-    than by building three ``ObjectMesh`` wrappers. ``FaceIncidence.PerEdge`` is ordito's rule and
-    is passed explicitly, as it is for ``face_connected_component_labels``.
-
-    Measured on three disjoint fixtures: both return three components with face counts
-    ``{20, 80, 320}``, and every face lands in exactly one -- which is the assert that would catch a
-    labelling that dropped or double-counted a face, where the counts alone would not.
-    """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
-    combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
-    assert isinstance(combined_tm, tm.Trimesh)
-
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
-        [
-            (mesh_a_wp.points, mesh_a_wp.indices),
-            (mesh_b_wp.points, mesh_b_wp.indices),
-            (mesh_c_wp.points, mesh_c_wp.indices),
-        ]
-    )
-    parts_wp = od.combine.split(concat_vertices_wp, concat_faces_wp)
-
-    components_ml = mm.getAllComponents(
-        mm.MeshPart(trimesh_to_meshlib(combined_tm)), mm.MeshComponents.FaceIncidence.PerEdge
-    )
-
-    expected = sorted(mesh.faces.shape[0] for mesh in (mesh_a_tm, mesh_b_tm, mesh_c_tm))
-    assert sorted(component_ml.count() for component_ml in components_ml) == expected
-    assert sorted(faces_wp.size // 3 for _vertices_wp, faces_wp in parts_wp) == expected
-
-    # Every face in exactly one component, which a count comparison alone would not catch.
-    covered_np = np.zeros(combined_tm.faces.shape[0], dtype=int)
-    for component_ml in components_ml:
-        covered_np += meshlib_bitset_to_numpy(component_ml, combined_tm.faces.shape[0])
-    assert (covered_np == 1).all()
 
 
 @pytest.mark.parity("split", "meshlib")
@@ -258,7 +197,7 @@ def test_split_finds_all_eight_components_of_one_generated_mesh(
 
 
 @pytest.mark.parity("split", "open3d", "pymeshlab")
-def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> None:
+def test_split_matches_open3d_and_pymeshlab(three_parts: list[MeshPair]) -> None:
     """
     Class B against both references, each of which returns the components a different way.
 
@@ -273,18 +212,9 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
     fixtures have 20, 168 and 1 024 faces, so that pairing is unambiguous -- and each paired
     component is compared by its face-centroid set through a bijective nearest-neighbour match.
     """
-    mesh_a_tm, mesh_a_wp = request.getfixturevalue("icosahedron")
-    mesh_b_tm, mesh_b_wp = request.getfixturevalue("hemisphere")
-    mesh_c_tm, mesh_c_wp = request.getfixturevalue("half_torus")
-    combined_tm = tm.util.concatenate([mesh_a_tm, mesh_b_tm, mesh_c_tm])
+    combined_tm = tm.util.concatenate([mesh_tm for mesh_tm, _ in three_parts])
     assert isinstance(combined_tm, tm.Trimesh)
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
-        [
-            (mesh_a_wp.points, mesh_a_wp.indices),
-            (mesh_b_wp.points, mesh_b_wp.indices),
-            (mesh_c_wp.points, mesh_c_wp.indices),
-        ]
-    )
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(three_parts)
 
     mesh_o3d = trimesh_to_open3d(combined_tm)
     labels_o3d = np.asarray(mesh_o3d.cluster_connected_triangles()[0])
@@ -335,14 +265,9 @@ def test_split_matches_open3d_and_pymeshlab(request: pytest.FixtureRequest) -> N
             assert len(set(np.asarray(match_np).tolist())) == np.asarray(match_np).size
 
 
-def test_split_with_offsets_matches_split(request: pytest.FixtureRequest) -> None:
+def test_split_with_offsets_matches_split(three_parts: list[MeshPair]) -> None:
     """Ordito against ordito: ``split`` is ``split_with_offsets`` split, slice for slice."""
-    meshes_wp = [
-        request.getfixturevalue(name) for name in ("icosahedron", "hemisphere", "half_torus")
-    ]
-    concat_vertices_wp, concat_faces_wp = od.combine.concatenate(
-        [(mesh_wp.points, mesh_wp.indices) for _mesh_tm, mesh_wp in meshes_wp]
-    )
+    concat_vertices_wp, concat_faces_wp = _concatenate_parts(three_parts)
 
     vertices_all_wp, vertex_offsets_wp, faces_all_wp, face_offsets_wp = (
         od.combine.split_with_offsets(concat_vertices_wp, concat_faces_wp)

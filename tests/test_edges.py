@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import igl
@@ -48,21 +49,29 @@ def _faces_np_to_wp(faces_np: np.ndarray, device: str) -> wp.array[wp.int32]:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("sort_rows", [False, True], ids=["directed", "sorted"])
 @pytest.mark.parity("faces_to_edges", "trimesh")
-def test_edges(device: str) -> None:
+@pytest.mark.parity("faces_to_edges_sorted", "trimesh")
+def test_edges(device: str, sort_rows: bool) -> None:
     """
     Class A: the directed ``3F`` edge table against ``trimesh.geometry.faces_to_edges``, in order.
 
     Row order is part of the claim -- face-major, three per face -- because ``edges_face`` and
     ``edges_unique_inverse`` are indexed by the same position. [`test_edges_match_igl`] is the
     class-B version against a reference that groups by corner instead.
+
+    The ``sorted=True`` arm compares against trimesh's table with each row sorted. The sort on the
+    reference side *is* the definition of the keyword, not an accommodation, which is why that arm
+    stays Class A rather than B.
     """
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(int(sort_rows))
     faces_np = rng.integers(0, 50, size=(20, 3), dtype=np.int32)
     edges_np = tm.geometry.faces_to_edges(faces_np)
+    if sort_rows:
+        edges_np = np.sort(edges_np, axis=1)
 
     faces_wp = _faces_np_to_wp(faces_np, device)
-    edges_wp = od.edges.faces_to_edges(faces_wp)
+    edges_wp = od.edges.faces_to_edges(faces_wp, sorted=sort_rows)
     assert np.array_equal(edges_wp.numpy(), edges_np)
 
 
@@ -88,29 +97,6 @@ def test_edges_match_igl(device: str) -> None:
 
     assert edges_igl.shape == (faces_np.shape[0] * 3, 2)
     assert np.array_equal(lexsort_rows(edges_wp.numpy()), lexsort_rows(edges_igl))
-
-
-@pytest.mark.parity("faces_to_edges_sorted", "trimesh")
-def test_edges_sorted(device: str) -> None:
-    """
-    Class A: the ``sorted=True`` form against trimesh's table with each row sorted.
-
-    The sort on the reference side *is* the definition of the keyword, not an accommodation,
-    which is why this stays Class A rather than B.
-    """
-    rng = np.random.default_rng(1)
-    faces_np = rng.integers(0, 50, size=(20, 3), dtype=np.int32)
-    edges_np = np.sort(tm.geometry.faces_to_edges(faces_np), axis=1)
-
-    faces_wp = _faces_np_to_wp(faces_np, device)
-    edges_wp = od.edges.faces_to_edges(faces_wp, sorted=True)
-    assert np.array_equal(edges_wp.numpy(), edges_np)
-
-
-def test_edges_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert od.edges.faces_to_edges(faces_wp).shape == (0, 2)
-    assert od.edges.faces_to_edges(faces_wp, sorted=True).shape == (0, 2)
 
 
 # ---------------------------------------------------------------------------
@@ -139,42 +125,62 @@ def test_edges_face(device: str) -> None:
     assert np.array_equal(face_idx_wp.numpy(), expected)
 
 
-def test_edges_face_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    assert od.edges.edges_face(faces_wp).shape == (0,)
-
-
 # ---------------------------------------------------------------------------
 # edges_unique
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
-@pytest.mark.parity("edges_unique", "trimesh")
-@pytest.mark.parity("edges_unique_auto_nv", "trimesh")
+@pytest.mark.parity("edges_unique", "trimesh", "pyvista")
+@pytest.mark.parity("edges_unique_auto_nv", "trimesh", "pyvista")
+@pytest.mark.parity("edges_unique_manifold", "potpourri3d")
 def test_edges_unique(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class B (row-set canonicalization): the unique undirected edge set, both sides lexsorted.
+    Class B (row-set canonicalization): the unique undirected edge set against three references.
 
-    ordito's order comes from a parallel hash and trimesh's from ``unique_rows``, so neither
-    is defined; the rows are already min-first on both sides. The inverse that pairs with this
-    set is checked by [`test_edges_unique_inverse`], which this sort would otherwise
-    invalidate.
+    ordito's order comes from a parallel sort and the references' from their own constructions,
+    so no order is shared; every comparison sorts each pair and lexsorts the rows. The inverse that
+    pairs with this set is checked by [`test_edges_unique_inverse`], which this sort would
+    otherwise invalidate.
 
-    The call omits ``n_vertices=``, so this is the *inferred* radix base -- the path the
-    ``edges_unique_auto_nv`` benchmark group times, which is why that group's marker rides here.
-    The hint is ordito's own parameter and no reference has one, so both groups compare against
-    the identical trimesh answer.
+    - **trimesh** (``unique_rows`` over the sorted edge table) and **pyvista**
+      (``extract_all_edges``, a line-cell ``PolyData``) are called against the form that omits
+      ``n_vertices=``, so this is the *inferred* radix base -- the path the
+      ``edges_unique_auto_nv`` benchmark group times, which is why that group's markers ride here.
+      The hint is ordito's own parameter and no reference has one, so both groups compare against
+      the identical answer. VTK's set is genuinely the *unique* undirected one, not the
+      ``3 * n_faces`` directed one: measured 30 = 30 on the icosahedron, 264 = 264 on the
+      hemisphere, 18 = 18 on a box, element for element.
+    - **potpourri3d** (``pp3d.edges``, geometry-central's internal halfedge ordering) is compared
+      against the hinted call. ``benchmarks/test_edges.py`` calls that row "a timing comparison,
+      not a parity one" because of the ordering; sorting dissolves it, and the sets must match
+      exactly. The fixtures are manifold for the reason the benchmark draws this row on the
+      synthetic ``scale`` axis -- ``pp3d.edges`` raises ``GC_SAFETY_ASSERT FAILURE ...
+      unreferenced vertex`` on any mesh carrying an unreferenced vertex, which every scan mesh
+      does.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     unique_idx_tm, _ = tm_grouping.unique_rows(np.sort(mesh_tm.edges, axis=1))
     unique_edges_tm = np.sort(mesh_tm.edges, axis=1)[unique_idx_tm]
+    edges_pv = pyvista_edges_to_indices(
+        cast("pv.PolyData", trimesh_to_pyvista(mesh_tm).extract_all_edges()), mesh_tm.vertices
+    )
+    edges_pp = np.asarray(
+        pp3d.edges(
+            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
+        )
+    )
 
     unique_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices)
     unique_edges_wp_np = unique_edges_wp.numpy()
+    hinted_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
 
     assert np.array_equal(lexsort_rows(unique_edges_wp_np), lexsort_rows(unique_edges_tm))
+    assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
+    assert_unordered_rows_equal(np.sort(unique_edges_wp_np, axis=1), edges_pv)
+    assert_unordered_rows_equal(np.sort(hinted_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
@@ -196,35 +202,6 @@ def test_edges_unique_inverse(request: pytest.FixtureRequest, mesh_name: str) ->
     # unique_edges[inverse] must reconstruct edges_sorted
     reconstructed = unique_edges_wp.numpy()[inverse_wp.numpy()]
     assert np.array_equal(reconstructed, edges_sorted_wp.numpy())
-
-
-@pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
-@pytest.mark.parity("edges_unique_manifold", "potpourri3d")
-def test_edges_unique_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    The unique undirected edge set against geometry-central's, which lists it in its own order.
-
-    ``benchmarks/test_edges.py`` calls this row "a timing comparison, not a parity one" because
-    ``pp3d.edges`` returns geometry-central's internal halfedge ordering. That is a statement about
-    *order*, and sorting dissolves it -- the sets themselves must match exactly, so this is Class B
-    with a lexsort, at full tolerance rather than a weakened one.
-
-    Both sides are canonicalised twice over: ``np.sort(..., axis=1)`` because the pair is undirected
-    and the two libraries need not agree on which endpoint comes first, then a row lexsort. Uses the
-    manifold fixtures for the reason the benchmark draws this row on the synthetic ``scale`` axis --
-    ``pp3d.edges`` raises ``GC_SAFETY_ASSERT FAILURE ... unreferenced vertex`` on any mesh carrying
-    an unreferenced vertex, which every scan mesh does.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edges_pp = np.asarray(
-        pp3d.edges(
-            np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-            np.ascontiguousarray(mesh_tm.faces, dtype=np.int32),
-        )
-    )
-
-    unique_edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=mesh_wp.points.size)
-    assert_unordered_rows_equal(np.sort(unique_edges_wp.numpy(), axis=1), np.sort(edges_pp, axis=1))
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
@@ -355,33 +332,6 @@ def test_edges_unique_and_inverse_match_pytorch3d(
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
-@pytest.mark.parity("edges_unique", "pyvista")
-@pytest.mark.parity("edges_unique_auto_nv", "pyvista")
-def test_edges_unique_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B: ``extract_all_edges`` returns the same set as a line-cell ``PolyData``.
-
-    The named transform is only the ordering -- VTK is free to emit its line cells in any order, so
-    each row is sorted and the rows lexsorted, the same treatment igl's ``uE`` gets above. It is
-    genuinely the *unique* undirected set on VTK's side too, not the ``3 * n_faces`` directed one:
-    measured 30 = 30 on the icosahedron, 264 = 264 on the hemisphere, 18 = 18 on a box, with the
-    sets equal element for element in each case.
-
-    Like the trimesh comparison above, this omits ``n_vertices=`` and so covers the inferred-base
-    group as well.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edges_pv = pyvista_edges_to_indices(
-        cast("pv.PolyData", trimesh_to_pyvista(mesh_tm).extract_all_edges()), mesh_tm.vertices
-    )
-
-    unique_edges_wp, _inverse_wp = od.edges.edges_unique(mesh_wp.indices)
-
-    assert len(edges_pv) > 0  # non-vacuous: two empty sets would compare equal
-    assert_unordered_rows_equal(np.sort(unique_edges_wp.numpy(), axis=1), edges_pv)
-
-
-@pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
 def test_edges_unique_radix_is_invariant_to_an_oversized_base(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -399,27 +349,6 @@ def test_edges_unique_radix_is_invariant_to_an_oversized_base(
         edges_wp, inverse_wp = od.edges.edges_unique(mesh_wp.indices, n_vertices=base)
         assert np.array_equal(edges_wp.numpy(), edges_tight_wp.numpy())
         assert np.array_equal(inverse_wp.numpy(), inverse_tight_wp.numpy())
-
-
-def test_edges_unique_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    unique_wp, inverse_wp = od.edges.edges_unique(faces_wp)
-    assert unique_wp.shape == (0, 2)
-    assert inverse_wp.shape == (0,)
-
-
-# ---------------------------------------------------------------------------
-# edges_unique_inverse (standalone)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
-def test_edges_unique_inverse_standalone(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-
-    _unique_edges_wp, inverse_from_unique = od.edges.edges_unique(mesh_wp.indices)
-    inverse_standalone = od.edges.edges_unique_inverse(mesh_wp.indices)
-    assert np.array_equal(inverse_from_unique.numpy(), inverse_standalone.numpy())
 
 
 # ---------------------------------------------------------------------------
@@ -466,21 +395,6 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
     assert np.allclose(np.sort(lengths_wp_np), np.sort(lengths_ml), rtol=1e-4, atol=1e-4)
 
 
-def test_edges_unique_length_precomputed(device: str) -> None:
-    rng = np.random.default_rng(7)
-    verts_np = rng.random((30, 3), dtype=np.float32)
-    faces_np = rng.integers(0, 30, size=(10, 3), dtype=np.int32)
-    faces_wp = _faces_np_to_wp(faces_np, device)
-    vertices_wp = points_to_warp(verts_np, device)
-
-    unique_edges_wp, _ = od.edges.edges_unique(faces_wp)
-    lengths_via_precomputed = od.edges.edges_unique_length(
-        vertices_wp, faces_wp, unique_edges=unique_edges_wp
-    )
-    lengths_fresh = od.edges.edges_unique_length(vertices_wp, faces_wp)
-    assert np.allclose(lengths_via_precomputed.numpy(), lengths_fresh.numpy(), rtol=1e-5, atol=1e-5)
-
-
 # ---------------------------------------------------------------------------
 # edges_length
 # ---------------------------------------------------------------------------
@@ -508,19 +422,6 @@ def test_edges_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
     assert np.allclose(np.sort(lengths_wp.numpy()), np.sort(lengths_tm), rtol=1e-4, atol=1e-4)
 
 
-def test_edges_length_precomputed(device: str) -> None:
-    rng = np.random.default_rng(8)
-    verts_np = rng.random((30, 3), dtype=np.float32)
-    faces_np = rng.integers(0, 30, size=(10, 3), dtype=np.int32)
-    faces_wp = _faces_np_to_wp(faces_np, device)
-    vertices_wp = points_to_warp(verts_np, device)
-
-    edges_in_wp = od.edges.faces_to_edges(faces_wp)
-    lengths_via_precomputed = od.edges.edges_length(vertices_wp, faces_wp, edges_in=edges_in_wp)
-    lengths_fresh = od.edges.edges_length(vertices_wp, faces_wp)
-    assert np.allclose(lengths_via_precomputed.numpy(), lengths_fresh.numpy(), rtol=1e-5, atol=1e-5)
-
-
 def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
     """
     Not a library comparison: the shape guard on every precomputed edge-table keyword here.
@@ -531,7 +432,8 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
     buffer already failed at launch, so only the wide case ever needed catching, and it needed
     catching on all three keywords.
 
-    The happy path is asserted alongside so the guard cannot be satisfied by rejecting everything.
+    The happy path is asserted alongside so the guard cannot be satisfied by rejecting everything,
+    and on it a precomputed table must give exactly the lengths the function derives itself.
     """
     rng = np.random.default_rng(11)
     verts_np = rng.random((30, 3), dtype=np.float32)
@@ -556,53 +458,32 @@ def test_precomputed_edge_tables_must_be_pairs(device: str) -> None:
         == unique_wp.shape[0]
     )
 
-
-def test_edges_length_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    verts_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert od.edges.edges_length(verts_wp, faces_wp).shape == (0,)
-
-
-@pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
-@pytest.mark.parity("mean_edge_length", "trimesh")
-def test_mean_edge_length(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Not a library comparison: the **per-face** average, where every face counts three edges.
-
-    An interior edge is therefore counted twice and a boundary edge once. The closing block asserts
-    this really is a different number from
-    [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length] on the open fixtures -- the
-    two functions exist because libigl needs both, so a change collapsing them into one must fail.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-
-    verts_np = mesh_tm.vertices.astype(np.float64)
-    triangles_np = verts_np[mesh_tm.faces]
-    per_face_np = float(np.linalg.norm(triangles_np - triangles_np[:, [1, 2, 0]], axis=2).mean())
-
-    vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
+    # A precomputed table gives the lengths the function would derive from ``faces`` itself.
+    unique_fresh_wp, _ = od.edges.edges_unique(faces_wp)
     assert np.allclose(
-        od.edges.mean_edge_length(vertices_wp, mesh_wp.indices), per_face_np, rtol=1e-4, atol=1e-4
+        od.edges.edges_unique_length(vertices_wp, faces_wp, unique_edges=unique_fresh_wp).numpy(),
+        od.edges.edges_unique_length(vertices_wp, faces_wp).numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
-
-    # The unique-edge average is the same number only when there is no boundary.
-    unique_wp = od.edges.mean_unique_edge_length(vertices_wp, mesh_wp.indices)
-    n_boundary = int(od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
-    if n_boundary == 0:
-        assert np.isclose(unique_wp, per_face_np, rtol=1e-6)
-    else:
-        assert not np.isclose(unique_wp, per_face_np, rtol=1e-4)
+    edges_in_wp = od.edges.faces_to_edges(faces_wp)
+    assert np.allclose(
+        od.edges.edges_length(vertices_wp, faces_wp, edges_in=edges_in_wp).numpy(),
+        od.edges.edges_length(vertices_wp, faces_wp).numpy(),
+        rtol=1e-5,
+        atol=1e-5,
+    )
 
 
 @pytest.mark.parametrize("mesh_name", _EDGE_MESHES)
 @pytest.mark.parity("mean_unique_edge_length", "igl", "pymeshlab", "trimesh", "meshlib")
-@pytest.mark.parity("mean_edge_length", "igl")
+@pytest.mark.parity("mean_edge_length", "igl", "trimesh")
 @pytest.mark.parity("edges_length", "igl")
 def test_edge_length_averages_match_their_references(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Both edge averages, each against the libigl function it is meant to reproduce.
+    Class A: both edge averages, each against the libigl function it is meant to reproduce.
 
     libigl carries two, and ordito now exposes one for each:
     [`mean_edge_length`][ordito.edges.mean_edge_length] is
@@ -623,6 +504,10 @@ def test_edge_length_averages_match_their_references(
     MeshLib's ``averageEdgeLength`` is a fourth reference for the unique-edge average specifically,
     and it settles *which* mean it computes -- undirected edges, once each -- which is the whole
     distinction this test exists to hold. It has no counterpart for the per-face average.
+
+    The per-face average is also checked against its numpy definition (not a library comparison:
+    trimesh exposes no such average, and its benchmark row computes this expression), every face
+    counting three edges, so an interior edge counts twice and a boundary edge once.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -637,6 +522,9 @@ def test_edge_length_averages_match_their_references(
     # Per-face average == igl's curvature-side getAverageEdge, i.e. edge_lengths().mean().
     per_face_wp = float(od.edges.mean_edge_length(mesh_wp.points, mesh_wp.indices))
     assert np.isclose(per_face_wp, float(lengths_igl.mean()), rtol=1e-4)
+    triangles_np = vertices_np[mesh_tm.faces]
+    per_face_np = float(np.linalg.norm(triangles_np - triangles_np[:, [1, 2, 0]], axis=2).mean())
+    assert np.allclose(per_face_wp, per_face_np, rtol=1e-4, atol=1e-4)
 
     # Unique-edge average == igl::avg_edge_length == MeshLab's avg_edge_length.
     unique_wp = float(od.edges.mean_unique_edge_length(mesh_wp.points, mesh_wp.indices))
@@ -657,14 +545,10 @@ def test_edge_length_averages_match_their_references(
     n_boundary = int(od.boundary.boundary_edges(mesh_wp.points, mesh_wp.indices).shape[0])
     if n_boundary == 0:
         assert np.isclose(per_face_wp, unique_wp, rtol=1e-4)
+        assert np.isclose(unique_wp, per_face_np, rtol=1e-6)
     else:
         assert not np.isclose(per_face_wp, unique_wp, rtol=1e-4)
-
-
-def test_mean_edge_length_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    verts_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    assert od.edges.mean_edge_length(verts_wp, faces_wp) == 0.0
+        assert not np.isclose(unique_wp, per_face_np, rtol=1e-4)
 
 
 # --- face_edge_lengths ----------------------------------------------------------------
@@ -711,7 +595,7 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     ``validate=False`` skips a range check, not any of the work that produces the answer.
 
     Ordito against ordito: the oracle for the row set itself is
-    ``test_edges_unique_matches_trimesh``, and what this pins is that the keyword every internal
+    [`test_edges_unique`], and what this pins is that the keyword every internal
     caller now passes cannot change what those callers see. It also pins the guard the default
     still provides, on an out-of-range index that would otherwise pack into a colliding key and
     silently merge two distinct edges.
@@ -743,3 +627,28 @@ def test_edges_unique_unvalidated_matches_the_validated_answer(device: str) -> N
     negative_wp = wp.array(negative_np, dtype=wp.int32, device=device)
     with pytest.raises(ValueError, match="non-negative"):
         _ = od.edges.edges_unique(negative_wp)
+
+
+_EMPTY_CASES: dict[
+    str, tuple[Callable[[wp.array[wp.int32], wp.array[wp.vec3]], object], object]
+] = {
+    "faces_to_edges": (lambda faces, _v: od.edges.faces_to_edges(faces).shape, (0, 2)),
+    "faces_to_edges_sorted": (
+        lambda faces, _v: od.edges.faces_to_edges(faces, sorted=True).shape,
+        (0, 2),
+    ),
+    "edges_face": (lambda faces, _v: od.edges.edges_face(faces).shape, (0,)),
+    "edges_unique": (lambda faces, _v: od.edges.edges_unique(faces)[0].shape, (0, 2)),
+    "edges_unique_inverse": (lambda faces, _v: od.edges.edges_unique(faces)[1].shape, (0,)),
+    "edges_length": (lambda faces, v: od.edges.edges_length(v, faces).shape, (0,)),
+    "mean_edge_length": (lambda faces, v: od.edges.mean_edge_length(v, faces), 0.0),
+}
+
+
+@pytest.mark.parametrize("case", list(_EMPTY_CASES))
+def test_empty_faces(device: str, case: str) -> None:
+    """Not a library comparison: every entry point answers an empty face buffer without raising."""
+    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
+    verts_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+    compute, expected = _EMPTY_CASES[case]
+    assert compute(faces_wp, verts_wp) == expected

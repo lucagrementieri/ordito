@@ -17,7 +17,6 @@ import ordito as od
 from tests.comparisons import assert_nonconstant
 from tests.conversions import (
     meshlib_scalars_to_numpy,
-    numpy_to_warp,
     points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
@@ -29,7 +28,8 @@ if TYPE_CHECKING:
     from typing_extensions import Buffer
 
 
-def _ellipsoid() -> tm.Trimesh:
+@pytest.fixture
+def ellipsoid(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """
     Build a non-uniformly scaled ``icosphere(3)``: closed, curved, of *varying* thickness.
 
@@ -39,7 +39,7 @@ def _ellipsoid() -> tm.Trimesh:
     """
     mesh_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     mesh_tm.apply_scale([1.0, 1.4, 0.7])
-    return mesh_tm
+    return mesh_tm, trimesh_to_warp(mesh_tm, device)
 
 
 def _vertex_normals_wp(mesh_wp: wp.Mesh) -> wp.array[wp.vec3]:
@@ -57,18 +57,25 @@ def test_ambient_occlusion_is_zero_on_a_convex_mesh(
 
     The one analytic check this quantity has, and the reason ``torus`` is here too — it is not
     convex, so it must *not* read zero, which is what makes the icosahedron result meaningful
-    rather than a stuck kernel.
+    rather than a stuck kernel. ``volumetric_obscurance`` attenuates the same occluders, so it
+    reads exactly zero on the convex mesh too, and non-zero on the torus.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    normals_wp = _vertex_normals_wp(mesh_wp)
     occlusion_np = od.visibility.ambient_occlusion(
-        mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=64, weight=weight
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=64, weight=weight
+    ).numpy()
+    obscurance_np = od.visibility.volumetric_obscurance(
+        mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=64, weight=weight
     ).numpy()
     assert (occlusion_np >= 0.0).all()
     assert (occlusion_np <= 1.0).all()
     if mesh_name == "icosahedron":
         assert occlusion_np.max() == 0.0
+        assert obscurance_np.max() == 0.0
     else:
         assert occlusion_np.max() > 0.1
+        assert obscurance_np.max() > 0.0
 
 
 def test_ambient_occlusion_finds_the_cavity(cave_cube: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -193,8 +200,7 @@ def test_ambient_occlusion_matches_meshlib_sky_view_factor(device: str) -> None:
         )
     )
 
-    vertices_wp, faces_wp = numpy_to_warp(terrain_tm.vertices, terrain_tm.faces.reshape(-1), device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    mesh_wp = trimesh_to_warp(terrain_tm, device)
     samples_wp = points_to_warp(samples_np, device)
     normals_wp = wp.array(
         np.tile(np.array([[0.0, 0.0, 1.0]], dtype=np.float32), (len(samples_np), 1)),
@@ -289,38 +295,20 @@ def test_ambient_occlusion_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> N
 
 
 def test_ambient_occlusion_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a parity assert: an empty ``points`` gives an empty field, and still checks ``normals``.
+
+    The empty early return must not silently skip the ``normals`` length check: a caller passing a
+    stale, wrong-length ``normals`` array alongside an empty ``points`` gets the ``ValueError`` the
+    docstring promises unconditionally, not an empty result.
+    """
     _mesh_tm, mesh_wp = icosahedron
     points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
     assert od.visibility.ambient_occlusion(mesh_wp, points_wp).shape == (0,)
-
-
-def test_ambient_occlusion_empty_still_validates_normals_length(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a parity assert: an empty ``points`` must not silently skip the ``normals`` length check.
-
-    ``_occlusion_bundle``'s ``m == 0`` early return used to run before
-    ``_resolve_normals_and_radius``, so a caller passing a stale, wrong-length ``normals`` array
-    alongside an empty ``points`` got an empty result back instead of the ``ValueError`` the
-    docstring promises unconditionally.
-    """
-    _mesh_tm, mesh_wp = icosahedron
-    points_wp = wp.zeros(0, dtype=wp.vec3, device=mesh_wp.device)
     with pytest.raises(ValueError, match="one entry per point"):
         od.visibility.ambient_occlusion(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)
         )
-
-
-def test_volumetric_obscurance_is_zero_on_a_convex_mesh(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    _mesh_tm, mesh_wp = icosahedron
-    obscurance_np = od.visibility.volumetric_obscurance(
-        mesh_wp, mesh_wp.points, normals=_vertex_normals_wp(mesh_wp), n_rays=64
-    ).numpy()
-    assert obscurance_np.max() == 0.0
 
 
 def test_volumetric_obscurance_approaches_ambient_occlusion_as_tau_falls(
@@ -403,12 +391,11 @@ def _sphere_wp(device: str, radius: float, subdivisions: int = 3):
     Build an icosphere at a caller-chosen radius: ``(trimesh, wp.Mesh, vertex normals)``.
 
     Parametrized over ``radius`` -- which is the axis every occlusion test here needs and no fixture
-    can carry -- so it stays a builder over ``numpy_to_warp`` rather than becoming one.
+    can carry -- so it stays a builder over ``trimesh_to_warp`` rather than becoming one.
     """
     sphere_tm = tm.creation.icosphere(subdivisions=subdivisions, radius=radius)
-    vertices_wp, faces_wp = numpy_to_warp(sphere_tm.vertices, sphere_tm.faces, device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    mesh_wp = trimesh_to_warp(sphere_tm, device)
+    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     return sphere_tm, mesh_wp, normals_wp
 
 
@@ -447,14 +434,8 @@ def test_shape_diameter_reduces_to_thickness(device: str) -> None:
 def test_shape_diameter_measures_a_slab(device: str) -> None:
     """On a 1 x 1 x 4 box the large faces are 1 apart, and the cone must say so."""
     box_tm = tm.creation.box(extents=[1.0, 1.0, 4.0]).subdivide().subdivide().subdivide()
-    vertices_wp = points_to_warp(box_tm.vertices, device)
-    faces_wp = wp.array(
-        np.ascontiguousarray(box_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    mesh_wp = trimesh_to_warp(box_tm, device)
+    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, cone_angle=np.deg2rad(10.0)
     ).numpy()
@@ -488,14 +469,8 @@ def test_shape_diameter_trimming_rejects_the_escaping_rays(device: str) -> None:
     inner_tm.invert()
     shell_tm = tm.util.concatenate([outer_tm, inner_tm])
     assert isinstance(shell_tm, tm.Trimesh)
-    vertices_wp = points_to_warp(shell_tm.vertices, device)
-    faces_wp = wp.array(
-        np.ascontiguousarray(shell_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    mesh_wp = trimesh_to_warp(shell_tm, device)
+    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     trimmed_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=128, trim=1.0
     ).numpy()
@@ -545,14 +520,8 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     meshset_pml.compute_scalar_by_shape_diameter_function_per_vertex(rays=256)
     diameter_pml = meshset_pml.current_mesh().vertex_scalar_array()
 
-    vertices_wp = points_to_warp(dumbbell_tm.vertices, device)
-    faces_wp = wp.array(
-        np.ascontiguousarray(dumbbell_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
-    normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp)
+    mesh_wp = trimesh_to_warp(dumbbell_tm, device)
+    normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     diameter_np = od.visibility.shape_diameter(
         mesh_wp, mesh_wp.points, normals=normals_wp, n_rays=256
     ).numpy()
@@ -579,7 +548,9 @@ def test_shape_diameter_agrees_with_pymeshlab_on_which_part_is_thinner(device: s
     "thickness_at_vertices group instead, where it is the class-A pair for "
     "thickness(method='ray'); pymeshlab carries the timed row here.",
 )
-def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
+def test_shape_diameter_collapses_onto_meshlibs_single_ray(
+    ellipsoid: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
     """
     Class C (a relative-error statistic): the cone, closed down, is MeshLib's one ray.
 
@@ -599,9 +570,8 @@ def test_shape_diameter_collapses_onto_meshlibs_single_ray(device: str) -> None:
     The mutation probe: shuffling ordito's answer takes the median relative difference to **0.157**
     (238x the measured agreement) and the correlation to -0.02.
     """
-    mesh_tm = _ellipsoid()
-    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    mesh_tm, mesh_wp = ellipsoid
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
 
     thickness_ml = meshlib_scalars_to_numpy(
@@ -639,15 +609,10 @@ def test_shape_diameter_invalid(device: str) -> None:
 
 
 def test_shape_diameter_empty(device: str) -> None:
+    """Not a parity assert: the empty case of ``test_ambient_occlusion_empty``, both halves."""
     _sphere_tm, mesh_wp, _normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
     points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     assert od.visibility.shape_diameter(mesh_wp, points_wp).shape == (0,)
-
-
-def test_shape_diameter_empty_still_validates_normals_length(device: str) -> None:
-    """Not a parity assert: see ``test_ambient_occlusion_empty_still_validates_normals_length``."""
-    _sphere_tm, mesh_wp, _normals_wp = _sphere_wp(device, 1.0, subdivisions=1)
-    points_wp = wp.zeros(0, dtype=wp.vec3, device=device)
     with pytest.raises(ValueError, match="one entry per point"):
         od.visibility.shape_diameter(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=device)
@@ -659,64 +624,50 @@ def test_shape_diameter_empty_still_validates_normals_length(device: str) -> Non
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("method", "seed", "atol"),
+    [pytest.param("max_sphere", 7, 1e-5, id="max_sphere"), pytest.param("ray", 13, 1e-8, id="ray")],
+)
 @pytest.mark.parity("thickness_interior", "trimesh")
-def test_thickness_max_sphere(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_thickness_matches_trimesh(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+    method: Literal["max_sphere", "ray"],
+    seed: int,
+    atol: float,
+) -> None:
     """
     Class A against ``trimesh.proximity.thickness``, including *which* points are infinite.
 
     The ``isfinite`` mask is compared before the values, so a point where one library finds no
     opposite surface and the other does is a failure rather than a skipped element. Measured 20 of
-    20 finite on this fixture, so the guarded ``allclose`` does run -- the guard is there for a
-    fixture where it would not, and is not silently making this test vacuous here.
+    20 finite on this fixture for both methods, so the guarded ``allclose`` does run -- the guard
+    is there for a fixture where it would not, and is not silently making this test vacuous here.
+
+    ``method="ray"`` is a separate algorithm from ``max_sphere`` rather than a tuning of it, so it
+    has its own row, at ``allclose``'s default tolerance; the ``thickness_interior`` benchmark group
+    is parametrized over both ``method`` values and trimesh is timed for both, so neither row rests
+    on the other branch's comparison.
     """
     mesh_tm, mesh_wp = icosahedron
-    points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=7)[:2]
-    normals_np = mesh_tm.face_normals[face_ids]
-
-    points_wp = points_to_warp(points_np, mesh_wp.device)
-    normals_wp = points_to_warp(normals_np, mesh_wp.device)
-
-    thickness_wp = od.visibility.thickness(mesh_wp, points_wp, normals=normals_wp).numpy()
-    thickness_tm = tm_proximity.thickness(mesh_tm, points_np, normals=normals_np)
-
-    finite_tm = np.isfinite(thickness_tm)
-    assert np.array_equal(np.isfinite(thickness_wp), finite_tm)
-    if finite_tm.any():
-        assert np.allclose(thickness_wp[finite_tm], thickness_tm[finite_tm], rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("thickness_interior", "trimesh")
-def test_thickness_ray(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Class A on the ``method="ray"`` branch, at ``allclose``'s default tolerance.
-
-    A separate algorithm from ``max_sphere`` rather than a tuning of it, so it needs its own
-    comparison; 20 of 20 points finite here too.
-
-    Carries the ``thickness_interior`` marker alongside [`test_thickness_max_sphere`] because that
-    benchmark group is parametrized over both ``method`` values and trimesh is timed for both -- one
-    test per branch, so neither row rests on the other branch's comparison.
-    """
-    mesh_tm, mesh_wp = icosahedron
-    points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=13)[:2]
+    points_np, face_ids = tm.sample.sample_surface(mesh_tm, 20, seed=seed)[:2]
     normals_np = mesh_tm.face_normals[face_ids]
 
     points_wp = points_to_warp(points_np, mesh_wp.device)
     normals_wp = points_to_warp(normals_np, mesh_wp.device)
 
     thickness_wp = od.visibility.thickness(
-        mesh_wp, points_wp, normals=normals_wp, method="ray"
+        mesh_wp, points_wp, normals=normals_wp, method=method
     ).numpy()
-    thickness_tm = tm_proximity.thickness(mesh_tm, points_np, normals=normals_np, method="ray")
+    thickness_tm = tm_proximity.thickness(mesh_tm, points_np, normals=normals_np, method=method)
 
     finite_tm = np.isfinite(thickness_tm)
     assert np.array_equal(np.isfinite(thickness_wp), finite_tm)
     if finite_tm.any():
-        assert np.allclose(thickness_wp[finite_tm], thickness_tm[finite_tm])
+        assert np.allclose(thickness_wp[finite_tm], thickness_tm[finite_tm], rtol=1e-5, atol=atol)
 
 
 @pytest.mark.parity("thickness_at_vertices", "meshlib", "trimesh")
-def test_thickness_at_vertices_matches_meshlib(device: str) -> None:
+def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class A, and it pins the normal convention: **angle-weighted**, not area-weighted.
 
@@ -743,9 +694,8 @@ def test_thickness_at_vertices_matches_meshlib(device: str) -> None:
     agreeing on a shared convention mistake, since it derives its ray direction from its own
     ``vertex_normals`` rather than from a pseudonormal.
     """
-    mesh_tm = _ellipsoid()
-    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    mesh_tm, mesh_wp = ellipsoid
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     n_vertices = vertices_wp.size
 
     thickness_ml = meshlib_scalars_to_numpy(
@@ -885,7 +835,7 @@ def test_max_tangent_sphere_reach_matches_trimesh(cave_cube: tuple[tm.Trimesh, w
     "for the values and is now the group's timed reference; this declaration is about MeshLib "
     "alone.",
 )
-def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
+def test_max_tangent_sphere_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class C (a median relative difference): the same shrinking-sphere algorithm, from just inside.
 
@@ -911,9 +861,8 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
     ``maxRadius`` must be set: it defaults to **1**, which on a mesh of any other scale silently
     caps every answer. Half the smallest bounding-box side is the article's own recommendation.
     """
-    mesh_tm = _ellipsoid()
-    vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, mesh_tm.faces.reshape(-1), device)
-    mesh_wp = wp.Mesh(points=vertices_wp, indices=faces_wp)
+    mesh_tm, mesh_wp = ellipsoid
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     normals_wp = od.vertices.vertex_normals(vertices_wp, faces_wp, weighting="angle")
     extent_np = mesh_tm.bounds[1] - mesh_tm.bounds[0]
 
@@ -930,7 +879,7 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
     inside_np = np.ascontiguousarray(
         mesh_tm.vertices - offset * normals_wp.numpy(), dtype=np.float32
     )
-    inside_wp = points_to_warp(inside_np, device)
+    inside_wp = points_to_warp(inside_np, mesh_wp.device)
     _centers_wp, radii_wp = od.visibility.max_tangent_sphere(
         mesh_wp, inside_wp, inwards=True, normals=normals_wp
     )
@@ -943,18 +892,8 @@ def test_max_tangent_sphere_matches_meshlib(device: str) -> None:
 
 
 def test_max_tangent_sphere_empty(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
-    points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
-    centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp)
-    assert centers_wp.shape == (0,)
-    assert radii_wp.shape == (0,)
-
-
-def test_max_tangent_sphere_empty_still_validates_normals_length(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
     """
-    Not a parity assert: see ``test_ambient_occlusion_empty_still_validates_normals_length``.
+    Not a parity assert: the empty case of ``test_ambient_occlusion_empty``, both halves.
 
     ``max_tangent_sphere``'s ``m == 0`` early return sat *after* its inline normals-length check
     rather than before it, but reached the same bug from the AABB-reduction side: two ``aabb``
@@ -962,6 +901,9 @@ def test_max_tangent_sphere_empty_still_validates_normals_length(
     """
     _, mesh_wp = icosahedron
     points_wp = warp_empty(0, wp.vec3, mesh_wp.device)
+    centers_wp, radii_wp = od.visibility.max_tangent_sphere(mesh_wp, points_wp)
+    assert centers_wp.shape == (0,)
+    assert radii_wp.shape == (0,)
     with pytest.raises(ValueError, match="one entry per point"):
         od.visibility.max_tangent_sphere(
             mesh_wp, points_wp, normals=wp.zeros(2, dtype=wp.vec3, device=mesh_wp.device)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from typing import Any
 
 import igl
 import numpy as np
@@ -31,29 +32,41 @@ from tests.conversions import (
 )
 
 
-def test_sample_fibonacci_sphere_unit(device: str):
-    directions_wp = od.sample.sample_fibonacci_sphere(1000, device=device)
-    directions_np = directions_wp.numpy()
-    assert directions_np.shape == (1000, 3)
-    norms = np.linalg.norm(directions_np, axis=1)
-    assert np.allclose(norms, 1.0, rtol=1e-5, atol=1e-5)
+@pytest.mark.parametrize("count", [4096, 100_000])
+def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str, count: int):
+    """
+    Class A against a float64 NumPy evaluation of the lattice's own closed form.
 
-
-def test_sample_fibonacci_sphere_uniform(device: str):
-    # A near-uniform covering of the sphere has its centroid essentially at the origin.
-    directions_np = od.sample.sample_fibonacci_sphere(4096, device=device).numpy()
+    The spiral phase is ``count`` multiples of the golden angle, so it grows without bound in
+    ``count``; accumulating it in float32 lost the low digits the low-discrepancy property lives
+    in. Measured before the fix: azimuth error 1.7e-04 rad at 1 024 rising to 0.21 rad at 1e6, and
+    a minimum neighbour spacing 11 % below the reference's at 100 000. ``count = 100_000`` is
+    asserted because that is where the loss is unambiguous and the test is still cheap; the same
+    hazard and the same float64 fix are documented at
+    ``kernels/bounds.oriented_box_candidate_axes``. At both counts every direction is also unit and
+    the set's centroid sits at the origin, as a near-uniform covering of the sphere requires.
+    """
+    directions_np = od.sample.sample_fibonacci_sphere(count, device=device).numpy()
+    assert directions_np.shape == (count, 3)
+    assert np.allclose(np.linalg.norm(directions_np, axis=1), 1.0, rtol=1e-5, atol=1e-5)
     assert np.allclose(directions_np.mean(axis=0), 0.0, atol=1e-2)
 
+    index_np = np.arange(count, dtype=np.float64)
+    z_np = 1.0 - 2.0 * (index_np + 0.5) / count
+    radius_np = np.sqrt(np.maximum(0.0, 1.0 - z_np * z_np))
+    theta_np = math.pi * (3.0 - math.sqrt(5.0)) * index_np
+    expected_np = np.stack(
+        [radius_np * np.cos(theta_np), radius_np * np.sin(theta_np), z_np], axis=1
+    )
+    assert np.allclose(directions_np, expected_np, rtol=1e-5, atol=1e-5)
 
-def test_sample_fibonacci_sphere_deterministic(device: str):
-    directions_a = od.sample.sample_fibonacci_sphere(500, device=device).numpy()
-    directions_b = od.sample.sample_fibonacci_sphere(500, device=device).numpy()
-    assert np.array_equal(directions_a, directions_b)
+    # The property the lattice exists for, and the one the float32 phase actually destroyed: the
+    # closest pair must be no tighter than the reference construction's.
+    def min_spacing(points_np: np.ndarray) -> float:
+        distances, _ = cKDTree(points_np).query(points_np, k=2)
+        return float(np.asarray(distances)[:, 1].min())
 
-
-def test_sample_fibonacci_sphere_empty(device: str):
-    directions_wp = od.sample.sample_fibonacci_sphere(0, device=device)
-    assert directions_wp.shape == (0,)
+    assert min_spacing(directions_np) >= 0.99 * min_spacing(expected_np)
 
 
 def test_sample_fibonacci_hemisphere_positive_z(device: str):
@@ -62,11 +75,6 @@ def test_sample_fibonacci_hemisphere_positive_z(device: str):
     assert np.all(directions_np[:, 2] > 0.0)
     norms = np.linalg.norm(directions_np, axis=1)
     assert np.allclose(norms, 1.0, rtol=1e-5, atol=1e-5)
-
-
-def test_sample_fibonacci_hemisphere_empty(device: str):
-    directions_wp = od.sample.sample_fibonacci_hemisphere(0, device=device)
-    assert directions_wp.shape == (0,)
 
 
 def test_sample_fibonacci_cone(device: str) -> None:
@@ -98,7 +106,6 @@ def test_sample_fibonacci_cone_invalid(device: str) -> None:
         od.sample.sample_fibonacci_cone(8, 0.0, device=device)
     with pytest.raises(ValueError, match=r"half_angle must be in \(0, pi\]"):
         od.sample.sample_fibonacci_cone(8, 4.0, device=device)
-    assert od.sample.sample_fibonacci_cone(0, 1.0, device=device).shape == (0,)
 
 
 @pytest.mark.parity("sample_surface", "trimesh", "igl")
@@ -214,20 +221,15 @@ def test_sample_surface_with_face_weights(icosahedron: tuple[tm.Trimesh, wp.Mesh
     assert np.allclose(freq_tm, freq_expected, rtol=0.07, atol=0.01)
 
 
-def test_sample_surface_poisson_disk_count(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
+def test_sample_surface_poisson_disk_count_and_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+    """Exactly ``count`` samples, each with its face index, every one on the surface."""
+    mesh_tm, mesh_wp = icosahedron
     count = 100
     pts, fids = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, count, seed=0
+        mesh_wp.points, mesh_wp.indices, count, seed=1
     )
     assert pts.shape == (count,)
     assert fids.shape == (count,)
-
-
-def test_sample_surface_poisson_disk_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = icosahedron
-    count = 100
-    pts, _ = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, count, seed=1)
     _, dists, _ = tm.proximity.closest_point(mesh_tm, pts.numpy())
     assert np.all(dists < 1e-4)
 
@@ -246,25 +248,6 @@ def test_sample_surface_poisson_disk_min_distance(icosahedron: tuple[tm.Trimesh,
     )
     min_dist = float(pdist(points.numpy()).min())
     assert min_dist >= r_min * 0.9
-
-
-def test_sample_surface_poisson_disk_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
-    points_a, face_indices_a = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, 80, seed=7
-    )
-    points_b, face_indices_b = od.sample.sample_surface_poisson_disk(
-        mesh_wp.points, mesh_wp.indices, 80, seed=7
-    )
-    assert np.array_equal(points_a.numpy(), points_b.numpy())
-    assert np.array_equal(face_indices_a.numpy(), face_indices_b.numpy())
-
-
-def test_sample_surface_poisson_disk_count_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
-    points, face_indices = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, 0)
-    assert points.shape == (0,)
-    assert face_indices.shape == (0,)
 
 
 def test_sample_surface_poisson_disk_high_init_factor(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
@@ -408,39 +391,6 @@ def test_find_local_maxima_flags_an_independent_set(device: str):
         assert flagged.isdisjoint(set(neighbour_rows[i]) - {i})
 
 
-def test_sample_fibonacci_sphere_phase_stays_low_discrepancy(device: str):
-    """
-    Class A against a float64 NumPy evaluation of the lattice's own closed form.
-
-    The spiral phase is ``count`` multiples of the golden angle, so it grows without bound in
-    ``count``; accumulating it in float32 lost the low digits the low-discrepancy property lives
-    in. Measured before the fix: azimuth error 1.7e-04 rad at 1 024 rising to 0.21 rad at 1e6, and
-    a minimum neighbour spacing 11 % below the reference's at 100 000. ``count = 100_000`` is
-    asserted because that is where the loss is unambiguous and the test is still cheap; the same
-    hazard and the same float64 fix are documented at
-    ``kernels/bounds.oriented_box_candidate_axes``.
-    """
-    count = 100_000
-    directions_np = od.sample.sample_fibonacci_sphere(count, device=device).numpy()
-
-    index_np = np.arange(count, dtype=np.float64)
-    z_np = 1.0 - 2.0 * (index_np + 0.5) / count
-    radius_np = np.sqrt(np.maximum(0.0, 1.0 - z_np * z_np))
-    theta_np = math.pi * (3.0 - math.sqrt(5.0)) * index_np
-    expected_np = np.stack(
-        [radius_np * np.cos(theta_np), radius_np * np.sin(theta_np), z_np], axis=1
-    )
-    assert np.allclose(directions_np, expected_np, rtol=1e-5, atol=1e-5)
-
-    # The property the lattice exists for, and the one the float32 phase actually destroyed: the
-    # closest pair must be no tighter than the reference construction's.
-    def min_spacing(points_np: np.ndarray) -> float:
-        distances, _ = cKDTree(points_np).query(points_np, k=2)
-        return float(np.asarray(distances)[:, 1].min())
-
-    assert min_spacing(directions_np) >= 0.99 * min_spacing(expected_np)
-
-
 def _blue_noise_radius_for_count(surface_area: float, n: int) -> float:
     return math.sqrt((surface_area * 0.5 / (n * 0.6162910373)) / math.pi)
 
@@ -455,30 +405,8 @@ def test_sample_surface_blue_noise_min_distance(icosahedron: tuple[tm.Trimesh, w
         assert min_dist >= radius * 0.99
 
 
-def test_sample_surface_blue_noise_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_tm, mesh_wp = icosahedron
-    radius = _blue_noise_radius_for_count(float(mesh_tm.area), 50)
-    pts, _ = od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, radius, seed=1)
-    _, dists, _ = tm.proximity.closest_point(mesh_tm, pts.numpy())
-    assert np.all(dists < 1e-4)
-
-
-def test_sample_surface_blue_noise_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
-    radius = _blue_noise_radius_for_count(1.0, 30)
-    points_a, face_indices_a = od.sample.sample_surface_blue_noise(
-        mesh_wp.points, mesh_wp.indices, radius, seed=7
-    )
-    points_b, face_indices_b = od.sample.sample_surface_blue_noise(
-        mesh_wp.points, mesh_wp.indices, radius, seed=7
-    )
-    assert np.array_equal(points_a.numpy(), points_b.numpy())
-    assert np.array_equal(face_indices_a.numpy(), face_indices_b.numpy())
-
-
-def test_sample_surface_blue_noise_count_order_of_magnitude(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
-):
+def test_sample_surface_blue_noise_count_and_on_surface(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+    """The count is within 1.5x of igl's estimate for the radius, every sample on the surface."""
     mesh_tm, mesh_wp = icosahedron
     surface_area = float(mesh_tm.area)
     expected = 50
@@ -489,6 +417,8 @@ def test_sample_surface_blue_noise_count_order_of_magnitude(
         surface_area * (math.pi * math.sqrt(3.0) / 6.0) / (math.pi * radius * radius / 4.0)
     )
     assert 0.5 * igl_expected <= n <= 1.5 * igl_expected
+    _, dists, _ = tm.proximity.closest_point(mesh_tm, points.numpy())
+    assert np.all(dists < 1e-4)
 
 
 def _blue_noise_statistics(
@@ -628,16 +558,6 @@ def test_sample_surface_blue_noise_radius_invalid(icosahedron: tuple[tm.Trimesh,
         od.sample.sample_surface_blue_noise(mesh_wp.points, mesh_wp.indices, 0.0)
 
 
-def test_sample_surface_blue_noise_empty_faces(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    mesh_wp = icosahedron[1]
-    empty_faces = warp_empty(0, wp.int32, mesh_wp.points.device)
-    points, face_indices = od.sample.sample_surface_blue_noise(
-        mesh_wp.points, empty_faces, 0.1, seed=0
-    )
-    assert points.shape == (0,)
-    assert face_indices.shape == (0,)
-
-
 @pytest.mark.parity(
     "sample_volume",
     "trimesh",
@@ -676,43 +596,102 @@ def test_sample_volume_uniform(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(points_np.mean(axis=0), mesh_tm.center_mass, atol=0.05)
 
 
-def test_sample_volume_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
-    pts_a = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
-    pts_b = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7).numpy()
-    assert np.array_equal(pts_a, pts_b)
+@pytest.mark.parametrize(
+    ("fixture_name", "match"),
+    [
+        pytest.param("half_torus", "watertight", id="not_watertight"),
+        pytest.param(None, "zero volume", id="zero_volume"),
+        pytest.param("torus", "star-shaped", id="not_star_shaped"),
+    ],
+)
+def test_sample_volume_rejects(
+    request: pytest.FixtureRequest, device: str, fixture_name: str | None, match: str
+) -> None:
+    """
+    The three inputs a centroid fan cannot sample, each refused by name.
 
-
-def test_sample_volume_count_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = icosahedron
-    pts = od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 0)
-    assert pts.shape == (0,)
-
-
-def test_sample_volume_not_watertight(half_torus: tuple[tm.Trimesh, wp.Mesh]):
-    _, mesh_wp = half_torus
-    with pytest.raises(ValueError, match="watertight"):
-        od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
-
-
-def test_sample_volume_zero_volume(device: str):
-    # A doubled triangle (the same face with both windings) is edge-manifold with no boundary
-    # edges, so it passes the watertight gate, yet it encloses nothing: the surface centroid is
-    # coplanar with both faces, so every fanned tetrahedron has a signed volume of exactly 0.0.
-    vertices_wp = wp.array(
-        np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), dtype=wp.vec3, device=device
-    )
-    faces_wp = wp.array([0, 1, 2, 0, 2, 1], dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="zero volume"):
+    * ``half_torus`` is open, so it fails the watertight gate.
+    * A doubled triangle (the same face with both windings) is edge-manifold with no boundary
+      edges, so it passes the watertight gate, yet it encloses nothing: the surface centroid is
+      coplanar with both faces, so every fanned tetrahedron has a signed volume of exactly 0.0.
+    * ``torus`` is watertight with positive total volume, but fanning tetrahedra from the centroid
+      (the hole of the torus) makes the inner half of the tube contribute negative signed volumes.
+    """
+    if fixture_name is None:
+        vertices_wp = wp.array(
+            np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]),
+            dtype=wp.vec3,
+            device=device,
+        )
+        faces_wp = wp.array([0, 1, 2, 0, 2, 1], dtype=wp.int32, device=device)
+    else:
+        _, mesh_wp = request.getfixturevalue(fixture_name)
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    with pytest.raises(ValueError, match=match):
         od.sample.sample_volume(vertices_wp, faces_wp, 100)
 
 
-def test_sample_volume_not_star_shaped(torus: tuple[tm.Trimesh, wp.Mesh]):
-    # Watertight with positive total volume, but fanning tetrahedra from the centroid (the hole
-    # of the torus) makes the inner half of the tube contribute negative signed volumes.
-    _, mesh_wp = torus
-    with pytest.raises(ValueError, match="star-shaped"):
-        od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 100)
+@pytest.mark.parametrize("sampler", ["fibonacci_sphere", "poisson_disk", "blue_noise", "volume"])
+def test_samplers_are_deterministic(icosahedron: tuple[tm.Trimesh, wp.Mesh], sampler: str) -> None:
+    """
+    Ordito against ordito: two calls with the same arguments and seed return identical buffers.
+
+    The lattice takes no seed, so its claim is plain reproducibility; the three seeded samplers
+    are called at ``seed=7`` twice, and every returned buffer (points and, where returned, face
+    indices) is compared bit for bit.
+    """
+    _, mesh_wp = icosahedron
+
+    def draw() -> tuple[wp.array[Any], ...]:
+        if sampler == "fibonacci_sphere":
+            return (od.sample.sample_fibonacci_sphere(500, device=mesh_wp.points.device),)
+        if sampler == "poisson_disk":
+            return od.sample.sample_surface_poisson_disk(
+                mesh_wp.points, mesh_wp.indices, 80, seed=7
+            )
+        if sampler == "blue_noise":
+            return od.sample.sample_surface_blue_noise(
+                mesh_wp.points, mesh_wp.indices, _blue_noise_radius_for_count(1.0, 30), seed=7
+            )
+        return (od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 200, seed=7),)
+
+    first, second = draw(), draw()
+    for array_a, array_b in zip(first, second, strict=True):
+        assert np.array_equal(array_a.numpy(), array_b.numpy())
+
+
+@pytest.mark.parametrize(
+    "sampler",
+    [
+        "fibonacci_sphere",
+        "fibonacci_hemisphere",
+        "fibonacci_cone",
+        "poisson_disk",
+        "blue_noise_no_faces",
+        "volume",
+    ],
+)
+def test_samplers_return_empty_buffers_for_an_empty_request(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], sampler: str
+) -> None:
+    """A zero count (or, for blue noise, a face-less mesh) returns every buffer at length zero."""
+    _, mesh_wp = icosahedron
+    device = mesh_wp.points.device
+    if sampler == "fibonacci_sphere":
+        buffers = (od.sample.sample_fibonacci_sphere(0, device=device),)
+    elif sampler == "fibonacci_hemisphere":
+        buffers = (od.sample.sample_fibonacci_hemisphere(0, device=device),)
+    elif sampler == "fibonacci_cone":
+        buffers = (od.sample.sample_fibonacci_cone(0, 1.0, device=device),)
+    elif sampler == "poisson_disk":
+        buffers = od.sample.sample_surface_poisson_disk(mesh_wp.points, mesh_wp.indices, 0)
+    elif sampler == "blue_noise_no_faces":
+        empty_faces = warp_empty(0, wp.int32, device)
+        buffers = od.sample.sample_surface_blue_noise(mesh_wp.points, empty_faces, 0.1, seed=0)
+    else:
+        buffers = (od.sample.sample_volume(mesh_wp.points, mesh_wp.indices, 0),)
+    for buffer in buffers:
+        assert buffer.shape == (0,)
 
 
 def test_resolve_seed_passes_a_seed_through_and_draws_one_otherwise() -> None:

@@ -874,8 +874,7 @@ def test_set_algebra_matches_meshlib(
     left = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16, mode="solid")
     right = _shifted(left, (3, 0, 0))
     lower, extent = _bounds_of(od.voxels.union(left, right))
-    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
-    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
+    padded_lower, padded_shape = _padded_box(lower, extent, 1)
     left_np = _dense(left, padded_lower, padded_shape)
     right_np = _dense(right, padded_lower, padded_shape)
     assert left_np.any()
@@ -1047,8 +1046,7 @@ def test_dilate_matches_scipy(sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.ar
     occupancy_np = _dense(grid, lower, extent)
     assert occupancy_np.any()
 
-    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
-    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
+    padded_lower, padded_shape = _padded_box(lower, extent, 1)
     dilated = _dense(od.voxels.dilate(grid), padded_lower, padded_shape)
     assert np.array_equal(dilated, ndi.binary_dilation(np.pad(occupancy_np, 1)))
 
@@ -1137,8 +1135,7 @@ def test_dilate_and_erode_match_meshlib(
     _mesh_tm, vertices_wp, faces_wp = sphere
     solid = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.2, mode="solid")
     lower, extent = _bounds_of(solid)
-    padded_lower = cast("tuple[int, int, int]", tuple(c - 1 for c in lower))
-    padded_shape = cast("tuple[int, int, int]", tuple(n + 2 for n in extent))
+    padded_lower, padded_shape = _padded_box(lower, extent, 1)
     occupancy_np = _dense(solid, padded_lower, padded_shape)
     assert occupancy_np.any()
 
@@ -1196,8 +1193,7 @@ def test_closing_and_opening_match_scipy(
     _mesh_tm, vertices_wp, faces_wp = sphere
     shell = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
     lower, extent = _bounds_of(shell)
-    padded_lower = cast("tuple[int, int, int]", tuple(c - 2 for c in lower))
-    padded_shape = cast("tuple[int, int, int]", tuple(n + 4 for n in extent))
+    padded_lower, padded_shape = _padded_box(lower, extent, 2)
     occupancy_np = _dense(shell, padded_lower, padded_shape)
     rank = {6: 1, 18: 2, 26: 3}[connectivity]
     structure_np = ndi.generate_binary_structure(3, rank)
@@ -1212,36 +1208,6 @@ def test_closing_and_opening_match_scipy(
     assert np.array_equal(opened_np, ndi.binary_opening(occupancy_np, structure=structure_np))
     # A hollow shell is thin, so opening removes and closing adds: neither is the identity here.
     assert opened_np.sum() < occupancy_np.sum() < closed_np.sum()
-
-
-def test_closing_and_opening_are_the_two_compositions(
-    sphere: tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]],
-):
-    """
-    Ordito against ordito: the oracle is ``test_closing_and_opening_match_scipy`` above.
-
-    The pair is defined by the *order* of the two passes, which is the one thing a comparison
-    against a single reference call cannot catch — a closing that eroded first would still be a
-    legal morphological filter and would still be idempotent. Both compositions are asserted
-    explicitly, and so are the containments that separate them.
-    """
-    _mesh_tm, vertices_wp, faces_wp = sphere
-    shell = od.voxels.voxelize_mesh(vertices_wp, faces_wp, 0.16)
-    lower, extent = _bounds_of(shell)
-    padded_lower = cast("tuple[int, int, int]", tuple(c - 2 for c in lower))
-    padded_shape = cast("tuple[int, int, int]", tuple(n + 4 for n in extent))
-    occupancy_np = _dense(shell, padded_lower, padded_shape)
-
-    closed_np = _dense(od.voxels.closing(shell), padded_lower, padded_shape)
-    opened_np = _dense(od.voxels.opening(shell), padded_lower, padded_shape)
-    assert np.array_equal(
-        closed_np, _dense(od.voxels.erode(od.voxels.dilate(shell)), padded_lower, padded_shape)
-    )
-    assert np.array_equal(
-        opened_np, _dense(od.voxels.dilate(od.voxels.erode(shell)), padded_lower, padded_shape)
-    )
-    assert np.array_equal(closed_np & occupancy_np, occupancy_np)  # closing contains the input
-    assert np.array_equal(opened_np & occupancy_np, opened_np)  # opening is contained in it
 
 
 def test_surface_voxels_is_the_erosion_complement(
@@ -1377,14 +1343,6 @@ def test_resolve_voxel_grid_passes_both_arguments_through(device: str) -> None:
     assert list(origin) == [1.0, 2.0, 3.0]
 
 
-def test_resolve_voxel_grid_empty_input_takes_a_unit_diagonal(device: str) -> None:
-    """An empty set has no bounding box, so the documented fallback is a diagonal of one."""
-    voxel_size, origin = od.voxels.resolve_voxel_grid(warp_empty(0, wp.vec3, device))
-
-    assert voxel_size == pytest.approx(0.01)
-    assert np.allclose(list(origin), -0.005, rtol=0, atol=1e-7)
-
-
 @pytest.mark.parametrize(
     ("n_points", "voxel_size"), [(0, None), (1, None), (4000, None), (4000, 1e-3), (4000, 0.37)]
 )
@@ -1428,21 +1386,29 @@ def test_resolve_voxel_grid_cell_bound_covers_every_cell(
     assert np.array_equal(inferred[1].numpy(), bounded[1].numpy())
 
 
-@pytest.mark.parametrize("n_points", [1, 5])
+@pytest.mark.parametrize("n_points", [0, 1, 5])
 def test_resolve_voxel_grid_zero_extent_input_takes_a_unit_diagonal(
     device: str, n_points: int
 ) -> None:
     """
     Not a library comparison: this is ordito's own default convention, which no reference shares.
 
-    A single point, or any all-coincident cloud, has a zero-extent bounding box and so no scale to
-    read a cell width off. It takes the same unit diagonal the empty set takes -- the alternative
-    was a derived ``0.01 * 0.0`` that tripped the positivity guard and reported
-    ``requires voxel_size > 0, got 0.0``, naming the one argument the caller left as ``None``.
+    An empty set has no bounding box, so the documented fallback is a diagonal of one, anchored
+    half a cell below the origin. A single point, or any all-coincident cloud, has a zero-extent
+    bounding box and so no scale to read a cell width off. It takes the same unit diagonal the
+    empty set takes -- the alternative was a derived ``0.01 * 0.0`` that tripped the positivity
+    guard and reported ``requires voxel_size > 0, got 0.0``, naming the one argument the caller
+    left as ``None``.
 
-    Both arities matter: ``n_points=1`` is the obvious case and ``n_points=5`` is the one a check
-    written as ``shape[0] == 1`` would miss, since coincidence rather than count is the condition.
+    Both non-empty arities matter: ``n_points=1`` is the obvious case and ``n_points=5`` is the
+    one a check written as ``shape[0] == 1`` would miss, since coincidence rather than count is the
+    condition.
     """
+    if n_points == 0:
+        voxel_size, origin = od.voxels.resolve_voxel_grid(warp_empty(0, wp.vec3, device))
+        assert voxel_size == pytest.approx(0.01)
+        assert np.allclose(list(origin), -0.005, rtol=0, atol=1e-7)
+        return
     points_wp = points_to_warp(np.full((n_points, 3), 2.5, dtype=np.float32), device)
 
     voxel_size, origin = od.voxels.resolve_voxel_grid(points_wp)
@@ -1873,6 +1839,16 @@ def _assert_surfaces_within(surface_a: tm.Trimesh, surface_b: tm.Trimesh, tolera
     samples_b = tm.sample.sample_surface(surface_b, 2000, seed=1)[0]
     assert tm.proximity.closest_point(surface_b, samples_a)[1].max() < tolerance
     assert tm.proximity.closest_point(surface_a, samples_b)[1].max() < tolerance
+
+
+def _padded_box(
+    lower: tuple[int, int, int], extent: tuple[int, int, int], pad: int
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Grow a ``(lower_cell, extent)`` box by ``pad`` cells on every side."""
+    return (
+        (lower[0] - pad, lower[1] - pad, lower[2] - pad),
+        (extent[0] + 2 * pad, extent[1] + 2 * pad, extent[2] + 2 * pad),
+    )
 
 
 def _bounds_of(grid: wp.Volume) -> tuple[tuple[int, int, int], tuple[int, int, int]]:

@@ -113,7 +113,7 @@ def _skip_pml_beyond_bunny(bench_case: BenchCase) -> None:
     "filter_mut_dif_laplacian scales each vertex's rate by how much of its Laplacian residual lies "
     "along the normal. Measured 0.0428 max-coordinate deviation on a noisy icosphere(2) of extent "
     "2.02 at 10 iterations. trimesh is the oracle for this group, in "
-    "tests/test_smoothing.py::test_filter_mut_dif_laplacian_volume_constraint. Recorded so it is "
+    "tests/test_smoothing.py::test_filter_mut_dif_laplacian. Recorded so it is "
     "not re-derived: open3d's filter IS ordito's filter_laplacian under an inverse-distance "
     "operator, matching it to 6.6e-08 at *one* iteration and diverging to 0.032 by ten only "
     "because open3d re-derives the edge weights from the current positions every pass while "
@@ -127,7 +127,7 @@ def _skip_pml_beyond_bunny(bench_case: BenchCase) -> None:
     "and exposes no per-vertex rate at all, and its step count is its only parameter. Measured "
     "0.171 max-coordinate deviation on a noisy icosphere(2) of extent 2.02 at 10 iterations -- 4x "
     "further from ordito than open3d's row is. trimesh is the oracle for this group, in "
-    "tests/test_smoothing.py::test_filter_mut_dif_laplacian_volume_constraint.",
+    "tests/test_smoothing.py::test_filter_mut_dif_laplacian.",
 )
 @pytest.mark.benchmark(group="filter_mut_dif_laplacian")
 @pytest.mark.benchlibs("ordito", "trimesh", "open3d", "pymeshlab")

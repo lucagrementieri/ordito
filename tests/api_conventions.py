@@ -116,6 +116,18 @@ _PACKAGE_DIR = _REPO_ROOT / "ordito"
 _KERNELS_DIR = _PACKAGE_DIR / "kernels"
 _BENCHMARKS_DIR = _REPO_ROOT / "benchmarks"
 
+
+@functools.cache
+def _parse_source(path: Path) -> ast.Module:
+    """
+    Parse ``path`` once per process, for every check that reads it.
+
+    A parse of ``ordito/`` costs several times a walk of it, and every check walks the same trees
+    without mutating them, so sharing the parse is free.
+    """
+    return ast.parse(path.read_text(encoding="utf-8"))
+
+
 # --- check 1 -----------------------------------------------------------------------------------
 
 # Reference libraries whose name in a *summary* line is the defect. Spelled as a single alternation
@@ -778,7 +790,7 @@ def scan_package() -> PackageScan:
             continue
         module = ".".join(relative.with_suffix("").parts)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError as error:
             scan.errors.append(f"ordito/{relative.as_posix()}:{error.lineno or 0}: {error.msg}")
             continue
@@ -957,7 +969,8 @@ def installed_warp_version() -> str | None:
         return None
 
 
-def _prose_blocks(source: str) -> list[tuple[int, str]]:
+@functools.cache
+def _prose_blocks(source: str) -> tuple[tuple[int, str], ...]:
     """
     ``(lineno, text)`` for each run of consecutive comment lines and each string literal.
 
@@ -983,13 +996,13 @@ def _prose_blocks(source: str) -> list[tuple[int, str]]:
     try:
         tree = ast.parse(source)
     except SyntaxError:
-        return blocks
+        return tuple(blocks)
     blocks.extend(
         (node.lineno, node.value)
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant) and isinstance(node.value, str)
     )
-    return blocks
+    return tuple(blocks)
 
 
 def warp_version_problems() -> list[str]:
@@ -1047,7 +1060,7 @@ def allocation_device_problems() -> list[str]:
             continue
         module = ".".join(relative.with_suffix("").parts).removesuffix(".__init__")
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for call, lineno in _bare_allocations(tree):
@@ -1152,6 +1165,7 @@ def docstring_examples() -> list[DocstringExample]:
 # --- check 13 -----------------------------------------------------------------------------------
 
 
+@functools.cache
 def _factory_registered(tree: ast.Module, attribute: str) -> frozenset[str]:
     """
     Names passed as the first argument to ``wp.<attribute>(...)`` anywhere in ``tree``.
@@ -1270,7 +1284,7 @@ def kernel_output_naming_problems() -> list[str]:
     for path in sorted(_KERNELS_DIR.rglob("*.py")):
         module = ".".join(path.relative_to(_KERNELS_DIR).with_suffix("").parts)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         # ``ast.walk``, not ``tree.body``: a kernel factory's body is a *nested* ``def``, so a
@@ -1345,7 +1359,7 @@ def array_annotation_style_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for annotation in _annotations(tree):
@@ -1388,7 +1402,7 @@ def launch_device_problems() -> list[str]:
         relative = path.relative_to(_PACKAGE_DIR)
         module = ".".join(relative.with_suffix("").parts).removesuffix(".__init__")
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for node in ast.walk(tree):
@@ -1470,7 +1484,7 @@ def builtin_cast_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for function in _kernel_scope_functions(tree):
@@ -1625,7 +1639,7 @@ def integer_division_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         constants = _int_module_constants(tree)
@@ -1691,7 +1705,7 @@ def bare_annotation_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for function in _kernel_scope_functions(tree):
@@ -1774,7 +1788,7 @@ def comparison_label_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_TESTS_DIR.glob("test_*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for function in ast.walk(tree):
@@ -1817,7 +1831,7 @@ def kernel_scope_ternary_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for function in _kernel_scope_functions(tree):
@@ -1945,7 +1959,7 @@ def bare_tid_problems() -> list[str]:
     problems: list[str] = []
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # test_package_scan_is_discoverable reports the parse failure
         for function in _kernel_scope_functions(tree):
@@ -2187,7 +2201,7 @@ def admonition_placement_problems() -> list[str]:
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         site = path.relative_to(_REPO_ROOT)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # check 12 and the suite itself report an unparseable module
         for node in ast.walk(tree):
@@ -2303,7 +2317,7 @@ def warp_host_arithmetic_problems() -> list[str]:
     trees: dict[str, tuple[Path, ast.Module]] = {}
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # check 12 and the suite itself report an unparseable module
         module = path.stem
@@ -2378,7 +2392,7 @@ def triplet_build_problems() -> list[str]:
     for path in sorted(_PACKAGE_DIR.rglob("*.py")):
         site = path.relative_to(_REPO_ROOT)
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"))
+            tree = _parse_source(path)
         except SyntaxError:
             continue  # check 12 and the suite itself report an unparseable module
         for node in ast.walk(tree):
@@ -2489,7 +2503,7 @@ def shape_spelling_problems() -> list[str]:
         if path.stem.startswith("_"):
             continue
         site = path.relative_to(_REPO_ROOT)
-        tree = ast.parse(path.read_text(encoding="utf-8"))
+        tree = _parse_source(path)
         for node in ast.walk(tree):
             if not isinstance(node, ast.ClassDef | ast.FunctionDef) or node.name.startswith("_"):
                 continue

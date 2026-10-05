@@ -29,7 +29,7 @@ from tests.conversions import (
 def test_edges_to_csr_roundtrip(device: str) -> None:
     edges_np = np.array([[0, 1], [1, 2], [0, 2]], dtype=np.int32)
     node_count = 3
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     adjacency = od.graph.edges_to_csr(node_count, edges_wp)
     offsets = adjacency.offsets.numpy()
     indices = adjacency.columns.numpy()
@@ -67,11 +67,23 @@ def test_edges_to_neighbor_lists_matches_igl(
     assert below pins the maximum degree strictly above the minimum, because on a mesh where every
     row has the same width a misplaced row is invisible to a row-by-row compare. ``icosahedron`` is
     excluded for exactly that reason — all twelve of its vertices have degree 5.
+
+    Two ordito-against-ordito claims ride on the same graph, with ``edges_to_csr`` carrying the
+    oracle (igl here, and scipy through ``connected_component_labels``):
+
+    - the default builder describes ``edges_to_csr``'s graph -- same offsets, same rows up to a
+      permutation -- which is the claim every caller that switched between them relies on;
+    - ``sort_rows=True`` is ``edges_to_csr``'s structure *bit for bit*, because that is what
+      [`neighbors.geodesic_ball`][ordito.neighbors.geodesic_ball] relies on: it emits its BFS queue
+      in visit order, so a permuted adjacency row permutes its result, and
+      ``curvature.principal_curvature`` then moves at the near-flat vertices where its quadric fit
+      is ill conditioned. Repeating the sorted call returns the identical buffer, the property the
+      default ``sort_rows=False`` does **not** have: its atomic cursor hands the slots out in
+      thread-arrival order and every repeat differs.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
+    edges_wp, _ = od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)
 
     neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
     neighbors, offsets = neighbors_wp.numpy(), offsets_wp.numpy()
@@ -88,75 +100,22 @@ def test_edges_to_neighbor_lists_matches_igl(
         row = sorted(neighbors[int(offsets[v]) : int(offsets[v + 1])].tolist())
         assert row == sorted(int(x) for x in adjacency_igl[v]), f"vertex {v} row differs"
 
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
-def test_edges_to_neighbor_lists_agrees_with_edges_to_csr(
-    mesh_name: str, request: pytest.FixtureRequest
-) -> None:
-    """
-    Ordito against ordito: the two adjacency builders describe the same graph.
-
-    ``edges_to_csr`` carries the oracle — it is the one with a reference comparison
-    (``igl.adjacency_list``, above, and scipy through ``connected_component_labels``). This pins
-    the cheap unsorted builder to it so the two cannot drift, which is the claim every caller that
-    switched between them relies on.
-    """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = mesh_wp.points.size
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-
-    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp)
     adjacency = od.graph.edges_to_csr(n_vertices, edges_wp)
-
-    assert np.array_equal(offsets_wp.numpy(), adjacency.offsets.numpy())
-    neighbors, offsets = neighbors_wp.numpy(), offsets_wp.numpy()
     columns = adjacency.columns.numpy()
+    assert np.array_equal(offsets, adjacency.offsets.numpy())
     for v in range(n_vertices):
         lo, hi = int(offsets[v]), int(offsets[v + 1])
         assert sorted(neighbors[lo:hi].tolist()) == sorted(columns[lo:hi].tolist())
 
-
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere", "unit_box"])
-def test_edges_to_neighbor_lists_sorted_rows_are_edges_to_csr_exactly(
-    mesh_name: str, request: pytest.FixtureRequest
-) -> None:
-    """
-    Ordito against ordito: ``sort_rows=True`` is ``edges_to_csr``'s structure, bit for bit.
-
-    ``edges_to_csr`` carries the oracle (``igl.adjacency_list``, above). This is the stronger of
-    the two claims the sibling test makes about the cheap builder -- not "the same rows up to a
-    permutation" but *the same buffer* -- because that is what
-    [`neighbors.geodesic_ball`][ordito.neighbors.geodesic_ball] relies on: it emits its BFS queue
-    in visit order, so a permuted adjacency row permutes its result, and
-    ``curvature.principal_curvature`` then moves at the near-flat vertices where its quadric fit is
-    ill conditioned.
-
-    The second half is the property the default ``sort_rows=False`` does **not** have: repeating
-    the call returns the identical buffer. Without it the atomic cursor hands the slots out in
-    thread-arrival order and every repeat differs.
-    """
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = mesh_wp.points.size
-    faces_wp = wp.array(mesh_wp.indices, dtype=wp.int32, device=mesh_wp.device)
-    edges_wp, _ = od.edges.edges_unique(faces_wp, n_vertices=n_vertices)
-
-    neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(
+    sorted_wp, sorted_offsets_wp = od.graph.edges_to_neighbor_lists(
         n_vertices, edges_wp, sort_rows=True
     )
-    adjacency = od.graph.edges_to_csr(n_vertices, edges_wp)
-    neighbors = neighbors_wp.numpy()
-
-    # Not a regular fixture, and not an empty one: a constant degree hides a misplaced row.
-    degrees = np.diff(offsets_wp.numpy())
-    assert int(degrees.max()) > int(degrees.min()) > 0
-
-    assert np.array_equal(offsets_wp.numpy(), adjacency.offsets.numpy())
-    assert np.array_equal(neighbors, adjacency.columns.numpy())
-
+    sorted_np = sorted_wp.numpy()
+    assert np.array_equal(sorted_offsets_wp.numpy(), adjacency.offsets.numpy())
+    assert np.array_equal(sorted_np, columns)
     for _ in range(4):
         repeat_wp, _ = od.graph.edges_to_neighbor_lists(n_vertices, edges_wp, sort_rows=True)
-        assert np.array_equal(repeat_wp.numpy(), neighbors)
+        assert np.array_equal(repeat_wp.numpy(), sorted_np)
 
 
 def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
@@ -171,7 +130,7 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
     edges_np = np.stack(
         [np.zeros(degree, dtype=np.int32), np.arange(1, degree + 1, dtype=np.int32)], axis=1
     )
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
 
     neighbors_wp, offsets_wp = od.graph.edges_to_neighbor_lists(
         degree + 1, edges_wp, sort_rows=True
@@ -184,10 +143,7 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
 
 def test_edges_to_neighbor_lists_rejects_an_out_of_range_endpoint(device: str) -> None:
     """The guard that keeps an unchecked index off a raw ``degree[a]`` write (section 12.1)."""
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[0, 1], [1, 5]], dtype=np.int32), dtype=wp.int32, device=device),
-        wp.int32,
-    )
+    edges_wp = _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
         od.graph.edges_to_neighbor_lists(3, edges_wp)
 
@@ -200,43 +156,12 @@ def test_edges_to_neighbor_lists_empty(device: str) -> None:
     assert np.array_equal(offsets_wp.numpy(), np.zeros(5, dtype=np.int32))
 
 
-@pytest.mark.parity("connected_component_labels", "scipy")
-def test_connected_component_labels_random(device: str) -> None:
-    """
-    Class B (label packing): the *partition* matches scipy's, through ``same_partition``.
-
-    ordito names a component after a representative node and scipy numbers them in traversal
-    order, so only the partition is shared -- comparing labels directly would fail on a correct
-    answer. But that transform is only *exercised* if the graph genuinely fragments: with one
-    component the two numbering conventions coincide and ``same_partition`` compares one constant
-    labelling with another, which any implementation returning a single label would pass.
-
-    **24 edges, not 200.** Measured on this seed, 200 random edges over 64 nodes gives **1**
-    component holding all 64 nodes -- the count is well past the giant-component threshold -- where
-    24 gives **40** components, **12** of them non-trivial, the largest holding 6 nodes. The assert
-    below therefore checks the fragmentation before comparing to it, which is the guard the vacuous
-    version lacked.
-    """
-    rng = np.random.default_rng(7)
-    node_count = 64
-    n_edges = 24
-    edges_np = rng.integers(0, node_count, size=(n_edges, 2), dtype=np.int32)
-
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
-    labels_np = _scipy_component_labels(edges_np, node_count)
-
-    # Non-vacuous: with one component the label-packing transform under test is the identity.
-    assert np.unique(labels_np).size > 1
-    assert same_partition(labels_wp.numpy(), labels_np)
-
-
 @pytest.mark.parametrize(("node_count", "n_edges"), [(64, 24), (2048, 2047)])
-@pytest.mark.parity("connected_component_labels", "igl")
-@pytest.mark.parity("connected_component_labels_depth", "igl")
+@pytest.mark.parity("connected_component_labels", "igl", "scipy")
+@pytest.mark.parity("connected_component_labels_depth", "igl", "scipy")
 def test_connected_component_labels_matches_igl(device: str, node_count: int, n_edges: int) -> None:
     """
-    Class B (label packing): the partition against ``igl.connected_components``.
+    Class B (label packing): the partition against ``igl.connected_components`` and scipy's.
 
     The reference worth having here because it takes the *same argument* ordito does -- a
     ``scipy.sparse`` adjacency matrix -- rather than a mesh, which is why
@@ -244,15 +169,18 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     It returns ``(n_components, labels, sizes)``, three values, and numbers components ``0..k-1`` in
     its own traversal order where ordito names each after a representative node, so
     [`same_partition`][tests.comparisons.same_partition] is the transform exactly as it is for the
-    scipy comparison above.
+    ``scipy.sparse.csgraph.connected_components`` comparison.
 
     Two shapes, and each carries a different half of the claim. The 64-node random graph is what
-    exercises the *label packing*, so its edge count is chosen to fragment it -- 24 edges give 40
-    components where the 200 this used to pass gave **1**, and with one component the two numbering
-    conventions coincide and the transform under test is the identity (the same defect the scipy
-    comparison above records). The 2 048-node **path** is deliberately a single component: its
-    diameter equals its node count, which is what the ``*_depth`` group exists to gate, and an
-    implementation that stopped propagating early would pass the first shape and fail this one.
+    exercises the *label packing*, so its edge count is chosen to fragment it: measured on this
+    seed, 24 edges give **40** components, **12** of them non-trivial, the largest holding 6 nodes,
+    where 200 random edges over 64 nodes give **1** component holding all 64 -- well past the
+    giant-component threshold -- and with one component the numbering conventions coincide and the
+    transform under test is the identity. The 2 048-node **path** is deliberately a single
+    component: its diameter equals its node count, the most propagation rounds any graph needs,
+    which is what the ``*_depth`` group exists to gate; an implementation that stopped propagating
+    early would pass the first shape and fail this one, which a random graph of diameter ~4 cannot
+    show.
     """
     if n_edges == node_count - 1:  # the path graph
         edges_np = np.stack(
@@ -272,14 +200,16 @@ def test_connected_component_labels_matches_igl(device: str, node_count: int, n_
     n_components_igl, labels_igl, sizes_igl = igl.connected_components(
         adjacency_np  # pyright: ignore[reportArgumentType]
     )
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
+    labels_wp = od.graph.connected_component_labels_from_edges(
+        _edges_wp(edges_np, device), node_count=node_count
+    )
 
     assert int(n_components_igl) == np.unique(labels_wp.numpy()).size
     assert int(np.asarray(sizes_igl).sum()) == node_count  # every node landed in a component
     # Non-vacuous on the random shape: the path is one component by design, see the docstring.
     assert int(n_components_igl) > 1 or n_edges == node_count - 1
     assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
+    assert same_partition(labels_wp.numpy(), _scipy_component_labels(edges_np, node_count))
 
 
 @pytest.mark.parametrize("shape", ["random", "path", "star", "loops_and_duplicates"])
@@ -309,9 +239,7 @@ def test_connected_component_labels_edge_list_matches_csr(device: str, shape: st
         base = rng.integers(0, node_count, size=(200, 2), dtype=np.int32)
         loops = np.repeat(rng.integers(0, node_count, size=(40, 1), dtype=np.int32), 2, axis=1)
         edges_np = np.concatenate([base, base[:50, ::-1], loops])
-    edges_wp = odt.as_array2d(
-        wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
-    )
+    edges_wp = _edges_wp(edges_np, device)
 
     labels_edges = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_csr = od.graph.connected_component_labels(od.graph.edges_to_csr(node_count, edges_wp))
@@ -347,9 +275,7 @@ def test_connected_component_labels_compressed_forest(
     else:
         leaves = np.arange(node_count - 1, dtype=np.int32)
         edges_np = np.stack([np.full_like(leaves, node_count - 1), leaves], axis=1)
-    edges_wp = odt.as_array2d(
-        wp.array(np.ascontiguousarray(edges_np), dtype=wp.int32, device=device), wp.int32
-    )
+    edges_wp = _edges_wp(edges_np, device)
     plain = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
     compressed = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
@@ -461,35 +387,14 @@ def test_connected_component_labels_matches_meshlib(request: pytest.FixtureReque
     assert same_partition(labels_wp.numpy(), labels_ml)
 
 
-def test_connected_component_labels_empty_edges(device: str) -> None:
-    node_count = 10
+@pytest.mark.parametrize("node_count", [10, 0], ids=["isolated_nodes", "zero_nodes"])
+def test_connected_component_labels_empty_edges(device: str, node_count: int) -> None:
+    """Class A: with no edges every node is its own component (scipy's answer), or none exist."""
     edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
     labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=node_count)
     labels_exp = _scipy_component_labels(np.empty((0, 2), dtype=np.int32), node_count)
+    assert labels_wp.shape == (node_count,)
     assert np.array_equal(labels_wp.numpy(), labels_exp)
-
-
-def test_connected_component_labels_zero_nodes(device: str) -> None:
-    edges_wp = odt.empty_2d((0, 2), wp.int32, device=device)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=0)
-    assert labels_wp.shape == (0,)
-
-
-@pytest.mark.parity("connected_component_labels_depth", "scipy")
-def test_connected_component_labels_path_graph(device: str) -> None:
-    """
-    Class B: the same partition comparison on the worst case for a label-propagation sweep.
-
-    A 2 048-node path is the graph that needs the most propagation rounds -- a diameter equal
-    to its node count -- so it catches an implementation that stops iterating too early, which
-    a random graph of diameter ~4 cannot.
-    """
-    n = 2048
-    edges_np = np.stack([np.arange(n - 1, dtype=np.int32), np.arange(1, n, dtype=np.int32)], axis=1)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
-    labels_exp = _scipy_component_labels(edges_np, n)
-    assert same_partition(labels_wp.numpy(), labels_exp)
 
 
 def test_connected_component_labels_star_graph(device: str) -> None:
@@ -497,7 +402,7 @@ def test_connected_component_labels_star_graph(device: str) -> None:
     hub = 0
     leaves = np.arange(1, n, dtype=np.int32)
     edges_np = np.stack([np.full(n - 1, hub, dtype=np.int32), leaves], axis=1)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     labels_wp = od.graph.connected_component_labels_from_edges(edges_wp, node_count=n)
     labels_exp = _scipy_component_labels(edges_np, n)
     assert same_partition(labels_wp.numpy(), labels_exp)
@@ -514,7 +419,7 @@ def test_connected_component_parity_random(device: str) -> None:
     edges_np = np.stack([a_np, b_np], axis=1)
     signs_np = (potential_np[a_np] ^ potential_np[b_np]).astype(np.int32)
 
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
     labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
 
@@ -533,7 +438,7 @@ def test_connected_component_parity_long_path(device: str) -> None:
     rng = np.random.default_rng(5)
     edges_np = np.stack([np.arange(n - 1), np.arange(1, n)], axis=1).astype(np.int32)
     signs_np = rng.integers(0, 2, size=n - 1).astype(np.int32)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
     labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
@@ -548,7 +453,7 @@ def test_connected_component_parity_contradiction_terminates(device: str) -> Non
     n = 1025
     edges_np = np.stack([np.arange(n), (np.arange(n) + 1) % n], axis=1).astype(np.int32)
     signs_np = np.ones(n, dtype=np.int32)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     signs_wp = wp.array(signs_np, dtype=wp.int32, device=device)
 
     labels_wp, parity_wp = od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, n)
@@ -567,26 +472,27 @@ def test_connected_component_parity_no_edges(device: str) -> None:
     assert np.array_equal(parity_wp.numpy(), np.zeros(7, dtype=np.int32))
 
 
-def test_connected_component_parity_signs_length_mismatch(device: str) -> None:
-    edges_wp = odt.as_array2d(wp.zeros((4, 2), dtype=wp.int32, device=device), wp.int32)
-    signs_wp = wp.zeros(3, dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="signs must have length 4"):
-        od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 4)
-
-
-def test_connected_component_parity_validates_range(device: str) -> None:
+@pytest.mark.parametrize(
+    ("edges", "n_signs", "node_count", "message"),
+    [
+        ([[0, 0]] * 4, 3, 4, "signs must have length 4"),
+        ([[0, 10]], 1, 5, "edge indices must lie in"),
+    ],
+    ids=["signs_length", "endpoint_range"],
+)
+def test_connected_component_parity_validates_its_input(
+    device: str, edges: list[list[int]], n_signs: int, node_count: int, message: str
+) -> None:
     """
-    The default range check rejects an endpoint outside ``[0, node_count)``.
+    One sign per edge, and every endpoint inside ``[0, node_count)`` under the default check.
 
-    Without this, ``ecl_hook_parity`` indexes a ``node_count``-element buffer by the raw
+    Without the range check, ``ecl_hook_parity`` indexes a ``node_count``-element buffer by the raw
     endpoint -- an out-of-range value reads and writes out of bounds rather than raising.
     """
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[0, 10]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
-    )
-    signs_wp = wp.zeros(1, dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="edge indices must lie in"):
-        od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, 5)
+    edges_wp = _edges_wp(np.array(edges, dtype=np.int32), device)
+    signs_wp = wp.zeros(n_signs, dtype=wp.int32, device=device)
+    with pytest.raises(ValueError, match=message):
+        od.graph.connected_component_parity_from_edges(edges_wp, signs_wp, node_count)
 
 
 def test_connected_component_parity_validates_signs(device: str) -> None:
@@ -600,9 +506,7 @@ def test_connected_component_parity_validates_signs(device: str) -> None:
     parent of ``-1`` that the next find read out of bounds. Both arms are asserted: the checked
     path raises, and the unchecked path still joins the edge.
     """
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[2, 3]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
-    )
+    edges_wp = _edges_wp(np.array([[2, 3]], dtype=np.int32), device)
     for bad in (2, -1, 1 << 20):
         signs_wp = wp.array(np.array([bad], dtype=np.int32), dtype=wp.int32, device=device)
         with pytest.raises(ValueError, match="signs must be 0 or 1"):
@@ -669,14 +573,7 @@ def _scipy_component_labels(edges: np.ndarray, node_count: int) -> np.ndarray:
 
 def test_successor_cycles_single_cycle(device: str) -> None:
     """One 4-cycle: the result starts at the smallest node and follows the edge direction."""
-    edges_wp = odt.as_array2d(
-        wp.array(
-            np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32),
-            dtype=wp.int32,
-            device=device,
-        ),
-        wp.int32,
-    )
+    edges_wp = _edges_wp(np.array([[5, 2], [2, 7], [7, 3], [3, 5]], dtype=np.int32), device)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
 
     assert np.array_equal(flat_wp.numpy(), np.array([2, 7, 3, 5], dtype=np.int32))
@@ -697,7 +594,7 @@ def test_successor_cycles_multiple_cycles(device: str) -> None:
     ]
     order = rng.permutation(len(edge_rows))
     edges_np = np.array(edge_rows, dtype=np.int32)[order]
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
 
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 11)
 
@@ -735,23 +632,13 @@ def test_successor_cycles_ranks_across_jump_round_boundaries(device: str, length
     rows = [(cycle[i], cycle[(i + 1) % length]) for i in range(length)]
     rows += [(chain[i], chain[i + 1]) for i in range(length)]
     edges_np = np.array(rows, dtype=np.int32)[rng.permutation(len(rows))]
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
 
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 3 * length)
 
     start = int(np.argmin(cycle))
     assert np.array_equal(flat_wp.numpy(), np.roll(cycle, -start))
     assert np.array_equal(offsets_wp.numpy(), np.array([0, length], dtype=np.int32))
-
-
-def test_successor_cycles_validates_range(device: str) -> None:
-    """The default range check rejects an endpoint outside ``[0, node_count)``."""
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
-        wp.int32,
-    )
-    with pytest.raises(ValueError, match="edge indices must lie in"):
-        od.graph.successor_cycles(edges_wp, 4)
 
 
 def test_successor_cycles_validates_before_launching(
@@ -782,10 +669,7 @@ def test_successor_cycles_validates_before_launching(
     # and routes ``launch_tiled`` through its own ``launch``; record every path.
     monkeypatch.setattr(wp, "launch", recording("wp"))
     monkeypatch.setattr(_launch, "launch", recording("_launch"))
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[0, 9], [9, 0]], dtype=np.int32), dtype=wp.int32, device=device),
-        wp.int32,
-    )
+    edges_wp = _edges_wp(np.array([[0, 9], [9, 0]], dtype=np.int32), device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
         od.graph.successor_cycles(edges_wp, 4)
     assert set(launched) <= {"ordito.kernels.reduce"}, launched
@@ -799,7 +683,7 @@ def test_successor_cycles_malformed_input_stays_in_range(device: str) -> None:
     the packed buffer stays a valid node index and the offsets still partition it.
     """
     edges_np = np.array([[0, 1], [1, 2], [2, 0], [3, 1]], dtype=np.int32)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
+    edges_wp = _edges_wp(edges_np, device)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 4)
 
     flat_np = flat_wp.numpy()
@@ -817,22 +701,10 @@ def test_successor_cycles_excludes_a_chain(device: str) -> None:
     the two collided and fabricated a bogus "cycle" out of the collision -- one that could even
     contain a node id that never appeared in the input at all.
     """
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[5, 3], [3, 7]], dtype=np.int32), dtype=wp.int32, device=device),
-        wp.int32,
-    )
+    edges_wp = _edges_wp(np.array([[5, 3], [3, 7]], dtype=np.int32), device)
     flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
     assert flat_wp.shape == (0,)
     assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
-
-
-def test_successor_cycles_mixed_cycle_and_chain(device: str) -> None:
-    """A real cycle is reported unchanged alongside a chain that contributes nothing."""
-    edges_np = np.array([[0, 1], [1, 2], [2, 0], [5, 3], [3, 7]], dtype=np.int32)
-    edges_wp = odt.as_array2d(wp.array(edges_np, dtype=wp.int32, device=device), wp.int32)
-    flat_wp, offsets_wp = od.graph.successor_cycles(edges_wp, 8)
-    assert np.array_equal(flat_wp.numpy(), np.array([0, 1, 2], dtype=np.int32))
-    assert np.array_equal(offsets_wp.numpy(), np.array([0, 3], dtype=np.int32))
 
 
 def test_successor_cycles_empty(device: str) -> None:
@@ -971,6 +843,14 @@ def test_shortest_path_envelope_respects_the_bound(half_torus: tuple[tm.Trimesh,
 
 
 def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    The argument checks, and the guard on a negative edge weight.
+
+    A negative weight makes the relaxation decrease without bound instead of converging. Without
+    its guard the loop returns a plausible-looking array that keeps getting smaller as
+    ``max_iterations`` grows -- silently wrong rather than raising, exactly what the docstring's
+    "not admissible" note warns about.
+    """
     mesh_tm, mesh_wp = icosahedron
     adjacency = _length_weighted_csr(mesh_wp)
     values_wp = wp.zeros(mesh_tm.vertices.shape[0], dtype=wp.float32, device=mesh_wp.device)
@@ -982,20 +862,21 @@ def test_shortest_path_envelope_invalid(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     with pytest.raises(ValueError, match="one entry per edge"):
         od.graph.edges_to_csr(n_vertices, edges, values_wp)
 
-
-def test_shortest_path_envelope_rejects_negative_weights(device: str) -> None:
-    """
-    A negative weight makes the relaxation decrease without bound instead of converging.
-
-    Without this guard the loop returns a plausible-looking array that keeps getting smaller as
-    ``max_iterations`` grows -- silently wrong rather than raising, exactly what the docstring's
-    "not admissible" note warns about.
-    """
-    edges_wp = odt.as_array2d(
-        wp.array(np.array([[0, 1]], dtype=np.int32), dtype=wp.int32, device=device), wp.int32
-    )
+    device = mesh_wp.device
     weights_wp = wp.array(np.array([-1.0], dtype=np.float32), dtype=wp.float32, device=device)
-    adjacency = od.graph.edges_to_csr(2, edges_wp, weights_wp)
-    values_wp = wp.array(np.array([0.0, 1000.0], dtype=np.float32), dtype=wp.float32, device=device)
+    negative = od.graph.edges_to_csr(
+        2, _edges_wp(np.array([[0, 1]], dtype=np.int32), device), weights_wp
+    )
+    two_values_wp = wp.array(
+        np.array([0.0, 1000.0], dtype=np.float32), dtype=wp.float32, device=device
+    )
     with pytest.raises(ValueError, match="non-negative"):
-        od.graph.shortest_path_envelope(adjacency, values_wp, max_iterations=5)
+        od.graph.shortest_path_envelope(negative, two_values_wp, max_iterations=5)
+
+
+def _edges_wp(edges_np: np.ndarray, device: wp.DeviceLike) -> odt.Array2dInt32:
+    """Upload an ``(m, 2)`` edge list as a rank-2 ``int32`` array on ``device``."""
+    return odt.as_array2d(
+        wp.array(np.ascontiguousarray(edges_np, dtype=np.int32), dtype=wp.int32, device=device),
+        wp.int32,
+    )

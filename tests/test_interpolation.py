@@ -4,13 +4,18 @@ import igl
 import numpy as np
 import pymeshlab as ml
 import pytest
-import pyvista as pv
 import trimesh as tm
 import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from tests.conversions import points_to_pyvista, points_to_warp, trimesh_to_pyvista, warp_empty
+from tests.conversions import (
+    numpy_to_warp,
+    points_to_pyvista,
+    points_to_warp,
+    trimesh_to_pyvista,
+    warp_empty,
+)
 
 
 @pytest.mark.parity("average_onto_faces", "igl", "pyvista")
@@ -170,12 +175,7 @@ def test_transfer_onto_vertices_matches_pymeshlab(device: str):
     meshset_pml.set_current_mesh(1)
     transferred_pml = meshset_pml.current_mesh().vertex_scalar_array()
 
-    source_vertices_wp = points_to_warp(source_tm.vertices, device)
-    source_faces_wp = wp.array(
-        np.ascontiguousarray(source_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
     target_vertices_wp = points_to_warp(target_tm.vertices, device)
     values_wp = wp.array(values_np.astype(np.float32), dtype=wp.float32, device=device)
     transferred_wp, distance_wp = od.interpolation.transfer_onto_vertices(
@@ -185,14 +185,9 @@ def test_transfer_onto_vertices_matches_pymeshlab(device: str):
     assert np.isfinite(distance_wp.numpy()).all()
 
     # pyvista, on the coincident target where all three transfer the same field.
-    source_pv = pv.PolyData(
-        np.ascontiguousarray(source_tm.vertices),
-        faces=np.hstack(
-            [np.full((source_tm.faces.shape[0], 1), 3), np.ascontiguousarray(source_tm.faces)]
-        ).ravel(),
-    )
+    source_pv = trimesh_to_pyvista(source_tm)
     source_pv.point_data["field"] = values_np
-    sampled_pv = pv.PolyData(np.ascontiguousarray(source_tm.vertices)).sample(source_pv)
+    sampled_pv = points_to_pyvista(source_tm.vertices).sample(source_pv)
     valid_pv = np.asarray(sampled_pv.point_data["vtkValidPointMask"]).astype(bool)
     self_wp, _self_distance = od.interpolation.transfer_onto_vertices(
         source_vertices_wp, source_faces_wp, values_wp, source_vertices_wp
@@ -212,12 +207,7 @@ def test_transfer_onto_vertices_reproduces_a_linear_field(device: str):
     direction_np = np.array([0.3, -0.6, 0.74])
     values_np = source_tm.vertices @ direction_np
 
-    source_vertices_wp = points_to_warp(source_tm.vertices, device)
-    source_faces_wp = wp.array(
-        np.ascontiguousarray(source_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
     # Target vertices projected onto the source surface first, so "linear on the source" holds
     # exactly rather than up to the two spheres' radial gap.
     projected_wp, _distance, _face = od.proximity.closest_point_on_mesh(
@@ -235,12 +225,7 @@ def test_transfer_onto_vertices_reproduces_a_linear_field(device: str):
 def test_transfer_onto_vertices_vec3_field(device: str):
     """The transfer is dtype-generic: a ``wp.vec3`` field (a normal, a colour) works unchanged."""
     source_tm, target_tm = _transfer_meshes(device)
-    source_vertices_wp = points_to_warp(source_tm.vertices, device)
-    source_faces_wp = wp.array(
-        np.ascontiguousarray(source_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
     target_vertices_wp = points_to_warp(target_tm.vertices, device)
     # Transferring the source *positions* must reproduce each target vertex's closest point.
     transferred_wp, _distance = od.interpolation.transfer_onto_vertices(
@@ -268,12 +253,7 @@ def test_transfer_onto_vertices_vec2_field(device: str):
     docstring advertised "any Warp dtype closed under scaling and addition".
     """
     source_tm, target_tm = _transfer_meshes(device)
-    source_vertices_wp = points_to_warp(source_tm.vertices, device)
-    source_faces_wp = wp.array(
-        np.ascontiguousarray(source_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
     target_vertices_wp = points_to_warp(target_tm.vertices, device)
 
     uv_np = np.ascontiguousarray(source_tm.vertices[:, :2], dtype=np.float32)
@@ -337,12 +317,7 @@ def test_transfer_onto_vertices_survives_a_sliver_source_face(device: str):
 def test_transfer_onto_vertices_misses_stay_zero(device: str):
     """A target beyond ``max_dist`` keeps the zero fill and reports ``inf``."""
     source_tm, _target_tm = _transfer_meshes(device)
-    source_vertices_wp = points_to_warp(source_tm.vertices, device)
-    source_faces_wp = wp.array(
-        np.ascontiguousarray(source_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=device,
-    )
+    source_vertices_wp, source_faces_wp = numpy_to_warp(source_tm.vertices, source_tm.faces, device)
     values_wp = wp.array(
         np.ones(source_tm.vertices.shape[0], dtype=np.float32), dtype=wp.float32, device=device
     )
@@ -429,9 +404,21 @@ def _interpolate_wp(
     ).numpy()
 
 
-@pytest.mark.parametrize(("radius", "sharpness"), [(0.2, 1.0), (0.2, 2.0), (0.2, 8.0), (1.0, 2.0)])
+@pytest.mark.parametrize(
+    ("radius", "sharpness", "k"),
+    [
+        pytest.param(0.2, 1.0, None, id="ball-r0.2-s1"),
+        pytest.param(0.2, 2.0, None, id="ball-r0.2-s2"),
+        pytest.param(0.2, 8.0, None, id="ball-r0.2-s8"),
+        pytest.param(1.0, 2.0, None, id="ball-r1-s2"),
+        pytest.param(1.0, 2.0, 4, id="k4"),
+        pytest.param(1.0, 2.0, 16, id="k16"),
+    ],
+)
 @pytest.mark.parity("interpolate_from_points", "pyvista")
-def test_interpolate_from_points_matches_pyvista(device: str, radius: float, sharpness: float):
+def test_interpolate_from_points_matches_pyvista(
+    device: str, radius: float, sharpness: float, k: int | None
+):
     """
     Class A, element-wise, against ``DataSet.interpolate`` — the same Gaussian kernel.
 
@@ -441,32 +428,24 @@ def test_interpolate_from_points_matches_pyvista(device: str, radius: float, sha
     both ruled out, at 0.30153478 against 0.39651675 and 0.13793103). ``sharpness`` is swept as the
     live axis, and the sweep starts at 1.0 because VTK **clamps it up** to that — its own ``0.5``
     behaves as ``1.0``.
+
+    The ``k`` rows are the k-nearest footprint, against ``interpolate(n_points=k)``. Measured: the
+    reference still scales the weights by ``radius`` in this mode — the footprint is the only thing
+    ``n_points`` changes, so a row of the same ``k`` neighbours interpolates differently at a
+    different radius (0.30153478 / 0.44769209 / 0.48687801 at radius 1 / 2 / 4). That is why
+    ``radius`` stays required there.
     """
     source_np, values_np, query_np = _scattered_cloud()
-    interpolated_pv = _interpolate_pv(source_np, values_np, query_np, radius, sharpness)
+    interpolated_pv = _interpolate_pv(source_np, values_np, query_np, radius, sharpness, n_points=k)
     interpolated_wp = _interpolate_wp(
-        source_np, values_np, query_np, radius, sharpness, device=device
+        source_np, values_np, query_np, radius, sharpness, device=device, k=k
     )
-    # Anti-vacuity: a radius that reached nothing would make both sides the null value everywhere.
-    assert (interpolated_pv != 0.0).sum() > 0.8 * query_np.shape[0]
-    assert np.allclose(interpolated_wp, interpolated_pv, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("k", [4, 16])
-@pytest.mark.parity("interpolate_from_points", "pyvista")
-def test_interpolate_from_points_k_nearest_matches_pyvista(device: str, k: int):
-    """
-    Class A on the k-nearest footprint, against ``interpolate(n_points=k)``.
-
-    Measured: the reference still scales the weights by ``radius`` in this mode — the footprint is
-    the only thing ``n_points`` changes, so a row of the same ``k`` neighbours interpolates
-    differently at a different radius (0.30153478 / 0.44769209 / 0.48687801 at radius 1 / 2 / 4).
-    That is why ``radius`` stays required here.
-    """
-    source_np, values_np, query_np = _scattered_cloud()
-    interpolated_pv = _interpolate_pv(source_np, values_np, query_np, 1.0, 2.0, n_points=k)
-    interpolated_wp = _interpolate_wp(source_np, values_np, query_np, 1.0, 2.0, device=device, k=k)
-    assert (interpolated_pv != 0.0).all()
+    # Anti-vacuity: a radius that reached nothing would make both sides the null value everywhere;
+    # a k-nearest footprint always reaches ``k`` sources.
+    if k is None:
+        assert (interpolated_pv != 0.0).sum() > 0.8 * query_np.shape[0]
+    else:
+        assert (interpolated_pv != 0.0).all()
     assert np.allclose(interpolated_wp, interpolated_pv, rtol=1e-5, atol=1e-5)
 
 

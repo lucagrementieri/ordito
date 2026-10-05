@@ -14,6 +14,7 @@ import scipy.sparse as sp
 import torch
 import trimesh as tm
 import warp as wp
+import warp.sparse as wps
 from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from pymeshfix import _meshfix
@@ -978,6 +979,31 @@ def warp_to_trimesh(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
         faces=faces_wp.numpy().reshape(-1, 3).astype(np.int64),
         process=False,
     )
+
+
+def scipy_to_bsr(
+    matrix_sp: sp.coo_matrix | sp.csr_matrix | sp.csc_matrix, device: wp.DeviceLike
+) -> odt.BsrMatrix[wp.float64]:
+    """
+    Upload a scipy sparse matrix as a ``float64`` BSR of 1x1 blocks on ``device``.
+
+    The inverse of [`bsr_to_csr`][tests.conversions.bsr_to_csr]. The matrix goes through its COO
+    form as triplets, so a ``coo_matrix`` built with repeated ``(row, col)`` pairs reaches
+    ``warp.sparse.bsr_from_triplets`` with its duplicates intact -- they are summed there, and the
+    result's ``nnz`` is the stale triplet count a duplicate build leaves. Explicit zeros are kept
+    (``prune_numerical_zeros=False``), so the uploaded pattern is the scipy matrix's own.
+    """
+    coo = matrix_sp.tocoo()
+    matrix_wp = wps.bsr_from_triplets(
+        int(coo.shape[0]),
+        int(coo.shape[1]),
+        wp.array(coo.row.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(coo.col.astype(np.int32), dtype=wp.int32, device=device),
+        wp.array(np.ascontiguousarray(coo.data, dtype=np.float64), dtype=wp.float64, device=device),
+        prune_numerical_zeros=False,
+    )
+    assert odt.has_blocks(matrix_wp, wp.float64)
+    return matrix_wp
 
 
 def bsr_to_dense(matrix: odt.SparseMatrix, n_vertices: int) -> np.ndarray:

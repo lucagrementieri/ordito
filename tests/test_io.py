@@ -70,17 +70,6 @@ def test_load_mesh_data_roundtrip(tmp_path: Path, device: str):
     assert "face_normals" not in data_wp
 
 
-def test_load_mesh_returns_wp_mesh(tmp_path: Path, device: str):
-    path = tmp_path / "mesh.ply"
-    source = _write_synthetic_mesh(path)
-
-    mesh_wp = od.io.load_mesh(path, device=device)
-
-    assert isinstance(mesh_wp, wp.Mesh)
-    assert np.allclose(mesh_wp.points.numpy(), source["vertices"], rtol=1e-5, atol=1e-5)
-    assert np.array_equal(mesh_wp.indices.numpy().reshape(-1, 3), source["faces"])
-
-
 @pytest.mark.parity(
     "load_mesh",
     "pytorch3d",
@@ -103,12 +92,17 @@ def test_load_mesh_matches_pytorch3d(tmp_path: Path, device: str):
 
     Note ``load_ply`` returns a bare ``(verts, faces)`` tuple, not a ``Meshes`` -- the container
     form is ``IO().load_mesh``, and only the ``.obj`` reader has an ``as_meshes`` helper.
+
+    The returned object is a ``wp.Mesh`` whose points and faces also match the written arrays.
     """
     path = tmp_path / "mesh.ply"
     source = _write_synthetic_mesh(path)
     vertices_p3d, faces_p3d = p3d_io.load_ply(str(path))
     mesh_wp = od.io.load_mesh(path, device=device)
 
+    assert isinstance(mesh_wp, wp.Mesh)
+    assert np.allclose(mesh_wp.points.numpy(), source["vertices"], rtol=1e-5, atol=1e-5)
+    assert np.array_equal(mesh_wp.indices.numpy().reshape(-1, 3), source["faces"])
     assert vertices_p3d.shape == source["vertices"].shape
     assert np.array_equal(mesh_wp.points.numpy(), vertices_p3d.numpy())
     assert np.array_equal(mesh_wp.indices.numpy().reshape(-1, 3), faces_p3d.numpy())

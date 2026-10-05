@@ -29,26 +29,38 @@ from tests.conversions import (
 )
 
 
-@pytest.mark.parity("moments", "meshlib")
-def test_volume(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "torus"])
+@pytest.mark.parity("moments", "meshlib", "pyvista")
+def test_volume(request: pytest.FixtureRequest, mesh_name: str):
     """
-    Class A: the divergence-theorem volume against ``Trimesh.volume`` and MeshLib's ``volume``.
+    Class A: the divergence-theorem volume against trimesh, MeshLib and pyvista.
 
-    A closed mesh is required for the integral to mean anything, which is why the fixture is
-    closed and the open-mesh behaviour is not asserted here.
+    The three references are ``Trimesh.volume``, MeshLib's ``volume`` and ``PolyData.volume``.
 
-    The parity marker names the ``moments`` group rather than a group of its own, because that is
-    where the integral family is timed and MeshLib's ``volume`` sits in it exactly as pyvista's
-    ``PolyData.volume`` does -- the volume alone, no centre of mass and no inertia tensor. Its
-    ``region`` argument defaults to the whole mesh, which is the comparison; ordito has no
-    per-region form, so nothing is left untested by passing ``None``.
+    A closed mesh is required for the integral to mean anything, which is why every fixture is
+    closed and the open-mesh behaviour is not asserted here. ``cave_cube`` is the fixture that makes
+    the *sign* convention matter: it is a shell whose inner box is wound inwards, so a volume taken
+    without signs would report the outer box alone.
+
+    The parity markers name the ``moments`` group rather than a group of their own, because that is
+    where the integral family is timed. VTK computes the volume as this module does -- a signed sum
+    of per-face tetrahedra -- so no transform applies and the agreement is float32-limited
+    (measured 2.5e-07 on ``icosahedron``, where ordito reads 2.536150455 against 2.536150710 and
+    trimesh's float64 answer is 2.536150710). MeshLib's ``volume`` sits in the group exactly as
+    pyvista's does -- the volume alone, no centre of mass and no inertia tensor. Its ``region``
+    argument defaults to the whole mesh, which is the comparison; ordito has no per-region form, so
+    nothing is left untested by passing ``None``.
     """
-    mesh_tm, mesh_wp = icosahedron
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
+    volume_pv = float(trimesh_to_pyvista(mesh_tm).volume)
+    assert volume_pv > 0.0
 
     volume_wp = od.measures.volume(mesh_wp.points, mesh_wp.indices)
     assert np.isclose(volume_wp, mesh_tm.volume, rtol=1e-5, atol=1e-5)
     assert np.isclose(volume_wp, mm.volume(mesh_ml.topology, mesh_ml.points), rtol=1e-5, atol=1e-5)
+    assert np.isclose(volume_wp, volume_pv, rtol=1e-5)
+    assert np.isclose(volume_pv, mesh_tm.volume, rtol=1e-5)
 
 
 def test_volume_inward_normals_negative(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
@@ -67,16 +79,13 @@ def test_volume_inward_normals_negative(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     assert np.isclose(volume_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
-def test_volume_empty(device: str):
-    vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.array([], dtype=wp.int32, device=device)
-    assert od.measures.volume(vertices, faces) == 0.0
-
-
-@pytest.mark.parity("surface_centroid", "trimesh", "meshlib")
+@pytest.mark.parity("surface_centroid", "trimesh", "meshlib", "pymeshlab")
 def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A: the area-weighted surface centroid against ``Trimesh.centroid`` and MeshLib's.
+    Class A against trimesh and MeshLib, Class B against MeshLab: the area-weighted centroid.
+
+    The references are ``Trimesh.centroid``, MeshLib's ``findCenterFromFaces`` and MeshLab's
+    ``shell_barycenter``.
 
     An open fixture, because on a closed symmetric mesh the centroid sits at the origin and a
     wrongly-weighted sum lands there too -- and this fixture is translated as well, so a function
@@ -87,9 +96,18 @@ def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     ``findCenterFromPoints`` is the plain vertex mean that [`centroid`][ordito.points.centroid]
     computes. The final assert holds them apart -- measured 2.63 apart on ``half_torus`` -- so a
     future rebinding to the other one cannot pass quietly.
+
+    MeshLab's ``get_geometric_measures`` answers six questions in one call -- which is why
+    ``benchmarks/test_triangles.py`` reads its row as an *upper* bound on the centroid alone -- but
+    "upper bound" is a statement about cost, not about the value. Indexing the dict is the whole
+    transform. The same call also returns ``barycenter``, the plain *vertex* mean; asserting against
+    ``shell_barycenter`` while checking that ``barycenter`` is measurably different is what makes
+    the comparison a test of the area weighting: on ``hemisphere`` they sit about 0.02 apart, some
+    400x the 1e-5 tolerance.
     """
     mesh_tm, mesh_wp = hemisphere
     mesh_ml = trimesh_to_meshlib(mesh_tm)
+    measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
 
     centroid_tm = mesh_tm.centroid
     centroid_ml = np.array([*mm.findCenterFromFaces(mesh_ml.topology, mesh_ml.points)])
@@ -98,6 +116,8 @@ def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     centroid_wp = np.array(odt.vec3_floats(centroid_wp))
     assert np.allclose(centroid_wp, centroid_tm, rtol=1e-5, atol=1e-5)
     assert np.allclose(centroid_wp, centroid_ml, rtol=1e-5, atol=1e-5)
+    assert np.allclose(centroid_wp, measures_pml["shell_barycenter"], rtol=1e-5, atol=1e-5)
+    assert not np.allclose(measures_pml["barycenter"], measures_pml["shell_barycenter"], atol=1e-3)
 
     # The vertex mean is a different point, and is ordito's points.centroid rather than this.
     vertex_mean_ml = np.array([*mm.findCenterFromPoints(mesh_ml.topology, mesh_ml.points)])
@@ -135,14 +155,6 @@ def test_surface_centroid_matches_trimesh_on_a_skewed_mesh_on_both_devices(kerne
     )
 
 
-def test_surface_centroid_empty(device: str):
-    vertices = wp.zeros(1, dtype=wp.vec3, device=device)
-    faces = wp.array([], dtype=wp.int32, device=device)
-    centroid_wp = od.measures.surface_centroid(vertices, faces)
-    centroid_wp = np.array(odt.vec3_floats(centroid_wp))
-    assert np.isnan(centroid_wp).all()
-
-
 def test_surface_centroid_all_degenerate(device: str):
     """
     Not a library comparison: the other input whose area weights sum to zero.
@@ -163,35 +175,6 @@ def test_surface_centroid_all_degenerate(device: str):
     assert float(areas_wp.numpy().max()) == 0.0
     centroid_wp = od.measures.surface_centroid(vertices_wp, faces_wp)
     assert np.isnan(odt.vec3_floats(centroid_wp)).all()
-
-
-@pytest.mark.parity("surface_centroid", "pymeshlab")
-def test_surface_centroid_matches_pymeshlab_shell_barycenter(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
-):
-    """
-    The area-weighted centroid against MeshLab's ``shell_barycenter``.
-
-    ``get_geometric_measures`` answers six questions in one call -- which is why
-    ``benchmarks/test_triangles.py`` reads its row as an *upper* bound on the centroid alone -- but
-    "upper bound" is a statement about cost, not about the value. Indexing the dict is the whole
-    transform (Class B).
-
-    The distinction that matters here is that the same call also returns ``barycenter``, the plain
-    *vertex* mean, and the two differ on any mesh with uneven triangle areas. Asserting against
-    ``shell_barycenter`` while checking that ``barycenter`` is measurably different is what makes
-    this a real test of the area weighting rather than of a centre of mass in general: on
-    ``hemisphere`` they sit about 0.02 apart, some 400x the 1e-5 tolerance.
-    """
-    mesh_tm, mesh_wp = hemisphere
-    measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
-
-    centroid_wp = od.measures.surface_centroid(mesh_wp.points, mesh_wp.indices)
-    centroid_np = np.array(odt.vec3_floats(centroid_wp))
-
-    assert np.allclose(centroid_np, measures_pml["shell_barycenter"], rtol=1e-5, atol=1e-5)
-    # The vertex mean is a different quantity; if it were not, the assert above would be weightless.
-    assert not np.allclose(measures_pml["barycenter"], measures_pml["shell_barycenter"], atol=1e-3)
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
@@ -233,28 +216,6 @@ def test_moments(request: pytest.FixtureRequest, mesh_name: str):
     assert (
         np.abs(np.asarray(inertia_wp).reshape(3, 3) - mesh_tm.moment_inertia).max() < 1e-5 * scale
     )
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "torus"])
-@pytest.mark.parity("moments", "pyvista")
-def test_volume_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str):
-    """
-    Class A on the volume half of ``moments``: ``PolyData.volume`` is the same divergence integral.
-
-    VTK computes it as this module does -- a signed sum of per-face tetrahedra -- so no transform
-    applies and the agreement is float32-limited (measured 2.5e-07 on ``icosahedron``, where ordito
-    reads 2.536150455 against 2.536150710 and trimesh's float64 answer is 2.536150710).
-
-    ``cave_cube`` is the fixture that makes the *sign* convention matter: it is a shell whose inner
-    box is wound inwards, so a volume taken without signs would report the outer box alone.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    volume_pv = float(trimesh_to_pyvista(mesh_tm).volume)
-    assert volume_pv > 0.0
-
-    assert np.isclose(od.measures.volume(mesh_wp.points, mesh_wp.indices), volume_pv, rtol=1e-5)
-    # Non-vacuous on cave_cube: the outer box alone is a measurably different number.
-    assert np.isclose(volume_pv, mesh_tm.volume, rtol=1e-5)
 
 
 def test_moments_center_of_mass_differs_from_the_surface_centroid(
@@ -307,10 +268,21 @@ def test_moments_translation_shifts_only_the_center(device: str):
     )
 
 
-def test_moments_empty(device: str):
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    volume, center, inertia = od.measures.moments(vertices_wp, faces_wp)
+def test_empty_mesh(device: str):
+    """
+    Not a library comparison: every reduction's answer on a mesh with no faces.
+
+    The volume of nothing is zero; the two centres are area- or volume-weighted means of nothing,
+    so ``NaN``; the inertia tensor is the zero matrix.
+    """
+    faces_wp = wp.array([], dtype=wp.int32, device=device)
+    one_vertex_wp = wp.zeros(1, dtype=wp.vec3, device=device)
+    no_vertices_wp = wp.array(np.zeros((0, 3), dtype=np.float32), dtype=wp.vec3, device=device)
+
+    assert od.measures.volume(one_vertex_wp, faces_wp) == 0.0
+    centroid_wp = od.measures.surface_centroid(one_vertex_wp, faces_wp)
+    assert np.isnan(odt.vec3_floats(centroid_wp)).all()
+    volume, center, inertia = od.measures.moments(no_vertices_wp, faces_wp)
     assert volume == 0.0
     assert np.isnan(odt.vec3_floats(center)).all()
     assert np.array_equal(np.asarray(inertia).reshape(3, 3), np.zeros((3, 3)))
@@ -327,8 +299,3 @@ def test_euler_characteristic(request: pytest.FixtureRequest, mesh_name: str) ->
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     euler_wp = od.measures.euler_characteristic(mesh_wp.indices)
     assert euler_wp == int(mesh_tm.euler_number)
-
-
-def test_euler_characteristic_icosahedron(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _, mesh_wp = icosahedron
-    assert od.measures.euler_characteristic(mesh_wp.indices) == 2

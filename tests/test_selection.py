@@ -196,6 +196,15 @@ def test_region_boundary_edges_matches_pyvista(device: str) -> None:
         assert edges_pv - rim == edges_wp, name
 
 
+def _upper_half_contour(mesh_wp: wp.Mesh) -> tuple[np.ndarray, odt.Array2dInt32]:
+    """Return the faces whose centroid lies above the mean height, and their oriented seam."""
+    faces_wp = mesh_wp.indices
+    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
+    region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
+    region_wp = wp.array(region_np, dtype=wp.bool, device=faces_wp.device)
+    return region_np, od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+
+
 @pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "unit_box", "hemisphere"])
 def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     request: pytest.FixtureRequest, mesh_name: str
@@ -216,14 +225,10 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
-    device = faces_wp.device
     n_faces = faces_wp.size // 3
 
-    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
-    region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
-    region_wp = wp.array(region_np, dtype=wp.bool, device=device)
-
-    oriented_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    region_np, oriented_wp = _upper_half_contour(mesh_wp)
+    region_wp = wp.array(region_np, dtype=wp.bool, device=faces_wp.device)
     assert np.array_equal(
         od.selection.faces_left_of_contour(faces_wp, oriented_wp).numpy(), region_np
     )
@@ -237,7 +242,7 @@ def test_region_boundary_edges_oriented_round_trips_through_the_fill(
 
 @pytest.mark.parametrize("oriented", [False, True])
 def test_region_boundary_edges_bucketed_match_the_key_sort(
-    icosphere: tuple[tm.Trimesh, wp.Mesh], oriented: bool, monkeypatch: pytest.MonkeyPatch
+    icosphere: tuple[tm.Trimesh, wp.Mesh], oriented: bool, request: pytest.FixtureRequest
 ) -> None:
     """
     Ordito against ordito: the bucketed mates give the key sort's seam, row for row.
@@ -253,8 +258,7 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
     sorted_np = od.selection.region_boundary_edges(
         mesh_wp.indices, face_mask, n_vertices, oriented=oriented
     ).numpy()
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    request.getfixturevalue("force_halfedge_buckets")
     bucketed_np = od.selection.region_boundary_edges(
         mesh_wp.indices, face_mask, n_vertices, oriented=oriented
     ).numpy()
@@ -263,14 +267,40 @@ def test_region_boundary_edges_bucketed_match_the_key_sort(
     assert np.array_equal(sorted_np, bucketed_np)
 
 
-def test_region_boundary_edges_rejects_mismatched_face_mask(device: str) -> None:
-    """Not a parity assert: pins the ``ValueError`` guard against an out-of-bounds kernel read."""
+@pytest.mark.parametrize(
+    ("entry_point", "message"),
+    [
+        pytest.param("region_boundary_edges", "one entry per face", id="region_boundary_edges"),
+        pytest.param(
+            "exclude_fully_selected_components",
+            "one entry per vertex",
+            id="exclude_fully_selected_components",
+        ),
+        pytest.param("submesh_from_face_mask", "one entry per face", id="submesh_from_face_mask"),
+    ],
+)
+def test_masks_of_the_wrong_length_are_rejected(
+    entry_point: str, message: str, device: str
+) -> None:
+    """Not a parity assert: pins each mask's ``ValueError`` guard against an out-of-bounds read."""
     _vertices_np, faces_np = _grid_mesh(3)
     n_faces = len(faces_np) // 3
+    n_vertices = int(faces_np.max()) + 1
     faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    short_mask = wp.zeros(n_faces - 1, dtype=wp.bool, device=device)
-    with pytest.raises(ValueError, match="one entry per face"):
-        od.selection.region_boundary_edges(faces_wp, short_mask)
+    short_face_mask = wp.zeros(n_faces - 1, dtype=wp.bool, device=device)
+    calls = {
+        "region_boundary_edges": lambda: od.selection.region_boundary_edges(
+            faces_wp, short_face_mask
+        ),
+        "exclude_fully_selected_components": lambda: od.selection.exclude_fully_selected_components(
+            faces_wp, wp.zeros(n_vertices - 1, dtype=wp.bool, device=device), n_vertices
+        ),
+        "submesh_from_face_mask": lambda: od.selection.submesh_from_face_mask(
+            wp.zeros(n_vertices, dtype=wp.vec3, device=device), faces_wp, short_face_mask
+        ),
+    }
+    with pytest.raises(ValueError, match=message):
+        calls[entry_point]()
 
 
 def _meshlib_contour(
@@ -307,11 +337,8 @@ def test_faces_left_of_contour_matches_meshlib(
     device = faces_wp.device
     n_faces = faces_wp.size // 3
 
-    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
-    region_np = centroids_np[:, 2] > centroids_np[:, 2].mean()
+    region_np, contour_wp = _upper_half_contour(mesh_wp)
     assert 0 < int(region_np.sum()) < n_faces  # non-vacuity: both sides have faces
-    region_wp = wp.array(region_np, dtype=wp.bool, device=device)
-    contour_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
     assert int(contour_wp.shape[0]) > 0  # and the seam between them is not empty
 
     topology_ml = trimesh_to_meshlib(mesh_tm).topology
@@ -393,11 +420,7 @@ def test_faces_left_of_contour_compressed_forest(
 
     _, mesh_wp = icosphere
     faces_wp = mesh_wp.indices
-    centroids_np = od.triangles.face_centroids(mesh_wp.points, faces_wp).numpy()
-    region_wp = wp.array(
-        centroids_np[:, 2] > centroids_np[:, 2].mean(), dtype=wp.bool, device=faces_wp.device
-    )
-    contour_wp = od.selection.region_boundary_edges(faces_wp, region_wp, oriented=True)
+    _region_np, contour_wp = _upper_half_contour(mesh_wp)
     plain = od.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
     monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
     compressed = od.selection.faces_left_of_contour(faces_wp, contour_wp).numpy()
@@ -481,30 +504,6 @@ def test_exclude_fully_selected_components_matches_scipy(device: str, n_sub: int
     assert np.array_equal(kept_wp, kept_np)
 
 
-def test_exclude_fully_selected_components(device: str):
-    ico = tm.creation.icosahedron()
-    hemi = tm.creation.icosphere(subdivisions=1)
-    v_ico = ico.vertices.astype(np.float64)
-    v_hemi = hemi.vertices.astype(np.float64) + np.array([5.0, 0.0, 0.0])
-    v_wp_ico = points_to_warp(v_ico, device)
-    f_wp_ico = wp.array(ico.faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
-    v_wp_hemi = points_to_warp(v_hemi, device)
-    f_wp_hemi = wp.array(hemi.faces.astype(np.int32).reshape(-1), dtype=wp.int32, device=device)
-    verts, faces = od.combine.concatenate([(v_wp_ico, f_wp_ico), (v_wp_hemi, f_wp_hemi)])
-
-    n = verts.size
-    n_ico = len(v_ico)
-    mask = np.zeros(n, dtype=bool)
-    mask[:n_ico] = True  # whole icosahedron component
-    mask[n_ico : n_ico + 3] = True  # partial hemisphere component
-    mask_wp = wp.array(mask, dtype=wp.bool, device=device)
-
-    result = od.selection.exclude_fully_selected_components(faces, mask_wp, n).numpy()
-    # The fully-selected icosahedron component is dropped; the partial hemisphere subset stays.
-    assert not result[:n_ico].any()
-    assert np.array_equal(result[n_ico : n_ico + 3], np.ones(3, dtype=bool))
-
-
 def test_exclude_fully_selected_components_compressed_forest(
     device: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -553,25 +552,27 @@ def test_exclude_fully_selected_components_compressed_forest(
     assert np.array_equal(compressed[1], plain[1])
 
 
-def test_exclude_fully_selected_components_rejects_mismatched_mask(device: str) -> None:
-    """Not a parity assert: pins the ``ValueError`` guard against an out-of-bounds kernel read."""
-    _vertices_np, faces_np = _grid_mesh(3)
-    n_vertices = int(faces_np.max()) + 1
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    short_mask = wp.zeros(n_vertices - 1, dtype=wp.bool, device=device)
-    with pytest.raises(ValueError, match="one entry per vertex"):
-        od.selection.exclude_fully_selected_components(faces_wp, short_mask, n_vertices)
-
-
-def test_submesh_from_face_indices_empty(device: str) -> None:
+def test_face_selections_of_nothing_are_empty(device: str) -> None:
+    """No face index, no face group or no vertex index: an empty submesh, packing or face list."""
     vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
-    face_indices_wp = warp_empty(0, wp.int32, device)
+    empty_wp = warp_empty(0, wp.int32, device)
+
     submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
-        vertices_wp, faces_wp, face_indices_wp
+        vertices_wp, faces_wp, empty_wp
     )
     assert submesh_vertices_wp.shape == (0,)
     assert submesh_faces_wp.shape == (0,)
+
+    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
+        vertices_wp, faces_wp, empty_wp, wp.zeros(1, dtype=wp.int32, device=device)
+    )
+    assert vertices_all_wp.shape == (0,)
+    assert np.array_equal(vertex_offsets_wp.numpy(), [0])
+    assert faces_all_wp.shape == (0,)
+
+    face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, empty_wp)
+    assert face_indices_wp.shape == (0,)
 
 
 @pytest.mark.parity("submesh_from_face_indices", "open3d", "pyvista")
@@ -668,90 +669,65 @@ def test_submesh_from_face_indices_matches_open3d_and_pyvista(
 
 
 @pytest.mark.parity("submesh_from_face_indices", "trimesh")
-def test_submesh_from_face_indices_single_face(request: pytest.FixtureRequest) -> None:
+@pytest.mark.parametrize(
+    "face_indices_list",
+    [pytest.param([0], id="single-face"), pytest.param([0, 0, 0, 5, 5, 12, 12], id="duplicated")],
+)
+def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
+    request: pytest.FixtureRequest, face_indices_list: list[int]
+) -> None:
     """
-    Class A: one face against ``trimesh.util.submesh``, positions and remapped indices.
+    Class A: a short index list against ``trimesh.util.submesh``, positions and remapped indices.
 
     ``repair=False, append=False`` on the reference side is not a transform but a *disabling* of
-    one: trimesh would otherwise weld and reorder, a different operation from this one.
+    one: trimesh would otherwise weld and reorder, a different operation from this one. The
+    duplicated arm is where the *face* count is the interesting half: a face named three times must
+    appear three times -- the output length is asserted exactly -- while its vertices are shared, so
+    the vertex count is bounded by the distinct faces' corners rather than fixed.
     """
     mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
-    face_indices = wp.array([0], dtype=wp.int32, device=mesh_wp.points.device)
-    submesh_tm = tm.util.submesh(mesh_tm, [[0]], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, face_indices
-    )
-    assert submesh_vertices_wp.shape == (3,)
-    assert submesh_faces_wp.shape == (3,)
-    assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
-    assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
-
-
-def test_submesh_from_face_indices_duplicated(request: pytest.FixtureRequest) -> None:
-    """
-    Class A with a repeated index list, where the *face* count is the interesting half.
-
-    A face named three times must appear three times -- the output length is asserted exactly --
-    while its vertices are shared, so the vertex count is bounded rather than fixed. trimesh agrees
-    on both.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue("icosahedron")
-    face_indices_np = np.array([0, 0, 0, 5, 5, 12, 12], dtype=np.int32)
+    face_indices_np = np.array(face_indices_list, dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
+    assert submesh_vertices_wp.shape == (len(submesh_tm.vertices),)
     assert submesh_vertices_wp.size <= len(np.unique(face_indices_np)) * 3
     assert submesh_faces_wp.shape == (len(face_indices_np) * 3,)
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
 
+@pytest.mark.parametrize("selection", ["random_third", "all_faces"])
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
-def test_submesh_from_face_indices_random_faces(
-    request: pytest.FixtureRequest, mesh_name: str
+def test_submesh_from_face_indices_matches_trimesh(
+    request: pytest.FixtureRequest, mesh_name: str, selection: str
 ) -> None:
     """
-    Class A over a third of the faces on three fixtures: the general case, no transform.
+    Class A over a random third of the faces and over every face, on three fixtures, no transform.
 
     Both the vertex *order* and the index remapping are compared elementwise, so this pins the
-    first-occurrence compaction rule and not merely the resulting set.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    rng = np.random.default_rng(42)
-    n_faces = mesh_tm.faces.shape[0]
-    n_select = max(1, n_faces // 3)
-    face_indices_np = rng.choice(n_faces, size=n_select, replace=False).astype(np.int32)
-    face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
-    submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
-    submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
-        mesh_wp.points, mesh_wp.indices, face_indices
-    )
-    assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
-    assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
-def test_submesh_from_face_indices_all_faces(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class A: selecting every face must reproduce the input mesh, not merely an equivalent one.
-
-    The identity case, and the one that pins the compaction's *order*: any renumbering that is
-    not the identity here would still give a valid mesh with the same geometry.
+    first-occurrence compaction rule and not merely the resulting set. Selecting every face must
+    reproduce the input mesh, not merely an equivalent one: the identity case is the one that pins
+    the compaction's *order*, since any renumbering that is not the identity there would still give
+    a valid mesh with the same geometry.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_faces = mesh_tm.faces.shape[0]
-    face_indices_np = np.arange(n_faces, dtype=np.int32)
+    if selection == "random_third":
+        rng = np.random.default_rng(42)
+        n_select = max(1, n_faces // 3)
+        face_indices_np = rng.choice(n_faces, size=n_select, replace=False).astype(np.int32)
+    else:
+        face_indices_np = np.arange(n_faces, dtype=np.int32)
     face_indices = wp.array(face_indices_np, dtype=wp.int32, device=mesh_wp.points.device)
     submesh_tm = tm.util.submesh(mesh_tm, [face_indices_np], repair=False, append=False)[0]
     submesh_vertices_wp, submesh_faces_wp = od.selection.submesh_from_face_indices(
         mesh_wp.points, mesh_wp.indices, face_indices
     )
     assert submesh_vertices_wp.size <= mesh_tm.vertices.shape[0]
-    assert submesh_faces_wp.size == n_faces * 3
+    assert submesh_faces_wp.size == face_indices_np.size * 3
     assert np.allclose(submesh_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
@@ -853,18 +829,6 @@ def test_submeshes_from_face_groups_unreferenced_vertices(device: str) -> None:
     assert np.array_equal(faces_all_wp.numpy(), [0, 1, 2])
 
 
-def test_submeshes_from_face_groups_empty(device: str) -> None:
-    vertices_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    faces_wp = wp.array(np.array([0, 1, 2, 0, 2, 3], dtype=np.int32), dtype=wp.int32, device=device)
-    empty_wp = warp_empty(0, wp.int32, device)
-    vertices_all_wp, vertex_offsets_wp, faces_all_wp = od.selection.submeshes_from_face_groups(
-        vertices_wp, faces_wp, empty_wp, wp.zeros(1, dtype=wp.int32, device=device)
-    )
-    assert vertices_all_wp.shape == (0,)
-    assert np.array_equal(vertex_offsets_wp.numpy(), [0])
-    assert faces_all_wp.shape == (0,)
-
-
 @pytest.mark.parametrize("mesh_name", ["icosphere", "half_torus"])
 def test_submesh_return_index_carries_an_attribute(
     request: pytest.FixtureRequest, mesh_name: str
@@ -937,19 +901,6 @@ def test_submesh_from_face_mask(request: pytest.FixtureRequest, mesh_name: str) 
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
     assert np.allclose(got_vertices_wp.numpy(), submesh_tm.vertices)
     assert np.array_equal(got_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
-
-
-def test_submesh_from_face_mask_rejects_mismatched_length(device: str) -> None:
-    """Not a parity assert: pins the ``ValueError`` guard against an out-of-bounds kernel read."""
-    _vertices_np, faces_np = _grid_mesh(3)
-    n_faces = len(faces_np) // 3
-    vertices_wp = wp.array(
-        np.zeros((int(faces_np.max()) + 1, 3), dtype=np.float32), dtype=wp.vec3, device=device
-    )
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    short_mask = wp.zeros(n_faces - 1, dtype=wp.bool, device=device)
-    with pytest.raises(ValueError, match="one entry per face"):
-        od.selection.submesh_from_face_mask(vertices_wp, faces_wp, short_mask)
 
 
 @pytest.mark.parity("delete_region_keep_boundary", "meshlib")
@@ -1287,19 +1238,6 @@ def test_submesh_from_vertex_mask(
     assert np.array_equal(got_faces_wp.numpy(), exp_faces_wp.numpy())
 
 
-def test_expand_vertex_mask(device: str):
-    vertices_np, faces_np = _grid_mesh(6)
-    n = len(vertices_np)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    seed = np.zeros(n, dtype=bool)
-    seed[len(vertices_np) // 2] = True
-    seed_wp = wp.array(seed, dtype=wp.bool, device=device)
-    for hops in (1, 2, 3):
-        edges_wp_np = od.selection.expand_vertex_mask(faces_wp, seed_wp, hops).numpy()
-        expected = _graph_distance(faces_np, n, seed) <= hops
-        assert np.array_equal(edges_wp_np, expected)
-
-
 @pytest.mark.parity("expand_vertex_mask", "pymeshlab")
 def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
     """
@@ -1320,7 +1258,8 @@ def test_expand_vertex_mask_matches_pymeshlab_dilatation(device: str):
     Selection removes a face when any of its vertices is on the boundary of the selection, so
     reading the vertex selection back gives the vertices of the surviving *faces* -- measured at
     51 / 39 / 25 vertices after 1 / 2 / 3 erosions where ``shrink_vertex_mask`` gives 19 / 7 / 1.
-    Different operation, not a discrepancy. ``test_shrink_vertex_mask`` keeps the scipy oracle.
+    Different operation, not a discrepancy. ``test_vertex_morphology_on_an_irregular_mesh`` keeps
+    the graph-distance oracle, ``test_expand_and_shrink_vertex_mask_match_meshlib`` the library.
     """
     vertices_np, faces_np = _grid_mesh(9)
     n_vertices = len(vertices_np)
@@ -1398,22 +1337,6 @@ def test_expand_and_shrink_vertex_mask_match_meshlib(device: str, hops: int) -> 
         assert np.array_equal(morphed_wp.numpy(), morphed_ml)
 
 
-def test_shrink_vertex_mask(device: str):
-    vertices_np, faces_np = _grid_mesh(6)
-    n = len(vertices_np)
-    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
-    seed = np.zeros(n, dtype=bool)
-    seed[len(vertices_np) // 2] = True
-    seed_wp = wp.array(seed, dtype=wp.bool, device=device)
-    dilated = od.selection.expand_vertex_mask(faces_wp, seed_wp, 2)
-    shrunk = od.selection.shrink_vertex_mask(faces_wp, dilated, 1).numpy()
-    # shrink = complement of expand of complement: vertex kept iff all 1-ring neighbours dilated.
-    dilated_np = dilated.numpy()
-    dist = _graph_distance(faces_np, n, ~dilated_np)
-    expected = dist > 1
-    assert np.array_equal(shrunk, expected)
-
-
 @pytest.mark.parametrize("hops", [1, 2, 3])
 def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
     """
@@ -1421,7 +1344,7 @@ def test_vertex_morphology_on_an_irregular_mesh(device: str, hops: int) -> None:
 
     A round marks the corners of every face with a selected corner, which is the edge-neighbour
     dilation only because two vertices of a triangle mesh are one-ring neighbours exactly when they
-    share a face. This pins that on what the grid tests lack: a boundary, a non-manifold fin (three
+    share a face. This pins that on a grid and what it lacks: a boundary, a non-manifold fin (three
     faces on one edge), a degenerate face with a repeated corner, and two unreferenced vertices --
     one selected, which must stay selected and spread nowhere, and one not, which nothing reaches.
     The seed is random and several vertices wide, and both outcomes of every vertex occur.
@@ -1474,13 +1397,6 @@ def test_face_indices_from_vertex_indices(
     # Two empty face lists compare equal, which is what the "all" branch used to do.
     assert face_indices_ref_np.size > 0
     assert np.array_equal(face_indices_wp.numpy(), face_indices_ref_np)
-
-
-def test_face_indices_from_vertex_indices_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([0, 1, 2], dtype=np.int32), dtype=wp.int32, device=device)
-    vertex_indices_wp = warp_empty(0, wp.int32, device)
-    face_indices_wp = od.selection.face_indices_from_vertex_indices(faces_wp, vertex_indices_wp)
-    assert face_indices_wp.shape == (0,)
 
 
 def _assert_edge_key_order(rows_np: np.ndarray) -> None:

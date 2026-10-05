@@ -29,6 +29,9 @@ from tests.parity import (
     uncovered_pairs,
 )
 
+# Static scans of the source tree: the CPU pass of ``python -m tests.devices`` deselects them.
+pytestmark = pytest.mark.device_agnostic
+
 
 def _fail(headline: str, problems: list[str]) -> None:
     """Fail with a counted headline and one indented line per problem, without a traceback."""

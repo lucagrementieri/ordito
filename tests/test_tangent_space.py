@@ -36,24 +36,6 @@ def _vector_heat_solver_pp(mesh_tm: tm.Trimesh) -> pp3d.MeshVectorHeatSolver:
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
-def test_vertex_tangent_frames_are_orthonormal(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
-        mesh_wp.points, mesh_wp.indices
-    )
-
-    basis_x, basis_y, normal = basis_x_wp.numpy(), basis_y_wp.numpy(), normal_wp.numpy()
-    assert np.allclose(np.linalg.norm(basis_x, axis=1), 1.0, rtol=1e-5, atol=1e-5)
-    assert np.allclose(np.linalg.norm(basis_y, axis=1), 1.0, rtol=1e-5, atol=1e-5)
-    assert np.allclose((basis_x * basis_y).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
-    assert np.allclose((basis_x * normal).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
-    # Right-handed: basis_x x basis_y points along the normal.
-    assert np.allclose((np.cross(basis_x, basis_y) * normal).sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("vertex_tangent_frames", "potpourri3d")
 def test_vertex_tangent_frames_match_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
@@ -64,7 +46,8 @@ def test_vertex_tangent_frames_match_potpourri3d(
     Both libraries pick ``basis_x`` by their own convention, so the comparison is that the two
     frames differ by a rotation *about the shared normal* -- one angle for the whole frame,
     checked by reconstructing each side's ``basis_y`` from the other's. Comparing ``basis_x``
-    elementwise is what section 6 rules out.
+    elementwise is what section 6 rules out. The frame is also checked orthonormal and
+    right-handed against its own normal at ``1e-5``, tighter than the cross-library ``1e-4``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.vertex_tangent_frames(
@@ -74,17 +57,23 @@ def test_vertex_tangent_frames_match_potpourri3d(
         np.asarray(basis) for basis in _vector_heat_solver_pp(mesh_tm).get_tangent_frames()
     )
 
+    basis_x, basis_y, normal = basis_x_wp.numpy(), basis_y_wp.numpy(), normal_wp.numpy()
+    assert np.allclose(np.linalg.norm(basis_x, axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose(np.linalg.norm(basis_y, axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose((basis_x * basis_y).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
+    assert np.allclose((basis_x * normal).sum(axis=1), 0.0, rtol=1e-5, atol=1e-5)
+    # Right-handed: basis_x x basis_y points along the normal.
+    assert np.allclose((np.cross(basis_x, basis_y) * normal).sum(axis=1), 1.0, rtol=1e-5, atol=1e-5)
+
     # Normals are frame-independent, so they must agree outright.
-    assert np.allclose(normal_wp.numpy(), normal_pp, rtol=1e-4, atol=1e-4)
+    assert np.allclose(normal, normal_pp, rtol=1e-4, atol=1e-4)
     # The two tangent bases span the same plane and differ by a rotation about the normal, so the
     # components of basis_x in potpourri3d's basis are a unit (cos, sin) pair.
-    basis_x = basis_x_wp.numpy()
     cosine = (basis_x * basis_x_pp).sum(axis=1)
     sine = (basis_x * basis_y_pp).sum(axis=1)
     assert np.allclose(np.hypot(cosine, sine), 1.0, rtol=1e-4, atol=1e-4)
     # ... and the same rotation carries basis_y onto potpourri3d's, i.e. the frames are right-handed
     # in the same orientation rather than mirrored.
-    basis_y = basis_y_wp.numpy()
     assert np.allclose((basis_y * basis_x_pp).sum(axis=1), -sine, rtol=1e-4, atol=1e-4)
     assert np.allclose((basis_y * basis_y_pp).sum(axis=1), cosine, rtol=1e-4, atol=1e-4)
 
@@ -232,7 +221,9 @@ def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_na
 
     That makes this the test that pins the **convention** rather than a property: were ordito to
     switch to, say, the longest edge or a projected global axis, the frame would still be
-    orthonormal and still span the face, and only this comparison would notice.
+    orthonormal and still span the face, and only this comparison would notice. Since igl's frame
+    is unit, right-handed, in the face and along the first edge, element-wise agreement pins all
+    four properties on ordito's side too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     basis_x_igl, basis_y_igl, normal_igl = igl.local_basis(
@@ -247,37 +238,6 @@ def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_na
     assert np.allclose(basis_x_wp.numpy(), basis_x_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(basis_y_wp.numpy(), basis_y_igl, rtol=1e-5, atol=1e-5)
     assert np.allclose(normal_wp.numpy(), normal_igl, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_face_tangent_frames_are_orthonormal_and_in_plane(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    The frame is right-handed, unit and lies in the face -- checked without any reference.
-
-    ``basis_x`` along the first edge is asserted directly rather than inferred: it is the property
-    the whole gauge rests on, and the one a refactor could silently change.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    basis_x_wp, basis_y_wp, normal_wp = od.tangent_space.face_tangent_frames(
-        mesh_wp.points, mesh_wp.indices
-    )
-    basis_x_np = basis_x_wp.numpy()
-    basis_y_np = basis_y_wp.numpy()
-    normal_np = normal_wp.numpy()
-
-    assert np.allclose(np.linalg.norm(basis_x_np, axis=1), 1.0, atol=1e-5)
-    assert np.allclose(np.linalg.norm(basis_y_np, axis=1), 1.0, atol=1e-5)
-    assert np.allclose(np.einsum("ij,ij->i", basis_x_np, basis_y_np), 0.0, atol=1e-5)
-    assert np.allclose(np.einsum("ij,ij->i", basis_x_np, normal_np), 0.0, atol=1e-5)
-    # Right-handed: basis_x x basis_y == normal.
-    assert np.allclose(np.cross(basis_x_np, basis_y_np), normal_np, atol=1e-5)
-    # And basis_x really is the first edge.
-    faces_np = mesh_tm.faces
-    edges_np = mesh_tm.vertices[faces_np[:, 1]] - mesh_tm.vertices[faces_np[:, 0]]
-    edges_np = edges_np / np.linalg.norm(edges_np, axis=1, keepdims=True)
-    assert np.allclose(basis_x_np, edges_np, atol=1e-5)
 
 
 def test_face_tangent_frames_empty(device: str) -> None:

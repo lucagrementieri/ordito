@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
@@ -90,39 +91,35 @@ def test_translation_and_scale_matrices_match_trimesh() -> None:
     assert np.allclose(scale_wp, scale_tm, rtol=1e-5, atol=1e-5)
 
 
-def test_rotation_matrix_zero_axis_raises() -> None:
-    """Not a parity assert: the guard on a degenerate axis."""
-    with pytest.raises(ValueError, match="non-zero axis"):
-        od.transform.rotation_matrix((0.0, 0.0, 0.0), 1.0)
-
-
-def test_rotation_matrix_nan_axis_raises() -> None:
+@pytest.mark.parametrize(
+    ("build", "message"),
+    [
+        (lambda: od.transform.rotation_matrix((0.0, 0.0, 0.0), 1.0), "non-zero axis"),
+        (
+            lambda: od.transform.rotation_matrix((float("nan"), 0.0, 0.0), 0.5),
+            "finite, non-zero axis",
+        ),
+        (lambda: od.transform.reflection_matrix((0.0, 0.0, 0.0)), "non-zero normal"),
+        (
+            lambda: od.transform.reflection_matrix((float("nan"), 0.0, 0.0)),
+            "finite, non-zero normal",
+        ),
+        (lambda: od.transform.scale_matrix((1.0, 2.0)), "scalar or length-3"),
+    ],
+    ids=["zero_axis", "nan_axis", "zero_normal", "nan_normal", "scale_length"],
+)
+def test_matrix_builders_reject_degenerate_arguments(
+    build: Callable[[], object], message: str
+) -> None:
     """
-    Not a parity assert: a NaN-valued axis must not silently pass the zero-length guard.
+    Not a parity assert: the guards on a degenerate axis, plane normal or scale factor.
 
-    Every comparison against NaN is False, so a guard spelled ``norm == 0.0`` lets a NaN axis
-    through and fills the whole matrix with NaN instead of raising.
+    The NaN arms are the ones a guard can miss: every comparison against NaN is False, so a guard
+    spelled ``norm == 0.0`` lets a NaN axis or normal through and fills the whole matrix with NaN
+    instead of raising.
     """
-    with pytest.raises(ValueError, match="finite, non-zero axis"):
-        od.transform.rotation_matrix((float("nan"), 0.0, 0.0), 0.5)
-
-
-def test_reflection_matrix_zero_normal_raises() -> None:
-    """Not a parity assert: the guard on a degenerate plane normal."""
-    with pytest.raises(ValueError, match="non-zero normal"):
-        od.transform.reflection_matrix((0.0, 0.0, 0.0))
-
-
-def test_reflection_matrix_nan_normal_raises() -> None:
-    """Not a parity assert: see ``test_rotation_matrix_nan_axis_raises``, same guard shape."""
-    with pytest.raises(ValueError, match="finite, non-zero normal"):
-        od.transform.reflection_matrix((float("nan"), 0.0, 0.0))
-
-
-def test_scale_matrix_bad_length_raises() -> None:
-    """Not a parity assert: the guard on a factor that is neither scalar nor length-3."""
-    with pytest.raises(ValueError, match="scalar or length-3"):
-        od.transform.scale_matrix((1.0, 2.0))
+    with pytest.raises(ValueError, match=message):
+        build()
 
 
 # ---------------------------------------------------------------------------
@@ -155,55 +152,90 @@ def test_transform_points_in_place(device: str) -> None:
     assert np.array_equal(in_place.numpy(), allocated.numpy())
 
 
-def test_transform_points_accepts_a_device_matrix(device: str) -> None:
+@pytest.mark.parametrize(
+    "apply",
+    [od.transform.transform_points, od.transform.transform_vectors, od.transform.transform_normals],
+    ids=["points", "vectors", "normals"],
+)
+def test_transforms_accept_a_device_matrix(
+    device: str, apply: Callable[[wp.array[wp.vec3], object], wp.array[wp.vec3]]
+) -> None:
     """
-    Ordito against ordito: the device-array matrix form agrees with the scalar one.
+    Ordito against ordito: the ``(1,)`` device-array matrix form agrees with the scalar one.
 
-    The scalar form carries the oracle (``test_transform_points_matches_trimesh``); this pins the
-    path ``registration.icp`` uses, which never brings its fitted matrix back to the host.
+    The scalar form carries the oracle (``test_transform_points_matches_trimesh`` and the normal
+    tests); this pins the path ``registration.icp`` uses, which never brings its fitted matrix back
+    to the host, on every entry point ``as_mat44``'s docstring claims accepts it. The inputs are
+    unit vectors, so the same buffer is a valid normal field.
     """
-    points_wp = points_to_warp(np.random.default_rng(2).normal(size=(64, 3)), device)
-    scalar = od.transform.transform_points(points_wp, _ROTATION)
-    on_device = od.transform.transform_points(
-        points_wp, wp.array([_ROTATION], dtype=wp.mat44, device=device)
+    vectors_np = np.random.default_rng(5).normal(size=(32, 3))
+    vectors_np /= np.linalg.norm(vectors_np, axis=1, keepdims=True)
+    vectors_wp = points_to_warp(vectors_np, device)
+    on_device_matrix = wp.array([_ROTATION], dtype=wp.mat44, device=device)
+    assert np.allclose(
+        apply(vectors_wp, on_device_matrix).numpy(),
+        apply(vectors_wp, _ROTATION).numpy(),
+        rtol=1e-5,
+        atol=1e-5,
     )
-    assert np.allclose(on_device.numpy(), scalar.numpy(), rtol=1e-5, atol=1e-5)
 
 
-def test_transform_points_mismatched_out_length_raises(device: str) -> None:
+@pytest.mark.parametrize(
+    ("call", "message"),
+    [
+        (
+            lambda points, device: od.transform.transform_points(
+                points, _ROTATION, out=warp_empty(2, wp.vec3, device)
+            ),
+            "out must have length",
+        ),
+        (
+            lambda points, device: od.transform.transform_points(
+                points,
+                wp.array([_ROTATION], dtype=wp.mat44, device=device),
+                out=warp_empty(2, wp.vec3, device),
+            ),
+            "out must have length",
+        ),
+        (
+            lambda points, device: od.transform.transform_points(
+                points, wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device)
+            ),
+            "length-1",
+        ),
+        (
+            lambda _points, device: od.transform.as_mat44(
+                wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device)
+            ),
+            "length-1",
+        ),
+        (
+            lambda _points, device: od.transform.as_mat44(warp_empty(0, wp.mat44, device)),
+            "length-1",
+        ),
+    ],
+    ids=[
+        "out_scalar_matrix",
+        "out_device_matrix",
+        "matrix_array_two",
+        "as_mat44_two",
+        "as_mat44_empty",
+    ],
+)
+def test_mismatched_lengths_raise(
+    device: str, call: Callable[[wp.array[wp.vec3], str], object], message: str
+) -> None:
     """
-    Not a parity assert: an undersized ``out`` must raise, not silently overrun it.
+    Not a parity assert: an undersized ``out`` and a matrix array that is not ``(1,)`` must raise.
 
     ``transform_points``'s device-array-matrix path launches straight into ``out`` with no shape
-    check of its own (unlike the scalar-matrix ``wp.map`` path, which validates internally) --
-    this is the guard that closes that gap for both paths alike.
+    check of its own (unlike the scalar-matrix ``wp.map`` path, which validates internally) -- the
+    ``out`` guard closes that gap for both paths alike. The ``(1,)`` device-array contract is
+    checked rather than assumed, at ``transform_points`` and at ``as_mat44`` itself.
     """
     points_wp = points_to_warp(np.random.default_rng(3).normal(size=(5, 3)), device)
-    with pytest.raises(ValueError, match="out must have length"):
-        od.transform.transform_points(points_wp, _ROTATION, out=warp_empty(2, wp.vec3, device))
-    with pytest.raises(ValueError, match="out must have length"):
-        od.transform.transform_points(
-            points_wp,
-            wp.array([_ROTATION], dtype=wp.mat44, device=device),
-            out=warp_empty(2, wp.vec3, device),
-        )
-
-
-def test_transform_points_mismatched_matrix_array_length_raises(device: str) -> None:
-    """Not a parity assert: the ``(1,)`` device-array contract, checked rather than assumed."""
-    points_wp = points_to_warp(np.random.default_rng(4).normal(size=(5, 3)), device)
-    with pytest.raises(ValueError, match="length-1"):
-        od.transform.transform_points(
-            points_wp, wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device)
-        )
-
-
-def test_as_mat44_mismatched_length_raises(device: str) -> None:
-    """Not a parity assert: the ``(1,)`` device-array contract, at ``as_mat44`` itself."""
-    with pytest.raises(ValueError, match="length-1"):
-        od.transform.as_mat44(wp.array([_ROTATION, _ROTATION], dtype=wp.mat44, device=device))
-    with pytest.raises(ValueError, match="length-1"):
-        od.transform.as_mat44(warp_empty(0, wp.mat44, device))
+    with pytest.raises(ValueError, match=message):
+        call(points_wp, device)
 
 
 def test_matrix_to_numpy_round_trips_a_scalar_and_a_device_matrix(device: str) -> None:
@@ -271,82 +303,37 @@ def test_transform_normals_stays_perpendicular(device: str) -> None:
     assert np.allclose(np.linalg.norm(mapped, axis=1), 1.0, rtol=1e-5, atol=1e-5)
 
 
-def test_transform_normals_singular_matrix_raises(device: str) -> None:
-    """Not a parity assert: a flattening transform has no normal map."""
-    normals_wp = points_to_warp(np.eye(3), device)
+@pytest.mark.parametrize("n_normals", [3, 0], ids=["normals", "empty"])
+def test_transform_normals_singular_matrix_raises(device: str, n_normals: int) -> None:
+    """
+    Not a parity assert: a flattening transform has no normal map, whatever ``normals`` holds.
+
+    The singularity check is a property of ``matrix``, not of ``normals``: an empty ``normals``
+    array used to make the early return skip ``normal_matrix`` entirely, so the same singular
+    matrix was silently accepted whenever there was nothing to transform.
+    """
+    normals_wp = points_to_warp(np.eye(3)[:n_normals], device)
     with pytest.raises(ValueError, match="invertible"):
         od.transform.transform_normals(normals_wp, od.transform.scale_matrix((1.0, 1.0, 0.0)))
-
-
-def test_transform_normals_singular_matrix_raises_on_empty_input(device: str) -> None:
-    """
-    Not a parity assert: the singularity check is a property of ``matrix``, not of ``normals``.
-
-    An empty ``normals`` array used to make the early return skip ``normal_matrix`` entirely, so
-    the same singular matrix that raises above was silently accepted whenever there was nothing to
-    transform.
-    """
-    normals_wp = warp_empty(0, wp.vec3, device)
-    with pytest.raises(ValueError, match="invertible"):
-        od.transform.transform_normals(normals_wp, od.transform.scale_matrix((1.0, 1.0, 0.0)))
-
-
-def test_transform_vectors_and_normals_accept_a_device_matrix(device: str) -> None:
-    """
-    Ordito against ordito: the ``(1,)`` device-array matrix form agrees with the scalar one.
-
-    ``as_mat44``'s docstring has always claimed every entry point accepts the array form;
-    ``transform_vectors``/``transform_normals`` were typed as a scalar ``wp.mat44`` only until this
-    pinned the claim true for them too.
-    """
-    vectors_wp = points_to_warp(np.random.default_rng(5).normal(size=(32, 3)), device)
-    on_device_matrix = wp.array([_ROTATION], dtype=wp.mat44, device=device)
-    assert np.allclose(
-        od.transform.transform_vectors(vectors_wp, on_device_matrix).numpy(),
-        od.transform.transform_vectors(vectors_wp, _ROTATION).numpy(),
-        rtol=1e-5,
-        atol=1e-5,
-    )
-    normals_np = vectors_wp.numpy()
-    normals_np /= np.linalg.norm(normals_np, axis=1, keepdims=True)
-    normals_wp = points_to_warp(normals_np, device)
-    assert np.allclose(
-        od.transform.transform_normals(normals_wp, on_device_matrix).numpy(),
-        od.transform.transform_normals(normals_wp, _ROTATION).numpy(),
-        rtol=1e-5,
-        atol=1e-5,
-    )
 
 
 @pytest.mark.parity("transform_mesh", "trimesh")
-@pytest.mark.parity("transform_points", "pyvista")
-def test_transform_points_matches_pyvista(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Class A: ``transform_points`` against VTK's ``vtkTransformFilter`` through pyvista."""
+@pytest.mark.parity("transform_points", "pyvista", "open3d")
+def test_transform_points_matches_pyvista_and_open3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Class A against both: VTK's filter and ``open3d.geometry.PointCloud.transform``.
+
+    VTK's side is ``vtkTransformFilter`` through pyvista.
+    """
     mesh_tm, mesh_wp = icosphere
     matrix_np = np.array(_ROTATION, dtype=np.float64).reshape(4, 4)
     moved_pv = trimesh_to_pyvista(mesh_tm).transform(matrix_np, inplace=False)
-    assert np.allclose(
-        od.transform.transform_points(mesh_wp.points, _ROTATION).numpy(),
-        np.asarray(moved_pv.points),
-        rtol=1e-5,
-        atol=1e-5,
-    )
-
-
-@pytest.mark.parity("transform_points", "open3d")
-def test_transform_points_matches_open3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """Class A: ``transform_points`` against ``open3d.geometry.PointCloud.transform``."""
-    mesh_tm, mesh_wp = icosphere
-    matrix_np = np.array(_ROTATION, dtype=np.float64).reshape(4, 4)
     cloud_o3d = cast(
         "o3d.geometry.PointCloud", points_to_open3d(mesh_tm.vertices).transform(matrix_np)
     )
-    assert np.allclose(
-        od.transform.transform_points(mesh_wp.points, _ROTATION).numpy(),
-        np.asarray(cloud_o3d.points),
-        rtol=1e-5,
-        atol=1e-5,
-    )
+    points_wp = od.transform.transform_points(mesh_wp.points, _ROTATION).numpy()
+    assert np.allclose(points_wp, np.asarray(moved_pv.points), rtol=1e-5, atol=1e-5)
+    assert np.allclose(points_wp, np.asarray(cloud_o3d.points), rtol=1e-5, atol=1e-5)
 
 
 @pytest.mark.parity("transform_normals", "pyvista")
@@ -551,18 +538,18 @@ def test_carried_cache_matches_recomputation(
             )
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
 def test_transform_carries_the_expensive_operators_through_a_rigid_motion(
-    request: pytest.FixtureRequest, mesh_name: str
+    half_torus: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Ordito against ordito: a rigid motion aliases the heavy assemblies rather than rebuilding.
 
     The oracle for the *values* is ``test_carried_cache_matches_recomputation``; this pins the
     thing that makes the method worth having, which a value comparison cannot see -- that the
-    carried entries are the same objects, so no work was done.
+    carried entries are the same objects, so no work was done. Aliasing does not depend on the
+    mesh, so one fixture serves; an open one, where the carry sets are narrower.
     """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    _mesh_tm, mesh_wp = half_torus
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)
     cotmatrix, entries, angles = mesh.cotmatrix, mesh.cotmatrix_entries, mesh.face_angles
     moved = mesh.transform(_ROTATION)
@@ -661,10 +648,7 @@ def test_adjacency_projections_and_convex_stay_consistent(
 
 
 @pytest.mark.parametrize("mesh_name", OPEN_MESHES)
-@pytest.mark.parametrize("key", ["volume", "center_mass", "moment_inertia"])
-def test_mass_properties_are_never_carried(
-    request: pytest.FixtureRequest, mesh_name: str, key: str
-) -> None:
+def test_mass_properties_are_never_carried(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Not a parity assert: the mass properties are dropped even by a translation, and must be.
 
@@ -676,14 +660,17 @@ def test_mass_properties_are_never_carried(
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = populate_cache(od.Trimesh.from_warp_mesh(mesh_wp))
-    assert key in mesh._cache
-
     moved = mesh.transform(od.transform.translation_matrix((1.5, -2.0, 0.5)))
-    assert key not in moved._cache
 
-    before = np.array(getattr(mesh, key), dtype=np.float64).ravel()
-    after = np.array(getattr(moved, key), dtype=np.float64).ravel()
-    assert not np.allclose(before, after, rtol=1e-3, atol=1e-3)
+    keys = ("volume", "center_mass", "moment_inertia")
+    for key in keys:
+        assert key in mesh._cache
+        assert key not in moved._cache
+    # Membership first: reading one mass property on ``moved`` caches its siblings with it.
+    for key in keys:
+        before = np.array(getattr(mesh, key), dtype=np.float64).ravel()
+        after = np.array(getattr(moved, key), dtype=np.float64).ravel()
+        assert not np.allclose(before, after, rtol=1e-3, atol=1e-3), key
 
 
 def test_transform_identity_returns_self(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:

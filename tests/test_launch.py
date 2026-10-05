@@ -79,29 +79,32 @@ def _launch_both(
     return out.numpy(), out_vectors.numpy()
 
 
-def test_launch_matches_wp_launch_on_every_argument_kind(device: str) -> None:
-    """Arrays of rank 1 and 2, vector arrays, scalars, a 64-bit id, a vector, a matrix, a bool."""
-    n = 257
+_IDENTITY = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+_PERMUTATION = wp.mat33(0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0)
+
+
+@pytest.mark.parametrize(
+    ("n", "scalars"),
+    [
+        pytest.param(257, [1.5, 3, 2**40 + 5, wp.vec3(1, 2, 3), _PERMUTATION, True], id="packable"),
+        pytest.param(
+            64, [wp.float32(0.5), 7, 11, (0.5, 0.0, 1.0), _IDENTITY, False], id="fallback"
+        ),
+    ],
+)
+def test_launch_matches_wp_launch_on_every_argument_kind(
+    device: str, n: int, scalars: list[object]
+) -> None:
+    """
+    Arrays of rank 1 and 2, vector arrays, scalars, a 64-bit id, a vector, a matrix, a bool.
+
+    ``packable`` takes the packed block from the second call on; ``fallback`` passes a Warp scalar,
+    a tuple for a vector and an out-of-range int, which all reach Warp's marshalling.
+    """
     data = _inputs(device, n)
-    frame = wp.mat33(0.0, 1.0, 0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 2.0)
-    args = [data["a"], data["grid"], data["vectors"], 1.5, 3, 2**40 + 5, wp.vec3(1, 2, 3), frame,
-            True]  # fmt: skip
+    args = [data["a"], data["grid"], data["vectors"], *scalars]
     expected = _launch_both(wp.launch, device, args, n)
     for _ in range(3):  # first call fills the cache, later ones take the packed block
-        got = _launch_both(_launch.launch, device, args, n)
-        assert np.array_equal(got[0], expected[0])
-        assert np.array_equal(got[1], expected[1])
-
-
-def test_launch_falls_back_for_values_the_block_cannot_pack(device: str) -> None:
-    """A Warp scalar, a tuple for a vector and an out-of-range int all reach Warp's marshalling."""
-    n = 64
-    data = _inputs(device, n)
-    frame = wp.mat33(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
-    args = [data["a"], data["grid"], data["vectors"], wp.float32(0.5), 7, 11, (0.5, 0.0, 1.0),
-            frame, False]  # fmt: skip
-    expected = _launch_both(wp.launch, device, args, n)
-    for _ in range(2):
         got = _launch_both(_launch.launch, device, args, n)
         assert np.array_equal(got[0], expected[0])
         assert np.array_equal(got[1], expected[1])

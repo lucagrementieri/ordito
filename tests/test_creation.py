@@ -525,37 +525,39 @@ def test_primitives_match_pymeshlab(device: str) -> None:
 
 
 @pytest.mark.parity("box", "trimesh")
-def test_box(device: str) -> None:
+@pytest.mark.parametrize("case", ["default", "extents", "bounds", "transform"])
+def test_box(device: str, case: str) -> None:
     """
-    Class A: vertices and faces against ``trimesh.creation.box``, at two extents.
+    Class A: vertices, faces and bounds against ``trimesh.creation.box``, per way of sizing it.
 
     The default and a non-cube box, because the extent scaling is applied after the unit table
-    -- a transposed scale passes the first and fails the second.
+    -- a transposed scale passes the first and fails the second -- then explicit bounds and a
+    rotation with a translation, each handed to both sides.
     """
-    _assert_same_vertices_and_faces(*od.creation.box(device=device), tm.creation.box())
-    _assert_same_vertices_and_faces(
-        *od.creation.box(extents=(1.0, 2.0, 3.0), device=device),
-        tm.creation.box(extents=[1.0, 2.0, 3.0]),
-    )
-
-
-def test_box_bounds(device: str) -> None:
-    bounds_np = np.array([[-1.0, 0.0, 2.0], [3.0, 1.0, 5.0]])
-    vertices_wp, faces_wp = od.creation.box(
-        bounds=cast("Sequence[Sequence[float]]", bounds_np), device=device
-    )
-    _assert_same_vertices_and_faces(vertices_wp, faces_wp, tm.creation.box(bounds=bounds_np))
+    if case == "default":
+        vertices_wp, faces_wp = od.creation.box(device=device)
+        box_tm = tm.creation.box()
+    elif case == "extents":
+        vertices_wp, faces_wp = od.creation.box(extents=(1.0, 2.0, 3.0), device=device)
+        box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0])
+    elif case == "bounds":
+        bounds_np = np.array([[-1.0, 0.0, 2.0], [3.0, 1.0, 5.0]])
+        vertices_wp, faces_wp = od.creation.box(
+            bounds=cast("Sequence[Sequence[float]]", bounds_np), device=device
+        )
+        box_tm = tm.creation.box(bounds=bounds_np)
+    else:
+        matrix_np = np.asarray(
+            tm.transformations.rotation_matrix(np.deg2rad(37.0), [1.0, 2.0, 3.0])
+        )
+        matrix_np[:3, 3] = np.array([1.0, -2.0, 0.5])
+        vertices_wp, faces_wp = od.creation.box(
+            extents=(1.0, 2.0, 3.0), transform=_mat44(matrix_np), device=device
+        )
+        box_tm = tm.creation.box(extents=[1.0, 2.0, 3.0], transform=matrix_np)
+    _assert_same_vertices_and_faces(vertices_wp, faces_wp, box_tm)
     assert np.allclose(
-        warp_to_trimesh(vertices_wp, faces_wp).bounds, bounds_np, rtol=1e-5, atol=1e-5
-    )
-
-
-def test_box_transform(device: str) -> None:
-    matrix_np = np.asarray(tm.transformations.rotation_matrix(np.deg2rad(37.0), [1.0, 2.0, 3.0]))
-    matrix_np[:3, 3] = np.array([1.0, -2.0, 0.5])
-    _assert_same_vertices_and_faces(
-        *od.creation.box(extents=(1.0, 2.0, 3.0), transform=_mat44(matrix_np), device=device),
-        tm.creation.box(extents=[1.0, 2.0, 3.0], transform=matrix_np),
+        warp_to_trimesh(vertices_wp, faces_wp).bounds, box_tm.bounds, rtol=1e-5, atol=1e-5
     )
 
 
@@ -866,7 +868,7 @@ def test_sphere_cap_invalid(device: str) -> None:
         od.creation.sphere_cap(subdivisions=-1, device=device)
 
 
-@pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4])
+@pytest.mark.parametrize("subdivisions", [0, 1, 2, 3, 4, 5])
 @pytest.mark.parity("icosphere", "trimesh")
 def test_icosphere(device: str, subdivisions: int) -> None:
     """
@@ -876,6 +878,11 @@ def test_icosphere(device: str, subdivisions: int) -> None:
     ``subdivisions=2``: a base edge carries ``2 ** subdivisions - 1`` interior points, so at levels
     0 and 1 there are none or one and an edge walked in the *wrong direction* still lands on the
     same index. From level 2 up, any error in the shared numbering shows as a different face set.
+
+    The closed-form numbering also has to be crack-free: a point on a base edge gets the same index
+    from both faces holding it. A seam is exactly what that failing looks like, and it is invisible
+    in a vertex *count* -- the count is closed-form too -- so the mesh is asserted closed and its
+    vertices distinct.
     """
     vertices_wp, faces_wp = od.creation.icosphere(subdivisions=subdivisions, device=device)
     _assert_same_vertices_and_faces(
@@ -884,6 +891,8 @@ def test_icosphere(device: str, subdivisions: int) -> None:
     assert faces_wp.size // 3 == 20 * 4**subdivisions
     assert vertices_wp.size == 10 * 4**subdivisions + 2
     assert np.allclose(np.linalg.norm(vertices_wp.numpy(), axis=1), 1.0, rtol=1e-5, atol=1e-5)
+    _assert_closed(vertices_wp, faces_wp)
+    assert vertices_wp.size == len(np.unique(vertices_wp.numpy(), axis=0))
 
 
 @pytest.mark.parametrize("subdivisions", [0, 1, 2])
@@ -915,16 +924,6 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
     distances_np, indices_np = cKDTree(vertices_p3d).query(vertices_np)
     assert float(np.max(distances_np)) < 1e-4
     assert np.unique(indices_np).size == len(vertices_np)
-
-
-@pytest.mark.parametrize("subdivisions", [1, 2, 3, 5])
-def test_icosphere_is_crack_free(device: str, subdivisions: int) -> None:
-    # The whole point of the closed-form numbering is that a point on a base edge gets the same
-    # index from both faces holding it. A seam is exactly what that failing looks like, and it is
-    # invisible in a vertex *count* -- the count is closed-form too, so it would still be right.
-    vertices_wp, faces_wp = od.creation.icosphere(subdivisions=subdivisions, device=device)
-    _assert_closed(vertices_wp, faces_wp)
-    assert vertices_wp.size == len(np.unique(vertices_wp.numpy(), axis=0))
 
 
 @pytest.mark.parametrize("levels_per_launch", [1, 3])
@@ -1238,20 +1237,19 @@ def test_torus_matches_pytorch3d(device: str) -> None:
 
 
 @pytest.mark.parametrize("name", sorted(_CLOSED_BUILDERS))
-def test_closed_primitives_are_volumes(device: str, name: str) -> None:
-    # The single assertion that pins the vertex collapse: without it the apex, pole and
-    # closed-profile vertices stay duplicated per slice and nothing here is watertight.
+def test_closed_primitives_are_deterministic_volumes(device: str, name: str) -> None:
+    """
+    Not a library comparison: every closed builder bounds a volume, and builds it the same twice.
+
+    The closedness is the single assertion that pins the vertex collapse: without it the apex, pole
+    and closed-profile vertices stay duplicated per slice and nothing here is watertight.
+    """
     vertices_wp, faces_wp = _CLOSED_BUILDERS[name](device)
     _assert_closed(vertices_wp, faces_wp)
     assert od.validation.is_volume(vertices_wp, faces_wp)
-
-
-@pytest.mark.parametrize("name", sorted(_CLOSED_BUILDERS))
-def test_primitives_are_deterministic(device: str, name: str) -> None:
-    first_v, first_f = _CLOSED_BUILDERS[name](device)
     second_v, second_f = _CLOSED_BUILDERS[name](device)
-    assert np.array_equal(first_v.numpy(), second_v.numpy())
-    assert np.array_equal(first_f.numpy(), second_f.numpy())
+    assert np.array_equal(vertices_wp.numpy(), second_v.numpy())
+    assert np.array_equal(faces_wp.numpy(), second_f.numpy())
 
 
 @pytest.mark.parity("revolve", "trimesh")
@@ -1597,55 +1595,39 @@ def _triangle_soup(
 
 
 @pytest.mark.parity("truncated_prisms", "trimesh")
-def test_truncated_prisms(device: str) -> None:
+@pytest.mark.parametrize("case", ["z_zero", "plane", "reversed_winding"])
+def test_truncated_prisms(device: str, case: str) -> None:
     """
     Class C (volume and body count): trimesh emits one prism per triangle in its own vertex order.
 
     The counts are exact -- 6 vertices and 8 faces per input triangle -- and the volume is
     compared to trimesh's; ``body_count == 5`` is what catches prisms welded together, which
-    the volume alone would not show.
+    the volume alone would not show. Three inputs: the default ``z = 0`` plane; an explicit plane,
+    which changes only where the prisms stop; and every source triangle reversed to face the plane,
+    whose prisms need their winding reversed or the bodies come out inside-out with negative volume.
     """
     triangles_np, vertices_wp, faces_wp = _triangle_soup(device)
-    prism_v, prism_f = od.creation.truncated_prisms(vertices_wp, faces_wp)
-    mesh_tm = tm.creation.truncated_prisms(triangles_np)
+    if case == "reversed_winding":
+        triangles_np = np.ascontiguousarray(triangles_np[:, ::-1, :])
+        vertices_wp = points_to_warp(triangles_np.reshape(-1, 3), device)
+    if case == "plane":
+        origin_np, normal_np = np.array([0.0, 0.0, 0.5]), np.array([0.0, 0.0, 1.0])
+        prism_v, prism_f = od.creation.truncated_prisms(
+            vertices_wp,
+            faces_wp,
+            origin=wp.vec3(*origin_np.tolist()),
+            normal=wp.vec3(*normal_np.tolist()),
+        )
+        mesh_tm = tm.creation.truncated_prisms(triangles_np, origin=origin_np, normal=normal_np)
+    else:
+        prism_v, prism_f = od.creation.truncated_prisms(vertices_wp, faces_wp)
+        mesh_tm = tm.creation.truncated_prisms(triangles_np)
+    prism_tm = warp_to_trimesh(prism_v, prism_f)
     assert prism_v.size == 6 * 5
     assert prism_f.size // 3 == 8 * 5
-    assert np.isclose(warp_to_trimesh(prism_v, prism_f).volume, mesh_tm.volume, rtol=1e-4)
-    assert warp_to_trimesh(prism_v, prism_f).body_count == 5
-
-
-def test_truncated_prisms_plane(device: str) -> None:
-    """
-    Class C (volume): the same construction truncated by an explicit plane rather than z = 0.
-
-    The plane argument changes only where the prisms stop, so the comparison is again the
-    enclosed volume against trimesh's, at the same plane.
-    """
-    triangles_np, vertices_wp, faces_wp = _triangle_soup(device)
-    origin_np, normal_np = np.array([0.0, 0.0, 0.5]), np.array([0.0, 0.0, 1.0])
-    prism_v, prism_f = od.creation.truncated_prisms(
-        vertices_wp,
-        faces_wp,
-        origin=wp.vec3(*origin_np.tolist()),
-        normal=wp.vec3(*normal_np.tolist()),
-    )
-    mesh_tm = tm.creation.truncated_prisms(triangles_np, origin=origin_np, normal=normal_np)
-    assert np.isclose(warp_to_trimesh(prism_v, prism_f).volume, mesh_tm.volume, rtol=1e-4)
-
-
-def test_truncated_prisms_reversed_winding(device: str) -> None:
-    # A source triangle facing the plane needs its prism's winding reversed, or the body comes out
-    # inside-out with negative volume.
-    triangles_np, _, faces_wp = _triangle_soup(device)
-    flipped_np = np.ascontiguousarray(triangles_np[:, ::-1, :])
-    vertices_wp = points_to_warp(flipped_np.reshape(-1, 3), device)
-    prism_v, prism_f = od.creation.truncated_prisms(vertices_wp, faces_wp)
-    assert warp_to_trimesh(prism_v, prism_f).volume > 0.0
-    assert np.isclose(
-        warp_to_trimesh(prism_v, prism_f).volume,
-        tm.creation.truncated_prisms(flipped_np).volume,
-        rtol=1e-4,
-    )
+    assert prism_tm.volume > 0.0
+    assert np.isclose(prism_tm.volume, mesh_tm.volume, rtol=1e-4)
+    assert prism_tm.body_count == 5
 
 
 def test_truncated_prisms_requires_normal_with_origin(device: str) -> None:
@@ -1697,6 +1679,12 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
 
     The face normals are compared as well as the positions, which is what pins the winding: a point
     set alone cannot tell the two orientations of a surface apart.
+
+    Each surface also has the topology it exists to provide, with open3d reading orientability:
+    Class A, ``o3d.geometry.TriangleMesh.is_orientable`` is the oracle ordito's own
+    [`is_orientable`][ordito.validation.is_orientable] was written against, and the six
+    non-orientable surfaces here are the first inputs in the suite for which it answers ``False`` —
+    without them the comparison is one-sided and a predicate returning a constant would pass it.
     """
     vertices_wp, faces_wp = _build_parametric(surface, 40, device)
     vertices_np = vertices_wp.numpy().astype(np.float64)
@@ -1731,24 +1719,9 @@ def test_parametric_surface_matches_pyvista(device: str, surface: _Surface) -> N
     # one must agree in *direction*, not just in plane.
     assert (aligned_np > 0.9).mean() > 0.999
 
-
-@pytest.mark.parametrize("surface", sorted(_PARAMETRIC_TABLE))
-def test_parametric_surface_topology(device: str, surface: _Surface) -> None:
-    """
-    Each surface has the topology it exists to provide, with open3d reading orientability.
-
-    Class A: ``o3d.geometry.TriangleMesh.is_orientable`` is the oracle ordito's own
-    [`is_orientable`][ordito.validation.is_orientable] was written against, and the six
-    non-orientable surfaces here are the first inputs in the suite for which it answers ``False`` —
-    without them the comparison is one-sided and a predicate returning a constant would pass it.
-    """
-    vertices_wp, faces_wp = _build_parametric(surface, 40, device)
-    faces_np = faces_wp.numpy().reshape(-1, 3)
     mesh_tm = warp_to_trimesh(vertices_wp, faces_wp)
-    expected = _PARAMETRIC_TABLE[surface]
-
     mesh_o3d = o3d.geometry.TriangleMesh(
-        o3d.utility.Vector3dVector(vertices_wp.numpy().astype(np.float64)),
+        o3d.utility.Vector3dVector(vertices_np),
         o3d.utility.Vector3iVector(faces_np.astype(np.int32)),
     )
     assert mesh_o3d.is_orientable() == expected.orientable
@@ -1923,7 +1896,7 @@ def test_empty_results(device: str) -> None:
 
 
 @pytest.mark.parametrize("surface", ["boy", "cross_cap", "klein", "mobius", "dini", "conic_spiral"])
-@pytest.mark.parametrize(("u_resolution", "v_resolution"), [(7, 5), (40, 40), (17, 33)])
+@pytest.mark.parametrize(("u_resolution", "v_resolution"), [(7, 5), (17, 33)])
 def test_parametric_lattice_paths_agree(
     device: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -1941,12 +1914,13 @@ def test_parametric_lattice_paths_agree(
     in the last float32 bit would be a second definition of the geometry rather than a faster route
     to the same one.
 
-    The gate is at ``_PARAMETRIC_LATTICE_DEVICE_FROM`` lattice samples, which the smallest
-    resolutions here sit below and the rest above -- so each path is forced both ways rather than
-    left to whichever side of the gate a resolution happens to land on. The surfaces straddle the
-    gluing rules the two paths have to agree on: a twisted wrap with two collapsed pole rows
-    (``boy``, ``cross_cap``), a wrap in each direction (``klein``), a twist with a boundary
-    (``mobius``), a plain open patch (``dini``) and a pole on one end only (``conic_spiral``).
+    The gate is at ``_PARAMETRIC_LATTICE_DEVICE_FROM`` lattice samples, and each path is forced
+    both ways rather than left to whichever side of the gate a resolution happens to land on; the
+    two lattices are a tiny one and a non-square one, so a transposed u/v index shows. The
+    surfaces straddle the gluing rules the two paths have to agree on: a twisted wrap with two
+    collapsed pole rows (``boy``, ``cross_cap``), a wrap in each direction (``klein``), a twist with
+    a boundary (``mobius``), a plain open patch (``dini``) and a pole on one end only
+    (``conic_spiral``).
     """
     forced = od.creation._PARAMETRIC_LATTICE_DEVICE_FROM  # pyright: ignore[reportPrivateUsage]
     monkeypatch.setattr(od.creation, "_PARAMETRIC_LATTICE_DEVICE_FROM", 1 << 30)

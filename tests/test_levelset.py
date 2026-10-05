@@ -35,7 +35,6 @@ from tests.comparisons import (
 )
 from tests.conversions import (
     meshlib_to_trimesh,
-    numpy_to_warp,
     points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
@@ -57,17 +56,29 @@ def _sphere_field(resolution: int, radius: float) -> np.ndarray:
 
 
 def test_marching_cubes_extracts_an_analytic_sphere(device: str) -> None:
-    """Every extracted vertex must land on the sphere the field describes, to grid resolution."""
+    """
+    Not a library comparison: the extracted vertices lie on the sphere the field describes.
+
+    With ``bounds`` every vertex must land on the sphere to grid resolution; without them the
+    vertices are lattice indices, the documented convention, so they lie inside the lattice and
+    the centred field's surface is centred on the lattice centre.
+    """
     radius, resolution = 0.6, 32
-    field_wp = wp.array(_sphere_field(resolution, radius), dtype=wp.float32, device=device)
+    field_wp = odt.as_array3d(
+        wp.array(_sphere_field(resolution, radius), dtype=wp.float32, device=device), wp.float32
+    )
     vertices_wp, faces_wp = od.levelset.marching_cubes(
-        odt.as_array3d(field_wp, wp.float32),
-        bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0)),
+        field_wp, bounds=(wp.vec3(-1.0, -1.0, -1.0), wp.vec3(1.0, 1.0, 1.0))
     )
     assert faces_wp.size > 0
     spacing = 2.0 / (resolution - 1)
     radii_np = np.linalg.norm(vertices_wp.numpy(), axis=1)
     assert np.abs(radii_np - radius).max() < spacing
+
+    index_vertices_np = od.levelset.marching_cubes(field_wp)[0].numpy()
+    assert index_vertices_np.min() >= 0.0
+    assert index_vertices_np.max() <= float(resolution - 1)
+    assert np.allclose(index_vertices_np.mean(axis=0), 0.5 * (resolution - 1), atol=0.5)
 
 
 @pytest.mark.parity("marching_cubes", "igl", "pyvista")
@@ -272,24 +283,12 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
 
 
-def test_marching_cubes_index_space_by_default(device: str) -> None:
-    """Without ``bounds`` the vertices are lattice indices, which is the documented convention."""
-    resolution = 24
-    field_wp = wp.array(_sphere_field(resolution, 0.6), dtype=wp.float32, device=device)
-    vertices_np = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))[0].numpy()
-    assert vertices_np.min() >= 0.0
-    assert vertices_np.max() <= float(resolution - 1)
-    # Centred field, so the extracted surface is centred on the lattice centre.
-    assert np.allclose(vertices_np.mean(axis=0), 0.5 * (resolution - 1), atol=0.5)
-
-
-def test_marching_cubes_empty_when_the_field_never_crosses(device: str) -> None:
+def test_marching_cubes_empty_and_invalid(device: str) -> None:
+    """Not a library comparison: a field that never crosses is empty, a 1-wide lattice raises."""
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)
     _vertices_wp, faces_wp = od.levelset.marching_cubes(odt.as_array3d(field_wp, wp.float32))
     assert faces_wp.size == 0
 
-
-def test_marching_cubes_invalid(device: str) -> None:
     thin_wp = wp.array(np.zeros((1, 8, 8), dtype=np.float32), dtype=wp.float32, device=device)
     with pytest.raises(ValueError, match="at least 2 wide"):
         od.levelset.marching_cubes(odt.as_array3d(thin_wp, wp.float32))
@@ -307,58 +306,31 @@ def _signed_distance_to(
 
 
 @pytest.mark.parametrize("distance", [0.2, -0.2])
-def test_offset_mesh_lands_at_the_requested_distance(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh], distance: float
-) -> None:
-    """
-    Class A on the defining property: every output vertex is at signed distance ``distance``.
-
-    This is the test that actually constrains the function, and it is stronger than any comparison
-    against another implementation -- an offset surface *is* a level set of the distance field, so
-    measuring the field at the output is measuring the answer. It is checked with
-    ``signed_distance_on_mesh``, which is not the code under test's own field sampler applied twice:
-    the offset marches a **lattice** and this queries the **vertices** it produced.
-
-    The tolerance is the lattice's: a marching-cubes vertex is linearly interpolated inside a cell,
-    so it lands within a fraction of ``_VOXEL`` of the true level set rather than within a whole
-    cell. Measured max deviation **0.0019** at a 0.05 spacing, i.e. 3.8 % of one cell.
-
-    Also asserts the sign of the volume change, which no distance check would catch: an outward
-    offset must enclose more and an inward one less.
-    """
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
-    offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
-        vertices_wp, faces_wp, distance, _VOXEL
-    )
-    assert offset_faces_wp.size > 0
-
-    signed_np = _signed_distance_to((vertices_wp, faces_wp), offset_vertices_wp.numpy())
-    assert np.abs(signed_np - distance).max() < 0.1 * _VOXEL
-
-    volume_before = float(od.measures.volume(vertices_wp, faces_wp))
-    volume_after = float(od.measures.volume(offset_vertices_wp, offset_faces_wp))
-    assert (volume_after > volume_before) is (distance > 0.0)
-    assert od.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
-
-
-@pytest.mark.parametrize("distance", [0.2, -0.2])
 @pytest.mark.parity("offset_mesh", "meshlib")
-def test_offset_mesh_matches_meshlib(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh], distance: float
+def test_offset_mesh_lands_at_the_distance_and_matches_meshlib(
+    icosphere: tuple[tm.Trimesh, wp.Mesh], distance: float
 ) -> None:
     """
-    Class C: the same surface as ``offsetMesh`` at a matched voxel size, to a tenth of a cell.
+    The defining property, then Class C against MeshLib's ``offsetMesh`` at a matched voxel size.
 
-    No correspondence exists between the two triangulations -- both march their own field on their
-    own lattice -- so the comparison is the two-sided Hausdorff distance between the *surfaces*,
-    plus the vertex counts as a sanity check on the resolution actually used. They agree closely
-    enough that the counts are worth asserting: measured **10 746 against 10 736** vertices at
-    ``distance = 0.2`` and 4 758 against 4 760 at ``-0.2``, i.e. within 0.1 %, because at a matched
-    spacing the two lattices differ only in where their origin falls.
+    Not a library comparison, first: every output vertex is at signed distance ``distance``. This
+    is the check that actually constrains the function, and it is stronger than any comparison
+    against another implementation -- an offset surface *is* a level set of the distance field, so
+    measuring the field at the output is measuring the answer. It is measured with
+    ``signed_distance_on_mesh``, which is not the code under test's own field sampler applied twice:
+    the offset marches a **lattice** and this queries the **vertices** it produced. The tolerance is
+    the lattice's: a marching-cubes vertex is linearly interpolated inside a cell, so it lands
+    within a fraction of ``_VOXEL`` of the true level set rather than within a whole cell. Measured
+    max deviation **0.0019** at a 0.05 spacing, i.e. 3.8 % of one cell. The sign of the volume
+    change is asserted too, which no distance check would catch: an outward offset must enclose
+    more and an inward one less.
 
+    Class C against MeshLib: no correspondence exists between the two triangulations -- both march
+    their own field on their own lattice -- so the comparison is the two-sided Hausdorff distance
+    between the *surfaces*, plus the vertex counts as a sanity check on the resolution actually
+    used. They agree closely enough that the counts are worth asserting: measured **10 746 against
+    10 736** vertices at ``distance = 0.2`` and 4 758 against 4 760 at ``-0.2``, i.e. within 0.1 %,
+    because at a matched spacing the two lattices differ only in where their origin falls.
     ``OffsetParameters.voxelSize`` is set explicitly rather than left at its default, which is the
     parameter that would otherwise decide the comparison.
 
@@ -371,13 +343,20 @@ def test_offset_mesh_matches_meshlib(
     [`test_offset_mesh_matches_pymeshlab`][] carries, so the two references are held to one
     standard.
     """
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
+    mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
+    assert offset_faces_wp.size > 0
+
+    signed_np = _signed_distance_to((vertices_wp, faces_wp), offset_vertices_wp.numpy())
+    assert np.abs(signed_np - distance).max() < 0.1 * _VOXEL
+
+    volume_before = float(od.measures.volume(vertices_wp, faces_wp))
+    volume_after = float(od.measures.volume(offset_vertices_wp, offset_faces_wp))
+    assert (volume_after > volume_before) is (distance > 0.0)
+    assert od.validation.is_watertight(offset_vertices_wp, offset_faces_wp)
 
     parameters_ml = mm.OffsetParameters()
     parameters_ml.voxelSize = _VOXEL
@@ -401,7 +380,7 @@ def test_offset_mesh_matches_meshlib(
 
 
 @pytest.mark.parity("offset_mesh", "pymeshlab")
-def test_offset_mesh_matches_pymeshlab(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_offset_mesh_matches_pymeshlab(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Class C: MeshLab's uniform resampler at a matched cell size and the same absolute offset.
 
@@ -422,10 +401,8 @@ def test_offset_mesh_matches_pymeshlab(device: str, icosphere: tuple[tm.Trimesh,
     ``0.25 * _VOXEL``: 0.0125, still **7.0x** the measured agreement.
     """
     distance = 0.2
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
+    mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     offset_vertices_wp, offset_faces_wp = od.levelset.offset_mesh(
         vertices_wp, faces_wp, distance, _VOXEL
     )
@@ -452,7 +429,7 @@ def test_offset_mesh_matches_pymeshlab(device: str, icosphere: tuple[tm.Trimesh,
 
 
 def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
+    icosphere: tuple[tm.Trimesh, wp.Mesh],
 ) -> None:
     """
     Not a library comparison: the automatic ``voxel_size``'s resolution **floor**, and its absence.
@@ -466,10 +443,8 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
     The genuinely empty case is asserted beside it, since the two must stay distinguishable: at
     ``-1.5`` there is no point at that distance inside a unit sphere and an empty answer is correct.
     """
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
+    _mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
 
     survivor_vertices_wp, survivor_faces_wp = od.levelset.offset_mesh(vertices_wp, faces_wp, -0.9)
     assert survivor_faces_wp.size > 0
@@ -481,16 +456,17 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "sparse_expected"),
+    ("mesh_name", "sparse_expected", "distance"),
     [
-        ("icosphere", True),
-        ("cave_cube", True),
-        ("boy_surface", False),
-        ("hemisphere", False),
-        ("half_torus", False),
+        *(
+            (name, True, distance)
+            for name in ("icosphere", "cave_cube")
+            for distance in (0.08, -0.04)
+        ),
+        # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
+        *((name, False, 0.08) for name in ("boy_surface", "hemisphere", "half_torus")),
     ],
 )
-@pytest.mark.parametrize("distance", [0.08, -0.04])
 def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
@@ -501,13 +477,14 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     """
     Ordito against ordito: the sparse extraction is the dense lattice's surface, and only it runs.
 
-    ``test_offset_mesh_lands_at_the_requested_distance`` and the two library comparisons carry the
-    oracle on the dense path; this pins the sparse path to it by lowering the node gate to zero
-    (every fixture here is far below the shipped one). On a closed, consistently wound input the
-    two must agree vertex for vertex up to the order of the buffers -- matched by nearest neighbour
-    with a bijection check -- and face for face with the same winding. On an open or non-orientable
-    input the gate must keep the dense lattice, whose winding-signed field jumps away from the
-    surface: the sparse extraction measured a fifth of a hemisphere's offset faces missing there.
+    ``test_offset_mesh_lands_at_the_distance_and_matches_meshlib`` and the pymeshlab comparison
+    carry the oracle on the dense path; this pins the sparse path to it by lowering the node gate
+    to zero (every fixture here is far below the shipped one). On a closed, consistently wound
+    input the two must agree vertex for vertex up to the order of the buffers -- matched by nearest
+    neighbour with a bijection check -- and face for face with the same winding. On an open or
+    non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
+    away from the surface: the sparse extraction measured a fifth of a hemisphere's offset faces
+    missing there.
 
     ``cave_cube`` is turned by a generic rotation first. Axis-aligned, its offset level runs
     exactly through lattice nodes, and a node whose distance rounds onto the level lands on
@@ -552,18 +529,16 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
     )
 
 
-def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_offset_mesh_guards(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the three documented value guards."""
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
+    _mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     with pytest.raises(ValueError, match="non-zero"):
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.0)
     with pytest.raises(ValueError, match="voxel_size must be positive"):
         od.levelset.offset_mesh(vertices_wp, faces_wp, 0.1, -1.0)
     with pytest.raises(ValueError, match="at least one face"):
-        od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
+        od.levelset.offset_mesh(vertices_wp, warp_empty(0, wp.int32, mesh_wp.device), 0.1)
 
 
 @pytest.mark.parametrize("iso", [0.0, 0.05, -0.05])
@@ -614,18 +589,14 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     )
 
 
-def test_signed_distance_level_set_guards(
-    device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]
-) -> None:
+def test_signed_distance_level_set_guards(icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the two documented value guards."""
-    mesh_tm, _ = icosphere
-    vertices_wp, faces_wp = numpy_to_warp(
-        np.asarray(mesh_tm.vertices), np.asarray(mesh_tm.faces, dtype=np.int32).reshape(-1), device
-    )
+    _mesh_tm, mesh_wp = icosphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     bounds = (wp.vec3(-1.5, -1.5, -1.5), wp.vec3(1.5, 1.5, 1.5))
     with pytest.raises(ValueError, match="at least one face"):
         od.levelset.signed_distance_level_set(
-            vertices_wp, warp_empty(0, wp.int32, device), 0.0, (8, 8, 8), bounds=bounds
+            vertices_wp, warp_empty(0, wp.int32, mesh_wp.device), 0.0, (8, 8, 8), bounds=bounds
         )
     with pytest.raises(ValueError, match="at least 2"):
         od.levelset.signed_distance_level_set(vertices_wp, faces_wp, 0.0, (8, 1, 8), bounds=bounds)

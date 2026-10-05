@@ -173,7 +173,7 @@ def accumulate_procrustes_moments(
         a_sq += w * wp.length_sq(av)
         b_sq += w * wp.length_sq(bv)
         # The covariance is weighted by *membership*, not magnitude — trimesh's convention, and
-        # what ``test_procrustes_binary_weights`` pins.
+        # what ``test_procrustes_matches_trimesh[binary_weights]`` pins.
         if w > wp.float32(0.0):
             cov += wp.outer(bv, av)
             mask_a += av

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Callable
+from typing import Any, Literal
 
 import numpy as np
 import pymeshlab as ml
@@ -14,266 +15,104 @@ import ordito.reduce as od_reduce
 import ordito.typing as odt
 from tests.conversions import points_to_torch, points_to_warp, trimesh_to_pyvista, warp_empty
 
+# Bound once as untyped callables: the tests below pass ``axis`` as a ``Literal[0, 1] | None``
+# variable, which no single overload of the public functions accepts.
+_MIN: Callable[..., Any] = od_reduce.min
+_MAX: Callable[..., Any] = od_reduce.max
+_MINMAX: Callable[..., Any] = od_reduce.minmax
+_SUM: Callable[..., Any] = od_reduce.sum
+_MEAN: Callable[..., Any] = od_reduce.mean
+_ANY: Callable[..., Any] = od_reduce.any
+_ALL: Callable[..., Any] = od_reduce.all
 
-def _random_values(shape: tuple[int, ...] | int, seed: int = 42) -> np.ndarray:
-    """Fixed-seed float32 standard-normal test data."""
-    return np.random.default_rng(seed).standard_normal(shape, dtype=np.float32)
+_SCALAR_DTYPES = [
+    pytest.param(np.int32, wp.int32, id="int32"),
+    pytest.param(np.float32, wp.float32, id="float32"),
+]
 
 
+def _scalar_values(shape: tuple[int, ...], dtype_np: type, seed: int) -> np.ndarray:
+    """Fixed-seed test data: integers in ``[-1000, 1000)`` or float32 standard normals."""
+    rng = np.random.default_rng(seed)
+    if np.issubdtype(dtype_np, np.integer):
+        return rng.integers(-1000, 1000, shape, dtype=np.int32)
+    return rng.standard_normal(shape, dtype=np.float32)
+
+
+def _random_mask(shape: tuple[int, ...], seed: int) -> np.ndarray:
+    """Fixed-seed mask with each element drawn ``True`` or ``False`` with equal probability."""
+    return np.random.default_rng(seed).choice([False, True], size=shape, replace=True)
+
+
+def _host(value: Any) -> np.ndarray:
+    """Read a reduction's result as NumPy: an axis result read back, a scalar wrapped."""
+    return value.numpy() if isinstance(value, wp.array) else np.asarray(value)
+
+
+def _assert_scalar_reductions(
+    values_np: np.ndarray, values_wp: wp.array[Any], axis: Literal[0, 1] | None = None
+) -> None:
+    """
+    Assert ``min``, ``max``, ``minmax``, ``sum`` and ``mean`` of ``values_wp`` equal NumPy's.
+
+    The extrema and an integer sum are exact; a float sum and every mean are compared at
+    ``1e-5``.
+    """
+    lower, upper = _MINMAX(values_wp, axis=axis)
+    for name, got, expected in (
+        ("min", _MIN(values_wp, axis=axis), values_np.min(axis=axis)),
+        ("max", _MAX(values_wp, axis=axis), values_np.max(axis=axis)),
+        ("minmax lower", lower, values_np.min(axis=axis)),
+        ("minmax upper", upper, values_np.max(axis=axis)),
+    ):
+        assert np.array_equal(_host(got), expected), name
+    sum_wp = _host(_SUM(values_wp, axis=axis))
+    if np.issubdtype(values_np.dtype, np.integer):
+        assert np.array_equal(sum_wp, values_np.sum(axis=axis)), "sum"
+    else:
+        assert np.allclose(sum_wp, values_np.sum(axis=axis), rtol=1e-5, atol=1e-5), "sum"
+    mean_wp = _host(_MEAN(values_wp, axis=axis))
+    assert np.allclose(mean_wp, values_np.mean(axis=axis), rtol=1e-5, atol=1e-5), "mean"
+
+
+def _assert_bool_reductions(
+    mask_np: np.ndarray, mask_wp: wp.array[wp.bool], axis: Literal[0, 1] | None = None
+) -> None:
+    """Assert ``any``, ``all``, ``sum`` (a count) and ``mean`` of ``mask_wp`` equal NumPy's."""
+    assert np.array_equal(_host(_ANY(mask_wp, axis=axis)), np.any(mask_np, axis=axis)), "any"
+    assert np.array_equal(_host(_ALL(mask_wp, axis=axis)), np.all(mask_np, axis=axis)), "all"
+    count_np = mask_np.sum(axis=axis)
+    assert np.array_equal(_host(_SUM(mask_wp, axis=axis)), count_np), "sum"
+    mean_wp = _host(_MEAN(mask_wp, axis=axis))
+    assert np.allclose(mean_wp, mask_np.mean(axis=axis), rtol=1e-5, atol=1e-5), "mean"
+
+
+@pytest.mark.parametrize(("dtype_np", "dtype_wp"), _SCALAR_DTYPES)
 @pytest.mark.parity("min_scalar", "numpy")
-def test_min_1d(device: str) -> None:
-    """Class A: direct comparison against ``numpy.min``."""
-    rng = np.random.default_rng(42)
-    n = 100
-    values_np = rng.integers(-1000, 1000, (n,), dtype=np.int32)
-    min_np = values_np.min()
-
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    min_wp = od_reduce.min(values_wp)
-    assert np.allclose(min_wp, min_np)
-
-
-def test_min_2d(device: str) -> None:
-    n = 200
-    m = 100
-    values_np = _random_values((n, m))
-    min_np = values_np.min()
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    min_wp = od_reduce.min(values_wp)
-    assert np.allclose(min_wp, min_np)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_min_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = odt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
-    got_wp = od_reduce.min(values_wp, axis=axis)
-    exp_np = values_np.min(axis=axis)
-    assert np.array_equal(got_wp.numpy(), exp_np)
-
-
-def test_max_1d(device: str) -> None:
-    rng = np.random.default_rng(42)
-    n = 100
-    values_np = rng.integers(-1000, 1000, (n,), dtype=np.int32)
-    max_np = values_np.max()
-
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    max_wp = od_reduce.max(values_wp)
-    assert np.allclose(max_wp, max_np)
-
-
-def test_max_2d(device: str) -> None:
-    n = 200
-    m = 100
-    values_np = _random_values((n, m))
-    max_np = values_np.max()
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    max_wp = od_reduce.max(values_wp)
-    assert np.allclose(max_wp, max_np)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parity("max_axis1", "numpy")
-def test_max_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    """Class A: direct comparison against ``numpy.max(axis=...)`` over both axes."""
-    rng = np.random.default_rng(42)
-    values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = odt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
-    got_wp = od_reduce.max(values_wp, axis=axis)
-    exp_np = values_np.max(axis=axis)
-    assert np.array_equal(got_wp.numpy(), exp_np)
-
-
 @pytest.mark.parity("minmax_scalar", "numpy")
-def test_minmax_1d(device: str) -> None:
-    """Class A: both extrema against ``numpy.min`` / ``numpy.max``."""
-    rng = np.random.default_rng(42)
-    n = 100
-    values_np = rng.integers(-1000, 1000, (n,), dtype=np.int32)
-    min_np = values_np.min()
-    max_np = values_np.max()
+@pytest.mark.parity("sum_scalar", "numpy")
+def test_scalar_reductions_1d(device: str, dtype_np: type, dtype_wp: type) -> None:
+    """
+    Class A: ``min``, ``max``, ``minmax``, ``sum`` and ``mean`` of a rank-1 array against NumPy.
 
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    min_wp, max_wp = od_reduce.minmax(values_wp)
-    assert np.allclose(min_wp, min_np)
-    assert np.allclose(max_wp, max_np)
+    One call each on 100 values, at an integer and a float dtype.
+    """
+    values_np = _scalar_values((100,), dtype_np, seed=42)
+    _assert_scalar_reductions(values_np, wp.array(values_np, dtype=dtype_wp, device=device))
 
 
 @pytest.mark.parametrize("shape", [(200, 100), (5000, 2), (5000, 3), (3, 5000)])
 @pytest.mark.parity("minmax_global_2d", "numpy")
-def test_minmax_2d(device: str, shape: tuple[int, int]) -> None:
+def test_scalar_reductions_2d_global(device: str, shape: tuple[int, int]) -> None:
     """
-    Class A: rank-2 ``axis=None`` extrema against ``numpy.min`` / ``numpy.max``.
+    Class A: rank-2 ``axis=None`` reductions against NumPy.
 
     Parametrized over narrow *and* wide trailing extents on purpose: ``(m, 2)`` is the edge-table
     shape [`ordito.graph.connected_components`][] validates, and it clips the ``TILE_2D`` square
     so the tile branch never runs — a wide-only fixture would leave that path untested.
     """
-    values_np = _random_values(shape)
-    min_np = values_np.min()
-    max_np = values_np.max()
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    min_wp, max_wp = od_reduce.minmax(values_wp)
-    assert np.allclose(min_wp, min_np)
-    assert np.allclose(max_wp, max_np)
-
-
-def test_minmax_vec3(device: str) -> None:
-    """Component-wise corner pair of a ``wp.vec3`` array (the ``aabb`` reduction)."""
-    rng = np.random.default_rng(42)
-    points_np = rng.standard_normal((500, 3)).astype(np.float32)
-    points_wp = points_to_warp(points_np, device)
-
-    lower_wp, upper_wp = od_reduce.minmax(points_wp)
-
-    assert np.allclose(np.array(list(lower_wp)), points_np.min(axis=0), rtol=1e-6, atol=1e-6)
-    assert np.allclose(np.array(list(upper_wp)), points_np.max(axis=0), rtol=1e-6, atol=1e-6)
-
-
-def test_minmax_vec3_rejects_axis_and_empty(device: str) -> None:
-    points_wp = wp.array(np.zeros((4, 3), dtype=np.float32), dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="axis=None"):
-        od_reduce.minmax(points_wp, axis=0)  # pyright: ignore[reportCallIssue, reportArgumentType]
-    with pytest.raises(ValueError, match="non-empty"):
-        od_reduce.minmax(warp_empty(0, wp.vec3, device))
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_minmax_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    values_np = _random_values((32, 10))
-    values_wp = odt.as_array2d(wp.array(values_np, dtype=wp.float32, device=device), wp.float32)
-    got_min_wp, got_max_wp = od_reduce.minmax(values_wp, axis=axis)
-    exp_min_np = values_np.min(axis=axis)
-    exp_max_np = values_np.max(axis=axis)
-    assert np.allclose(got_min_wp.numpy(), exp_min_np, rtol=1e-5, atol=1e-5)
-    assert np.allclose(got_max_wp.numpy(), exp_max_np, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parity("any_bool", "numpy")
-def test_any_1d(device: str) -> None:
-    """Class A, against ``numpy.any``, on a mask that is neither all-``True`` nor all-``False``."""
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(100,), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    any_wp = od_reduce.any(mask_wp)
-    any_ref_np = np.any(mask_np)
-    assert any_wp == any_ref_np
-
-
-@pytest.mark.parity("all_bool", "numpy")
-def test_all_1d(device: str) -> None:
-    """Class A, against ``numpy.all``, on a mask that is neither all-``True`` nor all-``False``."""
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(100,), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    all_wp = od_reduce.all(mask_wp)
-    all_ref_np = np.all(mask_np)
-    assert all_wp == all_ref_np
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_any_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(32, 4), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    any_wp = od_reduce.any(mask_wp, axis=axis)
-    any_ref_np = np.any(mask_np, axis=axis)
-    assert np.array_equal(any_wp.numpy(), any_ref_np)
-
-
-def test_any_2d_global(device: str) -> None:
-    rng = np.random.default_rng(42)
-    for mask_np in [
-        rng.choice([False, True], size=(32, 4), replace=True),
-        np.zeros((32, 4), dtype=bool),
-        np.ones((32, 4), dtype=bool),
-    ]:
-        mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-        any_wp = od_reduce.any(mask_wp, axis=None)
-        any_np = bool(np.any(mask_np))
-        assert any_wp == any_np, f"any global mismatch: ordito {any_wp}, numpy {any_np}"
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_all_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(32, 4), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    all_wp = od_reduce.all(mask_wp, axis=axis)
-    all_ref_np = np.all(mask_np, axis=axis)
-    assert np.array_equal(all_wp.numpy(), all_ref_np)
-
-
-def test_all_2d_global(device: str) -> None:
-    rng = np.random.default_rng(42)
-    for mask_np in [
-        rng.choice([False, True], size=(32, 4), replace=True),
-        np.zeros((32, 4), dtype=bool),
-        np.ones((32, 4), dtype=bool),
-    ]:
-        mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-        all_wp = od_reduce.all(mask_wp, axis=None)
-        all_np = bool(np.all(mask_np))
-        assert all_wp == all_np, f"all global mismatch: ordito {all_wp}, numpy {all_np}"
-
-
-def test_scalar_reduce_1d_axis_raises(device: str) -> None:
-    values_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
-    for fn in (od_reduce.min, od_reduce.max, od_reduce.minmax, od_reduce.sum):
-        with pytest.raises(ValueError, match="requires axis=None for a 1D array"):
-            fn(values_wp, axis=0)  # pyright: ignore[reportCallIssue, reportArgumentType]
-
-
-def test_sum_bool_1d_axis_raises(device: str) -> None:
-    mask_wp = wp.array([True, False, True], dtype=wp.bool, device=device)
-    with pytest.raises(ValueError, match="requires axis=None for a 1D array"):
-        od_reduce.sum(mask_wp, axis=0)
-
-
-def test_scalar_reduce_2d_invalid_axis_raises(device: str) -> None:
-    """An axis outside {0, 1, None} must raise rather than silently reading as axis=0."""
-    values_wp = wp.array([[1, 2], [3, 4]], dtype=wp.int32, device=device)
-    for fn in (od_reduce.min, od_reduce.max, od_reduce.minmax, od_reduce.sum):
-        with pytest.raises(ValueError, match="requires axis to be 0, 1, or None"):
-            fn(values_wp, axis=2)  # pyright: ignore[reportCallIssue, reportArgumentType]
-
-
-def test_bool_reduce_2d_invalid_axis_raises(device: str) -> None:
-    """Same invalid-axis contract as the scalar family, for ``any``/``all``."""
-    mask_wp = wp.array([[True, False], [False, True]], dtype=wp.bool, device=device)
-    for fn in (od_reduce.any, od_reduce.all):
-        with pytest.raises(ValueError, match="requires axis to be 0, 1, or None"):
-            fn(mask_wp, axis=2)  # pyright: ignore[reportCallIssue, reportArgumentType]
-
-
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_min_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    min_wp = od_reduce.min(values_wp)
-    assert np.allclose(min_wp, values_np.min())
-
-
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_max_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.standard_normal(shape).astype(np.float32)
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    max_wp = od_reduce.max(values_wp)
-    assert np.allclose(max_wp, values_np.max(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_minmax_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.standard_normal(shape).astype(np.float32)
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    got_min, got_max = od_reduce.minmax(values_wp)
-    assert np.allclose(got_min, values_np.min(), rtol=1e-5, atol=1e-5)
-    assert np.allclose(got_max, values_np.max(), rtol=1e-5, atol=1e-5)
+    values_np = _scalar_values(shape, np.float32, seed=42)
+    _assert_scalar_reductions(values_np, wp.array(values_np, dtype=wp.float32, device=device))
 
 
 @pytest.mark.parametrize("shape", [(9, 9), (65, 10), (16, 16), (3, 5), (200, 100)])
@@ -284,9 +123,7 @@ def test_scalar_reduce_global_noncontiguous(device: str, shape: tuple[int, int])
     A non-contiguous rank-2 array can't flatten onto the 1-D kernel, so this is the only path left
     to reach them: every contiguous array now flattens there instead
     (``reduce._flattened_for_global``). Shapes span the full-tile case, both single- and
-    double-boundary-short cases, and a wide table -- the same coverage
-    ``test_min_2d``/``test_minmax_2d``/``test_min_partial_tiles`` used to give the rank-2 kernel
-    before it stopped being reachable for a contiguous array.
+    double-boundary-short cases, and a wide table.
     """
     rng = np.random.default_rng(99)
     wide_np = rng.integers(-1000, 1000, (shape[0], shape[1] * 2), dtype=np.int32)
@@ -302,62 +139,202 @@ def test_scalar_reduce_global_noncontiguous(device: str, shape: tuple[int, int])
 
 
 @pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_any_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    mask_np = rng.choice([False, True], size=shape, replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    assert od_reduce.any(mask_wp) == bool(np.any(mask_np))
+def test_reductions_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
+    """
+    Global reductions over arrays that end mid-tile, against NumPy.
+
+    Every scalar reduction at an integer and a float dtype, and every mask reduction, on a rank-1
+    length one past a tile and on rank-2 shapes short of a tile in one or both dimensions.
+    """
+    for dtype_np, dtype_wp in ((np.int32, wp.int32), (np.float32, wp.float32)):
+        values_np = _scalar_values(shape, dtype_np, seed=99)
+        _assert_scalar_reductions(values_np, wp.array(values_np, dtype=dtype_wp, device=device))
+    mask_np = _random_mask(shape, seed=99)
+    _assert_bool_reductions(mask_np, wp.array(mask_np, dtype=wp.bool, device=device))
 
 
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_all_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    mask_np = rng.choice([False, True], size=shape, replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    assert od_reduce.all(mask_wp) == bool(np.all(mask_np))
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("shape", [(32, 10), (9, 9), (65, 10)])
+@pytest.mark.parametrize(("dtype_np", "dtype_wp"), _SCALAR_DTYPES)
+@pytest.mark.parity("max_axis1", "numpy")
+@pytest.mark.parity("sum_axis0", "numpy")
+def test_scalar_reductions_along_an_axis(
+    device: str, dtype_np: type, dtype_wp: type, shape: tuple[int, int], axis: Literal[0, 1]
+) -> None:
+    """
+    Class A: ``min`` / ``max`` / ``minmax`` / ``sum`` / ``mean`` with ``axis=...`` against NumPy.
+
+    Both axes, at a shape wider than a tile and two that end mid-tile.
+    """
+    values_np = _scalar_values(shape, dtype_np, seed=42)
+    _assert_scalar_reductions(
+        values_np, wp.array(values_np, dtype=dtype_wp, device=device), axis=axis
+    )
 
 
 @pytest.mark.parametrize(
-    ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
+    "mask_np",
+    [
+        pytest.param(_random_mask((100,), seed=42), id="random_1d"),
+        pytest.param(_random_mask((32, 4), seed=42), id="random_2d"),
+        pytest.param(np.zeros((32, 4), dtype=bool), id="all_false_2d"),
+        pytest.param(np.ones((32, 4), dtype=bool), id="all_true_2d"),
+    ],
 )
-def test_scalar_reduce_partial_tiles_axis(
+@pytest.mark.parity("any_bool", "numpy")
+@pytest.mark.parity("all_bool", "numpy")
+@pytest.mark.parity("sum_bool", "numpy")
+def test_mask_reductions_global(device: str, mask_np: np.ndarray) -> None:
+    """
+    Class A: ``any``, ``all``, ``sum`` and ``mean`` of a ``wp.bool`` mask against NumPy.
+
+    The random masks are about half set, so neither an all-``True`` nor an all-``False`` shortcut
+    passes them; the constant masks give ``any`` and ``all`` their other answers. ``sum`` counts the
+    mask without widening it to ``int32`` first, so this is the value gate on
+    ``kernels.reduce._reduce_bool_1d_tiled``.
+    """
+    _assert_bool_reductions(mask_np, wp.array(mask_np, dtype=wp.bool, device=device))
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("shape", [(32, 4), (9, 9), (65, 10)])
+def test_mask_reductions_along_an_axis(
     device: str, shape: tuple[int, int], axis: Literal[0, 1]
 ) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
-    values_wp = odt.as_array2d(wp.array(values_np, dtype=wp.int32, device=device), wp.int32)
-    assert np.array_equal(od_reduce.min(values_wp, axis=axis).numpy(), values_np.min(axis=axis))
-    assert np.array_equal(od_reduce.max(values_wp, axis=axis).numpy(), values_np.max(axis=axis))
-    got_min, got_max = od_reduce.minmax(values_wp, axis=axis)
-    assert np.array_equal(got_min.numpy(), values_np.min(axis=axis))
-    assert np.array_equal(got_max.numpy(), values_np.max(axis=axis))
-    assert np.array_equal(od_reduce.sum(values_wp, axis=axis).numpy(), values_np.sum(axis=axis))
+    """``any`` / ``all`` / ``sum`` / ``mean`` of a mask with ``axis=...`` against NumPy."""
+    mask_np = _random_mask(shape, seed=42)
+    _assert_bool_reductions(mask_np, wp.array(mask_np, dtype=wp.bool, device=device), axis=axis)
+
+
+@pytest.mark.parametrize("n", [63, 64, 65, 197, 300, 500])
+@pytest.mark.parity("sum_vec3", "numpy")
+@pytest.mark.parity("mean_vec3", "numpy")
+def test_vec3_reductions(device: str, n: int) -> None:
+    """
+    Class A: component-wise ``sum``, ``mean``, ``weighted_sum`` and ``minmax`` of ``wp.vec3``s.
+
+    Against ``numpy.sum`` / ``mean`` / ``min`` / ``max`` with ``axis=0`` and the weighted NumPy
+    sum. ``minmax`` returns the corner pair the ``aabb`` reduction uses. Lengths straddle a tile
+    boundary on both sides.
+    """
+    rng = np.random.default_rng(n)
+    values_np = rng.standard_normal((n, 3)).astype(np.float32)
+    weights_np = rng.random(n, dtype=np.float32)
+    values_wp = points_to_warp(values_np, device)
+    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
+
+    assert np.allclose(
+        np.array(od_reduce.sum(values_wp)), values_np.sum(axis=0), rtol=1e-4, atol=1e-4
+    )
+    assert np.allclose(
+        np.array(od_reduce.mean(values_wp)), values_np.mean(axis=0), rtol=1e-4, atol=1e-4
+    )
+    weighted_np = (weights_np[:, None] * values_np).sum(axis=0)
+    weighted_wp = od_reduce.weighted_sum(values_wp, weights_wp)
+    assert np.allclose(np.array(weighted_wp), weighted_np, rtol=1e-4, atol=1e-4)
+    lower_wp, upper_wp = od_reduce.minmax(values_wp)
+    assert np.allclose(np.array(list(lower_wp)), values_np.min(axis=0), rtol=1e-6, atol=1e-6)
+    assert np.allclose(np.array(list(upper_wp)), values_np.max(axis=0), rtol=1e-6, atol=1e-6)
+
+
+def _ints_1d(device: str) -> wp.array[wp.int32]:
+    return wp.array([1, 2, 3], dtype=wp.int32, device=device)
+
+
+def _ints_2d(device: str) -> wp.array[wp.int32]:
+    return wp.array([[1, 2], [3, 4]], dtype=wp.int32, device=device)
+
+
+def _mask_2d(device: str) -> wp.array[wp.bool]:
+    return wp.array([[True, False], [False, True]], dtype=wp.bool, device=device)
+
+
+# One row per rejected call: an id, the call on a device, and the message it must raise.
+_REJECTED_CALLS: list[tuple[str, Callable[[str], object], str]] = [
+    *(
+        (
+            f"{name}_1d_axis",
+            lambda device, fn=fn: fn(_ints_1d(device), axis=0),
+            "requires axis=None for a 1D array",
+        )
+        for name, fn in (
+            ("min", _MIN),
+            ("max", _MAX),
+            ("minmax", _MINMAX),
+            ("sum", _SUM),
+            ("mean", _MEAN),
+        )
+    ),
+    (
+        "sum_bool_1d_axis",
+        lambda device: _SUM(wp.array([True, False, True], dtype=wp.bool, device=device), axis=0),
+        "requires axis=None for a 1D array",
+    ),
+    *(
+        (
+            f"{name}_2d_axis_2",
+            lambda device, fn=fn: fn(_ints_2d(device), axis=2),
+            "requires axis to be 0, 1, or None",
+        )
+        for name, fn in (("min", _MIN), ("max", _MAX), ("minmax", _MINMAX), ("sum", _SUM))
+    ),
+    *(
+        (
+            f"{name}_bool_2d_axis_2",
+            lambda device, fn=fn: fn(_mask_2d(device), axis=2),
+            "requires axis to be 0, 1, or None",
+        )
+        for name, fn in (("any", _ANY), ("all", _ALL))
+    ),
+    *(
+        (
+            f"{name}_vec3_axis",
+            lambda device, fn=fn: fn(wp.zeros(4, dtype=wp.vec3, device=device), axis=0),
+            "axis=None",
+        )
+        for name, fn in (("minmax", _MINMAX), ("sum", _SUM), ("mean", _MEAN))
+    ),
+    *(
+        (
+            f"{name}_vec3_empty",
+            lambda device, fn=fn: fn(warp_empty(0, wp.vec3, device)),
+            "non-empty",
+        )
+        for name, fn in (("minmax", _MINMAX), ("sum", _SUM), ("mean", _MEAN))
+    ),
+    (
+        "weighted_sum_length_mismatch",
+        lambda device: od_reduce.weighted_sum(
+            wp.array([1.0, 2.0], dtype=wp.float32, device=device),
+            wp.array([1.0], dtype=wp.float32, device=device),
+        ),
+        "equal length",
+    ),
+    (
+        "weighted_sum_rank2",
+        lambda device: od_reduce.weighted_sum(
+            wp.array([[1.0, 2.0]], dtype=wp.float32, device=device),
+            wp.array([1.0], dtype=wp.float32, device=device),
+        ),
+        "requires rank-1",
+    ),
+]
 
 
 @pytest.mark.parametrize(
-    ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
+    ("call", "match"), [pytest.param(call, match, id=name) for name, call, match in _REJECTED_CALLS]
 )
-def test_bool_reduce_partial_tiles_axis(
-    device: str, shape: tuple[int, int], axis: Literal[0, 1]
-) -> None:
-    rng = np.random.default_rng(99)
-    mask_np = rng.choice([False, True], size=shape, replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    assert np.array_equal(od_reduce.any(mask_wp, axis=axis).numpy(), np.any(mask_np, axis=axis))
-    assert np.array_equal(od_reduce.all(mask_wp, axis=axis).numpy(), np.all(mask_np, axis=axis))
+def test_invalid_reductions_raise(device: str, call: Callable[[str], object], match: str) -> None:
+    """
+    Each rejected argument raises ``ValueError`` rather than being read some other way.
 
-
-@pytest.mark.parity("sum_scalar", "numpy")
-def test_sum_1d(device: str) -> None:
-    """Class A: direct comparison against ``numpy.sum``."""
-    rng = np.random.default_rng(42)
-    n = 100
-    values_np = rng.integers(-1000, 1000, (n,), dtype=np.int32)
-    sum_np = values_np.sum()
-
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    sum_wp = od_reduce.sum(values_wp)
-    assert np.allclose(sum_wp, sum_np)
+    An ``axis`` on a rank-1 array, an axis outside ``{0, 1, None}`` on a rank-2 one (instead of
+    silently reading as ``axis=0``), any ``axis`` or an empty input on a ``wp.vec3`` array, and
+    ``weighted_sum`` arguments of unequal length or rank 2 (instead of reading the leading
+    dimension).
+    """
+    with pytest.raises(ValueError, match=match):
+        call(device)
 
 
 @pytest.mark.parametrize("n", [1_000, 50_000, 3_000_000])
@@ -383,68 +360,6 @@ def test_float_sums_are_bit_identical_across_calls(device: str, n: int) -> None:
     assert len(sums) == len(means) == len(weighted) == len(vectors) == 1
     assert np.isclose(sums.pop(), values_np.astype(np.float64).sum(), rtol=1e-5)
     assert np.isclose(weighted.pop(), (values_np.astype(np.float64) * weights_np).sum(), rtol=1e-5)
-
-
-def test_sum_2d(device: str) -> None:
-    n = 200
-    m = 100
-    values_np = _random_values((n, m))
-    sum_np = values_np.sum()
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    sum_wp = od_reduce.sum(values_wp)
-    assert np.allclose(sum_wp, sum_np, rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-@pytest.mark.parity("sum_axis0", "numpy")
-def test_sum_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    """Class A: direct comparison against ``numpy.sum(axis=...)`` over both axes."""
-    rng = np.random.default_rng(42)
-    values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    got_wp = od_reduce.sum(values_wp, axis=axis)
-    exp_np = values_np.sum(axis=axis)
-    assert np.array_equal(got_wp.numpy(), exp_np)
-
-
-@pytest.mark.parity("sum_bool", "numpy")
-def test_sum_bool_1d(device: str) -> None:
-    """
-    Class A, against ``numpy.ndarray.sum`` over the same mask.
-
-    Counts a ``wp.bool`` mask without widening it to ``int32`` first, so this is the value gate on
-    ``kernels.reduce._reduce_bool_1d_tiled``. The mask is half set, so neither an all-zero nor an
-    all-one shortcut would pass it.
-    """
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(100,), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    sum_wp = od_reduce.sum(mask_wp)
-    sum_np = int(mask_np.sum())
-    assert sum_wp == sum_np
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_sum_bool_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(32, 4), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    got_wp = od_reduce.sum(mask_wp, axis=axis)
-    exp_np = mask_np.sum(axis=axis).astype(np.int32)
-    assert np.array_equal(got_wp.numpy(), exp_np)
-
-
-def test_sum_bool_2d_global(device: str) -> None:
-    rng = np.random.default_rng(42)
-    for mask_np in [
-        rng.choice([False, True], size=(32, 4), replace=True),
-        np.zeros((32, 4), dtype=bool),
-        np.ones((32, 4), dtype=bool),
-    ]:
-        mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-        sum_wp = od_reduce.sum(mask_wp, axis=None)
-        sum_np = int(mask_np.sum())
-        assert sum_wp == sum_np, f"sum global mismatch: ordito {sum_wp}, numpy {sum_np}"
 
 
 @pytest.mark.parity("weighted_sum", "numpy")
@@ -495,182 +410,6 @@ def test_weighted_sum_integrates_a_surface_field(half_torus: tuple[tm.Trimesh, w
     assert np.isclose(total_wp, integral_pv, rtol=1e-5, atol=1e-5)
 
 
-def test_weighted_sum_length_mismatch_raises(device: str) -> None:
-    values_wp = wp.array([1.0, 2.0], dtype=wp.float32, device=device)
-    weights_wp = wp.array([1.0], dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="equal length"):
-        od_reduce.weighted_sum(values_wp, weights_wp)
-
-
-def test_weighted_sum_rank2_raises(device: str) -> None:
-    """A rank-2 argument must raise rather than silently reading its leading dimension."""
-    values_wp = wp.array([[1.0, 2.0]], dtype=wp.float32, device=device)
-    weights_wp = wp.array([1.0], dtype=wp.float32, device=device)
-    with pytest.raises(ValueError, match="requires rank-1"):
-        od_reduce.weighted_sum(values_wp, weights_wp)
-
-
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_sum_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    sum_wp = od_reduce.sum(values_wp)
-    assert np.allclose(sum_wp, values_np.sum())
-
-
-@pytest.mark.parametrize("shape", [(65,), (9, 9), (65, 10)])
-def test_sum_bool_partial_tiles(device: str, shape: tuple[int, ...]) -> None:
-    rng = np.random.default_rng(99)
-    mask_np = rng.choice([False, True], size=shape, replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    assert od_reduce.sum(mask_wp) == int(mask_np.sum())
-
-
-@pytest.mark.parametrize(
-    ("shape", "axis"), [((9, 9), 0), ((9, 9), 1), ((65, 10), 0), ((65, 10), 1)]
-)
-def test_sum_partial_tiles_axis(device: str, shape: tuple[int, int], axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(99)
-    values_np = rng.integers(-1000, 1000, shape, dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    assert np.array_equal(od_reduce.sum(values_wp, axis=axis).numpy(), values_np.sum(axis=axis))
-
-
-def test_mean_1d_float(device: str) -> None:
-    values_np = _random_values(100)
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    mean_wp = od_reduce.mean(values_wp)
-    assert np.allclose(mean_wp, values_np.mean(), rtol=1e-5, atol=1e-5)
-
-
-def test_mean_1d_int(device: str) -> None:
-    rng = np.random.default_rng(42)
-    values_np = rng.integers(-1000, 1000, (100,), dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    mean_wp = od_reduce.mean(values_wp)
-    assert np.allclose(mean_wp, values_np.mean(), rtol=1e-5, atol=1e-5)
-
-
-def test_mean_2d(device: str) -> None:
-    values_np = _random_values((200, 100))
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    mean_wp = od_reduce.mean(values_wp)
-    assert np.allclose(mean_wp, values_np.mean(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_mean_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    values_np = _random_values((32, 10))
-    values_wp = wp.array(values_np, dtype=wp.float32, device=device)
-    mean_wp = od_reduce.mean(values_wp, axis=axis)
-    assert np.allclose(mean_wp.numpy(), values_np.mean(axis=axis), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_mean_2d_axis_int(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    values_np = rng.integers(-1000, 1000, (32, 10), dtype=np.int32)
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
-    mean_wp = od_reduce.mean(values_wp, axis=axis)
-    assert np.allclose(mean_wp.numpy(), values_np.mean(axis=axis), rtol=1e-5, atol=1e-5)
-
-
-def test_mean_bool_global(device: str) -> None:
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(32, 4), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    assert np.allclose(od_reduce.mean(mask_wp), mask_np.mean(), rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("axis", [0, 1])
-def test_mean_bool_2d_axis(device: str, axis: Literal[0, 1]) -> None:
-    rng = np.random.default_rng(42)
-    mask_np = rng.choice([False, True], size=(32, 4), replace=True)
-    mask_wp = wp.array(mask_np, dtype=wp.bool, device=device)
-    mean_wp = od_reduce.mean(mask_wp, axis=axis)
-    assert np.allclose(mean_wp.numpy(), mask_np.mean(axis=axis), rtol=1e-5, atol=1e-5)
-
-
-def test_mean_1d_axis_raises(device: str) -> None:
-    values_wp = wp.array([1, 2, 3], dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="requires axis=None for a 1D array"):
-        od_reduce.mean(values_wp, axis=0)
-
-
-@pytest.mark.parity("mean_vec3", "numpy")
-def test_mean_vec3_1d(device: str) -> None:
-    """Class A: component-wise mean against ``numpy.mean(axis=0)``."""
-    rng = np.random.default_rng(20)
-    values_np = rng.standard_normal((300, 3)).astype(np.float32)
-    values_wp = points_to_warp(values_np, device)
-    mean_wp = od_reduce.mean(values_wp)
-    assert np.allclose(np.array(mean_wp), values_np.mean(axis=0), rtol=1e-4, atol=1e-4)
-
-
-@pytest.mark.parametrize("n", [63, 64, 65, 197])
-def test_mean_vec3_partial_tiles(device: str, n: int) -> None:
-    rng = np.random.default_rng(n)
-    values_np = rng.standard_normal((n, 3)).astype(np.float32)
-    values_wp = points_to_warp(values_np, device)
-    mean_wp = od_reduce.mean(values_wp)
-    assert np.allclose(np.array(mean_wp), values_np.mean(axis=0), rtol=1e-4, atol=1e-4)
-
-
-def test_mean_vec3_axis_raises(device: str) -> None:
-    values_wp = wp.zeros(4, dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="axis"):
-        od_reduce.mean(values_wp, axis=0)
-
-
-def test_mean_vec3_empty_raises(device: str) -> None:
-    values_wp = warp_empty(0, wp.vec3, device)
-    with pytest.raises(ValueError, match="non-empty"):
-        od_reduce.mean(values_wp)
-
-
-@pytest.mark.parity("sum_vec3", "numpy")
-def test_sum_vec3_1d(device: str) -> None:
-    """Class A: component-wise sum against ``numpy.sum(axis=0)``."""
-    rng = np.random.default_rng(20)
-    values_np = rng.standard_normal((300, 3)).astype(np.float32)
-    values_wp = points_to_warp(values_np, device)
-    sum_wp = od_reduce.sum(values_wp)
-    assert np.allclose(np.array(sum_wp), values_np.sum(axis=0), rtol=1e-4, atol=1e-4)
-
-
-@pytest.mark.parametrize("n", [63, 64, 65, 197])
-def test_sum_vec3_partial_tiles(device: str, n: int) -> None:
-    rng = np.random.default_rng(n)
-    values_np = rng.standard_normal((n, 3)).astype(np.float32)
-    values_wp = points_to_warp(values_np, device)
-    sum_wp = od_reduce.sum(values_wp)
-    assert np.allclose(np.array(sum_wp), values_np.sum(axis=0), rtol=1e-4, atol=1e-4)
-
-
-def test_sum_vec3_axis_raises(device: str) -> None:
-    values_wp = wp.zeros(4, dtype=wp.vec3, device=device)
-    with pytest.raises(ValueError, match="axis"):
-        od_reduce.sum(values_wp, axis=0)
-
-
-def test_sum_vec3_empty_raises(device: str) -> None:
-    values_wp = warp_empty(0, wp.vec3, device)
-    with pytest.raises(ValueError, match="non-empty"):
-        od_reduce.sum(values_wp)
-
-
-def test_weighted_sum_vec3_1d(device: str) -> None:
-    rng = np.random.default_rng(21)
-    values_np = rng.standard_normal((300, 3)).astype(np.float32)
-    weights_np = rng.random(300, dtype=np.float32)
-    values_wp = points_to_warp(values_np, device)
-    weights_wp = wp.array(weights_np, dtype=wp.float32, device=device)
-    sum_wp = od_reduce.weighted_sum(values_wp, weights_wp)
-    exp_np = (weights_np[:, None] * values_np).sum(axis=0)
-    assert np.allclose(np.array(sum_wp), exp_np, rtol=1e-4, atol=1e-4)
-
-
 @pytest.mark.parity("weighted_sum", "pytorch3d")
 def test_weighted_sum_matches_pytorch3d(device: str) -> None:
     """
@@ -706,6 +445,29 @@ def test_weighted_sum_matches_pytorch3d(device: str) -> None:
     )
 
 
+@pytest.mark.parametrize("n", [7, 8])
+@pytest.mark.parametrize(
+    ("dtype_wp", "dtype_np"),
+    [
+        (wp.float32, np.float32),
+        (wp.float64, np.float64),
+        (wp.int32, np.int32),
+        (wp.int64, np.int64),
+        (wp.uint32, np.uint32),
+        (wp.uint64, np.uint64),
+    ],
+)
+def test_reduce_median_matches_numpy(device: str, n: int, dtype_wp: type, dtype_np: type) -> None:
+    """Class A: ``reduce.median`` equals ``np.median`` at both parities and every key dtype."""
+    rng = np.random.default_rng(90 + n)
+    if np.issubdtype(dtype_np, np.floating):
+        values_np = rng.standard_normal(n).astype(dtype_np)
+    else:
+        values_np = rng.integers(0, 1000, size=n).astype(dtype_np)
+    values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
+    assert np.allclose(od_reduce.median(values_wp), np.median(values_np), rtol=1e-5, atol=1e-5)
+
+
 @pytest.mark.parametrize("n", [100, 101])
 @pytest.mark.parity("median", "pymeshlab", "numpy")
 def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
@@ -721,7 +483,7 @@ def test_scalar_statistics_match_pymeshlab(device: str, n: int) -> None:
     for both parities: measured at n = 100, 101 and 1001 it returns ranks 49, 49 and 499 where the
     middle is 49.5, 50 and 500. So it is compared against that named order statistic instead, which
     still checks that the two see the same sorted distribution, while
-    [`tests.test_polyline.test_reduce_median_matches_numpy`][] is the oracle for
+    [`tests.test_reduce.test_reduce_median_matches_numpy`][] is the oracle for
     [`ordito.reduce.median`][] itself.
     """
     rng = np.random.default_rng(0)

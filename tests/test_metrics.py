@@ -62,82 +62,45 @@ def _igl_point_mesh_sqr_dist(
     return np.asarray(sqr_distances_igl, dtype=np.float64)
 
 
+def _cloud(rng: np.random.Generator, n_points: int) -> np.ndarray:
+    """``(n_points, 3)`` float32 points uniform in ``[-2, 2]^3``."""
+    return (rng.random((n_points, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+
+
+def _kdtree_sq(queries_np: np.ndarray, targets_np: np.ndarray) -> np.ndarray:
+    """Squared distance from each query to its nearest target, through ``scipy.spatial.KDTree``."""
+    return np.asarray(KDTree(targets_np).query(queries_np)[0], dtype=np.float64) ** 2
+
+
 # ---------------------------------------------------------------------------
 # Chamfer: point cloud to point cloud
 # ---------------------------------------------------------------------------
 
 
-def test_chamfer_points_to_points_mean(device: str) -> None:
-    rng = np.random.default_rng(0)
-    x_np = (rng.random((80, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((60, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+@pytest.mark.parametrize(("reduction", "atol"), [("sum", 1e-4), ("max", 1e-5)], ids=["sum", "max"])
+def test_chamfer_points_to_points_sum_and_max(
+    device: str, reduction: Literal["sum", "max"], atol: float
+) -> None:
+    """
+    Class B: the two reductions the Open3D and pytorch3d comparisons below never reach.
 
-    distance_xy_np = KDTree(y_np).query(x_np)[0]
-    distance_yx_np = KDTree(x_np).query(y_np)[0]
-    chamfer_np = np.mean(distance_xy_np**2) + np.mean(distance_yx_np**2)
-
-    chamfer_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device)
-    )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
-
-
-def test_chamfer_points_to_points_sum(device: str) -> None:
+    ``KDTree`` supplies the per-point nearest distances; the named transform is squaring and the
+    reduction, summed over both directions for ``"sum"`` and the larger of the two for ``"max"``.
+    The mean and the unreduced forms are compared below.
+    """
     rng = np.random.default_rng(1)
-    x_np = (rng.random((50, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((70, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+    x_np, y_np = _cloud(rng, 50), _cloud(rng, 70)
 
-    distance_xy_np = KDTree(y_np).query(x_np)[0]
-    distance_yx_np = KDTree(x_np).query(y_np)[0]
-    chamfer_np = np.sum(distance_xy_np**2) + np.sum(distance_yx_np**2)
-
-    chamfer_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction="sum"
-    )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-4)
-
-
-def test_chamfer_points_to_points_max(device: str) -> None:
-    rng = np.random.default_rng(2)
-    x_np = (rng.random((50, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((70, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-
-    distance_xy_np = KDTree(y_np).query(x_np)[0]
-    distance_yx_np = KDTree(x_np).query(y_np)[0]
-    chamfer_np = max(np.max(distance_xy_np**2), np.max(distance_yx_np**2))
+    squared_xy_np, squared_yx_np = _kdtree_sq(x_np, y_np), _kdtree_sq(y_np, x_np)
+    if reduction == "sum":
+        chamfer_np = np.sum(squared_xy_np) + np.sum(squared_yx_np)
+    else:
+        chamfer_np = max(np.max(squared_xy_np), np.max(squared_yx_np))
 
     chamfer_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction="max"
+        points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction=reduction
     )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
-
-
-def test_chamfer_points_to_points_single_directional(device: str) -> None:
-    rng = np.random.default_rng(3)
-    x_np = (rng.random((40, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((90, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-
-    chamfer_np = np.mean(KDTree(y_np).query(x_np)[0] ** 2)
-
-    chamfer_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device), single_directional=True
-    )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=1e-5)
-
-
-def test_chamfer_points_to_points_unreduced(device: str) -> None:
-    rng = np.random.default_rng(4)
-    x_np = (rng.random((40, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((90, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-
-    squared_xy_np = KDTree(y_np).query(x_np)[0] ** 2
-    squared_yx_np = KDTree(x_np).query(y_np)[0] ** 2
-
-    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device), point_reduction=None
-    )
-    assert np.allclose(forward_wp.numpy(), squared_xy_np, rtol=1e-5, atol=1e-5)
-    assert np.allclose(backward_wp.numpy(), squared_yx_np, rtol=1e-5, atol=1e-5)
+    assert np.allclose(chamfer_wp, chamfer_np, rtol=1e-5, atol=atol)
 
 
 @pytest.mark.parametrize("single_directional", [True, False], ids=["oneway", "symmetric"])
@@ -152,8 +115,7 @@ def test_chamfer_points_to_points_matches_open3d(device: str, single_directional
     branch does, so this asserts the two sides of that row compute the same number.
     """
     rng = np.random.default_rng(21)
-    x_np = (rng.random((80, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((60, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+    x_np, y_np = _cloud(rng, 80), _cloud(rng, 60)
 
     cloud_x_o3d, cloud_y_o3d = points_to_open3d(x_np), points_to_open3d(y_np)
     chamfer_o3d = np.square(
@@ -315,7 +277,15 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
-def test_chamfer_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.
+
+    ``igl.hausdorff`` is not bound, so its primitive supplies every vertex's squared distance to
+    the other surface; the named transform is the mean of each direction summed (Chamfer) and the
+    square root of the larger maximum (Hausdorff). The tolerance is ``_MESH_RTOL``: igl consumes
+    float64 vertices where Warp carries float32.
+    """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_a_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
@@ -324,20 +294,17 @@ def test_chamfer_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) ->
     sqr_a_to_b_np = _igl_point_mesh_sqr_dist(vertices_a_np, vertices_b_np, faces_np)
     sqr_b_to_a_np = _igl_point_mesh_sqr_dist(vertices_b_np, vertices_a_np, faces_np)
     chamfer_np = np.mean(sqr_a_to_b_np) + np.mean(sqr_b_to_a_np)
+    hausdorff_np = np.sqrt(max(sqr_a_to_b_np.max(), sqr_b_to_a_np.max()))
 
     vertices_b_wp = points_to_warp(vertices_b_np, mesh_wp.device)
     chamfer_wp = od.metrics.chamfer_mesh_to_mesh(
         mesh_wp.points, mesh_wp.indices, vertices_b_wp, mesh_wp.indices
     )
-    assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
-
-
-def test_chamfer_mesh_to_mesh_identical_is_zero(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    _mesh_tm, mesh_wp = icosahedron
-    chamfer_wp = od.metrics.chamfer_mesh_to_mesh(
-        mesh_wp.points, mesh_wp.indices, mesh_wp.points, mesh_wp.indices
+    hausdorff_wp = od.metrics.hausdorff_mesh_to_mesh(
+        mesh_wp.points, mesh_wp.indices, vertices_b_wp, mesh_wp.indices
     )
-    assert np.allclose(chamfer_wp, 0.0, atol=1e-6)
+    assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
 # ---------------------------------------------------------------------------
@@ -357,12 +324,13 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     """
     Class A on the forward half: ``PointsToMeshProjector`` returns the same squared distances.
 
-    The complement to [`test_chamfer_points_to_mesh`], which composes igl and scipy to reach the
-    whole two-sided Chamfer. This one isolates the expensive half -- the cloud-to-surface query --
-    and compares it **element-wise** rather than through a mean, which is strictly stronger: a mean
-    hides a permutation and a pair of compensating errors, and MeshLib reports one
-    ``MeshProjectionResult`` per query point so the correspondence is available. `distSq` is already
-    squared, matching ordito's ``point_reduction=None`` output with no transform.
+    The complement to [`test_chamfer_and_hausdorff_points_to_mesh`], which composes igl and scipy
+    to reach the whole two-sided Chamfer. This one isolates the expensive half -- the
+    cloud-to-surface query -- and compares it **element-wise** rather than through a mean, which is
+    strictly stronger: a mean hides a permutation and a pair of compensating errors, and MeshLib
+    reports one ``MeshProjectionResult`` per query point so the correspondence is available.
+    `distSq` is already squared, matching ordito's ``point_reduction=None`` output with no
+    transform.
 
     Measured 2.4e-07 max absolute difference over 500 points (1.1e-07 relative), which is ordito's
     float32 vertex storage against MeshLib's float32 -- see the `getNumpyVerts` note in CLAUDE.md
@@ -520,7 +488,9 @@ def test_chamfer_points_to_mesh_matches_pytorch3d(device: str) -> None:
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
 @pytest.mark.parity("chamfer_points_to_mesh", "igl")
-def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_chamfer_and_hausdorff_points_to_mesh(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     Class B (a named composition): igl supplies the forward half, scipy the backward one.
 
@@ -529,6 +499,9 @@ def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
     ``KDTree`` ``k=1`` search back from the mesh vertices -- the same two halves ordito computes,
     in the same order, each from an independent implementation. That composition is why the
     benchmark's igl row is the forward half alone and reads as a lower bound.
+
+    The Hausdorff distance is the same two halves reduced by ``max`` instead (square root of igl's
+    largest forward value, the largest ``KDTree`` backward distance).
 
     The tolerance is ``_MESH_RTOL`` rather than ``1e-5`` for a stated reason: igl consumes float64
     vertices where Warp carries float32, so the two agree only to float32 precision here.
@@ -542,13 +515,16 @@ def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
     points_np = (center + rng.normal(scale=0.6, size=(120, 3))).astype(np.float32)
 
     forward_sqr_igl = _igl_point_mesh_sqr_dist(points_np, vertices_np, faces_np)
-    backward_sqr_np = KDTree(points_np.astype(np.float64)).query(vertices_np)[0] ** 2
+    backward_sqr_np = _kdtree_sq(vertices_np, points_np.astype(np.float64))
     chamfer_np = np.mean(forward_sqr_igl) + np.mean(backward_sqr_np)
 
-    chamfer_wp = od.metrics.chamfer_points_to_mesh(
-        points_to_warp(points_np, mesh_wp.device), mesh_wp.points, mesh_wp.indices
-    )
+    hausdorff_np = max(np.sqrt(forward_sqr_igl.max()), np.sqrt(backward_sqr_np.max()))
+
+    points_wp = points_to_warp(points_np, mesh_wp.device)
+    chamfer_wp = od.metrics.chamfer_points_to_mesh(points_wp, mesh_wp.points, mesh_wp.indices)
+    hausdorff_wp = od.metrics.hausdorff_points_to_mesh(points_wp, mesh_wp.points, mesh_wp.indices)
     assert np.allclose(chamfer_wp, chamfer_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
+    assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
 
 
 # ---------------------------------------------------------------------------
@@ -556,23 +532,15 @@ def test_chamfer_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) 
 # ---------------------------------------------------------------------------
 
 
-def test_hausdorff_points_to_points(device: str) -> None:
-    rng = np.random.default_rng(6)
-    x_np = (rng.random((80, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((60, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-
-    hausdorff_np = max(directed_hausdorff(x_np, y_np)[0], directed_hausdorff(y_np, x_np)[0])
-
-    hausdorff_wp = od.metrics.hausdorff_points_to_points(
-        points_to_warp(x_np, device), points_to_warp(y_np, device)
-    )
-    assert np.allclose(hausdorff_wp, hausdorff_np, rtol=1e-5, atol=1e-5)
-
-
 def test_hausdorff_points_to_points_single_directional(device: str) -> None:
+    """
+    Class A: the one-way answer is ``scipy.spatial.distance.directed_hausdorff``.
+
+    The symmetric form is compared against Open3D and MeshLab below and against ``KDTree`` in
+    the backward-search test above.
+    """
     rng = np.random.default_rng(7)
-    x_np = (rng.random((80, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((60, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+    x_np, y_np = _cloud(rng, 80), _cloud(rng, 60)
 
     hausdorff_np = directed_hausdorff(x_np, y_np)[0]
 
@@ -600,8 +568,7 @@ def test_hausdorff_points_to_points_matches_open3d_and_pymeshlab(device: str) ->
     MeshLab's sampler would otherwise sample the surface instead of the vertices.
     """
     rng = np.random.default_rng(22)
-    x_np = (rng.random((80, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    y_np = (rng.random((60, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
+    x_np, y_np = _cloud(rng, 80), _cloud(rng, 60)
 
     cloud_x_o3d, cloud_y_o3d = points_to_open3d(x_np), points_to_open3d(y_np)
     hausdorff_o3d = max(
@@ -632,84 +599,99 @@ def test_hausdorff_points_to_points_matches_open3d_and_pymeshlab(device: str) ->
 
 
 # ---------------------------------------------------------------------------
-# Hausdorff: mesh to mesh (direct port of igl::hausdorff)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
-def test_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_a_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
-    vertices_b_np = vertices_a_np + np.array([0.3, -0.15, 0.2])
-
-    sqr_a_to_b_np = _igl_point_mesh_sqr_dist(vertices_a_np, vertices_b_np, faces_np)
-    sqr_b_to_a_np = _igl_point_mesh_sqr_dist(vertices_b_np, vertices_a_np, faces_np)
-    hausdorff_np = np.sqrt(max(sqr_a_to_b_np.max(), sqr_b_to_a_np.max()))
-
-    vertices_b_wp = points_to_warp(vertices_b_np, mesh_wp.device)
-    hausdorff_wp = od.metrics.hausdorff_mesh_to_mesh(
-        mesh_wp.points, mesh_wp.indices, vertices_b_wp, mesh_wp.indices
-    )
-    assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
-
-
-# ---------------------------------------------------------------------------
-# Hausdorff: point cloud to mesh (mixed)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])
-def test_hausdorff_points_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.asarray(mesh_tm.faces, dtype=np.int64)
-
-    rng = np.random.default_rng(8)
-    center = vertices_np.mean(axis=0)
-    points_np = (center + rng.normal(scale=0.6, size=(120, 3))).astype(np.float32)
-
-    forward_np = np.sqrt(_igl_point_mesh_sqr_dist(points_np, vertices_np, faces_np).max())
-    backward_np = np.max(KDTree(points_np.astype(np.float64)).query(vertices_np)[0])
-    hausdorff_np = max(forward_np, backward_np)
-
-    hausdorff_wp = od.metrics.hausdorff_points_to_mesh(
-        points_to_warp(points_np, mesh_wp.device), mesh_wp.points, mesh_wp.indices
-    )
-    assert np.allclose(hausdorff_wp, hausdorff_np, rtol=_MESH_RTOL, atol=_MESH_ATOL)
-
-
-# ---------------------------------------------------------------------------
 # Edge cases
 # ---------------------------------------------------------------------------
 
 
-def test_chamfer_points_to_points_empty(device: str) -> None:
-    x_wp = warp_empty(0, wp.vec3, device)
-    y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
-    assert od.metrics.chamfer_points_to_points(x_wp, y_wp) == 0.0
+def _zeros_cloud(device: str, n_points: int) -> wp.array[wp.vec3]:
+    return points_to_warp(np.zeros((n_points, 3), dtype=np.float32), device)
 
 
-def test_chamfer_points_to_points_empty_unreduced(device: str) -> None:
-    x_wp = warp_empty(0, wp.vec3, device)
-    y_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
-    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(x_wp, y_wp, point_reduction=None)
-    assert forward_wp.shape == (0,)
-    assert backward_wp.shape == (0,)
+def _unreduced_empty(device: str) -> np.ndarray:
+    forward_wp, backward_wp = od.metrics.chamfer_points_to_points(
+        warp_empty(0, wp.vec3, device), _zeros_cloud(device, 5), point_reduction=None
+    )
+    return np.concatenate([forward_wp.numpy(), backward_wp.numpy()])
 
 
-def test_hausdorff_points_to_mesh_empty_faces(device: str) -> None:
-    points_wp = points_to_warp(np.zeros((5, 3), dtype=np.float32), device)
-    vertices_wp = points_to_warp(np.zeros((3, 3), dtype=np.float32), device)
-    faces_wp = warp_empty(0, wp.int32, device)
-    assert od.metrics.hausdorff_points_to_mesh(points_wp, vertices_wp, faces_wp) == 0.0
+def _identical_cloud_hausdorff(device: str) -> np.ndarray:
+    x_wp = points_to_warp(_cloud(np.random.default_rng(9), 30), device)
+    return np.array([od.metrics.hausdorff_points_to_points(x_wp, x_wp)])
 
 
-def test_hausdorff_points_to_points_identical_is_zero(device: str) -> None:
-    rng = np.random.default_rng(9)
-    x_np = (rng.random((30, 3), dtype=np.float32) * 4.0 - 2.0).astype(np.float32)
-    x_wp = points_to_warp(x_np, device)
-    assert od.metrics.hausdorff_points_to_points(x_wp, x_wp) == 0.0
+def _identical_mesh_chamfer(device: str) -> np.ndarray:
+    mesh_wp = trimesh_to_warp(tm.creation.icosahedron(), device)
+    return np.array(
+        [
+            od.metrics.chamfer_mesh_to_mesh(
+                mesh_wp.points, mesh_wp.indices, mesh_wp.points, mesh_wp.indices
+            )
+        ]
+    )
+
+
+# Each case returns its values, which must all be zero to within ``atol`` and have ``shape``.
+_DEGENERATE_CASES: list[tuple[str, Callable[[str], np.ndarray], tuple[int, ...], float]] = [
+    (
+        "chamfer_empty_cloud",
+        lambda device: np.array(
+            [
+                od.metrics.chamfer_points_to_points(
+                    warp_empty(0, wp.vec3, device), _zeros_cloud(device, 5)
+                )
+            ]
+        ),
+        (1,),
+        0.0,
+    ),
+    ("chamfer_empty_cloud_unreduced", _unreduced_empty, (0,), 0.0),
+    (
+        "chamfer_loss_empty_cloud",
+        lambda device: od.metrics.chamfer_points_to_points_loss(
+            warp_empty(0, wp.vec3, device), _zeros_cloud(device, 4)
+        ).numpy(),
+        (1,),
+        0.0,
+    ),
+    (
+        "hausdorff_points_to_mesh_no_faces",
+        lambda device: np.array(
+            [
+                od.metrics.hausdorff_points_to_mesh(
+                    _zeros_cloud(device, 5),
+                    _zeros_cloud(device, 3),
+                    warp_empty(0, wp.int32, device),
+                )
+            ]
+        ),
+        (1,),
+        0.0,
+    ),
+    ("hausdorff_identical_clouds", _identical_cloud_hausdorff, (1,), 0.0),
+    ("chamfer_identical_meshes", _identical_mesh_chamfer, (1,), 1e-6),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "shape", "atol"),
+    [
+        pytest.param(case, shape, atol, id=case_id)
+        for case_id, case, shape, atol in _DEGENERATE_CASES
+    ],
+)
+def test_degenerate_inputs_measure_zero(
+    device: str, case: Callable[[str], np.ndarray], shape: tuple[int, ...], atol: float
+) -> None:
+    """
+    Not a library comparison: an empty side or two identical inputs measure exactly nothing.
+
+    An empty cloud gives a zero scalar (and empty per-point arrays unreduced), a mesh with no
+    faces a zero Hausdorff distance, and a cloud or mesh against itself zero -- exactly for the
+    clouds, within float32 rounding of the closest-point query for the mesh.
+    """
+    values_np = case(device)
+    assert values_np.shape == shape
+    assert np.all(np.abs(values_np) <= atol)
 
 
 # ---------------------------------------------------------------------------
@@ -794,46 +776,6 @@ def _fd_grad(loss_fn: Callable[[], float], arr: np.ndarray, eps: float = 1e-3) -
     return grad
 
 
-@pytest.mark.parametrize("reduction", ["mean", "sum"])
-@pytest.mark.parametrize("single_directional", [False, True])
-def test_chamfer_points_to_points_loss_grad(
-    device: str, reduction: _DiffReduction, single_directional: bool
-) -> None:
-    rng = np.random.default_rng(20)
-    x_np = (rng.random((25, 3)) * 4.0 - 2.0).astype(np.float32).astype(np.float64)
-    y_np = (rng.random((18, 3)) * 4.0 - 2.0).astype(np.float32).astype(np.float64)
-    n, m = len(x_np), len(y_np)
-
-    nn_xy = _nn_indices_np(x_np, y_np)
-    nn_yx = _nn_indices_np(y_np, x_np)
-
-    # Reference loss and closed-form gradient (pytorch3d convention, fixed assignment).
-    scale_f = (1.0 / n) if reduction == "mean" else 1.0
-    loss_np = _reduce_np(((x_np - y_np[nn_xy]) ** 2).sum(-1), reduction)
-    grad_x_np = 2.0 * scale_f * (x_np - y_np[nn_xy])
-    grad_y_np = np.zeros_like(y_np)
-    np.add.at(grad_y_np, nn_xy, -2.0 * scale_f * (x_np - y_np[nn_xy]))
-    if not single_directional:
-        scale_b = (1.0 / m) if reduction == "mean" else 1.0
-        loss_np += _reduce_np(((y_np - x_np[nn_yx]) ** 2).sum(-1), reduction)
-        grad_y_np += 2.0 * scale_b * (y_np - x_np[nn_yx])
-        np.add.at(grad_x_np, nn_yx, -2.0 * scale_b * (y_np - x_np[nn_yx]))
-
-    x_wp = wp.array(x_np, dtype=wp.vec3, device=device, requires_grad=True)
-    y_wp = wp.array(y_np, dtype=wp.vec3, device=device, requires_grad=True)
-    tape = wp.Tape()
-    loss_wp = od.metrics.chamfer_points_to_points_loss(
-        x_wp, y_wp, tape=tape, point_reduction=reduction, single_directional=single_directional
-    )
-    tape.backward(loss=loss_wp)
-
-    assert x_wp.grad is not None
-    assert y_wp.grad is not None
-    assert np.allclose(loss_wp.numpy()[0], loss_np, rtol=_GRAD_RTOL, atol=_GRAD_ATOL)
-    assert np.allclose(x_wp.grad.numpy(), grad_x_np, rtol=_GRAD_RTOL, atol=_GRAD_ATOL)
-    assert np.allclose(y_wp.grad.numpy(), grad_y_np, rtol=_GRAD_RTOL, atol=_GRAD_ATOL)
-
-
 @pytest.mark.parity(
     "chamfer_points_to_points_loss",
     "pytorch3d",
@@ -850,8 +792,9 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
     """
     Class A: pytorch3d's own autograd through ``loss.chamfer_distance`` is the gradient oracle.
 
-    Unlike the closed-form NumPy check above, this backpropagates through pytorch3d's own
-    nearest-neighbor assignment and reduction rather than a hand-derived formula. No restriction to
+    Unlike the closed-form check on either backward search above, this covers both reductions and
+    both directions, and backpropagates through pytorch3d's own nearest-neighbor assignment and
+    reduction rather than a hand-derived formula. No restriction to
     a single direction is needed here (contrast the mesh comparison below): both directions are
     plain point-to-point nearest neighbor on both sides, which is exactly what pytorch3d's
     ``single_directional`` keyword already means, so the two definitions agree completely rather
@@ -890,10 +833,16 @@ def test_chamfer_points_to_points_loss_grad_matches_pytorch3d(
 
 
 @pytest.mark.parametrize("reduction", ["mean", "sum"])
-@pytest.mark.parametrize("single_directional", [False, True])
 def test_chamfer_points_to_mesh_loss_grad(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction, single_directional: bool
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], reduction: _DiffReduction
 ) -> None:
+    """
+    Not a library comparison: the two-sided loss against central differences of a NumPy mirror.
+
+    pytorch3d's backward direction is face-to-point where ordito's is vertex-to-nearest-point, so
+    no library differentiates this two-sided loss; the forward-only loss has pytorch3d's autograd
+    as its oracle below. The assignments are held at the ones the loss itself computes.
+    """
     mesh_tm, mesh_wp = icosahedron
     device = mesh_wp.device
     verts_np = np.asarray(mesh_tm.vertices, dtype=np.float32).astype(np.float64)
@@ -912,10 +861,9 @@ def test_chamfer_points_to_mesh_loss_grad(
     nn_vp = od.neighbors.query_nearest(points_wp, verts_wp, k=1)[0].numpy()
 
     def evaluate_loss_np() -> float:
-        total = _reduce_np(_surface_sq_np(points_np, verts_np, faces_np, face_id), reduction)
-        if not single_directional:
-            total += _reduce_np(((verts_np - points_np[nn_vp]) ** 2).sum(-1), reduction)
-        return total
+        return _reduce_np(
+            _surface_sq_np(points_np, verts_np, faces_np, face_id), reduction
+        ) + _reduce_np(((verts_np - points_np[nn_vp]) ** 2).sum(-1), reduction)
 
     loss_np = evaluate_loss_np()
     grad_points_np = _fd_grad(evaluate_loss_np, points_np)
@@ -923,12 +871,7 @@ def test_chamfer_points_to_mesh_loss_grad(
 
     tape = wp.Tape()
     loss_wp = od.metrics.chamfer_points_to_mesh_loss(
-        points_wp,
-        verts_wp,
-        faces_wp,
-        tape=tape,
-        point_reduction=reduction,
-        single_directional=single_directional,
+        points_wp, verts_wp, faces_wp, tape=tape, point_reduction=reduction
     )
     tape.backward(loss=loss_wp)
 

@@ -22,6 +22,8 @@ from tests.conftest import MESHES
 from tests.conversions import (
     bsr_to_csr,
     bsr_to_dense,
+    faces_igl,
+    mesh_igl,
     numpy_to_warp,
     points_to_warp,
     trimesh_to_meshlib,
@@ -38,82 +40,61 @@ _LAPLACIAN_MESHES = ["icosahedron", "half_torus", "hemisphere"]
 
 
 @pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
-@pytest.mark.parity("face_gradients", "igl")
-def test_face_gradients_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
+@pytest.mark.parity("face_gradients", "igl", "pyvista")
+def test_face_gradients_matches_igl_and_pyvista(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
-    Class B (matrix form applied): ``igl.grad`` is the same operator as a sparse ``(3F, V)`` map.
+    The per-face gradient against libigl's sparse operator and VTK's per-point field.
 
-    igl returns the operator; ordito returns its product with the field. The named transform is
-    therefore to *apply* igl's matrix and unstack the result, which comes back as
+    **igl, Class B (matrix form applied)**: ``igl.grad`` is the same operator as a sparse
+    ``(3F, V)`` map. igl returns the operator; ordito returns its product with the field. The named
+    transform is therefore to *apply* igl's matrix and unstack the result, which comes back as
     ``[all x; all y; all z]`` rather than interleaved -- getting that wrong yields a permutation of
-    the right numbers, so the test also checks the defining property below, which no permutation
-    satisfies.
+    the right numbers, so the test also checks the gradient's defining identity,
+    ``dot(grad, v1 - v0) == values[v1] - values[v0]`` for every face, which no permutation
+    satisfies (and a finite difference along the edges, or a gradient left in the wrong plane,
+    fails). The tolerance is the package's standard ``1e-5`` rather than something tighter, and the
+    reason is structural rather than a fudge: ordito accumulates in ``float64`` but takes its
+    normals and areas from ``face_normals_and_areas``, which is ``float32``, so the geometry enters
+    at single precision where igl's is double throughout. Measured worst deviation across these
+    fixtures is **1.4e-6 relative** (on ``half_torus``, whose faces are the smallest), so the bound
+    has a 7x margin -- and it is a float32-vs-float64 gap, not a disagreement about the operator.
 
-    The tolerance is the package's standard ``1e-5`` rather than something tighter, and the reason
-    is structural rather than a fudge: ordito accumulates in ``float64`` but takes its normals and
-    areas from ``face_normals_and_areas``, which is ``float32``, so the geometry enters at single
-    precision where igl's is double throughout. Measured worst deviation across these fixtures is
-    **1.4e-6 relative** (on ``half_torus``, whose faces are the smallest), so the bound has a 7x
-    margin -- and it is a float32-vs-float64 gap, not a disagreement about the operator.
-
-    The second assert is the gradient's defining identity, checked without igl:
-    ``dot(grad, v1 - v0) == values[v1] - values[v0]`` for every face. A finite difference along the
-    edges, or a gradient left in the wrong plane, fails it.
+    **pyvista, Class B (averaged onto vertices)**: ``compute_derivative`` returns a per-**point**
+    gradient for a point-data field, and ``preference='cell'`` does not move it (measured: the array
+    stays ``(n_vertices, 3)``), so the named transform is ordito's answer averaged onto vertices
+    with ``interpolation.average_onto_vertices`` -- which turns out to be exactly what VTK computes,
+    element-wise to 1.8e-07 on ``icosphere(3)``. Its tangential convention is pinned by
+    [`test_face_gradients_pyvista_reference_is_tangential`].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+    n_vertices = vertices_np.shape[0]
     values_np = np.ascontiguousarray(vertices_np[:, 2])
+    values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
+    gradients_np = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp).numpy()
 
+    # igl: apply the operator and unstack [all x; all y; all z].
     n_faces = faces_np.shape[0]
     stacked_igl = np.asarray(igl.grad(vertices_np, faces_np) @ values_np)
     gradients_igl = np.stack(
         [stacked_igl[:n_faces], stacked_igl[n_faces : 2 * n_faces], stacked_igl[2 * n_faces :]],
         axis=1,
     )
-
-    values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
-    gradients_wp = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp)
-
-    assert np.allclose(gradients_wp.numpy(), gradients_igl, rtol=1e-5, atol=1e-5)
+    assert np.allclose(gradients_np, gradients_igl, rtol=1e-5, atol=1e-5)
 
     # The identity that defines a piecewise-linear gradient, independent of either library.
     edges_np = vertices_np[faces_np[:, 1]] - vertices_np[faces_np[:, 0]]
     differences_np = values_np[faces_np[:, 1]] - values_np[faces_np[:, 0]]
-    assert np.allclose(
-        np.einsum("ij,ij->i", gradients_wp.numpy(), edges_np), differences_np, atol=1e-5
-    )
+    assert np.allclose(np.einsum("ij,ij->i", gradients_np, edges_np), differences_np, atol=1e-5)
 
-
-@pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
-@pytest.mark.parity("face_gradients", "pyvista")
-def test_face_gradients_matches_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B (averaged onto vertices): VTK reports the same gradient, at the *points*.
-
-    ``compute_derivative`` returns a per-**point** gradient for a point-data field, and
-    ``preference='cell'`` does not move it (measured: the array stays ``(n_vertices, 3)``), so the
-    named transform is ordito's answer averaged onto vertices with
-    ``interpolation.average_onto_vertices`` -- which turns out to be exactly what VTK computes,
-    element-wise to 1.8e-07 on ``icosphere(3)``.
-
-    The quantity is the **tangential** surface gradient on both sides, which is the thing most
-    likely to be misread as a bug: for ``f = x`` on the unit sphere the mean is ``2/3 e_x``, not
-    ``e_x``, because the ambient x-direction is only partly tangent to the surface. That value is
-    pinned below so the convention is asserted rather than described.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    n_vertices = mesh_tm.vertices.shape[0]
-    values_np = np.ascontiguousarray(mesh_tm.vertices[:, 2], dtype=np.float64)
-
+    # pyvista: a per-point gradient, compared after averaging ordito's onto vertices.
     mesh_pv = trimesh_to_pyvista(mesh_tm)
     mesh_pv.point_data["field"] = values_np
     gradients_pv = np.asarray(
         mesh_pv.compute_derivative(scalars="field", gradient=True).point_data["gradient"]
     )
-
-    values_wp = wp.array(values_np, dtype=wp.float64, device=mesh_wp.device)
-    gradients_np = od.laplacian.face_gradients(mesh_wp.points, mesh_wp.indices, values_wp).numpy()
     averaged_np = np.stack(
         [
             od.interpolation.average_onto_vertices(
@@ -131,7 +112,16 @@ def test_face_gradients_matches_pyvista(request: pytest.FixtureRequest, mesh_nam
     )
     assert np.allclose(averaged_np, gradients_pv, rtol=1e-4, atol=1e-4)
 
-    # The gradient is *tangential*, on both sides: 2/3 e_x for f = x on a unit sphere.
+
+def test_face_gradients_pyvista_reference_is_tangential() -> None:
+    """
+    Not a library comparison: pins the convention VTK's reference above computes.
+
+    The quantity is the **tangential** surface gradient on both sides, which is the thing most
+    likely to be misread as a bug: for ``f = x`` on the unit sphere the mean is ``2/3 e_x``, not
+    ``e_x``, because the ambient x-direction is only partly tangent to the surface. The value is
+    asserted rather than described; it involves no Warp array, so it runs once per process.
+    """
     sphere_tm = tm.creation.icosphere(subdivisions=3, radius=1.0)
     sphere_pv = trimesh_to_pyvista(sphere_tm)
     sphere_pv.point_data["field"] = np.ascontiguousarray(sphere_tm.vertices[:, 0])
@@ -160,7 +150,7 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     Class A: the *applied* gradient, face by face, against the only reference that returns it.
 
     igl gives this operator as a sparse ``(3F, V)`` matrix and pyvista as a smoothed point field,
-    so both need a named transform before they can be compared (see the two tests above).
+    so both need a named transform before they can be compared (see the test above).
     ``gradientInTri`` is the third form -- one triangle's three corners and three values in, one
     vector out -- and needs none: it is the same quantity ordito returns, in the same units, per
     face.
@@ -208,7 +198,7 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
 def test_face_gradients_of_a_constant_field_is_zero(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
-    """A constant field has no gradient, and a degenerate face has none either."""
+    """Not a library comparison: a constant field has no gradient on any face."""
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     constant_wp = wp.array(
@@ -258,10 +248,7 @@ def test_cotmatrix_entries(request: pytest.FixtureRequest, mesh_name: str) -> No
     on.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-
-    cot_entries_igl = igl.cotmatrix_entries(vertices_np, faces_np)
+    cot_entries_igl = igl.cotmatrix_entries(*mesh_igl(mesh_tm))
     cot_entries_wp = od.laplacian.cotmatrix_entries(mesh_wp.points, mesh_wp.indices)
 
     assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
@@ -331,52 +318,33 @@ def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_
 # -----------------------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64], ids=["float32", "float64"])
 @pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
 @pytest.mark.parity("cotmatrix_entries_intrinsic", "igl")
-def test_cotmatrix_entries_intrinsic(request: pytest.FixtureRequest, mesh_name: str) -> None:
+def test_cotmatrix_entries_intrinsic(
+    request: pytest.FixtureRequest, mesh_name: str, dtype: type[wp.float32 | wp.float64]
+) -> None:
     """
     Class A: the length-only overload, fed igl's own ``edge_lengths`` so only the formula differs.
 
     Passing the reference's lengths in rather than ordito's isolates the cotangent formula
     from [`ordito.edges`], which has its own oracle. igl overloads the same name on the
     argument shape.
+
+    On the ``float64`` arm the dtype must change without the values changing. The dtype is asserted
+    as well as the values, because a silent ``float32`` return would still pass the ``1e-5``
+    comparison and lose precision only where it matters -- in a downstream solve.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-
-    edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
+    edge_lengths_igl = np.asarray(igl.edge_lengths(*mesh_igl(mesh_tm)))
     cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
     edge_lengths_wp = odt.as_array2d(
         wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
         wp.float32,
     )
-    cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp)
+    cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=dtype)
 
-    assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
-
-
-def test_cotmatrix_entries_intrinsic_float64(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Class A on the ``float64`` overload: the dtype must change without the values changing.
-
-    The dtype is asserted as well as the values, because a silent ``float32`` return would
-    still pass the ``1e-5`` comparison and lose precision only where it matters -- in a
-    downstream solve.
-    """
-    mesh_tm, mesh_wp = icosahedron
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-
-    edge_lengths_igl = np.asarray(igl.edge_lengths(vertices_np, faces_np))
-    edge_lengths_wp = odt.as_array2d(
-        wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
-        wp.float32,
-    )
-    cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=wp.float64)
-
-    assert cot_entries_wp.dtype == wp.float64
-    cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
+    assert cot_entries_wp.dtype == dtype
     assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
 
 
@@ -386,65 +354,58 @@ def test_cotmatrix_entries_intrinsic_float64(icosahedron: tuple[tm.Trimesh, wp.M
 
 
 @pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
-@pytest.mark.parity("cotmatrix", "igl")
+@pytest.mark.parity("cotmatrix", "igl", "potpourri3d")
+@pytest.mark.parity("mass_matrix_entries", "potpourri3d")
 def test_cotmatrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class A: the assembled cotangent operator against ``igl.cotmatrix``, dense and elementwise.
+    The assembled cotangent operator against ``igl.cotmatrix`` and geometry-central's bindings.
 
-    Both are densified first, because the two builds order their CSR entries differently while
-    holding the same matrix. This is the igl sign convention (negative diagonal), which the
-    module's other operators deliberately do not share.
+    **igl, Class A, dense and elementwise**: both are densified first, because the two builds
+    order their CSR entries differently while holding the same matrix. This is the igl sign
+    convention (negative diagonal), which the module's other operators deliberately do not share.
+
+    **potpourri3d**: a third independent implementation of quantities libigl already pins is worth
+    having precisely because it is cheap: these are the operators every solver in the library is
+    built on, so a regression here surfaces as a wrong answer several modules away.
+    ``vertex_areas`` is Class A: it is one third of the incident face areas, which is exactly the
+    barycentric lumped mass diagonal ``mass_matrix_entries`` returns. ``cotan_laplacian`` is
+    Class B, and the transform is a **sign flip**. geometry-central builds the
+    positive-semidefinite Laplacian while libigl -- and ordito with it -- builds the negative one:
+    measured on ``icosahedron``, ``pp3d.cotan_laplacian`` is ``-igl.cotmatrix`` to 1e-9 entry for
+    entry, with a ``+2.887`` diagonal against igl's ``-2.887``. Neither is wrong, but handing one to
+    a solver expecting the other flips the sign of every diffusion step, so the negation here is the
+    substance of the comparison rather than bookkeeping. Read potpourri3d as the *weakest* of the
+    three references rather than the strongest: it assembles both of these in vectorized numpy into
+    a scipy COO, not in geometry-central's C++, so it is closer to an independent re-derivation of
+    the same formula than to a separate codebase.
+
+    **Null space, not a library comparison**: the constant vector must be in the operator's null
+    space. Both sides are checked against the *property* rather than against each other -- igl at
+    1e-10 in float64 and ordito at 1e-4 in float32 -- which is what makes the differing thresholds
+    honest rather than a hidden tolerance. Catches a row that does not sum to zero, which a matrix
+    comparison at 1e-5 can miss on a large-valued row.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
 
     laplacian_igl = igl.cotmatrix(vertices_np, faces_np).tocsr()
     laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
-
     assert laplacian_wp.shape == laplacian_igl.shape
     assert np.allclose(laplacian_wp.toarray(), laplacian_igl.toarray(), rtol=1e-5, atol=1e-5)
 
+    faces_pp = np.ascontiguousarray(faces_np, dtype=np.int32)
+    cotmatrix_pp = pp3d.cotan_laplacian(vertices_np, faces_pp).tocsr()
+    assert laplacian_wp.shape == cotmatrix_pp.shape
+    assert np.allclose(laplacian_wp.toarray(), -cotmatrix_pp.toarray(), rtol=1e-5, atol=1e-5)
 
-@pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
-@pytest.mark.parity("cotmatrix", "potpourri3d")
-@pytest.mark.parity("mass_matrix_entries", "potpourri3d")
-def test_cotmatrix_and_mass_match_potpourri3d(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    The two operator builds against geometry-central's bindings, which already agree with libigl.
-
-    A third independent implementation of quantities libigl already pins is worth having precisely
-    because it is cheap: these are the operators every solver in the library is built on, so a
-    regression here surfaces as a wrong answer several modules away.
-
-    ``vertex_areas`` is Class A: it is one third of the incident face areas, which is exactly the
-    barycentric lumped mass diagonal ``mass_matrix_entries`` returns.
-
-    ``cotan_laplacian`` is Class B, and the transform is a **sign flip**. geometry-central builds
-    the positive-semidefinite Laplacian while libigl -- and ordito with it -- builds the negative
-    one: measured on ``icosahedron``, ``pp3d.cotan_laplacian`` is ``-igl.cotmatrix`` to 1e-9 entry
-    for entry, with a ``+2.887`` diagonal against igl's ``-2.887``. Neither is wrong, but handing
-    one to a solver expecting the other flips the sign of every diffusion step, so the negation
-    here is the substance of the comparison rather than bookkeeping.
-
-    Read potpourri3d as the *weakest* of the three references rather than the strongest: it
-    assembles both of these in vectorized numpy into a scipy COO, not in geometry-central's C++, so
-    it is closer to an independent re-derivation of the same formula than to a separate codebase.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
-
-    cotmatrix_pp = pp3d.cotan_laplacian(vertices_np, faces_np).tocsr()
-    cotmatrix_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
-    assert cotmatrix_wp.shape == cotmatrix_pp.shape
-    assert np.allclose(cotmatrix_wp.toarray(), -cotmatrix_pp.toarray(), rtol=1e-5, atol=1e-5)
-
-    mass_pp = pp3d.vertex_areas(vertices_np, faces_np)
+    mass_pp = pp3d.vertex_areas(vertices_np, faces_pp)
     mass_wp = od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(mass_wp.numpy(), mass_pp, rtol=1e-5, atol=1e-5)
+
+    ones = np.ones(vertices_np.shape[0], dtype=np.float64)
+    assert np.linalg.norm(cast("np.ndarray", laplacian_igl @ ones)) < 1e-10
+    ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
+    assert np.linalg.norm(laplacian_wp @ ones_wp) < 1e-4
 
 
 @pytest.mark.parity("cotmatrix", "pytorch3d")
@@ -529,28 +490,6 @@ def test_laplacian_operators_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mes
     assert np.array_equal(uniform_np, uniform_p3d + np.eye(n_vertices))
     assert float(np.abs(np.diag(inverse_p3d)).max()) == 0.0
     assert np.allclose(inverse_np, normalized_p3d, rtol=1e-5, atol=1e-7)
-
-
-def test_cotmatrix_null_space(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
-    """
-    Not a library comparison: the constant vector must be in the operator's null space.
-
-    Both sides are checked against the *property* rather than against each other -- igl at
-    1e-10 in float64 and ordito at 1e-4 in float32 -- which is what makes the differing
-    thresholds honest rather than a hidden tolerance. Catches a row that does not sum to zero,
-    which a matrix comparison at 1e-5 can miss on a large-valued row.
-    """
-    mesh_tm, mesh_wp = icosahedron
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-
-    laplacian_igl = igl.cotmatrix(vertices_np, faces_np)
-    ones = np.ones(vertices_np.shape[0], dtype=np.float64)
-    assert np.linalg.norm(cast("np.ndarray", laplacian_igl @ ones)) < 1e-10
-
-    laplacian_wp = bsr_to_csr(od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices))
-    ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
-    assert np.linalg.norm(laplacian_wp @ ones_wp) < 1e-4
 
 
 def test_cotmatrix_empty_mesh(device: str) -> None:
@@ -858,8 +797,7 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
 
     # igl takes the same (n_faces, 3) opposite-edge-length table, which pins the column order.
     laplacian_igl = igl.cotmatrix_intrinsic(
-        np.ascontiguousarray(lengths_wp.numpy(), dtype=np.float64),
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+        np.ascontiguousarray(lengths_wp.numpy(), dtype=np.float64), faces_igl(mesh_tm)
     )
     entries_wp = od.laplacian.cotmatrix_entries_intrinsic(lengths_wp)
     laplacian_wp = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, cot_entries=entries_wp)
@@ -889,10 +827,7 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
     # the module, and one that pins the flip's new-edge-length formula and its winding bookkeeping
     # at once. The intrinsic Delaunay triangulation is unique, so the two implementations need not
     # (and do not) perform the same flips in the same order to agree on the matrix.
-    laplacian_igl, _, _ = igl.intrinsic_delaunay_cotmatrix(
-        np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64),
-        np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
-    )
+    laplacian_igl, _, _ = igl.intrinsic_delaunay_cotmatrix(*mesh_igl(mesh_tm))
     laplacian_wp = od.laplacian.robust_laplacian(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(
         bsr_to_dense(laplacian_wp, n_vertices),
@@ -1249,54 +1184,32 @@ def test_laplacian_symmetric_flag(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> Non
 
 
 # -----------------------------------------------------------------------------------------
-# mass_matrix_entries (test_mass_matrix asserts the diagonal it returns)
+# mass_matrix_entries and mass_matrix
 # -----------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
 @pytest.mark.parity("mass_matrix_entries", "igl")
-def test_mass_matrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Class B: ``mass_matrix_entries`` against the *diagonal* of ``igl.massmatrix``.
-
-    The named transform is taking igl's diagonal -- ordito returns the lumped vector, not a
-    matrix. Despite the name this tests the entries; the assembled form is
-    [`test_mass_matrix_assembled_matches_igl`].
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
-
-    mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()
-    mass_wp = od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
-
-    assert np.allclose(mass_wp.numpy(), mass_igl, rtol=1e-5, atol=1e-5)
-
-
-# -----------------------------------------------------------------------------------------
-# mass_matrix
-# -----------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
 @pytest.mark.parity("mass_matrix", "igl")
 def test_mass_matrix_assembled_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    The *assembled* barycentric mass matrix, not just its diagonal.
+    The lumped mass entries and the *assembled* barycentric mass matrix against ``igl.massmatrix``.
 
-    ``test_mass_matrix`` already pins ``mass_matrix_entries`` against ``igl.massmatrix(...)
-    .diagonal()``, which is the same numbers; what this adds is the sparse build around them, and
-    that is a separate benchmark group for the same reason. Class A on the dense form: the matrix is
-    diagonal, so every off-diagonal entry must be zero, and asserting on the full array rather than
-    on ``.diagonal()`` is what makes a stray off-diagonal triplet visible.
+    **``mass_matrix_entries``, Class B**: the named transform is taking igl's diagonal -- ordito
+    returns the lumped vector, not a matrix.
+
+    **``mass_matrix``, Class A on the dense form**: what this adds over the entries is the sparse
+    build around the same numbers, and that is a separate benchmark group for the same reason. The
+    matrix is diagonal, so every off-diagonal entry must be zero, and asserting on the full array
+    rather than on ``.diagonal()`` is what makes a stray off-diagonal triplet visible.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
-    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
+    mass_igl = igl.massmatrix(*mesh_igl(mesh_tm), igl.MASSMATRIX_TYPE_BARYCENTRIC).tocsr()
 
-    mass_igl = igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).tocsr()
+    entries_wp = od.laplacian.mass_matrix_entries(mesh_wp.points, mesh_wp.indices)
+    assert np.allclose(entries_wp.numpy(), mass_igl.diagonal(), rtol=1e-5, atol=1e-5)
+
     mass_wp = bsr_to_csr(od.laplacian.mass_matrix(mesh_wp.points, mesh_wp.indices))
-
     assert mass_wp.shape == mass_igl.shape
     assert np.allclose(mass_wp.toarray(), mass_igl.toarray(), rtol=1e-5, atol=1e-5)
 

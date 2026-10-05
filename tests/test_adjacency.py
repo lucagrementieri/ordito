@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from typing import Any
 
 import igl
 import numpy as np
@@ -49,17 +50,6 @@ def test_face_adjacency(request: pytest.FixtureRequest, mesh_name: str) -> None:
     order_wp = _adjacency_order(adjacency_wp.numpy())
     assert np.array_equal(adjacency_wp.numpy()[order_wp], adjacency_tm[order_tm])
     assert np.array_equal(adjacency_edges_wp.numpy()[order_wp], adjacency_edges_tm[order_tm])
-
-
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
-def test_face_adjacency_n_vertices_matches_inferred(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """Supplying the hash radix skips a ``reduce.minmax`` readback; the result must not move."""
-    _, mesh_wp = request.getfixturevalue(mesh_name)
-    inferred_wp = od.adjacency.face_adjacency(mesh_wp.indices)
-    supplied_wp = od.adjacency.face_adjacency(mesh_wp.indices, n_vertices=mesh_wp.points.size)
-    assert np.array_equal(inferred_wp.numpy(), supplied_wp.numpy())
 
 
 @pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
@@ -122,11 +112,61 @@ def test_face_adjacency_edges_paired_rejects_an_odd_face_count(device: str) -> N
         od.adjacency.face_adjacency(faces_wp, edges_paired=True)
 
 
-def test_face_adjacency_empty(device: str) -> None:
+@pytest.mark.parametrize(
+    ("function", "shapes"),
+    [
+        pytest.param(
+            lambda faces_wp, _: od.adjacency.face_adjacency(faces_wp, return_edges=True),
+            [(0, 2), (0, 2)],
+            id="face_adjacency",
+        ),
+        pytest.param(
+            lambda faces_wp, _: od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0),
+            [(0,), (1,)],
+            id="vertex_face_adjacency",
+        ),
+        pytest.param(
+            lambda faces_wp, _: (od.adjacency.face_adjacency_unshared(faces_wp),),
+            [(0, 2)],
+            id="face_adjacency_unshared",
+        ),
+        pytest.param(
+            lambda faces_wp, vertices_wp: (
+                od.adjacency.face_adjacency_angles(vertices_wp, faces_wp),
+            ),
+            [(0,)],
+            id="face_adjacency_angles",
+        ),
+        pytest.param(
+            lambda faces_wp, vertices_wp: (
+                od.adjacency.face_adjacency_projections(vertices_wp, faces_wp),
+            ),
+            [(0,)],
+            id="face_adjacency_projections",
+        ),
+        pytest.param(
+            lambda faces_wp, vertices_wp: (
+                od.adjacency.face_adjacency_convex(vertices_wp, faces_wp),
+            ),
+            [(0,)],
+            id="face_adjacency_convex",
+        ),
+    ],
+)
+def test_empty_mesh_gives_empty_tables(
+    device: str,
+    function: Callable[[wp.array[wp.int32], wp.array[wp.vec3]], tuple[Any, ...]],
+    shapes: list[tuple[int, ...]],
+) -> None:
+    """
+    Each table on an empty face buffer has its documented shape with no rows.
+
+    ``vertex_face_adjacency`` at ``n_vertices=0`` still returns its one ``[0]`` offset.
+    """
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(faces_wp, return_edges=True)
-    assert adjacency_wp.shape == (0, 2)
-    assert adjacency_edges_wp.shape == (0, 2)
+    vertices_wp = warp_empty(0, wp.vec3, device)
+    results = function(faces_wp, vertices_wp)
+    assert [result.shape for result in results] == shapes
 
 
 @pytest.mark.parametrize(
@@ -236,9 +276,14 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     sorting each row. Both give ``n_vertices + 1`` offsets, so no sentinel has to be appended.
 
     Row order is genuinely undefined in ordito's version (a counting-sort scatter, so it is thread
-    order) and the docstring says so, which is why the rows are compared as **sets**. The offsets
-    are compared exactly: those are not order-dependent, and an off-by-one there is the failure
-    mode this function's consumers -- the decimator's normal-flip guard -- see as silent corruption.
+    order) and the docstring says so, which is why the rows are compared as **sets**: the scatter
+    picks each slot with a ``wp.atomic_add`` on a per-vertex cursor, so two runs on CUDA order a row
+    differently. The offsets are compared exactly: those are not order-dependent, and an off-by-one
+    there is the failure mode this function's consumers -- the decimator's normal-flip guard -- see
+    as silent corruption.
+
+    Both the supplied-``n_vertices`` call and the one that infers it (at the cost of a readback)
+    are compared against igl.
     """
     _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_wp = mesh_wp.indices
@@ -246,42 +291,16 @@ def test_vertex_face_adjacency_matches_igl(request: pytest.FixtureRequest, mesh_
     faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
 
     payload_igl, offsets_igl = igl.vertex_triangle_adjacency(faces_np, n_vertices)
-    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices)
-
-    assert np.array_equal(offsets_wp.numpy(), np.asarray(offsets_igl).ravel())
-    bounds_np = offsets_wp.numpy()
-    for vertex in range(n_vertices):
-        row_wp = payload_wp.numpy()[bounds_np[vertex] : bounds_np[vertex + 1]]
-        row_igl = np.asarray(payload_igl).ravel()[bounds_np[vertex] : bounds_np[vertex + 1]]
-        assert np.array_equal(np.sort(row_wp), np.sort(row_igl))
-
-
-@pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
-def test_vertex_face_adjacency_infers_n_vertices(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Omitting ``n_vertices`` costs a readback and must not change the *rows*.
-
-    The **offsets** are compared exactly and the rows only as sets, because the payload order is
-    genuinely nondeterministic: the scatter picks each slot with a ``wp.atomic_add`` on a per-vertex
-    cursor, so two runs on CUDA order a row differently. Asserting ``array_equal`` on the payload
-    would assert something the function does not promise -- it passes on cpu and fails on cuda,
-    which is how this test found its own bug.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    inferred_faces, inferred_offsets = od.adjacency.vertex_face_adjacency(mesh_wp.indices)
-    supplied_faces, supplied_offsets = od.adjacency.vertex_face_adjacency(
-        mesh_wp.indices, n_vertices=mesh_wp.points.size
-    )
-
-    assert np.array_equal(inferred_offsets.numpy(), supplied_offsets.numpy())
-    bounds_np = inferred_offsets.numpy()
-    for vertex in range(bounds_np.size - 1):
-        row = slice(int(bounds_np[vertex]), int(bounds_np[vertex + 1]))
-        assert np.array_equal(
-            np.sort(inferred_faces.numpy()[row]), np.sort(supplied_faces.numpy()[row])
-        )
+    for payload_wp, offsets_wp in (
+        od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=n_vertices),
+        od.adjacency.vertex_face_adjacency(faces_wp),
+    ):
+        assert np.array_equal(offsets_wp.numpy(), np.asarray(offsets_igl).ravel())
+        bounds_np, payload_np = offsets_wp.numpy(), payload_wp.numpy()
+        for vertex in range(n_vertices):
+            row_wp = payload_np[bounds_np[vertex] : bounds_np[vertex + 1]]
+            row_igl = np.asarray(payload_igl).ravel()[bounds_np[vertex] : bounds_np[vertex + 1]]
+            assert np.array_equal(np.sort(row_wp), np.sort(row_igl))
 
 
 def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
@@ -299,13 +318,6 @@ def test_vertex_face_adjacency_unreferenced_vertex(device: str) -> None:
 
     assert np.array_equal(offsets_wp.numpy(), np.array([0, 1, 2, 3, 3, 3], dtype=np.int32))
     assert np.array_equal(np.sort(payload_wp.numpy()), np.zeros(3, dtype=np.int32))
-
-
-def test_vertex_face_adjacency_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    payload_wp, offsets_wp = od.adjacency.vertex_face_adjacency(faces_wp, n_vertices=0)
-    assert offsets_wp.shape == (1,)
-    assert payload_wp.shape == (0,)
 
 
 def test_vertex_face_adjacency_zero_rows_with_faces(device: str) -> None:
@@ -444,12 +456,6 @@ def test_face_adjacency_unshared_duplicate_faces(device: str) -> None:
     assert np.array_equal(unshared_wp.numpy(), off_edge_np)
 
 
-def test_face_adjacency_unshared_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    unshared_wp = od.adjacency.face_adjacency_unshared(faces_wp)
-    assert unshared_wp.shape == (0, 2)
-
-
 @pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
 @pytest.mark.parity("face_adjacency_angles", "trimesh")
 def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -459,26 +465,35 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     The two implementations emit adjacency rows in different orders (sort-key order here, edge-list
     order in trimesh), so the angle arrays are matched through the face pair they belong to rather
     than positionally.
+
+    Ordito against ordito on the precomputed path as well: supplying ``face_normals`` takes the same
+    route as deriving them, and that result is compared against trimesh the same way.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_tm = mesh_tm.face_adjacency
     angles_tm = mesh_tm.face_adjacency_angles
 
     adjacency_wp = od.adjacency.face_adjacency(mesh_wp.indices)
+    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
     angles_wp = od.adjacency.face_adjacency_angles(
         mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
     )
+    angles_precomputed_wp = od.adjacency.face_adjacency_angles(
+        mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp, face_normals=face_normals_wp
+    )
+    assert np.allclose(angles_wp.numpy(), angles_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5)
 
-    angles_wp_lookup = {
-        (int(row[0]), int(row[1])): float(angles_wp.numpy()[i])
-        for i, row in enumerate(adjacency_wp.numpy())
-    }
     angles_tm_lookup = {
         (int(row[0]), int(row[1])): float(angles_tm[i]) for i, row in enumerate(adjacency_tm)
     }
-    assert angles_wp_lookup.keys() == angles_tm_lookup.keys()
-    for key, angle_tm in angles_tm_lookup.items():
-        assert np.isclose(angles_wp_lookup[key], angle_tm, rtol=1e-4, atol=5e-4)
+    for result_wp in (angles_wp, angles_precomputed_wp):
+        angles_wp_lookup = {
+            (int(row[0]), int(row[1])): float(result_wp.numpy()[i])
+            for i, row in enumerate(adjacency_wp.numpy())
+        }
+        assert angles_wp_lookup.keys() == angles_tm_lookup.keys()
+        for key, angle_tm in angles_tm_lookup.items():
+            assert np.isclose(angles_wp_lookup[key], angle_tm, rtol=1e-4, atol=5e-4)
 
 
 @pytest.mark.parametrize("mesh_name", ["cave_cube", "half_torus"])
@@ -551,45 +566,6 @@ def test_face_adjacency_angles_matches_meshlib(
     assert int((dihedral_ml > 1e-6).sum()) > 0
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_face_adjacency_angles_precomputed(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Ordito against ordito on the precomputed path, then Class B against trimesh's own table.
-
-    The first assert is the ordito-against-ordito one and carries no oracle: it pins only that
-    supplying ``face_normals`` takes the same route as deriving them. The trailing loop is the
-    reference half, and it is Class B for the reason [`test_face_adjacency_angles`] gives -- the two
-    libraries order the adjacency rows differently, so the comparison goes through a
-    ``(face_a, face_b)`` dict rather than positionally.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp = od.adjacency.face_adjacency(mesh_wp.indices)
-    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
-
-    angles_all_wp = od.adjacency.face_adjacency_angles(
-        mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp
-    )
-    angles_precomputed_wp = od.adjacency.face_adjacency_angles(
-        mesh_wp.points, mesh_wp.indices, face_adjacency=adjacency_wp, face_normals=face_normals_wp
-    )
-    assert np.allclose(angles_all_wp.numpy(), angles_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5)
-
-    angles_tm_lookup = {
-        (int(row[0]), int(row[1])): float(mesh_tm.face_adjacency_angles[i])
-        for i, row in enumerate(mesh_tm.face_adjacency)
-    }
-    for i, row in enumerate(adjacency_wp.numpy()):
-        angle_tm = angles_tm_lookup[(int(row[0]), int(row[1]))]
-        assert np.isclose(float(angles_precomputed_wp.numpy()[i]), angle_tm, rtol=1e-4, atol=5e-4)
-
-
-def test_face_adjacency_angles_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    angles_wp = od.adjacency.face_adjacency_angles(vertices_wp, faces_wp)
-    assert angles_wp.shape == (0,)
-
-
 @pytest.mark.parity("face_adjacency_projections", "trimesh")
 @pytest.mark.parametrize("mesh_name", _ADJACENCY_MESHES)
 def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -601,6 +577,10 @@ def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: s
     indexed into a dict by ``(face_a, face_b)`` before comparing. The key-set assert is what
     makes that sound: it fails if the two disagree about *which* pairs are adjacent, which a
     value comparison over a shared key subset would hide.
+
+    Ordito against ordito on the precomputed path as well: supplying ``face_adjacency_unshared`` and
+    ``face_normals`` takes the same route as deriving them, and that result is compared against
+    trimesh the same way.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_tm = mesh_tm.face_adjacency
@@ -615,81 +595,34 @@ def test_face_adjacency_projections(request: pytest.FixtureRequest, mesh_name: s
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
     )
-
-    adjacency_wp_np = adjacency_wp.numpy()
-    projections_wp_np = projections_wp.numpy()
-    projections_wp_lookup = {
-        (int(row[0]), int(row[1])): float(projections_wp_np[i])
-        for i, row in enumerate(adjacency_wp_np)
-    }
-    projections_tm_lookup = {
-        (int(row[0]), int(row[1])): float(projections_tm[i]) for i, row in enumerate(adjacency_tm)
-    }
-    assert projections_wp_lookup.keys() == projections_tm_lookup.keys()
-    for key, projection_tm in projections_tm_lookup.items():
-        projection_wp = projections_wp_lookup[key]
-        assert np.isclose(projection_wp, projection_tm, rtol=1e-4, atol=5e-4)
-
-
-@pytest.mark.parity("face_adjacency_projections", "trimesh")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_face_adjacency_projections_precomputed(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito on the precomputed path, then Class B against trimesh.
-
-    The first assert carries no oracle: it pins only that supplying ``face_adjacency_unshared`` and
-    ``face_normals`` takes the same route as deriving them. The reference half repeats
-    [`test_face_adjacency_projections`]'s comparison, Class B through the same row-order transform.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
-        mesh_wp.indices, return_edges=True
-    )
-    unshared_wp = od.adjacency.face_adjacency_unshared(
-        mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
-    )
-    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
-
-    projections_all_wp = od.adjacency.face_adjacency_projections(
-        mesh_wp.points,
-        mesh_wp.indices,
-        face_adjacency=adjacency_wp,
-        face_adjacency_edges=adjacency_edges_wp,
-    )
     projections_precomputed_wp = od.adjacency.face_adjacency_projections(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
-        face_adjacency_unshared=unshared_wp,
-        face_normals=face_normals_wp,
+        face_adjacency_unshared=od.adjacency.face_adjacency_unshared(
+            mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
+        ),
+        face_normals=od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)[0],
     )
     assert np.allclose(
-        projections_all_wp.numpy(), projections_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5
+        projections_wp.numpy(), projections_precomputed_wp.numpy(), rtol=1e-5, atol=1e-5
     )
 
-    adjacency_tm = mesh_tm.face_adjacency
-    projections_tm = mesh_tm.face_adjacency_projections
     adjacency_wp_np = adjacency_wp.numpy()
-    projections_precomputed_np = projections_precomputed_wp.numpy()
     projections_tm_lookup = {
         (int(row[0]), int(row[1])): float(projections_tm[i]) for i, row in enumerate(adjacency_tm)
     }
-    projections_precomputed_lookup = {
-        (int(row[0]), int(row[1])): float(projections_precomputed_np[i])
-        for i, row in enumerate(adjacency_wp_np)
-    }
-    for key, projection_tm in projections_tm_lookup.items():
-        assert np.isclose(projections_precomputed_lookup[key], projection_tm, rtol=1e-4, atol=5e-4)
-
-
-def test_face_adjacency_projections_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    projections_wp = od.adjacency.face_adjacency_projections(vertices_wp, faces_wp)
-    assert projections_wp.shape == (0,)
+    for result_wp in (projections_wp, projections_precomputed_wp):
+        projections_wp_np = result_wp.numpy()
+        projections_wp_lookup = {
+            (int(row[0]), int(row[1])): float(projections_wp_np[i])
+            for i, row in enumerate(adjacency_wp_np)
+        }
+        assert projections_wp_lookup.keys() == projections_tm_lookup.keys()
+        for key, projection_tm in projections_tm_lookup.items():
+            projection_wp = projections_wp_lookup[key]
+            assert np.isclose(projection_wp, projection_tm, rtol=1e-4, atol=5e-4)
 
 
 def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
@@ -767,6 +700,9 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
     Same transform and the same reason as [`test_face_adjacency_projections`]. Non-vacuous by
     fixture choice rather than by an assert: ``icosahedron`` is convex at every edge and
     ``half_torus`` is not, so the boolean is exercised both ways across the parametrisation.
+
+    Ordito against ordito on the precomputed path as well: supplying ``face_adjacency_unshared`` and
+    ``face_normals`` gives the identical mask, which is compared against trimesh the same way.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     adjacency_tm = mesh_tm.face_adjacency
@@ -781,74 +717,31 @@ def test_face_adjacency_convex(request: pytest.FixtureRequest, mesh_name: str) -
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
     )
-
-    adjacency_wp_np = adjacency_wp.numpy()
-    convex_wp_np = convex_wp.numpy()
-    convex_wp_lookup = {
-        (int(row[0]), int(row[1])): bool(convex_wp_np[i]) for i, row in enumerate(adjacency_wp_np)
-    }
-    convex_tm_lookup = {
-        (int(row[0]), int(row[1])): bool(convex_tm[i]) for i, row in enumerate(adjacency_tm)
-    }
-    assert convex_wp_lookup.keys() == convex_tm_lookup.keys()
-    for key, is_convex_tm in convex_tm_lookup.items():
-        assert convex_wp_lookup[key] == is_convex_tm
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_face_adjacency_convex_precomputed(request: pytest.FixtureRequest, mesh_name: str) -> None:
-    """
-    Ordito against ordito on the precomputed path, then Class B against trimesh.
-
-    The first assert carries no oracle -- it pins the precomputed-argument route only. The reference
-    half repeats [`test_face_adjacency_convex`]'s comparison, Class B through the same row-order
-    transform.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    adjacency_wp, adjacency_edges_wp = od.adjacency.face_adjacency(
-        mesh_wp.indices, return_edges=True
-    )
-    unshared_wp = od.adjacency.face_adjacency_unshared(
-        mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
-    )
-    face_normals_wp, _ = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
-
-    convex_all_wp = od.adjacency.face_adjacency_convex(
-        mesh_wp.points,
-        mesh_wp.indices,
-        face_adjacency=adjacency_wp,
-        face_adjacency_edges=adjacency_edges_wp,
-    )
     convex_precomputed_wp = od.adjacency.face_adjacency_convex(
         mesh_wp.points,
         mesh_wp.indices,
         face_adjacency=adjacency_wp,
         face_adjacency_edges=adjacency_edges_wp,
-        face_adjacency_unshared=unshared_wp,
-        face_normals=face_normals_wp,
+        face_adjacency_unshared=od.adjacency.face_adjacency_unshared(
+            mesh_wp.indices, face_adjacency=adjacency_wp, face_adjacency_edges=adjacency_edges_wp
+        ),
+        face_normals=od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)[0],
     )
-    assert np.array_equal(convex_all_wp.numpy(), convex_precomputed_wp.numpy())
+    assert np.array_equal(convex_wp.numpy(), convex_precomputed_wp.numpy())
 
-    adjacency_tm = mesh_tm.face_adjacency
-    convex_tm = mesh_tm.face_adjacency_convex
     adjacency_wp_np = adjacency_wp.numpy()
-    convex_precomputed_np = convex_precomputed_wp.numpy()
     convex_tm_lookup = {
         (int(row[0]), int(row[1])): bool(convex_tm[i]) for i, row in enumerate(adjacency_tm)
     }
-    convex_precomputed_lookup = {
-        (int(row[0]), int(row[1])): bool(convex_precomputed_np[i])
-        for i, row in enumerate(adjacency_wp_np)
-    }
-    for key, is_convex_tm in convex_tm_lookup.items():
-        assert convex_precomputed_lookup[key] == is_convex_tm
-
-
-def test_face_adjacency_convex_empty(device: str) -> None:
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    convex_wp = od.adjacency.face_adjacency_convex(vertices_wp, faces_wp)
-    assert convex_wp.shape == (0,)
+    for result_wp in (convex_wp, convex_precomputed_wp):
+        convex_wp_np = result_wp.numpy()
+        convex_wp_lookup = {
+            (int(row[0]), int(row[1])): bool(convex_wp_np[i])
+            for i, row in enumerate(adjacency_wp_np)
+        }
+        assert convex_wp_lookup.keys() == convex_tm_lookup.keys()
+        for key, is_convex_tm in convex_tm_lookup.items():
+            assert convex_wp_lookup[key] == is_convex_tm
 
 
 def _face_labels_np(faces_np: np.ndarray) -> np.ndarray:
@@ -856,7 +749,7 @@ def _face_labels_np(faces_np: np.ndarray) -> np.ndarray:
     Label the face dual graph with scipy: shared edges become entries, then a component pass.
 
     Written out rather than taken from a library because no reference builds the dual *and* labels
-    it in one call except igl's ``facet_components`` -- which is the other half of the comparison
+    it in one call except igl's ``facet_components`` -- which is another half of the comparison
     below, so reusing it would be comparing igl with itself. This is the same two-phase shape
     ordito's function has and the same one ``benchmarks/test_graph.py`` times on the scipy row.
     """
@@ -874,56 +767,6 @@ def _face_labels_np(faces_np: np.ndarray) -> np.ndarray:
     return sp.csgraph.connected_components(dual_np)[1]
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-@pytest.mark.parity("face_connected_component_labels", "igl")
-@pytest.mark.parity("face_connected_component_labels_depth", "igl", "scipy")
-def test_face_connected_component_labels_matches_igl(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B: the same partition under different label *names*, against igl and scipy.
-
-    ``igl.facet_components`` numbers components ``0..k-1`` in its own traversal order and returns
-    ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here. ordito's
-    label propagation names each component after a representative face instead, so on a
-    two-component mesh it returns e.g. ``{0, 12}`` where igl returns ``{0, 1}``. The transform is
-    [`canonical_labels`][tests.comparisons.canonical_labels]: relabel by first appearance, which is
-    what [`same_partition`][tests.comparisons.same_partition] applies.
-
-    scipy is the second reference and is a genuinely different decomposition of the work: it builds
-    the dual graph explicitly (see [`_face_labels_np`]) and then labels it, where igl does both
-    internally and ordito does both on the device. That is why the ``*_depth`` group -- whose
-    benchmark rows are all build-included -- claims both libraries here.
-
-    Both a single-component fixture and a two-component union are checked, because a labelling that
-    collapsed everything into one component would pass on the first alone.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_wp = mesh_wp.indices
-    faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
-
-    n_components_igl, labels_igl = igl.facet_components(faces_np)
-    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
-
-    assert n_components_igl == np.unique(labels_wp.numpy()).size
-    assert same_partition(labels_wp.numpy(), np.asarray(labels_igl).ravel())
-    assert same_partition(labels_wp.numpy(), _face_labels_np(faces_np))
-
-    # Two disjoint copies: the labelling must split them, which a constant output would not.
-    doubled_np = np.concatenate([faces_np, faces_np + faces_np.max() + 1])
-    doubled_wp = wp.array(
-        np.ascontiguousarray(doubled_np.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=faces_wp.device,
-    )
-    n_doubled_igl, labels_doubled_igl = igl.facet_components(doubled_np)
-    labels_doubled_wp = od.adjacency.face_connected_component_labels(doubled_wp)
-
-    assert n_doubled_igl == 2 * n_components_igl
-    assert same_partition(labels_doubled_wp.numpy(), np.asarray(labels_doubled_igl).ravel())
-    assert same_partition(labels_doubled_wp.numpy(), _face_labels_np(doubled_np))
-
-
 def _face_labels_ml(components_ml: Iterable[mm.BitSet], n_faces: int) -> np.ndarray:
     """Decode MeshLib's vector of ``FaceBitSet`` components into a per-face label array."""
     labels_np = np.full(n_faces, -1, dtype=np.int64)
@@ -932,13 +775,105 @@ def _face_labels_ml(components_ml: Iterable[mm.BitSet], n_faces: int) -> np.ndar
     return labels_np
 
 
+def _two_copies(mesh_tm: tm.Trimesh) -> tm.Trimesh:
+    """``mesh_tm`` and a disjoint translated copy of it, as one mesh."""
+    doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
+    assert isinstance(doubled_tm, tm.Trimesh)
+    return doubled_tm
+
+
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-@pytest.mark.parity("face_connected_component_labels", "meshlib")
-def test_face_connected_component_labels_matches_meshlib(
-    request: pytest.FixtureRequest, mesh_name: str
+@pytest.mark.parity("face_connected_component_labels", "igl", "meshlib", "pyvista")
+@pytest.mark.parity("face_connected_component_labels_depth", "igl", "scipy")
+def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
 ) -> None:
     """
-    Class B, and the pair that pins *which* incidence rule ordito implements.
+    Class B against all four: the same partition under different label *names*.
+
+    Every reference numbers components its own way, so each comparison goes through
+    [`same_partition`][tests.comparisons.same_partition] (relabel by first appearance, i.e.
+    [`canonical_labels`][tests.comparisons.canonical_labels]). ordito's label propagation names
+    each component after a representative face, so on a two-component mesh it returns e.g.
+    ``{0, 12}``.
+
+    - **igl**: ``igl.facet_components`` numbers ``0..k-1`` in its own traversal order and returns
+      ``(n_components, labels)`` -- the count **first**, which is the unpacking trap here.
+    - **scipy** is a genuinely different decomposition of the work: it builds the dual graph
+      explicitly (see [`_face_labels_np`]) and then labels it, where igl does both internally and
+      ordito does both on the device. That is why the ``*_depth`` group -- whose benchmark rows are
+      all build-included -- claims both libraries here.
+    - **MeshLib**: ``getAllComponents`` with ``FaceIncidence.PerEdge``, ordito's rule (see
+      [`test_face_connected_component_labels_is_per_edge`] for the input that separates it from
+      ``PerVertex``). The result is a vector of ``FaceBitSet`` in MeshLib's own order, each padded
+      to the face domain, its index taken as the label. Note the overload set -- a second form takes
+      ``maxComponentCount`` and returns a ``(components, count)`` **tuple**, so the result's type is
+      asserted by unpacking it as a plain sequence here.
+    - **pyvista**: ``connectivity('all')`` writes a ``RegionId`` **cell** array numbered ``0..k-1``
+      whose numbering is neither ordito's nor igl's -- measured on two disjoint spheres it labels
+      the *first* component ``1``, so even a pack-by-first-appearance comparison fails and only the
+      partition is shared (pyvista ships its own ``pack_labels`` for the same reason).
+
+    Both a single-component fixture and a two-copy union are checked, because a labelling that
+    collapsed everything into one component would pass on the first alone. On the union, ordito
+    against ordito: compressing the pre-hooked forest changes no label.
+    ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
+    ``ECL_COMPRESS_FROM`` faces, which no fixture reaches, so the threshold is lowered to force it.
+    """
+    from ordito.kernels.algorithms import connected_components as kernel_cc
+
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_wp = mesh_wp.indices
+    faces_np = faces_wp.numpy().reshape(-1, 3).astype(np.int64)
+    n_faces = faces_np.shape[0]
+
+    n_components_igl, labels_igl = igl.facet_components(faces_np)
+    components_ml = mm.getAllComponents(
+        mm.MeshPart(trimesh_to_meshlib(mesh_tm)), mm.MeshComponents.FaceIncidence.PerEdge
+    )
+    labels_pv = np.asarray(trimesh_to_pyvista(mesh_tm).connectivity("all").cell_data["RegionId"])
+    labels_wp = od.adjacency.face_connected_component_labels(faces_wp).numpy()
+
+    assert n_components_igl == len(components_ml) == np.unique(labels_wp).size
+    assert same_partition(labels_wp, np.asarray(labels_igl).ravel())
+    assert same_partition(labels_wp, _face_labels_np(faces_np))
+    assert same_partition(labels_wp, _face_labels_ml(components_ml, n_faces))
+    assert same_partition(labels_wp, labels_pv)
+
+    # Two disjoint copies: the labelling must split them, which a constant output would not.
+    doubled_tm = _two_copies(mesh_tm)
+    doubled_np = doubled_tm.faces.astype(np.int64)
+    doubled_wp = wp.array(
+        np.ascontiguousarray(doubled_np.reshape(-1), dtype=np.int32),
+        dtype=wp.int32,
+        device=faces_wp.device,
+    )
+    n_doubled_igl, labels_doubled_igl = igl.facet_components(doubled_np)
+    doubled_ml = mm.getAllComponents(
+        mm.MeshPart(trimesh_to_meshlib(doubled_tm)), mm.MeshComponents.FaceIncidence.PerEdge
+    )
+    labels_doubled_pv = np.asarray(
+        trimesh_to_pyvista(doubled_tm).connectivity("all").cell_data["RegionId"]
+    )
+    labels_doubled_wp = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
+
+    assert n_doubled_igl == 2 * n_components_igl
+    assert len(doubled_ml) == 2 * len(components_ml)
+    assert np.unique(labels_doubled_pv).size == 2 * n_components_igl
+    assert same_partition(labels_doubled_wp, np.asarray(labels_doubled_igl).ravel())
+    assert same_partition(labels_doubled_wp, _face_labels_np(doubled_np))
+    assert same_partition(labels_doubled_wp, _face_labels_ml(doubled_ml, 2 * n_faces))
+    assert same_partition(labels_doubled_wp, labels_doubled_pv)
+
+    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
+    compressed_wp = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
+    assert np.unique(labels_doubled_wp).size >= 2
+    assert np.array_equal(compressed_wp, labels_doubled_wp)
+
+
+def test_face_connected_component_labels_is_per_edge(device: str) -> None:
+    """
+    Class B against MeshLib: the pair that pins *which* incidence rule ordito implements.
 
     ``getAllComponents`` takes a ``FaceIncidence`` and the two settings are different operations,
     not two tunings: ``PerEdge`` connects faces sharing an edge, which is ordito's rule, and
@@ -946,122 +881,21 @@ def test_face_connected_component_labels_matches_meshlib(
     one vertex -- they read **2** components and **1**, and ordito reads 2. No other reference in
     this module exposes that choice, so this is the only test that can fail if the convention ever
     drifts.
-
-    The decode is the usual one: a vector of ``FaceBitSet`` in MeshLib's own traversal order, each
-    padded to the face domain, its index taken as the label, compared as a *partition*. Note the
-    overload set -- a second form takes ``maxComponentCount`` and returns a ``(components, count)``
-    **tuple**, so the result's type is asserted by unpacking it as a plain sequence here.
     """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_wp = mesh_wp.indices
-    n_faces = mesh_tm.faces.shape[0]
-
-    components_ml = mm.getAllComponents(
-        mm.MeshPart(trimesh_to_meshlib(mesh_tm)), mm.MeshComponents.FaceIncidence.PerEdge
-    )
-    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
-    assert len(components_ml) == np.unique(labels_wp.numpy()).size
-    assert same_partition(labels_wp.numpy(), _face_labels_ml(components_ml, n_faces))
-
-    # Two disjoint copies, the case a constant labelling would pass.
-    doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
-    assert isinstance(doubled_tm, tm.Trimesh)
-    doubled_wp = wp.array(
-        np.ascontiguousarray(doubled_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=faces_wp.device,
-    )
-    doubled_ml = mm.getAllComponents(
-        mm.MeshPart(trimesh_to_meshlib(doubled_tm)), mm.MeshComponents.FaceIncidence.PerEdge
-    )
-    assert len(doubled_ml) == 2 * len(components_ml)
-    assert same_partition(
-        od.adjacency.face_connected_component_labels(doubled_wp).numpy(),
-        _face_labels_ml(doubled_ml, doubled_tm.faces.shape[0]),
-    )
-
-    # The convention, on the input that separates the two rules.
     bowtie_vertices_np = np.array(
         [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, -1.0, 0.0]]
     )
     bowtie_faces_np = np.array([[0, 1, 2], [0, 3, 4]], dtype=np.int32)
     bowtie_ml = mm.MeshPart(numpy_to_meshlib(bowtie_vertices_np, bowtie_faces_np))
     bowtie_wp = wp.array(
-        np.ascontiguousarray(bowtie_faces_np.reshape(-1)), dtype=wp.int32, device=faces_wp.device
+        np.ascontiguousarray(bowtie_faces_np.reshape(-1)), dtype=wp.int32, device=device
     )
     per_edge_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerEdge)
     per_vertex_ml = mm.getAllComponents(bowtie_ml, mm.MeshComponents.FaceIncidence.PerVertex)
     assert (len(per_edge_ml), len(per_vertex_ml)) == (2, 1)
-    assert np.unique(od.adjacency.face_connected_component_labels(bowtie_wp).numpy()).size == 2
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-def test_face_connected_component_labels_compressed_forest(
-    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str
-) -> None:
-    """
-    Ordito against ordito: compressing the pre-hooked forest changes no label.
-
-    ``connected_components.ecl_compress`` runs between the pre-hook and the hook only from
-    ``ECL_COMPRESS_FROM`` faces, which no fixture reaches, so the threshold is lowered to force it;
-    the uncompressed path carries the oracles (igl, scipy and meshlib, above). Two disjoint copies,
-    so the labels name more than one component.
-    """
-    from ordito.kernels.algorithms import connected_components as kernel_cc
-
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_np = mesh_wp.indices.numpy()
-    doubled_wp = wp.array(
-        np.concatenate([faces_np, faces_np + faces_np.max() + 1]),
-        dtype=wp.int32,
-        device=mesh_wp.indices.device,
-    )
-    plain = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
-    monkeypatch.setattr(kernel_cc, "ECL_COMPRESS_FROM", 0)
-    compressed = od.adjacency.face_connected_component_labels(doubled_wp).numpy()
-    assert np.unique(plain).size >= 2
-    assert np.array_equal(compressed, plain)
-
-
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
-@pytest.mark.parity("face_connected_component_labels", "pyvista")
-def test_face_connected_component_labels_matches_pyvista(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class B, the same relabelling as the igl row: VTK's ``RegionId`` names the components its way.
-
-    ``connectivity('all')`` writes a ``RegionId`` **cell** array numbered ``0..k-1``, and the
-    numbering is neither ordito's representative-face id nor igl's traversal order -- measured on
-    two disjoint spheres it labels the *first* component ``1``, so even a pack-by-first-appearance
-    comparison fails and only the partition is shared. That is what
-    [`same_partition`][tests.comparisons.same_partition] compares; pyvista ships its own
-    ``pack_labels`` for the same reason.
-
-    The two-copy case is the non-vacuous half: on a single-component fixture any labelling at all
-    induces the same trivial partition.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    faces_wp = mesh_wp.indices
-
-    labels_pv = np.asarray(trimesh_to_pyvista(mesh_tm).connectivity("all").cell_data["RegionId"])
-    labels_wp = od.adjacency.face_connected_component_labels(faces_wp)
-    assert same_partition(labels_wp.numpy(), labels_pv)
-
-    doubled_tm = tm.util.concatenate([mesh_tm, mesh_tm.copy().apply_translation([10.0, 0.0, 0.0])])
-    assert isinstance(doubled_tm, tm.Trimesh)
-    doubled_wp = wp.array(
-        np.ascontiguousarray(doubled_tm.faces.reshape(-1), dtype=np.int32),
-        dtype=wp.int32,
-        device=faces_wp.device,
-    )
-    labels_doubled_pv = np.asarray(
-        trimesh_to_pyvista(doubled_tm).connectivity("all").cell_data["RegionId"]
-    )
-    labels_doubled_wp = od.adjacency.face_connected_component_labels(doubled_wp)
-
-    assert np.unique(labels_doubled_pv).size == 2
-    assert same_partition(labels_doubled_wp.numpy(), labels_doubled_pv)
+    labels_wp = od.adjacency.face_connected_component_labels(bowtie_wp).numpy()
+    assert same_partition(labels_wp, _face_labels_ml(per_edge_ml, 2))
+    assert np.unique(labels_wp).size == 2
 
 
 @pytest.mark.parametrize("mesh_name", ["icosphere", "cave_cube", "hemisphere"])

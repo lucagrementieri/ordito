@@ -48,33 +48,48 @@ def _path_length(points: np.ndarray) -> float:
     return float(np.linalg.norm(np.diff(points, axis=0), axis=1).sum())
 
 
+def _trace(
+    mesh_wp: wp.Mesh,
+    start_np: np.ndarray,
+    directions_np: np.ndarray,
+    frames: tuple[wp.array[wp.vec3], wp.array[wp.vec3], wp.array[wp.vec3]] | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Trace from host start vertices and directions; returns the packed ``(points, offsets)``."""
+    return od.geodesic_walk.trace_from_vertex(
+        mesh_wp.points,
+        mesh_wp.indices,
+        wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
+        points_to_warp(directions_np, mesh_wp.device),
+        frames=frames,
+    )
+
+
 # ---------------------------------------------------------------------------
 # trace_from_vertex
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize("mesh_name", MESHES)
-def test_trace_from_vertex_walks_the_requested_distance(
+def test_trace_from_vertex_walks_the_requested_distance_on_the_surface(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Not a library comparison: the traced arc length against the requested one, computed here.
+    The two properties that make a trace a geodesic, each checked against its own oracle.
 
-    The direction's *tangential* component sets the distance to walk, so the reference is arithmetic
-    rather than another implementation -- an equality on a closed mesh and an upper bound on an open
-    one, where a ray can stop at the rim. The cross-library check is
+    Not a library comparison, for the arc length: the direction's *tangential* component sets the
+    distance to walk, so the reference is arithmetic rather than another implementation -- an
+    equality on a closed mesh and an upper bound on an open one, where a ray can stop at the rim.
+
+    Class C (a distance bound, not a correspondence), for the surface: trimesh supplies only the
+    point-to-surface distance, so every traced point is asserted to lie on a triangle. The bug class
+    it excludes is the one unfolding gets wrong -- drifting off the surface at a triangle crossing
+    -- which no arc-length check would see. The cross-library check is
     [`test_trace_from_vertex_matches_potpourri3d`].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     start_np, directions_np = _rays(mesh_tm, 24, seed=0)
     frames_wp = od.tangent_space.vertex_tangent_frames(mesh_wp.points, mesh_wp.indices)
-    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
-        points_to_warp(directions_np, mesh_wp.device),
-        frames=frames_wp,
-    )
+    points_wp, offsets_wp = _trace(mesh_wp, start_np, directions_np, frames=frames_wp)
 
     normals = frames_wp[2].numpy()
     is_boundary = od.halfedge.vertex_one_rings(mesh_wp.indices, n_vertices=len(mesh_tm.vertices))[
@@ -92,27 +107,6 @@ def test_trace_from_vertex_walks_the_requested_distance(
             assert np.isclose(traced, requested, rtol=1e-4, atol=1e-5)
         # The path starts where it was asked to.
         assert np.allclose(points[0], mesh_tm.vertices[start], rtol=1e-5, atol=1e-5)
-
-
-@pytest.mark.parametrize("mesh_name", MESHES)
-def test_trace_from_vertex_stays_on_the_surface(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Class C (a distance bound, not a correspondence): every traced point is on the surface.
-
-    trimesh supplies only the point-to-surface distance, so this asserts a property of ordito's
-    answer rather than comparing two answers. The bug class it excludes is the one unfolding gets
-    wrong -- drifting off the surface at a triangle crossing -- which no arc-length check would see.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    start_np, directions_np = _rays(mesh_tm, 24, seed=1)
-    points_wp, _ = od.geodesic_walk.trace_from_vertex(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
-        points_to_warp(directions_np, mesh_wp.device),
-    )
 
     # Every traced point must lie on a triangle: an unfolding error would drift off the surface.
     distance_tm = np.abs(
@@ -145,12 +139,7 @@ def test_trace_from_vertex_matches_potpourri3d(
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     start_np, directions_np = _rays(mesh_tm, 12, seed=2)
 
-    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(start_np, dtype=wp.int32, device=mesh_wp.device),
-        points_to_warp(directions_np, mesh_wp.device),
-    )
+    points_wp, offsets_wp = _trace(mesh_wp, start_np, directions_np)
     curves = od.array.split(points_wp, offsets_wp)
 
     tracer_pp = pp3d.GeodesicTracer(vertices_np, faces_np)
@@ -189,12 +178,7 @@ def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, w
     outward = np.asarray(mesh_tm.vertices)[boundary] - centroid
     outward *= 100.0 / np.linalg.norm(outward, axis=1, keepdims=True)
 
-    points_wp, offsets_wp = od.geodesic_walk.trace_from_vertex(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(boundary, dtype=wp.int32, device=mesh_wp.device),
-        points_to_warp(outward, mesh_wp.device),
-    )
+    points_wp, offsets_wp = _trace(mesh_wp, boundary, outward)
 
     scale = float(
         np.linalg.norm(np.asarray(mesh_tm.vertices).max(0) - np.asarray(mesh_tm.vertices).min(0))
@@ -382,6 +366,10 @@ def test_geodesic_path_reaches_its_source(request: pytest.FixtureRequest, mesh_n
     Measured on ``icosphere(3)``: the two agreed to 1.8e-08, the accumulated one landing above on
     cuda:0 and below on cpu, so 2 of these 20 paths stopped dead on cpu at 0.265 and 0.524 of their
     true length while cuda:0 completed them. One device, one fixture, deterministic each time.
+
+    Each path must also start at its target and **stay on the surface**: a descent that
+    mis-unfolded across an edge would produce a plausible polyline floating off the mesh, which no
+    length comparison catches, so every point is asserted within a rounding of a face.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(np.asarray(mesh_tm.vertices).shape[0])
@@ -393,13 +381,20 @@ def test_geodesic_path_reaches_its_source(request: pytest.FixtureRequest, mesh_n
     source_np = np.asarray(mesh_tm.vertices)[0]
     paths = _paths_to_source(mesh_wp, targets_np)
     assert len(paths) == len(targets_np)  # non-vacuity: a path came back for every target
+    vertices_np = mesh_wp.points.numpy()
+    diagonal = float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
     for target, path in zip(targets_np, paths, strict=True):
         points_np = path.numpy()
+        assert len(points_np) >= 2
         assert np.allclose(points_np[0], np.asarray(mesh_tm.vertices)[int(target)], atol=1e-5)
         assert np.allclose(points_np[-1], source_np, atol=1e-5), (
             f"path from {int(target)} stopped {np.linalg.norm(points_np[-1] - source_np):.4f} "
             f"short of the source after {len(points_np)} points"
         )
+        _closest_wp, distance_wp, _face_wp = od.proximity.closest_point_on_mesh(
+            mesh_wp.points, mesh_wp.indices, path
+        )
+        assert float(distance_wp.numpy().max()) < 1e-5 * diagonal
 
 
 @pytest.mark.parity("geodesic_path", "potpourri3d")
@@ -449,45 +444,6 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     assert ratio_np.min() > 0.999
     assert np.median(ratio_np) < 1.05
     assert ratio_np.max() < 1.2
-
-
-@pytest.mark.parametrize("mesh_name", _PATH_MESHES)
-def test_geodesic_path_reaches_the_source_along_the_surface(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Not a library comparison: the three properties that make the output a path at all.
-
-    A path must **start at its target**, **end at its source** and **stay on the surface** -- and
-    the third is the one worth the closest-point query: a descent that mis-unfolded across an edge
-    would produce a plausible polyline floating off the mesh, which no length comparison catches.
-    Every point is within a rounding of a face.
-
-    The fourth property is the algorithm's own invariant and the reason it terminates: the field
-    **strictly decreases** along the path. It is checked by sampling the distance field at each
-    point through its closest face rather than at the vertices: most points are edge crossings.
-    """
-    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
-    n_vertices = vertices_wp.size
-    rng = np.random.default_rng(3)
-    targets_np = rng.choice(
-        np.arange(1, n_vertices), min(12, n_vertices - 1), replace=False
-    ).astype(np.int32)
-    paths = _paths_to_source(mesh_wp, targets_np)
-    vertices_np = vertices_wp.numpy()
-
-    diagonal = float(np.linalg.norm(vertices_np.max(axis=0) - vertices_np.min(axis=0)))
-    for target, path in zip(targets_np, paths, strict=True):
-        path_np = path.numpy()
-        assert len(path_np) >= 2
-        assert np.allclose(path_np[0], vertices_np[target], atol=1e-5)
-        assert np.allclose(path_np[-1], vertices_np[0], atol=1e-5)
-
-        _closest_wp, distance_wp, _face_wp = od.proximity.closest_point_on_mesh(
-            vertices_wp, faces_wp, path
-        )
-        assert float(distance_wp.numpy().max()) < 1e-5 * diagonal
 
 
 def test_descend_field_stops_at_a_local_minimum_and_at_a_boundary(
@@ -605,6 +561,15 @@ def _cycle_length(vertices_np: np.ndarray, loop_np: np.ndarray) -> float:
     )
 
 
+def _shortened_generators(
+    mesh_wp: wp.Mesh,
+) -> tuple[list[wp.array[wp.int32]], list[wp.array[wp.int32]], int]:
+    """Return the homology generators and the same loops shortened, with the sweep count."""
+    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    shortened_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    return loops_wp, shortened_wp, sweeps
+
+
 @pytest.mark.parity("shorten_loop", "potpourri3d")
 def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
@@ -628,10 +593,8 @@ def test_shorten_loop_preserves_the_homotopy_class(torus: tuple[tm.Trimesh, wp.M
     """
     mesh_tm, mesh_wp = torus
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
-    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
+    loops_wp, shortened_wp, sweeps = _shortened_generators(mesh_wp)
     assert len(loops_wp) == 2  # non-vacuity: genus 1, so there are two generators to shorten
-
-    shortened_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
     assert 0 < sweeps < 100  # it converged rather than being cut off by the cap
 
     solver_pp = pp3d.EdgeFlipGeodesicSolver(
@@ -702,8 +665,7 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)
-    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    shortened_wp, _sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    _loops_wp, shortened_wp, _sweeps = _shortened_generators(mesh_wp)
 
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     topology_ml = mesh_ml.topology
@@ -773,8 +735,7 @@ def test_shorten_loop_returns_valid_non_separating_cycles(
     """
     _, mesh_wp = torus
     device = mesh_wp.indices.device
-    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    shortened_wp, _ = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    _loops_wp, shortened_wp, _sweeps = _shortened_generators(mesh_wp)
 
     edges_np = {
         tuple(sorted(edge)) for edge in od.edges.faces_to_edges(mesh_wp.indices).numpy().tolist()
@@ -892,8 +853,7 @@ def test_shorten_loop_is_idempotent_and_handles_edge_cases(
     loop too short to have a triple, and an empty list, come back untouched.
     """
     _, mesh_wp = torus
-    loops_wp = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-    once_wp, _ = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, loops_wp)
+    _loops_wp, once_wp, _sweeps = _shortened_generators(mesh_wp)
     twice_wp, sweeps = od.geodesic_walk.shorten_loop(mesh_wp.points, mesh_wp.indices, once_wp)
     assert sweeps == 2  # one sweep per parity, both finding nothing to do
     for first_wp, second_wp in zip(once_wp, twice_wp, strict=True):

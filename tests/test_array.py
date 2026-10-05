@@ -40,33 +40,25 @@ def test_arange_matches_numpy(device: str, args: tuple[int, ...]) -> None:
     assert np.array_equal(out_wp.numpy(), np.arange(*args, dtype=np.int32))
 
 
-def test_arange_rejects_a_zero_step(device: str) -> None:
-    with pytest.raises(ValueError, match="step must be non-zero"):
-        od.array.arange(0, 10, 0, device=device)
-
-
-def test_sort_pair_indices(device: str) -> None:
-    n, fill = 5, -1
+@pytest.mark.parametrize("n", [5, 0], ids=["five", "zero"])
+def test_sort_pair_indices(device: str, n: int) -> None:
+    """``0 .. n - 1`` followed by ``n`` copies of the fill value; ``n == 0`` allocates empty."""
+    fill = -1
     out_wp = od.array.sort_pair_indices(n, fill, device)
-    expected_np = np.array([0, 1, 2, 3, 4, -1, -1, -1, -1, -1], dtype=np.int32)
+    expected_np = np.concatenate([np.arange(n), np.full(n, fill)]).astype(np.int32)
+    assert out_wp.shape == (2 * n,)
     assert np.array_equal(out_wp.numpy(), expected_np)
 
 
-def test_sort_pair_indices_zero(device: str) -> None:
-    out_wp = od.array.sort_pair_indices(0, -1, device)
-    assert out_wp.shape == (0,)
-
-
-def test_arange_repeat(device: str) -> None:
-    count, repeats = 9, 3
+@pytest.mark.parametrize(
+    ("count", "repeats"), [(9, 3), (0, 4)], ids=["nine_by_three", "zero_count"]
+)
+def test_arange_repeat(device: str, count: int, repeats: int) -> None:
+    """Each of ``0 .. count // repeats - 1`` repeated ``repeats`` times; zero allocates empty."""
     out_wp = od.array.arange_repeat(count, repeats, device)
     expected_np = np.repeat(np.arange(count // repeats, dtype=np.int32), repeats)
+    assert out_wp.shape == (count,)
     assert np.array_equal(out_wp.numpy(), expected_np)
-
-
-def test_arange_repeat_zero_count(device: str) -> None:
-    out_wp = od.array.arange_repeat(0, 4, device)
-    assert out_wp.shape == (0,)
 
 
 def test_index_builders_are_int32_and_guard_the_range(device: str) -> None:
@@ -96,39 +88,10 @@ def test_index_builders_are_int32_and_guard_the_range(device: str) -> None:
         od.array.sort_pair_indices(1, 2**31, device)
 
 
-def test_concatenate(device: str) -> None:
-    parts = [
-        wp.array([0, 3], dtype=wp.int32, device=device),
-        wp.array([], dtype=wp.int32, device=device),
-        wp.array([7, 12], dtype=wp.int32, device=device),
-    ]
-    out_wp = od.array.concatenate(parts)
-    assert np.array_equal(out_wp.numpy(), np.array([0, 3, 7, 12], dtype=np.int32))
-
-
 def test_concatenate_single_returns_input(device: str) -> None:
     arr_wp = wp.array([1, 2], dtype=wp.int32, device=device)
     out_wp = od.array.concatenate([arr_wp])
     assert out_wp is arr_wp
-
-
-def test_concatenate_empty_segments(device: str) -> None:
-    out_wp = od.array.concatenate([warp_empty(0, wp.int32, device)])
-    assert out_wp.shape == (0,)
-
-
-def test_split_roundtrips_pack_1d_arrays(device: str) -> None:
-    """``split(*pack_1d_arrays(arrays))`` recovers every input segment (the inverse pair)."""
-    rng = np.random.default_rng(3)
-    parts_np = [rng.integers(0, 100, size=size).astype(np.int32) for size in (4, 1, 0, 7)]
-    parts_wp = [wp.array(part, dtype=wp.int32, device=device) for part in parts_np]
-
-    flat_wp, offsets_wp = od.array.pack_1d_arrays(parts_wp)
-    segments_wp = od.array.split(flat_wp, offsets_wp)
-
-    assert len(segments_wp) == len(parts_np)
-    for segment_wp, part_np in zip(segments_wp, parts_np, strict=True):
-        assert np.array_equal(segment_wp.numpy(), part_np)
 
 
 @pytest.mark.parity("concatenate_arrays", "numpy")
@@ -152,7 +115,8 @@ def test_the_packing_family_matches_numpy(device: str, copy: bool) -> None:
 
     A **zero-length segment** is in the middle of the input on purpose. It is the case an offsets
     scheme gets wrong (two consecutive offsets that are equal), and the one where ``np.split`` and
-    ordito could plausibly disagree about which piece is empty.
+    ordito could plausibly disagree about which piece is empty. The packed buffer and its offsets
+    land on the segments' device.
     """
     rng = np.random.default_rng(3)
     parts_np = [
@@ -166,6 +130,8 @@ def test_the_packing_family_matches_numpy(device: str, copy: bool) -> None:
     assert np.array_equal(od.array.concatenate(parts_wp).numpy(), flat_np)
 
     packed_wp, packed_offsets_wp = od.array.pack_1d_arrays(parts_wp)
+    assert packed_wp.device == device
+    assert packed_offsets_wp.device == device
     assert np.array_equal(packed_wp.numpy(), flat_np)
     assert np.array_equal(packed_offsets_wp.numpy(), offsets_np.astype(np.int32))
 
@@ -307,12 +273,6 @@ def test_split_rejects_bad_offsets(device: str) -> None:
         od.array.split(flat_wp, warp_empty(0, wp.int32, device))
 
 
-def test_split_empty_offsets(device: str) -> None:
-    """``[0]`` describes no segments, over an empty buffer."""
-    empty_wp = warp_empty(0, wp.int32, device)
-    assert od.array.split(empty_wp, wp.zeros(1, dtype=wp.int32, device=device)) == []
-
-
 @pytest.mark.parametrize("copy", [False, True])
 def test_split_accepts_host_offsets(device: str, copy: bool) -> None:
     """
@@ -336,13 +296,17 @@ def test_split_accepts_host_offsets(device: str, copy: bool) -> None:
         od.array.split(flat_wp, [0, 2])
 
 
-@pytest.mark.parametrize("copy", [False, True])
-def test_split_trailing_empty_segment(device: str, copy: bool) -> None:
-    """A segment that is empty *at the end* of the buffer splits (Warp rejects ``arr[n:n]``)."""
+def test_split_trailing_empty_segment(device: str) -> None:
+    """
+    A segment that is empty *at the end* of the buffer copies (Warp rejects ``arr[n:n]``).
+
+    The view form of a trailing empty segment is ``test_segment_views_match_real_slices``' last
+    segment, compared key by key against a real slice.
+    """
     flat_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
     offsets_wp = wp.array(np.array([0, 4, 4, 4], dtype=np.int32), dtype=wp.int32, device=device)
 
-    segments_wp = od.array.split(flat_wp, offsets_wp, copy=copy)
+    segments_wp = od.array.split(flat_wp, offsets_wp, copy=True)
 
     assert [segment.size for segment in segments_wp] == [4, 0, 0]
     assert np.array_equal(segments_wp[0].numpy(), np.arange(4, dtype=np.int32))
@@ -411,10 +375,14 @@ def test_segment_views_match_real_slices(device: str, dtype: type) -> None:
         assert np.array_equal(view_wp.numpy(), base_wp.numpy()[begin:end])
 
 
-@pytest.mark.parametrize("dtype", _SPLIT_DTYPES, ids=lambda d: d.__name__)
+@pytest.mark.parametrize("dtype", [wp.int32, wp.vec3], ids=lambda d: d.__name__)
 def test_segment_views_keep_their_base_alive_and_write_through(device: str, dtype: type) -> None:
     """
     Ordito against NumPy: stamped views outlive their base and a kernel writing one writes it.
+
+    One scalar and one three-wide dtype: the lifetime and the launch pointer do not depend on the
+    element type beyond its stride, which ``test_segment_views_match_real_slices`` pins for every
+    dtype in ``_SPLIT_DTYPES``.
 
     The base is dropped and the pool churned before the views are read, so a view that did not hold
     its base would read recycled memory. ``wp.copy`` into a view and ``wp.clone`` of the trailing
@@ -548,18 +516,6 @@ def test_allclose_matches_numpy(device: str, dtype_wp: type, dtype_np: type) -> 
     assert od.array.allclose(a_wp, far_wp) == bool(np.allclose(a_np, a_np + dtype_np(1e-2)))
 
 
-def test_allclose_empty_is_true(device: str) -> None:
-    empty_wp = warp_empty(0, wp.vec3, device)
-    assert od.array.allclose(empty_wp, empty_wp) is True
-
-
-def test_allclose_rejects_mismatched_dtypes(device: str) -> None:
-    a_wp = wp.zeros(3, dtype=wp.float32, device=device)
-    b_wp = wp.zeros(3, dtype=wp.float64, device=device)
-    with pytest.raises(ValueError, match="matching dtypes"):
-        od.array.allclose(a_wp, b_wp)
-
-
 def test_allclose_rejects_mismatched_devices() -> None:
     """
     Ordito against ordito: a public two-array function must reject a cross-device call.
@@ -606,26 +562,6 @@ def test_sort_and_argsort_duplicate_keys(device: str) -> None:
     assert np.array_equal(keys_np[order_wp.numpy()], sorted_keys_wp.numpy())
 
 
-def test_sort_and_argsort_empty(device: str) -> None:
-    keys_wp = warp_empty(0, wp.int32, device)
-    sorted_keys_wp, order_wp = od.array.sort_and_argsort(keys_wp)
-    assert sorted_keys_wp.shape == (0,)
-    assert order_wp.shape == (0,)
-
-
-def test_pack_1d_wp_arrays(device: str):
-    parts = [
-        wp.array([1, 2, 3], dtype=wp.int32, device=device),
-        wp.array([], dtype=wp.int32, device=device),
-        wp.array([4], dtype=wp.int32, device=device),
-    ]
-    flat, offsets = od.array.pack_1d_arrays(parts)
-    assert flat.device == device
-    assert offsets.device == device
-    assert np.array_equal(flat.numpy(), np.array([1, 2, 3, 4], dtype=np.int32))
-    assert np.array_equal(offsets.numpy(), np.array([0, 3, 3, 4], dtype=np.int32))
-
-
 def test_pack_1d_wp_arrays_vec3(device: str):
     parts = [
         wp.array([wp.vec3(1.0, 0.0, 0.0), wp.vec3(0.0, 1.0, 0.0)], dtype=wp.vec3, device=device),
@@ -636,15 +572,6 @@ def test_pack_1d_wp_arrays_vec3(device: str):
     flat_wp_np = flat.numpy().reshape(-1, 3)
     assert np.allclose(flat_wp_np, expected_np, rtol=1e-5, atol=1e-5)
     assert np.array_equal(offsets.numpy(), np.array([0, 2, 3], dtype=np.int32))
-
-
-def test_pack_1d_wp_arrays_dtype_mismatch(device: str):
-    parts = [
-        wp.array([1], dtype=wp.int32, device=device),
-        wp.array([2.0], dtype=wp.float32, device=device),
-    ]
-    with pytest.raises(ValueError, match="same dtype"):
-        od.array.pack_1d_arrays(parts)
 
 
 def test_sort_rows(device: str):
@@ -659,16 +586,20 @@ def test_sort_rows(device: str):
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.mat22d])
 def test_triplet_buffers(dtype: type, device: str) -> None:
-    """Three same-length buffers on the requested device, int32 indices and ``dtype`` values."""
-    n_triplets = 12
-    rows_wp, cols_wp, values_wp = od.array.triplet_buffers(n_triplets, dtype, device)
+    """
+    Three same-length buffers on the requested device, int32 indices and ``dtype`` values.
 
-    for buffer_wp in (rows_wp, cols_wp, values_wp):
-        assert buffer_wp.shape == (n_triplets,)
-        assert wp.get_device(str(buffer_wp.device)) == wp.get_device(device)
-    assert rows_wp.dtype == wp.int32
-    assert cols_wp.dtype == wp.int32
-    assert values_wp.dtype == dtype
+    A zero-entry build is a real case (an empty mesh), so the buffers must also allocate empty.
+    """
+    for n_triplets in (12, 0):
+        rows_wp, cols_wp, values_wp = od.array.triplet_buffers(n_triplets, dtype, device)
+
+        for buffer_wp in (rows_wp, cols_wp, values_wp):
+            assert buffer_wp.shape == (n_triplets,)
+            assert wp.get_device(str(buffer_wp.device)) == wp.get_device(device)
+        assert rows_wp.dtype == wp.int32
+        assert cols_wp.dtype == wp.int32
+        assert values_wp.dtype == dtype
 
 
 def test_triplet_buffers_feed_a_sparse_build(device: str) -> None:
@@ -683,13 +614,6 @@ def test_triplet_buffers_feed_a_sparse_build(device: str) -> None:
     assert odt.has_blocks(matrix_wp, wp.float64)
     assert np.array_equal(matrix_wp.offsets.numpy()[:4], np.arange(4))
     assert np.allclose(matrix_wp.values.numpy().reshape(-1), np.ones(3))
-
-
-def test_triplet_buffers_zero_length(device: str) -> None:
-    """A zero-entry build is a real case (an empty mesh), so the buffers must allocate empty."""
-    rows_wp, cols_wp, values_wp = od.array.triplet_buffers(0, wp.float32, device)
-    for buffer_wp in (rows_wp, cols_wp, values_wp):
-        assert buffer_wp.shape == (0,)
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64, wp.int32])
@@ -887,42 +811,15 @@ def test_index_sparse_uses_the_input_device(device: str) -> None:
     assert str(matrix.values.device) == str(indices_wp.device)
 
 
-def test_isin_1d(device: str) -> None:
-    rng = np.random.default_rng(42)
-    elements_np = rng.integers(0, 20, size=50, dtype=np.int32)
-    test_np = rng.choice(20, size=8, replace=False).astype(np.int32)
+@pytest.mark.parametrize(
+    "shape", [(50,), (12, 3), (4, 3, 2), (2, 2, 3, 5)], ids=["1d", "2d", "rank3", "rank4"]
+)
+def test_isin_matches_numpy_at_every_rank(device: str, shape: tuple[int, ...]) -> None:
+    """
+    Class A against [`numpy.isin`][]: membership is a per-element predicate, so any rank works.
 
-    elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
-    test_wp = wp.array(test_np, dtype=wp.int32, device=device)
-    mask_wp = od.array.isin(elements_wp, test_wp)
-    mask_np = np.isin(elements_np, test_np)
-    assert np.array_equal(mask_wp.numpy(), mask_np)
-
-
-def test_isin_2d(device: str) -> None:
-    rng = np.random.default_rng(7)
-    elements_np = rng.integers(0, 15, size=(12, 3), dtype=np.int32)
-    test_np = rng.choice(15, size=5, replace=False).astype(np.int32)
-
-    elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
-    test_wp = wp.array(test_np, dtype=wp.int32, device=device)
-    mask_wp = od.array.isin(elements_wp, test_wp)
-    mask_np = np.isin(elements_np, test_np)
-    assert np.array_equal(mask_wp.numpy(), mask_np)
-
-
-def test_isin_empty_test(device: str) -> None:
-    elements_np = np.array([0, 1, 2, 3], dtype=np.int32)
-    elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
-    test_wp = warp_empty(0, wp.int32, device)
-    mask_wp = od.array.isin(elements_wp, test_wp)
-    mask_ref_np = np.zeros_like(elements_np, dtype=bool)
-    assert np.array_equal(mask_wp.numpy(), mask_ref_np)
-
-
-@pytest.mark.parametrize("shape", [(4, 3, 2), (2, 2, 3, 5)], ids=["rank3", "rank4"])
-def test_isin_higher_rank(device: str, shape: tuple[int, ...]) -> None:
-    """Membership is a per-element predicate, so any rank round-trips through flatten/reshape."""
+    Ranks above one round-trip through flatten and reshape; the mask keeps the input's shape.
+    """
     rng = np.random.default_rng(13)
     elements_np = rng.integers(0, 15, size=shape, dtype=np.int32)
     test_np = rng.choice(15, size=5, replace=False).astype(np.int32)
@@ -930,18 +827,10 @@ def test_isin_higher_rank(device: str, shape: tuple[int, ...]) -> None:
     elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
     test_wp = wp.array(test_np, dtype=wp.int32, device=device)
     mask_wp = od.array.isin(elements_wp, test_wp)
-    assert mask_wp.shape == shape
-    assert np.array_equal(mask_wp.numpy(), np.isin(elements_np, test_np))
-
-
-def test_isin_sparse_large_indices(device: str) -> None:
-    """Forces sort + binary-search path (max index >> len(test_elements))."""
-    elements_np = np.array([1, 1_000_000, 2, 999_999, 3], dtype=np.int32)
-    test_np = np.array([1, 2, 3], dtype=np.int32)
-    elements_wp = wp.array(elements_np, dtype=wp.int32, device=device)
-    test_wp = wp.array(test_np, dtype=wp.int32, device=device)
-    mask_wp = od.array.isin(elements_wp, test_wp)
     mask_np = np.isin(elements_np, test_np)
+    assert mask_np.any()
+    assert not mask_np.all()
+    assert mask_wp.shape == shape
     assert np.array_equal(mask_wp.numpy(), mask_np)
 
 
@@ -1007,16 +896,6 @@ def test_isin_integer_dtypes_sparse(device: str, dtype_wp: type, dtype_np: type)
     )
 
 
-def test_isin_rejects_mismatched_and_non_integer_dtypes(device: str) -> None:
-    """Both arrays must share one integer dtype: the kernels are instantiated per dtype."""
-    elements_wp = wp.array(np.arange(4, dtype=np.int64), dtype=wp.int64, device=device)
-    with pytest.raises(TypeError, match="one dtype"):
-        od.array.isin(elements_wp, wp.array(np.array([1], np.int32), dtype=wp.int32, device=device))
-    floats_wp = wp.array(np.zeros(3, np.float32), dtype=wp.float32, device=device)
-    with pytest.raises(TypeError, match="integer dtype"):
-        od.array.isin(floats_wp, floats_wp)
-
-
 @pytest.mark.parity("flatnonzero", "numpy")
 def test_flatnonzero(device: str) -> None:
     """Class A: the same indices ``np.flatnonzero`` returns, for the same mask."""
@@ -1026,12 +905,6 @@ def test_flatnonzero(device: str) -> None:
     indices_wp = od.array.flatnonzero(mask_wp)
     indices_ref_np = np.flatnonzero(mask_np).astype(np.int32)
     assert np.array_equal(indices_wp.numpy(), indices_ref_np)
-
-
-def test_flatnonzero_empty(device: str) -> None:
-    mask_wp = wp.array(np.zeros(8, dtype=bool), dtype=wp.bool, device=device)
-    indices_wp = od.array.flatnonzero(mask_wp)
-    assert indices_wp.shape == (0,)
 
 
 @pytest.mark.parametrize(
@@ -1050,12 +923,6 @@ def test_flatnonzero_nonboolean(device: str, dtype_wp: type, dtype_np: type) -> 
     values_wp = wp.array(values_np, dtype=dtype_wp, device=device)
     indices_wp = od.array.flatnonzero(values_wp)
     assert np.array_equal(indices_wp.numpy(), np.flatnonzero(values_np).astype(np.int32))
-
-
-def test_flatnonzero_rejects_rank2(device: str) -> None:
-    values_wp = wp.array(np.zeros((3, 4), dtype=np.int32), dtype=wp.int32, device=device)
-    with pytest.raises(ValueError, match="1D"):
-        od.array.flatnonzero(values_wp)
 
 
 @pytest.mark.parametrize("first", [False, True])
@@ -1122,13 +989,6 @@ def test_mask_to_compact_ranks_is_the_exclusive_scan_of_the_mask(device: str, in
     assert np.array_equal(index_map_wp.numpy()[positions_np], np.arange(count, dtype=np.int32))
 
 
-def test_mask_to_compact_ranks_empty(device: str) -> None:
-    """An empty mask maps to an empty array and a zero count, without launching a scan."""
-    index_map_wp, count = od.array.mask_to_compact_ranks(warp_empty(0, wp.bool, device))
-    assert count == 0
-    assert index_map_wp.shape == (0,)
-
-
 def test_counts_to_offsets(device: str) -> None:
     """Class A: the total-terminated exclusive prefix sum is ``numpy.cumsum`` behind a zero."""
     rng = np.random.default_rng(41)
@@ -1140,14 +1000,6 @@ def test_counts_to_offsets(device: str) -> None:
     assert np.array_equal(
         offsets_wp.numpy(), np.concatenate([[0], np.cumsum(counts_np)]).astype(np.int32)
     )
-
-
-def test_counts_to_offsets_empty(device: str) -> None:
-    """No counts scan to the one-element ``[0]``, the empty terminated form."""
-    counts_wp = warp_empty(0, wp.int32, device)
-    offsets_wp, total = od.array.counts_to_offsets(counts_wp)
-    assert total == 0
-    assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
 
 
 def test_remap_indices_passes_negative_sentinels_through(device: str) -> None:
@@ -1166,62 +1018,32 @@ def test_remap_indices_passes_negative_sentinels_through(device: str) -> None:
     assert np.array_equal(remapped_wp.numpy(), np.array([12, -1, 10, 11, -1], dtype=np.int32))
 
 
-def test_remap_indices_empty(device: str) -> None:
-    indices_wp = warp_empty(0, wp.int32, device)
-    remap_wp = wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=device)
-    assert od.array.remap_indices(indices_wp, remap_wp).shape == (0,)
-
-
-def test_indices_to_mask_empty(device: str) -> None:
-    indices_wp = warp_empty(0, wp.int32, device)
-    mask_wp = od.array.indices_to_mask(indices_wp, 5)
-    assert np.array_equal(mask_wp.numpy(), np.zeros(5, dtype=bool))
-
-
 @pytest.mark.parity("gather", "numpy")
-def test_gather_1d(device: str) -> None:
-    """Class A: the same values ``src[indices]`` returns, which is NumPy's whole answer here."""
+@pytest.mark.parametrize("layout", ["1d", "2d_rows", "vec3"])
+def test_gather(device: str, layout: str) -> None:
+    """
+    Class A: the same values ``src[indices]`` returns, which is NumPy's whole answer here.
+
+    Scalars, rows of a rank-2 table (the result keeps the trailing dimension) and ``wp.vec3``
+    elements, with repeated indices drawn at random.
+    """
     rng = np.random.default_rng(5)
-    values_np = rng.integers(0, 1000, size=32, dtype=np.int32)
-    indices_np = rng.integers(0, 32, size=10, dtype=np.int32)
-
-    values_wp = wp.array(values_np, dtype=wp.int32, device=device)
+    if layout == "1d":
+        source_np = rng.integers(0, 1000, size=32, dtype=np.int32)
+        source_wp = wp.array(source_np, dtype=wp.int32, device=device)
+    elif layout == "2d_rows":
+        source_np = rng.integers(0, 1000, size=(20, 2), dtype=np.int32)
+        source_wp = wp.array(source_np, dtype=wp.int32, device=device)
+    else:
+        source_np = rng.standard_normal((16, 3)).astype(np.float32)
+        source_wp = points_to_warp(source_np, device)
+    indices_np = rng.integers(0, source_np.shape[0], size=7, dtype=np.int32)
     indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
-    gathered_wp = od.array.gather(values_wp, indices_wp)
 
-    assert np.array_equal(gathered_wp.numpy(), values_np[indices_np])
+    gathered_wp = od.array.gather(source_wp, indices_wp)
 
-
-def test_gather_2d_rows(device: str) -> None:
-    rng = np.random.default_rng(6)
-    rows_np = rng.integers(0, 1000, size=(20, 2), dtype=np.int32)
-    indices_np = rng.integers(0, 20, size=7, dtype=np.int32)
-
-    rows_wp = wp.array(rows_np, dtype=wp.int32, device=device)
-    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
-    gathered_wp = od.array.gather(rows_wp, indices_wp)
-
-    assert gathered_wp.shape == (7, 2)
-    assert np.array_equal(gathered_wp.numpy(), rows_np[indices_np])
-
-
-def test_gather_vec3(device: str) -> None:
-    rng = np.random.default_rng(7)
-    points_np = rng.standard_normal((16, 3)).astype(np.float32)
-    indices_np = rng.integers(0, 16, size=5, dtype=np.int32)
-
-    points_wp = points_to_warp(points_np, device)
-    indices_wp = wp.array(indices_np, dtype=wp.int32, device=device)
-    gathered_wp = od.array.gather(points_wp, indices_wp)
-
-    assert np.array_equal(gathered_wp.numpy(), points_np[indices_np])
-
-
-def test_gather_empty_indices(device: str) -> None:
-    rows_wp = wp.array(np.zeros((4, 2), dtype=np.int32), dtype=wp.int32, device=device)
-    indices_wp = warp_empty(0, wp.int32, device)
-    gathered_wp = od.array.gather(rows_wp, indices_wp)
-    assert gathered_wp.shape == (0, 2)
+    assert gathered_wp.numpy().shape == source_np[indices_np].shape
+    assert np.array_equal(gathered_wp.numpy(), source_np[indices_np])
 
 
 bitcast_test_data = (
@@ -1414,16 +1236,6 @@ def test_trim_to_count_keeps_the_written_prefix_of_every_buffer(device: str) -> 
     assert np.array_equal(vectors_wp.numpy(), vectors_np[:n_written])
     # A fresh allocation, not a view: writing the source tail must not reach the trimmed copy.
     assert scalars_wp.ptr != counter_wp.ptr
-
-
-def test_trim_to_count_zero(device: str) -> None:
-    """A counter of zero gives empty buffers rather than a zero-length copy of the whole tail."""
-    n_out, (trimmed_wp,) = od.array.trim_to_count(
-        wp.zeros(1, dtype=wp.int32, device=device),
-        wp.array(np.arange(10, dtype=np.int32), dtype=wp.int32, device=device),
-    )
-    assert n_out == 0
-    assert trimmed_wp.shape == (0,)
 
 
 def test_isin_max_index_matches_the_inferred_span(device: str) -> None:
@@ -1625,6 +1437,128 @@ def test_require_same_device_flags_a_mismatch_and_ignores_none(device: str) -> N
         _device.require_same_device(a=a_wp, c=c_wp)
     with pytest.raises(RuntimeError, match=r"'loops\[0\]' is on .+ while 'loops\[1\]' is on"):
         _device.require_same_device(loops=[a_wp, c_wp])
+
+
+_EMPTY_INPUT_CASES = [
+    "concatenate",
+    "split",
+    "allclose",
+    "sort_and_argsort",
+    "isin_empty_test_set",
+    "flatnonzero_no_selection",
+    "mask_to_compact_ranks",
+    "counts_to_offsets",
+    "remap_indices",
+    "indices_to_mask",
+    "gather",
+    "trim_to_count",
+]
+
+
+@pytest.mark.parametrize("case", _EMPTY_INPUT_CASES)
+def test_empty_inputs(device: str, case: str) -> None:
+    """
+    Not a library comparison: each function's answer when there is nothing to process.
+
+    The empty answer is a convention, not a computation, so it is stated per function:
+    ``split`` of the offsets ``[0]`` is no segments, ``allclose`` of two empty arrays is ``True``,
+    ``counts_to_offsets`` of no counts is the one-element ``[0]`` (the empty terminated form),
+    ``indices_to_mask`` of no indices is an all-``False`` mask of the requested length, a gather of
+    no rows keeps the trailing dimension, ``isin`` against an empty test set and ``flatnonzero``
+    of an all-``False`` mask select nothing, and ``trim_to_count`` at a zero counter returns empty
+    buffers rather than a zero-length copy of the whole tail. ``mask_to_compact_ranks`` answers
+    without launching a scan.
+    """
+    empty_wp = warp_empty(0, wp.int32, device)
+    if case == "concatenate":
+        assert od.array.concatenate([empty_wp]).shape == (0,)
+    elif case == "split":
+        assert od.array.split(empty_wp, wp.zeros(1, dtype=wp.int32, device=device)) == []
+    elif case == "allclose":
+        empty_vec3_wp = warp_empty(0, wp.vec3, device)
+        assert od.array.allclose(empty_vec3_wp, empty_vec3_wp) is True
+    elif case == "sort_and_argsort":
+        sorted_keys_wp, order_wp = od.array.sort_and_argsort(empty_wp)
+        assert sorted_keys_wp.shape == (0,)
+        assert order_wp.shape == (0,)
+    elif case == "isin_empty_test_set":
+        elements_wp = wp.array(np.arange(4, dtype=np.int32), dtype=wp.int32, device=device)
+        assert np.array_equal(od.array.isin(elements_wp, empty_wp).numpy(), np.zeros(4, dtype=bool))
+    elif case == "flatnonzero_no_selection":
+        mask_wp = wp.array(np.zeros(8, dtype=bool), dtype=wp.bool, device=device)
+        assert od.array.flatnonzero(mask_wp).shape == (0,)
+    elif case == "mask_to_compact_ranks":
+        index_map_wp, count = od.array.mask_to_compact_ranks(warp_empty(0, wp.bool, device))
+        assert count == 0
+        assert index_map_wp.shape == (0,)
+    elif case == "counts_to_offsets":
+        offsets_wp, total = od.array.counts_to_offsets(empty_wp)
+        assert total == 0
+        assert np.array_equal(offsets_wp.numpy(), np.zeros(1, dtype=np.int32))
+    elif case == "remap_indices":
+        remap_wp = wp.array(np.array([0, 1], dtype=np.int32), dtype=wp.int32, device=device)
+        assert od.array.remap_indices(empty_wp, remap_wp).shape == (0,)
+    elif case == "indices_to_mask":
+        mask_wp = od.array.indices_to_mask(empty_wp, 5)
+        assert np.array_equal(mask_wp.numpy(), np.zeros(5, dtype=bool))
+    elif case == "gather":
+        rows_wp = wp.array(np.zeros((4, 2), dtype=np.int32), dtype=wp.int32, device=device)
+        assert od.array.gather(rows_wp, empty_wp).shape == (0, 2)
+    else:
+        n_out, (trimmed_wp,) = od.array.trim_to_count(
+            wp.zeros(1, dtype=wp.int32, device=device),
+            wp.array(np.arange(10, dtype=np.int32), dtype=wp.int32, device=device),
+        )
+        assert n_out == 0
+        assert trimmed_wp.shape == (0,)
+
+
+_INVALID_ARGUMENT_CASES = [
+    "arange_zero_step",
+    "allclose_mismatched_dtypes",
+    "pack_1d_arrays_mismatched_dtypes",
+    "isin_mismatched_dtypes",
+    "isin_non_integer_dtype",
+    "flatnonzero_rank2",
+]
+
+
+@pytest.mark.parametrize("case", _INVALID_ARGUMENT_CASES)
+def test_invalid_arguments_raise(device: str, case: str) -> None:
+    """
+    Not a library comparison: each guard names what it rejects.
+
+    ``isin``'s two arrays must share one integer dtype because its kernels are instantiated per
+    dtype; ``flatnonzero`` is defined on rank-1 input only.
+    """
+    if case == "arange_zero_step":
+        with pytest.raises(ValueError, match="step must be non-zero"):
+            od.array.arange(0, 10, 0, device=device)
+    elif case == "allclose_mismatched_dtypes":
+        a_wp = wp.zeros(3, dtype=wp.float32, device=device)
+        b_wp = wp.zeros(3, dtype=wp.float64, device=device)
+        with pytest.raises(ValueError, match="matching dtypes"):
+            od.array.allclose(a_wp, b_wp)
+    elif case == "pack_1d_arrays_mismatched_dtypes":
+        parts = [
+            wp.array([1], dtype=wp.int32, device=device),
+            wp.array([2.0], dtype=wp.float32, device=device),
+        ]
+        with pytest.raises(ValueError, match="same dtype"):
+            od.array.pack_1d_arrays(parts)
+    elif case == "isin_mismatched_dtypes":
+        elements_wp = wp.array(np.arange(4, dtype=np.int64), dtype=wp.int64, device=device)
+        test_wp = wp.array(np.array([1], np.int32), dtype=wp.int32, device=device)
+        with pytest.raises(TypeError, match="one dtype"):
+            od.array.isin(elements_wp, test_wp)
+    elif case == "isin_non_integer_dtype":
+        floats_wp = wp.array(np.zeros(3, np.float32), dtype=wp.float32, device=device)
+        with pytest.raises(TypeError, match="integer dtype"):
+            od.array.isin(floats_wp, floats_wp)
+    else:
+        values_wp = wp.array(np.zeros((3, 4), dtype=np.int32), dtype=wp.int32, device=device)
+        with pytest.raises(ValueError, match="1D"):
+            od.array.flatnonzero(values_wp)
 
 
 @pytest.mark.parametrize("sizes", [(3, 0, 5, 1), (4,), (0, 0, 2)])

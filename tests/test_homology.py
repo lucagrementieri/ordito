@@ -22,7 +22,7 @@ import warp as wp
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-from tests.conversions import numpy_to_warp, trimesh_to_meshlib, warp_empty
+from tests.conversions import numpy_to_warp, trimesh_to_meshlib
 
 
 def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: Container[tuple[int, ...]]) -> bool:
@@ -42,12 +42,25 @@ def _is_simple_edge_cycle(loop: np.ndarray, edges_tm: Container[tuple[int, ...]]
 def test_homology_generator_count_is_twice_the_genus(
     request: pytest.FixtureRequest, mesh_name: str, genus: int
 ) -> None:
-    _, mesh_wp = request.getfixturevalue(mesh_name)
+    """
+    Not a library comparison: no reference computes a homology basis, so the claim is structural.
+
+    The count is pinned by the Euler characteristic, which also fixes the tree-cotree identity
+    ``E = (V - 1) + (F - 1) + 2g``: an implementation letting the primal tree take an edge the
+    cotree already has, or leaving one in neither, returns the wrong count. trimesh supplies only
+    the mesh's own edge set, used to check each loop *is* a walk along real edges -- closed, and
+    visiting no vertex twice -- which excludes a "loop" jumping between unconnected vertices. The
+    count assert makes the walk check non-vacuous on every genus above zero.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    edges_tm = {tuple(sorted(edge)) for edge in mesh_tm.edges_unique.tolist()}
     loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
 
     # The genus the fixture is built for, and the genus the mesh actually has, must agree first.
     assert od.measures.euler_characteristic(mesh_wp.indices) == 2 - 2 * genus
     assert len(loops) == 2 * genus
+    for loop in loops:
+        assert _is_simple_edge_cycle(loop.numpy(), edges_tm)
 
 
 @pytest.mark.parametrize(("mesh_name", "genus"), [("torus", 1), ("genus_two", 2)])
@@ -65,7 +78,7 @@ def test_homology_generator_count_matches_meshlib(
 
     So the count is the comparison and the *structure* is what makes it non-vacuous: each of
     MeshLib's paths is checked to be a genuine closed edge walk with no repeated vertex, which is
-    the same property [`test_homology_generators_are_simple_closed_edge_cycles`] asserts on
+    the same property [`test_homology_generator_count_is_twice_the_genus`] asserts on
     ordito's side. A reference returning ``2 * genus`` arbitrary edge lists would pass a bare count
     and fail this.
 
@@ -85,27 +98,6 @@ def test_homology_generator_count_matches_meshlib(
         assert len(walk_np) >= 3
         assert len(set(walk_np)) == len(walk_np)  # simple: no vertex repeats
         assert int(mesh_ml.topology.dest(tunnel_ml[-1])) == walk_np[0]  # and closed
-
-
-@pytest.mark.parametrize("mesh_name", ["torus", "genus_two"])
-def test_homology_generators_are_simple_closed_edge_cycles(
-    request: pytest.FixtureRequest, mesh_name: str
-) -> None:
-    """
-    Not a library comparison: no reference computes a homology basis, so the claim is structural.
-
-    trimesh supplies only the mesh's own edge set, used to check each loop *is* a walk along real
-    edges -- closed, and visiting no vertex twice. The generator count is pinned separately by the
-    Euler characteristic; what this excludes is a "loop" jumping between unconnected vertices, and
-    it asserts the loop list is non-empty first so a function returning nothing cannot pass.
-    """
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edges_tm = {tuple(sorted(edge)) for edge in mesh_tm.edges_unique.tolist()}
-    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-
-    assert len(loops) > 0
-    for loop in loops:
-        assert _is_simple_edge_cycle(loop.numpy(), edges_tm)
 
 
 def test_homology_generators_are_not_contractible(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -143,7 +135,7 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
     exactly what this is written to exclude.
 
     Mutation probe: replacing the ``wp.atomic_min`` claim with a plain racy write fails **this
-    test's elementwise comparison and nothing else** -- the other fifteen tests in this file stay
+    test's elementwise comparison and nothing else** -- the other tests in this file stay
     green, because the loops stay simple, closed, non-contractible and correctly counted. That is
     the whole argument for the test existing.
     """
@@ -222,49 +214,19 @@ def test_homology_generators_reject_a_disconnected_surface(
         od.homology.homology_generators(vertices_wp, faces_wp)
 
 
-def test_homology_generators_without_edges(device: str) -> None:
+@pytest.mark.parametrize("n_vertices", [0, 4], ids=["no_vertices", "unreferenced_vertices"])
+def test_homology_generators_without_edges(device: str, n_vertices: int) -> None:
     """
     Not a library comparison: the degenerate input the closed-surface guard must answer, not raise.
 
     A mesh with no faces has no boundary edges either, so it is vacuously closed and the honest
     answer is an empty basis. The boundary-count reduction is what used to raise here, with a
-    ``ValueError`` whose message said the mesh had a boundary. Distinct from
-    [`test_homology_generators_empty`], which has no vertices either: this one reaches the
-    edge-count early return with a populated vertex buffer.
+    ``ValueError`` whose message said the mesh had a boundary. The populated-vertex arm reaches the
+    edge-count early return with vertices present; the empty arm has none at all.
     """
-    vertices_wp = wp.zeros(4, dtype=wp.vec3, device=device)
+    vertices_wp = wp.zeros(n_vertices, dtype=wp.vec3, device=device)
     faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
 
-    assert od.homology.homology_generators(vertices_wp, faces_wp) == []
-
-
-def test_homology_generators_satisfy_the_tree_cotree_identity(
-    torus: tuple[tm.Trimesh, wp.Mesh],
-) -> None:
-    """
-    Not a library comparison: the counting identity a tree-cotree decomposition must satisfy.
-
-    ``E = (V - 1) + (F - 1) + 2g`` is the whole point of the construction, and trimesh contributes
-    only ``V`` and ``F``. An implementation mislabelling one edge -- letting the primal tree take an
-    edge the cotree already has, or leaving one in neither -- breaks the identity, which no
-    reference implementation is needed to state. It is the invariant that covers the decomposition
-    now that it is internal to [`homology_generators`], and it bites on the spanning trees where the
-    Euler-characteristic count in this file bites on the genus.
-    """
-    mesh_tm, mesh_wp = torus
-    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices)
-
-    n_vertices = len(mesh_tm.vertices)
-    n_faces = len(mesh_tm.faces)
-    n_edges = int(od.edges.edges_unique(mesh_wp.indices, n_vertices=n_vertices)[0].shape[0])
-    # Non-vacuity: the fixture really is genus 1, so the identity is not 0 == 0.
-    assert len(loops) == 2
-    assert len(loops) == n_edges - (n_vertices - 1) - (n_faces - 1)
-
-
-def test_homology_generators_empty(device: str) -> None:
-    vertices_wp = warp_empty(0, wp.vec3, device)
-    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
     assert od.homology.homology_generators(vertices_wp, faces_wp) == []
 
 
