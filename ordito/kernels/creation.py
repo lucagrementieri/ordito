@@ -9,6 +9,8 @@ from ordito.kernels.predicates import orient2d
 from ordito.kernels.reduce import block_chunk, commit_block_total
 from ordito.kernels.triangles import corner_triple, face_vertices, write_corner_triple_reversible
 
+wp.set_module_options({"enable_backward": False})
+
 SQRT3 = wp.constant(wp.float32(math.sqrt(3.0)))
 PI_F = wp.constant(wp.float32(math.pi))
 

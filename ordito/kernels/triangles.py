@@ -21,6 +21,8 @@ from ordito.kernels.predicates import (
     vector_angle,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 # ``face_quality`` metric selectors. Passed as a warp-uniform kernel argument so all four share one
 # compiled module (a ``wp.Function`` cannot be a kernel argument -- see AGENTS.md section 2.7).
 QUALITY_ASPECT_RATIO = wp.constant(wp.int32(0))  # circumradius / (2 * inradius), 1 .. +inf

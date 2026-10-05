@@ -12,6 +12,8 @@ import warp as wp
 
 from ordito.kernels.predicates import normalize_or_zero
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def transform_point_mat44(point: wp.vec3, matrix: wp.mat44) -> wp.vec3:

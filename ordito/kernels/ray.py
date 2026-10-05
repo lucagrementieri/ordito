@@ -2,6 +2,8 @@ import warp as wp
 
 from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def first_hit(

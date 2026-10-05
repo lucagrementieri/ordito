@@ -8,6 +8,8 @@ from ordito.kernels.algorithms import bfs as kernel_bfs
 from ordito.kernels.array import declare_map_signatures, map_probe, map_probe_single
 from ordito.kernels.reduce import block_chunk_1d, block_min
 
+wp.set_module_options({"enable_backward": False})
+
 # Iterative-deepening k-nearest search. A scan at radius ``r`` enumerates every point within
 # Euclidean distance ``r``, so a row whose k-th distance is at most ``r`` is provably the exact
 # k-NN and the loop can stop. Both accelerators enumerate the ball directly -- the BVH through
@@ -116,12 +118,15 @@ def bvh_walk_emit(query: wp.BvhQuery, base: wp.int32, out_indices: wp.array[wp.i
 
 # The ball-shaped broad phase over bounds, and it is *not* a tighter spelling of the box one below.
 # ``wp.bvh_query_sphere`` prunes on an exact sphere-AABB squared distance where
-# ``wp.bvh_query_aabb`` prunes on a box overlap, and on Warp 1.17 the box traversal is far the more
-# expensive of the two *per candidate returned* -- isolated with the box's own *inscribed* cube
-# (half extent ``r / sqrt(3)``, so strictly fewer candidates than the ball), it still costs several
-# times the ball query. So the ball trims candidates *and* walks more cheaply, and a caller whose
-# predicate is a ball wants this pair rather than the box pair plus a narrow phase. Both counts are
-# exact against a brute-force oracle; CLAUDE.md section 12.8 records the verdict.
+# ``wp.bvh_query_aabb`` prunes on a box overlap. On Warp 1.17 the box traversal was far the more
+# expensive of the two per candidate returned. Warp 1.18's traversal rewrite made the sphere walk
+# 1.7-2.2x slower on surface clouds and left the box walk where it was, so the verdict was
+# re-taken through the public calls with every ball enumeration in this module (and the curvature
+# and edge-distance ones) swapped for the circumscribed box plus the exact ``in_ball`` test: the
+# sphere still wins at the benchmark points -- ball queries 1.00-1.02x at two mean edges and
+# 1.10-1.14x at four, k-NN rows 1.00-1.45x, the weighted query 1.09-1.33x. So a caller whose
+# predicate is a ball still wants this pair rather than the box pair plus a narrow phase. Both
+# counts are exact against a brute-force oracle; CLAUDE.md section 12.8 records the verdict.
 @wp.func
 def ball_count_in_bounds(bvh_id: wp.uint64, q: wp.vec3, radius: wp.float32) -> wp.int32:
     # Broad-phase hits of the ball: every bound whose AABB comes within ``radius`` of ``q``.

@@ -21,6 +21,8 @@ from ordito.kernels.halfedge import halfedge_next, halfedge_prev
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import face_normals_and_area
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def crease_flags(

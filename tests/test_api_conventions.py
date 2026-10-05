@@ -465,6 +465,29 @@ def test_generic_kernels_register_their_overloads() -> None:
     _fail("generic kernel(s) with no registered overload:", sorted(unregistered))
 
 
+def test_only_the_taped_kernel_module_compiles_backward_passes() -> None:
+    """
+    Every ``ordito.kernels`` module but ``metrics`` sets ``enable_backward`` to ``False``.
+
+    ``.claude/CLAUDE.md`` section 2.6. Only the Chamfer losses in ``kernels/metrics.py`` are
+    recorded on a ``wp.Tape``, yet Warp's default compiles an adjoint for every kernel, and the
+    adjoints dominate the build: a cold compile of every kernel module took 2.4x as long with them
+    (``energies`` alone 7.5x). Nothing fails when a module forgets the option -- it only costs
+    compile time -- so it needs a check. ``metrics`` must keep it: a taped kernel without an
+    adjoint silently records no gradient.
+    """
+    backward = [
+        module_name
+        for module_name in _ordito_kernel_modules()
+        if wp.get_module(module_name).options.get("enable_backward", wp.config.enable_backward)
+    ]
+    assert "ordito.kernels.metrics" in backward
+    _fail(
+        "kernel module(s) compiling backward passes nothing tapes:",
+        sorted(name for name in backward if name != "ordito.kernels.metrics"),
+    )
+
+
 def _ordito_kernel_modules() -> list[str]:
     """
     Import every ``ordito.kernels`` sub-module and return the Warp module names they registered.

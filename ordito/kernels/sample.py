@@ -5,6 +5,8 @@ import warp as wp
 from ordito.kernels.array import scanned_count
 from ordito.kernels.triangles import face_vertices
 
+wp.set_module_options({"enable_backward": False})
+
 # Golden angle in radians: pi * (3 - sqrt(5)) ~ 2.399963. Successive multiples of this
 # angle place points on the Fibonacci lattice, the most uniform simple spiral on a sphere.
 #

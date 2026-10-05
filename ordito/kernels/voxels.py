@@ -35,6 +35,8 @@ from ordito.kernels.grouping import hash_slot_words3, next_slot
 from ordito.kernels.predicates import triangle_aabb, triangle_aabb_overlap
 from ordito.kernels.triangles import face_vertices, row_triple, write_row_triple
 
+wp.set_module_options({"enable_backward": False})
+
 # ---------------------------------------------------------------------------------------------
 # Voxelization
 # ---------------------------------------------------------------------------------------------

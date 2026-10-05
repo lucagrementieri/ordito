@@ -334,13 +334,10 @@ def contains_points(
         wp.map(kernel_array.less, signed, wp.float32(0.0), out=inside)
         ```
 
-        That mode is deliberately **not** offered here. It needs a ``wp.Mesh`` built with
-        ``support_winding_number=True``, and Warp neither records that flag on the mesh object nor
-        errors when it is missing — it silently falls back to ray parity. Since this function takes
-        a caller-supplied ``wp.Mesh``, ordito cannot verify the flag, so the option would be able
-        to quietly return the parity answer.
-        [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] builds its own mesh
-        and therefore can guarantee it.
+        That mode needs a ``wp.Mesh`` built with ``support_winding_number=True``; without the flag
+        Warp's winding query silently falls back to ray parity.
+        [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh] builds such a mesh
+        itself, or accepts one passed as ``mesh=`` after checking the flag.
 
     Parameters
     ----------

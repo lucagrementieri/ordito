@@ -11,6 +11,8 @@ from ordito.kernels.triangles import (
     face_vertices_vec3d,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def mesh_signed_volume(

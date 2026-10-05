@@ -9,6 +9,8 @@ from ordito.kernels.triangles import (
     triangle_cross,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def max_corner_inverse_edge_length_sq(

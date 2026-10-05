@@ -5,6 +5,8 @@ import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
 
+wp.set_module_options({"enable_backward": False})
+
 # Slot table for the **device-side round loop**: one zero-initialized ``wp.array[wp.int32]`` that a
 # ``dim=1`` kernel updates at the end of each round, so ``wp.capture_while`` can drive the rounds
 # with no host readback. Slot 0 counts rounds -- read against a cap, which is what bounds a loop

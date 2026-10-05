@@ -7,6 +7,8 @@ from ordito.kernels.array import RegisterBlockedTable, atomic_min_packed_box, sc
 from ordito.kernels.predicates import TWO_PI_F64, is_in_aabb, is_in_obb
 from ordito.kernels.reduce import block_argmin
 
+wp.set_module_options({"enable_backward": False})
+
 # Super-Fibonacci spiral constants [Alexa 2022]: the two irrational strides whose phase pair
 # equidistributes over SO(3). Held as reciprocals, and multiplied rather than divided by, so the
 # candidate set is bit-comparable with ``igl::super_fibonacci``'s. The full turn they scale is

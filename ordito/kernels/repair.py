@@ -31,6 +31,8 @@ from ordito.kernels.triangles import (
     write_corner_triple,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def mark_referenced(faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:

@@ -7,6 +7,8 @@ from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import vector_angle
 from ordito.kernels.triangles import corner_triple
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def write_face_edge_keys(

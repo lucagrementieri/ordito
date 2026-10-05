@@ -31,6 +31,8 @@ from ordito.kernels.reduce import (
     commit_block_total,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def segment_displacement(polyline: wp.array[wp.vec3], i: wp.int32) -> wp.vec3:

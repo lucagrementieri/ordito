@@ -7,6 +7,8 @@ from ordito.kernels.predicates import project_out_normal, unit_tangent, world_to
 from ordito.kernels.tangent_space import corner_angle
 from ordito.kernels.triangles import face_normal, local_corner
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def exit_edge(

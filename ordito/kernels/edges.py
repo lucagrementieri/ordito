@@ -5,6 +5,8 @@ from ordito.kernels.array import sorted_run_start, unpack_edge_key
 from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.predicates import segment_aabb, side_lengths
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def _write_edge(

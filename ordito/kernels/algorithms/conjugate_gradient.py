@@ -38,6 +38,8 @@ from ordito.kernels.array import LOOP_CONDITION, LOOP_ROUND, OverloadTable
 from ordito.kernels.linalg import jacobi_row
 from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_max, block_sum
 
+wp.set_module_options({"enable_backward": False})
+
 # Lanes per block for both stages of the conjugate-gradient dot product. The partial stage gets one
 # block per ``CG_TILE`` entries *of each column*, which is what makes its grid grow with the system
 # instead of its serial depth; the finalize stage folds that column's partials with one more block.

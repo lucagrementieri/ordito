@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import math
 import warnings
-from typing import Literal
+from typing import Literal, cast
 
 import igl
 import numpy as np
@@ -173,6 +173,39 @@ def test_delaunay_contains_the_pyvista_triangulation(device: str):
     assert faces_pv <= faces_od
     # The excess is hull slivers only: a few triangles, not a different triangulation.
     assert len(faces_od - faces_pv) < 0.05 * len(faces_od)
+
+
+@pytest.mark.parametrize("n_points", [200, 20_000])
+def test_delaunay_matches_warp_edge_flip_from_the_same_seed(device: str, n_points: int):
+    """
+    Class A: the identical face set as ``warp.geometry.delaunay_edge_flip`` run on the same seed.
+
+    Both sides flip the lexicographic seed triangulation to Delaunay, so this pins ordito's flip
+    loop (its claims, its in-circle predicate, its incremental adjacency) against an independent
+    implementation of the same phase, face for face, at a size Qhull's edge-set comparison above
+    does not reach. The seed itself is ordito's and is covered by the scipy comparison; random
+    points in general position have one Delaunay triangulation, so the shared seed cannot make
+    the comparison agree by construction.
+    """
+    import warp.geometry
+
+    rng = np.random.default_rng(n_points)
+    points_np = rng.random((n_points, 2)).astype(np.float32)
+    points_wp = points_to_warp_uv(points_np, device)
+
+    faces_od = od.reconstruction.delaunay_triangulation(points_wp).numpy().reshape(-1, 3)
+    seed_np = od.reconstruction._lexicographic_triangulation(points_wp)  # pyright: ignore[reportPrivateUsage]
+    faces_warp_wp = wp.array(np.asarray(seed_np).reshape(-1, 3), dtype=wp.int32, device=device)
+    # Warp annotates the faces ``wp.array2d``, a static helper no runtime array is typed as.
+    flips_wp = warp.geometry.delaunay_edge_flip(
+        points_wp, cast("wp.array2d[wp.int32]", faces_warp_wp)
+    )
+
+    assert int(flips_wp.numpy()[0]) > 0, "the reference had a non-Delaunay seed to repair"
+    assert np.array_equal(
+        lexsort_rows(np.sort(faces_od, axis=1)),
+        lexsort_rows(np.sort(faces_warp_wp.numpy(), axis=1)),
+    )
 
 
 def test_delaunay_no_violations(device: str):

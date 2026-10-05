@@ -7,6 +7,8 @@ from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import doublearea_from_lengths, squared_edge_lengths
 from ordito.kernels.triangles import face_vertices, row_triple
 
+wp.set_module_options({"enable_backward": False})
+
 # ``cot_entries_from_l2`` and ``cot_entries_from_edge_lengths`` stay here rather than joining
 # ``squared_edge_lengths`` / ``doublearea_from_lengths`` in ``kernels/predicates.py``: a cotangent
 # weight is not a general triangle quantity, it is this operator's own entry, and the zero-area

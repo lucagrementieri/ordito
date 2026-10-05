@@ -16,6 +16,8 @@ from ordito.kernels.predicates import point_plane_dot, triangles_intersect
 from ordito.kernels.proximity import mesh_aabb_collect
 from ordito.kernels.remesh import write_split_children
 
+wp.set_module_options({"enable_backward": False})
+
 SLICE_SIGN_INSIDE = wp.constant(wp.int32(-1))
 SLICE_SIGN_OUTSIDE = wp.constant(wp.int32(1))
 SLICE_SIGN_ON_PLANE = wp.constant(wp.int32(0))

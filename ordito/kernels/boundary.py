@@ -11,6 +11,8 @@ from ordito.kernels.array import (
 from ordito.kernels.grouping import sorted_run_of_length
 from ordito.kernels.halfedge import halfedge_endpoints, next_boundary_halfedge
 
+wp.set_module_options({"enable_backward": False})
+
 # Every boundary query here is one radix sort of the halfedges' undirected edge keys, carrying each
 # halfedge's index as the payload: a boundary edge is then a run of exactly one key, and its
 # payload names the halfedge -- which is row ``h`` of ``edges.faces_to_edges``, so the edge's

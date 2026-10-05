@@ -39,7 +39,7 @@ import math
 from typing import Literal, cast
 
 import warp as wp
-from warp.geometry import IsoSurfaceMarchingCubes
+from warp.geometry import IsoSurfaceMarchingCubes, sparse_marching_cubes
 
 import ordito as od
 import ordito.typing as odt
@@ -74,6 +74,15 @@ _MIN_AUTO_RESOLUTION = 64
 # that puts a lattice cell strictly inside the offset band, which is what marching cubes needs to
 # find the level set at all.
 _SAMPLES_PER_DISTANCE = 3
+
+# Lattice nodes from which an offset of a closed, consistently wound mesh extracts its level set
+# sparsely -- a Lipschitz octree brackets the surface and the distance is queried only at the
+# corners of the cells it keeps -- instead of sampling every node. See ``offset_mesh``'s Notes for
+# why the input has to be closed. Measured on CUDA against the dense lattice: 0.84-0.93x on
+# ``dragon`` at 0.6-0.7 M nodes, 1.95x at 2.4 M and 4.5x at 9 M, 1.84x on ``happy_buddha`` at the
+# benchmark's finest cell, 5.7-11.8x on a 20 k-face sphere at 10-37 M nodes. The closedness test it
+# pays on an open input is two key sorts, 0.98x at worst (``lucy``, 28 M faces).
+_SPARSE_OFFSET_FROM_NODES = 1 << 21
 
 
 def marching_cubes(
@@ -236,6 +245,18 @@ def offset_mesh(
 
     Accuracy is the lattice's, improved by marching cubes' linear interpolation across a cell.
 
+    On a large lattice a closed, consistently wound input is not sampled on every node: an octree
+    over the lattice discards every cell whose centre is farther from the level set than the cell
+    is wide -- sound because a signed distance changes no faster than the distance travelled --
+    and the distance is evaluated only at the corners of the cells left, so the cost follows the
+    offset surface's area rather than the lattice's volume. The surface is the dense lattice's, up
+    to the order of its vertices and faces -- except where a lattice node's distance rounds onto
+    the offset level itself, which the two place one rounding apart and so can triangulate
+    differently, equally validly. An input with a boundary keeps the dense lattice: there
+    the sign of its distance can jump away from the surface, across the region a hole spans, and
+    such a field is not bounded by the distance travelled, so the octree could discard cells the
+    dense extraction keeps.
+
     See Also
     --------
     [`thicken_mesh`][ordito.levelset.thicken_mesh]
@@ -273,10 +294,46 @@ def offset_mesh(
     # field itself wants so that the surface is enclosed.
     pad = 2 + (math.ceil(distance / spacing) if distance > 0.0 else 0)
 
+    if bounds is None:
+        bounds = od.bounds.aabb(vertices)
+    shape, box = od.proximity.signed_distance_lattice(vertices, spacing, bounds=bounds, pad=pad)
+    if math.prod(shape) >= _SPARSE_OFFSET_FROM_NODES and _is_closed_and_consistent(vertices, faces):
+        mesh = wp.Mesh(
+            points=vertices, indices=faces, support_winding_number=sign_mode == "winding"
+        )
+
+        def signed_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]:
+            return od.proximity.signed_distance_on_mesh(
+                vertices, faces, points, sign_mode=sign_mode, mesh=mesh
+            )
+
+        lower, upper = box
+        # Typed as a union with the ``return_stats=True`` triple, which is not asked for here.
+        return cast(
+            "tuple[wp.array[wp.vec3], wp.array[wp.int32]]",
+            sparse_marching_cubes(
+                signed_distance,
+                *shape,
+                lower=lower,
+                upper=upper,
+                threshold=distance,
+                device=vertices.device,
+            ),
+        )
+
     field, box = od.proximity.signed_distance_grid(
         vertices, faces, spacing, bounds=bounds, pad=pad, sign_mode=sign_mode
     )
     return od.levelset.marching_cubes(field, distance, bounds=box)
+
+
+def _is_closed_and_consistent(vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]) -> bool:
+    """Whether every edge has exactly two faces that traverse it in opposite directions."""
+    # Winding first: it is the cheaper of the two sorts, and an inconsistent input stops there.
+    n_vertices = vertices.size
+    return od.validation.is_winding_consistent(
+        faces, n_vertices=n_vertices
+    ) and od.validation.is_edge_manifold(faces, allow_boundary_edges=False, n_vertices=n_vertices)
 
 
 def thicken_mesh(

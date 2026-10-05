@@ -6,6 +6,8 @@ from ordito.kernels.array import OverloadTable, trilinear_cell, trilinear_corner
 from ordito.kernels.neighbors import in_ball
 from ordito.kernels.triangles import face_vertices, point_barycentric
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def average_onto_faces(

@@ -58,6 +58,9 @@ from conftest import BenchCase, BenchLibrary, skip_larger_than
 # the cell. The pair is a slope check: 1/64 to 1/128 is 8x the samples, and an offset of four cells
 # is wide enough that the padding (``ceil(distance / cell) + 2``) is a real part of the lattice.
 _CELL_DIVISORS = [64, 128]
+# ``offset_mesh`` alone adds a third point: past a couple of million lattice nodes a closed input
+# takes the sparse extraction, which no coarser point reaches.
+_OFFSET_CELL_DIVISORS = [*_CELL_DIVISORS, 256]
 _OFFSET_CELLS = 4.0
 
 
@@ -71,7 +74,7 @@ def _cell_and_offset(bench_case: BenchCase, divisor: int) -> tuple[float, float]
 
 @pytest.mark.benchmark(group="offset_mesh")
 @pytest.mark.benchlibs("ordito", "meshlib", "pymeshlab")
-@pytest.mark.parametrize("divisor", _CELL_DIVISORS)
+@pytest.mark.parametrize("divisor", _OFFSET_CELL_DIVISORS)
 def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     """
     Outward level-set offset at a matched cell width: field sampling plus one marching-cubes pass.
@@ -89,7 +92,16 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     magnitude and two orders behind respectively.
 
     Read meshlib's *median*, not its mean: its OpenVDB band build spreads sevenfold here.
+
+    The third divisor is ordito's alone. At 1/256 of the diagonal the lattice passes the couple of
+    million nodes from which a **closed** input skips the dense field -- an octree brackets the
+    offset surface and only the cells near it are queried -- so ``happy_buddha``, the one closed
+    scan mesh, falls well below the open meshes' cubic growth there, while the open ones keep the
+    dense lattice and pay only the closedness test. The references' rows at that point would add
+    minutes for no new reading.
     """
+    if divisor not in _CELL_DIVISORS and bench_case.kind != "ordito":
+        pytest.skip("the finest cell width is an ordito-only point on the axis")
     cell, distance = _cell_and_offset(bench_case, divisor)
 
     if bench_case.kind == "meshlib":

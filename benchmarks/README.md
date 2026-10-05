@@ -375,10 +375,10 @@ the `Trimesh` case: `warp_mesh` is a `_CachedProperty`, so the second query onwa
 It is *not* a way to make one large query faster — there the BVH build has already vanished into the
 traversal.
 
-`signed_distance_on_mesh(sign_mode="winding")` refuses a supplied mesh rather than accepting one:
-it needs `wp.Mesh(support_winding_number=True)` and `wp.Mesh` exposes no way to read that flag back,
-so an unflagged mesh would silently degrade to ray parity. `intersection.mesh_with_mesh` has no such
-keyword either, for a different reason — it picks the *smaller* of its two meshes as the BVH target
+`signed_distance_on_mesh(sign_mode="winding")` accepts a supplied mesh only if it was built with
+`wp.Mesh(support_winding_number=True)` (Warp 1.18 exposes the flag); an unflagged mesh would
+silently degrade to ray parity, so it is refused. `intersection.mesh_with_mesh` takes no prebuilt
+mesh at all, for a different reason — it picks the *smaller* of its two meshes as the BVH target
 at runtime, so a caller cannot know which one to build.
 
 ### Measured hazards — do not re-enable these without reading the numbers

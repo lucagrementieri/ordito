@@ -6,6 +6,8 @@ from ordito.kernels.linalg import free_row
 from ordito.kernels.predicates import squared_edge_lengths
 from ordito.kernels.triangles import corner_triple, face_vertices, row_triple
 
+wp.set_module_options({"enable_backward": False})
+
 # Below this (float64) squared edge length the isometric rest-triangle flattening is treated as
 # degenerate: its rest edges are zeroed so the ARAP local step contributes nothing for that face.
 EPSILON_ARAP_EDGE_SQ = wp.constant(wp.float64(1.0e-20))

@@ -1,5 +1,7 @@
 import warp as wp
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def shell_vertex(

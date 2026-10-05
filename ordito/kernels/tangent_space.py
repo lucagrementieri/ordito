@@ -5,6 +5,8 @@ from ordito.kernels.halfedge import halfedge_destination
 from ordito.kernels.predicates import unit_tangent
 from ordito.kernels.triangles import face_normals_and_area
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def corner_angle(face_angles: wp.array2d[wp.float32], h: wp.int32) -> wp.float32:

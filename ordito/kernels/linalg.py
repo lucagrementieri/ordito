@@ -33,6 +33,8 @@ from warp._src.fem.linalg import householder_qr_decomposition, solve_triangular
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def solve_normal_equations(matrix: Any, rhs: Any) -> tuple[Any, wp.bool]:

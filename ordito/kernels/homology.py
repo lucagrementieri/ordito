@@ -73,6 +73,8 @@ from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_r
 from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND
 from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
 
+wp.set_module_options({"enable_backward": False})
+
 # One past the largest edge index any proposal can hold, so ``wp.atomic_min`` starts empty. The
 # candidate count is bounded by the unique-edge count, which is well inside int32.
 FOREST_NO_PROPOSAL = wp.constant(wp.int32(INT32_MAX))

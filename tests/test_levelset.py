@@ -480,6 +480,78 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
     assert empty_faces_wp.size == 0
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "sparse_expected"),
+    [
+        ("icosphere", True),
+        ("cave_cube", True),
+        ("boy_surface", False),
+        ("hemisphere", False),
+        ("half_torus", False),
+    ],
+)
+@pytest.mark.parametrize("distance", [0.08, -0.04])
+def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    sparse_expected: bool,
+    distance: float,
+) -> None:
+    """
+    Ordito against ordito: the sparse extraction is the dense lattice's surface, and only it runs.
+
+    ``test_offset_mesh_lands_at_the_requested_distance`` and the two library comparisons carry the
+    oracle on the dense path; this pins the sparse path to it by lowering the node gate to zero
+    (every fixture here is far below the shipped one). On a closed, consistently wound input the
+    two must agree vertex for vertex up to the order of the buffers -- matched by nearest neighbour
+    with a bijection check -- and face for face with the same winding. On an open or non-orientable
+    input the gate must keep the dense lattice, whose winding-signed field jumps away from the
+    surface: the sparse extraction measured a fifth of a hemisphere's offset faces missing there.
+
+    ``cave_cube`` is turned by a generic rotation first. Axis-aligned, its offset level runs
+    exactly through lattice nodes, and a node whose distance rounds onto the level lands on
+    different sides in the two extractions (they place the same node one rounding apart), which
+    picks different, equally valid triangulations there -- a tie, not the defect under test.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    if mesh_name == "cave_cube":
+        rotation_np = np.asarray(tm.transformations.rotation_matrix(0.3, [1.0, 2.0, 3.0]))[:3, :3]
+        vertices_wp = points_to_warp(np.asarray(mesh_tm.vertices) @ rotation_np.T, mesh_wp.device)
+    # A spacing of its own, coarser than the derived one: the open arms run the dense lattice twice.
+    voxel_size = float(mesh_tm.scale) / 48.0
+    dense_vertices_wp, dense_faces_wp = od.levelset.offset_mesh(
+        vertices_wp, faces_wp, distance, voxel_size
+    )
+
+    calls: list[int] = []
+    sparse = od.levelset.sparse_marching_cubes
+
+    def counted(*args: object, **kwargs: object) -> object:
+        calls.append(1)
+        return sparse(*args, **kwargs)  # pyright: ignore[reportArgumentType]
+
+    monkeypatch.setattr(od.levelset, "_SPARSE_OFFSET_FROM_NODES", 0)
+    monkeypatch.setattr(od.levelset, "sparse_marching_cubes", counted)
+    sparse_vertices_wp, sparse_faces_wp = od.levelset.offset_mesh(
+        vertices_wp, faces_wp, distance, voxel_size
+    )
+    assert len(calls) == int(sparse_expected)
+
+    assert dense_vertices_wp.size > 100, "the offset has a surface to compare"
+    assert sparse_vertices_wp.size == dense_vertices_wp.size
+    gap_np, to_dense_np = map(
+        np.asarray, cKDTree(dense_vertices_wp.numpy()).query(sparse_vertices_wp.numpy())
+    )
+    assert gap_np.max() < 1e-5 * float(mesh_tm.scale)
+    assert np.unique(to_dense_np).shape[0] == to_dense_np.shape[0]
+    assert_unordered_rows_equal(
+        canonical_winding(to_dense_np[sparse_faces_wp.numpy().reshape(-1, 3)]),
+        canonical_winding(dense_faces_wp.numpy().reshape(-1, 3)),
+    )
+
+
 def test_offset_mesh_guards(device: str, icosphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """Not a library comparison: the three documented value guards."""
     mesh_tm, _ = icosphere

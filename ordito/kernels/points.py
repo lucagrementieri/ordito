@@ -22,6 +22,8 @@ from ordito.kernels.reduce import (
     outer_sum_chunk,
 )
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def point_plane_distance(

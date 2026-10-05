@@ -9,6 +9,8 @@ from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import corner_triple
 from ordito.kernels.vertices import normalized_accumulated_row
 
+wp.set_module_options({"enable_backward": False})
+
 # Fixed-size float64 types for the 6-coefficient quadric fit in ``relax_approx``. The rest of the
 # kernel runs in float32; the least-squares solve is float64 for conditioning, and it runs through
 # ``linalg.solve_normal_equations``, which is rank-generic -- ``kernels/curvature.py``'s 5x5 quadric

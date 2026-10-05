@@ -23,6 +23,12 @@ Usage
 ``uv run python -m tests.devices --slow-cpu``
     Same, but the CPU pass runs ``--device=both``, which in a CUDA-hidden process means "all of CPU,
     skip nothing" -- the ``slow_cpu`` Poisson tests included.
+``uv run python -m tests.devices --cpu-blocks``
+    Adds a third pass: the CPU pass again with ``--cpu-blocks``, so every ``launch_tiled`` kernel
+    runs all its lanes on the CPU device and the tiled reductions take their CUDA code path there.
+    That turns the deterministic CPU device into an oracle for the CUDA-only tile code, which the
+    ordinary CPU pass, running one lane per block, never executes. Opt-in: a CPU block costs a fixed
+    price per launch far above the one-lane form.
 ``uv run python -m tests.devices -- -x -k grouping``
     Everything after ``--`` is forwarded to both pytest invocations.
 
@@ -61,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
         help="run the slow_cpu tests in the CPU pass too (uses --device=both there)",
     )
     parser.add_argument(
+        "--cpu-blocks",
+        action="store_true",
+        help="add a CPU pass with --cpu-blocks (every lane of a CPU block runs)",
+    )
+    parser.add_argument(
         "pytest_args", nargs="*", help="extra arguments forwarded to both pytest passes"
     )
     args = parser.parse_args(argv)
@@ -73,14 +84,17 @@ def main(argv: list[str] | None = None) -> int:
             "cpu pass", "both" if args.slow_cpu else "cpu", hide_cuda=True, extra=args.pytest_args
         ),
     ]
+    if args.cpu_blocks:
+        cpu_blocks = ["--cpu-blocks", *args.pytest_args]
+        results.append(_run("cpu-blocks pass", "cpu", hide_cuda=True, extra=cpu_blocks))
 
     print("\n=== summary")
     for label, returncode, seconds in results:
         print(
-            f"    {label:<10} {'ok' if returncode == 0 else f'FAILED ({returncode})'}  "
+            f"    {label:<15} {'ok' if returncode == 0 else f'FAILED ({returncode})'}  "
             f"{seconds:7.1f} s"
         )
-    print(f"    {'total':<10}    {sum(seconds for _, _, seconds in results):10.1f} s")
+    print(f"    {'total':<15}    {sum(seconds for _, _, seconds in results):10.1f} s")
     return max(returncode for _, returncode, _ in results)
 
 

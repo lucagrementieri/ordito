@@ -5,6 +5,8 @@ import warp as wp
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import sorted_run_start
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def offset_packed_faces(

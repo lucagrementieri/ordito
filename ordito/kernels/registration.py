@@ -15,6 +15,8 @@ from ordito.kernels.reduce import (
 )
 from ordito.kernels.transform import transform_point_mat44
 
+wp.set_module_options({"enable_backward": False})
+
 # ---------------------------------------------------------------------------
 # Packed Procrustes accumulator
 #

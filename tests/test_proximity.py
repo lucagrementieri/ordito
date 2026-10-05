@@ -1459,30 +1459,47 @@ def test_supplied_mesh_gives_the_same_answer(
     )
 
 
-def test_signed_distance_on_mesh_refuses_a_supplied_mesh_in_winding_mode(
-    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+def test_signed_distance_on_mesh_winding_accepts_only_a_flagged_mesh(
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    The winding mode needs ``support_winding_number=True`` and cannot check for it, so it refuses.
+    Ordito against ordito: a supplied mesh in winding mode is accepted iff it carries the flag.
 
-    ``wp.Mesh`` exposes no way to read the flag back after construction, and without the per-node
-    solid-angle expansion the winding builtin silently falls back to ray parity -- a wrong answer
-    that looks like a right one. Refusing is the only safe response, and this pins it.
+    Without ``support_winding_number=True`` the winding builtin silently falls back to ray
+    parity -- a wrong answer that looks like a right one -- so an unflagged mesh is refused. A
+    flagged one must give exactly the answer of the self-built mesh, which carries the oracle
+    (``test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number``). On the open
+    ``hemisphere`` the two signs disagree somewhere, so a mesh whose flag were ignored would fail
+    the equality rather than pass it by coincidence.
     """
-    _mesh_tm, mesh_wp = icosahedron
-    # Zeroed rather than ``wp.empty``: the positions do not matter here, but uninitialized ones
-    # made a later host norm over the answer overflow, depending on what the allocator returned.
-    points_wp = wp.zeros(4, dtype=wp.vec3, device=mesh_wp.device)
-    prebuilt_wp = wp.Mesh(points=wp.clone(mesh_wp.points), indices=wp.clone(mesh_wp.indices))
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    rng = np.random.default_rng(5)
+    lower_np, upper_np = mesh_tm.bounds
+    points_wp = points_to_warp(rng.uniform(lower_np, upper_np, size=(500, 3)), mesh_wp.device)
+    unflagged_wp = wp.Mesh(points=wp.clone(mesh_wp.points), indices=wp.clone(mesh_wp.indices))
+    flagged_wp = wp.Mesh(
+        points=wp.clone(mesh_wp.points),
+        indices=wp.clone(mesh_wp.indices),
+        support_winding_number=True,
+    )
 
     with pytest.raises(ValueError, match="support_winding_number"):
         od.proximity.signed_distance_on_mesh(
-            mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding", mesh=prebuilt_wp
+            mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding", mesh=unflagged_wp
         )
-    # ...and the same call without mesh= works, so the guard is on the combination, not the mode.
-    assert od.proximity.signed_distance_on_mesh(
+    self_built = od.proximity.signed_distance_on_mesh(
         mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding"
-    ).shape == (4,)
+    ).numpy()
+    supplied = od.proximity.signed_distance_on_mesh(
+        mesh_wp.points, mesh_wp.indices, points_wp, sign_mode="winding", mesh=flagged_wp
+    ).numpy()
+    assert np.array_equal(self_built, supplied)
+    if mesh_name == "hemisphere":
+        parity = od.proximity.signed_distance_on_mesh(
+            mesh_wp.points, mesh_wp.indices, points_wp, mesh=flagged_wp
+        ).numpy()
+        assert not np.array_equal(np.sign(parity), np.sign(supplied))
 
 
 def test_signed_distance_on_mesh_sign_direction(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1600,9 +1617,9 @@ def test_signed_distance_grid_guards_and_conventions(
     Not a library comparison: the two guards, and that ``bounds`` overrides the mesh's own box.
 
     The ``mesh=`` argument is forwarded rather than interpreted, so
-    ``signed_distance_on_mesh``'s rule about ``sign_mode="winding"`` applies here unchanged -- that
-    is asserted, because a wrapper that quietly built its own mesh would silently answer with the
-    parity sign.
+    ``signed_distance_on_mesh``'s rule about ``sign_mode="winding"`` (the mesh must carry
+    ``support_winding_number``) applies here unchanged -- that is asserted, because a wrapper that
+    quietly built its own mesh would hide an unflagged one.
     """
     mesh_tm, mesh_wp = icosphere
     vertices_wp, faces_wp = numpy_to_warp(
@@ -1613,7 +1630,7 @@ def test_signed_distance_grid_guards_and_conventions(
         od.proximity.signed_distance_grid(vertices_wp, faces_wp, 0.1, pad=-1)
     with pytest.raises(ValueError, match="at least one face"):
         od.proximity.signed_distance_grid(vertices_wp, warp_empty(0, wp.int32, device), 0.1)
-    with pytest.raises(ValueError, match="cannot use a supplied mesh"):
+    with pytest.raises(ValueError, match="support_winding_number"):
         od.proximity.signed_distance_grid(
             vertices_wp, faces_wp, 0.1, sign_mode="winding", mesh=mesh_wp
         )

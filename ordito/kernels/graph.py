@@ -2,6 +2,8 @@ import warp as wp
 
 from ordito.kernels import array as kernel_array
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def write_adjacency_pair(

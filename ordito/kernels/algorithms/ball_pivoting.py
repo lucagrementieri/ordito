@@ -76,6 +76,8 @@ from ordito.kernels.grouping import hash_find, hash_find_or_insert
 from ordito.kernels.predicates import dihedral_angle, triangle_normal
 from ordito.kernels.reduce import block_argmin
 
+wp.set_module_options({"enable_backward": False})
+
 # Per-thread neighbour scratch for the seed search (Open3D re-scans the KNN result twice).
 MAX_SEED_NEIGHBORS = 64
 # ``seed_triangles``' per-point cache: a neighbour index is the orphan the point last deferred to,

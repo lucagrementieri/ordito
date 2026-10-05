@@ -135,7 +135,7 @@ _N_BOXES = 256
 
 _queries_np_cache: dict[str, np.ndarray] = {}
 _queries_wp_cache: dict[tuple[str, str], wp.array[wp.vec3]] = {}
-_bvh_cache: dict[tuple[str, str], wp.Bvh] = {}
+_bvh_cache: dict[tuple[str, str, int], wp.Bvh] = {}
 _kdtree_cache: dict[str, KDTree] = {}
 _pcd_o3d_cache: dict[str, o3d.geometry.PointCloud] = {}
 _cloud_ml_cache: dict[str, mm.PointCloud] = {}
@@ -196,11 +196,11 @@ def _queries_ml(bench_case: BenchCase) -> mm.std_vector_Vector3_float:
     return _queries_ml_cache[bench_case.mesh_name]
 
 
-def _bvh(bench_case: BenchCase) -> wp.Bvh:
+def _bvh(bench_case: BenchCase, leaf_size: int = 4) -> wp.Bvh:
     """Prebuilt BVH over the cloud -- an *input* for the ball group, timed on its own elsewhere."""
-    key = (bench_case.mesh_name, str(bench_case.device))
+    key = (bench_case.mesh_name, str(bench_case.device), leaf_size)
     if key not in _bvh_cache:
-        _bvh_cache[key] = od.neighbors.bvh_from_points(bench_case.vertices_wp)
+        _bvh_cache[key] = od.neighbors.bvh_from_points(bench_case.vertices_wp, leaf_size)
     return _bvh_cache[key]
 
 
@@ -534,7 +534,8 @@ def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> 
     answers one query per call, so a row would price the interpreter twice over; the correctness
     comparison lives in ``tests/test_neighbors.py`` as a ``benchmarked=False`` claim. Read this
     group against ``query_nearest_bvh_k1`` instead, which is the same traversal with the weight
-    term dropped.
+    term dropped; like that group, the row builds its tree inside the call, at the leaf size the
+    call picks from the point count.
 
     A wider weight spread costs several times as much, so the axis is doing what it was chosen for.
     Read each mesh's row in isolation: a row that follows another case in the same process can
@@ -556,12 +557,9 @@ def test_query_weighted_nearest(bench_case: BenchCase, weight_spread: float) -> 
         dtype=wp.float32,
         device=bench_case.device,
     )
-    bvh = _bvh(bench_case)
     max_weight = float(weight_spread * bench_case.mean_edge)
     indices, distances = bench_case.run(
-        lambda: od.neighbors.query_weighted_nearest(
-            points, weights, queries, max_weight=max_weight, accelerator=bvh
-        )
+        lambda: od.neighbors.query_weighted_nearest(points, weights, queries, max_weight=max_weight)
     )
     assert indices.shape == (queries.size,)
     assert distances.shape == (queries.size,)
@@ -655,7 +653,8 @@ def test_query_ball_bvh(bench_case: BenchCase, radius_scale: float) -> None:
     radius = radius_scale * bench_case.mean_edge
     if bench_case.kind == "ordito":
         points, queries = bench_case.vertices_wp, _queries_wp(bench_case)
-        bvh = _bvh(bench_case)
+        # One point a leaf: the tree the ball queries build when they build their own.
+        bvh = _bvh(bench_case, leaf_size=1)
         neighbors, _distances, offsets = bench_case.run(
             lambda: od.neighbors.query_ball_with_offsets(points, queries, radius, accelerator=bvh)
         )

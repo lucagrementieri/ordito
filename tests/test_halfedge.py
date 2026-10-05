@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -44,6 +44,42 @@ def test_halfedge_twins_are_a_symmetric_pairing(
         np.sort(halfedge_endpoints_tm[interior], axis=1),
         np.sort(halfedge_endpoints_tm[twins[interior]], axis=1),
     )
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+def test_halfedge_twins_matches_warp_tri_tri_adjacency(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Class B: the twins are ``warp.geometry.tri_tri_adjacency``'s neighbours after a named transform.
+
+    Warp reports, per face and local vertex ``j``, the face across the edge *opposite* ``j``;
+    halfedge ``3 * f + k`` runs from corner ``k`` to ``k + 1``, so it is the edge opposite corner
+    ``(k + 2) % 3`` and its twin's face is ``twin // 3``. The two agree on every edge-manifold,
+    consistently wound input, which every fixture here is. They part where ordito's precondition
+    bites: Warp needs no consistent winding and pairs an edge whose two faces are wound against
+    each other, which ``halfedge_twins`` rejects.
+    """
+    import warp.geometry
+
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    n_vertices = len(mesh_tm.vertices)
+    # Warp annotates the faces ``wp.array2d``, a static helper no runtime array is typed as.
+    faces_2d_wp = cast(
+        "wp.array2d[wp.int32]",
+        wp.array(np.asarray(mesh_tm.faces, dtype=np.int32), dtype=wp.int32, device=mesh_wp.device),
+    )
+    neighbors_warp, _edges_warp = warp.geometry.tri_tri_adjacency(
+        faces_2d_wp, vertex_count=n_vertices
+    )
+
+    twins = od.halfedge.halfedge_twins(mesh_wp.indices, n_vertices=n_vertices).numpy()
+    neighbors_od = np.empty((len(mesh_tm.faces), 3), dtype=np.int32)
+    for k in range(3):
+        twin = twins[k::3]
+        neighbors_od[:, (k + 2) % 3] = np.where(twin >= 0, twin // 3, -1)
+
+    assert np.array_equal(neighbors_od, neighbors_warp.numpy())
 
 
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube"])

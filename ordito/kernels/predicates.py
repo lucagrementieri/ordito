@@ -35,6 +35,8 @@ from ordito.constants import (
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import cross2, declare_map_signatures, map_probe, sort3
 
+wp.set_module_options({"enable_backward": False})
+
 # Full turn in ``float64``; ``type(x)(TWO_PI_F64)`` narrows it to the caller's precision, and at
 # ``float32`` that is bit-identical to ``2 * wp.PI`` (verified on both devices, Warp 1.18).
 TWO_PI_F64 = wp.constant(wp.float64(2.0 * math.pi))

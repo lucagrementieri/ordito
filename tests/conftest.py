@@ -65,7 +65,26 @@ if hasattr(wp.config, "launch_array_access_mode"):  # warp >= 1.14
 torch.sparse.check_sparse_tensor_invariants.enable()
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Register ``--cpu-blocks``, the opt-in pass that runs every lane of a CPU block."""
+    parser.getgroup("ordito").addoption(
+        "--cpu-blocks",
+        action="store_true",
+        default=False,
+        help="set wp.config.enable_cpu_blocks, so a launch_tiled kernel runs all its lanes on the "
+        "CPU device and the tiled reductions take their CUDA code path there. A correctness oracle "
+        "for tiled kernels, not a speed setting; run it through `python -m tests.devices "
+        "--cpu-blocks`.",
+    )
+
+
 def pytest_configure(config: pytest.Config) -> None:
+    # Warp reads the flag at each launch, so setting it here -- before any test launches -- is
+    # enough. On the CPU device ``wp.launch_tiled`` otherwise runs one lane per block, which hides
+    # every kernel whose lanes partition work by anything but ``wp.block_dim()`` (CLAUDE.md
+    # section 2.2) and keeps ``_device.prefers_tiled_reduction``'s tiled half off the CPU.
+    if config.getoption("--cpu-blocks"):
+        wp.config.enable_cpu_blocks = True
     config.addinivalue_line(
         "markers",
         "parity(group, *libraries, benchmarked=..., reason=...): this test asserts ordito agrees "

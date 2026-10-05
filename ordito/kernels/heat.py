@@ -27,6 +27,8 @@ from ordito.kernels.reduce import block_chunk_1d, commit_sum_and_count
 from ordito.kernels.scatter import add_corner_triple
 from ordito.kernels.triangles import face_unit_gradient, face_vertices_vec3d
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def upper_edge_length_sum_and_count(

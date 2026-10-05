@@ -40,6 +40,8 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import block_chunk_1d, block_sum, commit_sum_and_count
 
+wp.set_module_options({"enable_backward": False})
+
 # Compile-time upper bound on the per-point fan size (neighbours kept for one center).
 # Per-thread scratch arrays are sized to this; the runtime ``max_neighbours`` must not exceed it.
 MAX_NEIGHBOURS = 64

@@ -51,6 +51,8 @@ from ordito.constants import TILE_1D
 from ordito.kernels.array import element_priority, inverse_or_one, sqrt_abs
 from ordito.kernels.reduce import block_chunk, block_sum
 
+wp.set_module_options({"enable_backward": False})
+
 # Node states for the distance-2 maximal independent set. The encoding is ordered rather than
 # arbitrary: a root must win any maximum (it vetoes every node in its two-hop ball) and an excluded
 # node must lose to every undecided one (it can no longer veto anything).

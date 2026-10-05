@@ -4,6 +4,8 @@ from ordito.kernels import array as kernel_array
 from ordito.kernels.array import OverloadTable, pack_triangle_key, sorted_run_start
 from ordito.kernels.triangles import corner_triple
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def scatter_first_occurrence(inverse: wp.array[wp.int32], out_first: wp.array[wp.int32]) -> None:

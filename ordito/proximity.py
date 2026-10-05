@@ -773,9 +773,9 @@ def signed_distance_on_mesh(
         standard choice for a once-wound closed surface.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the clone and BVH
-        build. **Only valid with ``sign_mode="parity"``**: the winding mode needs a mesh built with
-        ``support_winding_number=True``, and ``wp.Mesh`` exposes no way to read that flag back, so a
-        supplied mesh cannot be checked and is refused rather than silently degraded to parity.
+        build. With ``sign_mode="winding"`` it must have been built with
+        ``support_winding_number=True``; without that flag the winding builtin silently answers with
+        ray parity, so such a mesh is refused.
 
     Returns
     -------
@@ -785,8 +785,8 @@ def signed_distance_on_mesh(
     Raises
     ------
     ValueError
-        If ``sign_mode`` is not ``"parity"`` or ``"winding"``, or if ``mesh`` is supplied together
-        with ``sign_mode="winding"``.
+        If ``sign_mode`` is not ``"parity"`` or ``"winding"``, or if ``mesh`` is supplied with
+        ``sign_mode="winding"`` but was built without ``support_winding_number=True``.
     RuntimeError
         If ``vertices``, ``faces``, ``points`` and ``mesh`` are not all on one device.
 
@@ -807,15 +807,13 @@ def signed_distance_on_mesh(
     if n_faces == 0:
         return _launch.full(m, float("inf"), dtype=wp.float32, device=device)
 
-    if mesh is not None and sign_mode == "winding":
-        # wp.Mesh exposes no way to read back support_winding_number, so a supplied mesh cannot be
-        # checked for the per-node solid-angle expansion the winding builtin needs -- and without it
-        # the builtin silently degrades to ray parity. Refusing is the only safe answer; the parity
-        # mode has no such requirement and accepts any mesh.
+    if mesh is not None and sign_mode == "winding" and not mesh.support_winding_number:
+        # Without the per-node solid-angle expansion the winding builtin silently degrades to ray
+        # parity, so an unflagged mesh is refused; the parity mode accepts any mesh.
         raise ValueError(
-            "sign_mode='winding' cannot use a supplied mesh: it needs "
-            "wp.Mesh(support_winding_number=True), which cannot be verified after construction. "
-            "Omit mesh=, or use sign_mode='parity'."
+            "sign_mode='winding' needs a mesh built with wp.Mesh(support_winding_number=True); "
+            "the supplied mesh was not. Rebuild it with the flag, omit mesh=, or use "
+            "sign_mode='parity'."
         )
     if mesh is None:
         require_nonempty_mesh(faces, "signed_distance_on_mesh")
@@ -907,9 +905,8 @@ def signed_distance_grid(
         rims.
     mesh
         A ``wp.Mesh`` already built over ``vertices`` and ``faces``, to spare the build. Forwarded
-        as-is, so ``signed_distance_on_mesh``'s rule applies unchanged: it is usable with
-        ``sign_mode="parity"`` only, since the winding sign needs a mesh built with
-        ``support_winding_number=True`` and that cannot be verified after construction.
+        as-is, so ``signed_distance_on_mesh``'s rule applies unchanged: with ``sign_mode="winding"``
+        it must have been built with ``support_winding_number=True``.
 
     Returns
     -------
@@ -924,7 +921,8 @@ def signed_distance_grid(
     Raises
     ------
     ValueError
-        If ``voxel_size`` is not positive, ``pad`` is negative, or ``faces`` is empty.
+        If ``voxel_size`` is not positive, ``pad`` is negative, ``faces`` is empty, or ``mesh`` is
+        supplied with ``sign_mode="winding"`` but was built without ``support_winding_number=True``.
     RuntimeError
         If ``vertices``, ``faces`` and ``mesh`` are not all on one device.
 
@@ -959,11 +957,53 @@ def signed_distance_grid(
         The occupancy lattice, when a binary inside test is all that is needed.
     """
     require_same_device(vertices=vertices, faces=faces, mesh=mesh)
-    if pad < 0:
-        raise ValueError("pad must be non-negative")
     if faces.size == 0:
         raise ValueError("signed_distance_grid needs at least one face")
-    device = vertices.device
+    shape, box = signed_distance_lattice(vertices, voxel_size, bounds=bounds, pad=pad)
+    samples = od.voxels.grid_points(shape, bounds=box, device=vertices.device)
+    distances = signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode, mesh=mesh)
+    return odt.as_array3d(distances.reshape(shape), wp.float32), box
+
+
+def signed_distance_lattice(
+    vertices: wp.array[wp.vec3],
+    voxel_size: float | None = None,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    pad: int = 2,
+) -> tuple[tuple[int, int, int], tuple[wp.vec3, wp.vec3]]:
+    """
+    Shape and bounds of the corner lattice a signed-distance grid samples, without sampling it.
+
+    The lattice is exactly [`signed_distance_grid`][ordito.proximity.signed_distance_grid]'s,
+    for a caller that evaluates the field somewhere other than on every node -- a sparse level-set
+    extraction that queries only the cells near the surface, as
+    [`ordito.levelset.offset_mesh`][ordito.levelset.offset_mesh] does on a large lattice -- and
+    must land on exactly the nodes the dense field would have.
+
+    Parameters
+    ----------
+    vertices
+        ``(n_vertices,)`` mesh vertex positions; only their box is read, and only when ``bounds``
+        is ``None`` or ``voxel_size`` is.
+    voxel_size, bounds, pad
+        As in [`signed_distance_grid`][ordito.proximity.signed_distance_grid].
+
+    Returns
+    -------
+    shape : tuple[int, int, int]
+        ``(nx, ny, nz)`` samples per axis, each at least 2.
+    bounds : tuple[wp.vec3, wp.vec3]
+        The ``(lower, upper)`` corners the lattice spans, padded and snapped so the spacing is
+        exactly ``voxel_size`` on every axis.
+
+    Raises
+    ------
+    ValueError
+        If ``voxel_size`` is not positive or ``pad`` is negative.
+    """
+    if pad < 0:
+        raise ValueError("pad must be non-negative")
     spacing, _origin = od.voxels.resolve_voxel_grid(
         vertices, voxel_size, None, caller="signed_distance_grid"
     )
@@ -980,10 +1020,7 @@ def signed_distance_grid(
     snapped_upper = wp.vec3(
         *(float(lower[axis]) + (shape[axis] - 1) * spacing for axis in range(3))
     )
-
-    samples = od.voxels.grid_points(shape, bounds=(lower, snapped_upper), device=device)
-    distances = signed_distance_on_mesh(vertices, faces, samples, sign_mode=sign_mode, mesh=mesh)
-    return odt.as_array3d(distances.reshape(shape), wp.float32), (lower, snapped_upper)
+    return shape, (lower, snapped_upper)
 
 
 def winding_number(

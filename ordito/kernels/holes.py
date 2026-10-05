@@ -24,6 +24,8 @@ from ordito.kernels.predicates import (
 from ordito.kernels.reduce import block_argmin, block_barrier, block_min
 from ordito.kernels.triangles import corner_triple
 
+wp.set_module_options({"enable_backward": False})
+
 # Big-but-finite penalty for a triangulation the metric rejects: lets the DP keep a bad
 # triangulation rather than break entirely, while staying below ``float`` precision limits
 # when summed.

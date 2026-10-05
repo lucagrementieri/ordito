@@ -14,6 +14,8 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.triangles import face_normals_and_area
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def atomic_add_vec3(out_sum: wp.array2d[wp.Float], row: wp.int32, v: wp.vec3) -> None:

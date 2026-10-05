@@ -16,6 +16,8 @@ from warp._src.context import builtin_functions as _warp_builtins
 from ordito.constants import INT32_MAX_CONSTANT, TILE_1D, TILE_2D, TILES_PER_BLOCK_1D
 from ordito.kernels.array import KernelTable, atomic_min_packed_box, is_close_scalar, is_close_vec3
 
+wp.set_module_options({"enable_backward": False})
+
 _tile_min = _warp_builtins["tile_min"]
 _tile_max = _warp_builtins["tile_max"]
 _tile_sum = _warp_builtins["tile_sum"]

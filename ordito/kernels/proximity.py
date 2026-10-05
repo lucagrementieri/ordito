@@ -18,6 +18,8 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.reduce import block_argmin
 
+wp.set_module_options({"enable_backward": False})
+
 # ``face_to_mesh_distance`` / ``_tiled`` publish each thread's own best distance into
 # ``global_best_sq`` so other threads can prune against it (see the wrapper's seeding comment for
 # why this needs a bound rather than a tight one). Publishing the *exact* value has the same
@@ -132,7 +134,10 @@ def closest_point_on_edges(
     # is what makes ``best <= r`` a proof
     # of exactness rather than a heuristic. The enumeration was the bounding cube until Warp 1.17
     # supplied ``wp.bvh_query_sphere``; the proof above is the same either way, and the ball is 6/pi
-    # ~ 1.91x less volume to walk. Unlike the point BVH next door this still needs its narrow phase,
+    # ~ 1.91x less volume to walk. The cube was re-timed after Warp 1.18 slowed the sphere walk: it
+    # wins only at the largest meshes (1.04-1.09x at ``happy_buddha`` / ``lucy``), ties at
+    # ``dragon`` and loses 0.76x at ``bunny_decimated``, too small and too mixed for a size gate.
+    # Unlike the point BVH next door this still needs its narrow phase,
     # because an edge's bounds are not degenerate -- a sphere may overlap the AABB of an edge whose
     # closest point lies outside it.
     tid = wp.int32(wp.tid())

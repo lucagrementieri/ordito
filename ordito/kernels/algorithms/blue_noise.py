@@ -62,6 +62,8 @@ import warp as wp
 from ordito.kernels import array as kernel_array
 from ordito.kernels.array import element_priority
 
+wp.set_module_options({"enable_backward": False})
+
 INVALID = wp.constant(wp.int32(-1))
 
 # Cells are ``r`` wide, so the ball of radius ``r`` around any point in a cell is contained in that

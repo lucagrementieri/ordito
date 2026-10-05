@@ -16,6 +16,8 @@ index-space calibration (see the dense kernels in ``ordito/kernels/reconstructio
 import warp as wp
 import warp.fem as fem
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def world_to_index(p: wp.vec3, lower: wp.vec3, scale: wp.float32) -> wp.vec3:

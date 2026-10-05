@@ -12,6 +12,8 @@ from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.intersection import candidate_pair_intersects, candidate_slot_query
 from ordito.kernels.predicates import vector_angle
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def directed_edge(

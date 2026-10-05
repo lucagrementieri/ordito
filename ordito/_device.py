@@ -51,7 +51,12 @@ def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
     correctly forms a one-element tile there. Upstream tracks closing the gap in NVIDIA/warp#1480
     (*CPU/GPU parity for all tile code*, which names ``wp.tile(lane_value)`` followed by reductions
     or scans as an affected pattern) and NVIDIA/warp#1638 (*Add efficient CPU block execution with
-    fibers*). The branch becomes removable only once CPU blocks run more than one logical thread.
+    fibers*). Warp 1.18 shipped the latter as the experimental, off-by-default
+    ``wp.config.enable_cpu_blocks``, under which a CPU block runs every lane; this function then
+    answers ``True`` on the CPU too, so the tiled variant runs there. That is correct but costs a
+    fixed price per block far above the sliced variant's, so it is what the test suite's
+    ``--cpu-blocks`` pass uses to run the CUDA code path on the deterministic CPU device, not a
+    production setting. The branch becomes removable only once CPU blocks are cheap by default.
 
     The portable form instead gives each thread a strided slice and one atomic, which is correct on
     both devices but gives up the block shuffle-reduce, costing real CUDA time once the input
@@ -69,13 +74,13 @@ def prefers_tiled_reduction(device: wp.DeviceLike) -> bool:
     Returns
     -------
     bool
-        ``True`` for a CUDA device, ``False`` for CPU.
+        ``True`` for a CUDA device, ``False`` for CPU unless ``wp.config.enable_cpu_blocks`` is set.
 
     See Also
     --------
     [`items_per_slice`][ordito._device.items_per_slice]
     """
-    return wp.get_device(device).is_cuda
+    return wp.get_device(device).is_cuda or wp.config.enable_cpu_blocks
 
 
 def run_device_loop(

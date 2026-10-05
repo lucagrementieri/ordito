@@ -11,6 +11,8 @@ from ordito.kernels.predicates import (
 from ordito.kernels.scatter import add_corner_triple, append_to_pair
 from ordito.kernels.triangles import face_vertices_vec3d
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def reciprocal_or_zero(value: wp.Float) -> wp.Float:

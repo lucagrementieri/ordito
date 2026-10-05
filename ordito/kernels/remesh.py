@@ -67,6 +67,8 @@ from ordito.kernels.triangles import (
 )
 from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cell
 
+wp.set_module_options({"enable_backward": False})
+
 # The collapse round loop's third state slot, **appended** after ``array.LOOP_ROUND`` and
 # ``LOOP_CONDITION`` so the shared two keep their numbers: the total commits as of the end of
 # the previous round, which is how ``end_collapse_round`` decides whether a round progressed.

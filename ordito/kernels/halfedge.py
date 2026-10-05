@@ -20,6 +20,8 @@ import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def halfedge_next(h: wp.int32) -> wp.int32:

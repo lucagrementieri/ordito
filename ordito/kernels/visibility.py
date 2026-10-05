@@ -6,6 +6,8 @@ from ordito.kernels.proximity import closest_point_query
 from ordito.kernels.reduce import block_sum
 from ordito.kernels.tangent_space import any_perpendicular
 
+wp.set_module_options({"enable_backward": False})
+
 # Weighting of a ray inside the bundle. Passed as a warp-uniform kernel argument so both schemes
 # share one compiled module (see AGENTS.md section 2.7 on runtime selection).
 WEIGHT_COSINE = wp.constant(wp.int32(0))  # Lambert's cosine law: the physical ambient integral

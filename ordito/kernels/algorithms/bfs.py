@@ -24,6 +24,8 @@ import warp as wp
 from ordito.kernels import grouping as kernel_grouping
 from ordito.kernels.array import update_argmax, update_argmin
 
+wp.set_module_options({"enable_backward": False})
+
 # Per-source scratch capacities (rows of the wrapper-allocated global-memory pools).
 # ``PER_SOURCE_MAX_NEIGHBORS`` caps the queue — and therefore the collected set — as before;
 # the visited hash row is power-of-two sized with a 3/4 load-factor fill bound; the extras pool

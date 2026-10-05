@@ -149,7 +149,11 @@ Not supported inside `@wp.kernel` / `@wp.func`:
   idiom exists only at Python scope, where it always floored.
 - **The floor costs a sign correction on CUDA**: `floordiv_signed` is `a / b` plus a
   remainder-sign fix-up, about 2 SASS instructions per site per entry even for a constant divisor
-  (408 vs 400 on a two-site probe). Unsigned `//` is the plain division.
+  (408 vs 400 on a two-site probe). Unsigned `//` is the plain division. **Priced tree-wide and
+  declined**: every kernel module compiled against a copy of Warp whose `floordiv_signed` truncates
+  differs by 440 `_forward` SASS instructions in 1 036 k (0.04 %), in 66 of 886 kernels; the
+  largest relative growth (`multigrid.dense_solve`, +25 %) is one `//` outside the loop of a
+  single-launch coarsest-level solve. Do not respell `//` as `/` or unsigned operands for speed.
 - **Spell integer division `//`** (check 17). `/` on two `int32`s only truncates because the
   operands are integers, so a reader must recover the types. Dividends here are non-negative
   indices, where the conventions coincide; the hazard is a negative dividend, where `//` and `/`
@@ -345,7 +349,19 @@ registration; one test file went from ~9 minutes to 1.4 s).
   lacks raises a `KeyError` naming the kernel. `kernels/reduce.py` has **no** generic kernels:
   its factories bake the dtype in.
 
-### 2.6 In-place `@wp.func` parameters (`wp.ref[T]`)
+### 2.6 Backward passes, and in-place `@wp.func` parameters (`wp.ref[T]`)
+
+**Only `ordito/kernels/metrics.py` is differentiated** (the Chamfer losses, through a caller's
+`wp.Tape`). Every other kernel module sets `wp.set_module_options({"enable_backward": False})`
+right after its imports, because Warp compiles an adjoint for every kernel by default and the
+adjoints dominate the build: a cold compile of all 55 kernel modules took 25.4 s with them and
+10.6 s without (`energies` 11.5 s -> 1.5 s: `curved_hessian_triplets`' backward is 55 k SASS
+instructions against an 8 k forward). The forward SASS is unchanged or smaller (38 of 886 kernels
+shrink, mostly `reduce`'s tile reductions). A new kernel module copies the line;
+`test_only_the_taped_kernel_module_compiles_backward_passes` fails when one does not, and fails if
+`metrics` ever sets it (a taped kernel without an adjoint silently records no gradient). A
+`@wp.func` compiles under its *calling* module's options, so `metrics`' taped kernels still get
+adjoints of the helpers they import. Generated `wp.map` modules keep Warp's default.
 
 `@wp.func` helpers may declare `wp.ref[T]` parameters to mutate caller-owned storage (locals, array
 elements, struct fields), e.g. `update_argmin` in `kernels/array.py`.
@@ -1337,6 +1353,12 @@ The `device` fixture is parametrized; `--device={auto,cpu,cuda,both}` selects fo
   a test slow on both devices gets a smaller input.
 - **A `launch_tiled` kernel's test pins `"cpu"` explicitly in a parametrize** — the fixture
   returns `cuda:0` whenever CUDA exists, leaving the CPU path unexercised (§12.2).
+- **`--cpu-blocks` runs the CUDA tile code on the CPU** (`python -m tests.devices --cpu-blocks`
+  adds it as a third pass): Warp's experimental `enable_cpu_blocks` gives a CPU block all its
+  lanes, so every `launch_tiled` kernel and tiled reduction executes its CUDA path on the
+  deterministic device (§12.2). Opt-in, for a change to a tiled kernel or to lane partitioning;
+  each CPU block costs a fixed price per launch (whole suite 329 s against the plain CPU pass's
+  119 s; green on first run, 2026-10-05).
 - **When two devices differ but neither is wrong, compare both to a common oracle**, not to each
   other (`heat_signed_distance`: the cross-device gap is 5x below either device's discretization
   error, so no guard).
@@ -2508,7 +2530,14 @@ Still true by default on **Warp 1.18**: `wp.launch_tiled(kernel, dim=[...], bloc
 executes **one thread per block** on the CPU backend; `wp.tid()`'s lane index is always 0. Warp 1.18
 adds the experimental opt-in `wp.config.enable_cpu_blocks = True` (NVIDIA/warp#1638), under which
 the CPU runs every lane and `wp.block_dim()` reports the launch's value; it is off by default and
-documented as substantially slower, so the `_sliced` siblings stay (re-pricing it is open).
+documented as substantially slower, so the `_sliced` siblings stay. Priced on a 256-block
+lane-strided sum: ~18 µs per block at 64 lanes and ~110 µs at 256 (65 k elements: 0.09 ms default,
+4.7 ms at 64 lanes, 29 ms at 256), a 1.5-340x loss, so **not a production path**. Its use is the
+test oracle: `pytest --cpu-blocks` (and `python -m tests.devices --cpu-blocks`, a third pass) sets
+it, `_device.prefers_tiled_reduction` then answers `True` on the CPU too, and every `launch_tiled`
+kernel and tiled reduction runs its CUDA code path on the deterministic CPU device. That is the
+one run that executes §2.2's partition hazard with more than one lane on a device whose float
+atomics serialize.
 
 - **The obvious probe says "fixed", and that is the trap.** `wp.tile_load` reads a whole tile out
   of an array, is lane-independent and was never affected; only `wp.tile(x)` built from *per-lane*
@@ -2548,6 +2577,12 @@ documented as substantially slower, so the `_sliced` siblings stay (re-pricing i
       may return an incomplete candidate set (upstream's half). Both ordito callers survive
       because each has a second sound bound (the global running minimum; the pivot's acceptance
       test).
+    - **Unchanged on Warp 1.18**: `native/tile_bvh.h`'s CUDA traversal is byte-identical to 1.17's
+      (the diff touches only the CPU path), and its node stack drops pushes past
+      `64 * BVH_QUERY_STACK_SIZE` the same silent way. A leaf-1 BVH cannot reach the overrun (a
+      round appends at most one primitive per lane, 32 under the 160 capacity), which is why a
+      uniform-cloud probe returns exact sets on both versions; the trigger needs multi-primitive
+      leaves, as `wp.mesh_get_bvh`'s.
 - **Warp exposes no node-by-node BVH traversal** (only `bvh_query_aabb` / `_ray` / `_sphere` /
   `bvh_get_group_root`), so a BVH-pair wavefront means writing our own hierarchy.
 - **A `wp.capture_while` body issuing several launches does not replay as one unit on both
@@ -2687,6 +2722,13 @@ Rules: §1.3, §1.5, §1.6.
 - **"Clear the kernel cache before the first run" is a no-op across an upgrade**: Warp namespaces
   the cache by version (`~/.cache/warp/1.17.0`). `wp.config.kernel_cache_dir` reads `None` until
   init.
+- **Cold compile is dominated by adjoints, not by inlining** (census 2026-10-05, Warp 1.18, every
+  kernel module loaded into an empty cache): 25.4 s with backward passes, 10.6 s without (§2.6,
+  now the tree's setting); `energies` 11.5 s and `reduce` 2.8 s were the top two, `neighbors` only
+  0.4 s because its register-row bucket kernels are factory-built on first use. Warp 1.18's
+  `@wp.func(inline=False)` was therefore not pursued: the large duplicated bodies are the bucket
+  kernels' unrolled rows, which §2.9 requires inline, and no other module's compile is near the
+  adjoint cost removed.
 - **`wp.config.verbose = True` is deprecated in Warp 1.17** (stderr noise); use
   `wp.config.log_level = wp.LOG_DEBUG`.
 - **coverage.py cannot see a kernel body** (the Python function is never called; the tracer
@@ -2781,7 +2823,9 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   runtime cost (parity stays the default). Traps: `support_winding_number=True` is required or the
   builtin **silently returns the ray-parity answer**. Through Warp 1.17 `wp.Mesh` did not retain
   the flag, so only a function that built its own mesh could guarantee it; Warp 1.18 exposes
-  `wp.Mesh.support_winding_number` (GH-1824), so a supplied mesh can be checked (§16.6 lead). Warp exposes only the thresholded
+  `wp.Mesh.support_winding_number` (GH-1824), and `signed_distance_on_mesh` / `signed_distance_grid`
+  accept a supplied mesh exactly when it reads `True` (a plain Python attribute set by the
+  constructor, so a caller who assigns it afterwards defeats the check). Warp exposes only the thresholded
   *sign*, so `proximity.winding_number` still needs a custom LBVH.
 - **`wp.bvh_query_sphere`** (Warp 1.17), in `kernels/neighbors.py` and
   `proximity.py::closest_point_on_edges`: a win where the enumeration radius is large relative to
@@ -2802,12 +2846,28 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   **k-NN's optimum grows with size and `k`** (8-16 at 8 k points, 16-32 at 0.4-1 M, 32-64 from
   4 M; up to 1.59x over leaf 4). A gate of 16 below ~100 k points, 32 to ~2 M and 64 above stays
   within 0.97x of best everywhere measured, where a fixed 16 or 32 drops to 0.85x. The leaf size
-  does not matter to the default hash-grid k-NN (within 1.03x). Re-run the backend sweep if upstream
-  fixes the sphere walk: on 1.17 it beat the grid off-surface.
+  does not matter to the default hash-grid k-NN (within 1.03x). **Adopted** (2026-10-05): the ball
+  queries default to `leaf_size=1`, `query_nearest` / `query_weighted_nearest` to `leaf_size=None`,
+  that size gate (`neighbors._NEAREST_LEAF_SIZES`; the weighted query stays within 0.92x of its best
+  leaf under it, where 4 fell to 0.73x at `lucy`); `bvh_from_points` keeps 4 for a tree shared by
+  both families. Harness against the leaf-4 defaults: `query_ball_bvh` 1.25-1.29x,
+  `query_nearest_bvh_k64` 1.23-1.34x, `_k7` 1.00-1.14x, `query_weighted_nearest` 0.97-1.16x;
+  distances identical on both devices (tied `k`-th indices may differ on CUDA, as they may anyway).
+  Re-run the backend sweep if upstream fixes the sphere walk: on 1.17 it beat the grid off-surface.
+- **The sphere walk still beats the box walk at every ball site on 1.18**, despite the regression.
+  Every `bvh_query_sphere` enumeration (ball count / collect, both k-NN row kernels, the weighted
+  query, `ball_mean_curvature`, `closest_point_on_edges`) swapped for the circumscribed cube plus
+  the exact `in_ball` test, harness A/B at the benchmark points: ball queries 1.00-1.02x at 2 mean
+  edges and 0.88-0.91x at 4, k-NN 0.69-1.00x, weighted 0.75-0.92x, `discrete_mean_curvature`
+  0.70-0.82x, `closest_point_on_edges` 0.76x at `bunny_decimated` but 1.04-1.09x at `happy_buddha`
+  / `lucy` (too mixed for a size gate). The raw-kernel coin toss (box ahead at 1-2 mean edges) does
+  not survive into the public calls. Numbers at `kernels/neighbors.py`'s ball-broad-phase comment,
+  `kernels/curvature.ball_mean_curvature` and `kernels/proximity.py`'s edge search.
 - **`wp.bvh_query_sphere` as a broad phase over *bounds***: `curvature.discrete_mean_curvature` won
   2-4x over a cube `wp.bvh_query_aabb`. **`wp.bvh_query_aabb`'s traversal costs several times
-  `wp.bvh_query_sphere`'s per candidate on the same BVH, even at equal candidate count**, so a cube
-  broad phase is the wrong query when the real predicate is a ball. **`ball_pivoting`'s pivot
+  `wp.bvh_query_sphere`'s per candidate on the same BVH, even at equal candidate count** (measured
+  on Warp 1.17; on 1.18 the per-candidate gap narrowed, and the public calls still favour the
+  sphere, above), so a cube broad phase is the wrong query when the real predicate is a ball. **`ball_pivoting`'s pivot
   search is blocked on Warp**: its tiled box walk is the win (§14.2) and Warp 1.17 has no
   `tile_bvh_query_sphere`. The exact in-loop substitute (reject `|c - mp| > 2r` before the
   prefilter: a candidate on a radius-`r` ball whose chord holds the edge midpoint is within `2r`
@@ -2816,6 +2876,20 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.mesh_get_bvh`** (Warp 1.17): `proximity.mesh_to_mesh_distance` builds one structure over
   mesh B instead of two.
 - **`wp.volume_index_to_world`**: adopted for the convention (perf-neutral).
+- **`warp.geometry.sparse_marching_cubes`** (Warp 1.18) in `levelset.offset_mesh`: a Lipschitz
+  octree brackets the level set and only the kept cells' corners are queried. Gated on lattice
+  size (`levelset._SPARSE_OFFSET_FROM_NODES = 2**21`: 0.84-0.93x on `dragon` at 0.6-0.7 M nodes,
+  1.95x at 2.4 M, 4.5x at 9 M; 5.7-11.8x on a 20 k-face sphere at 10-37 M) **and on a closed,
+  consistently wound input**. On an open or non-orientable one the winding-signed distance jumps
+  away from the surface, across the region a hole spans, so it is not 1-Lipschitz and the octree
+  drops cells the dense lattice keeps (a fifth of a hemisphere's offset faces). The closedness test
+  is two key sorts, winding first (0.98x at worst, `lucy`). Equal to the dense surface up to buffer
+  order except at a node whose distance rounds onto the level: the two extractions place a node one
+  rounding apart, so a lattice-aligned input (an axis-aligned box) triangulates such ties
+  differently; `test_offset_mesh_sparse_extraction_matches_the_dense_lattice` rotates `cave_cube`
+  for that reason. Its octree reads back one count per level. `repair.fix_self_intersections`'
+  voxel path and `reconstruction.resample_uniform` still march a dense lattice: open lead, each
+  needs the same closedness gate (a closed self-intersecting input is still Lipschitz).
 
 **Rejected on measured evidence — do not re-propose without new data:**
 
@@ -2834,6 +2908,19 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
 - **`wp.volume_voxel_count`** is a capacity (§3.7).
 - **`dense_chol` / `dense_subs` / `dense_solve`** are `hidden: True` / `doc: "WIP"` and take
   `wp.array[float32]` where the caller holds a `wp.spatial_matrix` in registers: a 2x loss (§2.9).
+- **`warp.geometry.delaunay_edge_flip`** (Warp 1.18) for `reconstruction.delaunay_triangulation`:
+  from the same lexicographic seed it is 0.37x / 0.60x / 0.88x / 1.03x / 1.10x at 2 k / 20 k /
+  100 k / 500 k / 1 M random points, **and not exact at the top**: at 1 M points it leaves two edges
+  that violate the in-circle test under exact rational arithmetic, where ordito's `float64`
+  predicate leaves none. It is a test oracle instead (Class A at 200 and 20 000 points,
+  `test_delaunay_matches_warp_edge_flip_from_the_same_seed`).
+- **`warp.geometry.tri_tri_adjacency`** (Warp 1.18) for `halfedge.halfedge_twins`: a different
+  contract (it pairs an edge whose two faces are wound against each other, which `halfedge_twins`
+  rejects; on non-manifold input the two disagree), so a test oracle on edge-manifold, consistently
+  wound fixtures (`test_halfedge_twins_matches_warp_tri_tri_adjacency`, Class B). It is faster at
+  scale (0.426 vs 0.493 ms at `dragon`, 9.7 vs 17.9 ms at `lucy`, slower below 0.1 M faces): a lead
+  for §16.11's sort, not a substitute.
+- **`warp.geometry.swept_volume_mesh`** (Warp 1.18): no ordito counterpart and no caller (§4.2).
 
 ### 12.9 `wp.Volume` as a voxel-set container
 
@@ -2889,6 +2976,7 @@ Warp 1.18 deltas noted):
 | no sparse triangular solve | unchanged |
 | generic `Any`-typed `@wp.func` wrappers around tile intrinsics | a wrapper over a *tile* argument still fails (NVRTC "more than one instance of overloaded function"); use §2.7's builtin-capture factory. A wrapper over a per-lane *value* works on Warp 1.17 (`reduce.block_sum` / `block_min` / `block_max` at int32/int64/uint64/float32/float64, `vec2i`, `vec3d`, `mat33`, `spatial_matrix`, a 25-wide vector, both devices) |
 | `@wp.kernel(grid_stride=False)` | benchmarked as noise (±5 %, sign flips) — not adopted |
+| `tile_bvh_query_aabb` result-buffer overrun | **still present on 1.18** (`tile_bvh.h`'s CUDA traversal byte-identical to 1.17); the `candidate < n` guards stay (§12.2) |
 
 **Three things that make an upgrade's verification honest, all of which default to a *false pass*:**
 
@@ -4692,7 +4780,11 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   widest walk before any finish runs, so a fix must decide *before* the walk. One measured loss
   is kept: `interpolate_from_points`' `k` path on queries one to two spacings off the cloud, 0.42x
   on `bunny_decimated` (vs 1.6-6.6x on far queries); no backend dominates (grid beats `bvh` in 24
-  of 34 cells by up to 3.6x).
+  of 34 cells by up to 3.6x). **Re-probed on Warp 1.18 with the size-gated leaf** (2026-10-05, `lucy`
+  vertex subsets, self queries): deferring is 0.82-0.87x at `k = 7` up to 8 k points and 4.1-13.6x
+  from 16 k; at `k = 64` 0.77x at 2 k and 1.13-1.81x at 4-16 k. The 8192 threshold stands. Off-cloud
+  queries are the open defect: the default grid `k = 7` took 133 / 285 ms on 1 M / 2 M-point `lucy`
+  subsets with queries two spacings off, against 11 / 23 ms through `backend="bvh"`.
 - **`k`, not `n`, is what is still slow in the k-NN path**: insertion cost is super-linear in `k`
   because the candidate row lives in global memory (§2.9's register row targets it).
 - **A tie exact in float32 is not a tie in a float64 oracle**, so an exact set compare pins the
@@ -4745,6 +4837,16 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   mesh a third, costs a closed one 3-8 %: the vertex test's launches stop overlapping the sort).
 
 #### mesh_to_mesh_distance, metrics
+
+- **Warp 1.18 sped `mesh_to_mesh_distance` up with no ordito change** (its tiled box walk and
+  the mesh BVH go through the rewritten traversal): 1.6-1.8x on the bunnies, 1.06-1.15x on
+  `dragon` / `happy_buddha`, flat at `lucy`, identical distances, against a 1.17 worktree. The
+  `ball_pivoting` pivot search, the other tiled box walk, is flat (1.01x, identical faces), so
+  §14.2's crossover was not re-swept: its hash-grid side did not move and surface-cloud box walks
+  did not either.
+- **The `metrics` backward-search gate (`_GRID_BACKWARD_MIN_POINTS`) was not re-measured on 1.18**:
+  it chooses between the collapsed-point mesh and the seeded hash grid, and neither moved (0.451 vs
+  0.454 ms and the grid's control row flat).
 
 - **A distance *bound* only seeds a prune limit, so a subsample is exactly as sound.** The bound
   phase (sample A by *face corners*, stride capped at 128 faces; cap each sampled closest-point

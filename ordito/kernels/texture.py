@@ -4,6 +4,8 @@ from ordito.kernels.array import update_argmax_lowest_index
 from ordito.kernels.predicates import barycentric_2d
 from ordito.kernels.triangles import corner_triple, face_vertices
 
+wp.set_module_options({"enable_backward": False})
+
 # NaN payload for vertices whose UV is non-finite (never sampled) and out-of-bounds reads.
 NAN_F32 = wp.constant(wp.float32(float("nan")))
 # Inclusive coverage tolerance so shared triangle edges are not dropped (avoids seam gaps).

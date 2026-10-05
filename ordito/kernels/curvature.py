@@ -8,6 +8,8 @@ from ordito.kernels.predicates import angle_defect, segment_aabb, unit_tangent, 
 from ordito.kernels.tangent_space import any_perpendicular
 from ordito.kernels.triangles import face_normals_and_area
 
+wp.set_module_options({"enable_backward": False})
+
 # Custom fixed-size float64 types for the 5x5 quadric-fit normal equations: the rest of the
 # kernel runs in float32, but the least-squares solve is done in float64 for conditioning.
 vec5d = wp.types.vector(length=5, dtype=wp.float64)
@@ -439,6 +441,10 @@ def ball_mean_curvature(
     # dihedral angle of every adjacent face pair, weighted by the length of their shared edge inside
     # the ball, summed during the BVH walk over the edges' bounds. One sequential sum per query,
     # with no candidate list, count pass, scan, readback or per-candidate binary search and atomic.
+    #
+    # The ball query, not the circumscribed cube: re-timed after Warp 1.18 slowed the sphere walk
+    # on point-like bounds, the cube walk (whose extra edges add exact zeros here) is still the
+    # slower ``discrete_mean_curvature`` by 1.2-1.4x across the benchmark spheres and radii.
     q = wp.int32(wp.tid())
     center = queries[q]
     total = wp.float32(0.0)

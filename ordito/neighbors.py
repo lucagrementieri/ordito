@@ -65,7 +65,9 @@ _CELL_PROBE_POINTS = 600
 
 # Smallest cloud a ``k > 1`` hash-grid search defers its unfinished self-query rows to the BVH at.
 # Below it the scan those rows would otherwise take is short enough that the tree build, the
-# second launch and the readback deciding them cost more than they save.
+# second launch and the readback deciding them cost more than they save. Re-probed with the
+# size-gated leaf on ``lucy`` vertex subsets (self queries): deferring is 0.82-0.87x at ``k = 7``
+# up to 8 k points and 4.1-13.6x from 16 k; at ``k = 64`` 0.77x at 2 k, 1.13-1.81x at 4-16 k.
 _KNN_DEFER_MIN_POINTS = 8192
 
 # Default hash-grid resolution: ``wp.HashGrid`` folds cell coordinates modulo its bins, so a cloud
@@ -87,6 +89,15 @@ _GRID_BINS_MAX = 384
 _GRID_BINS_PER_POINT = 2
 _GRID_BINS_STEP = 32
 
+# BVH leaf sizes. A ball query's walk is fastest with one point a leaf at every cloud size, radius
+# and query offset measured (1.07-1.35x over four leaves, growing with the radius), while a nearest
+# query's optimum grows with the cloud: 8-16 points a leaf at 8 k points, 16-32 at 0.4-1 M, 32-64
+# from 4 M (up to 1.59x over four). The gate below stays within 0.97x of the best leaf on every
+# k-NN cell measured and within 0.92x on the weighted query, where a fixed 4 fell to 0.63x / 0.73x.
+_BALL_LEAF_SIZE = 1
+_NEAREST_LEAF_SIZES = ((100_000, 16), (2_000_000, 32))
+_NEAREST_LEAF_SIZE_LARGE = 64
+
 
 def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     """
@@ -102,7 +113,11 @@ def bvh_from_points(points: wp.array[wp.vec3], leaf_size: int = 4) -> wp.Bvh:
     points
         ``(n,)`` positions.
     leaf_size
-        Maximum primitives per leaf; forwarded to ``warp.Bvh``.
+        Maximum primitives per leaf; forwarded to ``warp.Bvh``. The two query families want
+        opposite leaves: the ball queries are fastest at one point a leaf, the nearest queries at
+        larger leaves the larger the cloud (what [`query_nearest`][ordito.neighbors.query_nearest]
+        picks when it builds its own tree). The default sits between them, for a tree shared by
+        both.
 
     Returns
     -------
@@ -469,7 +484,7 @@ def query_ball(
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
     grid_bins: int | None = None,
-    leaf_size: int = 4,
+    leaf_size: int = _BALL_LEAF_SIZE,
     return_sorted: bool = False,
     copy: bool = False,
 ) -> (
@@ -519,9 +534,8 @@ def query_ball(
         [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]. Ignored under
         ``backend="bvh"`` and whenever ``accelerator`` is given.
     leaf_size
-        Maximum primitives per leaf when building a BVH. Ignored under ``backend="hashgrid"``,
-        whenever ``accelerator`` is given, and at ``k == 1``, where the tree is a
-        [`mesh_from_points`][ordito.neighbors.mesh_from_points].
+        Maximum primitives per leaf when building a BVH; one point a leaf is the fastest walk for
+        a ball query. Ignored under ``backend="hashgrid"`` and whenever ``accelerator`` is given.
     return_sorted
         If ``True``, neighbors within each query are ordered by increasing distance. If ``False``,
         order follows the broad phase's traversal (undefined ordering).
@@ -598,7 +612,7 @@ def query_ball_count(
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
     grid_bins: int | None = None,
-    leaf_size: int = 4,
+    leaf_size: int = _BALL_LEAF_SIZE,
 ) -> wp.array[wp.int32]:
     """
     Count neighbors of each query within Euclidean distance ``r``.
@@ -676,7 +690,7 @@ def query_ball_with_offsets(
     accelerator: wp.HashGrid | wp.Bvh | None = None,
     backend: QueryBackend | None = None,
     grid_bins: int | None = None,
-    leaf_size: int = 4,
+    leaf_size: int = _BALL_LEAF_SIZE,
     return_sorted: bool = False,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32], wp.array[wp.int32]]:
     """
@@ -927,7 +941,7 @@ def query_nearest(
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
     grid_bins: int | None = ...,
-    leaf_size: int = ...,
+    leaf_size: int | None = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
 ) -> tuple[odt.Array1dInt32, odt.Array1dFloat32]: ...
@@ -941,7 +955,7 @@ def query_nearest(
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
     grid_bins: int | None = ...,
-    leaf_size: int = ...,
+    leaf_size: int | None = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
     # Rank 1, not 2: a single neighbour per query collapses the trailing axis away, whichever form
@@ -957,7 +971,7 @@ def query_nearest(
     backend: QueryBackend | None = ...,
     max_radius: float = ...,
     grid_bins: int | None = ...,
-    leaf_size: int = ...,
+    leaf_size: int | None = ...,
     initial_radius: float | None = ...,
     bounds: tuple[wp.vec3, wp.vec3] | None = ...,
 ) -> tuple[odt.Array2dInt32, odt.Array2dFloat32]: ...
@@ -970,7 +984,7 @@ def query_nearest(
     backend: QueryBackend | None = None,
     max_radius: float = math.inf,
     grid_bins: int | None = None,
-    leaf_size: int = 4,
+    leaf_size: int | None = None,
     initial_radius: float | None = None,
     bounds: tuple[wp.vec3, wp.vec3] | None = None,
 ) -> tuple[odt.Array2dInt32 | odt.Array1dInt32, odt.Array2dFloat32 | odt.Array1dFloat32]:
@@ -1030,8 +1044,11 @@ def query_nearest(
         [`hashgrid_from_points`][ordito.neighbors.hashgrid_from_points]. Ignored under
         ``backend="bvh"`` and whenever ``accelerator`` is given.
     leaf_size
-        Maximum primitives per leaf when building a BVH. Ignored under ``backend="hashgrid"`` and
-        whenever ``accelerator`` is given.
+        Maximum primitives per leaf when building a BVH; ``None`` picks it from the point count
+        (larger leaves for larger clouds, where the walk is faster with them). Ignored whenever
+        ``accelerator`` is given and at ``k == 1`` under ``backend="bvh"``, where the tree is a
+        [`mesh_from_points`][ordito.neighbors.mesh_from_points]. The default ``"hashgrid"``
+        backend builds a BVH only to finish the queries that land on the cloud.
     initial_radius
         First search radius. Defaults to
         [`knn_initial_radius`][ordito.neighbors.knn_initial_radius], which estimates it from the
@@ -1126,7 +1143,7 @@ def query_nearest(
     shared = [wp.int32(k), wp.float32(max_radius), wp.float32(initial_radius)]
     outputs = [neighbor_indices, neighbor_distances]
     if kind == "bvh":
-        bvh = resolved if resolved is not None else bvh_from_points(points, leaf_size)
+        bvh = resolved if resolved is not None else _nearest_bvh(points, leaf_size)
         # The BVH follows an unbounded radius, so it needs no linear-scan cutover argument.
         _launch.launch(
             kernel_neighbors.bvh_nearest_kernel(k),
@@ -1201,7 +1218,7 @@ def _finish_deferred_nearest(
     max_radius: float,
     initial_radius: float,
     bounds: tuple[wp.vec3, wp.vec3],
-    leaf_size: int,
+    leaf_size: int | None,
     deferred: wp.array[wp.int32],
     neighbor_indices: odt.Array2dInt32,
     neighbor_distances: odt.Array2dFloat32,
@@ -1230,7 +1247,7 @@ def _finish_deferred_nearest(
             device=device,
         )
         return
-    bvh = bvh_from_points(points, leaf_size)
+    bvh = _nearest_bvh(points, leaf_size)
     _launch.launch(
         kernel_neighbors.bvh_nearest_kernel(k),
         dim=m,
@@ -1413,7 +1430,7 @@ def query_weighted_nearest(
     *,
     max_weight: float | None = None,
     accelerator: wp.Bvh | None = None,
-    leaf_size: int = 4,
+    leaf_size: int | None = None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.float32]]:
     """
     Nearest site under the weighted distance ``|p - q| - w(p)``.
@@ -1445,7 +1462,8 @@ def query_weighted_nearest(
         ``backend`` beside it: this query has only the BVH broad phase, so there is nothing to
         select between.
     leaf_size
-        Maximum primitives per BVH leaf when one is built here.
+        Maximum primitives per BVH leaf when one is built here; ``None`` picks it from the point
+        count, as [`query_nearest`][ordito.neighbors.query_nearest] does.
 
     Returns
     -------
@@ -1498,7 +1516,7 @@ def query_weighted_nearest(
         )
 
     if accelerator is None:
-        accelerator = bvh_from_points(points, leaf_size=leaf_size)
+        accelerator = _nearest_bvh(points, leaf_size)
     if max_weight is None:
         max_weight = float(od.reduce.max(weights))
     min_bound, max_bound = od.bounds.aabb(points)
@@ -1528,6 +1546,16 @@ def query_weighted_nearest(
         device=device,
     )
     return out_indices, out_distances
+
+
+def _nearest_bvh(points: wp.array[wp.vec3], leaf_size: int | None) -> wp.Bvh:
+    """Build the BVH a nearest query walks, at ``leaf_size`` or the point count's gated leaf."""
+    if leaf_size is None:
+        n = points.size
+        leaf_size = next(
+            (size for below, size in _NEAREST_LEAF_SIZES if n < below), _NEAREST_LEAF_SIZE_LARGE
+        )
+    return bvh_from_points(points, leaf_size)
 
 
 def nearest_neighbor_distance(points: wp.array[wp.vec3]) -> wp.array[wp.float32]:

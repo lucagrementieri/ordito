@@ -19,6 +19,8 @@ from ordito.kernels.halfedge import halfedge_endpoints
 from ordito.kernels.scatter import mark_corners
 from ordito.kernels.triangles import corner_triple
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.kernel
 def mark_indexed_face_vertices(

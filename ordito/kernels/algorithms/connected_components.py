@@ -13,6 +13,8 @@ Two variants over the same union-find core:
 
 import warp as wp
 
+wp.set_module_options({"enable_backward": False})
+
 
 @wp.func
 def find_representative(parents: wp.array[wp.int32], v: wp.int32) -> wp.int32:
