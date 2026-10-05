@@ -1423,12 +1423,12 @@ def remove_degree3_vertices(
     n_input = faces.size // 3
     if n_input == 0 or max_iter == 0:
         return (vertices, faces, 0) if return_count else (vertices, faces)
-    # The documented edge-manifold check, on the input only: the run-length test on the sorted
-    # halfedge keys, counted inside pass 0's first launch and read back with that pass's counters,
+    # The documented edge-manifold check, on the input only: the twin defects of the halfedge
+    # mates, counted inside pass 0's first launch and read back with that pass's counters,
     # rather than a twin table the pass never reads. Replacing an interior degree-3 fan by the one
     # triangle over its rim keeps every rim edge at two faces with the same orientation, so a pass
     # cannot make a valid mesh invalid and later passes do not re-prove it.
-    input_keys, input_order = od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
+    input_mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # The passes run over one fixed-capacity face buffer rather than compacting after each: a
     # replaced fan's three faces keep their rows with their kept flag cleared, and the replacements
     # are appended after the last used row. Each removal takes three kept faces and adds one, so at
@@ -1473,7 +1473,7 @@ def remove_degree3_vertices(
     _launch.launch(
         kernel_repair.degree3_fan_tables_input,
         dim=3 * n_input,
-        inputs=[faces, input_keys, input_order, counts, link_sums, fans, face_slots, kept, defects],
+        inputs=[faces, input_mates, counts, link_sums, fans, face_slots, kept, defects],
         device=device,
     )
     _launch.launch(
@@ -1791,8 +1791,8 @@ def make_winding_consistent(
         ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`face_flip_mask`][ordito.validation.face_flip_mask] for its key sort. It does not
-        change the answer, and it is trusted, not checked.
+        [`face_flip_mask`][ordito.validation.face_flip_mask], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
 
     Returns
     -------
@@ -1825,7 +1825,7 @@ def make_winding_consistent(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.int32, device=device)
 
-    # The flip mask solves the bits straight off the sorted halfedge keys, with no adjacency table
+    # The flip mask solves the bits straight off the halfedge mates, with no adjacency table
     # and no host read of its length -- the bits ``face_orientation_bits`` gives.
     flip = od.validation.face_flip_mask(faces, n_vertices=n_vertices)
     out_faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)

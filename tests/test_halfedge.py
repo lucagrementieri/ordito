@@ -259,7 +259,7 @@ def _sorted_and_bucketed_pairings(
     faces_wp: wp.array[wp.int32], n_vertices: int, monkeypatch: pytest.MonkeyPatch
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Twins and defect counts from the key sort (no vertex count) and the buckets (forced on)."""
-    monkeypatch.setattr(od.halfedge, "_BUCKETED_TWINS_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
     pairings = []
     for bound in (None, n_vertices):
         defect_counts = wp.zeros(2, dtype=wp.int32, device=faces_wp.device)
@@ -632,3 +632,108 @@ def test_require_matching_twins_bounds_a_twin_against_the_halfedge_count(device:
         od.halfedge.require_matching_twins(
             faces_wp, wp.array(twins_np, dtype=wp.int32, device=device)
         )
+
+
+# ---------------------------------------------------------------------------
+# halfedge_mates
+# ---------------------------------------------------------------------------
+
+
+def _expected_mates(faces_np: np.ndarray) -> np.ndarray:
+    """``halfedge_mates``' codes from NumPy grouping of trimesh's per-halfedge edge rows."""
+    edges = np.sort(tm.geometry.faces_to_edges(faces_np.reshape(-1, 3)), axis=1)
+    _, inverse, counts = np.unique(edges, axis=0, return_inverse=True, return_counts=True)
+    inverse = inverse.ravel()
+    expected = np.full(len(edges), -1, dtype=np.int64)
+    for edge in np.flatnonzero(counts >= 2):
+        members = np.flatnonzero(inverse == edge)
+        if len(members) == 2:
+            expected[members] = members[::-1]
+        else:
+            expected[members] = -2 - members.min()
+    return expected
+
+
+@pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
+@pytest.mark.parametrize("mesh_name", [*MESHES, "boy_surface", "mobius"])
+def test_halfedge_mates_match_numpy_edge_grouping(
+    request: pytest.FixtureRequest, mesh_name: str, bounded: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class B: the mates are NumPy's grouping of trimesh's halfedge rows by undirected edge.
+
+    ``trimesh.geometry.faces_to_edges`` lists halfedge ``3 * f + k`` in ordito's order; grouping
+    its sorted rows with ``np.unique`` gives each edge's halfedges, which name the codes (the
+    partner of a pair, ``-1`` alone, ``-2 - lowest`` for three or more). Run through both
+    builders on both devices: the per-vertex buckets (a vertex count given, size gate and CPU
+    forced open) and the key sort (no vertex count). ``boy_surface`` and ``mobius`` carry pairs
+    wound the same way, which a mate keeps and a twin does not.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    n_vertices = len(mesh_tm.vertices) if bounded else None
+    mates = od.halfedge.halfedge_mates(mesh_wp.indices, n_vertices).numpy()
+    expected = _expected_mates(np.asarray(mesh_tm.faces))
+    assert np.count_nonzero(expected >= 0) > 0
+    assert np.array_equal(mates, expected)
+
+
+@pytest.mark.parametrize("bounded", [True, False], ids=["buckets", "sort"])
+@pytest.mark.parametrize(
+    ("faces", "n_vertices"),
+    [
+        pytest.param([5, 6, 7, 0, 1, 2, 0, 1, 3, 0, 1, 4], 8, id="three-faces-on-an-edge"),
+        pytest.param([6, 7, 8, 0, 1, 2, 0, 1, 3, 1, 0, 4, 1, 0, 5], 9, id="four-faces-on-an-edge"),
+        pytest.param([0, 1, 2, 1, 2, 3], 4, id="pair-wound-the-same-way"),
+        pytest.param([0, 1, 2, 0, 1, 2], 3, id="duplicated-face"),
+        pytest.param([0, 0, 1], 2, id="repeated-vertex"),
+    ],
+)
+def test_halfedge_mates_on_defects(
+    faces: list[int], n_vertices: int, bounded: bool, device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class B: on each defect the mates are NumPy's grouping, by both builders.
+
+    The edges of three and four faces carry the ``-2 - lowest`` code on every member, which is
+    what lets a consumer act on such an edge once (a leading unrelated face keeps ``lowest`` off
+    halfedge 0, where a bare ``-2`` would read the same); the same-way pair and the duplicated face
+    are pairs, where ``halfedge_twins`` would reject them.
+    """
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    faces_np = np.array(faces, dtype=np.int32)
+    faces_wp = wp.array(faces_np, dtype=wp.int32, device=device)
+    mates = od.halfedge.halfedge_mates(faces_wp, n_vertices if bounded else None).numpy()
+    assert np.array_equal(mates, _expected_mates(faces_np))
+
+
+@pytest.mark.parametrize("hub_first", [True, False])
+def test_halfedge_mates_on_a_hub(
+    hub_first: bool, device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a 512-valence hub pairs as the sort pairs it, numbered either way.
+
+    The sort carries the oracle (``test_halfedge_mates_match_numpy_edge_grouping``); this pins the
+    buckets to it where a lower-*index* owner would pile every spoke into one bucket.
+    """
+    cone_tm = tm.creation.cone(radius=1.0, height=1.0, sections=512)
+    faces_np = np.asarray(cone_tm.faces, dtype=np.int32)
+    valence = np.bincount(faces_np.ravel(), minlength=len(cone_tm.vertices))
+    order = np.argsort(-valence if hub_first else valence, kind="stable")
+    renumber = np.empty_like(order)
+    renumber[order] = np.arange(len(order))
+    faces_wp = wp.array(renumber[faces_np].ravel().astype(np.int32), dtype=wp.int32, device=device)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_PAIRING_ON_CPU", True)
+    monkeypatch.setattr(od.halfedge, "_BUCKETED_MATES_FROM_HALFEDGES", 0)
+    bucketed = od.halfedge.halfedge_mates(faces_wp, len(cone_tm.vertices)).numpy()
+    sorted_ = od.halfedge.halfedge_mates(faces_wp).numpy()
+    assert valence.max() == 512
+    assert np.array_equal(bucketed, sorted_)
+
+
+def test_halfedge_mates_empty(device: str) -> None:
+    faces_wp = wp.array(np.array([], dtype=np.int32), dtype=wp.int32, device=device)
+    assert od.halfedge.halfedge_mates(faces_wp, 0).shape == (0,)

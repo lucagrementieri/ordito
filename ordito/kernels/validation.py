@@ -1,7 +1,7 @@
 import warp as wp
 
 from ordito.constants import INT32_MAX_CONSTANT
-from ordito.kernels.adjacency import edge_endpoints, sorted_pair_slot, write_face_edge_keys
+from ordito.kernels.adjacency import edge_endpoints, write_face_edge_keys
 from ordito.kernels.algorithms.connected_components import (
     ecl_hook_pair,
     ecl_hook_pair_parity,
@@ -45,29 +45,28 @@ def edge_pair_winding_mask(
 
 
 @wp.kernel
-def sorted_pair_winding_violation(
+def mate_pair_winding_violation(
     faces: wp.array[wp.int32],
     edges: wp.array2d[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     require_pairs: wp.bool,
     out_violation: wp.array[wp.int32],
 ) -> None:
     """
     Raise ``out_violation[0]`` when a shared edge's two faces traverse it the same way.
 
-    ``edge_pair_winding_mask``'s per-pair test, read straight off the sorted keys (each pair's
-    first member does it), so a predicate needs no compacted group table and no host read of its
-    length. With ``require_pairs`` a run that is not exactly two keys also raises the flag: the
-    "every edge shared by exactly two faces" half of ``is_volume``.
+    ``edge_pair_winding_mask``'s per-pair test, read off the halfedge mates (each pair's lower
+    halfedge does it), so a predicate needs no compacted group table and no host read of its
+    length. With ``require_pairs`` a halfedge whose edge is not shared by exactly two faces also
+    raises the flag: the "every edge shared by exactly two faces" half of ``is_volume``.
     """
-    i = wp.int32(wp.tid())
-    first, unpaired_start = sorted_pair_slot(sorted_keys, i)
-    if unpaired_start and require_pairs:
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate < 0 and require_pairs:
         out_violation[0] = 1
-    if first == i:
-        _a0, b0 = directed_edge(faces, edges, order[i])
-        a1, _b1 = directed_edge(faces, edges, order[i + 1])
+    if mate > h:
+        _a0, b0 = directed_edge(faces, edges, h)
+        a1, _b1 = directed_edge(faces, edges, mate)
         if b0 != a1:
             out_violation[0] = 1
 
@@ -148,36 +147,24 @@ def edge_share_count_violation(
 
 
 @wp.kernel
-def sorted_run_manifold_mask(
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    allow_boundary: wp.bool,
-    out_mask: wp.array[wp.bool],
+def mate_manifold_mask(
+    mates: wp.array[wp.int32], allow_boundary: wp.bool, out_mask: wp.array[wp.bool]
 ) -> None:
     """
     Clear the face flag of every halfedge whose undirected edge is not edge-manifold.
 
-    One thread per sorted halfedge key. An edge's face-share count is the length of its run of
-    equal keys, and [`edge_manifold`][ordito.kernels.validation.edge_manifold] only asks whether
-    that is one, two, or more -- which the neighbouring keys answer (``sorted_pair_slot`` for an
-    exact pair, then one more equal neighbour means three or more). So no unique-edge table, no
-    inverse and no count array is built, and ``out_mask`` (arriving all ``True``) needs no gather.
-    The stores are unsynchronized because every writer stores the same ``False``.
+    One thread per halfedge. [`edge_manifold`][ordito.kernels.validation.edge_manifold] only asks
+    whether an edge's face-share count is one, two, or more, which the halfedge's mate code
+    (``halfedge.halfedge_mates``) says outright: ``-1`` one, a partner two, ``<= -2`` three or
+    more. So no unique-edge table, no inverse and no count array is built, and ``out_mask``
+    (arriving all ``True``) needs no gather. The stores are unsynchronized because every writer
+    stores the same ``False``.
     """
-    i = wp.int32(wp.tid())
-    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
-    count = wp.int32(2)
-    if first < 0:
-        count = 1
-        key = sorted_keys[i]
-        if i > 0:
-            if sorted_keys[i - 1] == key:
-                count = 3
-        if i + 1 < sorted_keys.shape[0]:
-            if sorted_keys[i + 1] == key:
-                count = 3
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    count = wp.where(mate >= 0, wp.int32(2), wp.where(mate == -1, wp.int32(1), wp.int32(3)))
     if not edge_manifold(count, allow_boundary):
-        out_mask[order[i] // 3] = False
+        out_mask[h // 3] = False
 
 
 @wp.func
@@ -241,61 +228,55 @@ def adjacency_corner_hook(
 
 
 @wp.func
-def sorted_corner_link(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    i: wp.int32,
+def mate_corner_link(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.bool]:
     """
-    Corner-graph edge of sorted halfedge position ``i``, plus ``sorted_pair_slot``'s run flag.
+    Corner-graph edge of halfedge ``h``, plus whether its edge is not shared by exactly two faces.
 
-    ``adjacency_corner_links`` with no face-adjacency table between them. Both members of an
-    exact pair give one link each -- the pair's first shared-edge endpoint from its first member,
-    the second from its second -- which are the two links the adjacency row would have produced,
-    taken from the same first-member edge. Every other position gives the self-loop ``(i, i)``, a
-    no-op to the union-find. The component labels are each component's smallest corner id whatever
-    order or multiplicity the unions come in, so they equal the adjacency path's exactly. Shared
-    by ``sorted_corner_prehook`` and ``sorted_corner_hook``, which form the edge in the thread so
-    no ``(3 n_faces, 2)`` corner-edge table is written only to be read back twice.
+    ``adjacency_corner_links`` with no face-adjacency table between them. Both halfedges of a pair
+    give one link each -- the pair's first shared-edge endpoint from its lower halfedge, the
+    second from its upper -- which are the two links the adjacency row would have produced, taken
+    from the lower halfedge's edge. Every other halfedge gives the self-loop ``(h, h)``, a no-op to
+    the union-find. The component labels are each component's smallest corner id whatever order
+    or multiplicity the unions come in, so they equal the adjacency path's exactly. Shared by
+    ``mate_corner_prehook`` and ``mate_corner_hook``, which form the edge in the thread so no
+    ``(3 n_faces, 2)`` corner-edge table is written only to be read back twice.
     """
-    first, unpaired_start = sorted_pair_slot(sorted_keys, i)
-    if first < 0:
-        return i, i, unpaired_start
-    e0 = order[first]
+    mate = mates[h]
+    if mate < 0:
+        return h, h, wp.bool(True)
+    e0 = wp.min(h, mate)
     a, b = edge_endpoints(faces, e0)
-    c0, c1 = corner_link(faces, e0 // 3, order[first + 1] // 3, wp.where(i == first, a, b))
-    return c0, c1, unpaired_start
+    c0, c1 = corner_link(faces, e0 // 3, wp.max(h, mate) // 3, wp.where(h == e0, a, b))
+    return c0, c1, wp.bool(False)
 
 
 @wp.kernel
-def sorted_corner_prehook(
+def mate_corner_prehook(
     faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     require_pairs: wp.bool,
     parents: wp.array[wp.int32],
     out_violation: wp.array[wp.int32],
 ) -> None:
-    # ``connected_components.ecl_init_parent_edges`` over ``sorted_corner_link``'s edges. With
-    # ``require_pairs`` a run that is not exactly two keys raises ``out_violation[0]``: the edge
-    # half of ``is_watertight``, folded into the same pass; without it the flag is never indexed.
-    i = wp.int32(wp.tid())
-    c0, c1, unpaired_start = sorted_corner_link(faces, sorted_keys, order, i)
-    if unpaired_start and require_pairs:
+    # ``connected_components.ecl_init_parent_edges`` over ``mate_corner_link``'s edges. With
+    # ``require_pairs`` an edge not shared by exactly two faces raises ``out_violation[0]``: the
+    # edge half of ``is_watertight``, folded into the same pass; without it the flag is never
+    # indexed.
+    h = wp.int32(wp.tid())
+    c0, c1, unpaired = mate_corner_link(faces, mates, h)
+    if unpaired and require_pairs:
         out_violation[0] = 1
     ecl_prehook_pair(parents, c0, c1)
 
 
 @wp.kernel
-def sorted_corner_hook(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    parents: wp.array[wp.int32],
+def mate_corner_hook(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], parents: wp.array[wp.int32]
 ) -> None:
-    # ``connected_components.ecl_hook_edges`` over the same edges, after ``sorted_corner_prehook``.
-    c0, c1, _unpaired_start = sorted_corner_link(faces, sorted_keys, order, wp.int32(wp.tid()))
+    # ``connected_components.ecl_hook_edges`` over the same edges, after ``mate_corner_prehook``.
+    c0, c1, _unpaired = mate_corner_link(faces, mates, wp.int32(wp.tid()))
     ecl_hook_pair(parents, c0, c1)
 
 
@@ -427,56 +408,47 @@ def build_signed_face_edges(
 
 
 @wp.func
-def sorted_pair_signed_edge(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    i: wp.int32,
+def mate_signed_edge(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], h: wp.int32
 ) -> tuple[wp.int32, wp.int32, wp.int32]:
     """
-    ``build_signed_face_edges``' row for sorted halfedge position ``i``, with no adjacency table.
+    ``build_signed_face_edges``' row for halfedge ``h``, with no adjacency table.
 
-    A pair's first member gives the row the adjacency table would hold -- the ascending face pair
-    and the flip bit over its first member's edge -- and every other position a self-loop with
-    sign ``0``, which the parity union-find skips and every orientation satisfies. The pair rows
-    keep their adjacency order, so the unions run in the same sequence as over the compacted table.
-    Shared by ``sorted_pair_hook_parity`` and ``sorted_pair_orientation_conflict``, which form the
-    edge in the thread rather than read a ``(3 n_faces, 2)`` table and its signs.
+    A pair's lower halfedge gives the row the adjacency table would hold -- the ascending face
+    pair and the flip bit over that halfedge's edge -- and every other halfedge a self-loop with
+    sign ``0``, which the parity union-find skips and every orientation satisfies. Shared by
+    ``mate_hook_parity`` and ``mate_orientation_conflict``, which form the edge in the thread
+    rather than read a ``(3 n_faces, 2)`` table and its signs.
     """
-    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
-    e0 = order[i]
-    if first != i:
-        return e0 // 3, e0 // 3, wp.int32(0)
-    g0 = e0 // 3
-    g1 = order[i + 1] // 3
+    mate = mates[h]
+    if mate <= h:
+        return h // 3, h // 3, wp.int32(0)
+    g0 = h // 3
+    g1 = mate // 3
     f0 = wp.min(g0, g1)
     f1 = wp.max(g0, g1)
-    a, b = edge_endpoints(faces, e0)
+    a, b = edge_endpoints(faces, h)
     return f0, f1, pair_flip_sign(faces, f0, f1, a, b)
 
 
 @wp.kernel
-def sorted_pair_hook_parity(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    words: wp.array[wp.int32],
+def mate_hook_parity(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], words: wp.array[wp.int32]
 ) -> None:
-    # ``connected_components.ecl_hook_parity`` over ``sorted_pair_signed_edge``'s edges.
-    f0, f1, sign = sorted_pair_signed_edge(faces, sorted_keys, order, wp.int32(wp.tid()))
+    # ``connected_components.ecl_hook_parity`` over ``mate_signed_edge``'s edges.
+    f0, f1, sign = mate_signed_edge(faces, mates, wp.int32(wp.tid()))
     ecl_hook_pair_parity(words, f0, f1, sign)
 
 
 @wp.kernel
-def sorted_pair_orientation_conflict(
+def mate_orientation_conflict(
     faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     orient: wp.array[wp.int32],
     out_conflict: wp.array[wp.int32],
 ) -> None:
-    # Flag any signed edge of ``sorted_pair_signed_edge``'s whose faces violate its flip constraint.
-    f0, f1, sign = sorted_pair_signed_edge(faces, sorted_keys, order, wp.int32(wp.tid()))
+    # Flag any signed edge of ``mate_signed_edge``'s whose faces violate its flip constraint.
+    f0, f1, sign = mate_signed_edge(faces, mates, wp.int32(wp.tid()))
     if ((orient[f0] + orient[f1]) & wp.int32(1)) != sign:
         out_conflict[0] = wp.int32(1)
 
@@ -484,8 +456,7 @@ def sorted_pair_orientation_conflict(
 @wp.kernel
 def accumulate_neighbor_normals(
     face_normals: wp.array[wp.vec3],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     out_neighbor_sum: wp.array[wp.vec3],
     out_max_angle: wp.array[wp.float32],
 ) -> None:
@@ -497,15 +468,15 @@ def accumulate_neighbor_normals(
     # two normals -- taken from the two normals this thread loads anyway, rather than read from a
     # ``(m,)`` table a launch of its own would have written for this pass alone.
     #
-    # Launched over the sorted halfedge keys rather than a compacted ``face_adjacency`` table: each
-    # pair's first member (``sorted_pair_slot``) does the pair's work, in the pair's adjacency-row
-    # order, so no table is built and no host read of its length is needed.
-    i = wp.int32(wp.tid())
-    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
-    if first != i:
+    # Launched over the halfedge mates rather than a compacted ``face_adjacency`` table: each
+    # pair's lower halfedge does the pair's work, so no table is built and no host read of its
+    # length is needed.
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate <= h:
         return
-    e0 = order[i] // 3
-    e1 = order[i + 1] // 3
+    e0 = h // 3
+    e1 = mate // 3
     f0 = wp.min(e0, e1)
     f1 = wp.max(e0, e1)
     normal_0 = face_normals[f0]

@@ -266,7 +266,7 @@ def ecl_hook_pair_parity(
 ) -> None:
     # The parity hook of one signed graph edge ``(a, b)``: ``ecl_hook_pair``'s counterpart, shared
     # by ``ecl_hook_parity`` and the kernels that form their signed edges in the thread
-    # (``validation``'s orientation over the sorted halfedge keys). A self-loop unions nothing.
+    # (``validation``'s orientation over the halfedge mates). A self-loop unions nothing.
     if a != b:
         rep_a = wp.int32(0)
         par_a = wp.int32(0)

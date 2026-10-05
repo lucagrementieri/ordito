@@ -192,38 +192,32 @@ def emit_sorted_face_pairs(
 
 
 @wp.func
-def sorted_pair_faces(
-    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], i: wp.int32
-) -> tuple[wp.int32, wp.int32]:
-    # The face-adjacency graph as one edge per sorted halfedge, for a union-find: a pair's first
-    # member gives the ``edge_pairs_to_face_pairs`` pair, every other position a self-loop on its
-    # own face, which the union-find ignores. No pair table is compacted, so nothing is sized by a
-    # host read, and the labels -- each component's smallest face id -- are the ones the compacted
-    # adjacency gives.
-    first, _unpaired_start = sorted_pair_slot(sorted_keys, i)
-    f0 = order[i] // 3
+def mate_pair_faces(mates: wp.array[wp.int32], h: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # The face-adjacency graph as one edge per halfedge, for a union-find: the lower halfedge of a
+    # pair (``halfedge.halfedge_mates``) gives the ``edge_pairs_to_face_pairs`` pair, every other
+    # halfedge a self-loop on its own face, which the union-find ignores. No pair table is
+    # compacted, so nothing is sized by a host read, and the labels -- each component's smallest
+    # face id -- are the ones the compacted adjacency gives.
+    f0 = h // 3
     f1 = f0
-    if first == i:
-        f1 = order[i + 1] // 3
+    mate = mates[h]
+    if mate > h:
+        f1 = mate // 3
     return f0, f1
 
 
 @wp.kernel
-def sorted_pair_prehook(
-    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], parents: wp.array[wp.int32]
-) -> None:
-    # ``connected_components.ecl_init_parent_edges`` over ``sorted_pair_faces``' edges, formed in
+def mate_pair_prehook(mates: wp.array[wp.int32], parents: wp.array[wp.int32]) -> None:
+    # ``connected_components.ecl_init_parent_edges`` over ``mate_pair_faces``' edges, formed in
     # the thread: no ``(3 n_faces, 2)`` edge table is written only to be read back twice.
-    f0, f1 = sorted_pair_faces(sorted_keys, order, wp.int32(wp.tid()))
+    f0, f1 = mate_pair_faces(mates, wp.int32(wp.tid()))
     ecl_prehook_pair(parents, f0, f1)
 
 
 @wp.kernel
-def sorted_pair_hook(
-    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], parents: wp.array[wp.int32]
-) -> None:
-    # ``connected_components.ecl_hook_edges`` over the same edges, after ``sorted_pair_prehook``.
-    f0, f1 = sorted_pair_faces(sorted_keys, order, wp.int32(wp.tid()))
+def mate_pair_hook(mates: wp.array[wp.int32], parents: wp.array[wp.int32]) -> None:
+    # ``connected_components.ecl_hook_edges`` over the same edges, after ``mate_pair_prehook``.
+    f0, f1 = mate_pair_faces(mates, wp.int32(wp.tid()))
     ecl_hook_pair(parents, f0, f1)
 
 

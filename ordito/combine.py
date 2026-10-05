@@ -206,7 +206,7 @@ def split_with_offsets(
     if n_faces == 0:
         return (*_launch.empty_packed(wp.vec3, device), *_launch.empty_packed(wp.int32, device))
 
-    face_labels = od.adjacency.face_connected_component_labels(faces)
+    face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
 
     sorted_labels, sorted_face_ids = od.array.sort_and_argsort(face_labels)
 

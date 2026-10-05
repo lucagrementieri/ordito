@@ -109,91 +109,6 @@ def halfedge_vertex_pairs(
     out_edges[i, 1] = tip
 
 
-# ``sorted_halfedge_run_class`` verdicts for one sorted position of the packed halfedge keys.
-HALFEDGE_RUN_NONE = wp.constant(wp.int32(0))  # not a run's first position, or a boundary edge
-HALFEDGE_RUN_NON_MANIFOLD = wp.constant(wp.int32(1))  # first of a run of three or more
-HALFEDGE_RUN_SAME_DIRECTION = wp.constant(wp.int32(2))  # first of a pair running the same way
-HALFEDGE_RUN_TWINS = wp.constant(wp.int32(3))  # first of a pair of opposite halfedges
-
-
-@wp.func
-def sorted_halfedge_run_class(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    i: wp.int32,
-) -> wp.int32:
-    """
-    Classify sorted position ``i`` of the packed halfedge keys by the halfedge-twin rule.
-
-    Only the first position of each run of equal keys answers, so a kernel over every sorted
-    position resolves each undirected edge exactly once: a run of one is a boundary edge
-    (``HALFEDGE_RUN_NONE``), three or more a non-manifold edge, and a pair is a twin pair unless
-    its two halfedges share an origin, i.e. traverse the edge the same way. The one spelling of the
-    rule ``pair_sorted_halfedges`` applies while pairing twins and ``repair.degree3_fan_tables``
-    applies to validate without building the table.
-    """
-    key = sorted_keys[i]
-    if i > 0 and sorted_keys[i - 1] == key:
-        return HALFEDGE_RUN_NONE
-    n = sorted_keys.shape[0]
-    if i + 1 >= n or sorted_keys[i + 1] != key:
-        return HALFEDGE_RUN_NONE
-    if i + 2 < n and sorted_keys[i + 2] == key:
-        return HALFEDGE_RUN_NON_MANIFOLD
-    if faces[order[i]] == faces[order[i + 1]]:
-        return HALFEDGE_RUN_SAME_DIRECTION
-    return HALFEDGE_RUN_TWINS
-
-
-@wp.kernel
-def pair_sorted_halfedges(
-    faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
-    out_twins: wp.array[wp.int32],
-    out_defect_counts: wp.array[wp.int32],
-) -> None:
-    # One thread per position in the hash-sorted halfedge list; only the first position of each run
-    # of equal keys acts, so each undirected edge is resolved exactly once. Run length 1 is a
-    # boundary edge (twin stays -1), 2 an interior edge, 3+ a non-manifold edge.
-    #
-    # ``out_defect_counts`` carries the two rejections in one buffer so the wrapper needs one
-    # readback: slot 0 counts edge-non-manifold edges, slot 1 counts edges whose two halfedges run
-    # the *same* way.
-    #
-    # **The direction test is what makes the twin contract true rather than merely plausible.** The
-    # sort key is built from the *sorted* endpoint pair, so it identifies the undirected edge and
-    # says nothing about which way either halfedge crosses it -- and on a mesh that is not
-    # consistently wound, the two halfedges of an edge can both run ``a -> b``. Pairing those still
-    # satisfies ``twins[twins[h]] == h``, so nothing downstream notices; what breaks is the
-    # *orientation* half of the contract ``halfedge_twins`` documents, and with it the CCW rotation
-    # ``h -> twins[prev(h)]`` that ``write_one_rings`` walks. On a closed, edge- and
-    # vertex-manifold but *non-orientable* mesh that leaves ``vertex_one_rings`` succeeding while
-    # returning ring entries whose halfedge does not originate at the owning vertex, and halfedges
-    # appearing in two rings at once -- so ``halfedge_tangent_angles`` sums corner angles belonging
-    # to other vertices and races two threads onto one slot, or the walk closes early and the
-    # wrapper reports a "pinch point" on a mesh that has none.
-    #
-    # Two halfedges of one undirected edge run the same way exactly when they share an origin, so
-    # the test is one gather and no geometry. Two further inputs it rejects, both correctly: an
-    # exactly *duplicated* face, whose three edges each carry two halfedges pointing the same way
-    # (a reversed duplicate is a consistently wound degenerate surface and is still accepted); and
-    # a face with a repeated vertex, whose self-edge ``a -> a`` has no opposite direction to find.
-    # The wrapper's message says "the same direction", which is true of all three.
-    i = wp.int32(wp.tid())
-    run = sorted_halfedge_run_class(faces, sorted_keys, order, i)
-    if run == HALFEDGE_RUN_NON_MANIFOLD:
-        wp.atomic_add(out_defect_counts, 0, 1)
-    elif run == HALFEDGE_RUN_SAME_DIRECTION:
-        wp.atomic_add(out_defect_counts, 1, 1)
-    elif run == HALFEDGE_RUN_TWINS:
-        h0 = order[i]
-        h1 = order[i + 1]
-        out_twins[h0] = h1
-        out_twins[h1] = h0
-
-
 @wp.func
 def edge_bucket_owner(degrees: wp.array[wp.int32], a: wp.int32, b: wp.int32) -> wp.int32:
     # The endpoint whose bucket holds the undirected edge ``{a, b}``: the one with fewer incident
@@ -238,6 +153,151 @@ def scatter_edge_buckets(
     out_buckets[wp.atomic_add(cursors, owner, 1)] = wp.vec2i(other, h)
 
 
+# ``halfedge.halfedge_mates``' code for a halfedge whose undirected edge carries only it (a
+# boundary). A mate ``>= 0`` is the other halfedge of an edge carrying exactly two, whichever way
+# each runs; a code ``<= -2`` marks an edge carrying three or more, as ``-2 - lowest`` with
+# ``lowest`` the smallest halfedge on that edge, so a kernel can act on such an edge once.
+HALFEDGE_MATE_BOUNDARY = wp.constant(wp.int32(-1))
+
+
+@wp.func
+def mate_from_run(length: wp.int32, other: wp.int32, lowest: wp.int32) -> wp.int32:
+    # The mate code of a halfedge on an edge of ``length`` halfedges, given the other halfedge of a
+    # pair and the edge's lowest halfedge: the one encoding both mate builders write.
+    if length == 1:
+        return HALFEDGE_MATE_BOUNDARY
+    if length == 2:
+        return other
+    return wp.int32(-2) - lowest
+
+
+@wp.func
+def bucketed_halfedge_mate(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.vec2i],
+    h: wp.int32,
+) -> wp.int32:
+    # Halfedge ``h``'s mate code from the per-vertex edge buckets: every halfedge of an undirected
+    # edge sits in its owner's bucket, so scanning that bucket for the others gives the edge's
+    # halfedge count, the pair partner and the lowest halfedge, the three things
+    # ``sorted_halfedge_mates`` reads off a run of equal sorted keys.
+    #
+    # One thread per *halfedge* rather than Warp's one per *vertex*: a bucket of ``B`` costs each
+    # of its ``B`` threads ``B`` loads in parallel, not one thread ``B^2 / 2`` (Warp's matcher was
+    # ~3 300x the sort on a 4 096-spoke fan, quadratic in the spokes). With the lower-degree owner
+    # the buckets of a mesh stay a few dozen.
+    a, b = halfedge_endpoints(faces, h)
+    owner = edge_bucket_owner(degrees, a, b)
+    other = wp.where(owner == a, b, a)
+    start = wp.int32(0)
+    if owner > 0:
+        start = ends[owner - 1]
+    length = wp.int32(1)
+    partner = wp.int32(-1)
+    lowest = h
+    for slot in range(start, ends[owner]):
+        entry = buckets[slot]
+        if entry[0] == other and entry[1] != h:
+            length += 1
+            partner = entry[1]
+            lowest = wp.min(lowest, entry[1])
+    return mate_from_run(length, partner, lowest)
+
+
+@wp.kernel
+def bucketed_halfedge_mates(
+    faces: wp.array[wp.int32],
+    degrees: wp.array[wp.int32],
+    ends: wp.array[wp.int32],
+    buckets: wp.array[wp.vec2i],
+    out_mates: wp.array[wp.int32],
+) -> None:
+    # ``halfedge.halfedge_mates`` from the per-vertex edge buckets; its sibling
+    # ``sorted_halfedge_mates`` writes the same table from the edge-key sort. On CUDA, against the
+    # sort, interleaved on icospheres: the component labels 0.91-0.95x up to 20 k faces, 1.10x at
+    # 82 k, 1.19x at 0.33 M, 1.49x at 1.3 M; the edge-manifold mask 0.91-0.96x up to 82 k, 1.02x at
+    # 0.33 M, 1.76x at 1.3 M; so ``halfedge._BUCKETED_MATES_FROM_HALFEDGES = 1 << 19``. Against the
+    # sorted-run kernels they replaced, at `dragon` / `happy_buddha` / `lucy`: labels 1.81x /
+    # 1.83x / 1.90x, mask 2.25x / 2.27x / 2.25x.
+    h = wp.int32(wp.tid())
+    out_mates[h] = bucketed_halfedge_mate(faces, degrees, ends, buckets, h)
+
+
+@wp.kernel
+def sorted_halfedge_mates(
+    sorted_keys: wp.array[wp.uint64], order: wp.array[wp.int32], out_mates: wp.array[wp.int32]
+) -> None:
+    # ``halfedge.halfedge_mates`` from the radix sort of the halfedges' undirected keys, one thread
+    # per sorted position: an edge's halfedges are its run of equal keys, and the stable sort of
+    # an identity payload leaves them in ascending halfedge order, so the run's first payload is
+    # the edge's lowest halfedge, as ``bucketed_halfedge_mate`` takes it. The walk to the run's
+    # ends is a run's length, a few halfedges on anything but a non-manifold book of faces.
+    i = wp.int32(wp.tid())
+    n = sorted_keys.shape[0]
+    key = sorted_keys[i]
+    start = i
+    while start > 0 and sorted_keys[start - 1] == key:
+        start -= 1
+    end = i + 1
+    while end < n and sorted_keys[end] == key:
+        end += 1
+    # Only a pair reads its partner: a run of one may end the buffer, so ``start + 1`` is no slot.
+    other = wp.int32(-1)
+    if end - start == 2:
+        other = order[wp.where(i == start, start + 1, start)]
+    out_mates[order[i]] = mate_from_run(end - start, other, order[start])
+
+
+# ``mate_twin_defect``'s defect slots, those of ``halfedge_twins``' two rejections.
+HALFEDGE_DEFECT_NONE = wp.constant(wp.int32(-1))
+HALFEDGE_DEFECT_NON_MANIFOLD = wp.constant(wp.int32(0))
+HALFEDGE_DEFECT_SAME_DIRECTION = wp.constant(wp.int32(1))
+
+
+@wp.func
+def mate_twin_defect(
+    faces: wp.array[wp.int32], mate: wp.int32, h: wp.int32
+) -> tuple[wp.int32, wp.int32]:
+    # ``halfedge_twins``' rule on halfedge ``h``'s mate code: the twin, ``-1`` unless the mate runs
+    # the other way, and the defect this halfedge counts into the twin build's two-slot buffer
+    # (slot 0 non-manifold edges, slot 1 edges whose two halfedges run the *same* way, one readback
+    # for both). An edge of three or more halfedges is non-manifold and a pair wound the same way
+    # misoriented, each counted by the edge's lowest halfedge so once per edge.
+    #
+    # **The direction test is what makes the twin contract true rather than merely plausible.** A
+    # mate identifies the undirected edge and says nothing about which way either halfedge crosses
+    # it -- and on a mesh that is not consistently wound, the two halfedges of an edge can both run
+    # ``a -> b``. Pairing those still satisfies ``twins[twins[h]] == h``, so nothing downstream
+    # notices; what breaks is the *orientation* half of the contract ``halfedge_twins`` documents,
+    # and with it the CCW rotation ``h -> twins[prev(h)]`` that ``write_one_rings`` walks. On a
+    # closed, edge- and vertex-manifold but *non-orientable* mesh that leaves ``vertex_one_rings``
+    # succeeding while returning ring entries whose halfedge does not originate at the owning
+    # vertex, and halfedges appearing in two rings at once -- so ``halfedge_tangent_angles`` sums
+    # corner angles belonging to other vertices and races two threads onto one slot, or the walk
+    # closes early and the wrapper reports a "pinch point" on a mesh that has none.
+    #
+    # Two halfedges of one undirected edge run the same way exactly when they share an origin, so
+    # the test is one gather and no geometry. Two further inputs it rejects, both correctly: an
+    # exactly *duplicated* face, whose three edges each carry two halfedges pointing the same way
+    # (a reversed duplicate is a consistently wound degenerate surface and is still accepted); and
+    # two faces sharing a self-edge ``a -> a`` (each repeating vertex ``a``), which has no opposite
+    # direction to find; a lone self-edge is a boundary halfedge. The wrapper's message says "the
+    # same direction", which is true of all three.
+    if mate <= wp.int32(-2):
+        if wp.int32(-2) - mate == h:
+            return wp.int32(-1), HALFEDGE_DEFECT_NON_MANIFOLD
+        return wp.int32(-1), HALFEDGE_DEFECT_NONE
+    if mate < 0:
+        return wp.int32(-1), HALFEDGE_DEFECT_NONE
+    if faces[mate] == faces[h]:
+        if h < mate:
+            return wp.int32(-1), HALFEDGE_DEFECT_SAME_DIRECTION
+        return wp.int32(-1), HALFEDGE_DEFECT_NONE
+    return mate, HALFEDGE_DEFECT_NONE
+
+
 @wp.kernel
 def pair_bucketed_halfedges(
     faces: wp.array[wp.int32],
@@ -247,50 +307,40 @@ def pair_bucketed_halfedges(
     out_twins: wp.array[wp.int32],
     out_defect_counts: wp.array[wp.int32],
 ) -> None:
-    # The twin table from per-vertex edge buckets, the sibling of ``pair_sorted_halfedges`` under
-    # the same rule (``sorted_halfedge_run_class``): every halfedge of an undirected edge sits in
-    # one bucket, so one thread per halfedge scans it for the others and knows the run's length --
-    # one is a boundary, three or more non-manifold, a pair twins unless both halfedges share an
-    # origin. Each defect is counted once, by the run's lowest halfedge, into the same two slots,
-    # and every entry is written, so ``out_twins`` needs no fill.
-    #
-    # One thread per *halfedge* rather than Warp's one per *vertex*: a bucket of ``B`` costs each
-    # of its ``B`` threads ``B`` loads in parallel, not one thread ``B^2 / 2`` (Warp's matcher was
-    # ~3 300x the sort on a 4 096-spoke fan, quadratic in the spokes). With the lower-degree owner
-    # the buckets of a mesh stay a few dozen.
+    # The twin table from per-vertex edge buckets, the sibling of ``twins_from_mates`` under
+    # the same rule (``mate_twin_defect``): a boundary edge stays ``-1``, an edge of three
+    # or more halfedges is non-manifold, a pair is twins unless both halfedges share an origin.
+    # Each defect is counted once, by the edge's lowest halfedge, into the same two slots, and
+    # every entry is written, so ``out_twins`` needs no fill.
     #
     # Against the radix sort on CUDA, identical tables and defect counts: 1.04-1.07x up to 82 k
     # faces, 1.24x at 0.33 M, 2.2-2.6x from 0.87 M to 28 M, 1.26x on a 400 000-spoke hub; with the
     # validating readback 1.02-1.35x below 0.33 M and 2.1x at 0.87-1.1 M. It also beats Warp's
     # ``tri_tri_adjacency`` (which cannot validate) by 1.5x at 0.87 M. On the CPU it loses at every
     # size (0.29-0.57x: the sort's passes are cheap serial loops there, the bucket scans are not),
-    # so the CPU keeps the sort (``halfedge._BUCKETED_TWINS_ON_CPU``).
+    # so the CPU keeps the sort (``halfedge._BUCKETED_PAIRING_ON_CPU``).
     h = wp.int32(wp.tid())
-    a, b = halfedge_endpoints(faces, h)
-    owner = edge_bucket_owner(degrees, a, b)
-    other = wp.where(owner == a, b, a)
-    start = wp.int32(0)
-    if owner > 0:
-        start = ends[owner - 1]
-    matches = wp.int32(0)
-    partner = wp.int32(-1)
-    lowest = h
-    for slot in range(start, ends[owner]):
-        entry = buckets[slot]
-        if entry[0] == other and entry[1] != h:
-            matches += 1
-            partner = entry[1]
-            lowest = wp.min(lowest, entry[1])
-    twin = wp.int32(-1)
-    if matches >= 2:
-        if lowest == h:
-            wp.atomic_add(out_defect_counts, 0, 1)
-    elif matches == 1:
-        if faces[partner] == a:
-            if h < partner:
-                wp.atomic_add(out_defect_counts, 1, 1)
-        else:
-            twin = partner
+    twin, defect = mate_twin_defect(
+        faces, bucketed_halfedge_mate(faces, degrees, ends, buckets, h), h
+    )
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defect_counts, defect, 1)
+    out_twins[h] = twin
+
+
+@wp.kernel
+def twins_from_mates(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    out_twins: wp.array[wp.int32],
+    out_defect_counts: wp.array[wp.int32],
+) -> None:
+    # The twin table and its two defect counts from a mate table (the sort path's), under
+    # ``mate_twin_defect``, the rule ``pair_bucketed_halfedges`` applies to the mates it forms.
+    h = wp.int32(wp.tid())
+    twin, defect = mate_twin_defect(faces, mates[h], h)
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defect_counts, defect, 1)
     out_twins[h] = twin
 
 
@@ -299,7 +349,7 @@ def count_mispaired_twins(
     faces: wp.array[wp.int32], twins: wp.array[wp.int32], out_mispaired: wp.array[wp.int32]
 ) -> None:
     # One thread per halfedge, counting the entries of a *caller-supplied* twin table that are not
-    # the opposite halfedge. ``halfedge_twins`` cannot produce one -- ``pair_sorted_halfedges``
+    # the opposite halfedge. ``halfedge_twins`` cannot produce one -- ``mate_twin_defect``
     # makes the property hold by construction -- so this exists for the ``twins=`` keyword, which
     # three public modules accept and none of them can trust.
     #

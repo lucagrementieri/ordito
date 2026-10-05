@@ -13,12 +13,11 @@ from ordito.kernels.array import (
 )
 from ordito.kernels.bounds import packed_box_diagonal
 from ordito.kernels.halfedge import (
-    HALFEDGE_RUN_NON_MANIFOLD,
-    HALFEDGE_RUN_SAME_DIRECTION,
+    HALFEDGE_DEFECT_NONE,
     halfedge_destination,
     halfedge_next,
+    mate_twin_defect,
     next_boundary_halfedge,
-    sorted_halfedge_run_class,
 )
 from ordito.kernels.predicates import triangle_aspect_ratio, triangle_normal
 from ordito.kernels.triangles import (
@@ -471,8 +470,7 @@ def record_degree3_halfedge(
 @wp.kernel
 def degree3_fan_tables_input(
     faces: wp.array[wp.int32],
-    sorted_keys: wp.array[wp.uint64],
-    order: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_link_sums: wp.array[wp.int32],
     out_fans: wp.array2d[wp.int32],
@@ -483,18 +481,16 @@ def degree3_fan_tables_input(
     # Pass 0 of ``remove_degree3_vertices``, over the input's halfedges: the fan tables, plus the
     # three things only the first pass does. It copies the input into the front of the pass loop's
     # fixed-capacity face buffer (``out_faces``) and sets its kept flags, one store per face from
-    # its first halfedge, in place of a copy and a fill; and it counts its position's twin defect
-    # on the input's sorted halfedge keys into ``out_defects`` -- the input validation, riding on
+    # its first halfedge, in place of a copy and a fill; and it counts its halfedge's twin defect
+    # from the input's halfedge mates into ``out_defects`` -- the input validation, riding on
     # this launch and on the pass's one readback -- with, in its third slot, the input's referenced
     # vertex count: each removal unreferences exactly its centre, so the output's vertex count is
     # this less the removals and the final compaction needs no readback. ``degree3_fan_tables`` is
     # every later pass.
     h = wp.int32(wp.tid())
-    run = sorted_halfedge_run_class(faces, sorted_keys, order, h)
-    if run == HALFEDGE_RUN_NON_MANIFOLD:
-        wp.atomic_add(out_defects, 0, 1)
-    elif run == HALFEDGE_RUN_SAME_DIRECTION:
-        wp.atomic_add(out_defects, 1, 1)
+    _twin, defect = mate_twin_defect(faces, mates[h], h)
+    if defect != HALFEDGE_DEFECT_NONE:
+        wp.atomic_add(out_defects, defect, 1)
     out_faces[h] = faces[h]
     if h % 3 == 0:
         out_kept[h // 3] = 1

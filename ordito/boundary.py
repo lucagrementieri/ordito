@@ -320,21 +320,24 @@ def _pinched_boundary_cycles(
     """
     faces = boundary.faces
     # ``halfedge_twins(faces, n_vertices=n_vertices, validate=False)``, read off the boundary
-    # detection's own sort: the same keys against the same radix, sorted stably, so the pairing
-    # kernel sees the identical sorted list and the mesh-sized key build and sort are not repeated.
+    # detection's own sort: the same keys against the same radix, sorted stably, so the mates are
+    # the ones ``halfedge.halfedge_mates`` would build and the mesh-sized key build and sort are not
+    # repeated. The defect counts are not read.
     n = boundary.n
-    twins = _launch.full(n, -1, dtype=wp.int32, device=faces.device)
+    device = faces.device
+    mates = _launch.empty(n, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_halfedge.pair_sorted_halfedges,
+        kernel_halfedge.sorted_halfedge_mates,
         dim=n,
-        inputs=[
-            faces,
-            odt.as_dense(boundary.keys[:n]),
-            boundary.order,
-            twins,
-            _launch.zeros(2, dtype=wp.int32, device=faces.device),
-        ],
-        device=faces.device,
+        inputs=[odt.as_dense(boundary.keys[:n]), boundary.order, mates],
+        device=device,
+    )
+    twins = _launch.empty(n, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_halfedge.twins_from_mates,
+        dim=n,
+        inputs=[faces, mates, twins, _launch.zeros(2, dtype=wp.int32, device=device)],
+        device=device,
     )
     tails, next_node = boundary.successors(n, twins=twins)
     return _closed_successor_cycles(tails, next_node, kernel_boundary.CYCLE_HALFEDGES, faces)

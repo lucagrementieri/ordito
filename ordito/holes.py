@@ -3149,7 +3149,7 @@ class _JoinRim:
         if int(boundary.shape[0]) == 0:
             return None
         n_faces = faces.size // 3
-        face_labels = od.adjacency.face_connected_component_labels(faces)
+        face_labels = od.adjacency.face_connected_component_labels(faces, n_vertices=vertices.size)
         vertex_labels = _launch.full(vertices.size, -1, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_scatter.scatter_face_labels_to_vertices,

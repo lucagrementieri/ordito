@@ -5324,14 +5324,15 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   cut wrote a `(3n, 2)` table and read **0.80x at `lucy`** (the key staging copy another 0.07): a
   saving that removes a readback and adds `O(n)` traffic shrinks with the mesh and can invert;
   measure the top of the axis.
-- **Solve parity through the sorted halfedge keys, not an adjacency table**:
-  `validation.face_flip_mask` runs the parity union-find straight off `sorted_face_edge_keys`
+- **Solve parity through the halfedge mates, not an adjacency table**:
+  `validation.face_flip_mask` runs the parity union-find straight off `halfedge.halfedge_mates`
   (`make_winding_consistent`).
-- **The run of equal sorted keys answers "is this edge manifold"**: 1, 2 or 3+ is decidable from a
-  sorted position's neighbours, so a per-face or per-halfedge manifold mask is one kernel after the
-  sort, not `unique_1d` plus inverse plus counts plus a gather. The rule is one `@wp.func`,
-  `kernels/halfedge.sorted_halfedge_run_class`, which `pair_sorted_halfedges` also calls (it
-  cannot live in `kernels/adjacency.py`, which imports `halfedge`). `face_adjacency(edges_paired=
+- **A halfedge's mate answers "is this edge manifold"**: 1, 2 or 3+ is the mate code (`-1`, a
+  partner, `<= -2`), so a per-face or per-halfedge manifold mask is one kernel after the pairing,
+  not `unique_1d` plus inverse plus counts plus a gather. The twin rule is one `@wp.func`,
+  `kernels/halfedge.mate_twin_defect`, which the bucketed and sorted twin builds and
+  `remove_degree3_vertices`' input check call (the sorted-run spelling,
+  `sorted_halfedge_run_class`, is gone with it). `face_adjacency(edges_paired=
   True)`: every edge on exactly two faces makes the adjacency the sort permutation read two to a
   row. `is_watertight` / `is_volume` / `is_vertex_manifold` / `is_edge_manifold` are a handful of
   launches with `n_vertices=`. `is_winding_consistent` / `is_orientable` / `face_flip_mask` /
@@ -5370,7 +5371,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `halfedge._pair_bucketed_halfedges`, whenever `n_vertices` is given, which every in-repo caller
   does): a counting sort of the halfedges by their edge's lower-*degree* endpoint (ties to the lower
   index; corner counts are one `count_occurrences` launch), then one thread per halfedge scanning
-  its bucket for the run `sorted_halfedge_run_class` would see -- same twins, same two defect
+  its bucket for the run the key sort would give -- same twins, same two defect
   counts, each defect counted once by its run's lowest halfedge. Warp's `tri_tri_adjacency` has the
   bucketing but keys the *lower index* and matches one thread per vertex, a quadratic cliff on any
   hub (§12.8); the degree owner keeps a hub's edges in its spokes' buckets and the per-halfedge
@@ -5380,11 +5381,39 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   400 000-spoke hub numbered first; validated (one readback either way) 1.02-1.35x below 0.33 M and
   2.06-2.15x at 0.87-1.1 M. Tables and counts identical everywhere probed, non-manifold
   `bunny_decimated` / `lucy` included. **The CPU keeps the sort**: the buckets lose 0.29-0.57x
-  there at every size (`_BUCKETED_TWINS_ON_CPU`, which the equivalence tests force on).
+  there at every size (`_BUCKETED_PAIRING_ON_CPU`, which the equivalence tests force on).
   `n_vertices` now sizes buffers on this path, so it must bound every index (it already did for
   `vertex_one_rings`). Pinned by `test_bucketed_twins_match_the_sorted_twins_on_*` and
   `test_bucketed_twins_on_a_hub`; double-counting a run or matching on the halfedge alone fails
   them.
+- **`halfedge.halfedge_mates` is the order-free pairing the edge-classifying consumers read**
+  (2026-10-05): per halfedge, the other halfedge of an edge carrying exactly two (either
+  direction), `-1` alone, `-2 - lowest` for three or more, so a pair is acted on by its lower
+  halfedge and a non-manifold edge once. Built by the edge buckets on CUDA from
+  `_BUCKETED_MATES_FROM_HALFEDGES = 1 << 19` halfedges with `n_vertices` given, else by the key
+  sort plus one pass over its runs (`sorted_halfedge_mates`). Every order-free edge classifier
+  reads it: `face_connected_component_labels` (union-find hooks off `mate > h`),
+  `edge_manifold_mask`, `is_vertex_manifold` / `vertex_manifold_mask` / `is_watertight` (corner
+  graph), `is_winding_consistent` / `is_volume`, `is_orientable` / `face_flip_mask` (parity
+  union-find), `face_defective_mask`'s neighbour pass, `remove_degree3_vertices`' input check, the
+  sorted twin build and `boundary`'s pinched-rim twins; `combine.split` and `holes._JoinRim` now
+  pass `n_vertices`. Against the sorted-run kernels on CUDA at `dragon` / `happy_buddha` /
+  `lucy`: labels 1.81x / 1.83x / 1.90x, `edge_manifold_mask` 2.25x / 2.27x / 2.25x,
+  `is_vertex_manifold` 1.58x / 1.78x / 1.83x, `vertex_manifold_mask` 1.75x / 1.86x / 1.83x,
+  `is_winding_consistent` 1.99x / 2.36x / 2.25x, `is_volume` 2.0x / 2.1x / 2.26x,
+  `is_orientable` 1.42x / 1.60x / 1.89x, `face_flip_mask` 1.48x / 1.66x / 1.92x,
+  `face_defective_mask` 1.67x / 1.68x / 1.68x, `remove_degree3_vertices` 1.37x / 1.52x (`lucy`
+  is non-manifold). **The price is the extra pass on the sort path, accepted by the owner
+  (2026-10-05)**: on CUDA up to 70 k faces most calls are flat and the mask 0.81-0.85x (~13 us,
+  one launch and one buffer), `halfedge_twins` without `n_vertices` 0.93-0.98x at every size; on
+  the CPU 0.81-1.05x (worst `is_winding_consistent` / `is_volume` 0.82-0.88x). Keeping a
+  sorted-run consumer below the gate would remove it at the cost of two kernels per consumer.
+  The sort's free upper half cannot hold the mates from `halfedge.py` (`sorted_face_edge_keys`
+  returns trimmed views). On the CPU the union-finds and `face_defective_mask`'s float atomics
+  now run in halfedge order rather than sorted order: labels are unchanged (minimum ids), the
+  neighbour sums move at rounding, and a non-orientable flip mask (best effort) may differ. Pinned by `test_halfedge_mates_*` (NumPy grouping oracle on both builders,
+  defects whose non-manifold edge does not start at halfedge 0, a hub), which a bare `-2` code
+  fails.
 - **`halfedge_twins` / `vertex_one_rings` gained `validate=`** (pass-0-only validation in
   `remove_degree3_vertices`); `is_edge_manifold` / `edge_manifold_mask` share
   `adjacency.face_edge_keys`. **Face-hop vertex morphology** (`expand_vertex_mask` /

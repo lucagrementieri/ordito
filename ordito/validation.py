@@ -79,8 +79,8 @@ def is_edge_manifold(
 
     Deliberately **not** ``all(edge_manifold_mask(faces))``, unlike the other ``is_*`` / ``*_mask``
     pairs here: this counts the edges in a hash table and reads it in place, where the mask needs
-    each halfedge's own count and so sorts the keys. Delegating would add the sort to the cheap
-    path.
+    each halfedge's own count and so pairs every halfedge. Delegating would add the pairing to the
+    cheap path.
     """
     n_faces = faces.size // 3
     if n_faces == 0:
@@ -177,16 +177,16 @@ def edge_manifold_mask(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    # The share count of each edge is the length of its run of sorted keys, read in place: no
-    # unique-edge table, inverse or count array, and no host read of the unique count.
-    keys, order = _sorted_halfedge_keys(
+    # The share count of each edge is its halfedges' mate code, read in place: no unique-edge
+    # table, inverse or count array, and no host read of the unique count.
+    mates = od.halfedge.halfedge_mates(
         faces, _validated_vertex_bound(faces, n_vertices, validate, "edge_manifold_mask")
     )
     out_mask = _launch.full(n_faces, True, dtype=wp.bool, device=device)
     _launch.launch(
-        kernel_validation.sorted_run_manifold_mask,
-        dim=keys.size,
-        inputs=[keys, order, wp.bool(allow_boundary_edges), out_mask],
+        kernel_validation.mate_manifold_mask,
+        dim=mates.size,
+        inputs=[mates, wp.bool(allow_boundary_edges), out_mask],
         device=device,
     )
     return out_mask
@@ -290,8 +290,8 @@ def is_vertex_manifold(
         n_vertices = od.array.index_bound(faces, require_non_negative=face_adjacency is None)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     if face_adjacency is None:
-        parents = _corner_parents_from_keys(
-            faces, _sorted_halfedge_keys(faces, n_vertices), False, None
+        parents = _corner_parents_from_mates(
+            faces, od.halfedge.halfedge_mates(faces, n_vertices), False, None
         )
     else:
         assert face_adjacency_edges is not None
@@ -378,10 +378,10 @@ def vertex_manifold_mask(
     n_vertices = vertices.size
     if faces.size // 3 == 0:
         return _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
-    # The corner graph straight off the sorted halfedge keys, with its pair check off: no thread
-    # indexes the violation flag, so none is allocated.
-    parents = _corner_parents_from_keys(
-        faces, _sorted_halfedge_keys(faces, n_vertices), False, None
+    # The corner graph straight off the halfedge mates, with its pair check off: no thread indexes
+    # the violation flag, so none is allocated.
+    parents = _corner_parents_from_mates(
+        faces, od.halfedge.halfedge_mates(faces, n_vertices), False, None
     )
     mask = _launch.zeros(n_vertices, dtype=wp.bool, device=faces.device)
     _vertex_manifold_check(faces, n_vertices, parents, mask, None)
@@ -575,9 +575,8 @@ def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None =
         ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] so the key sort orders
-        only the bits a key can occupy. It does not change the answer, and it is trusted, not
-        checked.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
 
     Returns
     -------
@@ -596,14 +595,14 @@ def is_winding_consistent(faces: wp.array[wp.int32], *, n_vertices: int | None =
     if n_faces == 0:
         return True
 
-    # ``edge_winding_consistent_mask``'s per-pair test read straight off the sorted keys, so the
-    # verdict needs no group table, no host read of its length and no reduction over a mask.
-    keys, order = _sorted_halfedge_keys(faces, n_vertices)
+    # ``edge_winding_consistent_mask``'s per-pair test read straight off the halfedge mates, so
+    # the verdict needs no group table, no host read of its length and no reduction over a mask.
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     _launch.launch(
-        kernel_validation.sorted_pair_winding_violation,
-        dim=keys.size,
-        inputs=[faces, None, keys, order, False, violation],
+        kernel_validation.mate_pair_winding_violation,
+        dim=mates.size,
+        inputs=[faces, None, mates, False, violation],
         device=faces.device,
     )
     return int(read_scalar(violation)) == 0
@@ -768,9 +767,8 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
         ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] so the key sort orders
-        only the bits a key can occupy. It does not change the answer, and it is trusted, not
-        checked.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
 
     Returns
     -------
@@ -794,13 +792,13 @@ def is_orientable(faces: wp.array[wp.int32], *, n_vertices: int | None = None) -
     if n_faces == 0:
         return True
 
-    orient, keys, order = _orientation_bits_from_keys(faces, n_vertices)
+    orient, mates = _orientation_bits_from_mates(faces, n_vertices)
     device = faces.device
     conflict = _launch.zeros(1, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_validation.sorted_pair_orientation_conflict,
-        dim=keys.size,
-        inputs=[faces, keys, order, orient, conflict],
+        kernel_validation.mate_orientation_conflict,
+        dim=mates.size,
+        inputs=[faces, mates, orient, conflict],
         device=device,
     )
     return int(read_scalar(conflict, 0)) == 0
@@ -825,9 +823,8 @@ def face_flip_mask(
         ``(3 * n_faces,)`` flat triangle index buffer.
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] so the key sort orders
-        only the bits a key can occupy. It does not change the answer, and it is trusted, not
-        checked.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
 
     Returns
     -------
@@ -859,40 +856,39 @@ def face_flip_mask(
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.bool, device=device)
 
-    orient, _, _ = _orientation_bits_from_keys(faces, n_vertices)
+    orient, _ = _orientation_bits_from_mates(faces, n_vertices)
     mask = _launch.empty(n_faces, dtype=wp.bool, device=device)
     _launch.map(kernel_array.greater, orient, wp.int32(0), out=mask)
     return mask
 
 
-def _orientation_bits_from_keys(
+def _orientation_bits_from_mates(
     faces: wp.array[wp.int32], n_vertices: int | None
-) -> tuple[wp.array[wp.int32], wp.array[wp.uint64], wp.array[wp.int32]]:
+) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
-    Flip bits, with the signed edges formed straight off the sorted halfedge keys.
+    Flip bits, with the signed edges formed straight off the halfedge mates.
 
     The bits [`face_orientation_bits`][ordito.validation.face_orientation_bits] returns.
 
-    One signed edge per halfedge: each adjacency pair's row at its first member, a sign-``0``
+    One signed edge per halfedge: each adjacency pair's row at its lower halfedge, a sign-``0``
     self-loop everywhere else, which the parity union-find skips and every orientation satisfies.
-    The pair rows keep their adjacency order, so the bits are the ones the adjacency table gives,
-    and neither that table nor the host read of its length is built. For callers that consume the
-    bits, not the table: [`is_orientable`][ordito.validation.is_orientable] and
+    So neither the adjacency table nor the host read of its length is built. For callers that
+    consume the bits, not the table: [`is_orientable`][ordito.validation.is_orientable] and
     [`face_flip_mask`][ordito.validation.face_flip_mask]. ``faces`` must be non-empty;
-    ``n_vertices`` is the sort's optional radix, as in those two. The sorted
-    keys are returned too, so a caller can re-form the same edges.
+    ``n_vertices`` is ``halfedge_mates``' optional bound, as in those two. The mates are returned
+    too, so a caller can re-form the same edges.
     """
-    keys, order = _sorted_halfedge_keys(faces, n_vertices)
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
     # Every endpoint is a face id derived in the thread from a halfedge index, bounded by
     # ``n_faces`` by construction, and every sign is ``0`` or ``1``.
     orient = _solve_orientation(
         faces.size // 3,
-        kernel_validation.sorted_pair_hook_parity,
-        keys.size,
-        [faces, keys, order],
+        kernel_validation.mate_hook_parity,
+        mates.size,
+        [faces, mates],
         faces.device,
     )
-    return orient, keys, order
+    return orient, mates
 
 
 def _solve_orientation(
@@ -1001,8 +997,8 @@ def is_watertight(
     # sort on the device.
     n_vertices = vertices.size
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
-    parents = _corner_parents_from_keys(
-        faces, _sorted_halfedge_keys(faces, n_vertices), True, violation
+    parents = _corner_parents_from_mates(
+        faces, od.halfedge.halfedge_mates(faces, n_vertices), True, violation
     )
     _vertex_manifold_check(faces, n_vertices, parents, None, violation)
     if int(read_scalar(violation)) != 0:
@@ -1109,15 +1105,15 @@ def is_volume(
     if n_faces == 0:
         return False
 
-    # Watertightness and winding consistency are one pass over the sorted halfedge keys: a run
-    # that is not exactly two keys is an edge not shared by exactly two faces, and each pair's two
-    # directed copies must be reversed. One flag, one readback, and the volume only if it passes.
-    keys, order = _sorted_halfedge_keys(faces, vertices.size)
+    # Watertightness and winding consistency are one pass over the halfedge mates: a halfedge
+    # without a mate is on an edge not shared by exactly two faces, and each pair's two directed
+    # copies must be reversed. One flag, one readback, and the volume only if it passes.
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
     violation = _launch.zeros(1, dtype=wp.int32, device=faces.device)
     _launch.launch(
-        kernel_validation.sorted_pair_winding_violation,
-        dim=keys.size,
-        inputs=[faces, edges, keys, order, True, violation],
+        kernel_validation.mate_pair_winding_violation,
+        dim=mates.size,
+        inputs=[faces, edges, mates, True, violation],
         device=faces.device,
     )
     if int(read_scalar(violation)) != 0:
@@ -1228,13 +1224,13 @@ def face_defective_mask(
             face_normals, _areas = od.triangles.face_normals_and_areas(vertices, faces)
         neighbor_sum = _launch.zeros(n_faces, dtype=wp.vec3, device=device)
         max_angle = _launch.zeros(n_faces, dtype=wp.float32, device=device)
-        # Over the sorted halfedge keys, each adjacency pair taken at its first member: the pairs
+        # Over the halfedge mates, each adjacency pair taken at its lower halfedge: the pairs
         # ``face_adjacency`` would emit, with no table compacted and no host read of its length.
-        keys, order = _sorted_halfedge_keys(faces, vertices.size)
+        mates = od.halfedge.halfedge_mates(faces, vertices.size)
         _launch.launch(
             kernel_validation.accumulate_neighbor_normals,
-            dim=keys.size,
-            inputs=[face_normals, keys, order, neighbor_sum, max_angle],
+            dim=mates.size,
+            inputs=[face_normals, mates, neighbor_sum, max_angle],
             device=device,
         )
 
@@ -1262,29 +1258,28 @@ def face_defective_mask(
     return out_bad
 
 
-def _corner_parents_from_keys(
+def _corner_parents_from_mates(
     faces: wp.array[wp.int32],
-    sorted_keys: tuple[wp.array[wp.uint64], wp.array[wp.int32]],
+    mates: wp.array[wp.int32],
     require_pairs: bool,
     violation: wp.array[wp.int32] | None,
 ) -> wp.array[wp.int32]:
     """
-    Union-find forest of the corner graph, hooked straight off the sorted halfedge keys.
+    Union-find forest of the corner graph, hooked straight off the halfedge mates.
 
-    The pairs [`face_adjacency`][ordito.adjacency.face_adjacency] would emit are the runs of
-    exactly two equal keys, so no adjacency table, run scan or host read of its length is needed,
-    and each corner-graph edge is formed inside the pre-hook and the hook rather than written to a
-    table first; every other halfedge links its own corner to itself. With ``require_pairs`` the
+    The pairs [`face_adjacency`][ordito.adjacency.face_adjacency] would emit are the halfedges
+    with a mate, so no adjacency table, run scan or host read of its length is needed, and each
+    corner-graph edge is formed inside the pre-hook and the hook rather than written to a table
+    first; every other halfedge links its own corner to itself. With ``require_pairs`` the
     pre-hook raises ``violation[0]`` on any edge not shared by exactly two faces; without it
     ``violation`` is never read and may be ``None``.
     """
-    keys, order = sorted_keys
-    n = keys.size
+    n = mates.size
     parents = od.array.arange(n, device=faces.device)
     _launch.launch(
-        kernel_validation.sorted_corner_prehook,
+        kernel_validation.mate_corner_prehook,
         dim=n,
-        inputs=[faces, keys, order, require_pairs, parents, violation],
+        inputs=[faces, mates, require_pairs, parents, violation],
         device=faces.device,
     )
     if n >= kernel_connected_components.ECL_COMPRESS_FROM:
@@ -1292,9 +1287,9 @@ def _corner_parents_from_keys(
             kernel_connected_components.ecl_compress, dim=n, inputs=[parents], device=faces.device
         )
     _launch.launch(
-        kernel_validation.sorted_corner_hook,
+        kernel_validation.mate_corner_hook,
         dim=n,
-        inputs=[faces, keys, order, parents],
+        inputs=[faces, mates, parents],
         device=faces.device,
     )
     return parents
@@ -1344,33 +1339,12 @@ def _vertex_manifold_check(
     )
 
 
-def _sorted_halfedge_keys(
-    faces: wp.array[wp.int32], n_vertices: int | None
-) -> tuple[wp.array[wp.uint64], wp.array[wp.int32]]:
-    """
-    Sort the ``3 * n_faces`` packed undirected halfedge keys, returning the sorting permutation too.
-
-    Halfedge ``3f + k`` is corner ``k`` of face ``f``, the ``faces_to_edges`` row order, so the
-    permutation maps each sorted position back to its face and corner. The keys come straight off
-    ``faces`` in one launch into the sort's own buffer
-    ([`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]), which packs a caller's
-    ``edges_sorted`` rows identically and costs less than hashing them: no row read, no staging
-    copy, and only the bits ``n_vertices`` leaves a key are sorted. So no caller here reads a
-    precomputed row table for its keys. The radix is ``n_vertices``, or ``INDEX_RADIX_PAIR`` when
-    it is ``None`` -- injective on any ``int32`` pair and order-preserving on non-negative indices,
-    so the sort, and every run of equal keys, is the same whichever radix packed them and no
-    reduction has to find the bound. The radix sort is stable, so equal keys stay in halfedge
-    order: the order [`face_adjacency`][ordito.adjacency.face_adjacency] groups them in.
-    """
-    return od.adjacency.sorted_face_edge_keys(faces, n_vertices=n_vertices)
-
-
 def _halfedge_keys(faces: wp.array[wp.int32]) -> wp.array[wp.uint64]:
     """
     Pack the undirected key of every halfedge, in halfedge order, against ``INDEX_RADIX_PAIR``.
 
-    The unsorted counterpart of ``_sorted_halfedge_keys``, read straight off ``faces`` for the
-    same reason: it is the rows ``hash_indices_rows`` of ``edges_sorted`` would give, for less.
+    Read straight off ``faces``: it is the rows ``hash_indices_rows`` of ``edges_sorted`` would
+    give, for less.
     """
     n_faces = faces.size // 3
     keys = _launch.empty(3 * n_faces, dtype=wp.uint64, device=faces.device)

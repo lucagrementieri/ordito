@@ -735,7 +735,8 @@ def face_connected_component_labels(
     [`connected_component_labels_from_edges`][ordito.graph.connected_component_labels_from_edges]
     gives over [`face_adjacency`][ordito.adjacency.face_adjacency] with
     ``node_count = n_faces`` -- each component named by its smallest face id -- and run through
-    the same union-find, fed straight from the sorted edge keys instead of a compacted pair table.
+    the same union-find, fed straight from
+    [`halfedge_mates`][ordito.halfedge.halfedge_mates] instead of a compacted pair table.
     [`Trimesh.face_connected_component_labels`][ordito.mesh.Trimesh] calls the edge-list form
     directly when it already holds a cached adjacency.
 
@@ -746,9 +747,8 @@ def face_connected_component_labels(
         [`face_adjacency`][ordito.adjacency.face_adjacency]).
     n_vertices
         Optional exclusive bound on the vertex indices, forwarded to
-        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] so the key sort orders
-        only the bits a key can occupy. It does not change the answer, and it is trusted, not
-        checked.
+        [`halfedge_mates`][ordito.halfedge.halfedge_mates], which pairs faster with it. It does
+        not change the answer, and it is trusted, not checked: it must exceed every index.
 
     Returns
     -------
@@ -764,33 +764,23 @@ def face_connected_component_labels(
     n_faces = faces.size // 3
     if n_faces == 0:
         return _launch.empty(0, dtype=wp.int32, device=faces.device)
-    # The adjacency pairs straight off the sorted edge keys, one union-find edge per halfedge (a
+    # The adjacency pairs straight off the halfedge mates, one union-find edge per halfedge (a
     # self-loop where no pair starts), formed inside the pre-hook and hook kernels: no compacted
     # table, no host read of its length, and no per-halfedge edge table written only to be read
     # back twice. The labels are each component's smallest face id whatever edges are hooked.
-    # The forest lives in the payload buffer's upper half, which the sort leaves free.
     device = faces.device
-    keys, order, n = _sorted_face_edge_buffers(faces, n_vertices)
-    # Trimmed: the run classification reads its length off the keys' shape.
-    sorted_keys = odt.as_dense(keys[:n])
-    parents = odt.as_dense(order[n : n + n_faces])
+    mates = od.halfedge.halfedge_mates(faces, n_vertices)
+    n = mates.size
+    parents = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(kernel_array.ARANGE[wp.int32], dim=n_faces, inputs=[parents], device=device)
     _launch.launch(
-        kernel_adjacency.sorted_pair_prehook,
-        dim=n,
-        inputs=[sorted_keys, order, parents],
-        device=device,
+        kernel_adjacency.mate_pair_prehook, dim=n, inputs=[mates, parents], device=device
     )
     if n_faces >= kernel_connected_components.ECL_COMPRESS_FROM:
         _launch.launch(
             kernel_connected_components.ecl_compress, dim=n_faces, inputs=[parents], device=device
         )
-    _launch.launch(
-        kernel_adjacency.sorted_pair_hook,
-        dim=n,
-        inputs=[sorted_keys, order, parents],
-        device=device,
-    )
+    _launch.launch(kernel_adjacency.mate_pair_hook, dim=n, inputs=[mates, parents], device=device)
     labels = _launch.empty(n_faces, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_connected_components.ecl_flatten,
