@@ -1302,21 +1302,33 @@ def straighten_boundary(
             device=device,
         )
         # One notch per boundary halfedge at most, and a pinched rim can carry more of those than
-        # the mesh has vertices, so the bound is the halfedge count. Trimmed to the real count
-        # below, so the slack never leaves this loop.
-        new_faces = odt.empty_2d((n_halfedges, 3), wp.int32, device=device)
+        # the mesh has vertices, so the bound is the halfedge count.
+        new_faces = _launch.empty(3 * n_halfedges, dtype=wp.int32, device=device)
         _launch.launch(
             kernel_repair.emit_straighten_faces,
             dim=n_halfedges,
-            inputs=[faces, rim_next, rim_prev, candidate, cursor, new_faces],
+            inputs=[
+                faces,
+                rim_next,
+                rim_prev,
+                candidate,
+                cursor,
+                new_faces.reshape((n_halfedges, 3)),
+            ],
             device=device,
         )
         # One readback per pass, and it is the loop's own stopping test: how many notches the pass
         # actually closed is a device-side fact and a Python loop cannot branch on it otherwise.
-        n_added, (accepted,) = od.array.trim_to_count(cursor, new_faces)
+        n_added = int(read_scalar(cursor))
         if n_added == 0:
             break
-        faces = od.array.concatenate([faces, accepted.reshape(3 * n_added)])
+        # The emitted prefix goes straight behind the current faces in one exact-size buffer: one
+        # allocation and two copies, where trimming the emit and then concatenating cost two of
+        # each and a third copy.
+        grown = _launch.empty(faces.size + 3 * n_added, dtype=wp.int32, device=device)
+        _launch.copy(grown, faces, count=faces.size)
+        _launch.copy(grown, new_faces, dest_offset=faces.size, count=3 * n_added)
+        faces = grown
         added += n_added
     return (faces, added) if return_count else faces
 
@@ -2163,18 +2175,27 @@ def fix_self_intersections(
     # The input buffers are only read until the first refill replaces them, so the copy a clean
     # input is owed is taken at the end rather than paid on every call.
     current_vertices, current_faces = vertices, faces
+    # Two decision words per pass, each raised on the device by the launch that produced its mask
+    # (``kernel_repair.flag_any_selected``, the dilation's last lookup): a four-byte read each
+    # rather than a copy of the whole face mask.
+    state = _launch.zeros(2, dtype=wp.int32, device=vertices.device)
     for _ in range(max_iter):
         bad_mask = od.validation.face_self_intersecting_mask(current_vertices, current_faces)
-        # Two readbacks per pass, and each decides the loop. Deliberately *not* ``od.reduce.any`` /
-        # ``od.reduce.all``: a device reduction has a roughly fixed cost, while copying a ``bool``
-        # array is one byte per element, so below the crossover -- about half a million elements --
-        # the copy wins. Every mesh this runs on is well under it, so the readback stays; revisit at
-        # a mesh past half a million faces.
-        if not bool(bad_mask.numpy().any()):
+        n_faces = current_faces.size // 3
+        _launch.launch(
+            kernel_repair.flag_any_selected,
+            dim=n_faces,
+            inputs=[bad_mask, state],
+            device=state.device,
+        )
+        if int(read_scalar(state, 0)) == 0:
             break
-        region = _dilate_face_mask(current_faces, bad_mask, max_expand, current_vertices.size)
-        if bool(region.numpy().all()):
+        region = _dilate_face_mask(
+            current_faces, bad_mask, max_expand, current_vertices.size, state
+        )
+        if int(read_scalar(state, 1)) == 0:
             break  # the region swallowed the mesh: refilling it would delete everything
+        _launch.zero_(state)
         current_vertices, current_faces = od.holes.refill_region(
             current_vertices, current_faces, region
         )
@@ -2186,7 +2207,11 @@ def fix_self_intersections(
 
 
 def _dilate_face_mask(
-    faces: wp.array[wp.int32], face_mask: wp.array[wp.bool], hops: int, n_vertices: int
+    faces: wp.array[wp.int32],
+    face_mask: wp.array[wp.bool],
+    hops: int,
+    n_vertices: int,
+    state: wp.array[wp.int32] | None = None,
 ) -> wp.array[wp.bool]:
     """
     Grow a face selection by ``hops`` rings, through the vertices it touches.
@@ -2212,6 +2237,9 @@ def _dilate_face_mask(
         ``faces.max()``: that is a whole-buffer readback, and ``fix_self_intersections`` calls this
         once per pass, to recover a number the caller is already holding -- which is what
         ``face_adjacency(n_vertices=...)`` exists to avoid.
+    state
+        ``(2,)`` decision words; slot 1 is raised when some face stays outside the grown selection.
+        ``None`` raises nothing.
 
     Returns
     -------
@@ -2247,12 +2275,20 @@ def _dilate_face_mask(
             inputs=[faces, grown, vertex_mask],
             device=device,
         )
-    _launch.launch(
-        kernel_selection.face_mask_from_vertex_mask,
-        dim=n_faces,
-        inputs=[faces, vertex_mask, wp.bool(False), grown],
-        device=device,
-    )
+    if state is None:
+        _launch.launch(
+            kernel_selection.face_mask_from_vertex_mask,
+            dim=n_faces,
+            inputs=[faces, vertex_mask, wp.bool(False), grown],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_repair.face_mask_from_vertex_mask_flag_unselected,
+            dim=n_faces,
+            inputs=[faces, vertex_mask, grown, state],
+            device=device,
+        )
     return grown
 
 

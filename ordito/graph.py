@@ -590,16 +590,13 @@ def successor_cycles(
     # Already range-checked above, so the downstream call skips the second reduction and host sync.
     labels = connected_component_labels_from_edges(edges, node_count=node_count, validate=False)
 
-    cycle_nodes = od.array.flatnonzero(node_mask)
-    n_nodes = cycle_nodes.size
-
     label_min = _launch.full(node_count, node_count, dtype=wp.int32, device=device)
     label_count = _launch.zeros(node_count, dtype=wp.int32, device=device)
     is_chain = _launch.zeros(node_count, dtype=wp.int32, device=device)
     _launch.launch(
         kernel_graph.scatter_cycle_min_and_count,
-        dim=n_nodes,
-        inputs=[cycle_nodes, next_node, labels, label_min, label_count, is_chain],
+        dim=node_count,
+        inputs=[node_mask, next_node, labels, label_min, label_count, is_chain],
         device=device,
     )
 
@@ -613,8 +610,8 @@ def successor_cycles(
     # firing on an ordinary chain.
     _launch.launch(
         kernel_graph.chain_node_mask,
-        dim=n_nodes,
-        inputs=[cycle_nodes, labels, is_chain, node_mask],
+        dim=node_count,
+        inputs=[labels, is_chain, node_mask],
         device=device,
     )
     cycle_nodes = od.array.flatnonzero(node_mask)

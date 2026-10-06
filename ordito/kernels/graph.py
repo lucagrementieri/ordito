@@ -136,15 +136,19 @@ def scatter_successor(
 
 @wp.kernel
 def scatter_cycle_min_and_count(
-    cycle_nodes: wp.array[wp.int32],
+    node_mask: wp.array[wp.bool],
     next_node: wp.array[wp.int32],
     labels: wp.array[wp.int32],
     out_label_min: wp.array[wp.int32],
     out_label_count: wp.array[wp.int32],
     out_is_chain: wp.array[wp.int32],
 ) -> None:
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
+    # One thread per node, the endpoints selected by the mask: every update is an order-free
+    # atomic, so this is the per-endpoint launch over the mask's ``flatnonzero`` without the
+    # compaction (its scan, readback and two buffers).
+    v = wp.int32(wp.tid())
+    if not node_mask[v]:
+        return
     label = labels[v]
     wp.atomic_min(out_label_min, label, v)
     wp.atomic_add(out_label_count, label, wp.int32(1))
@@ -156,17 +160,15 @@ def scatter_cycle_min_and_count(
 
 @wp.kernel
 def chain_node_mask(
-    cycle_nodes: wp.array[wp.int32],
-    labels: wp.array[wp.int32],
-    is_chain: wp.array[wp.int32],
-    out_node_mask: wp.array[wp.bool],
+    labels: wp.array[wp.int32], is_chain: wp.array[wp.int32], out_node_mask: wp.array[wp.bool]
 ) -> None:
-    # Clear the node-space endpoint mask at every node of a chain component. The mask is True
-    # exactly at ``cycle_nodes`` beforehand, so its ``flatnonzero`` afterwards is the kept nodes in
-    # ascending order -- the same list a keep flag per ``cycle_nodes`` entry plus a gather through
-    # its ``flatnonzero`` produced, without the flag buffer or the gather.
-    tid = wp.int32(wp.tid())
-    v = cycle_nodes[tid]
+    # Clear the node-space endpoint mask at every node of a chain component, one thread per node
+    # reading and writing only its own slot. Its ``flatnonzero`` afterwards is the kept nodes in
+    # ascending order -- the same list a keep flag per endpoint plus a gather through its
+    # ``flatnonzero`` produced, without the flag buffer or the gather.
+    v = wp.int32(wp.tid())
+    if not out_node_mask[v]:
+        return
     out_node_mask[v] = is_chain[labels[v]] == 0
 
 
