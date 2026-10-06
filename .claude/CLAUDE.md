@@ -3344,6 +3344,39 @@ rows) and 0.98x with a ray-major scratch, though an *outward* closest-hit bundle
 (price the actual rays). **Nor does its `(n, n_rays)` scratch cost anything** (15 GB at `lucy` and
 256 rays): register-held distances (one unrolled kernel per rays-per-lane bucket) were 0.97-0.98x.
 
+**The caller's BVH builder sets the bundle cost, and the answer does not move** (2026-10-06,
+Warp 1.18). The bundle kernels trace the caller's `wp.Mesh`; built with `bvh_constructor="cubql"`
+instead of the default LBVH, `ambient_occlusion` / `shape_diameter` at 64 rays are 1.50x / 1.94x at
+`dragon` (34.9 / 55.0 -> 23.1 / 28.4 ms) and 2.51x / 2.18x at `lucy` (1 606 / 2 708 -> 641 /
+1 243 ms), outputs bit-identical, and every builder matches a brute-force `float64` ray oracle ray
+for ray (bunny, dragon). `sah` at leaf 1-2 is 1.37-1.45x at `dragon`, 1.9-2.3x at `lucy`; LBVH leaf 1
+1.11-1.16x; leaf 8 0.78x. The build is the price: 2 / 37 ms default against 80 ms / **3.9 s**
+`cubql` and 0.4 / 13 s `sah` at `dragon` / `lucy`, so building one inside a single call barely
+breaks even at 256 rays; the win is a caller who builds once and traces many rays. The functions
+take a caller-built mesh, so the module only documents it (owner's decision, option c; a
+`Trimesh` property for a traced mesh is open). Probe trap: with `normals=None` the closest-face
+normal at a vertex is a tie the BVH breaks, so comparing builders without explicit normals reads
+as answers changing by up to 0.88.
+
+**`max_tangent_sphere`: the shrink loop's answer is a tolerance window, and "exact" is not
+"true" on a mesh** (2026-10-06, probes only, nothing shipped). `thickness_interior[sphere_med]`'s
+422 ms is 12 rounds whose first five cannot prune (every inward ray hits the antipode, so the seed
+centre is equidistant from all 81 920 faces). The loop stops anywhere in `[r_true, r*]`, `r* = tol +
+R(p + tol n)` with the absolute `TOLERANCE_PLANAR`; at a convex vertex `r_true = 0` (incident faces
+fold into any ball), so on a sphere it returns 0.007 of the ray thickness, as trimesh does. Two exact
+alternatives were built (closed-form touch radius per face -- vertex, edge and interior cases --
+galloped over `bvh_query_sphere`, exact by nesting of tangent balls; matches a `float64` oracle to
+2.6e-5) and compared on `2r / thickness(method="ray")` (the ray is the ball's diameter chord, so
+`<= 1`, never violated): **faces through the point excluded** 0.67 / 0.30 / 0.21 median on
+icosphere(4) / `bunny_decimated` / `dragon`, because an inscribed polyhedron's second ring sags
+into the ball by the same order as the ball's curvature over one edge, so it does not converge
+under refinement; **vertices only** (Ma et al. 2012's shrinking ball on the samples) 0.97 / 0.36 /
+0.28, the smooth answer on the sphere but blind to a face interior between samples; the current
+loop 0.007 / 0.049 / 0.32 (its 1e-5 window exceeds small features at `dragon`'s scale). Cost vs the
+loop: faces 6.3x / 0.36x / 0.37x, vertices 0.99x / 0.39x / 0.68x -- a ball hugging the surface pulls
+up to ~34 000 face boxes into the verification query. A warm start from `r*` under a 128-face
+budget is 390x on `sphere_med` and level on scans but answers inside the same window. The contract choice is the owner's.
+
 **FPS wins where the hole DP lost**: its per-iteration work is `n` distances, so one SM suffices and
 what it removes is two replayed kernels of launch latency per dependent round.
 
