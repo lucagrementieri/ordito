@@ -138,8 +138,10 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
+from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
+from ordito.kernels import cholesky as kernel_cholesky
 from ordito.kernels import linalg as kernel_linalg
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
@@ -154,6 +156,15 @@ CG_TOLERANCE = 1e-10
 # Iteration cap as a multiple of the per-column system size, matching the callers' previous
 # hand-rolled ``maxiter=10 * n``.
 CG_MAXITER_FACTOR = 10
+
+# The componentwise backward error ``|b - A x|_i / (|A| |x| + |b|)_i`` a settled iterate of
+# ``solve_spd_settled`` may carry anywhere before the solve falls back to a direct factorization.
+# A genuinely settled iterate sits orders of magnitude below it; one that "settled" on round-off
+# (a strongly graded mesh, a scan with slivers) sits at one.
+SETTLE_BACKWARD_ERROR = 1e-6
+
+# Componentwise backward error the direct fallback refines to.
+SETTLE_DIRECT_TOLERANCE = 1e-12
 
 # How often the conjugate-gradient loop tests the residual against the tolerance. ``0`` means
 # "every iteration, on device": ``warp.optim.linear`` then drives the loop with ``wp.capture_while``
@@ -1095,6 +1106,7 @@ def solve_spd_settled(
     settle_rounds: int,
     maxiter: int | None = None,
     preconditioner: wpl.LinearOperator | None = None,
+    coordinates: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.int32]:
     """
     Run Jacobi conjugate gradient until every entry of the solution has settled relative to itself.
@@ -1116,9 +1128,16 @@ def solve_spd_settled(
     magnitude below the method's own discretization error. The residual, the iterate and every
     reduction stay ``float64``.
 
-    The check is tested on the device, inside the solve's recorded loop, so nothing is read back.
-    As with [`solve_spd`][ordito.linalg.solve_spd], the solver state is kept for ``matrix``'s
-    lifetime and a later solve against it replays the recorded loop.
+    The check is tested on the device, inside the solve's recorded loop. As with
+    [`solve_spd`][ordito.linalg.solve_spd], the solver state is kept for ``matrix``'s lifetime and
+    a later solve against it replays the recorded loop.
+
+    The settled iterate is then verified: where its componentwise backward error exceeds
+    [`SETTLE_BACKWARD_ERROR`][ordito.linalg.SETTLE_BACKWARD_ERROR] -- conjugate gradient's
+    round-off swamping entries far below the peak, on an operator ill-conditioned in places -- the
+    system is solved again by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
+    factorization, kept for the operator's lifetime so a later solve against it goes there
+    directly. The verification reads back one flag.
 
     Parameters
     ----------
@@ -1142,11 +1161,15 @@ def solve_spd_settled(
     preconditioner
         ``None``, or the operator [`jacobi_preconditioner`][ordito.linalg.jacobi_preconditioner]
         built for ``matrix``: the solve is Jacobi-preconditioned either way.
+    coordinates
+        ``(n_points,)`` positions of ``matrix``'s (block) rows -- a mesh's vertices for a vertex
+        operator -- for the fallback factorization's ordering. ``None`` orders by the pattern alone.
 
     Returns
     -------
     wp.array[wp.int32]
-        ``(1,)`` device array holding the rounds that took a step. It belongs to the solver
+        ``(1,)`` device array holding the rounds that took a step; zero when the operator went to
+        its kept factorization directly. It belongs to the solver
         state kept for ``matrix`` and is overwritten by the next solve against it -- or, for an
         operator rebuilt per call, against the next operator of its shape, whose solve takes the
         same state (see [`solve_spd`][ordito.linalg.solve_spd]).
@@ -1159,12 +1182,20 @@ def solve_spd_settled(
     RuntimeError
         If ``rhs`` and ``solution`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        When the settled iterate fails the backward-error check and no factorization can be built
+        (over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not positive
+        definite); the iterate is returned.
+
     See Also
     --------
     [`solve_spd`][ordito.linalg.solve_spd]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
+    [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
     """
-    require_same_device(rhs=rhs, solution=solution)
+    require_same_device(rhs=rhs, solution=solution, coordinates=coordinates)
     columns = rhs.ndim == 2
     if columns:
         if (
@@ -1190,12 +1221,25 @@ def solve_spd_settled(
             )
         n_columns, n_rows = 1, int(rhs.shape[0])
         rhs_flat, solution_flat = rhs, solution
-        if odt.has_blocks(matrix, wp.mat22d):
-            # Solved as its scalar expansion, as ``solve_spd`` does (``_solve_spd_batched``).
-            matrix = _scalar_expansion(matrix)
-            rhs_flat, solution_flat = _as_scalar_view(rhs), _as_scalar_view(solution)
+    operator = matrix
+    rows_per_point = 1
+    if odt.has_blocks(matrix, wp.mat22d):
+        # Solved as its scalar expansion, as ``solve_spd`` does (``_solve_spd_batched``).
+        scalar = _scalar_expansion(matrix)
+        rhs_flat, solution_flat = _as_scalar_view(rhs), _as_scalar_view(solution)
+        rows_per_point = 2
+    else:
+        scalar = cast("odt.BsrMatrix[wp.float64]", matrix)
+    factor = _FACTOR_CACHE.get(operator)
+    if factor is not None and factor[0] == _storage_identity(operator):
+        # This operator already failed the settle check once: solve it directly.
+        factor[1].solve(
+            _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
+            tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
+        )  # fmt: skip
+        return _launch.zeros(1, dtype=wp.int32, device=rhs.device)
     solver = _cached_solver(
-        matrix,
+        scalar,
         n_columns,
         tol=0.0,
         maxiter=CG_MAXITER_FACTOR * n_rows if maxiter is None else maxiter,
@@ -1206,7 +1250,71 @@ def solve_spd_settled(
         pooled=True,
     )
     solver.solve(rhs_flat, solution_flat)
+    # The settle rule decides *when to stop*, not whether the iterate is right: on an operator
+    # whose conditioning is extreme in places (a strongly graded mesh, a scan's slivers) conjugate
+    # gradient's round-off swamps the far field's entries long before they settle, and the
+    # iterate "settles" on garbage. The componentwise backward error of the result catches it
+    # exactly (a settled solve sits orders of magnitude below the bar, a failed one at 1), and the
+    # direct factorization -- which reaches every entry with its own relative precision -- takes
+    # over. One four-byte read: the decision to factor is the host's.
+    flag = _launch.zeros(1, dtype=wp.int32, device=rhs.device)
+    _launch.launch(
+        kernel_cholesky.backward_error_exceeds,
+        dim=(int(scalar.nrow), n_columns),
+        inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
+                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR)],
+        outputs=[flag],
+        device=rhs.device,
+    )  # fmt: skip
+    if read_scalar(flag, 0) == 0:
+        return solver.iterations
+    try:
+        factorization = sparse_cholesky(
+            _storage_alias(scalar), _expanded_coordinates(coordinates, rows_per_point)
+        )
+    except ValueError as exc:
+        warnings.warn(
+            f"solve_spd_settled: the settled iterate fails the componentwise backward-error check "
+            f"and the direct fallback is unavailable ({exc}); returning the iterate",
+            stacklevel=2,
+        )
+        return solver.iterations
+    _FACTOR_CACHE[operator] = (_storage_identity(operator), factorization)
+    factorization.solve(
+        _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
+        tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
+    )  # fmt: skip
     return solver.iterations
+
+
+def _storage_identity(matrix: odt.SparseMatrix) -> tuple[int, int, int]:
+    """Return an operator's three array identities: a key that changes with its storage."""
+    return (id(matrix.offsets), id(matrix.columns), id(matrix.values))
+
+
+def _columns_view(vector: wp.array[wp.float64], n_columns: int) -> odt.ArrayNd:
+    """Return a flat ``float64`` vector as ``n_columns`` columns, or itself for one."""
+    if n_columns == 1:
+        return vector
+    return vector.reshape((n_columns, vector.size // n_columns))
+
+
+def _expanded_coordinates(
+    coordinates: wp.array[wp.vec3] | None, rows_per_point: int
+) -> wp.array[wp.vec3] | None:
+    """Return one position per scalar row: each block row's, ``rows_per_point`` times."""
+    if coordinates is None or rows_per_point == 1:
+        return coordinates
+    # Host-side: ``sparse_cholesky`` reads its coordinates back once anyway.
+    expanded = np.repeat(coordinates.numpy(), rows_per_point, axis=0)
+    return _launch.array(expanded, dtype=wp.vec3, device=coordinates.device)
+
+
+# The direct factorizations ``solve_spd_settled`` fell back to, keyed weakly by their operator. A
+# factorization holds its operator's storage through an alias, never the operator.
+_FACTOR_CACHE: weakref.WeakKeyDictionary[
+    odt.SparseMatrix, tuple[tuple[int, int, int], SparseCholesky]
+] = weakref.WeakKeyDictionary()
 
 
 @overload

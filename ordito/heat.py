@@ -333,6 +333,7 @@ def heat_geodesic(
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
         preconditioner=heat_preconditioner,
+        coordinates=vertices,
     )
     return _distance_from_heat(vertices, faces, sources, operators, heat)
 
@@ -917,7 +918,7 @@ def extend_scalar(
 
     if operators is None:
         operators = heat_operators(vertices, faces, t)
-    diffused_indicator, diffused_values = _extend(operators[0], sources, values, n_vertices, device)
+    diffused_indicator, diffused_values = _extend(operators[0], sources, values, vertices)
     # Converged per vertex, so only an exactly zero indicator -- a component no source reaches --
     # has no value to extend (``divide_nonzero``).
     extended = _launch.empty(n_vertices, dtype=wp.float64, device=device)
@@ -929,8 +930,7 @@ def _extend(
     heat_system: odt.BsrMatrix[wp.float64],
     sources: wp.array[wp.int32],
     values: wp.array[wp.float64],
-    n_vertices: int,
-    device: wp.DeviceLike,
+    vertices: wp.array[wp.vec3],
 ) -> tuple[wp.array[wp.float64], wp.array[wp.float64]]:
     """
     ``extend_scalar``'s diffusion: the diffused source indicator and the diffused ``values``.
@@ -939,6 +939,8 @@ def _extend(
     form it in the map that consumes it rather than in a pass and a buffer of its own.
     """
     n_sources = sources.size
+    n_vertices = vertices.size
+    device = vertices.device
     # The indicator and the weighted values diffuse through the same operator, so they are one
     # batched two-column solve (``linalg.solve_spd_columns``) rather than two independent ones,
     # which shares the launches and converges on the worse-behaved of the two columns.
@@ -961,6 +963,7 @@ def _extend(
         check_rounds=_HEAT_CHECK_ROUNDS,
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
+        coordinates=vertices,
     )
     return odt.as_dense(diffused[0]), odt.as_dense(diffused[1])
 
@@ -1091,6 +1094,7 @@ def transport_tangent_vectors(
         check_rounds=_HEAT_CHECK_ROUNDS,
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
+        coordinates=_stacked_positions(vertices, 2),
     )
     diffused_indicator = diffused[2 * n_vertices : 3 * n_vertices]
     diffused_magnitudes = diffused[3 * n_vertices :]
@@ -1207,6 +1211,7 @@ def log_map(
         check_rounds=_HEAT_CHECK_ROUNDS,
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
+        coordinates=_stacked_positions(vertices, 1),
     )
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
@@ -1311,6 +1316,25 @@ def _stacked_fields(
     storage = _launch.zeros((rows + 1) // 2, dtype=wp.vec2d, device=device)
     flat = storage.view(wp.float64).flatten()
     return odt.as_dense(storage[:n_vertices]), odt.as_dense(flat[:rows])
+
+
+def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[wp.vec3]:
+    """
+    Return the vertex of every row of ``_stacked_fields``' stack.
+
+    A vector system's two rows, then each scalar system's one: the ordering of the factorization a
+    failed settle falls back to.
+    """
+    n_vertices = vertices.size
+    positions = _launch.empty((2 + n_scalars) * n_vertices, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
+        kernel_heat.stacked_positions,
+        dim=n_vertices,
+        inputs=[vertices, wp.int32(n_scalars)],
+        outputs=[positions],
+        device=vertices.device,
+    )
+    return positions
 
 
 def tangent_to_world(

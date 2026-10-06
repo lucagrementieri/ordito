@@ -40,6 +40,8 @@ import igl
 import numpy as np
 import potpourri3d as pp3d
 import pytest
+import scipy.sparse as sp
+import scipy.sparse.linalg as spla
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
@@ -83,6 +85,45 @@ def icosphere5(device: str) -> Icosphere5:
     mesh_tm = _icosphere5_tm()
     vertices_wp, faces_wp = numpy_to_warp(mesh_tm.vertices, np.ravel(mesh_tm.faces), device)
     return mesh_tm, vertices_wp, faces_wp
+
+
+GradedSaddle = tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]
+
+
+@functools.cache
+def _graded_saddle_np() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return a ``68 x 68`` grid lifted onto a saddle, its spacing cubed along one axis.
+
+    ``benchmarks``' ``saddle_graded`` at a quarter of the vertices: worst aspect ratio in the
+    thousands.
+    """
+    k = 68
+    step = np.linspace(-1.0, 1.0, k)
+    u, v = np.meshgrid(np.sign(step) * np.abs(step) ** 3, step, indexing="ij")
+    vertices = np.column_stack((u.ravel(), v.ravel(), 0.35 * (u * u - 0.6 * v * v).ravel()))
+    i, j = np.meshgrid(np.arange(k - 1), np.arange(k - 1), indexing="ij")
+    corner = (i * k + j).ravel()
+    faces = np.vstack(
+        (
+            np.column_stack((corner, corner + k, corner + k + 1)),
+            np.column_stack((corner, corner + k + 1, corner + 1)),
+        )
+    )
+    return vertices, faces.astype(np.int64)
+
+
+@pytest.fixture
+def graded_saddle(device: str) -> GradedSaddle:
+    """
+    Return the graded saddle and its device buffers.
+
+    The heat system there is ill-conditioned in places (Jacobi-scaled condition number in the
+    millions), which is what the settle rule cannot see.
+    """
+    vertices_np, faces_np = _graded_saddle_np()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, np.ravel(faces_np), device)
+    return vertices_np, faces_np, vertices_wp, faces_wp
 
 
 # --------------------------------------------------------------------------
@@ -365,6 +406,34 @@ def test_heat_geodesic_matches_igl_far_from_the_sources(
     ).numpy()
     assert np.ptp(distance_igl) > 1.0
     assert np.abs(distance_wp - distance_igl).max() < 5e-3 * np.ptp(distance_igl)
+
+
+@pytest.mark.parametrize("reuse", [False, True], ids=["one_shot", "operators"])
+def test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d(
+    device: str, graded_saddle: GradedSaddle, reuse: bool
+) -> None:
+    """
+    Class A at 1e-3 of the distance range against geometry-central's factorized heat method.
+
+    The settle rule stopped the heat solve on round-off: on this mesh conjugate gradient's
+    iterate "settles" with the far field wrong by up to 1e30 relative, and the distance was 38 % of
+    the range off potpourri3d (and 4.4 % mean, 38 % worst off ``igl.exact_geodesic``, against the
+    method's own 1.1 % / 6.2 %). The settled iterate's componentwise backward error flags it and
+    the solve falls back to a direct factorization. Measured agreement 2.6e-4 of the range, both
+    one-shot and with reused operators (whose second call goes to the factorization directly).
+    """
+    vertices_np, faces_np, vertices_wp, faces_wp = graded_saddle
+    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    operators = od.heat.heat_operators(vertices_wp, faces_wp) if reuse else None
+    for _ in range(2 if reuse else 1):
+        distance_wp = od.heat.heat_geodesic(
+            vertices_wp, faces_wp, sources_wp, operators=operators
+        ).numpy()
+        distance_pp = pp3d.MeshHeatMethodDistanceSolver(
+            vertices_np, faces_np.astype(np.int32), use_robust=False
+        ).compute_distance(0)
+        assert np.ptp(distance_pp) > 1.0
+        assert np.abs(distance_wp - distance_pp).max() < 1e-3 * np.ptp(distance_pp)
 
 
 def test_heat_geodesic_approximates_exact(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -1126,6 +1195,46 @@ def test_transport_tangent_vectors_matches_potpourri3d(
     # locus)
     # the transported direction is genuinely undefined and the two libraries disagree freely there.
     assert np.median(angle) < 2.0
+
+
+def test_transport_on_a_graded_mesh_matches_a_direct_solve(
+    device: str, graded_saddle: GradedSaddle
+) -> None:
+    """
+    Class A at 1e-3 degrees: transported directions against ``scipy``'s solve of the same system.
+
+    The direction of a transported vector is the direction of the diffused vector field at that
+    vertex (the magnitude extension only rescales it), so the reference is ``spsolve`` on
+    ``vector_heat_operators``' own system. The settle rule used to stop this solve on round-off:
+    the median direction was 4.8e-3 degrees off and the worst 180 degrees. Measured agreement
+    2.4e-6 degrees after the backward-error fallback.
+    """
+    _, _, vertices_wp, faces_wp = graded_saddle
+    n_vertices = vertices_wp.size
+    operators = od.heat.vector_heat_operators(vertices_wp, faces_wp)
+    offsets = operators[0].offsets.numpy()[: n_vertices + 1]
+    system_sp = sp.bsr_matrix(
+        (
+            operators[0].values.numpy()[: offsets[-1]],
+            operators[0].columns.numpy()[: offsets[-1]],
+            offsets,
+        ),
+        shape=(2 * n_vertices, 2 * n_vertices),
+    )
+    rhs_np = np.zeros(2 * n_vertices)
+    rhs_np[0] = 1.0
+    field_np = spla.spsolve(system_sp.tocsc(), rhs_np)
+    expected = field_np[0::2] + 1j * field_np[1::2]
+    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
+    vectors_wp = wp.array(np.array([[1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=device)
+    transported_wp, resolved_wp = od.heat.transport_tangent_vectors(
+        vertices_wp, faces_wp, sources_wp, vectors_wp, operators=operators
+    )
+    transported = transported_wp.numpy()
+    resolved = resolved_wp.numpy()
+    angle = np.degrees(np.abs(np.angle((transported[:, 0] + 1j * transported[:, 1]) / expected)))
+    assert resolved.all()
+    assert angle.max() < 1e-3
 
 
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)

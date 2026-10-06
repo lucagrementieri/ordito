@@ -5540,6 +5540,32 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 
 ### 16.10 `heat` (diffusion, settle test, far field)
 
+- **A settled iterate is not a solved one: the settle rule stopped the heat diffusions on
+  round-off wherever the system is ill-conditioned in places** (2026-10-07). On `saddle_graded`
+  (Jacobi-scaled condition number 2.8e4 of the heat system) conjugate gradient's iterate "settles"
+  with 66 % of its entries off by more than 1e-3 relative (median 29, worst 4e30) and
+  `heat_geodesic` was 10.2 % mean / 49.7 % worst of the range off `igl.exact_geodesic` (potpourri3d
+  1.15 / 5.77, the method's own error); transported directions were off by a median 7.3 degrees and
+  up to 180 against `spsolve`. Raising `settle_rounds` does not help (4 096 rounds: settles at 1 712
+  with the worst entry still 1e18 off, distance 3.9 % / 35 %): it is finite-precision CG, not the
+  stop. `dragon` is as bad (98 % of the reached vertices, worst 1e89). Multigrid-preconditioned
+  CG is worse still (§16.15). **What separates them is the componentwise backward error**
+  `|b - A x|_i / (|A||x| + |b|)_i` of the result: ~4e-8 on every genuinely settled field (spheres,
+  `saddle`, `hemisphere`, both bunnies), 1.8e-3 on a mildly graded saddle (exponent 1.25), 1.0 on
+  the failures. A conditioning bound was tried as the trigger and does not separate them
+  (`bunny_decimated` reads 1.9e4 and is fine; a 1.5-graded saddle reads 392 and is broken).
+  `solve_spd_settled` now verifies its result against `SETTLE_BACKWARD_ERROR = 1e-6` (one 4-byte
+  read) and on failure solves by a `cholesky.sparse_cholesky` factorization, kept for the operator
+  so its later solves skip the CG (§16.16). Fixed: 1.11 % / 5.74 % on `saddle_graded` (potpourri3d
+  1.15 / 5.77); the 68 x 68 graded saddle's one-shot and reused-operator distance is 2.6e-4 of the
+  range off potpourri3d (was 0.38) and its transport 2.4e-6 degrees off `spsolve` (was 180);
+  `test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d` /
+  `test_transport_on_a_graded_mesh_matches_a_direct_solve` fail on the old code. Cost, interleaved
+  A/B: the verification read 0.95-1.01x on every well-conditioned row; the graded one-shot rows pay
+  the CG that failed plus the factorization (`heat_geodesic` 0.75x, `transport` 0.23x, `log_map`
+  0.58x, `extend_scalar` 0.56x, now correct), the graded reused-operator rows go straight to the
+  factor (`heat_geodesic` 1.13x, its Poisson CG is the rest; `transport` 10.3x, 6.1 -> 0.59 ms,
+  potpourri3d 3.0).
 - **`heat_geodesic` was wrong far from its sources past a dozen rings, and the same defect sat
   under every heat-diffusion entry point.** On `icosphere(5)` from one source the worst error was
   2.34 against the great-circle distance (igl 0.019). A CG iterate after `k` rounds is a
@@ -6007,6 +6033,16 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 
 ### 16.15 Preconditioners (Jacobi-Chebyshev, squared-Laplacian, adaptive, multigrid)
 
+- **REFUTED: multigrid for the heat diffusions** (2026-10-07). Smoothed-aggregation-preconditioned
+  CG on `saddle`'s heat system reaches a residual of 1e-10 to 1e-16 in 8-13 iterations, and the
+  field is wrong: median relative error 1e14-1e18, distance 24-31 % mean off exact against the
+  exact heat's 0.6 %. A preconditioner that couples the whole mesh leaves an error of order
+  machine epsilon times the peak in every entry, which swamps entries hundreds of orders below it;
+  only where the field's range fits in `float64`'s epsilon (`sphere_small`, 1e-16) does it work.
+  Componentwise accuracy needs either a Krylov-local iteration (the settle CG, which itself fails
+  where the system is ill-conditioned in places, §16.10) or a factorization whose arithmetic adds
+  terms of one sign (an M-matrix's Cholesky).
+
 - **A single-level Jacobi-Chebyshev preconditioner wins on long Laplacian solves**
   (`linalg.chebyshev_preconditioner`, `preconditioner="chebyshev"`, `z = p(D⁻¹A) D⁻¹ r` at
   `CHEBYSHEV_DEGREE = 12`, one fused launch per step; `CHEBYSHEV_INTERVAL = 80`). The earlier claim
@@ -6268,6 +6304,40 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   Round counts equal the `W=16` column of the need measurement exactly (saddle 304, `sphere_med`
   256, `sphere_small` 112 / 96). The settle solves are bound by their round count (§16.1).
 - **A settle solve reads a `float32` copy of its operator** (§16.10).
+
+#### The direct factorization (`ordito.cholesky`)
+
+- **`sparse_cholesky` is a supernodal multifrontal Cholesky with level-scheduled partitioned-
+  inverse solves, all on the device** (2026-10-07). Ordering: nested dissection, every subset of a
+  depth split in one vectorized NumPy pass at the median of its principal axis (geometric with
+  vertex coordinates; over hop distances from three mutually far vertices without), separator the
+  smaller endpoint set of the crossing edges, leaves of 32 rows, each tree's top merged while it
+  holds at most `CHOLESKY_TOP_ROWS = 512` rows (fewer solve levels). Fill on the benchmark meshes
+  ~50-60 entries a row (landmark ordering 2x the flops on `sphere_med`, equal on saddles). Numeric:
+  `float64` fronts in one arena, level by level, each panel of 16 columns three launches (one warp
+  factors the 16-square diagonal block, then one thread per row below it and per solve-block
+  column, then one thread per trailing entry), every front of the level at once; each front also
+  writes its solve block `[L11^-1; -L21 L11^-1]`. Solve: per level a gather, an 8-entry chunked
+  product per row and a fixed-order chunk sum (forward), and the transposed pair (backward); no
+  float atomics, so solves repeat bit for bit; refined against the operator until the residual
+  passes its test, componentwise for the heat fields. Graph-recorded with `capture_while` and
+  replayed. Symbolic analysis is cached per pattern content (`_PLAN_CACHE`, 4 entries).
+- **Measured** (heat system `M - tL`, RTX 5090): numeric refactor 1.7 / 2.2 / 4.1 ms
+  (`sphere_small` / `saddle_graded` / `sphere_med`), against a level-batched cuSOLVER yardstick
+  (torch) of 1.5 / 5.4 / 8.0 ms in `float64`; a solve 0.11 / 0.20 / 0.25 ms (two residual tests
+  and one triangular-solve pair; settle CG 1.2 / 3.8 / 3.5 ms); host analysis 30 / 70 / 220 ms the
+  first time a pattern is seen (nested dissection and the task maps), ~0 after. Componentwise
+  agreement with `spsolve` 3e-15 to 2e-12, the far field included.
+- **`float64` factor, not `float32` plus refinement**: a `float32` factor converged under float64
+  refinement (heat componentwise in 2-3 refinements, the graded Laplacian in 4-12) but every
+  refinement is a solve; the `float64` factor's one solve passes the test at once, and its numeric
+  factorization is latency-bound, not throughput-bound, so `float64` cost little.
+- **Decisions that read as missing**: the one-block-per-front kernel for small fronts was removed
+  (the panel path is as fast at every front size, 1.69 vs 1.77 ms); panel width 16 (8 equal, 32
+  1.75x slower); row-per-thread unchunked solve dots lose to 8-entry chunks plus a sum pass (a
+  dependent `float64` FMA costs ~44 ns on this part, so long serial dots are latency-bound: 0.72 vs
+  0.11 ms on `sphere_small`); per-row `float64` atomics in the forward solve were replaced by
+  fixed-order slot sums for reproducibility at no measurable cost.
 
 #### One-block solves
 

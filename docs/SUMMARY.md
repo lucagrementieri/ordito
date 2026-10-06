@@ -79,6 +79,7 @@ Shelving decisions that are not obvious from the section titles:
         * [laplacian](api/ordito/laplacian.md)
         * [energies](api/ordito/energies.md)
         * [linalg](api/ordito/linalg.md)
+        * [cholesky](api/ordito/cholesky.md)
         * [interpolation](api/ordito/interpolation.md)
         * [parametrization](api/ordito/parametrization.md)
     * Geodesics & heat-method solvers
