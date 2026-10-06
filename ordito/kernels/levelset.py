@@ -693,12 +693,12 @@ def resolve_crossing_endpoints(
 MC_TRI_BASE = len(IsoSurfaceMarchingCubes.CASE_TO_TRI_RANGE)
 MC_EDGE_BASE = MC_TRI_BASE + len(IsoSurfaceMarchingCubes.TRI_LOCAL_INDICES)
 
-_MC_CORNERS = IsoSurfaceMarchingCubes.CUBE_CORNER_OFFSETS
+MC_CORNERS = IsoSurfaceMarchingCubes.CUBE_CORNER_OFFSETS
 
 
 def _packed_edge(first: int, second: int) -> int:
     """One cube edge packed as ``owner offset | axis << 3``: its lower corner and its axis."""
-    a, b = _MC_CORNERS[first], _MC_CORNERS[second]
+    a, b = MC_CORNERS[first], MC_CORNERS[second]
     owner = [min(a[c], b[c]) for c in range(3)]
     axis = next(c for c in range(3) if a[c] != b[c])
     return owner[0] | (owner[1] << 1) | (owner[2] << 2) | (axis << 3)
@@ -713,6 +713,54 @@ MARCHING_CUBES_TABLE = (
     + tuple(IsoSurfaceMarchingCubes.TRI_LOCAL_INDICES)
     + MARCHING_CUBES_EDGES
 )
+
+
+@wp.func
+def mc_values_cross(here: wp.float32, there: wp.float32, iso: wp.float32) -> wp.int32:
+    # 1 when an edge whose ends hold ``here`` and ``there`` straddles ``iso`` (``>=`` on one end,
+    # ``<`` on the other: Warp's test, so a NaN end never crosses). Shared with the narrow-band
+    # extraction in ``kernels/algorithms/poisson_band``, which reads a composite field.
+    return wp.where((here >= iso and there < iso) or (here < iso and there >= iso), 1, 0)
+
+
+@wp.func
+def mc_edge_vertex(
+    lower: wp.vec3,
+    delta: wp.vec3,
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+    axis: wp.int32,
+    here: wp.float32,
+    there: wp.float32,
+    iso: wp.float32,
+    margin: wp.float32,
+) -> wp.vec3:
+    # The vertex on the crossing edge from node ``(i, j, k)`` along ``axis``: Warp's
+    # ``extract_vertices_kernel`` arithmetic statement for statement, which is what keeps the dense
+    # extraction bit-identical to it. ``margin`` 0 is Warp's ``clamp(t, 0, 1)`` exactly; above 0
+    # it keeps the vertex that fraction of the edge off both nodes (``marching_cubes``'
+    # ``edge_margin``).
+    io = i + wp.where(axis == 0, 1, 0)
+    jo = j + wp.where(axis == 1, 1, 0)
+    ko = k + wp.where(axis == 2, 1, 0)
+    t = (iso - here) / (there - here)
+    t = wp.clamp(t, margin, 1.0 - margin)
+    here_pos = lower + wp.vec3(
+        wp.float32(i) * delta.x, wp.float32(j) * delta.y, wp.float32(k) * delta.z
+    )
+    there_pos = lower + wp.vec3(
+        wp.float32(io) * delta.x, wp.float32(jo) * delta.y, wp.float32(ko) * delta.z
+    )
+    return wp.lerp(here_pos, there_pos, t)
+
+
+@wp.func
+def mc_triangle_edge(table: wp.array[wp.int32], slot: wp.int32) -> wp.vec4i:
+    # The cube edge a triangle corner sits on, from its ``TRI_LOCAL_INDICES`` slot: the owner
+    # corner's offset from the cell's lower node and the edge's axis.
+    packed = table[MC_EDGE_BASE + table[MC_TRI_BASE + slot]]
+    return wp.vec4i(packed & 1, (packed >> 1) & 1, (packed >> 2) & 1, packed >> 3)
 
 
 @wp.func
@@ -731,9 +779,7 @@ def mc_edge_crosses(
     ko = k + wp.where(axis == 2, 1, 0)
     if io >= field.shape[0] or jo >= field.shape[1] or ko >= field.shape[2]:
         return 0
-    here = field[i, j, k]
-    there = field[io, jo, ko]
-    return wp.where((here >= iso and there < iso) or (here < iso and there >= iso), 1, 0)
+    return mc_values_cross(field[i, j, k], field[io, jo, ko], iso)
 
 
 @wp.func
@@ -745,9 +791,9 @@ def mc_case_code(
     code = wp.int32(0)
     for c in range(8):
         value = field[
-            i + wp.static(_MC_CORNERS[c][0]),
-            j + wp.static(_MC_CORNERS[c][1]),
-            k + wp.static(_MC_CORNERS[c][2]),
+            i + wp.static(MC_CORNERS[c][0]),
+            j + wp.static(MC_CORNERS[c][1]),
+            k + wp.static(MC_CORNERS[c][2]),
         ]
         if value >= iso:
             code += wp.static(1 << c)
@@ -805,8 +851,7 @@ def marching_cubes_emit(
 ) -> None:
     # Writes node ``(i, j, k)``'s crossing-edge vertices and its cell's triangles at the slots the
     # inclusive scan of ``marching_cubes_counts`` gives (each count is subtracted back off its
-    # inclusive total). The vertex arithmetic is Warp's ``extract_vertices_kernel``'s, statement for
-    # statement, which is what keeps the positions bit-identical to it.
+    # inclusive total). The vertex arithmetic is ``mc_edge_vertex``'s.
     i, j, k = wp.tid()
     ny = field.shape[1]
     nz = field.shape[2]
@@ -819,33 +864,25 @@ def marching_cubes_emit(
     slot = ends[0] - (crossing[0] + crossing[1] + crossing[2])
     for axis in range(3):
         if crossing[axis] != 0:
-            io = i + wp.where(axis == 0, 1, 0)
-            jo = j + wp.where(axis == 1, 1, 0)
-            ko = k + wp.where(axis == 2, 1, 0)
-            here = field[i, j, k]
-            there = field[io, jo, ko]
-            t = (iso - here) / (there - here)
-            # ``margin`` 0 is Warp's ``clamp(t, 0, 1)`` exactly; above 0 it keeps every vertex that
-            # fraction of the edge off both lattice nodes (``marching_cubes``' ``edge_margin``).
-            t = wp.clamp(t, margin, 1.0 - margin)
-            here_pos = lower + wp.vec3(
-                wp.float32(i) * delta.x, wp.float32(j) * delta.y, wp.float32(k) * delta.z
+            there = field[
+                i + wp.where(axis == 0, 1, 0),
+                j + wp.where(axis == 1, 1, 0),
+                k + wp.where(axis == 2, 1, 0),
+            ]
+            out_vertices[slot] = mc_edge_vertex(
+                lower, delta, i, j, k, axis, field[i, j, k], there, iso, margin
             )
-            there_pos = lower + wp.vec3(
-                wp.float32(io) * delta.x, wp.float32(jo) * delta.y, wp.float32(ko) * delta.z
-            )
-            out_vertices[slot] = wp.lerp(here_pos, there_pos, t)
             slot += 1
 
     cell = mc_cell_triangles(field, iso, table, i, j, k)
     first_face = ends[1] - cell[1]
     for tri in range(cell[1]):
         for s in range(3):
-            packed = table[MC_EDGE_BASE + table[MC_TRI_BASE + cell[0] + 3 * tri + s]]
-            oi = i + (packed & 1)
-            oj = j + ((packed >> 1) & 1)
-            ok = k + ((packed >> 2) & 1)
-            axis = packed >> 3
+            edge = mc_triangle_edge(table, cell[0] + 3 * tri + s)
+            oi = i + edge[0]
+            oj = j + edge[1]
+            ok = k + edge[2]
+            axis = edge[3]
             # The owner's vertices sit at the end of its scanned count, in axis order, so this
             # edge's is its total less one less each crossing edge on a higher axis. An edge the
             # case table names but the crossing test rejects -- only possible with a NaN corner,

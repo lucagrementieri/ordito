@@ -3425,8 +3425,9 @@ The serial BVH being worse than the hash grid shows the win is the tiled travers
 structure; it spends 32 lanes on a query the device could already saturate, which is the crossover.
 
 - **Do not re-run the tree-wide sweep**: exactly one of three hash-grid usages could take it.
-  `neighbors.query_*` runs past the crossover, `poisson_fem.refinement_oracle` has no block to
-  cooperate over (`warp.fem` owns the launch shape), `ball_pivoting`'s pivot search qualified on its
+  `neighbors.query_*` runs past the crossover, `poisson_fem.refinement_oracle` (the warp.fem
+  Poisson backend, removed 2026-10-07) had no block to cooperate over (`warp.fem` owns the launch
+  shape), `ball_pivoting`'s pivot search qualified on its
   few-hundred-edge front. Its empty-ball test stays a per-lane serial hash-grid query (each lane
   tests a different ball).
 - **A bespoke cell list bounds what an index could be worth**: 1.3-1.7x faster single-threaded
@@ -4247,7 +4248,9 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   in key order, which *is* `resolve_duplicated_faces`' output order, so
   `_clean_reconstruction(deduplicate=False)` skips that stage (every face reaching it has a
   distinct vertex set).
-- **`warp.fem` gotchas, each a plausible wrong answer rather than an error**: an `ImplicitField`
+- **`warp.fem` gotchas** (the former `method="adaptive"` backend, superseded on 2026-10-07 by the
+  band backend below; kept for whoever revives a `warp.fem` path), **each a plausible wrong answer
+  rather than an error**: an `ImplicitField`
   func must have no return annotation; `allocate_by_voxels` is voxel-*centered* (the extraction
   lattice needs a half-voxel translation or a spurious surface component appears); solve in
   *index space* so the screening-versus-stiffness balance matches the dense calibration; a
@@ -4264,15 +4267,40 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   0.0005 -- against a discretization scale of 0.13 cells (depth 9 vs 8). Extraction is now
   `levelset.marching_cubes`' port (§16.5), 1.03-1.04x on the whole call at depths 7-9 (the
   standalone 2.9x is mostly allocation the warm pool already hides here).
-- **A narrow-band brick hierarchy was prototyped, not adopted** (awaiting a decision). Finest
-  data only, every coarser level's right-hand side and screening its `Pᵀ` restriction (the MG
-  operator `2^(L-l) L_l + s W_l`), a dense depth-7 base, 8³ bricks near the samples above it,
-  Dirichlet ghosts `P x_coarse`: 10-19x at depth 9 (bunny, dragon), 3.5-5x at depth 8, and depth
-  10 runs (80 ms on dragon; dense is out of memory there). Error 0.01-0.04 cells against dense,
-  shrinking with band width, not rounds. **Independently splatted coarse levels cannot supply the
-  Dirichlet values**: the converged depth-8 and depth-9 dense solutions are not one scale apart
-  (ratio 0.5-0.67 near the surface, 0.33 far, screening is not level-normalized), which put 0.15
-  cells of error in a band that grew with more rounds.
+- **`method="adaptive"` is the narrow-band brick backend** (2026-10-07,
+  `reconstruction._screened_poisson_band`, `kernels/algorithms/poisson_band`), replacing the
+  `warp.fem` Nanogrid backend. Finest data only: every coarser level's right-hand side and
+  screening are its `Pᵀ` restriction and its operator the dense MG's `2^(L-l) L_l + s W_l`; a
+  dense base at `max(full_depth, depth - 2)` solved by the dense MG-PCG; above it 8³-node bricks
+  around the samples (plus the one-node divergence margin) and the bricks the base surface crosses,
+  each coarser band the finer one projected and grown a brick; each band level solves for itself
+  with Dirichlet ghosts `P x_coarse` by Jacobi-PCG through the shared CG kernels (30 rounds,
+  16 at the finest); extraction on the composite field over the finest band grown a brick, with
+  the dense port's numbering and `edge_margin`. Misses (restriction or ghost) and unownable
+  crossing cells are counted on the device: zero everywhere measured, pinned by a test.
+  **Independently splatted coarse levels cannot supply the Dirichlet values**: the converged
+  depth-8 and depth-9 dense solutions are not one scale apart (ratio 0.5-0.67 near the surface,
+  0.33 far; screening is not level-normalized), which put 0.15 cells of error in a band that grew
+  with more rounds.
+  Interleaved mins, one process per mesh; error mean in finest cells vs dense / vs input:
+
+  | mesh, depth | dense | warp.fem | band | band vs dense | vs input dense / fem / band |
+  |---|---|---|---|---|---|
+  | bunny_decimated 7 / 8 / 9 | 7.1 / 28.1 / 183 ms | 59 / 60 / 75 | 4.5 / 7.7 / 26.6 | 0.013 / 0.019 / 0.110 | d9: 0.344 / 0.511 / 0.313 |
+  | bunny 7 / 8 / 9 | 7.9 / 31.7 / 219 | 108 / 282 / 312 | 4.6 / 7.7 / 28.0 | 0.012 / 0.012 / 0.022 | d9: 0.178 / 0.258 / 0.177 |
+  | dragon 7 / 8 / 9 | 8.6 / 38.3 / 258 | 1 595 / 2 675 / 8 239 | 4.5 / 6.5 / 17.9 | 0.013 / 0.011 / 0.011 | d9: 0.0356 / 0.0582 / 0.0396 |
+  | depth 10, bunny_decimated / bunny / dragon | out of memory | 74 / 310 / OOM | 120 / 124 / 98 | -- | band d10 beats dense d9 against the input on bunny and dragon |
+
+  Decisions: **the band supersedes `warp.fem`** (13-460x faster, and better or equal against the
+  input and open3d everywhere but dragon at depths 7-8, where the variational assembly is closer
+  at equal depth -- 0.032 vs 0.062 cells at depth 7 -- and still loses to the band one depth
+  finer at a hundredth of the time). **`dense` stays the default**: against the input the band is
+  equal on bunny, better on the sparse bunny_decimated, and 2-11 % worse on dragon (depth 9 0.0396
+  vs 0.0356 cells). A brick of extra dilation (0.0390) or 30 finest rounds on top (0.0380, 1.93x
+  the call) do not close it, so the gap is the rediscretized coarse operator, not the band width.
+  **OPEN: FAS tau-correction** (restrict the composite residual over band plus ghost layer, correct
+  the coarse level, re-solve the band) is the principled fix for that gap; not built.
+  `fem.adaptive_nanogrid_from_field` was 182 of the old backend's 400 ms at bunny depth 9.
 - **FIXED (2026-10-06): the depth-9 output was opened by its own degenerate-face cleanup.**
   `face_nondegenerate_mask` rejects an altitude or edge under `TOLERANCE_MERGE = 1e-8`, an
   *absolute* length, and a marching-cubes vertex lands within rounding of a lattice node wherever
@@ -4300,7 +4328,8 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   ceiling), 8.64 -> 4.99 GB on bunny, identical matrix and surface, `happy_buddha` d9 runs too,
   and the adaptive rows 1.12-1.19x faster. `fem.integrate(output=, add=True)` is not an
   alternative: it merges through the same stale-`nnz` axpy and fails the same way. Pinned by
-  `test_poisson_adaptive_merges_its_operators_at_their_true_size`. compute-sanitizer also flags a
+  `test_poisson_adaptive_merges_its_operators_at_their_true_size` (removed with the backend the next
+  day, when the band backend superseded it). compute-sanitizer also flags a
   Warp-internal 512-byte CUB scan over-read (321 bytes past a 317-byte allocation) inside
   `wp_volume_from_active_voxels_device` (the Nanogrid build), on every adaptive call; benign
   outside the sanitizer, where it makes `Volume` creation fail -- an upstream report, not this

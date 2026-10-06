@@ -536,6 +536,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # it cannot be a kernel local -- but it is neither an input nor the answer, so ``out_`` would
     # misread.
     ("reconstruction", "lexicographic_triangulation"): frozenset({"hull"}),
+    # in-place: a band level's right-hand side, its Dirichlet ghosts moved onto it.
+    ("algorithms.poisson_band", "band_level_setup"): frozenset({"b"}),
     # ``edges`` is absent deliberately: this kernel mutates the table only through
     # ``register_face_edge``, and check 13 does not follow writes into a called ``@wp.func``.
     ("algorithms.ball_pivoting", "commit_triangles"): frozenset({"counters", "point_used"}),

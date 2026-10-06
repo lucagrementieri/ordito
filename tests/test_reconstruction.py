@@ -27,7 +27,6 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
-import ordito.typing as odt
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from tests.comparisons import (
@@ -41,6 +40,7 @@ from tests.comparisons import (
     symmetric_surface_distance,
     undirected_edges,
 )
+from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
     meshlib_to_trimesh,
     numpy_to_meshlib,
@@ -1019,24 +1019,80 @@ def test_poisson_small_scale_cloud_is_watertight_without_degenerate_faces(device
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
-def test_poisson_adaptive_matches_dense(device: str):
-    points_np, normals_np = _sphere_cloud(4)
+def _surface_cloud(mesh_tm: tm.Trimesh, n_points: int) -> tuple[np.ndarray, np.ndarray]:
+    """Sample a fixture's surface uniformly (seeded) with its face normals, as an oriented cloud."""
+    sample = tm.sample.sample_surface(mesh_tm, n_points, seed=np.random.default_rng(11))
+    return np.asarray(sample[0], np.float64), np.asarray(mesh_tm.face_normals[sample[1]])
+
+
+@pytest.mark.parametrize("mesh_name", CLOSED_MESHES)
+def test_poisson_adaptive_matches_dense(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Ordito against ordito: the narrow-band backend reconstructs the dense backend's surface.
+
+    The band backend solves the dense lattice's own system, stored only near the surface, with the
+    lattice away from it held at the coarser levels' prolonged solution; the dense backend carries
+    the open3d and pymeshlab comparisons above. Measured in finest-cell units on a seeded surface
+    sample of each closed fixture (convex, and a hollow shell with an inner surface), the two sit
+    well under a tenth of a cell apart, against a cell of discretization error in either; the bound
+    is in cells so it means the same at either device's depth.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = str(mesh_wp.points.device)
+    points_np, normals_np = _surface_cloud(mesh_tm, 20_000)
     points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    depth = _poisson_depth(device) + 1
+    cell = 1.1 * float(np.ptp(points_np, axis=0).max()) / 2**depth
 
     vertices_dense, faces_dense = od.reconstruction.screened_poisson(
-        points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="dense"
+        points_wp, normals_wp, depth=depth, full_depth=4, method="dense"
     )
-    vertices_adaptive, faces_adaptive = od.reconstruction.screened_poisson(
-        points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="adaptive"
+    vertices_band, faces_band = od.reconstruction.screened_poisson(
+        points_wp, normals_wp, depth=depth, full_depth=4, method="adaptive"
     )
-    # Same iso-surface on two different grids, so a surface metric rather than a correspondence.
-    # Its old ``symmetric_chamfer(...) < 0.05`` sat only 1.8x above that helper's 0.028 sampling
-    # floor, which is most of what it was measuring; sample-to-surface has no floor.
-    mean_distance, _ = symmetric_surface_distance(
-        warp_to_trimesh(vertices_dense, faces_dense),
-        warp_to_trimesh(vertices_adaptive, faces_adaptive),
+
+    assert od.validation.is_watertight(vertices_band, faces_band)
+    mean_distance, max_distance = symmetric_surface_distance(
+        warp_to_trimesh(vertices_dense, faces_dense), warp_to_trimesh(vertices_band, faces_band)
     )
-    assert mean_distance < 0.02
+    # Measured 0.005-0.011 cells mean and 0.10-0.16 cells worst on both devices; the bounds are
+    # 3.6x and 3x that. Not solving the band levels at all (``_BAND_ROUNDS = 0``, the prolonged
+    # coarse field alone) puts the mean at 0.09-0.11 cells on CUDA, so the mean bound bites.
+    assert mean_distance < 0.04 * cell
+    assert max_distance < 0.5 * cell
+
+
+def test_poisson_band_nests_and_extracts_closed(device: str) -> None:
+    """
+    Not a library comparison: the band hierarchy loses nothing, and its extraction is closed.
+
+    ``_screened_poisson_band`` counts, on the device, every coarse node a restriction or a
+    Dirichlet ghost found missing from the coarser band, and every crossing cell its extraction
+    band could not own; both are impossible by the bands' nesting, so both must be zero. The raw
+    extraction, before ``screened_poisson``'s cleanup, must already be watertight and free of
+    degenerate faces -- the property the band's composite field and edge margin are for.
+    """
+    points_np, normals_np = _sphere_cloud(4)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    lower, _upper, size = od.reconstruction._poisson_cube(points_wp, 1.1)  # pyright: ignore[reportPrivateUsage]
+    diagnostics = wp.zeros(2, dtype=wp.int32, device=device)
+    vertices_wp, faces_wp = od.reconstruction._screened_poisson_band(  # pyright: ignore[reportPrivateUsage]
+        points_wp,
+        normals_wp,
+        lower,
+        size,
+        depth=_poisson_depth(device) + 1,
+        full_depth=4,
+        screen=4.0,
+        solver_iterations=100,
+        solver_tolerance=1e-5,
+        confidence=False,
+        diagnostics=diagnostics,
+    )
+    assert np.array_equal(diagnostics.numpy(), [0, 0])
+    assert faces_wp.size > 0
+    assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
 
 
 def test_poisson_adaptive_confidence_runs(device: str):
@@ -1053,44 +1109,6 @@ def test_poisson_adaptive_confidence_runs(device: str):
     )
     assert od.validation.is_watertight(vertices_wp, faces_wp)
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
-
-
-def test_poisson_adaptive_merges_its_operators_at_their_true_size(
-    device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Not a library comparison: the stiffness-plus-screening merge sees true entry counts.
-
-    ``fem.integrate`` leaves a matrix's ``nnz`` field at its triplet capacity, and ``bsr_axpy``
-    sizes its merge from that field: on ``dragon`` at depth 9 the merge asked for four times the
-    entries the two operators hold, exhausted the device inside a Warp call that does not report
-    it, and the solve died later with CUDA error 700 -- too large a case for a test, so this pins
-    the cause instead. Both operands must reach ``bsr_axpy`` with ``nnz`` equal to their true
-    count; the arrays' larger capacity is asserted so the trap is live on this fixture.
-    """
-    seen: list[tuple[int, int, int]] = []
-    merge = odt.bsr_axpy
-
-    def recording_axpy(
-        x: odt.BsrMatrix[wp.float32], y: odt.BsrMatrix[wp.float32]
-    ) -> odt.BsrMatrix[wp.float32]:
-        for operand in (x, y):
-            n_rows = int(operand.nrow)
-            true_count = int(operand.offsets[n_rows : n_rows + 1].numpy()[0])
-            seen.append((int(operand.nnz), true_count, int(operand.values.shape[0])))
-        return merge(x, y)
-
-    monkeypatch.setattr(odt, "bsr_axpy", recording_axpy)
-    points_np, normals_np = _sphere_cloud(4)
-    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
-    od.reconstruction.screened_poisson(
-        points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="adaptive"
-    )
-
-    assert len(seen) == 2
-    for nnz_field, true_count, capacity in seen:
-        assert nnz_field == true_count
-        assert capacity > true_count
 
 
 # ---------------------------------------------------------------------------

@@ -11,7 +11,7 @@ and the figure is unchanged by ``warp.config.launch_array_access_mode`` at ``REL
 consequence: roughly 4x, one process against two.
 
 Both-device coverage earns the second process. It is what caught the ``warp.fem`` ambient-device
-leak in ``reconstruction._screened_poisson_adaptive`` -- broken for CPU input on any box with a GPU,
+leak in the former ``warp.fem`` Poisson backend -- broken for CPU input on any box with a GPU,
 and invisible to both a CUDA-only run (devices matched) and a ``CUDA_VISIBLE_DEVICES=""`` run
 (``warp.fem`` then defaults to CPU) -- and the module-scope ``wp.array`` in ``test_grouping``.
 

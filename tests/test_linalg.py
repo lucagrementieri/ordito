@@ -803,9 +803,10 @@ def test_solve_spd_float32_system_matches_numpy(
     Class A, against ``numpy.linalg.solve``, for a ``float32`` operator solved in place.
 
     A ``float32`` system keeps ``float32`` vectors and reduces its dots in ``float64``
-    (``reconstruction``'s ``warp.fem`` Poisson system is the caller). The ``heavy`` arm lowers the
-    thresholds so the round forms ``A u`` with ``warp.sparse.bsr_mv`` and reduces the dots in a
-    launch of their own -- the path for long rows on a long column, which no fixture here reaches.
+    (``reconstruction``'s former ``warp.fem`` Poisson system was the caller). The ``heavy`` arm
+    lowers the thresholds so the round forms ``A u`` with ``warp.sparse.bsr_mv`` and reduces the
+    dots in a launch of their own -- the path for long rows on a long column, which no fixture here
+    reaches.
     The tolerance is ``float32``'s.
     """
     if heavy:

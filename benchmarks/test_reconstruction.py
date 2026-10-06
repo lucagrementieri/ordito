@@ -73,8 +73,9 @@ Sizing notes:
   so a larger multiple completes; it is not benchmarked, because a ball that wide searches a much
   larger neighbourhood per pivot and measures a different thing.
 - ``screened_poisson`` in ``dense`` mode is dominated by the ``2 ** depth`` cubed node grid rather
-  than the point count, so it costs the same on ``bunny_decimated`` and ``bunny``; ``adaptive`` does
-  scale with the cloud. Both run at the default ``depth=8``.
+  than the point count, so it costs the same on ``bunny_decimated`` and ``bunny``; ``adaptive``
+  stores that grid only near the surface, so it scales with the surface instead, and is the only
+  backend with a depth-10 row (the dense lattice does not fit the device there).
 
 Everything is capped at ``bunny``, and the cap is load-bearing: point-cloud triangulation and ball
 pivoting are superlinear in the cloud size. The CPU screened-Poisson references made it
@@ -112,8 +113,9 @@ _BPA_RADIUS_FRACTION = 1.5
 
 # Octree depths of ``ordito.reconstruction.screened_poisson``. This is the module's dominant knob
 # by a wide margin: ``dense`` mode is a ``2^depth`` cubed node grid, so each step is ~8x the nodes
-# and the point count is almost secondary.
-_POISSON_DEPTHS = [7, 9]
+# and the point count is almost secondary. ``adaptive`` stores that grid only near the surface, so
+# it also runs at depth 10, where the dense grid does not fit the device.
+_POISSON_DEPTHS = [7, 9, 10]
 
 # A depth-9 dense solve and a ball-pivoting front are both seconds a call.
 _HEAVY_ROUNDS = 3
@@ -390,6 +392,8 @@ def test_screened_poisson(
     skip_larger_than(
         bench_case, "bunny", "screened Poisson above bunny dominates the suite (93 min at dragon)"
     )
+    if depth > 9 and (method == "dense" or bench_case.kind == "meshlib"):
+        pytest.skip("the dense 2^10 lattice does not fit the device; only the band backend runs")
     if bench_case.kind == "meshlib":
         if method == "adaptive":
             pytest.skip("its lattice is uniform: there is no adaptive variant to match")

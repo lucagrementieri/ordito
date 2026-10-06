@@ -24,9 +24,10 @@ its consumers in [`ordito.levelset`][ordito.levelset], and ``screened_poisson`` 
 
 from __future__ import annotations
 
+import functools
 import math
 import warnings
-from typing import TYPE_CHECKING, Literal, NamedTuple, cast
+from typing import Literal, NamedTuple, cast
 
 import numpy as np
 import warp as wp
@@ -38,17 +39,13 @@ from ordito import _launch
 from ordito._device import read_scalar, require_same_device, run_device_loop
 from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import array as kernel_array
+from ordito.kernels import levelset as kernel_levelset
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
 from ordito.kernels import remesh as kernel_remesh
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from ordito.kernels.algorithms import conjugate_gradient as kernel_cg
-
-if TYPE_CHECKING:
-    # Type-checking only: the adaptive-backend helpers import ``warp.fem`` lazily (inside the
-    # functions) so ``import ordito`` never pays its tens-of-seconds first-call codegen unused.
-    import warp.fem as fem
-
+from ordito.kernels.algorithms import poisson_band as kernel_poisson_band
 
 # Points from which the CUDA flip phase starts with Warp's own ``delaunay_edge_flip`` and lets the
 # float64 flip loop below finish from its output. Warp's pass alone is about twice as fast as the
@@ -479,15 +476,15 @@ def screened_poisson(
         When ``True``, weight each sample's splat by ``|normals[i]|`` (treating the normal magnitude
         as a per-sample confidence), matching PoissonRecon's ``confidence`` flag.
     method
-        Solver backend. ``"dense"`` (default) uses the dense node-centered grid described above.
-        ``"adaptive"`` uses a ``warp.fem`` adaptive Nanogrid refined only near the samples with a
-        variational (finite-element) assembly: fewer degrees of freedom for the same finest
-        resolution, so it reaches higher ``depth`` on the same memory budget. The two backends agree
-        up to discretization. A point-source weak form rings when the cells are much finer than the
-        sampling, so the adaptive backend caps the finest near-surface cell at roughly the mean
-        sample spacing (PoissonRecon-style); a ``depth`` above what the sampling supports then only
-        refines the extraction lattice. It lazily imports ``warp.fem`` (a one-time codegen cost of
-        tens of seconds on first use).
+        Solver backend. ``"dense"`` (default) solves on the whole node lattice described above.
+        ``"adaptive"`` solves the same lattice's system stored only near the surface: below
+        ``max(full_depth, depth - 2)`` the lattice is dense, and every finer level keeps only the
+        ``8**3``-node bricks around the samples and around the coarser level's surface, solving for
+        that band with the lattice away from it held at the coarser solution (every coarser level's
+        data is the finest level's, restricted, so that solution is a valid boundary value). Its
+        surface agrees with ``dense`` to a small fraction of a cell, its cost follows the surface
+        rather than the volume, and it runs at ``depth=10``, whose dense lattice does not fit a
+        32 GB device. With ``depth == full_depth`` there is no band and it is the dense solve.
 
     Returns
     -------
@@ -534,9 +531,9 @@ def screened_poisson(
     **Choosing ``depth``.** The useful depth follows the cloud's *sampling density*, not its size,
     and past that point extra depth costs time without buying fidelity -- once the grid outruns the
     samples, accuracy can get worse rather than better. The default of ``8`` matches PoissonRecon's
-    own; for a known cloud density it is worth lowering. The ``adaptive`` backend is much flatter in
-    depth (it already caps near-surface refinement at the sample spacing) and is the better choice
-    when the depth wanted for the extraction lattice exceeds what the sampling supports.
+    own; for a known cloud density it is worth lowering. The ``adaptive`` backend makes a finer
+    lattice affordable -- its cost follows the surface -- but not more faithful than the sampling
+    supports.
 
     **``point_weight=0`` is ill-conditioned.** Screening is what conditions the operator; at ``0``
     only the ``1e-4`` floor above keeps it SPD, so the conjugate gradient stops on a solution whose
@@ -568,12 +565,11 @@ def screened_poisson(
     # Effective screening weight: a floor keeps the operator SPD even at point_weight == 0.
     screen = max(float(point_weight), 1e-4)
 
-    if method == "adaptive":
-        vertices, faces = _screened_poisson_adaptive(
+    if method == "adaptive" and full_depth < depth:
+        vertices, faces = _screened_poisson_band(
             points,
             normals,
             cube_lower,
-            cube_upper,
             cube_size,
             depth=depth,
             full_depth=full_depth,
@@ -719,18 +715,30 @@ def _poisson_dense_solve(
     # One read of the counts, and one more only for a level that used its whole budget: a level
     # that stops at ``solver_iterations`` above its tolerance says so, as ``linalg.solve_spd`` does.
     for iterations, (res, residual_tolerance) in zip(counts.numpy(), level_results, strict=True):
-        if int(iterations) < solver_iterations:
-            continue
-        tolerance_sq, residual_sq = residual_tolerance.numpy()
-        residual, tolerance = math.sqrt(float(residual_sq)), math.sqrt(float(tolerance_sq))
-        if residual > tolerance:
-            warnings.warn(
-                f"screened_poisson: the {res}^3 level's conjugate gradient hit its "
-                f"{solver_iterations}-iteration cap with residual norm {residual:.3e} against "
-                f"tolerance {tolerance:.3e}; raise solver_iterations or solver_tolerance.",
-                stacklevel=2,
-            )
+        _warn_if_unconverged(res, int(iterations), residual_tolerance, solver_iterations)
     return prev_solution, prev_res
+
+
+def _warn_if_unconverged(
+    res: int, iterations: int, residual_tolerance: wp.array[wp.float64], solver_iterations: int
+) -> None:
+    """
+    Warn when a ``res**3`` level's solve used its whole budget and ended above its tolerance.
+
+    ``residual_tolerance`` is ``_solve_screened_poisson``'s device pair (squared threshold, squared
+    residual), read only for a level that hit the cap -- as ``linalg.solve_spd`` reports.
+    """
+    if iterations < solver_iterations:
+        return
+    tolerance_sq, residual_sq = residual_tolerance.numpy()
+    residual, tolerance = math.sqrt(float(residual_sq)), math.sqrt(float(tolerance_sq))
+    if residual > tolerance:
+        warnings.warn(
+            f"screened_poisson: the {res}^3 level's conjugate gradient hit its "
+            f"{solver_iterations}-iteration cap with residual norm {residual:.3e} against "
+            f"tolerance {tolerance:.3e}; raise solver_iterations or solver_tolerance.",
+            stacklevel=4,
+        )
 
 
 def _poisson_solve_level(
@@ -1100,11 +1108,41 @@ class _PoissonMultigrid:
         self._cycle(0, source, destination)
 
 
-def _screened_poisson_adaptive(
+# Levels below ``depth`` solved on the dense base lattice by the band backend, and the conjugate-
+# gradient rounds a band level runs. A band level starts from the prolonged coarse solution and
+# solves only the correction the finer lattice adds near the surface, which is local, so a fixed
+# handful of rounds settles it; the band's thickness, not the round count, bounds what is left.
+# Measured on ``dragon`` at depth 9 against the dense backend's converged surface: 8 rounds 0.016
+# cells mean, 16 rounds 0.012, 30 rounds 0.0115, 60 rounds 0.0112 (the band's floor). The finest
+# level is the most expensive and the least in need of rounds, since every coarser level has
+# already placed the surface. A band grown by a brick around the samples was priced and declined:
+# 0.0096 cells at 1.47x the call, two bricks the same, and 30 finest rounds on top 0.0078 at 1.93x
+# -- against the input, 0.0396 -> 0.0390 -> 0.0380 cells where the dense backend is at 0.0356, so
+# the remaining gap is the coarse operator's, not the band's width.
+_BAND_DENSE_LEVELS_BELOW = 2
+_BAND_ROUNDS = 30
+_BAND_ROUNDS_FINEST = 16
+
+
+class _BandLevel(NamedTuple):
+    """
+    One narrow-band lattice level: which ``8**3``-node bricks of the ``res**3`` grid are stored.
+
+    ``brick_map`` maps a brick to its slot or ``-1``; ``brick_coords`` is each slot's brick; a band
+    node's storage index is ``slot * 512 + local`` (``kernels/algorithms/poisson_band``).
+    """
+
+    res: int
+    nbk: int
+    brick_map: wp.array[wp.int32]
+    brick_coords: wp.array[wp.vec3i]
+    n_nodes: int
+
+
+def _screened_poisson_band(
     points: wp.array[wp.vec3],
     normals: wp.array[wp.vec3],
     cube_lower: wp.vec3,
-    cube_upper: wp.vec3,
     cube_size: float,
     *,
     depth: int,
@@ -1113,246 +1151,493 @@ def _screened_poisson_adaptive(
     solver_iterations: int,
     solver_tolerance: float,
     confidence: bool,
+    diagnostics: wp.array[wp.int32] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Solve the screened-Poisson system on a ``warp.fem`` adaptive Nanogrid and extract its surface.
+    Solve the screened-Poisson system on a narrow band of the dense lattice and extract it.
 
-    Backs the ``method="adaptive"`` path of
-    [`screened_poisson`][ordito.reconstruction.screened_poisson]. ``warp.fem`` and its integrand
-    module are imported lazily here (not at module scope) so ``import ordito`` never pays the
-    tens-of-seconds warp.fem first-call codegen unless the adaptive backend is used.
+    Backs [`screened_poisson`][ordito.reconstruction.screened_poisson]'s ``method="adaptive"``.
+    The finest level's splat is the only data; the levels between a dense base lattice and the
+    finest are stored only near the surface, in ``8**3``-node bricks, and each solves for its band
+    with every out-of-band neighbour held at the prolonged coarser solution. A coarse level's data
+    is the ``P^T`` restriction of the finest one's and its operator the dense multigrid's coarse
+    operator, so a coarse solution approximates the fine one and its prolongation is a valid
+    boundary value -- which an independently splatted coarse level is not: the converged depth-8
+    and depth-9 dense solutions differ by a factor that varies across the domain, since screening is
+    not normalized per level.
 
-    The solve is variational instead of the dense backend's finite-difference stencil: a dense
-    coarse grid at ``2**full_depth`` is refined toward the samples with an ``fem.ImplicitField``
-    oracle that never carves voxels (full-cube coverage), then the weak Laplacian
-    ``integral(grad u . grad v)``,
-    an exact point-measure screening term, and a point-source right-hand side are assembled over the
-    cells and a ``PicQuadrature`` at the samples and solved with a diagonal-preconditioned conjugate
-    gradient. Everything runs in index space (finest spacing ``1``) so the screening-vs-gradient
-    balance matches the dense backend's index-space calibration. The (un-oriented) iso-surface
-    ``(vertices, faces)`` is returned; the caller orients it outward.
+    Two passes: the band of the bricks the samples touch carries all the data, so the dense base is
+    solved from its restriction; then the bricks the base's iso-surface crosses are added -- where
+    the surface closes a hole the samples leave open -- and the band levels are solved coarse to
+    fine. The surface is extracted from the composite field (band values, prolonged coarse ones off
+    the band) over the finest band grown by a brick, with ``levelset.marching_cubes``' numbering
+    and edge margin. ``diagnostics``, when given, receives ``[missing, skipped]``: coarse nodes a
+    restriction or a ghost found absent (the nesting makes it zero) and crossing cells the
+    extraction band could not own (a hole); both are counted on the device, never read here.
     """
-    # Deferred: importing ``warp.fem`` adds meaningfully to ``import ordito``, and the kernel
-    # module below imports it at module scope, so both stay behind the one adaptive-Poisson path.
-    # The deferral is only real because ``kernels/curvature.py`` and ``kernels/smoothing.py`` take
-    # their two QR helpers from ``warp._src.fem.linalg``; while they used the public path this saved
-    # nothing at all, since ``import ordito`` loaded the whole fem package anyway.
-    import warp.fem as fem
-
-    from ordito.kernels.algorithms import poisson_fem as kernel_poisson_fem
-
     device = points.device
-    # ``warp.fem`` launches its internal kernels on Warp's *ambient* device, not on the device of
-    # the arrays it is handed, so on a box with a CUDA device every ``fem`` call below would land
-    # on ``cuda:0`` while these buffers sit on the host -- a genuine cross-device launch that a
-    # strict launch-device check rejects (``PicQuadrature``'s ``finalize_cell_particle_data`` is the
-    # first to fire). ordito's own allocations already carry ``device=``; this is the one place
-    # where a dependency picks the device for us, so the whole fem section runs under a scope.
-    with wp.ScopedDevice(device):
-        n = points.size
+    n = points.size
+    base = max(full_depth, depth - _BAND_DENSE_LEVELS_BELOW)
+    res_f = (1 << depth) + 1
+    nbk_f = (res_f + 7) // 8
+    res_b = (1 << base) + 1
+    if diagnostics is None:
+        diagnostics = _launch.zeros(2, dtype=wp.int32, device=device)
+    missing = odt.as_dense(diagnostics[0:1])
 
-        res_fine = 1 << depth
-        scale_to_index = float(res_fine) / cube_size
-
-        # Index-space sample positions, unit normals, and per-sample quadrature measures.
-        positions = _launch.empty(n, dtype=wp.vec3, device=device)
-        _launch.map(
-            kernel_poisson_fem.world_to_index,
-            points,
-            cube_lower,
-            wp.float32(scale_to_index),
-            out=positions,
-        )
-        unit_normals = _launch.empty(n, dtype=wp.vec3, device=device)
-        # These maps are independent and the same width, so they would merge into one
-        # multi-output call -- declined because it saves one launch on a function whose body is a
-        # finite-element Poisson solve, which is orders of magnitude more work.
-        _launch.map(wp.normalize, normals, out=unit_normals)
-        if confidence:
-            measures = _launch.empty(n, dtype=wp.float32, device=device)
-            _launch.map(wp.length, normals, out=measures)
-        else:
-            measures = _launch.full(n, wp.float32(1.0), device=device)
-
-        # Match the finest near-surface cell size to the sample spacing (PoissonRecon-style): a
-        # point-source weak form rings if cells are much finer than the sampling, so cap the
-        # effective octree depth at ~two cells per mean nearest-neighbour distance (never below
-        # full_depth, never above the requested depth). ``depth`` beyond this only refines the
-        # extraction lattice, which merely samples the already-smooth field more densely.
-        # The whole ``k = 2`` self-query table, as ``ball_pivoting`` reduces its own: slot 0 is the
-        # self-match at exactly zero, which the positive-finite filter drops, so the mean is the
-        # nearest-neighbour spacing with no copy of column 1 first.
-        mean_spacing = (
-            _mean_positive_finite(od.neighbors.query_nearest(points, points, k=2)[1].flatten())
-            if n >= 2
-            else None
-        )
-        spacing = mean_spacing if mean_spacing is not None else cube_size / float(res_fine)
-        grid_depth = int(np.floor(np.log2(max(2.0 * cube_size / spacing, 1.0))))
-        grid_depth = max(full_depth, min(depth, grid_depth))
-
-        res_coarse = 1 << full_depth
-        level_count = grid_depth - full_depth + 1
-        coarse_voxel = float(1 << (depth - full_depth))
-        fine_voxel = float(1 << (depth - grid_depth))
-        spacing_idx = spacing * scale_to_index
-        band_r = max(2.0 * fine_voxel, 1.5 * spacing_idx)
-        falloff = max(coarse_voxel, 2.0 * spacing_idx)
-
-        # Coarse dense base grid covering the whole cube in index space, then refine to the samples.
-        ijk = np.stack(np.meshgrid(*(np.arange(res_coarse),) * 3, indexing="ij"), axis=-1).reshape(
-            -1, 3
-        )
-        # Translate by half a voxel so the voxel-centered grid spans exactly ``[0, 2**depth]`` per
-        # axis. Without it the domain is ``[-coarse_voxel/2, ...]`` and the outer lattice shell
-        # falls outside; failed lookups leave zeros marching cubes reads as a spurious surface.
-        coarse_grid = wp.Volume.allocate_by_voxels(
-            _launch.array(ijk.astype(np.int32), dtype=wp.vec3i, device=device),
-            voxel_size=coarse_voxel,
-            translation=(0.5 * coarse_voxel, 0.5 * coarse_voxel, 0.5 * coarse_voxel),
-            device=device,
-        )
-        hashgrid = od.neighbors.hashgrid_from_points(positions, band_r + falloff)
-        refinement = fem.ImplicitField(
-            domain=fem.Cells(fem.Nanogrid(coarse_grid)),
-            func=cast("wp.Function", kernel_poisson_fem.refinement_oracle),
-            values={
-                "grid": hashgrid.id,
-                "pts": positions,
-                "r": wp.float32(band_r),
-                "falloff": wp.float32(falloff),
-            },
-        )
-        geometry = fem.adaptive_nanogrid_from_field(
-            coarse_grid, level_count, refinement_field=refinement, grading="face"
-        )
-
-        # Weak-form assembly: stiffness + screening = source.
-        space = fem.make_polynomial_space(geometry, degree=1, dtype=float)
-        domain = fem.Cells(geometry)
-        test = fem.make_test(space, domain=domain)
-        trial = fem.make_trial(space, domain=domain)
-        quadrature = fem.PicQuadrature(domain, positions, measures)
-
-        # ``kernels/`` is not type-checked, so its ``@fem.integrand`` forms reach here untyped; a
-        # bilinear form integrates to a ``float32`` matrix, a linear one to a ``float32`` array.
-        matrix = cast(
-            "odt.BsrMatrix[wp.float32]",
-            fem.integrate(
-                cast("fem.Integrand", kernel_poisson_fem.diffusion_form),
-                fields={"u": trial, "v": test},
-            ),
-        )
-        screening = cast(
-            "odt.BsrMatrix[wp.float32]",
-            fem.integrate(
-                cast("fem.Integrand", kernel_poisson_fem.screening_form),
-                quadrature=quadrature,
-                fields={"u": trial, "v": test},
-                values={"screen": wp.float32(screen)},
-            ),
-        )
-        # ``fem.integrate`` leaves each matrix's ``nnz`` at its triplet *capacity* (2.25x the true
-        # stiffness count on ``dragon``, 28x the screening one), and ``bsr_axpy`` sizes its merge
-        # from that field: on ``dragon`` at depth 9 it asked for 663 M entries where 159 M exist,
-        # ran the device out of memory inside a Warp call that does not report it, and the solve
-        # died later with CUDA error 700. Repaired counts make the merge exactly the matrices' own.
-        matrix.nnz_sync()
-        screening.nnz_sync()
-        matrix = odt.bsr_axpy(screening, matrix)  # ``matrix += screening``, in place
-        rhs = cast(
-            "wp.array[wp.float32]",
-            fem.integrate(
-                cast("fem.Integrand", kernel_poisson_fem.source_form),
-                quadrature=quadrature,
-                fields={"v": test},
-                values={"normals": unit_normals},
-                output_dtype=float,
-            ),
-        )
-
-        solution = _launch.zeros_like(rhs)
-        # ``linalg``'s own conjugate gradient on the ``float32`` system as assembled, where Warp's
-        # records a new conditional graph per call. The default cadence, so that a solve which runs
-        # out of iterations above its tolerance warns, on either device.
-        od.linalg.solve_spd(
-            matrix,
-            rhs,
-            solution,
-            tol=solver_tolerance,
-            maxiter=solver_iterations,
-            name="screened_poisson",
-        )
-        field = space.make_field()
-        field.dof_values = solution
-
-        sampled = _launch.zeros(n, dtype=wp.float32, device=device)
-        fem.interpolate(
-            cast("fem.Integrand", kernel_poisson_fem.sample_field),
-            at=domain,
-            dim=n,
-            fields={"u": field},
-            values={"positions": positions, "out_values": sampled},
-        )
-        iso = _poisson_iso_value(sampled, normals, confidence)
-
-        return _extract_poisson_surface_fem(
-            field, domain, iso, cube_lower, cube_upper, cube_size, depth, res_fine, device
-        )
-
-
-def _extract_poisson_surface_fem(
-    field: fem.DiscreteField,
-    domain: fem.GeometryDomain,
-    iso: float,
-    cube_lower: wp.vec3,
-    cube_upper: wp.vec3,
-    cube_size: float,
-    depth: int,
-    res_fine: int,
-    device: wp.DeviceLike,
-) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
-    """
-    Sample the adaptive ``field`` onto a dense lattice and marching-cube the ``iso`` surface.
-
-    The lattice resolution is capped at ``2**min(depth, 9) + 1``: the lattice is a ``vec3``
-    sample position and a ``float32`` value per node before the extraction's own scratch (a pair of
-    counters a node), so a full-cube lattice at depth 10 does not fit the device. A slab-chunked
-    pass would lift that cap, but the
-    extractor is crack-free only within a single grid -- its per-cell face triangulation is not
-    consistent across independent invocations, so welding independent slabs leaves non-manifold
-    seams -- and depth 9-10 already oversamples the spacing-capped solve, so the simple capped
-    extraction is used.
-    """
-    # Deferred: importing ``warp.fem`` adds to ``import ordito``'s cost, and the kernel module
-    # below imports it at module scope, so both stay behind the one adaptive-Poisson path.
-    import warp.fem as fem
-
-    from ordito.kernels.algorithms import poisson_fem as kernel_poisson_fem
-
-    res = (1 << min(depth, 9)) + 1
-    step_index = float(res_fine) / float(res - 1)
-    positions = _launch.empty(res * res * res, dtype=wp.vec3, device=device)
+    # Pass 1: the sample bands, the finest data and its restriction to the dense base.
+    sample_flags = _launch.zeros(nbk_f**3, dtype=wp.int32, device=device)
     _launch.launch(
-        kernel_poisson_fem.lattice_positions,
-        dim=(res, res, res),
-        inputs=[wp.float32(step_index), res, wp.float32(float(res_fine) - 1e-3), positions],
+        kernel_poisson_band.mark_sample_bricks,
+        dim=n,
+        inputs=[points, cube_lower, wp.float32((res_f - 1) / cube_size), res_f, nbk_f],
+        outputs=[sample_flags],
         device=device,
     )
-    values = _launch.zeros(res * res * res, dtype=wp.float32, device=device)
-    fem.interpolate(
-        cast("fem.Integrand", kernel_poisson_fem.sample_field),
-        at=domain,
-        dim=res * res * res,
-        fields={"u": field},
-        values={"positions": positions, "out_values": values},
+    final_flags = _launch.clone(sample_flags)
+    sample_bands = _band_levels(sample_flags, depth, base, device)
+    data = _band_data(
+        sample_bands, points, normals, cube_lower, cube_size, confidence, missing, device
     )
-    return od.levelset.marching_cubes(
-        odt.as_array3d(values.reshape((res, res, res)), wp.float32),
-        iso,
-        bounds=(cube_lower, cube_upper),
-        edge_margin=_poisson_edge_margin(cube_size, res),
+    base_b = _launch.zeros(res_b**3, dtype=wp.float32, device=device)
+    base_w = _launch.zeros(res_b**3, dtype=wp.float32, device=device)
+    _restrict_band(sample_bands[base + 1], *data[base + 1], None, res_b, base_b, base_w, missing)
+
+    lap_b = float(1 << (depth - base))
+    rhs = _launch.empty(res_b**3, dtype=wp.float32, device=device)
+    smoother = _launch.empty(res_b**3, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_poisson_band.dense_base_setup,
+        dim=(res_b, res_b, res_b),
+        inputs=[
+            base_b,
+            base_w,
+            res_b,
+            wp.float32(1.0 / lap_b),
+            wp.float32(screen / lap_b),
+            wp.float32(_MG_OMEGA),
+        ],
+        outputs=[rhs, smoother],
+        device=device,
     )
+    base_x = _launch.zeros(res_b**3, dtype=wp.float32, device=device)
+    base_rounds = _launch.empty(1, dtype=wp.int32, device=device)
+    base_residual = _solve_screened_poisson(
+        base_w,
+        screen / lap_b,
+        res_b,
+        rhs,
+        smoother,
+        base_x,
+        solver_iterations,
+        solver_tolerance,
+        base_rounds,
+        device,
+    )
+
+    # Pass 2: add the bricks the base surface crosses, and move the data onto the final bands.
+    sampled = _launch.empty(n, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reconstruction.sample_field_trilinear,
+        dim=n,
+        inputs=[base_x, res_b, cube_lower, wp.float32((res_b - 1) / cube_size), points],
+        outputs=[sampled],
+        device=device,
+    )
+    _launch.launch(
+        kernel_poisson_band.mark_crossing_bricks,
+        dim=(res_b - 1, res_b - 1, res_b - 1),
+        inputs=[
+            base_x,
+            res_b,
+            wp.float32(_poisson_iso_value(sampled, normals, confidence)),
+            (res_f - 1) // (res_b - 1),
+            res_f,
+            nbk_f,
+        ],
+        outputs=[final_flags],
+        device=device,
+    )
+    extract_flags = _launch.empty_like(final_flags)
+    _launch.launch(
+        kernel_poisson_band.dilate_bricks,
+        dim=(nbk_f, nbk_f, nbk_f),
+        inputs=[final_flags, nbk_f],
+        outputs=[extract_flags],
+        device=device,
+    )
+    bands = _band_levels(final_flags, depth, base, device)
+    # Read after the band builds' own reads, which have already waited for the base solve.
+    _warn_if_unconverged(res_b, int(read_scalar(base_rounds)), base_residual, solver_iterations)
+
+    # The band levels, coarse to fine, each from the prolonged level below it.
+    coarse_map: wp.array[wp.int32] | None = None
+    coarse_x, coarse_nbk, coarse_res = base_x, 0, res_b
+    fine_x = base_x
+    for level in range(base + 1, depth + 1):
+        band = bands[level]
+        source = sample_bands[level]
+        b = _launch.zeros(band.n_nodes, dtype=wp.float32, device=device)
+        w = _launch.zeros(band.n_nodes, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_poisson_band.embed_band_data,
+            dim=source.n_nodes,
+            inputs=[source.brick_coords, source.res, *data[level], band.brick_map, band.nbk],
+            outputs=[b, w],
+            device=device,
+        )
+        lap = float(1 << (depth - level))
+        fine_x = _launch.empty(band.n_nodes, dtype=wp.float32, device=device)
+        inv_diag = _launch.empty(band.n_nodes, dtype=wp.float32, device=device)
+        _launch.launch(
+            kernel_poisson_band.band_level_setup,
+            dim=band.n_nodes,
+            inputs=[
+                band.brick_coords,
+                band.brick_map,
+                band.nbk,
+                band.res,
+                wp.float32(lap),
+                w,
+                wp.float32(screen),
+                coarse_map,
+                coarse_x,
+                coarse_nbk,
+                coarse_res,
+                b,
+            ],
+            outputs=[fine_x, inv_diag, missing],
+            device=device,
+        )
+        rounds = _BAND_ROUNDS_FINEST if level == depth else _BAND_ROUNDS
+        _solve_band_level(
+            band,
+            lap,
+            w,
+            screen,
+            b,
+            fine_x,
+            inv_diag,
+            min(rounds, solver_iterations),
+            solver_tolerance,
+            device,
+        )
+        if level < depth:
+            coarse_map, coarse_x, coarse_nbk, coarse_res = (
+                band.brick_map,
+                fine_x,
+                band.nbk,
+                band.res,
+            )
+
+    finest = bands[depth]
+    _launch.launch(
+        kernel_poisson_band.band_sample,
+        dim=n,
+        inputs=[
+            points,
+            cube_lower,
+            wp.float32((res_f - 1) / cube_size),
+            res_f,
+            finest.brick_map,
+            finest.nbk,
+            fine_x,
+        ],
+        outputs=[sampled],
+        device=device,
+    )
+    iso = _poisson_iso_value(sampled, normals, confidence)
+    extract = _band_level(extract_flags, res_f, device)
+    composite = [
+        finest.brick_map,
+        fine_x,
+        coarse_map,
+        coarse_x,
+        coarse_nbk,
+        coarse_res,
+        res_f,
+        wp.float32(iso),
+    ]
+    table = _marching_cubes_table(wp.get_device(device).alias)
+    counts = _launch.empty(extract.n_nodes, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_poisson_band.band_marching_cubes_counts,
+        dim=extract.n_nodes,
+        inputs=[extract.brick_coords, extract.brick_map, extract.nbk, *composite, table],
+        outputs=[counts, odt.as_dense(diagnostics[1:2])],
+        device=device,
+    )
+    _launch.array_scan(counts, counts, inclusive=True)
+    totals = read_scalar(counts)
+    vertices = _launch.empty(int(totals[0]), dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * int(totals[1]), dtype=wp.int32, device=device)
+    if vertices.size > 0:
+        spacing = cube_size / float(res_f - 1)
+        _launch.launch(
+            kernel_poisson_band.band_marching_cubes_emit,
+            dim=extract.n_nodes,
+            inputs=[
+                extract.brick_coords,
+                extract.brick_map,
+                extract.nbk,
+                *composite,
+                cube_lower,
+                wp.vec3(spacing, spacing, spacing),
+                wp.float32(_poisson_edge_margin(cube_size, res_f)),
+                table,
+                counts,
+            ],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    return vertices, faces
+
+
+def _band_levels(
+    flags: wp.array[wp.int32], depth: int, base: int, device: wp.DeviceLike
+) -> dict[int, _BandLevel]:
+    """
+    Build the band at every level from ``depth`` down to ``base + 1``, the finest from ``flags``.
+
+    Each coarser level holds the bricks covering its finer level's, grown by one coarse brick, so
+    every ghost a finer level reads and every node its data restricts into is stored. ``flags`` is
+    consumed (scanned in place).
+    """
+    level_flags = {depth: flags}
+    for level in range(depth - 1, base, -1):
+        nbk_f = ((1 << (level + 1)) + 8) // 8
+        nbk_c = ((1 << level) + 8) // 8
+        projected = _launch.zeros(nbk_c**3, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_poisson_band.project_bricks,
+            dim=(nbk_f, nbk_f, nbk_f),
+            inputs=[level_flags[level + 1], nbk_f, nbk_c],
+            outputs=[projected],
+            device=device,
+        )
+        grown = _launch.empty(nbk_c**3, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_poisson_band.dilate_bricks,
+            dim=(nbk_c, nbk_c, nbk_c),
+            inputs=[projected, nbk_c],
+            outputs=[grown],
+            device=device,
+        )
+        level_flags[level] = grown
+    return {
+        level: _band_level(level_flags[level], (1 << level) + 1, device) for level in level_flags
+    }
+
+
+def _band_level(flags: wp.array[wp.int32], res: int, device: wp.DeviceLike) -> _BandLevel:
+    """Compact a brick flag set into a ``_BandLevel``; ``flags`` is scanned in place."""
+    nbk = (res + 7) // 8
+    _launch.array_scan(flags, flags, inclusive=True)
+    # The brick count sizes the band's storage, so it is read.
+    n_bricks = int(read_scalar(flags))
+    brick_map = _launch.empty(nbk**3, dtype=wp.int32, device=device)
+    brick_coords = _launch.empty(max(n_bricks, 1), dtype=wp.vec3i, device=device)
+    _launch.launch(
+        kernel_poisson_band.compact_bricks,
+        dim=nbk**3,
+        inputs=[flags, nbk],
+        outputs=[brick_map, brick_coords],
+        device=device,
+    )
+    return _BandLevel(
+        res, nbk, brick_map, brick_coords, n_bricks * int(kernel_poisson_band.BRICK_NODES)
+    )
+
+
+def _band_data(
+    bands: dict[int, _BandLevel],
+    points: wp.array[wp.vec3],
+    normals: wp.array[wp.vec3],
+    cube_lower: wp.vec3,
+    cube_size: float,
+    confidence: bool,
+    missing: wp.array[wp.int32],
+    device: wp.DeviceLike,
+) -> dict[int, tuple[wp.array[wp.float32], wp.array[wp.float32]]]:
+    """Every band level's ``(b, W)``: the finest splat's right-hand side, restricted down."""
+    depth = max(bands)
+    finest = bands[depth]
+    n_nodes = finest.n_nodes
+    splat = _launch.zeros(4 * n_nodes, dtype=wp.float32, device=device)
+    vx, vy, vz, weights = (odt.as_dense(splat[k * n_nodes : (k + 1) * n_nodes]) for k in range(4))
+    _launch.launch(
+        kernel_poisson_band.band_splat,
+        dim=points.size,
+        inputs=[
+            points,
+            normals,
+            cube_lower,
+            wp.float32((finest.res - 1) / cube_size),
+            finest.res,
+            wp.int32(1 if confidence else 0),
+            finest.brick_map,
+            finest.nbk,
+        ],
+        outputs=[vx, vy, vz, weights],
+        device=device,
+    )
+    b = _launch.empty(n_nodes, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_poisson_band.band_rhs,
+        dim=n_nodes,
+        inputs=[finest.brick_coords, finest.brick_map, finest.nbk, finest.res, vx, vy, vz, weights],
+        outputs=[b],
+        device=device,
+    )
+    data = {depth: (b, weights)}
+    for level in range(depth - 1, min(bands) - 1, -1):
+        coarse = bands[level]
+        coarse_b = _launch.zeros(coarse.n_nodes, dtype=wp.float32, device=device)
+        coarse_w = _launch.zeros(coarse.n_nodes, dtype=wp.float32, device=device)
+        _restrict_band(
+            bands[level + 1], *data[level + 1], coarse, coarse.res, coarse_b, coarse_w, missing
+        )
+        data[level] = (coarse_b, coarse_w)
+    return data
+
+
+def _restrict_band(
+    fine: _BandLevel,
+    b: wp.array[wp.float32],
+    weights: wp.array[wp.float32],
+    coarse: _BandLevel | None,
+    res_c: int,
+    out_b: wp.array[wp.float32],
+    out_weights: wp.array[wp.float32],
+    missing: wp.array[wp.int32],
+) -> None:
+    """``P^T`` of ``fine``'s data into the band ``coarse``, or the dense ``res_c**3`` grid."""
+    _launch.launch(
+        kernel_poisson_band.restrict_band,
+        dim=fine.n_nodes,
+        inputs=[
+            fine.brick_coords,
+            fine.res,
+            b,
+            weights,
+            None if coarse is None else coarse.brick_map,
+            0 if coarse is None else coarse.nbk,
+            res_c,
+        ],
+        outputs=[out_b, out_weights, missing],
+        device=b.device,
+    )
+
+
+def _solve_band_level(
+    band: _BandLevel,
+    lap: float,
+    weights: wp.array[wp.float32],
+    screen: float,
+    rhs: wp.array[wp.float32],
+    solution: wp.array[wp.float32],
+    inv_diag: wp.array[wp.float32],
+    maxiter: int,
+    tol: float,
+    device: wp.DeviceLike,
+) -> None:
+    """
+    Jacobi-preconditioned conjugate gradient on one band level, from ``solution`` in place.
+
+    ``_solve_screened_poisson``'s Chronopoulos-Gear round with the band's row in place of the dense
+    stencil and Jacobi in place of the V-cycle: the shared ``cg_seed`` / ``cg_coefficients`` /
+    ``cg_update`` kernels, one recorded device loop, nothing read back.
+    """
+    n = band.n_nodes
+    tile = int(kernel_cg.CG_TILE)
+    span, blocks, fold = kernel_cg.cg_layout(n, od.linalg.CG_FOLD_MAX_BLOCKS)
+    stride = blocks * span
+    vectors = _launch.empty(5 * stride, dtype=wp.float32, device=device)
+    r, u, w, p, s = (odt.as_dense(vectors[k * stride : (k + 1) * stride]) for k in range(5))
+    partials = _launch.empty((3, 1, blocks), dtype=wp.float64, device=device)
+    scalars = _launch.empty((10, 1), dtype=wp.float64, device=device)
+    atol_sq = odt.as_dense(scalars[0, 0:1])
+    dots = odt.as_array2d(odt.as_dense(scalars[1:3]), wp.float64)
+    coefficients = odt.as_array2d(odt.as_dense(scalars[3:6]), wp.float64)
+    gamma_old, alpha_old, gamma_new, alpha_new = (
+        odt.as_dense(scalars[row, 0:1]) for row in range(6, 10)
+    )
+    state = _launch.empty(kernel_array.LOOP_STATE_SIZE, dtype=wp.int32, device=device)
+    iterations = _launch.empty(1, dtype=wp.int32, device=device)
+    level = [band.brick_coords, band.brick_map, band.nbk, band.res, wp.float32(lap), weights]
+    screen_f = wp.float32(screen)
+    _launch.launch_tiled(
+        kernel_poisson_band.band_cg_initial,
+        dim=(blocks,),
+        inputs=[n, span, *level, screen_f, rhs, solution, inv_diag],
+        outputs=[r, u, p, s, partials],
+        block_dim=tile,
+        device=device,
+    )
+    _launch.launch_tiled(
+        kernel_cg.cg_seed,
+        dim=(1,),
+        inputs=[wp.float64(tol * tol), wp.float64(0.0), blocks, partials],
+        outputs=[atol_sq, gamma_new, alpha_new, iterations, state],
+        block_dim=tile,
+        device=device,
+    )
+
+    def round_() -> None:
+        _launch.launch_tiled(
+            kernel_poisson_band.band_cg_matvec_dots,
+            dim=(blocks,),
+            inputs=[n, span, *level, screen_f, r, u, gamma_new, alpha_new],
+            outputs=[w, partials, gamma_old, alpha_old, state],
+            block_dim=tile,
+            device=device,
+        )
+        if not fold:
+            _launch.launch_tiled(
+                kernel_cg.cg_coefficients,
+                dim=(1,),
+                inputs=[1, maxiter, blocks, partials, gamma_old, alpha_old, atol_sq, state],
+                outputs=[coefficients, gamma_new, alpha_new, dots, iterations],
+                block_dim=tile,
+                device=device,
+            )
+        _launch.launch_tiled(
+            kernel_cg.CG_UPDATE[wp.float32],
+            dim=(1, stride // tile),
+            inputs=[
+                stride,
+                tile,
+                n,
+                1,
+                maxiter,
+                1 if fold else 0,
+                blocks,
+                1,
+                partials,
+                coefficients,
+                gamma_old,
+                alpha_old,
+                atol_sq,
+                inv_diag,
+                w,
+                p,
+                s,
+                r,
+                u,
+                state,
+            ],
+            outputs=[solution, u, gamma_new, alpha_new, dots, iterations],
+            block_dim=tile,
+            device=device,
+        )
+
+    run_device_loop(device, odt.as_dense(state[kernel_array.LOOP_CONDITION_VIEW]), round_)
+
+
+@functools.cache
+def _marching_cubes_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/levelset.MARCHING_CUBES_TABLE`` on the device ``device`` names, uploaded once."""
+    return _launch.array(kernel_levelset.MARCHING_CUBES_TABLE, dtype=wp.int32, device=device)
 
 
 def _poisson_edge_margin(cube_size: float, res: int) -> float:
