@@ -2,7 +2,7 @@ import warp as wp
 
 from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT, TWO_PI
 from ordito.kernels import triangles as kernel_triangles
-from ordito.kernels.array import RegisterBlockedTable, lift_vec2
+from ordito.kernels.array import RegisterBlockedTable, lift_vec2, morton_code_30, to_vec3, to_vec3d
 from ordito.kernels.neighbors import (
     MAX_SEARCH_ATTEMPTS,
     attempt_radius,
@@ -12,11 +12,12 @@ from ordito.kernels.neighbors import (
 from ordito.kernels.predicates import (
     barycentric_2d,
     closest_point_on_segment,
+    is_in_aabb,
     is_strictly_inside_aabb,
     triangle_aabb,
     triangle_triangle_distance_sq,
 )
-from ordito.kernels.reduce import block_argmin
+from ordito.kernels.reduce import block_argmin, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -639,12 +640,17 @@ def signed_distance_on_mesh_winding(
 
 
 @wp.func
-def solid_angle(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3) -> wp.float32:
-    """Signed solid angle subtended by triangle (a, b, c) at point p (``igl::solid_angle``)."""
-    v0 = a - p
+def solid_angle_terms(
+    v0: wp.vec3, vl0: wp.float32, b: wp.vec3, c: wp.vec3, p: wp.vec3
+) -> tuple[wp.float32, wp.float32]:
+    """
+    ``(y, x)`` with ``atan2(y, x)`` half the solid angle of triangle ``(p + v0, b, c)`` at ``p``.
+
+    The first corner arrives already relative to ``p``, with its length, so a fan of triangles
+    sharing that corner (``winding_number_tree``'s caps) computes it once per fan.
+    """
     v1 = b - p
     v2 = c - p
-    vl0 = wp.length(v0)
     vl1 = wp.length(v1)
     vl2 = wp.length(v2)
     # det([v0; v1; v2]) as the scalar triple product — cheaper than materializing the matrix.
@@ -653,6 +659,14 @@ def solid_angle(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3) -> wp.float32:
     dp1 = wp.dot(v2, v0)
     dp2 = wp.dot(v0, v1)
     denom = vl0 * vl1 * vl2 + dp0 * vl0 + dp1 * vl1 + dp2 * vl2
+    return detf, denom
+
+
+@wp.func
+def solid_angle(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3) -> wp.float32:
+    """Signed solid angle subtended by triangle (a, b, c) at point p (``igl::solid_angle``)."""
+    v0 = a - p
+    detf, denom = solid_angle_terms(v0, wp.length(v0), b, c, p)
     return wp.atan2(detf, denom) / TWO_PI
 
 
@@ -743,6 +757,423 @@ def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
 WINDING_NUMBER_TILED = RegisterBlockedTable(
     "winding_number_tiled", _winding_number_tiled_kernel, WINDING_WIDTHS
 )
+
+
+# ---------------------------------------------------------------------------------------------
+# Exact hierarchical winding number (``proximity.winding_number`` above the size gate)
+#
+# Jacobson, Kavan and Sorkine-Hornung (2013): a patch ``S`` of the mesh and a fan ``C`` closing its
+# boundary (one triangle ``(apex, a, b)`` per boundary halfedge ``a -> b``) form a closed 2-chain,
+# whose winding number is an integer and is 0 at any point outside a convex region holding both.
+# So outside that region ``w_S(q) = sum Omega(apex, a, b) / 4 pi`` over the boundary halfedges --
+# exactly, with no expansion and no accuracy parameter -- and it costs the patch's *perimeter*
+# rather than its area. The chain algebra holds for any soup: a halfedge whose partner is missing,
+# runs the same way, or shares a non-manifold edge simply stays on the boundary (its fan triangle
+# is still exact; a cancelling pair only saves work).
+#
+# The patches are the nodes of an implicit complete binary tree over the faces sorted by the Morton
+# code of their centroid: heap numbering (root 1, children ``2k`` and ``2k + 1``), ``n_leaves`` a
+# power of two, leaf ``j`` at node ``n_leaves + j`` holding sorted faces ``[j * L, (j + 1) * L)``,
+# every node a contiguous face range. A node's region is its box intersected with four diagonal
+# slabs (a 14-DOP), and its apex is the mean of its face corners, which lies inside both.
+# A node keeps a cap only when its perimeter is below its face count; otherwise it is summed face
+# by face, which is cheaper and equally exact. Leaves never keep one.
+#
+# A query descends only into nodes whose region contains it, so per query the work is the caps of
+# the siblings along its path plus the leaves it lands in -- about the square root of the face
+# count (2.1 k solid angles per query on a 16 k-face mesh, 17.5 k on 0.87 M faces, 53 k on 28 M,
+# where the direct sum pays the face count). Measured, CLAUDE.md section 16.6:
+#
+# - **Per query it is compute-bound at the direct sum's own rate** (~2e11 solid angles a second),
+#   so the gain is the work ratio. Reading caps as vertex-index pairs instead of stored positions
+#   (a third of the memory) was 0.30x; accumulating the angles as a complex product to drop the
+#   ``atan2`` was 0.81x.
+# - **The 14-DOP test is 1.24-1.25x over the box alone**; leaf size is flat from 4 to 32 faces (32
+#   stores the fewest cap edges); a 128-lane block is 1.23x over 32 lanes; Morton-sorting the
+#   queries is 1.04-1.08x and not done. A Hilbert face order measured 1.08-1.23x on the query and is
+#   left open.
+# - **A Barnes-Hut far field on top of the caps buys nothing** (Barill et al. 2018, order 1 and 2,
+#   beta 2-8): the siblings a query is outside of touch its own node, so they are never well
+#   separated, and forcing more expansions makes a block walk thousands of nodes serially (3-30x
+#   slower). Warp's own order-2 walk (``wp::mesh_query_winding_number``, reachable only through
+#   ``wp.func_native``) needs its accuracy at 8 for a 1.8e-5 error and is slower than this at 6.
+# - **One block per query cell of a lattice (lanes over queries, the walk testing the cell's box)
+#   was 16x slower** than one block per query on ``offset_mesh``'s dragon lattice.
+
+
+# Faces per leaf. The cost is flat from 4 to 32; 32 keeps the fewest caps (a leaf is summed face by
+# face anyway, and a node of a few leaves rarely has a perimeter below its face count).
+WINDING_TREE_LEAF_FACES = 32
+# The size gate in ``proximity.winding_number``: the hierarchy once both ``n_queries`` and
+# ``n_queries * n_faces`` reach these, the tiled direct sum below. The build costs about a face's
+# worth of work per face plus a fixed few tenths of a millisecond on CUDA, the direct sum a fixed
+# cost per pair, so the crossover is a pair count with a query floor for meshes large enough that
+# the build alone outweighs a few queries. Swept build + walk against the tiled sum (2026-10-06):
+# CUDA level at 2.7e8 pairs on 16 k faces (0.98x), 2.6x / 1.3x / 1.5x at 2.2-2.8e8 pairs on 69 k /
+# 0.87 M / 1.1 M faces, losing below 7e7 (0.3-0.9x); on 28 M faces 0.68x at 64 queries and 2.6x at
+# 256. The CPU device's direct sum is two orders slower per pair and its build no slower per face,
+# so its gate is far lower: 1.3-3.0x from 6.5e4 pairs at 64 queries on 320-5 k faces, 0.94x at 16
+# queries.
+WINDING_TREE_FROM_PAIRS_CUDA = 1 << 28
+WINDING_TREE_FROM_QUERIES_CUDA = 128
+WINDING_TREE_FROM_PAIRS_CPU = 1 << 16
+WINDING_TREE_FROM_QUERIES_CPU = 32
+# Lanes per query block: they split each node's cap edges and faces, striding by
+# ``wp.block_dim()``. Swept build + walk at 16 / 32 / 64 / 128 lanes: 32 is best on 69 k faces
+# (1.13x over 64 at 10 k queries, 1.50x at 100 k) and within 1.07x of the best (64) on 0.87-1.1 M
+# faces; 128 lost to both everywhere but 28 M faces (1.01x). It is also the block width this module
+# already launches with, so it adds no compiled variant of the module (CLAUDE.md section 2.5).
+WINDING_TREE_BLOCK_DIM = 32
+# Every ``atan2`` term is added as an integer multiple of ``2**-bits`` radians (the walk's
+# ``fixed_point_scale`` is ``2**bits``), so the sum is the same whichever lane adds which term in
+# whichever order: the cap edges are placed by atomic cursors, and the result is still
+# bit-reproducible. A float32 term of magnitude at least ``2**(23 - bits)`` scales to an exact
+# integer, so only smaller terms round, by at most half a unit. A query sums at most ``n_faces``
+# terms -- a node contributes its cap only when that is shorter than its face list -- each at most
+# ``pi < 4`` in magnitude, so ``bits = 61 - ceil(log2(n_faces))`` keeps the 64-bit total from
+# overflowing; ``WINDING_FIXED_POINT_MAX_BITS`` caps it where no float32 term needs more.
+WINDING_FIXED_POINT_MAX_BITS = 40
+# Relative growth of a node's region before a query counts as outside it: the apex is rounded to
+# float32, so it may sit an ulp outside a region it lies on the face of, and the identity needs it
+# inside. Growing the region only sends a query down one more level.
+WINDING_REGION_GROWTH = wp.float32(1.0e-6)
+
+
+@wp.func
+def diagonal_slabs(p: wp.vec3) -> wp.vec4:
+    # Coordinates along the four body diagonals: with the box's three axes, a 14-DOP.
+    return wp.vec4(p[0] + p[1] + p[2], p[0] + p[1] - p[2], p[0] - p[1] + p[2], -p[0] + p[1] + p[2])
+
+
+@wp.kernel
+def winding_face_keys(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    corners: wp.array[wp.float32],
+    out_keys: wp.array[wp.int32],
+    out_order: wp.array[wp.int32],
+) -> None:
+    # dim == n_faces: the Morton code of each face centroid over the vertices' box, and the face's
+    # own index, into the radix sort's double-width buffers. ``corners`` is
+    # ``kernel_reduce.minmax_vec3_chunked``'s ``[lower, -upper]``, read here so no readback sits
+    # between the reduction and the sort.
+    f = wp.int32(wp.tid())
+    lower = wp.vec3(corners[0], corners[1], corners[2])
+    extent = wp.vec3(-corners[3], -corners[4], -corners[5]) - lower
+    inv_extent = wp.vec3()
+    for axis in range(3):
+        if extent[axis] > 0.0:
+            inv_extent[axis] = 1023.0 / extent[axis]
+    a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
+    out_keys[f] = morton_code_30((a + b + c) / 3.0, lower, inv_extent)
+    out_order[f] = f
+
+
+@wp.kernel
+def winding_sorted_faces(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    order: wp.array[wp.int32],
+    out_corners: wp.array[wp.vec3],
+    out_rank: wp.array[wp.int32],
+) -> None:
+    # dim == n_faces: the corners of the ``i``-th face in Morton order, three to a face, so a node's
+    # faces are one contiguous run of positions, and each face's position in that order.
+    i = wp.int32(wp.tid())
+    f = order[i]
+    a, b, c = kernel_triangles.face_vertices(vertices, faces, f)
+    out_corners[3 * i] = a
+    out_corners[3 * i + 1] = b
+    out_corners[3 * i + 2] = c
+    out_rank[f] = i
+
+
+@wp.kernel
+def winding_leaves(
+    corners: wp.array[wp.vec3],
+    leaf_faces: wp.int32,
+    n_leaves: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_slab_lower: wp.array[wp.vec4],
+    out_slab_upper: wp.array[wp.vec4],
+    out_corner_sum: wp.array[wp.vec3d],
+    out_count: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # dim == n_leaves: leaf ``j`` (node ``n_leaves + j``) over its sorted faces. A padding leaf past
+    # the last face gets count 0 and an empty region; the walk never enters one.
+    j = wp.int32(wp.tid())
+    n_faces = corners.shape[0] // 3
+    start = wp.min(j * leaf_faces, n_faces)
+    end = wp.min(start + leaf_faces, n_faces)
+    lower = wp.vec3(FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT)
+    upper = -lower
+    slab_lower = wp.vec4(
+        FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT, FLOAT32_INF_CONSTANT
+    )
+    slab_upper = -slab_lower
+    corner_sum = wp.vec3d()
+    for t in range(3 * start, 3 * end):
+        p = corners[t]
+        lower = wp.min(lower, p)
+        upper = wp.max(upper, p)
+        d = diagonal_slabs(p)
+        slab_lower = wp.min(slab_lower, d)
+        slab_upper = wp.max(slab_upper, d)
+        corner_sum = corner_sum + to_vec3d(p)
+    k = n_leaves + j
+    out_lower[k] = lower
+    out_upper[k] = upper
+    out_slab_lower[k] = slab_lower
+    out_slab_upper[k] = slab_upper
+    out_corner_sum[k] = corner_sum
+    out_count[k] = end - start
+    out_first[k] = start
+
+
+@wp.kernel
+def winding_merge_level(
+    level_start: wp.int32,
+    out_lower: wp.array[wp.vec3],
+    out_upper: wp.array[wp.vec3],
+    out_slab_lower: wp.array[wp.vec4],
+    out_slab_upper: wp.array[wp.vec4],
+    out_corner_sum: wp.array[wp.vec3d],
+    out_count: wp.array[wp.int32],
+    out_first: wp.array[wp.int32],
+) -> None:
+    # dim == level width: node ``level_start + tid`` from its two children, which the previous
+    # launch (one level deeper) wrote into the same arrays.
+    k = level_start + wp.int32(wp.tid())
+    left = 2 * k
+    right = left + 1
+    out_lower[k] = wp.min(out_lower[left], out_lower[right])
+    out_upper[k] = wp.max(out_upper[left], out_upper[right])
+    out_slab_lower[k] = wp.min(out_slab_lower[left], out_slab_lower[right])
+    out_slab_upper[k] = wp.max(out_slab_upper[left], out_slab_upper[right])
+    out_corner_sum[k] = out_corner_sum[left] + out_corner_sum[right]
+    out_count[k] = out_count[left] + out_count[right]
+    out_first[k] = out_first[left]
+
+
+@wp.func
+def halfedge_cap_levels(
+    h: wp.int32,
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    leaf_faces: wp.int32,
+    depth: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # Halfedge ``h``'s leaf, and the shallowest tree level at which it lies on a node's boundary:
+    # it does at every level from there down to the leaves. It cancels against its mate inside
+    # every node holding both faces, i.e. down to their leaves' lowest common ancestor, whose
+    # level is ``depth`` minus the bit length of the two leaf indices' xor -- but only when the
+    # mate runs the other way. A boundary edge, a same-way pair and a non-manifold edge
+    # (``mates[h] < 0`` or a mate that does not reverse ``h``) never cancel: always correct, a
+    # cancelled pair only saves work. ``count_cap_edges`` and ``fill_cap_edges`` must agree
+    # halfedge by halfedge, hence one function.
+    f = h // 3
+    leaf = rank[f] // leaf_faces
+    first_level = wp.int32(0)
+    mate = mates[h]
+    if mate >= 0:
+        if faces[mate] == faces[3 * f + (h - 3 * f + 1) % 3]:
+            x = leaf ^ (rank[mate // 3] // leaf_faces)
+            bits = wp.int32(0)
+            while x > 0:
+                x = x >> 1
+                bits += 1
+            first_level = depth - bits + 1
+    return leaf, first_level
+
+
+@wp.kernel
+def count_cap_edges(
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    leaf_faces: wp.int32,
+    depth: wp.int32,
+    out_perimeter: wp.array[wp.int32],
+) -> None:
+    # dim == 3 * n_faces: each halfedge adds itself to the perimeter of every internal node (levels
+    # below ``depth``) on whose boundary it lies. ``out_perimeter`` is zeroed by the caller.
+    h = wp.int32(wp.tid())
+    leaf, first_level = halfedge_cap_levels(h, faces, mates, rank, leaf_faces, depth)
+    for level in range(first_level, depth):
+        wp.atomic_add(out_perimeter, ((1 << depth) + leaf) >> (depth - level), 1)
+
+
+@wp.func
+def keeps_cap(
+    k: wp.int32, n_leaves: wp.int32, perimeter: wp.array[wp.int32], count: wp.array[wp.int32]
+) -> wp.bool:
+    # Does node ``k`` keep a cap? Internal nodes only, and only when the cap is cheaper than the
+    # node's faces. The offsets, the fill and the walk all ask this, so it is one function.
+    return k >= 1 and k < n_leaves and perimeter[k] < count[k]
+
+
+@wp.kernel
+def cap_edge_counts(
+    n_leaves: wp.int32,
+    perimeter: wp.array[wp.int32],
+    count: wp.array[wp.int32],
+    out_offsets: wp.array[wp.int32],
+) -> None:
+    # dim == 2 * n_leaves: node ``k``'s cap size into ``out_offsets[k + 1]`` (0 for a node without a
+    # cap) and the leading 0, for an in-place inclusive scan into the ``n + 1`` offsets.
+    k = wp.int32(wp.tid())
+    size = wp.int32(0)
+    if keeps_cap(k, n_leaves, perimeter, count):
+        size = perimeter[k]
+    out_offsets[k + 1] = size
+    if k == 0:
+        out_offsets[0] = 0
+
+
+@wp.kernel
+def fill_cap_edges(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    mates: wp.array[wp.int32],
+    rank: wp.array[wp.int32],
+    leaf_faces: wp.int32,
+    depth: wp.int32,
+    perimeter: wp.array[wp.int32],
+    count: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_cap_start: wp.array[wp.vec3],
+    out_cap_end: wp.array[wp.vec3],
+    out_fill: wp.array[wp.int32],
+) -> None:
+    # dim == 3 * n_faces: ``count_cap_edges`` again, writing each halfedge's endpoints into the cap
+    # of every node that keeps one. ``out_fill`` is a zeroed per-node cursor, so the order inside a
+    # cap varies run to run; the walk's fixed-point sum does not see it.
+    h = wp.int32(wp.tid())
+    leaf, first_level = halfedge_cap_levels(h, faces, mates, rank, leaf_faces, depth)
+    n_leaves = wp.int32(1) << depth
+    if first_level < depth:
+        f = h // 3
+        a = vertices[faces[h]]
+        b = vertices[faces[3 * f + (h - 3 * f + 1) % 3]]
+        for level in range(first_level, depth):
+            k = (n_leaves + leaf) >> (depth - level)
+            if keeps_cap(k, n_leaves, perimeter, count):
+                slot = offsets[k] + wp.atomic_add(out_fill, k, 1)
+                out_cap_start[slot] = a
+                out_cap_end[slot] = b
+
+
+@wp.func
+def outside_node_region(
+    q: wp.vec3,
+    slabs: wp.vec4,
+    lower: wp.vec3,
+    upper: wp.vec3,
+    slab_lower: wp.vec4,
+    slab_upper: wp.vec4,
+) -> wp.bool:
+    # Is ``q`` outside the node's 14-DOP, grown by ``WINDING_REGION_GROWTH`` of its coordinates'
+    # magnitude? A ``nan`` query reports outside (every comparison is false), and its fan sum is
+    # ``nan`` like the direct sum's.
+    scale = wp.max(
+        wp.max(wp.abs(lower[0]), wp.abs(upper[0])),
+        wp.max(
+            wp.max(wp.abs(lower[1]), wp.abs(upper[1])), wp.max(wp.abs(lower[2]), wp.abs(upper[2]))
+        ),
+    )
+    grow = WINDING_REGION_GROWTH * scale
+    box_grow = wp.vec3(grow, grow, grow)
+    slab_grow = 3.0 * wp.vec4(grow, grow, grow, grow)
+    if not is_in_aabb(q, lower - box_grow, upper + box_grow):
+        return True
+    lo = slab_lower - slab_grow
+    hi = slab_upper + slab_grow
+    return not (
+        slabs[0] >= lo[0]
+        and slabs[0] <= hi[0]
+        and slabs[1] >= lo[1]
+        and slabs[1] <= hi[1]
+        and slabs[2] >= lo[2]
+        and slabs[2] <= hi[2]
+        and slabs[3] >= lo[3]
+        and slabs[3] <= hi[3]
+    )
+
+
+@wp.func
+def fixed_point_angle(detf: wp.float32, denom: wp.float32, scale: wp.float32) -> wp.int64:
+    return wp.int64(wp.round(wp.atan2(detf, denom) * scale))
+
+
+@wp.kernel
+def winding_number_tree(
+    corners: wp.array[wp.vec3],
+    n_leaves: wp.int32,
+    lower: wp.array[wp.vec3],
+    upper: wp.array[wp.vec3],
+    slab_lower: wp.array[wp.vec4],
+    slab_upper: wp.array[wp.vec4],
+    corner_sum: wp.array[wp.vec3d],
+    count: wp.array[wp.int32],
+    first: wp.array[wp.int32],
+    perimeter: wp.array[wp.int32],
+    cap_offsets: wp.array[wp.int32],
+    cap_start: wp.array[wp.vec3],
+    cap_end: wp.array[wp.vec3],
+    fixed_point_scale: wp.float32,
+    fixed_point_to_turns: wp.float64,
+    query_points: wp.array[wp.vec3],
+    out_winding: wp.array[wp.float32],
+) -> None:
+    # One block per query (``launch_tiled``, dim == n_queries). Every lane walks the whole tree --
+    # the same branches, since they share the query -- and the lanes split each node's cap edges or
+    # faces, striding by ``wp.block_dim()`` (one lane on the CPU device, which then covers them all;
+    # CLAUDE.md section 2.2). The walk is stackless: descend to ``2k``; past a finished node climb
+    # while it is a right child, then step to its sibling; the root finishing ends it.
+    q_index, lane = wp.tid()
+    block = wp.block_dim()
+    q = query_points[q_index]
+    slabs = diagonal_slabs(q)
+    total = wp.int64(0)
+    k = wp.int32(1)
+    while True:
+        c = count[k]
+        descend = False
+        if c > 0:
+            outside = outside_node_region(
+                q, slabs, lower[k], upper[k], slab_lower[k], slab_upper[k]
+            )
+            if outside and keeps_cap(k, n_leaves, perimeter, count):
+                apex = to_vec3(corner_sum[k] / wp.float64(3 * c))
+                v0 = apex - q
+                vl0 = wp.length(v0)
+                for t in range(cap_offsets[k] + lane, cap_offsets[k + 1], block):
+                    detf, denom = solid_angle_terms(v0, vl0, cap_start[t], cap_end[t], q)
+                    total += fixed_point_angle(detf, denom, fixed_point_scale)
+            elif outside or k >= n_leaves:
+                start = first[k]
+                for t in range(start + lane, start + c, block):
+                    v0 = corners[3 * t] - q
+                    detf, denom = solid_angle_terms(
+                        v0, wp.length(v0), corners[3 * t + 1], corners[3 * t + 2], q
+                    )
+                    total += fixed_point_angle(detf, denom, fixed_point_scale)
+            else:
+                descend = True
+        if descend:
+            k = 2 * k
+        else:
+            while (k & 1) == 1 and k > 1:
+                k = k >> 1
+            if k == 1:
+                break
+            k = k + 1
+    block_total = block_sum(total)
+    if lane == 0:
+        out_winding[q_index] = wp.float32(wp.float64(block_total) * fixed_point_to_turns)
 
 
 @wp.func

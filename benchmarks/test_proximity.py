@@ -3,14 +3,15 @@ Benchmarks for ``ordito.proximity`` hot paths.
 
 Covers winding number, signed distance, tangent spheres and geodesic-ball queries. The AABB
 reduction moved to [`test_bounds.py`](test_bounds.py), where ``ordito.bounds`` lives.
-``winding_number`` is O(n_queries x n_faces) even in the tiled variant, so ``lucy`` is skipped; the
-pinned serial (``tiled=False``) path is additionally capped at ``bunny`` because one thread per
-query walking every face takes minutes beyond that.
+``winding_number``'s references are O(n_queries x n_faces), so they are capped below ``lucy``;
+ordito's row answers its large cases through a patch hierarchy that sums each query's nearby
+triangles and a closing fan for every patch it is outside of -- still the exact sum -- and runs the
+whole ladder. The pinned serial (``tiled=False``) path is capped at ``bunny`` because one thread
+per query walking every face takes minutes beyond that.
 
 Read ``winding_number`` and ``signed_distance_on_mesh[winding]`` together: both answer an
-inside/outside question from solid angle, but the first accumulates it exactly over every face while
-the second lets Warp's BVH traversal approximate it and keeps only the sign. The gap between them is
-the cost of needing the winding *value* rather than just its sign.
+inside/outside question from solid angle, but the first returns the exact sum while the second lets
+Warp's BVH traversal approximate it, keeps only the sign, and also pays for the closest point.
 
 Open3D has no equivalent for anything in this module: no generalized winding number -- its
 inside/outside test is raycasting-based, a different algorithm answering a coarser question -- and
@@ -31,9 +32,9 @@ here is a *cost* comparison only.
 **And the Barnes-Hut approximation does pay**, which is worth recording because a smaller probe had
 suggested otherwise. At this module's query count ``igl.fast_winding_number`` is 2.6-3.6x
 ``igl.winding_number`` for a maximum winding deviation of 0.004. It is not a row of its own because
-ordito exposes no approximate-winding entry point to put opposite it (``winding_number`` is the
-exact sum; the Barnes-Hut walk exists only inside ``signed_distance_on_mesh(sign_mode="winding")``),
-but it is the number to weigh a fast-winding port against.
+ordito exposes no approximate-winding entry point to put opposite it: ``winding_number`` is the
+exact sum, and its hierarchy needs no approximation to be sublinear in the face count (a far field
+on top of it measured no faster at any useful accuracy; ``kernels/proximity.py``).
 
 ``compute_scalar_by_distance_from_another_mesh_per_vertex(signeddist=True)`` measures every vertex
 of one mesh against another, so the query points go in as a second, face-less mesh and the answer
@@ -83,8 +84,9 @@ if TYPE_CHECKING:
 _QUERY_SEED = 42
 _N_QUERIES = 10_000
 
-# Query counts for ``winding_number``, the one genuinely O(queries x faces) function here: the
-# other half of its product, swept independently of the mesh.
+# Query counts for ``winding_number``, swept independently of the mesh: its references are
+# O(queries x faces), and ordito's own row switches from the direct sum to the hierarchy on the
+# product.
 _N_QUERIES_SWEEP = [10_000, 100_000]
 
 _query_cache: dict[tuple[str, str, int], wp.array[wp.vec3]] = {}
@@ -138,11 +140,13 @@ def _query_points_ml(bench_case: BenchCase, count: int = _N_QUERIES) -> mm.std_v
 @pytest.mark.parametrize("n_queries", _N_QUERIES_SWEEP)
 def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
     """
-    Exact winding number: no BVH, every query sums over every face.
+    Exact winding number: ordito's hierarchy and igl's direct sum agree to float rounding.
 
-    The one genuinely ``O(queries x faces)`` function in the module, so both sizes are swept -- the
-    mesh by the registry and the query count here. A 10x step in queries that is not a 10x step in
-    time would mean the launch is not saturating the device.
+    igl's row is ``O(queries x faces)``; ordito's sums every face directly only while the product
+    is small, and above it walks a patch hierarchy whose per-query cost grows with roughly the
+    square root of the face count, plus a build linear in it. So both sizes are swept -- the mesh
+    by the registry and the query count here -- and the references stop at ``happy_buddha`` (and
+    at ``bunny`` for the wide query sweep) while ordito's row runs to ``lucy``.
 
     **pyvista answers the reduced question**: ``select_interior_points`` returns the inside/outside
     *bool* rather than the winding number itself, which is what ``ray.contains_points`` returns and
@@ -157,20 +161,22 @@ def test_winding_number(bench_case: BenchCase, n_queries: int) -> None:
     documentation, which is why the value comparison lives in ``tests/test_ray.py`` on a closed
     fixture and this row asserts only the shape.
 
-    **meshlib answers a Barnes-Hut approximation of it**, and that is the whole reason its row is
-    interesting here: ``FastWindingNumber(mesh).calcFromVector`` walks the mesh's AABB tree and
-    replaces a distant subtree by a dipole, so unlike ordito's and igl's rows it is *not*
-    ``O(queries x faces)`` and should not follow the product. ``beta=20`` is the accuracy at which
-    it agrees with the exact sum to 1e-05; its own default of 2 is 24x looser, so a row at the
-    default would be timing a coarser answer. The tree build is inside the timed callable because
+    **meshlib answers a Barnes-Hut approximation of it**: ``FastWindingNumber(mesh).calcFromVector``
+    walks the mesh's AABB tree and replaces a distant subtree by a dipole, so like ordito's row and
+    unlike igl's it does not follow the product. ``beta=20`` is the accuracy at which it agrees
+    with the exact sum to 1e-05; its own default of 2 is 24x looser, so a row at the default would
+    be timing a coarser answer. The tree build is inside the timed callable because
     ``FastWindingNumber`` is constructed per call, the same no-hoisting situation igl's AABB tree
-    and ordito's ``wp.Mesh`` are in.
+    and ordito's patch hierarchy are in.
     """
-    skip_larger_than(bench_case, "happy_buddha", "O(queries x faces): lucy is untenable")
-    if n_queries > _N_QUERIES:
-        # 100k queries against dragon is 8.7e10 pair evaluations, and against happy_buddha 1.1e11.
-        # The 10x query step is measurable on the medium meshes and the product is what it says.
-        skip_larger_than(bench_case, "bunny", "the wide query sweep is only tenable up to bunny")
+    if bench_case.kind != "ordito":
+        skip_larger_than(bench_case, "happy_buddha", "O(queries x faces): lucy is untenable")
+        if n_queries > _N_QUERIES:
+            # 100k queries against dragon is 8.7e10 pair evaluations, and against happy_buddha
+            # 1.1e11; the 10x query step is measurable on the medium meshes.
+            skip_larger_than(
+                bench_case, "bunny", "the wide query sweep is only tenable up to bunny"
+            )
     if bench_case.kind == "pyvista":
         skip_larger_than(bench_case, "bunny", "vtkSelectEnclosedPoints casts rays serially")
         mesh_pv = bench_case.mesh_pv

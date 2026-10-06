@@ -2853,8 +2853,10 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   the flag, so only a function that built its own mesh could guarantee it; Warp 1.18 exposes
   `wp.Mesh.support_winding_number` (GH-1824), and `signed_distance_on_mesh` / `signed_distance_grid`
   accept a supplied mesh exactly when it reads `True` (a plain Python attribute set by the
-  constructor, so a caller who assigns it afterwards defeats the check). Warp exposes only the thresholded
-  *sign*, so `proximity.winding_number` still needs a custom LBVH.
+  constructor, so a caller who assigns it afterwards defeats the check). Warp's public API exposes
+  only the thresholded *sign*; the value (`wp::mesh_query_winding_number`, an order-2 Barnes-Hut
+  walk) is reachable only through `wp.func_native`. `proximity.winding_number` needs neither: it is
+  exact through its own patch hierarchy (§16.6).
 - **`wp.bvh_query_sphere`** (Warp 1.17), in `kernels/neighbors.py` and
   `proximity.py::closest_point_on_edges`: a win where the enumeration radius is large relative to
   an existing BVH. **It is bit-exactly `wp.length_sq(d) <= r*r`**, so adopting it means the squared
@@ -4965,6 +4967,39 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   `edges_sorted` cold was pure overhead. `is_watertight(mesh=)` takes a factory and builds the BVH
   only once both manifold tests pass. **Declined: an early exit on the edge test** (saves an open
   mesh a third, costs a closed one 3-8 %: the vertex test's launches stop overlapping the sort).
+
+#### winding_number: exact hierarchy (boundary caps)
+
+- **`winding_number` was a brute force, `O(queries x faces)`**, compute-bound at ~2e11 solid angles
+  a second (4.4 us a query on `dragon`); no tree existed. Above a size gate it now walks an
+  **exact** hierarchy (Jacobson, Kavan, Sorkine-Hornung 2013): a patch the query is outside the
+  convex region of contributes the solid angle of a fan closing its boundary (patch plus fan is
+  a closed 2-chain, winding 0 outside the region), so a query costs the perimeters of the sibling
+  patches on its path, about `sqrt(n_faces)` solid angles (2.1 k on 16 k faces, 17.5 k on 0.87 M,
+  53 k on 28 M). Holds for any soup: an uncancelled halfedge only costs work. Interleaved against
+  HEAD (2026-10-06, build included): `bunny` 10 k 5.5x, `dragon` 10 k 22x, `happy_buddha` 10 k 28x,
+  `bunny_decimated` 100 k 3.0x, `bunny` 100 k 18x, `lucy` 10 k 94x (2.67 s -> 28 ms);
+  `bunny_decimated` 10 k stays on the tiled sum (1.00x). Its float64 error (<= 1.7e-6) is below
+  the tiled float32 sum's on every scan mesh (2.1e-5 at `lucy`); sums in int64 fixed point, so it
+  is bit-reproducible. On the CPU device 1.3-1.7x at 16 queries, 18x at 1 k (`bunny`); the gate
+  is per device.
+- **The apex must lie inside the region the query is outside of.** With a 14-DOP region and the
+  box centre as apex, one query in 10 000 (Hilbert-ordered `bunny`) was off by exactly one turn:
+  the fan left the DOP. The apex is the mean of the patch corners (float64 sums: a float32 sum of
+  millions of corners drifts), and the region is grown by 1e-6 of its coordinates for the
+  float32 rounding of the apex. `test_winding_number_tree_fans_from_inside_the_patch_region`
+  pins it.
+- **Declined, measured at the site** (`kernels/proximity.py`): a Barnes-Hut far field over the
+  caps (order 1/2, beta 2-8: no gain at any useful accuracy, 3-30x slower when forced, because
+  siblings next to the query are never well separated); cap edges as vertex indices (0.30x);
+  a complex-product phase sum instead of `atan2` (0.81x); one block per lattice cell (16x slower);
+  Morton-sorted queries (1.04-1.08x). Warp's native order-2 walk needs accuracy 8 for 1.8e-5 and is
+  slower than the exact hierarchy from accuracy 6. Open: a Hilbert face order (1.08-1.23x on the
+  walk); `signed_distance_on_mesh(sign_mode="winding")` taking its sign from the hierarchy (exact,
+  but it still needs the closest point; Warp's accuracy-2 sign disagreed with the exact one at 0
+  of 99 k `offset_mesh` lattice nodes on `dragon`, so it is speed, not a defect).
+- **Block width 32**: best on 69 k faces (1.5x over 64 at 100 k queries), within 1.07x of 64 on
+  ~1 M faces, and the width `kernels/proximity` already launches with (no new module variant).
 
 #### mesh_to_mesh_distance, metrics
 

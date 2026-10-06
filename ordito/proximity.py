@@ -1037,6 +1037,17 @@ def winding_number(
     closed, consistently oriented watertight mesh, interior points have
     winding number near ``1`` and exterior points near ``0``.
 
+    The answer is the exact sum, not an approximation of it, on every path; the paths differ only
+    in how much of it they evaluate triangle by triangle and in their float32 rounding. Once the
+    queries times the faces is large, the faces are grouped into a hierarchy of spatially coherent
+    patches, and a patch whose bounding region does not hold the query contributes the solid angle
+    of a fan closing its boundary instead of its triangles: patch and fan together form a closed
+    surface, whose winding number vanishes outside the region, so the fan's solid angle is the
+    patch's exactly (Jacobson, Kavan and Sorkine-Hornung 2013). That holds for any triangle soup --
+    open, non-manifold or inconsistently wound -- and it lets a query visit roughly the square root
+    of the face count rather than every face. That path sums in fixed point, so it returns the same
+    bits on every run.
+
     Parameters
     ----------
     vertices
@@ -1046,13 +1057,14 @@ def winding_number(
     points
         ``(m,)`` query positions in space.
     tiled
-        When ``True`` (default), sum solid angles with the face list partitioned across
-        threads: one thread per ``(query, face slice)`` walks a strided slice of
+        When ``True`` (default), sum in parallel: through the patch hierarchy above, or, while
+        the queries times the faces is small, with the face list partitioned across threads -- one
+        thread per ``(query, face slice)`` walks a strided slice of
         [`ITEMS_PER_QUERY_SLICE`][ordito.proximity.ITEMS_PER_QUERY_SLICE] faces and accumulates
-        one ``wp.atomic_add`` per slice, so the summation order is nondeterministic and the result
-        can differ in the last float32 digits between runs. When ``False``, each query thread
-        loops over all faces serially — orders of magnitude slower on large meshes,
-        but the fixed left-to-right summation makes it the exact-sum reference.
+        one ``wp.atomic_add`` per slice, so that sum's order is nondeterministic and the result can
+        differ in the last float32 digits between runs. When ``False``, each query thread loops
+        over all faces serially -- orders of magnitude slower on large meshes, but the fixed
+        left-to-right summation makes it the exact-sum reference.
 
     Returns
     -------
@@ -1072,6 +1084,8 @@ def winding_number(
         return _launch.empty(0, dtype=wp.float32, device=device)
     if n_faces == 0:
         return _launch.zeros(n_queries, dtype=wp.float32, device=device)
+    if tiled and _uses_winding_tree(n_queries, n_faces, device):
+        return _winding_number_tree(vertices, faces, points)
 
     out_winding = (
         _launch.zeros(n_queries, dtype=wp.float32, device=device)
@@ -1101,6 +1115,153 @@ def winding_number(
             inputs=[vertices, faces, wp.int32(n_faces), points, out_winding],
             device=device,
         )
+    return out_winding
+
+
+def _uses_winding_tree(n_queries: int, n_faces: int, device: wp.DeviceLike) -> bool:
+    """Whether [`winding_number`][ordito.proximity.winding_number] answers through the hierarchy."""
+    if wp.get_device(device).is_cuda:
+        from_pairs, from_queries = (
+            kernel_proximity.WINDING_TREE_FROM_PAIRS_CUDA,
+            kernel_proximity.WINDING_TREE_FROM_QUERIES_CUDA,
+        )
+    else:
+        from_pairs, from_queries = (
+            kernel_proximity.WINDING_TREE_FROM_PAIRS_CPU,
+            kernel_proximity.WINDING_TREE_FROM_QUERIES_CPU,
+        )
+    return n_queries >= from_queries and n_queries * n_faces >= from_pairs
+
+
+def _winding_number_tree(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], points: wp.array[wp.vec3]
+) -> wp.array[wp.float32]:
+    """
+    ``(m,)`` exact winding numbers through the patch hierarchy (``kernels/proximity.py``).
+
+    Builds the implicit Morton tree over the faces (corners in Morton order, per-node 14-DOP, face
+    range and corner sum, bottom up one level a launch), the boundary of every node that keeps a
+    cap, then walks it with one block per query.
+    """
+    device = points.device
+    n_faces = faces.size // 3
+    leaf_faces = kernel_proximity.WINDING_TREE_LEAF_FACES
+    depth = max(1, math.ceil(math.log2(-(-n_faces // leaf_faces))))
+    n_leaves = 1 << depth
+    n_nodes = 2 * n_leaves
+
+    corners_box = _launch.full(6, math.inf, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_reduce.minmax_vec3_chunked,
+        dim=kernel_reduce.chunks_1d(vertices.size),
+        inputs=[vertices, corners_box],
+        device=device,
+    )
+    keys = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    order = _launch.empty(2 * n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.winding_face_keys,
+        dim=n_faces,
+        inputs=[vertices, faces, corners_box, keys, order],
+        device=device,
+    )
+    _launch.radix_sort_pairs(keys, order, count=n_faces, end_bit=30)
+    corners = _launch.empty(3 * n_faces, dtype=wp.vec3, device=device)
+    rank = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.winding_sorted_faces,
+        dim=n_faces,
+        inputs=[vertices, faces, order, corners, rank],
+        device=device,
+    )
+
+    lower = _launch.empty(n_nodes, dtype=wp.vec3, device=device)
+    upper = _launch.empty(n_nodes, dtype=wp.vec3, device=device)
+    slab_lower = _launch.empty(n_nodes, dtype=wp.vec4, device=device)
+    slab_upper = _launch.empty(n_nodes, dtype=wp.vec4, device=device)
+    corner_sum = _launch.empty(n_nodes, dtype=wp.vec3d, device=device)
+    count = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    first = _launch.empty(n_nodes, dtype=wp.int32, device=device)
+    nodes = [lower, upper, slab_lower, slab_upper, corner_sum, count, first]
+    _launch.launch(
+        kernel_proximity.winding_leaves,
+        dim=n_leaves,
+        inputs=[corners, wp.int32(leaf_faces), wp.int32(n_leaves), *nodes],
+        device=device,
+    )
+    for level in range(depth - 1, -1, -1):
+        _launch.launch(
+            kernel_proximity.winding_merge_level,
+            dim=1 << level,
+            inputs=[wp.int32(1 << level), *nodes],
+            device=device,
+        )
+
+    mates = od.halfedge.halfedge_mates(faces, vertices.size)
+    perimeter = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
+    cap_levels = [mates, rank, wp.int32(leaf_faces), wp.int32(depth)]
+    _launch.launch(
+        kernel_proximity.count_cap_edges,
+        dim=3 * n_faces,
+        inputs=[faces, *cap_levels, perimeter],
+        device=device,
+    )
+    cap_offsets = _launch.empty(n_nodes + 1, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.cap_edge_counts,
+        dim=n_nodes,
+        inputs=[wp.int32(n_leaves), perimeter, count, cap_offsets],
+        device=device,
+    )
+    cap_sizes = cap_offsets[1:]
+    _launch.array_scan(cap_sizes, cap_sizes, inclusive=True)
+    # One readback: the cap edges' total sizes their buffers, and only the device knows it.
+    n_cap_edges = int(read_scalar(cap_offsets))
+    cap_start = _launch.empty(max(n_cap_edges, 1), dtype=wp.vec3, device=device)
+    cap_end = _launch.empty(max(n_cap_edges, 1), dtype=wp.vec3, device=device)
+    fill = _launch.zeros(n_nodes, dtype=wp.int32, device=device)
+    _launch.launch(
+        kernel_proximity.fill_cap_edges,
+        dim=3 * n_faces,
+        inputs=[
+            vertices,
+            faces,
+            *cap_levels,
+            perimeter,
+            count,
+            cap_offsets,
+            cap_start,
+            cap_end,
+            fill,
+        ],
+        device=device,
+    )
+
+    fixed_point_bits = min(
+        kernel_proximity.WINDING_FIXED_POINT_MAX_BITS, 61 - math.ceil(math.log2(n_faces))
+    )
+    out_winding = _launch.empty(points.size, dtype=wp.float32, device=device)
+    _launch.launch_tiled(
+        kernel_proximity.winding_number_tree,
+        dim=[points.size],
+        inputs=[
+            corners,
+            wp.int32(n_leaves),
+            *nodes[:5],
+            count,
+            first,
+            perimeter,
+            cap_offsets,
+            cap_start,
+            cap_end,
+            wp.float32(2.0**fixed_point_bits),
+            wp.float64(1.0 / (2.0**fixed_point_bits * 2.0 * math.pi)),
+            points,
+            out_winding,
+        ],
+        block_dim=kernel_proximity.WINDING_TREE_BLOCK_DIM,
+        device=device,
+    )
     return out_winding
 
 

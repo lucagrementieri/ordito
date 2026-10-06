@@ -1495,8 +1495,20 @@ def test_signed_distance_grid_guards_and_conventions(
     assert tight_field_wp.numpy().max() < 0.0
 
 
+def _force_winding_tree(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> None:
+    """Move ``winding_number``'s size gate so every call takes (or skips) the patch hierarchy."""
+    threshold = 0 if enabled else 2**62
+    for name in (
+        "WINDING_TREE_FROM_PAIRS_CUDA",
+        "WINDING_TREE_FROM_QUERIES_CUDA",
+        "WINDING_TREE_FROM_PAIRS_CPU",
+        "WINDING_TREE_FROM_QUERIES_CPU",
+    ):
+        monkeypatch.setattr(kernel_proximity, name, threshold)
+
+
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
-@pytest.mark.parametrize("tiled", [False, True])
+@pytest.mark.parametrize("path", ["serial", "tiled", "tree"])
 @pytest.mark.parity("winding_number", "igl")
 @pytest.mark.parity(
     "winding_number_serial",
@@ -1507,20 +1519,25 @@ def test_signed_distance_grid_guards_and_conventions(
     "identical call twice under two names. This group exists to pin ordito's own tiled=False "
     "path, which the reference has no counterpart for.",
 )
-def test_winding_number_random(request: pytest.FixtureRequest, mesh_name: str, tiled: bool) -> None:
+def test_winding_number_random(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str, path: str
+) -> None:
     """
-    Class A: the generalized winding number against ``igl.winding_number``, both kernels.
+    Class A: the generalized winding number against ``igl.winding_number``, on all three paths.
 
-    Parametrized over ``tiled`` so the serial and block-cooperative sums are each held to the
-    same reference rather than to each other -- 200 queries spanning inside, outside and near-
-    surface.
+    Parametrized over the path so the serial sum, the tiled sum and the patch hierarchy are each
+    held to the same reference rather than to each other -- 200 queries spanning inside, outside
+    and near-surface. The size gate is moved so each arm takes its own path at this size.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     query_np = _random_queries_np()
+    _force_winding_tree(monkeypatch, enabled=path == "tree")
 
     winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
     query_wp = points_to_warp(query_np, mesh_wp.device)
-    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=tiled)
+    winding_wp = od.proximity.winding_number(
+        mesh_wp.points, mesh_wp.indices, query_wp, tiled=path != "serial"
+    )
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
@@ -1599,6 +1616,129 @@ def test_winding_number_tiled_matches_igl_on_the_cpu() -> None:
     winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
     query_wp = points_to_warp(query_np, kernel_device)
     winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp, tiled=True)
+    assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
+
+
+def _near_surface_queries_np(mesh_tm: tm.Trimesh, n: int, seed: int) -> np.ndarray:
+    """``n`` queries jittered off the surface at three scales, plus a quarter drawn from the box."""
+    rng = np.random.default_rng(seed)
+    diagonal = float(np.linalg.norm(mesh_tm.bounds[1] - mesh_tm.bounds[0]))
+    on_surface = mesh_tm.vertices[rng.integers(0, len(mesh_tm.vertices), n)]
+    scales = np.repeat([1e-2, 1e-3, 1e-4], -(-n // 3))[:n, None] * diagonal
+    near = on_surface + rng.normal(size=(n, 3)) * scales
+    return np.vstack([near, _queries_in_bounds_np(mesh_tm, n // 4, seed)])
+
+
+def _winding_soup(mesh_tm: tm.Trimesh, seed: int) -> tuple[np.ndarray, np.ndarray]:
+    """``mesh_tm`` as a soup: some faces flipped, duplicated, degenerate, and non-manifold fins."""
+    rng = np.random.default_rng(seed)
+    faces_np = np.array(mesh_tm.faces, dtype=np.int64)
+    flipped = rng.random(len(faces_np)) < 0.2
+    faces_np[flipped] = faces_np[flipped][:, ::-1]
+    duplicated = faces_np[rng.random(len(faces_np)) < 0.05]
+    degenerate = np.repeat(rng.integers(0, len(mesh_tm.vertices), 20)[:, None], 3, axis=1)
+    # A third face on existing edges: non-manifold fins.
+    fins = np.column_stack([faces_np[:10, 0], faces_np[:10, 1], faces_np[10:20, 2]])
+    soup_np = np.vstack([faces_np, duplicated, degenerate, fins])
+    return np.asarray(mesh_tm.vertices, dtype=np.float64), soup_np[rng.permutation(len(soup_np))]
+
+
+@pytest.mark.parametrize(
+    "mesh_name", ["icosphere", "cave_cube", "hemisphere", "mobius", "boy_surface"]
+)
+@pytest.mark.parametrize("soup", [False, True], ids=["mesh", "soup"])
+def test_winding_number_tree_matches_the_direct_sum(
+    request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch, mesh_name: str, soup: bool
+) -> None:
+    """
+    Ordito against ordito: the patch hierarchy against the serial exact sum, near the surface.
+
+    The serial sum carries the oracle (``test_winding_number_random``); this pins the hierarchy to
+    it where the hierarchy has the most to get wrong -- queries a hundredth to a ten-thousandth of
+    the diagonal off the surface, which sit just outside many patches' regions -- on closed, open
+    and non-orientable fixtures, and on a soup of each with flipped, duplicated, degenerate and
+    non-manifold fin faces, whose boundary chains do not cancel. A fan identity applied where it
+    does not hold is off by a whole turn, not by rounding, so the 1e-5 bar separates the two. The
+    result is also bit-identical between two calls: the hierarchy sums in fixed point.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    device = mesh_wp.device
+    if soup:
+        vertices_wp, faces_wp = numpy_to_warp(*_winding_soup(mesh_tm, seed=7), device)
+    else:
+        vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    query_wp = points_to_warp(_near_surface_queries_np(mesh_tm, 600, seed=11), device)
+
+    serial_wp = od.proximity.winding_number(vertices_wp, faces_wp, query_wp, tiled=False)
+    _force_winding_tree(monkeypatch, enabled=True)
+    tree_wp = od.proximity.winding_number(vertices_wp, faces_wp, query_wp)
+    again_wp = od.proximity.winding_number(vertices_wp, faces_wp, query_wp)
+
+    serial_np = serial_wp.numpy()
+    assert np.ptp(serial_np) > 0.5  # non-vacuity: both sides of the surface are queried
+    assert np.allclose(tree_wp.numpy(), serial_np, rtol=0.0, atol=1e-5)
+    assert np.array_equal(tree_wp.numpy(), again_wp.numpy())
+
+
+def test_winding_number_tree_fans_from_inside_the_patch_region(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the closing fan's apex must lie in the region the query is outside of.
+
+    One planar triangle ``x + y + z = 1`` spanning the unit box, finely subdivided, so the root
+    patch keeps a fan over its 192-edge boundary. Its box is the unit box, but its 14-DOP has the
+    diagonal slab pinned to ``x + y + z = 1``, so a query on the box diagonal at ``x + y + z =
+    1.35`` is inside the box and outside the region. An apex at the box centre (``x + y + z =
+    1.5``) lies outside that region: patch plus fan is then a closed surface enclosing the query,
+    and the answer is off by exactly one turn. The apex the hierarchy uses -- the mean of the
+    patch's corners -- lies on the triangle.
+    """
+    subdivisions = 64
+    rows = [(i, j) for i in range(subdivisions + 1) for j in range(subdivisions + 1 - i)]
+    index = {ij: k for k, ij in enumerate(rows)}
+    barycentric_np = (
+        np.array([(i, j, subdivisions - i - j) for i, j in rows], dtype=np.float64) / subdivisions
+    )
+    faces_np = []
+    for i, j in rows:
+        if i + j < subdivisions:
+            faces_np.append((index[i, j], index[i + 1, j], index[i, j + 1]))
+        if i + j < subdivisions - 1:
+            faces_np.append((index[i + 1, j], index[i + 1, j + 1], index[i, j + 1]))
+    vertices_wp, faces_wp = numpy_to_warp(barycentric_np, np.array(faces_np), device)
+    diagonal_np = np.linspace(0.05, 0.95, 37)[:, None] * np.ones(3)
+    rng = np.random.default_rng(5)
+    query_np = np.vstack([diagonal_np, rng.random((200, 3))])
+    query_wp = points_to_warp(query_np, device)
+
+    serial_np = od.proximity.winding_number(vertices_wp, faces_wp, query_wp, tiled=False).numpy()
+    _force_winding_tree(monkeypatch, enabled=True)
+    tree_np = od.proximity.winding_number(vertices_wp, faces_wp, query_wp).numpy()
+
+    assert len(faces_np) == subdivisions**2
+    assert np.abs(serial_np).max() > 0.1  # non-vacuity: the triangle subtends a real angle
+    assert np.allclose(tree_np, serial_np, rtol=0.0, atol=1e-5)
+
+
+def test_winding_number_tree_matches_igl_on_the_cpu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """
+    Class A: the patch hierarchy on the CPU device the ``device`` fixture never reaches.
+
+    Its walk is a ``launch_tiled`` kernel whose lanes split each patch's work by
+    ``wp.block_dim()``: one lane on the CPU device, which must then cover every fan edge and face
+    itself. A lane partition that ignored the block width would sum a fraction of them there.
+    """
+    kernel_device = "cpu"
+    mesh_tm = tm.creation.icosphere(subdivisions=3)
+    mesh_wp = trimesh_to_warp(mesh_tm, kernel_device)
+    query_np = _near_surface_queries_np(mesh_tm, 200, seed=43)
+    _force_winding_tree(monkeypatch, enabled=True)
+
+    winding_igl = igl.winding_number(*mesh_igl(mesh_tm), query_np)
+    query_wp = points_to_warp(query_np, kernel_device)
+    winding_wp = od.proximity.winding_number(mesh_wp.points, mesh_wp.indices, query_wp)
+    assert np.ptp(np.asarray(winding_igl)) > 0.5
     assert np.allclose(winding_wp.numpy(), np.asarray(winding_igl).ravel(), rtol=1e-5, atol=1e-5)
 
 
