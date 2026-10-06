@@ -438,6 +438,13 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # launches and both read and written every level, which is the ``forest_link`` case one kernel
     # down.
     ("graph", "scatter_neighbor_lists"): frozenset({"cursor"}),
+    # ``signed_distance_level_set``'s winding lattice: ``column_suffix_sums`` turns each column's
+    # per-node crossing deltas into suffix sums where they lie; ``take_exact_winding`` and
+    # ``warp_winding_sign`` overwrite the lattice winding number of the nodes in doubt, and the
+    # first clears their slot once settled. Each buffer is both the input and the result.
+    ("levelset", "column_suffix_sums"): frozenset({"crossings"}),
+    ("levelset", "take_exact_winding"): frozenset({"winding", "slots"}),
+    ("levelset", "warp_winding_sign"): frozenset({"winding"}),
     ("homology", "bfs_push_level"): frozenset({"state"}),
     # A Chronopoulos-Gear round updates its recurrence in place: ``p``, ``s = A p`` and ``r`` are
     # each read and overwritten by the one lane that owns the entry. They are the iteration's state,

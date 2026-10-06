@@ -58,8 +58,8 @@ from conftest import BenchCase, BenchLibrary, skip_larger_than
 # the cell. The pair is a slope check: 1/64 to 1/128 is 8x the samples, and an offset of four cells
 # is wide enough that the padding (``ceil(distance / cell) + 2``) is a real part of the lattice.
 _CELL_DIVISORS = [64, 128]
-# ``offset_mesh`` alone adds a third point: past a couple of million lattice nodes a closed input
-# takes the sparse extraction, which no coarser point reaches.
+# ``offset_mesh`` alone adds a third point, a lattice of a few million nodes: the slope of the
+# winding lattice's per-node passes, which the coarser points leave hidden under its fixed costs.
 _OFFSET_CELL_DIVISORS = [*_CELL_DIVISORS, 256]
 _OFFSET_CELLS = 4.0
 
@@ -85,20 +85,19 @@ def test_offset_mesh(bench_case: BenchCase, divisor: int) -> None:
     the level set is clipped by the boundary -- which at four cells of offset is a noticeable
     fraction of the box and is paid by ordito's row alone (both references pad internally).
 
-    Read the two divisors as a slope. 2x the resolution is **8x the samples**, and ordito's row
-    grows only **2.8x** -- the samples are independent queries, so a lattice this size does not
-    saturate the GPU and the wall clock tracks occupancy rather than work. The reference rows grow
-    2.2x (meshlib) and 1.6x (pymeshlab) for the same reason on their own cores, and sit an order of
-    magnitude and two orders behind respectively.
+    Read the two divisors as a slope. 2x the resolution is **8x the lattice**, but ordito's row
+    searches for the closest point only within a cell diagonal of the offset level and signs the
+    nodes by counting crossings along the lattice's columns, so what grows with the lattice is a
+    few cheap passes; on the scan meshes the per-mesh costs (the BVH build, the boundary chain)
+    dominate and the row grows 0.8-1.9x across the pair. The reference rows grow 2.2x (meshlib)
+    and 1.6x (pymeshlab) on their own cores, an order of magnitude and two orders behind.
 
     Read meshlib's *median*, not its mean: its OpenVDB band build spreads sevenfold here.
 
-    The third divisor is ordito's alone. At 1/256 of the diagonal the lattice passes the couple of
-    million nodes from which a **closed** input skips the dense field -- an octree brackets the
-    offset surface and only the cells near it are queried -- so ``happy_buddha``, the one closed
-    scan mesh, falls well below the open meshes' cubic growth there, while the open ones keep the
-    dense lattice and pay only the closedness test. The references' rows at that point would add
-    minutes for no new reading.
+    The third divisor is ordito's alone: a lattice of several million nodes, where those per-node
+    passes start to show (1.2-2.0x over the 1/128 row on the scan meshes, where sampling every
+    node grew 4.5-4.7x on the open ones). The references' rows there would add minutes for no new
+    reading.
     """
     if divisor not in _CELL_DIVISORS and bench_case.kind != "ordito":
         pytest.skip("the finest cell width is an ordito-only point on the axis")
@@ -198,9 +197,10 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
     """
     The field alone, without the marching: ``resolution ** 3`` signed closest-point queries.
 
-    Subtract this from ``offset_mesh`` above to price the extraction, which is the only reason both
-    groups exist -- they run the identical lattice, so the difference is Warp's ``MarchingCubes``
-    over it.
+    Not a component of ``offset_mesh`` above: that one never builds this field. It caps each
+    closest-point search a cell diagonal past the offset level and signs the nodes from the lattice
+    itself, so this row is the price of the whole field (and of the parity sign, the default here),
+    which that one avoids.
 
     open3d's ``RaycastingScene.compute_signed_distance`` is the same quantity, to 1.27e-07
     (``tests/test_proximity.py``), and it is the one reference here that batches: the lattice is
@@ -209,9 +209,7 @@ def test_signed_distance_grid(bench_case: BenchCase, divisor: int) -> None:
 
     The two slopes are the whole row. For 8x the samples open3d grows 6.7x -- a saturated CPU doing
     the work -- where ordito grows 1.9x, a GPU that was not full at the coarser lattice, so the gap
-    widens several-fold across the resolution pair. Subtracting these from ``offset_mesh`` prices
-    the extraction, which grows an order of magnitude over the same pair: past a certain resolution
-    the offset is dominated by ``MarchingCubes`` rather than by the field.
+    widens several-fold across the resolution pair.
     """
     cell, _distance = _cell_and_offset(bench_case, divisor)
 

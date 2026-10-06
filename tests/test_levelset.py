@@ -37,6 +37,7 @@ from tests.comparisons import (
 )
 from tests.conversions import (
     meshlib_to_trimesh,
+    numpy_to_warp,
     points_to_warp,
     trimesh_to_meshlib,
     trimesh_to_pymeshlab,
@@ -529,10 +530,11 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
 
     ``test_offset_mesh_lands_at_the_distance_and_matches_meshlib`` and the pymeshlab comparison
     carry the oracle on the dense path; this pins the sparse path to it by lowering the node gate
-    to zero (every fixture here is far below the shipped one). On a closed, consistently wound
-    input the two must agree vertex for vertex up to the order of the buffers -- matched by nearest
-    neighbour with a bijection check -- and face for face with the same winding. On an open or
-    non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
+    to zero (every fixture here is far below the shipped one) and closing the winding lattice's,
+    which would otherwise take every winding-signed lattice this size. On a closed, consistently
+    wound input the two must agree vertex for vertex up to the order of the buffers -- matched by
+    nearest neighbour with a bijection check -- and face for face with the same winding. On an open
+    or non-orientable input the gate must keep the dense lattice, whose winding-signed field jumps
     away from the surface: the sparse extraction measured a fifth of a hemisphere's offset faces
     missing there.
 
@@ -559,6 +561,7 @@ def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
         calls.append(1)
         return sparse(*args, **kwargs)  # pyright: ignore[reportArgumentType]
 
+    monkeypatch.setattr(od.levelset, "_LATTICE_WINDING_BELOW_NODES", 0)
     monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
     monkeypatch.setattr(od.levelset, "sparse_marching_cubes", counted)
     sparse_vertices_wp, sparse_faces_wp = od.levelset.offset_mesh(
@@ -599,8 +602,9 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     Ordito against ordito: both extractions equal ``marching_cubes`` of the sampled field.
 
     The dense path is checked against composing the public parts by hand (sample the lattice with
-    ``grid_points``, sign it with ``signed_distance_on_mesh``, march it), and the sparse path --
-    forced by lowering the node gate -- against the dense one, on a lattice whose spacing differs
+    ``grid_points``, sign it with ``signed_distance_on_mesh``, march it), bit for bit, and the
+    sparse path -- forced by lowering its node gate and closing the winding lattice's -- against the
+    dense one, on a lattice whose spacing differs
     per axis, the shape ``reconstruction.resample_uniform`` builds. Vertices are matched by nearest
     neighbour with a bijection check and faces compared with their winding.
     """
@@ -622,6 +626,7 @@ def test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice(
     assert np.array_equal(dense_vertices_wp.numpy(), composed_vertices_wp.numpy())
     assert np.array_equal(dense_faces_wp.numpy(), composed_faces_wp.numpy())
 
+    monkeypatch.setattr(od.levelset, "_LATTICE_WINDING_BELOW_NODES", 0)
     monkeypatch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 0)
     sparse_vertices_wp, sparse_faces_wp = od.levelset.signed_distance_level_set(
         vertices_wp, faces_wp, iso, shape, bounds=bounds
@@ -650,6 +655,228 @@ def test_signed_distance_level_set_guards(icosphere: tuple[tm.Trimesh, wp.Mesh])
         )
     with pytest.raises(ValueError, match="at least 2"):
         od.levelset.signed_distance_level_set(vertices_wp, faces_wp, 0.0, (8, 1, 8), bounds=bounds)
+
+
+# Every topology the winding lattice treats differently: closed and convex, closed with flat faces
+# lying on lattice planes (``unit_box``: the lattice starts ``pad`` cells below its box), a hollow
+# shell, open with one rim and with two (``half_torus`` is cut on a lattice plane), non-orientable
+# closed and with a boundary, and closed but self-intersecting.
+_WINDING_LATTICE_MESHES = [
+    "icosahedron",
+    "icosphere_coarse",
+    "unit_box",
+    "cave_cube",
+    "hemisphere",
+    "half_torus",
+    "boy_surface",
+    "mobius",
+    "bohemian_dome",
+]
+
+
+def _sampled_level_set(
+    monkeypatch: pytest.MonkeyPatch,
+    vertices_wp: wp.array[wp.vec3],
+    faces_wp: wp.array[wp.int32],
+    iso: float,
+    shape: tuple[int, int, int],
+    bounds: tuple[wp.vec3, wp.vec3],
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Extract the level set by sampling every lattice node, the winding lattice switched off."""
+    with monkeypatch.context() as patch:
+        patch.setattr(od.levelset, "_LATTICE_WINDING_BELOW_NODES", 0)
+        patch.setattr(od.levelset, "_SPARSE_LEVEL_SET_FROM_NODES", 1 << 62)
+        return od.levelset.signed_distance_level_set(
+            vertices_wp, faces_wp, iso, shape, bounds=bounds
+        )
+
+
+@pytest.mark.parametrize(
+    ("settle", "constant", "value"),
+    [
+        pytest.param("shipped", None, None, id="shipped"),
+        # Every node in doubt goes straight to Warp's own sign, building its solid-angle BVH.
+        pytest.param("warp_sign", "_EXACT_WINDING_CAPACITY", 0, id="warp_sign"),
+        # A margin of nearly 1/2 puts most of the lattice in doubt, through both settling stages.
+        pytest.param("wide_margin", "_WINDING_UNDECIDED_DELTA", 0.45, id="wide_margin"),
+        # No room for any cone: an open input falls back to sampling every node.
+        pytest.param("no_cones", "_MAX_CONE_EDGES", -1, id="no_cones"),
+    ],
+)
+@pytest.mark.parametrize("mesh_name", _WINDING_LATTICE_MESHES)
+def test_signed_distance_level_set_winding_lattice_is_the_sampled_lattice(
+    request: pytest.FixtureRequest,
+    monkeypatch: pytest.MonkeyPatch,
+    mesh_name: str,
+    settle: str,
+    constant: str | None,
+    value: float | None,
+) -> None:
+    """
+    Ordito against ordito: the winding lattice extracts the sampled lattice's surface, bit for bit.
+
+    The sampled path (``grid_points`` signed by ``signed_distance_on_mesh(sign_mode="winding")``,
+    marched; pinned to composing those parts by hand in
+    ``test_signed_distance_level_set_is_the_dense_field_on_an_anisotropic_lattice``) carries the
+    oracle, ``offset_mesh``'s meshlib and pymeshlab comparisons above. Here the winding lattice --
+    a band-capped closest-point search signed by the exact winding number counted along lattice
+    columns, Warp's own sign only where the two could differ -- must reproduce it exactly: the
+    same vertex and face buffers, at an outward, a zero and an inward level, on every topology the
+    method treats differently, and with each settling stage forced in turn.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    if constant is not None:
+        monkeypatch.setattr(od.levelset, constant, value)
+    spacing = float(mesh_tm.scale) / 40.0
+    compared = 0
+    for cells in (2.0, 0.0, -1.0):
+        iso = cells * spacing
+        pad = 2 + max(math.ceil(cells), 0)
+        shape, bounds = od.proximity.signed_distance_lattice(
+            vertices_wp, spacing, bounds=od.bounds.aabb(vertices_wp), pad=pad
+        )
+        lattice_vertices_wp, lattice_faces_wp = od.levelset.signed_distance_level_set(
+            vertices_wp, faces_wp, iso, shape, bounds=bounds
+        )
+        sampled_vertices_wp, sampled_faces_wp = _sampled_level_set(
+            monkeypatch, vertices_wp, faces_wp, iso, shape, bounds
+        )
+        assert np.array_equal(lattice_vertices_wp.numpy(), sampled_vertices_wp.numpy()), (
+            settle,
+            cells,
+        )
+        assert np.array_equal(lattice_faces_wp.numpy(), sampled_faces_wp.numpy()), (settle, cells)
+        compared += int(sampled_faces_wp.size > 0)
+    assert compared >= 2, "the comparison has surfaces to compare"
+
+
+@pytest.mark.parametrize("opening", [0, 1, 2])
+def test_signed_distance_level_set_winding_lattice_with_a_rim_on_a_lattice_plane(
+    device: str, monkeypatch: pytest.MonkeyPatch, opening: int
+) -> None:
+    """
+    Ordito against ordito: a hole whose rim lies on a lattice plane, opening along each axis.
+
+    The sampled lattice carries the oracle, as in
+    ``test_signed_distance_level_set_winding_lattice_is_the_sampled_lattice``. The cone closing the
+    hole is then flat and lies on a plane of lattice nodes: opening along ``z`` the columns cross
+    it, opening along ``x`` or ``y`` it is edge-on to the columns of at least one direction, and
+    opening along ``y`` to both, so no rasterised crossing can mark its nodes and only the
+    on-cone test does (removing it fails the ``y`` arm).
+    """
+    sphere_tm = tm.creation.icosphere(subdivisions=2, radius=1.0)
+    hemisphere_tm = sphere_tm.slice_plane(
+        plane_origin=np.zeros(3), plane_normal=np.array([0.0, 0.0, 1.0]), cap=False
+    )
+    hemisphere_tm.merge_vertices()
+    permutation = {0: [2, 0, 1], 1: [0, 2, 1], 2: [0, 1, 2]}[opening]
+    vertices_np = np.asarray(hemisphere_tm.vertices)[:, permutation]
+    faces_np = np.asarray(hemisphere_tm.faces)
+    if np.linalg.det(np.eye(3)[permutation]) < 0.0:
+        faces_np = faces_np[:, ::-1]
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.ravel(), device)
+    spacing = 2.0 / 40.0
+    for cells in (2.0, 0.0, -1.0):
+        iso = cells * spacing
+        shape, bounds = od.proximity.signed_distance_lattice(
+            vertices_wp, spacing, bounds=od.bounds.aabb(vertices_wp), pad=2 + max(int(cells), 0)
+        )
+        lattice_vertices_wp, lattice_faces_wp = od.levelset.signed_distance_level_set(
+            vertices_wp, faces_wp, iso, shape, bounds=bounds
+        )
+        sampled_vertices_wp, sampled_faces_wp = _sampled_level_set(
+            monkeypatch, vertices_wp, faces_wp, iso, shape, bounds
+        )
+        assert sampled_faces_wp.size > 0
+        assert np.array_equal(lattice_vertices_wp.numpy(), sampled_vertices_wp.numpy()), cells
+        assert np.array_equal(lattice_faces_wp.numpy(), sampled_faces_wp.numpy()), cells
+
+
+def test_signed_distance_level_set_re_queries_capped_crossing_endpoints(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: a capped node that ends a crossing edge gets its exact distance back.
+
+    On an open surface the winding-signed field changes sign away from the surface (across the
+    hemisphere's opening), so an edge marching cubes interpolates across can end at a node farther
+    than the band the closest-point search is capped at. The sampled field
+    (``signed_distance_on_mesh``) carries the oracle: at every endpoint of every crossing edge the
+    winding lattice's field must equal it bit for bit, and some of those endpoints must lie past
+    the cap, so the re-query is what this exercises.
+    """
+    mesh_tm, mesh_wp = hemisphere
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    spacing = float(mesh_tm.scale) / 40.0
+    shape, bounds = od.proximity.signed_distance_lattice(
+        vertices_wp, spacing, bounds=od.bounds.aabb(vertices_wp), pad=2
+    )
+    iso = 0.0
+    field_wp = od.levelset._winding_band_field(vertices_wp, faces_wp, iso, shape, bounds)  # pyright: ignore[reportPrivateUsage]
+    assert field_wp is not None
+    samples_wp = od.voxels.grid_points(shape, bounds=bounds, device=mesh_wp.device)
+    sampled_np = (
+        od.proximity.signed_distance_on_mesh(vertices_wp, faces_wp, samples_wp, sign_mode="winding")
+        .numpy()
+        .reshape(shape)
+    )
+    lattice_np = field_wp.numpy()
+    endpoints_np = np.zeros(shape, dtype=bool)
+    above_np = sampled_np >= iso
+    for axis in range(3):
+        crossing_np = np.diff(above_np.astype(np.int8), axis=axis) != 0
+        lower_np = [slice(None)] * 3
+        upper_np = [slice(None)] * 3
+        lower_np[axis] = slice(0, -1)
+        upper_np[axis] = slice(1, None)
+        endpoints_np[tuple(lower_np)] |= crossing_np
+        endpoints_np[tuple(upper_np)] |= crossing_np
+    assert np.array_equal(lattice_np[endpoints_np], sampled_np[endpoints_np])
+    diagonal = math.sqrt(3.0) * spacing
+    assert (np.abs(sampled_np[endpoints_np]) > 1.5 * diagonal).sum() > 0, "a capped endpoint"
+
+
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "mobius"])
+def test_boundary_chain_is_the_net_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
+    """
+    Not a library comparison: no reference returns a mesh's boundary as a 1-chain with multiplicity.
+
+    The chain is checked against its definition, summed on the host: per undirected edge, the net
+    number of its halfedges running from the lower vertex to the higher, emitted that many times in
+    that direction. ``mobius`` is the non-orientable case whose seam halfedges run the same way and
+    count twice; a flipped face on the closed ``icosahedron`` adds three such edges where there
+    were none; a third face on one edge of ``hemisphere`` makes a run of three halfedges.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = mesh_wp.indices.numpy().reshape(-1, 3)
+    if mesh_name == "icosahedron":
+        faces_np = faces_np.copy()
+        faces_np[0] = faces_np[0, ::-1]
+    if mesh_name == "hemisphere":
+        faces_np = np.vstack([faces_np, [[faces_np[0, 1], faces_np[0, 0], faces_np[1, 2]]]])
+    faces_wp = wp.array(faces_np.ravel(), dtype=wp.int32, device=mesh_wp.device)
+    n_vertices = int(mesh_wp.points.size)
+    chain_np = od.levelset._boundary_chain(faces_wp, n_vertices).numpy()  # pyright: ignore[reportPrivateUsage]
+
+    tails_np = faces_np.ravel()
+    heads_np = np.roll(faces_np, -1, axis=1).ravel()
+    low_np = np.minimum(tails_np, heads_np)
+    high_np = np.maximum(tails_np, heads_np)
+    net_np: dict[tuple[int, int], int] = {}
+    for low, high, tail in zip(low_np.tolist(), high_np.tolist(), tails_np.tolist(), strict=True):
+        if low != high:
+            net_np[(low, high)] = net_np.get((low, high), 0) + (1 if tail == low else -1)
+    expected_np = np.array(
+        [
+            (low, high) if net > 0 else (high, low)
+            for (low, high), net in net_np.items()
+            for _ in range(abs(net))
+        ],
+        dtype=np.int32,
+    ).reshape(-1, 2)
+    assert expected_np.shape[0] > 0, "the chain is not empty"
+    assert_unordered_rows_equal(chain_np, expected_np)
 
 
 @pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "icosphere_coarse", "unit_box"])

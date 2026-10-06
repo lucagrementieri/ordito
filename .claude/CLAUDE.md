@@ -2857,6 +2857,12 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   only the thresholded *sign*; the value (`wp::mesh_query_winding_number`, an order-2 Barnes-Hut
   walk) is reachable only through `wp.func_native`. `proximity.winding_number` needs neither: it is
   exact through its own patch hierarchy (§16.6).
+    - **The flag is ~136 bytes of `SolidAngleProps` per BVH node, 2F nodes**: 7.6 GB on `lucy`
+      (28 M faces), and its bottom-up refit is ~67 of the ~105 ms build there (the plain BVH ~38).
+      **An allocation failure inside `wp_mesh_create_device` is not checked**: on a GPU shared with
+      other processes the `lucy` build failed twice (2026-10-06) as `CUDA error 700` cascading
+      through every later call, not as an exception. `signed_distance_level_set`'s winding lattice
+      (§16.5) builds it only for nodes whose sign it cannot settle itself (none on the scan meshes).
 - **`wp.bvh_query_sphere`** (Warp 1.17), in `kernels/neighbors.py` and
   `proximity.py::closest_point_on_edges`: a win where the enumeration radius is large relative to
   an existing BVH. **It is bit-exactly `wp.length_sq(d) <= r*r`**, so adopting it means the squared
@@ -2937,6 +2943,15 @@ The `nnz`-is-a-capacity rule is §3.7. Further behaviours, all silent:
   1-Lipschitz: its winding sign changes only on the surface). The defaults of all three stay under
   the gate on the benchmark meshes (flat in the harness, 0.98-1.04x), so the gain is at finer cells.
   `kernels/reconstruction.lattice_points` went with the move (`grid_points` samples the lattice).
+  **Since 2026-10-06 a winding-signed lattice below `levelset._LATTICE_WINDING_BELOW_NODES =
+  2**26` nodes takes the winding lattice instead (§16.5), whatever its topology**: it reproduces the
+  dense surface bit for bit where the octree matches it only up to rounding, and beats the octree on
+  closed inputs 5.5-6.4x on `happy_buddha` at 17-55 M nodes and 3.0x / 2.4x / 1.6x on a 20 k-face
+  sphere at 29 / 56 / 95 M (the sphere's trend puts the crossover past ~150 M nodes; the gate also
+  bounds the lattice's ~44 bytes a node). The octree now serves `sign_mode="parity"` from 2**21
+  and closed winding inputs from 2**26. Bounding each octree level's closest-point search by what
+  that level reads (`|iso|` plus its half-diagonal) is exact but measured only 1.05-1.08x: its
+  queries are already near the surface.
 
 **Rejected on measured evidence — do not re-propose without new data:**
 
@@ -4152,6 +4167,8 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 
 ### 16.3 `reconstruction`
 
+- **`resample_uniform` extracts through `levelset.signed_distance_level_set`**, so its
+  winding-signed lattice is §16.5's winding lattice (1.07-1.66x at the benchmark's cells).
 - **`screened_poisson`'s `dense` solve is over a `2^depth`-cubed node grid whatever the cloud
   size**, so each level costs ~8x and the CPU test depth is one lower than CUDA's. **Error is not
   monotone in depth** (past some depth the octree resolves sampling noise), so never assert
@@ -4804,6 +4821,42 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   cells was the first candidate (7.7 ms at 513³, same faces and vertex set) but is not bit-exact:
   it rebuilds corner positions from the cells' minimum subscript, sorts every corner's int64 code
   and reads back three times.
+- **Where a signed-distance lattice's time goes on a fine scan (`lucy`, 28 M faces, 0.4 M nodes):
+  not the lattice, the closest-point shell.** A query 4-6 cells from a surface of tiny triangles
+  must open every leaf whose box is nearer than its answer, a disc of near-equidistant triangles;
+  single queries took up to 3 ms and the launch is bound by its slowest. Better trees only halve it
+  (`cubql` / `median` 2x faster queries for 4-12 s builds; leaf size changes nothing), and a
+  perfect oracle seed (`max_dist` = the answer) is only 2.4x. **Declined: coarse-to-fine seeding**
+  (each fine node bounded by its coarse neighbours' closest points, exact): 0.63-1.3x across
+  bunny / dragon / lucy at 64-256 cells, each level a launch bound by its slowest query.
+  **Declined unbuilt: triangle scatter (Mauch / Bridson)**: at the offset band's radius the pairs
+  number ~22 G on `lucy` at 1/128.
+- **`signed_distance_level_set(sign_mode="winding")` is the winding lattice** (2026-10-06,
+  `kernels/levelset.py`'s header): the closest-point search capped at `|iso|` + 1.01 cell
+  diagonals (a capped search's hits are the uncapped search's bit for bit), a resolve pass that
+  re-queries uncapped any capped node ending a crossing edge (an open surface's winding-signed
+  field changes sign away from it: removing the pass fails 13 of the identity tests), and the sign
+  from the exact generalized winding number on the lattice -- signed crossings along z columns of
+  the faces and of a cone over each boundary component (`_boundary_chain` from
+  `halfedge_mates`, 9 ms on `lucy`), plus the cones' solid angles, cross-checked by the x columns.
+  Nodes in doubt (within 0.1 of 1/2, a crossing within 1e-3 cell of the node, on a cone triangle,
+  the two directions disagreeing, within 64 ulps of the surface) are summed exactly with a port of
+  Warp's `robust_solid_angle` (bitwise equal to it on 1 M random and near-coplanar cases, both
+  devices; it returns 0 in a face's plane, which is what Warp's sign does at such a node), and
+  those still near 1/2 take Warp's own sign through the builtin, building the solid-angle BVH only
+  then. Identity, vertex and face buffers bit for bit against sampling every node: 36 scan-mesh
+  configurations (bunny, dragon, happy_buddha, lucy x 64/128/256 x iso +4/0/-2 cells), 108 fixture
+  configurations on CUDA and 81 on CPU, the forced-fallback and margin arms committed as
+  `test_signed_distance_level_set_winding_lattice_is_the_sampled_lattice`. Each guard was
+  mutation-probed: the surface tie and the cross-check each fail 6 tests, deciding every undecided
+  node exactly fails 10, the on-cone test fails the y-opening arm of
+  `..._with_a_rim_on_a_lattice_plane`. **The one assumption**: Warp's Barnes-Hut error stays under
+  0.1 off the flagged nodes (measured <= 1e-3 on an open hemisphere, <= 0.02 on the scan meshes).
+  Harness-point A/B against sampling every node (min of 5, interleaved): `offset_mesh` 1.5-2.5x at
+  1/64, 2.5-4.5x at 1/128, 6.2-11x at 1/256 (`lucy` 2.46x / 3.42x / 6.15x; `bunny_decimated` 7.1x
+  and `dragon` 11.0x at 1/256), `resample_uniform` 1.07-1.66x, `fix_self_intersections(voxel)`
+  3.9-6.1x on the tangle meshes; no cell slower. `lucy` at 1/128 is now plain BVH build 38 +
+  capped search 29 + boundary chain 9 + lattice winding 3 of 77 ms.
 
 ### 16.6 `proximity`, `metrics`, `neighbors`
 

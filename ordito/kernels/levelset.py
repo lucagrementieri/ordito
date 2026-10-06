@@ -1,9 +1,672 @@
 import warp as wp
 from warp.geometry import IsoSurfaceMarchingCubes
 
+from ordito.constants import FLOAT32_INF_CONSTANT, TOLERANCE_MERGE_CONSTANT
 from ordito.kernels.array import ravel_index
 
 wp.set_module_options({"enable_backward": False})
+
+# ---------------------------------------------------------------------------------------------
+# Signed-distance level sets on a corner lattice, signed by the generalized winding number.
+#
+# ``signed_distance_level_set``'s winding path reproduces, bit for bit, the surface the dense
+# lattice of ``proximity.signed_distance_on_mesh(sign_mode="winding")`` values extracts, without
+# evaluating that field everywhere:
+#
+# * **Distance in a band.** Marching cubes reads a node's value only where an edge from it crosses
+#   ``iso``, and both ends of such an edge lie within one cell diagonal of the level; everywhere
+#   else only the node's side of ``iso`` matters. So the closest-point search is capped at
+#   ``|iso|`` plus a cell diagonal and a miss is stored as that cap, on the node's own side.
+#   Under the cap the search visits a subset of the uncapped search's nodes in the same order, and
+#   its strict ``<`` keeps the first of equal distances, so a hit is the uncapped answer bit for
+#   bit. A field signed by the winding number of an open surface can change sign away from the
+#   surface, so a capped node can still end a crossing edge; ``resolve_crossing_endpoints``
+#   re-queries exactly those uncapped.
+# * **Sign from the lattice.** For a closed 2-chain the winding number is an integer: the signed
+#   count of crossings of a ray. An open mesh M is closed by the cone K over its boundary 1-chain
+#   (from one boundary vertex per boundary component), and w(M) = w(M - K) + w(K): the first term
+#   counts crossings along each lattice column, rasterising every triangle of M and of K onto the
+#   columns, the second sums the solid angles of the few cone triangles. That is the exact winding
+#   number, where Warp's own (``mesh_query_point_sign_winding_number``) is a Barnes-Hut
+#   approximation of it, so the two agree except where the exact value is close to 1/2 or the
+#   lattice's own evaluation is in doubt (a crossing within rounding of a node, a node on a cone
+#   triangle, the two column directions disagreeing, a node within rounding of the surface). Those
+#   nodes are *undecided*: they are summed exactly with Warp's per-triangle solid angle, and a node
+#   still within ``delta`` of 1/2 takes Warp's own sign.
+#
+# Measured (CUDA, every node of lattices at 64-256 cells across the scan meshes and the test
+# fixtures): Warp's approximation stays within 1e-3 of the exact winding number on an open
+# hemisphere and within 0.02 on the scan meshes, so the 0.1 margin is not what the agreement rests
+# on. Without the on-cone test a hemisphere opening along y (its cone edge-on to both column
+# directions) diverges; a flag for triangles whose projection is a sliver was built and never
+# changed a surface over 324 fixture and tilted-box configurations once the two column directions
+# are compared, so it was dropped.
+# ---------------------------------------------------------------------------------------------
+
+# A rasterised crossing within this many cells (along its column) of a node leaves that node's
+# integer winding in doubt.
+AMBIGUOUS_CROSSING = wp.constant(wp.float32(1.0e-3))
+# Cone components seen from farther than this many bounding radii are bounded rather than summed.
+CONE_NEAR_RADII = wp.constant(wp.float32(4.0))
+INV_FOUR_PI = wp.constant(wp.float32(0.07957747154594767))
+
+
+@wp.func
+def halfedge_endpoints(faces: wp.array[wp.int32], h: wp.int32) -> wp.vec2i:
+    f = h // 3
+    corner = h - 3 * f
+    return wp.vec2i(faces[h], faces[3 * f + (corner + 1) % 3])
+
+
+@wp.func
+def halfedge_orientation(faces: wp.array[wp.int32], h: wp.int32) -> wp.int32:
+    # +1 for a halfedge running from its lower vertex index to its higher, -1 the other way, 0 for
+    # a degenerate one: its cone triangle would be degenerate too and contributes nothing.
+    ends = halfedge_endpoints(faces, h)
+    orientation = wp.int32(0)
+    if ends[0] < ends[1]:
+        orientation = 1
+    elif ends[0] > ends[1]:
+        orientation = -1
+    return orientation
+
+
+@wp.kernel
+def boundary_chain_multiplicity(
+    faces: wp.array[wp.int32], mates: wp.array[wp.int32], out_net: wp.array[wp.int32]
+) -> None:
+    # The boundary 1-chain of the faces: per undirected edge, the net number of times its halfedges
+    # run from its lower vertex to its higher, stored at one representative halfedge (the edge's own
+    # halfedge when alone, the lower of a pair, the lowest of a run of three or more, which
+    # ``halfedge.halfedge_mates`` encodes as ``-2 - lowest``). ``out_net`` arrives zeroed.
+    h = wp.int32(wp.tid())
+    mate = mates[h]
+    if mate == -1:
+        out_net[h] = halfedge_orientation(faces, h)
+    elif mate >= 0:
+        if h < mate:
+            out_net[h] = halfedge_orientation(faces, h) + halfedge_orientation(faces, mate)
+    else:
+        wp.atomic_add(out_net, -2 - mate, halfedge_orientation(faces, h))
+
+
+@wp.kernel
+def boundary_chain_counts(net: wp.array[wp.int32], out_counts: wp.array[wp.int32]) -> None:
+    h = wp.int32(wp.tid())
+    out_counts[h] = wp.abs(net[h])
+
+
+@wp.kernel
+def emit_boundary_chain(
+    faces: wp.array[wp.int32],
+    net: wp.array[wp.int32],
+    offsets: wp.array[wp.int32],
+    out_chain: wp.array2d[wp.int32],
+) -> None:
+    # Each boundary edge as many times as its multiplicity, directed the way its net runs.
+    h = wp.int32(wp.tid())
+    multiplicity = net[h]
+    if multiplicity == 0:
+        return
+    ends = halfedge_endpoints(faces, h)
+    low = wp.min(ends[0], ends[1])
+    high = wp.max(ends[0], ends[1])
+    start = wp.where(multiplicity > 0, low, high)
+    end = wp.where(multiplicity > 0, high, low)
+    base = offsets[h]
+    for t in range(wp.abs(multiplicity)):
+        out_chain[base + t, 0] = start
+        out_chain[base + t, 1] = end
+
+
+@wp.kernel
+def cone_component_keys(
+    chain: wp.array2d[wp.int32], labels: wp.array[wp.int32], out_keys: wp.array[wp.int32]
+) -> None:
+    # A chain edge's boundary component, named by its smallest vertex: the cone's apex.
+    e = wp.int32(wp.tid())
+    out_keys[e] = labels[chain[e, 0]]
+
+
+@wp.kernel
+def mark_run_starts(sorted_keys: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
+    t = wp.int32(wp.tid())
+    out_flags[t] = wp.where(t == 0 or sorted_keys[t] != sorted_keys[t - 1], 1, 0)
+
+
+@wp.kernel
+def cone_bounds(
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    out_radius: wp.array[wp.float32],
+) -> None:
+    # A ball around each component's apex holding its whole cone (the convex hull of the apex and
+    # the component's boundary vertices), for the far-field bound in ``cone_winding``. Inflated by
+    # a rounding margin so the bound stays one.
+    c = wp.int32(wp.tid())
+    apex = vertices[sorted_keys[starts[c]]]
+    radius = wp.float32(0.0)
+    for t in range(starts[c], starts[c + 1]):
+        e = order[t]
+        radius = wp.max(radius, wp.length(vertices[chain[e, 0]] - apex))
+        radius = wp.max(radius, wp.length(vertices[chain[e, 1]] - apex))
+    out_radius[c] = radius * 1.001 + 1.0e-30
+
+
+@wp.func
+def lattice_coordinates(p: wp.vec3, lower: wp.vec3, inv_step: wp.vec3, axis: wp.int32) -> wp.vec3:
+    # A world point in lattice index units, permuted so the column direction is the last
+    # component: axis 0 runs columns along z, axis 1 along x.
+    q = wp.cw_mul(p - lower, inv_step)
+    return wp.where(axis == 0, q, wp.vec3(q[1], q[2], q[0]))
+
+
+@wp.func
+def lattice_node(u: wp.int32, v: wp.int32, w: wp.int32, axis: wp.int32) -> wp.vec3i:
+    # The natural ``(i, j, k)`` of the node at column ``(u, v)``, height ``w``.
+    return wp.where(axis == 0, wp.vec3i(u, v, w), wp.vec3i(w, u, v))
+
+
+@wp.func
+def precedes(a: wp.vec3, b: wp.vec3, ia: wp.int32, ib: wp.int32) -> wp.bool:
+    # A canonical endpoint order by position, the index only breaking an exact tie, so the two faces
+    # sharing an edge -- and coincident duplicate vertices -- evaluate it identically.
+    result = ia < ib
+    if a[2] != b[2]:
+        result = a[2] < b[2]
+    if a[1] != b[1]:
+        result = a[1] < b[1]
+    if a[0] != b[0]:
+        result = a[0] < b[0]
+    return result
+
+
+@wp.func
+def edge_function(low: wp.vec2, high: wp.vec2, x: wp.float32, y: wp.float32) -> wp.float32:
+    # Side of the column ``(x, y)`` relative to the canonical edge ``low -> high``. A column exactly
+    # on the edge is pushed along one fixed generic direction (simulation of simplicity), so every
+    # face sharing the edge decides it the same way and a column through an edge or a vertex
+    # crosses the closed chain exactly once per sheet.
+    dx = high[0] - low[0]
+    dy = high[1] - low[1]
+    side = dx * (y - low[1]) - dy * (x - low[0])
+    if side == 0.0:
+        side = dx * 0.7548776662466927 - dy * 0.5698402909980532
+        if side == 0.0:
+            side = wp.where(dx > 0.0 or (dx == 0.0 and dy > 0.0), 1.0, -1.0)
+    return side
+
+
+@wp.func
+def directed_edge_function(
+    ia: wp.int32,
+    ib: wp.int32,
+    pa: wp.vec3,
+    pb: wp.vec3,
+    a: wp.vec3,
+    b: wp.vec3,
+    x: wp.float32,
+    y: wp.float32,
+) -> wp.float32:
+    a2 = wp.vec2(a[0], a[1])
+    b2 = wp.vec2(b[0], b[1])
+    return wp.where(
+        precedes(pa, pb, ia, ib), edge_function(a2, b2, x, y), -edge_function(b2, a2, x, y)
+    )
+
+
+@wp.func
+def rasterize_crossings(
+    ia: wp.int32,
+    ib: wp.int32,
+    ic: wp.int32,
+    pa: wp.vec3,
+    pb: wp.vec3,
+    pc: wp.vec3,
+    weight: wp.int32,
+    lower: wp.vec3,
+    inv_step: wp.vec3,
+    axis: wp.int32,
+    crossings: wp.array3d[wp.int32],
+    ambiguous: wp.array3d[wp.int32],
+) -> None:
+    # Every column through the triangle's projection gets its signed crossing at the highest node
+    # below it, so a suffix sum along the column (``column_suffix_sums``) is, at each node, the
+    # signed count of crossings above it. The sign is the projected orientation, so a closed,
+    # outward-wound surface counts 1 inside and 0 outside.
+    n_u = wp.where(axis == 0, crossings.shape[0], crossings.shape[1])
+    n_v = wp.where(axis == 0, crossings.shape[1], crossings.shape[2])
+    n_w = wp.where(axis == 0, crossings.shape[2], crossings.shape[0])
+    a = lattice_coordinates(pa, lower, inv_step, axis)
+    b = lattice_coordinates(pb, lower, inv_step, axis)
+    c = lattice_coordinates(pc, lower, inv_step, axis)
+    u0 = wp.max(wp.int32(wp.ceil(wp.min(a[0], wp.min(b[0], c[0])))), 0)
+    u1 = wp.min(wp.int32(wp.floor(wp.max(a[0], wp.max(b[0], c[0])))), n_u - 1)
+    v0 = wp.max(wp.int32(wp.ceil(wp.min(a[1], wp.min(b[1], c[1])))), 0)
+    v1 = wp.min(wp.int32(wp.floor(wp.max(a[1], wp.max(b[1], c[1])))), n_v - 1)
+    if u0 > u1 or v0 > v1:
+        return
+    area = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+    if area == 0.0:
+        return
+    orientation = wp.where(area > 0.0, 1, -1)
+    w_low = wp.min(a[2], wp.min(b[2], c[2]))
+    w_high = wp.max(a[2], wp.max(b[2], c[2]))
+    for u in range(u0, u1 + 1):
+        for v in range(v0, v1 + 1):
+            x = wp.float32(u)
+            y = wp.float32(v)
+            side_ab = directed_edge_function(ia, ib, pa, pb, a, b, x, y)
+            side_bc = directed_edge_function(ib, ic, pb, pc, b, c, x, y)
+            side_ca = directed_edge_function(ic, ia, pc, pa, c, a, x, y)
+            inside = wp.where(
+                orientation > 0,
+                side_ab > 0.0 and side_bc > 0.0 and side_ca > 0.0,
+                side_ab < 0.0 and side_bc < 0.0 and side_ca < 0.0,
+            )
+            if inside:
+                # Clamped to the triangle's own height range: a projection that is a sliver
+                # interpolates badly, and the column it then miscounts disagrees with the other
+                # direction's count, which leaves its nodes undecided.
+                total = side_ab + side_bc + side_ca
+                height = wp.clamp(
+                    (side_bc * a[2] + side_ca * b[2] + side_ab * c[2]) / total, w_low, w_high
+                )
+                nearest = wp.int32(wp.round(height))
+                if (
+                    wp.abs(height - wp.float32(nearest)) < AMBIGUOUS_CROSSING
+                    and nearest >= 0
+                    and nearest < n_w
+                ):
+                    node = lattice_node(u, v, nearest, axis)
+                    ambiguous[node[0], node[1], node[2]] = 1
+                below = wp.min(wp.int32(wp.ceil(height)), n_w) - 1
+                if below >= 0:
+                    node = lattice_node(u, v, below, axis)
+                    wp.atomic_add(crossings, node[0], node[1], node[2], orientation * weight)
+
+
+@wp.kernel
+def rasterize_face_crossings(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    lower: wp.vec3,
+    inv_step: wp.vec3,
+    axis: wp.int32,
+    out_crossings: wp.array3d[wp.int32],
+    out_ambiguous: wp.array3d[wp.int32],
+) -> None:
+    f = wp.int32(wp.tid())
+    ia = faces[3 * f]
+    ib = faces[3 * f + 1]
+    ic = faces[3 * f + 2]
+    rasterize_crossings(
+        ia,
+        ib,
+        ic,
+        vertices[ia],
+        vertices[ib],
+        vertices[ic],
+        1,
+        lower,
+        inv_step,
+        axis,
+        out_crossings,
+        out_ambiguous,
+    )
+
+
+@wp.kernel
+def rasterize_cone_crossings(
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    labels: wp.array[wp.int32],
+    lower: wp.vec3,
+    inv_step: wp.vec3,
+    axis: wp.int32,
+    out_crossings: wp.array3d[wp.int32],
+    out_ambiguous: wp.array3d[wp.int32],
+) -> None:
+    # The cone K, subtracted: triangle ``(apex, a, b)`` for each boundary edge ``a -> b``, the apex
+    # being the component's smallest vertex (a real vertex, so its index orders it canonically).
+    e = wp.int32(wp.tid())
+    a = chain[e, 0]
+    b = chain[e, 1]
+    apex = labels[a]
+    rasterize_crossings(
+        apex,
+        a,
+        b,
+        vertices[apex],
+        vertices[a],
+        vertices[b],
+        -1,
+        lower,
+        inv_step,
+        axis,
+        out_crossings,
+        out_ambiguous,
+    )
+
+
+@wp.kernel
+def column_suffix_sums(axis: wp.int32, crossings: wp.array3d[wp.int32]) -> None:
+    # In place: each node's signed count of the crossings above it along its column.
+    u, v = wp.tid()
+    n_w = wp.where(axis == 0, crossings.shape[2], crossings.shape[0])
+    total = wp.int32(0)
+    for t in range(n_w):
+        w = n_w - 1 - t
+        node = lattice_node(u, v, w, axis)
+        total = total + crossings[node[0], node[1], node[2]]
+        crossings[node[0], node[1], node[2]] = total
+
+
+@wp.func
+def warp_solid_angle(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3) -> wp.float32:
+    # Warp's ``robust_solid_angle`` (``native/solid_angle.h``), operation for operation, so that a
+    # query lying in a face's plane gets the zero Warp's own winding evaluation gives it -- which is
+    # what decides the sign of a node within rounding of the surface. Not
+    # ``kernels/proximity.solid_angle``: that is the closed-form Van Oosterom-Strackee formula,
+    # equal to rounding but not at that tie.
+    qa = a - p
+    qb = b - p
+    qc = c - p
+    length_a = wp.length(qa)
+    length_b = wp.length(qb)
+    length_c = wp.length(qc)
+    angle = wp.float32(0.0)
+    if length_a != 0.0 and length_b != 0.0 and length_c != 0.0:
+        qa = qa / length_a
+        qb = qb / length_b
+        qc = qc / length_c
+        numerator = wp.dot(qa, wp.cross(qb - qa, qc - qa))
+        if numerator != 0.0:
+            denominator = 1.0 + wp.dot(qa, qb) + wp.dot(qa, qc) + wp.dot(qb, qc)
+            angle = 2.0 * wp.atan2(numerator, denominator)
+    return angle
+
+
+@wp.func
+def on_cone_triangle(a: wp.vec3, b: wp.vec3, c: wp.vec3, p: wp.vec3) -> wp.bool:
+    # ``p`` within rounding of the cone triangle itself, where its solid angle jumps by 4 pi and the
+    # rasterised crossing (absent altogether when the triangle is edge-on to the columns) cannot
+    # be trusted to agree with it.
+    qa = a - p
+    qb = b - p
+    qc = c - p
+    length_a = wp.length(qa)
+    length_b = wp.length(qb)
+    length_c = wp.length(qc)
+    numerator = wp.dot(qa, wp.cross(qb, qc))
+    denominator = (
+        length_a * length_b * length_c
+        + wp.dot(qa, qb) * length_c
+        + wp.dot(qb, qc) * length_a
+        + wp.dot(qc, qa) * length_b
+    )
+    return wp.abs(numerator) <= 1.0e-4 * length_a * length_b * length_c and denominator <= 0.0
+
+
+@wp.func
+def ball_winding_bound(distance: wp.float32, radius: wp.float32) -> wp.float32:
+    # The largest |winding number| any surface inside a ball can have, seen from ``distance`` away
+    # from its centre: the ball's solid angle over 4 pi.
+    ratio = wp.min(radius / distance, 1.0)
+    return 0.5 * (1.0 - wp.sqrt(1.0 - ratio * ratio))
+
+
+@wp.func
+def cone_component_winding(
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    apex: wp.vec3,
+    first: wp.int32,
+    last: wp.int32,
+    p: wp.vec3,
+) -> wp.vec2:
+    # One component's cone: (its winding number at ``p``, 1 if ``p`` lies on it).
+    angle = wp.float32(0.0)
+    on_cone = wp.float32(0.0)
+    for t in range(first, last):
+        e = order[t]
+        a = vertices[chain[e, 0]]
+        b = vertices[chain[e, 1]]
+        angle = angle + warp_solid_angle(apex, a, b, p)
+        if on_cone_triangle(apex, a, b, p):
+            on_cone = 1.0
+    return wp.vec2(angle * INV_FOUR_PI, on_cone)
+
+
+@wp.kernel
+def lattice_winding_numbers(
+    points: wp.array3d[wp.vec3],
+    crossings_z: wp.array3d[wp.int32],
+    crossings_x: wp.array3d[wp.int32],
+    ambiguous: wp.array3d[wp.int32],
+    distance: wp.array3d[wp.float32],
+    vertices: wp.array[wp.vec3],
+    chain: wp.array2d[wp.int32],
+    order: wp.array[wp.int32],
+    sorted_keys: wp.array[wp.int32],
+    starts: wp.array[wp.int32],
+    radius: wp.array[wp.float32],
+    delta: wp.float32,
+    sign_irrelevant_below: wp.float32,
+    surface_tie: wp.float32,
+    out_winding: wp.array3d[wp.float32],
+    out_slots: wp.array3d[wp.int32],
+    out_undecided: wp.array[wp.vec3],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # The node's winding number: the column count plus the cones' solid angle, every cone farther
+    # than ``CONE_NEAR_RADII`` of its radius bounded instead of summed unless the bound leaves the
+    # sign (with its ``delta`` margin) open. A node whose sign matters -- it may end a crossing edge
+    # or sit on the other side of ``iso`` under either sign (``distance >= sign_irrelevant_below``)
+    # -- and whose lattice value is in doubt gets a slot in ``out_undecided`` (``slot + 1`` in
+    # ``out_slots``; ``out_count[0]`` counts them all, past the buffer too).
+    i, j, k = wp.tid()
+    p = points[i, j, k]
+    base = wp.float32(crossings_z[i, j, k])
+    near = wp.float32(0.0)
+    far_bound = wp.float32(0.0)
+    on_cone = wp.float32(0.0)
+    n_components = starts.shape[0] - 1
+    for component in range(n_components):
+        apex = vertices[sorted_keys[starts[component]]]
+        reach = wp.length(p - apex)
+        if reach > CONE_NEAR_RADII * radius[component]:
+            far_bound = far_bound + ball_winding_bound(reach, radius[component])
+        else:
+            term = cone_component_winding(
+                vertices, chain, order, apex, starts[component], starts[component + 1], p
+            )
+            near = near + term[0]
+            on_cone = wp.max(on_cone, term[1])
+    winding = base + near
+    if wp.abs(winding - 0.5) <= far_bound + delta:
+        for component in range(n_components):
+            apex = vertices[sorted_keys[starts[component]]]
+            if wp.length(p - apex) > CONE_NEAR_RADII * radius[component]:
+                term = cone_component_winding(
+                    vertices, chain, order, apex, starts[component], starts[component + 1], p
+                )
+                winding = winding + term[0]
+                on_cone = wp.max(on_cone, term[1])
+    out_winding[i, j, k] = winding
+    d = distance[i, j, k]
+    doubtful = (
+        wp.abs(winding - 0.5) < delta
+        or ambiguous[i, j, k] != 0
+        or on_cone != 0.0
+        or crossings_z[i, j, k] != crossings_x[i, j, k]
+        or d <= surface_tie
+    )
+    slot = wp.int32(0)
+    if doubtful and d >= sign_irrelevant_below and d > TOLERANCE_MERGE_CONSTANT:
+        slot = wp.atomic_add(out_count, 0, 1) + 1
+        if slot <= out_undecided.shape[0]:
+            out_undecided[slot - 1] = p
+    out_slots[i, j, k] = slot
+
+
+@wp.kernel
+def exact_winding_slices(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    points: wp.array[wp.vec3],
+    n_slices: wp.int32,
+    out_winding: wp.array[wp.float32],
+) -> None:
+    # The exact winding number of the undecided points, every face summed with Warp's own solid
+    # angle; one thread per (point, face slice), committed into the zeroed ``out_winding``.
+    q, s = wp.tid()
+    p = points[q]
+    n_faces = faces.shape[0] // 3
+    angle = wp.float32(0.0)
+    for f in range(s, n_faces, n_slices):
+        angle = angle + warp_solid_angle(
+            vertices[faces[3 * f]], vertices[faces[3 * f + 1]], vertices[faces[3 * f + 2]], p
+        )
+    wp.atomic_add(out_winding, q, angle * INV_FOUR_PI)
+
+
+@wp.kernel
+def take_exact_winding(
+    exact: wp.array[wp.float32],
+    delta: wp.float32,
+    winding: wp.array3d[wp.float32],
+    slots: wp.array3d[wp.int32],
+    out_count: wp.array[wp.int32],
+) -> None:
+    # In place: an undecided node takes its exact winding number and is settled, unless that too is
+    # within ``delta`` of 1/2, where only Warp's own approximation reproduces Warp's sign; those
+    # keep their slot and are counted.
+    i, j, k = wp.tid()
+    slot = slots[i, j, k]
+    if slot == 0:
+        return
+    value = exact[slot - 1]
+    if wp.abs(value - 0.5) < delta:
+        wp.atomic_add(out_count, 0, 1)
+    else:
+        winding[i, j, k] = value
+        slots[i, j, k] = 0
+
+
+@wp.kernel
+def warp_winding_sign(
+    mesh: wp.uint64,
+    points: wp.array3d[wp.vec3],
+    slots: wp.array3d[wp.int32],
+    winding: wp.array3d[wp.float32],
+) -> None:
+    # In place: Warp's own sign at the nodes still in doubt, from the very query
+    # ``proximity.signed_distance_on_mesh(sign_mode="winding")`` makes (accuracy 2, threshold 1/2,
+    # unbounded), written as winding 1 inside and 0 outside.
+    i, j, k = wp.tid()
+    if slots[i, j, k] == 0:
+        return
+    query = wp.mesh_query_point_sign_winding_number(
+        mesh, points[i, j, k], FLOAT32_INF_CONSTANT, 2.0, 0.5
+    )
+    winding[i, j, k] = wp.where(query.sign < 0.0, 1.0, 0.0)
+
+
+@wp.kernel
+def capped_distance(
+    mesh: wp.uint64,
+    points: wp.array3d[wp.vec3],
+    cap: wp.float32,
+    out_distance: wp.array3d[wp.float32],
+) -> None:
+    # Unsigned distance to the closest point, or ``cap`` when none is closer: under the cap the
+    # search returns the uncapped search's face and coordinates bit for bit.
+    i, j, k = wp.tid()
+    p = points[i, j, k]
+    query = wp.mesh_query_point_no_sign(mesh, p, cap)
+    d = cap
+    if query.result:
+        d = wp.length(p - wp.mesh_eval_position(mesh, query.face, query.u, query.v))
+    out_distance[i, j, k] = d
+
+
+@wp.func
+def signed_value(d: wp.float32, winding: wp.float32) -> wp.float32:
+    # ``proximity.signed_distance_from_query``'s tail: positive within the merge tolerance of the
+    # surface, else negative inside (winding above 1/2).
+    return wp.where(d <= TOLERANCE_MERGE_CONSTANT, d, wp.where(winding > 0.5, -d, d))
+
+
+@wp.kernel
+def signed_band_values(
+    distance: wp.array3d[wp.float32],
+    winding: wp.array3d[wp.float32],
+    out_values: wp.array3d[wp.float32],
+) -> None:
+    i, j, k = wp.tid()
+    out_values[i, j, k] = signed_value(distance[i, j, k], winding[i, j, k])
+
+
+@wp.func
+def crosses(
+    values: wp.array3d[wp.float32],
+    i: wp.int32,
+    j: wp.int32,
+    k: wp.int32,
+    above: wp.bool,
+    iso: wp.float32,
+) -> wp.bool:
+    return (values[i, j, k] >= iso) != above
+
+
+@wp.kernel
+def resolve_crossing_endpoints(
+    mesh: wp.uint64,
+    points: wp.array3d[wp.vec3],
+    cap: wp.float32,
+    iso: wp.float32,
+    winding: wp.array3d[wp.float32],
+    values: wp.array3d[wp.float32],
+    out_field: wp.array3d[wp.float32],
+) -> None:
+    # The field marching cubes reads: every node as signed, except a capped node with an axis
+    # neighbour on the other side of ``iso`` -- an edge marching cubes interpolates across -- which
+    # gets its exact distance from the uncapped search. Only a field that is not 1-Lipschitz (signed
+    # by the winding number of an open surface) has one.
+    i, j, k = wp.tid()
+    value = values[i, j, k]
+    result = value
+    if wp.abs(value) >= cap:
+        above = value >= iso
+        crossing = False
+        if i > 0:
+            crossing = crossing or crosses(values, i - 1, j, k, above, iso)
+        if i + 1 < values.shape[0]:
+            crossing = crossing or crosses(values, i + 1, j, k, above, iso)
+        if j > 0:
+            crossing = crossing or crosses(values, i, j - 1, k, above, iso)
+        if j + 1 < values.shape[1]:
+            crossing = crossing or crosses(values, i, j + 1, k, above, iso)
+        if k > 0:
+            crossing = crossing or crosses(values, i, j, k - 1, above, iso)
+        if k + 1 < values.shape[2]:
+            crossing = crossing or crosses(values, i, j, k + 1, above, iso)
+        if crossing:
+            p = points[i, j, k]
+            query = wp.mesh_query_point_no_sign(mesh, p, FLOAT32_INF_CONSTANT)
+            d = wp.length(p - wp.mesh_eval_position(mesh, query.face, query.u, query.v))
+            result = signed_value(d, winding[i, j, k])
+    out_field[i, j, k] = result
+
+
+# ---------------------------------------------------------------------------------------------
+# thicken_mesh
+# ---------------------------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------------------------
