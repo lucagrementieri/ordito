@@ -47,12 +47,6 @@ keywords = [
     "warp",
 ]
 
-# ``ordito.neighbors`` and ``ordito.proximity`` are the package's hard 1.17 dependencies: their
-# ball queries call ``wp.bvh_query_sphere``, which does not exist before it.
-
-# ``numpy`` is core, not optional: 16 of the modules ``ordito/__init__.py`` imports eagerly use it
-# for host-side metadata math. It adds nothing to an install, since ``warp-lang`` itself declares an
-# unconditional ``Requires-Dist: numpy`` and ``import warp`` loads it before ordito gets a say.
 dependencies = ["numpy>=1.20", "warp-lang>=1.18"]
 
 [project.urls]
@@ -322,7 +316,7 @@ exclude = [
     # ordito/kernels/ is inherently un-typecheckable. Excluded wholesale.
     "ordito/kernels",
 ]
-include = ["benchmarks", "tests", "ordito"]
+include = ["benchmarks", "ordito", "tests"]
 pythonVersion = "3.11"
 # Test-only stubs for reference libraries that ship none a checker can read (pymeshlab).
 stubPath = "tests/typings"

@@ -30,6 +30,9 @@ import warp as wp
 # package, which is two orders of magnitude dearer to import and shows up in ``import ordito``.
 # ``kernels/reduce.py`` reaches into ``warp._src`` on the same terms.
 from warp._src.fem.linalg import householder_qr_decomposition, solve_triangular
+from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
+from warp._src.types import array as array_type
+from warp._src.types import type_is_generic
 
 from ordito.kernels.array import OverloadTable, inverse_or_one
 
@@ -588,6 +591,43 @@ def _register_overloads() -> None:
             for d in (wp.float32, wp.float64)
         },
     )
+
+
+def register_warp_overload(kernel: Any, scalar: Any, **arguments: Any) -> None:
+    """
+    Register ``kernel``'s overload with every generic argument at ``scalar``.
+
+    For Warp's *own* generic kernels, whose modules ordito cannot give a ``_register_overloads``:
+    each new dtype a launch meets adds an overload, changes the module's hash and recompiles it,
+    exactly as for ordito's (CLAUDE.md section 2.5). Registered before the module first loads, all
+    of them compile together once. A generic scalar argument becomes ``scalar``, a generic array
+    an array of ``scalar`` at its own rank; ``arguments`` overrides a named argument's scalar
+    (a copy between precisions). The concrete signature is derived from the kernel's own
+    template, so an argument added or renamed upstream is followed rather than guessed.
+    """
+    concrete = {}
+    for name, template in kernel.adj.arg_types.items():
+        dtype = arguments.get(name, scalar)
+        if template is Any:
+            concrete[name] = dtype
+        elif isinstance(template, array_type) and type_is_generic(template.dtype):
+            concrete[name] = array_type(dtype=dtype, ndim=template.ndim)
+        else:
+            concrete[name] = template
+    wp.overload(kernel, concrete)
+
+
+def register_bsr_mv_overloads(tile_size: int) -> None:
+    """
+    Register the ``warp.sparse.bsr_mv`` kernels a heavy-row CG round launches, at both precisions.
+
+    The lane-per-row kernel for scalar blocks and the block-per-row one at ``tile_size``. Warp
+    builds each from a cached factory, so the arguments are spelled as ``bsr_mv`` spells them
+    (``block_cols=`` as a keyword, the tile positionally) to reach the kernel it launches.
+    """
+    for scalar in (wp.float32, wp.float64):
+        register_warp_overload(make_bsr_mv_kernel(block_cols=1), scalar)
+        register_warp_overload(make_bsr_mv_tiled_kernel(tile_size), scalar)
 
 
 _register_overloads()

@@ -2717,11 +2717,18 @@ Rules: §1.3, §1.5, §1.6.
   test moved between runs). Routed through `array.copyto` (§3.6): 0, and the CUDA pass 53.8 →
   49.9 s. The sixth non-`warp.sparse` one was a *test* calling `wp.map(wp.mul, ...)` over `vec3`,
   which forked the `map_mul` module the package declares at import: **a test's own `wp.map` of a
-  builtin shares the library's generated module**, so tests build such inputs on the host. The five
-  left are `warp.sparse`'s generic `_bsr_*` / `bsr_mv` kernels meeting a second dtype, four from
-  tests' own reference builds and one where ordito's float32 heavy-row CG and a test's float64
-  `matvec` share Warp's non-tiled `bsr_mv`; each loads from the cache in ~0.4 ms, and preventing
-  them would mean `wp.overload` on Warp-private factory kernels. **Census them with `wp.config.log_level = wp.LOG_DEBUG` under
+  builtin shares the library's generated module**, so tests build such inputs on the host. The last
+  five were `warp.sparse`'s generic `_bsr_*` / `bsr_mv` kernels meeting a second dtype: now 0.
+  **Warp's own generic kernels take `wp.overload` too**: `kernels/linalg.register_warp_overload`
+  derives the concrete signature from the kernel's template (`kernel.adj.arg_types`, `Any` and
+  generic arrays set to one scalar, per-argument overrides for a mixed-precision copy).
+  `register_bsr_mv_overloads` registers both `bsr_mv` kernels ordito's heavy-row CG launches at
+  float32 and float64 at import (the factories are `functools.cache`d, so they are called as
+  `bsr_mv` calls them: `block_cols=` by keyword, the tile positionally), and `tests/conftest.py`
+  registers the three the suite's own reference builds reach (`bsr_from_triplets`,
+  `bsr_transposed`, `bsr_copy`). `test_heavy_row_rounds_launch_only_the_bsr_mv_overloads_
+  registered_at_import` fails if a Warp release moves the signature (probed with the registration
+  removed: both arms fail on CUDA, the first on CPU, where both arms use one kernel). **Census them with `wp.config.log_level = wp.LOG_DEBUG` under
   `pytest -s`**: pytest captures Warp's log otherwise and the grep finds nothing.
 - **`import ordito` is expensive because `@wp.kernel` builds an `Adjoint` at import time for every
   decorated kernel**, and importing one submodule imports the parent package first. Fixed by a
@@ -5937,6 +5944,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   hazard `cg_dot_partials` documents (a long tail cost several times a short one at nearly the same
   size: 1.5x win -> 0.82x loss).
 - **Batching host checks**: `CG_CHECK_EVERY_FALLBACK` cadence; §14.6. `cg(check_every=0)`: §14.6.
+- **The block-per-row `bsr_mv` is CUDA-only** (fixed 2026-10-05). `_row_path` passed
+  `tile_size=_HEAVY_ROW_TILE` on every device, where `bsr_mv`'s own heuristic tiles only on CUDA;
+  on the CPU the `launch_tiled` kernel runs one lane per block (§12.2), forms `A u` from one lane's
+  share, and both precisions returned **zero iterations and a zero solution** with no error (rows
+  over `_HEAVY_ROW_TILED_ENTRIES` on a column too long to fold; no fixture reached it until the
+  `bsr_mv` registration guard forced the path). The CPU now keeps the lane-per-row kernel, pinned
+  by that test's `block_per_row` arm (fails with the device check removed).
 
 #### Settle solves (heat)
 

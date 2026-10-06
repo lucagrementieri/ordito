@@ -27,8 +27,14 @@ import torch  # noqa: E402
 import trimesh as tm  # noqa: E402
 import warp as wp  # noqa: E402
 from meshlib import mrmeshpy as mm  # noqa: E402
+from warp._src.sparse import (  # noqa: E402
+    _bsr_accumulate_triplet_values,  # pyright: ignore[reportPrivateUsage]
+    _bsr_assign_copy_blocks,  # pyright: ignore[reportPrivateUsage]
+    _bsr_transpose_values,  # pyright: ignore[reportPrivateUsage]
+)
 
 import ordito as od  # noqa: E402
+from ordito.kernels.linalg import register_warp_overload  # noqa: E402
 from ordito.mesh import _CachedProperty  # noqa: E402  # pyright: ignore[reportPrivateUsage]
 from tests.conversions import meshlib_to_trimesh, trimesh_to_warp, warp_to_trimesh  # noqa: E402
 
@@ -63,6 +69,19 @@ if hasattr(wp.config, "launch_array_access_mode"):  # warp >= 1.14
 # ``benchmarks/conftest.py`` opts *out* instead, and that is not an inconsistency: a timed
 # pytorch3d row must not be charged for validation ordito's row does not perform.
 torch.sparse.check_sparse_tensor_invariants.enable()
+
+
+# The suite builds its own reference and input matrices through ``warp.sparse`` at several dtypes
+# the package never reaches: ``bsr_from_triplets`` at float32 / float64 / int32 (the
+# ``csr_from_triplets`` oracle), ``bsr_transposed`` at float32 / float64 (the ``csr_transpose``
+# oracle), and ``bsr_copy`` within float64 and down to float32. Those kernels are Warp's generic
+# ones, so each second dtype rebuilt its module mid-run on whichever test met it first; registered
+# here, before anything launches, each module compiles once with all of them.
+for _scalar in (wp.float32, wp.float64, wp.int32):
+    register_warp_overload(_bsr_accumulate_triplet_values, _scalar)
+for _scalar in (wp.float32, wp.float64):
+    register_warp_overload(_bsr_transpose_values, _scalar)
+    register_warp_overload(_bsr_assign_copy_blocks, wp.float64, dest_values=_scalar)
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:

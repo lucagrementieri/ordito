@@ -14,6 +14,7 @@ import scipy.sparse as sp
 import trimesh as tm
 import warp as wp
 import warp.sparse as wps
+from warp._src.sparse import make_bsr_mv_kernel, make_bsr_mv_tiled_kernel
 
 import ordito as od
 import ordito.typing as odt
@@ -822,6 +823,68 @@ def test_solve_spd_float32_system_matches_numpy(
     od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp, tol=1e-6)
     expected_np = np.linalg.solve(dense_np, rhs_np.astype(np.float64))
     assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-4, atol=1e-4)
+
+
+@pytest.mark.usefixtures("batched_engine")
+@pytest.mark.parametrize("tiled", [False, True], ids=["lane_per_row", "block_per_row"])
+def test_heavy_row_rounds_launch_only_the_bsr_mv_overloads_registered_at_import(
+    device: str, tiled: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: heavy-row rounds add no ``bsr_mv`` overload.
+
+    ``warp.sparse.bsr_mv`` launches Warp's generic kernels, so a second precision would rebuild
+    the kernel's module mid-process; ``kernels/linalg.register_bsr_mv_overloads`` registers both
+    precisions at import. This pins the registration to the kernel ``bsr_mv`` really launches: a
+    Warp release that renames a factory argument or changes the signature leaves the registered
+    overloads on a kernel nothing uses, and a new overload appears here (both arms fail with the
+    registration removed). The thresholds are lowered so a small system takes the heavy-row path,
+    one solve per precision, each on the batched engine.
+
+    The ``block_per_row`` arm also pins the device split: on the CPU, which runs one lane per
+    block, the tiled kernel forms ``A u`` from one lane's share, and the solve used to stop at zero
+    iterations with a zero answer; there the round must stay on the lane-per-row kernel.
+    """
+    monkeypatch.setattr(od.linalg, "CG_FOLD_MAX_BLOCKS", 0)
+    monkeypatch.setattr(od.linalg, "CG_HEAVY_ROW_ENTRIES", 0)
+    expect_tiled = tiled and wp.get_device(device).is_cuda
+    if tiled:
+        monkeypatch.setattr(od.linalg, "_HEAVY_ROW_TILED_ENTRIES", 0)
+    if expect_tiled:
+        kernel = cast("wp.Kernel", make_bsr_mv_tiled_kernel(od.linalg._HEAVY_ROW_TILE))
+    else:
+        kernel = cast("wp.Kernel", make_bsr_mv_kernel(block_cols=1))
+    registered = set(kernel.overloads)
+    tiles: dict[type, list[int]] = {wp.float32: [], wp.float64: []}
+    bsr_mv = odt.bsr_mv
+
+    def counting_bsr_mv(*args: Any, **kwargs: Any) -> Any:
+        tiles[args[0].scalar_type].append(int(kwargs["tile_size"]))
+        return bsr_mv(*args, **kwargs)
+
+    monkeypatch.setattr(odt, "bsr_mv", counting_bsr_mv)
+    matrix64_wp, _rhs, dense_np, _rhs_np = _grid_laplacian_system(device, n_rhs=1)
+    matrix32_wp = wps.bsr_copy(
+        matrix64_wp,
+        scalar_type=wp.float32,  # pyright: ignore[reportArgumentType]  # Warp types it an instance
+    )
+    assert odt.has_blocks(matrix32_wp, wp.float32)
+    systems: list[tuple[odt.SparseMatrix, type]] = [
+        (matrix64_wp, wp.float64),
+        (matrix32_wp, wp.float32),
+    ]
+    rhs_np = np.random.default_rng(32).standard_normal(dense_np.shape[0])
+    expected_np = np.linalg.solve(dense_np, rhs_np)
+    for matrix_wp, dtype in systems:
+        rhs_wp = wp.array(rhs_np, dtype=dtype, device=device)
+        solution_wp = wp.zeros_like(rhs_wp)
+        od.linalg.solve_spd(matrix_wp, rhs_wp, solution_wp, tol=1e-6)
+        assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-4, atol=1e-4)
+    for dtype_tiles in tiles.values():
+        assert dtype_tiles
+        assert all((tile > 0) == expect_tiled for tile in dtype_tiles)
+    assert len(registered) >= 2
+    assert set(kernel.overloads) == registered
 
 
 @pytest.mark.parametrize("shift", [1.0, 1e-4])

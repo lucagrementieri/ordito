@@ -205,6 +205,9 @@ CG_HEAVY_ROW_ENTRIES = 16
 # ``nnz`` *capacity* -- 4.5x the true count on the ``warp.fem`` system that motivated this.
 _HEAVY_ROW_TILED_ENTRIES = 64
 _HEAVY_ROW_TILE = 64
+# Both kernels those rounds launch are Warp's generic ones, and a process solving in both
+# precisions would otherwise rebuild each kernel's module at its second dtype.
+kernel_linalg.register_bsr_mv_overloads(_HEAVY_ROW_TILE)
 
 # Rows per column up to which a solve under Jacobi or the squared-Laplacian polynomial runs as one
 # launch, one block per column (``kernels/algorithms/conjugate_gradient.cg_one_block``), instead of
@@ -2465,10 +2468,16 @@ def _row_path(matrix: odt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     launches, and one ``bsr_mv`` a column plus a dots launch lose to the one fused launch (measured
     0.91-0.94x on ``smooth_region``'s three-column, twenty-entry-a-row systems). One four-byte
     read for a column that does not fold.
+
+    The block-per-row kernel is a ``launch_tiled`` kernel whose lanes split a row, and the CPU
+    device runs one lane per block (CLAUDE.md section 2.2), so there it would form ``A u`` from
+    one lane's share and the solve would stop at zero iterations; the CPU keeps the lane-per-row
+    kernel, as ``bsr_mv``'s own heuristic does.
     """
     entries = read_scalar(matrix.offsets, n) if n > 0 and not fold else 0
     heavy = entries > CG_HEAVY_ROW_ENTRIES * n
-    return heavy, _HEAVY_ROW_TILE if entries > _HEAVY_ROW_TILED_ENTRIES * n else -1
+    tiled = matrix.device.is_cuda and entries > _HEAVY_ROW_TILED_ENTRIES * n
+    return heavy, _HEAVY_ROW_TILE if tiled else -1
 
 
 @overload
