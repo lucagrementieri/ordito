@@ -130,7 +130,7 @@ def isotropic_remesh(
     all edge lengths toward ``target_length`` by (1) **splitting** every edge longer than
     ``4/3 * target_length`` at its midpoint (crack-free, reusing
     [`subdivide_to_size`][ordito.remesh.subdivide_to_size]); (2) **collapsing** every edge shorter
-    than ``4/5 * target_length`` (a parallel primitive with full 1-ring locking and a manifold
+    than ``4/5 * target_length`` (a parallel set of non-conflicting collapses and a manifold
     link-condition guard); (3) **flipping** interior edges toward the ideal vertex valence (6
     interior, 4 boundary); (4) **tangentially smoothing** free vertices (area-equalizing Laplacian
     projected onto the tangent plane); and (5) **reprojecting** free vertices back onto the original
@@ -536,7 +536,7 @@ def _collapse_pass(
     grouping: tuple[odt.Array2dInt32, wp.array[wp.int32]] | None = None,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], _EdgeIncidence | None]:
     """
-    Collapse short edges in parallel with 1-ring locking; returns compacted (vertices, faces).
+    Collapse short edges as a conflict-free independent set; returns compacted (vertices, faces).
 
     ``low`` and ``high`` are the per-vertex length bands, so one path serves both a uniform target
     and a sizing field. They are compacted alongside the vertices at the end of each pass rather
@@ -636,17 +636,7 @@ def _collapse_pass(
         _launch.launch(
             kernel_remesh.commit_collapses,
             dim=m,
-            inputs=[
-                survivor,
-                removed,
-                target_pos,
-                ring_offsets,
-                ring_neighbors,
-                claim,
-                remap,
-                positions,
-                count,
-            ],
+            inputs=[survivor, removed, target_pos, claim, remap, positions, count],
             device=device,
         )
         # Drop the faces the collapses degenerated and the vertices no face names any more, in one

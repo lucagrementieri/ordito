@@ -256,8 +256,8 @@ def lock_two_rings(
     out_claim: wp.array[wp.int64],
 ) -> None:
     # Atomic-min ``key`` into every vertex of the two closed 1-rings of ``s`` and ``r``: the lock
-    # half of a parallel independent set over edge candidates, so that whichever candidate wins
-    # everywhere it touched has a neighbourhood disjoint from every other winner's.
+    # half of a parallel independent set over edge collapses. A candidate that still holds its own
+    # key at both endpoints conflicts with no claimant of a smaller key (``endpoints_hold``).
     #
     # Both of ``kernels/remesh.py``'s collapse paths run it, with the keys ``remesh.scramble_index``
     # and ``remesh.bucketed_lock_key`` build. Two properties of
@@ -274,29 +274,6 @@ def lock_two_rings(
 
 
 @wp.func
-def two_rings_hold(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    table: wp.array[Any],
-    s: wp.int32,
-    r: wp.int32,
-    value: Any,
-) -> wp.bool:
-    # Does every vertex of the two closed 1-rings of ``s`` and ``r`` hold ``value`` in ``table``?
-    # The read half of ``lock_two_rings`` (a candidate won its claim where the minimum is its own
-    # key) and of ``stamp_two_rings`` (a neighbourhood is untouched where no mark is set).
-    if table[s] != value or table[r] != value:
-        return False
-    for i in range(offsets[s], offsets[s + 1]):
-        if table[columns[i]] != value:
-            return False
-    for i in range(offsets[r], offsets[r + 1]):
-        if table[columns[i]] != value:
-            return False
-    return True
-
-
-@wp.func
 def stamp_two_rings(
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
@@ -307,7 +284,8 @@ def stamp_two_rings(
 ) -> None:
     # Store ``value`` into every vertex of the two closed 1-rings of ``s`` and ``r``: plain stores
     # rather than ``lock_two_rings``' atomic minimum, so it is only for a value every racing writer
-    # agrees on.
+    # agrees on. A collapse whose endpoints are both unmarked afterwards (``endpoints_hold``)
+    # conflicts with none of the stamped ones.
     out_marks[s] = value
     out_marks[r] = value
     for i in range(offsets[s], offsets[s + 1]):
@@ -319,9 +297,9 @@ def stamp_two_rings(
 @wp.func
 def endpoints_hold(table: wp.array[Any], s: wp.int32, r: wp.int32, value: Any) -> wp.bool:
     # Do both endpoints of the collapse ``(s, r)`` hold ``value`` in ``table``? The read half of
-    # the decimation pass's independent set: after ``lock_two_rings`` it is the win test (``value``
-    # the collapse's own key), and after ``stamp_two_rings`` the "no committed collapse conflicts"
-    # test (``value`` zero).
+    # both collapse paths' independent sets: after ``lock_two_rings`` it is the win test (``value``
+    # the collapse's own key), and after ``stamp_two_rings`` the quadric pass's "no committed
+    # collapse conflicts" test (``value`` zero).
     #
     # Two collapses conflict when an endpoint of either lies in the other's closed 1-rings, and
     # only then. A collapse ``(s, r)`` changes the faces incident to ``s`` or ``r`` and nothing
@@ -333,8 +311,9 @@ def endpoints_hold(table: wp.array[Any], s: wp.int32, r: wp.int32, value: Any) -
     #
     # Adjacency is symmetric, so "an endpoint of ``B`` is in ``A``'s closed rings" is the same
     # statement as "an endpoint of ``A`` is in ``B``'s", and reading the claim at the two endpoints
-    # alone decides the conflict both ways. ``two_rings_hold`` reads every ring vertex instead,
-    # which is the stricter disjoint-rings rule: it admits about half as many collapses a pass.
+    # alone decides the conflict both ways. Reading every ring vertex instead is the stricter
+    # disjoint-rings rule the decimators used before: it admits about half as many collapses a
+    # pass, and a collapse stage capped at a few passes then stops well short of its target.
     return table[s] == value and table[r] == value
 
 

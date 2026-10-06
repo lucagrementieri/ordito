@@ -49,7 +49,6 @@ from ordito.kernels.scatter import (
     mark_corners,
     record_edge_incidence,
     stamp_two_rings,
-    two_rings_hold,
 )
 from ordito.kernels.triangles import (
     corner_triple,
@@ -1820,8 +1819,8 @@ def scramble_index(index: wp.int32) -> wp.int64:
     # non-negative and ``INT64_MAX`` remains usable as the unclaimed sentinel.
     #
     # **Injective**, which is why the key is 64 bits and not the natural 32: the win test
-    # (``scatter.two_rings_hold``) is equality against a neighbourhood minimum, so two candidates
-    # sharing a key both win and both commit -- overlapping 1-rings, a corrupted mesh rather than a
+    # (``scatter.endpoints_hold``) is equality against a neighbourhood minimum, so two candidates
+    # sharing a key both win and both commit -- a conflict, a corrupted mesh rather than a
     # worse one. A masked ``lowbias32`` is exactly 2-to-1, so the index goes in the low half, which
     # disturbs nothing but a tie: that now goes to the lower index instead of to both. It is also
     # what lets both collapse paths run **one** lock pass rather than following it with a second,
@@ -1869,10 +1868,10 @@ def claim_collapse_key(
     columns: wp.array[wp.int32],
     out_min_key: wp.array[wp.int64],
 ) -> None:
-    # The winning (smallest scrambled) key over the closed 1-rings of both endpoints, read back by
-    # ``scatter.two_rings_hold``: winners have disjoint closed 1-rings. The quadric pass reads the
-    # same claim at the endpoints alone (``scatter.endpoints_hold``), the weaker rule that is
-    # still exactly the conflict to exclude.
+    # The winning (smallest scrambled) key over the closed 1-rings of both endpoints, read back at
+    # the two endpoints by ``commit_collapses`` (``scatter.endpoints_hold``): no two winners have
+    # an endpoint in each other's closed 1-rings, which is exactly the conflict to exclude. The
+    # quadric pass claims the same way inside ``drop_locked_and_claim``.
     #
     # The key is ``scramble_index(k)`` and not ``k`` for the reason that function records: a min-key
     # lock over a *spatially monotone* key field has essentially one local minimum, so it commits a
@@ -1892,8 +1891,6 @@ def commit_collapses(
     survivor: wp.array[wp.int32],
     removed: wp.array[wp.int32],
     pos: wp.array[wp.vec3],
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
     claim: wp.array[wp.int64],
     out_remap: wp.array[wp.int32],
     out_positions: wp.array[wp.vec3],
@@ -1904,7 +1901,7 @@ def commit_collapses(
     if s < 0:
         return
     r = removed[k]
-    if not two_rings_hold(offsets, columns, claim, s, r, scramble_index(k)):
+    if not endpoints_hold(claim, s, r, scramble_index(k)):
         return
     out_remap[r] = s
     out_positions[s] = pos[k]

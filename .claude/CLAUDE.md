@@ -4410,6 +4410,18 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
     - Not built, priced: symmetric 10-double quadric storage written per face and gathered per
       vertex through the vertex-face CSR (micro-probe of that stage 2.3x at `dragon`, 3.6x at
       `lucy`; needs one more graph node and an `n_faces` x 80-byte buffer).
+- **`isotropic_remesh`'s collapse stage takes the same exact conflict rule** (`commit_collapses`
+  reads the claim at the endpoints, `scatter.endpoints_hold`; `two_rings_hold` is gone). The
+  stage always ran its full `max_passes=5` at ~1.8 % of the faces a pass and never converged.
+  One process, min of 5, 3 iterations at the mean edge length, against the previous commit:
+  saddle 0.99x, saddle_graded 1.24x, bunny 1.18x, dragon 1.20x, happy_buddha 1.28x (fewer faces
+  reach the later stages). Edges in `[0.8, 4/3]` of the target: saddle_graded 0.666 -> 0.873,
+  dragon 0.904 -> 0.959, happy_buddha 0.847 -> 0.943 (short edges 33 % -> 12 %, 9.5 % -> 4.0 %,
+  15 % -> 5.6 %). Deviation flat. **The price is the worst triangles on scans**: 1st-percentile
+  mean ratio `dragon` 0.59 -> 0.49, `happy_buddha` 0.33 -> 0.22, sliver (< 10 degree) share
+  0.50 % -> 0.63 % and 0.87 % -> 1.14 %; on the graded saddle it improves 0.015 -> 0.146. Not
+  taken: `max_passes=3` with the relaxed rule (1.30-1.37x, still converges better than 5 strict
+  passes).
 - **`COLLAPSE_MIN_NORMAL_DOT` is per step, so a face can turn further over several passes.**
   At 0.2 the relaxed rule's extra collapses folded a face of the graded height field in
   `test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face` (dot -0.11 against the analytic
