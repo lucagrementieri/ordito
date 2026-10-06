@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from collections.abc import Callable
 from typing import Generic, NoReturn, TypeVar, cast, overload
@@ -14,6 +15,16 @@ from ordito import _launch
 from ordito._device import require_nonempty_mesh
 
 _R = TypeVar("_R")
+
+_LOGGER = logging.getLogger(__name__)
+
+# `Trimesh.mesh_for_rays`' budget: the rays whose saving would pay for `traced_mesh`'s build, as a
+# fixed part plus a part per face. On an RTX 5090 (Warp 1.18) the cuBQL build costs ~6 ms over the
+# default plus ~0.1 us a face, and its tree saves ~0.4-1.6 ns a traced ray (any-hit bundles at the
+# low end, closest-hit at the high end); the measured break-even sat at 84-255 rays a face from
+# 0.87 M to 28 M faces and at 230-2 150 on 16-69 k faces, which this pair of constants follows.
+_TRACED_MESH_FIXED_RAYS = 8_000_000
+_TRACED_MESH_RAYS_PER_FACE = 160
 
 # Cached quantities that depend only on `faces` (topology), not on vertex positions. A
 # functional update that keeps the same faces and the same vertex count (`with_vertices`)
@@ -421,6 +432,100 @@ class Trimesh:
         """
         require_nonempty_mesh(self._faces, "Trimesh.warp_mesh")
         return wp.Mesh(points=self._vertices, indices=self._faces)
+
+    @_CachedProperty
+    def traced_mesh(self) -> wp.Mesh:
+        """
+        Build `warp_mesh`'s geometry into a `warp.Mesh` whose BVH is built for tracing many rays.
+
+        On a CUDA device it is built by Warp's cuBQL builder (``bvh_constructor="cubql"``), whose
+        tree returns the same hits as the default builder's and traces a ray bundle markedly faster,
+        for a build that costs many times more. It therefore pays only on a mesh that will trace of
+        the order of a hundred rays a face or more over its life;
+        [`mesh_for_rays`][ordito.mesh.Trimesh.mesh_for_rays] chooses between the two automatically.
+
+        Where cuBQL cannot help, this is `warp_mesh` itself, so no BVH is built twice: on the CPU
+        device, whose default builder already produces the faster tree, and on a Warp build without
+        cuBQL. The tree cannot carry Warp's winding-number data, so pass `warp_mesh` (or a mesh
+        built with ``support_winding_number=True``) to the winding-signed queries.
+
+        Raises
+        ------
+        ValueError
+            If the mesh has zero faces.
+
+        See Also
+        --------
+        [`warp_mesh`][ordito.mesh.Trimesh.warp_mesh]
+        [`mesh_for_rays`][ordito.mesh.Trimesh.mesh_for_rays]
+        [`ambient_occlusion`][ordito.visibility.ambient_occlusion]
+        """
+        require_nonempty_mesh(self._faces, "Trimesh.traced_mesh")
+        if self.device.is_cpu or not wp.is_cubql_available():
+            return self.warp_mesh
+        return wp.Mesh(points=self._vertices, indices=self._faces, bvh_constructor="cubql")
+
+    def mesh_for_rays(self, n_rays: int) -> wp.Mesh:
+        """
+        `warp_mesh` or `traced_mesh`, whichever tracing ``n_rays`` more rays should go through.
+
+        The faster tree's extra build is paid once while its saving grows with every ray, and how
+        many rays a mesh will trace over its life is not known when it is built: the rent-or-buy
+        problem, decided the standard online way. Rays go through `warp_mesh` and are counted; once
+        the count reaches the number whose saving would have paid for `traced_mesh`'s build, that
+        mesh is built and returned from then on, which keeps the total within about twice the cost
+        of the better fixed choice made in hindsight. A call that alone traces enough rays switches
+        at once. An already built `traced_mesh` is always returned (its build is spent), and on the
+        CPU device both properties are the same mesh.
+
+        The count belongs to this `Trimesh` and is cleared by
+        [`invalidate`][ordito.mesh.Trimesh.invalidate]. The switch is logged at ``INFO`` on the
+        ``ordito.mesh`` logger. A caller who has already decided passes `warp_mesh` or
+        `traced_mesh` directly instead.
+
+        Parameters
+        ----------
+        n_rays
+            Rays about to be traced through the returned mesh: for a hemisphere or cone bundle, the
+            number of points times the rays per point.
+
+        Returns
+        -------
+        wp.Mesh
+            `traced_mesh` once the counted rays reach the budget, `warp_mesh` before.
+
+        Raises
+        ------
+        ValueError
+            If ``n_rays`` is negative, or the mesh has zero faces.
+
+        Examples
+        --------
+        ```python
+        mesh = od.Trimesh(v, f)
+        rays = 64
+        occlusion = od.visibility.ambient_occlusion(
+            mesh.mesh_for_rays(mesh.n_vertices * rays), mesh.vertices, n_rays=rays
+        )
+        ```
+        """
+        if n_rays < 0:
+            raise ValueError(f"n_rays must be non-negative, got {n_rays}")
+        if "traced_mesh" in self._cache or self.device.is_cpu or not wp.is_cubql_available():
+            return self.traced_mesh
+        counted = cast("int", self._cache.get("_rays_traced", 0)) + n_rays
+        budget = _TRACED_MESH_FIXED_RAYS + _TRACED_MESH_RAYS_PER_FACE * self.n_faces
+        if counted < budget:
+            self._cache["_rays_traced"] = counted
+            return self.warp_mesh
+        _LOGGER.info(
+            "Trimesh.mesh_for_rays: %d rays counted against a budget of %d for %d faces; "
+            "building the cuBQL tree",
+            counted,
+            budget,
+            self.n_faces,
+        )
+        return self.traced_mesh
 
     @_CachedProperty
     def face_normals(self) -> wp.array[wp.vec3]:

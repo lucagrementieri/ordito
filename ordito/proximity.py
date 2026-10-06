@@ -1279,13 +1279,14 @@ def query_mesh_aabb_with_offsets(
     query_upper[k]]`` against every triangle in ``mesh`` via ``wp.mesh_query_aabb``.
     At most ``max_hits`` candidate face indices are recorded per query.
 
-    Requires the default Warp mesh BVH backend; ``bvh_constructor="cubql"`` meshes
-    do not support AABB queries.
+    Any Warp mesh BVH answers it, whichever builder made the tree. When a query box holds more than
+    ``max_hits`` triangles, which of them are kept follows the tree's traversal order, so two trees
+    over the same mesh can keep different subsets.
 
     Parameters
     ----------
     mesh
-        Target ``warp.Mesh`` built with the default BVH backend.
+        Target ``warp.Mesh``.
     query_lower
         ``(m,)`` lower corners of the query boxes, on the target device.
     query_upper

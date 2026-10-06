@@ -76,6 +76,78 @@ def test_warp_mesh_raises_for_empty_mesh(device: str) -> None:
         _ = mesh.warp_mesh
 
 
+def test_traced_mesh_traces_the_rays_warp_mesh_traces(
+    cave_cube: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: two BVHs over one mesh, which must change the cost and not the hits.
+
+    The values' oracle is ``tests/test_visibility.py`` (trimesh / libigl); this pins that the cuBQL
+    tree returns them bit for bit, for an any-hit bundle and a closest-hit cone alike, on a
+    non-convex solid whose occlusion is not a constant.
+    """
+    _mesh_tm, mesh_wp = cave_cube
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    normals = od.vertices.vertex_normals(mesh.vertices, mesh.faces)
+    occlusion_wp = od.visibility.ambient_occlusion(mesh.warp_mesh, mesh.vertices, normals=normals)
+    traced_occlusion_wp = od.visibility.ambient_occlusion(
+        mesh.traced_mesh, mesh.vertices, normals=normals
+    )
+    assert np.ptp(occlusion_wp.numpy()) > 0.1
+    assert np.array_equal(traced_occlusion_wp.numpy(), occlusion_wp.numpy())
+    diameter_wp = od.visibility.shape_diameter(mesh.warp_mesh, mesh.vertices, normals=normals)
+    traced_diameter_wp = od.visibility.shape_diameter(
+        mesh.traced_mesh, mesh.vertices, normals=normals
+    )
+    assert np.array_equal(traced_diameter_wp.numpy(), diameter_wp.numpy(), equal_nan=True)
+
+
+def test_traced_mesh_is_warp_mesh_where_cubql_cannot_help(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """Not a library comparison: on the CPU the default tree is kept, so nothing builds twice."""
+    _mesh_tm, mesh_wp = icosahedron
+    mesh = od.Trimesh.from_warp_mesh(mesh_wp)
+    if mesh.device.is_cpu or not wp.is_cubql_available():
+        assert mesh.traced_mesh is mesh.warp_mesh
+    else:
+        assert mesh.traced_mesh is not mesh.warp_mesh
+
+
+def test_mesh_for_rays_rents_then_buys(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the online choice switches once the counted rays reach the budget.
+
+    The budget is patched to 100 rays so the arithmetic is visible: two calls of 40 stay on
+    `warp_mesh`, the third crosses the budget and builds `traced_mesh`, every later call keeps it,
+    `invalidate` clears the count, and a single call over the budget switches at once.
+    """
+    monkeypatch.setattr("ordito.mesh._TRACED_MESH_FIXED_RAYS", 100)
+    monkeypatch.setattr("ordito.mesh._TRACED_MESH_RAYS_PER_FACE", 0)
+    _mesh_tm, mesh_wp = icosahedron
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    if mesh.device.is_cpu or not wp.is_cubql_available():
+        assert mesh.mesh_for_rays(10**9) is mesh.warp_mesh
+        return
+    assert mesh.mesh_for_rays(40) is mesh.warp_mesh
+    assert mesh.mesh_for_rays(40) is mesh.warp_mesh
+    assert mesh.mesh_for_rays(30) is mesh.traced_mesh
+    assert mesh.traced_mesh is not mesh.warp_mesh
+    assert mesh.mesh_for_rays(1) is mesh.traced_mesh
+    mesh.invalidate()
+    assert mesh.mesh_for_rays(99) is mesh.warp_mesh
+    mesh.invalidate()
+    assert mesh.mesh_for_rays(100) is mesh.traced_mesh
+
+
+def test_mesh_for_rays_rejects_a_negative_count(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    _mesh_tm, mesh_wp = icosahedron
+    with pytest.raises(ValueError, match="non-negative"):
+        od.Trimesh.from_warp_mesh(mesh_wp).mesh_for_rays(-1)
+
+
 def test_mesh_from_numpy_round_trip(icosahedron: tuple[tm.Trimesh, wp.Mesh], device: str) -> None:
     """Class A: the numpy arrays survive the upload unchanged, positions and indices alike."""
     mesh_tm, _mesh_wp = icosahedron

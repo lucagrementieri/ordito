@@ -95,10 +95,10 @@ def ambient_occlusion(
     ----------
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``). The occluder *and* the surface being shaded.
-        Every ray is traced through this BVH, so its quality sets the cost: a mesh built with
-        ``wp.Mesh(..., bvh_constructor="cubql")`` traces a large bundle markedly faster than the
-        default builder's, for a slower build, and returns the same values -- worth it when the mesh
-        is built once and traced with many rays.
+        Every ray is traced through this BVH, so its quality sets the cost and not the values:
+        [`Trimesh.traced_mesh`][ordito.mesh.Trimesh.traced_mesh] traces a large bundle markedly
+        faster than [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] for a costlier build, and
+        [`Trimesh.mesh_for_rays`][ordito.mesh.Trimesh.mesh_for_rays] picks between the two.
     points
         ``(m,)`` positions to shade, normally the mesh's own vertices.
     normals
@@ -178,10 +178,10 @@ def volumetric_obscurance(
     ----------
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``).
-        Every ray is traced through this BVH, so its quality sets the cost: a mesh built with
-        ``wp.Mesh(..., bvh_constructor="cubql")`` traces a large bundle markedly faster than the
-        default builder's, for a slower build, and returns the same values -- worth it when the mesh
-        is built once and traced with many rays.
+        Every ray is traced through this BVH, so its quality sets the cost and not the values:
+        [`Trimesh.traced_mesh`][ordito.mesh.Trimesh.traced_mesh] traces a large bundle markedly
+        faster than [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] for a costlier build, and
+        [`Trimesh.mesh_for_rays`][ordito.mesh.Trimesh.mesh_for_rays] picks between the two.
     points
         ``(m,)`` positions to shade.
     normals
@@ -344,10 +344,10 @@ def shape_diameter(
     mesh
         Triangle mesh with a built BVH (``wp.Mesh``). Should be closed: on an open surface the rays
         that find nothing on the far side are simply absent from the mean.
-        Every ray is traced through this BVH, so its quality sets the cost: a mesh built with
-        ``wp.Mesh(..., bvh_constructor="cubql")`` traces a large bundle markedly faster than the
-        default builder's, for a slower build, and returns the same values -- worth it when the mesh
-        is built once and traced with many rays.
+        Every ray is traced through this BVH, so its quality sets the cost and not the values:
+        [`Trimesh.traced_mesh`][ordito.mesh.Trimesh.traced_mesh] traces a large bundle markedly
+        faster than [`Trimesh.warp_mesh`][ordito.mesh.Trimesh.warp_mesh] for a costlier build, and
+        [`Trimesh.mesh_for_rays`][ordito.mesh.Trimesh.mesh_for_rays] picks between the two.
     points
         ``(m,)`` surface positions to measure at, normally the mesh's own vertices.
     normals

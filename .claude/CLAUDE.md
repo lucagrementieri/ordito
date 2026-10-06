@@ -3370,8 +3370,14 @@ for ray (bunny, dragon). `sah` at leaf 1-2 is 1.37-1.45x at `dragon`, 1.9-2.3x a
 1.11-1.16x; leaf 8 0.78x. The build is the price: 2 / 37 ms default against 80 ms / **3.9 s**
 `cubql` and 0.4 / 13 s `sah` at `dragon` / `lucy`, so building one inside a single call barely
 breaks even at 256 rays; the win is a caller who builds once and traces many rays. The functions
-take a caller-built mesh, so the module only documents it (owner's decision, option c; a
-`Trimesh` property for a traced mesh is open). Probe trap: with `normals=None` the closest-face
+take a caller-built mesh, and a `wp.Mesh` does not record its builder (so no hint can tell a
+deliberate choice from the default): `Trimesh.traced_mesh` is the cuBQL mesh (on CUDA; the CPU's
+default SAH tree traces faster, cuBQL 0.93-0.94x on bunny, so there it is `warp_mesh`), and
+`Trimesh.mesh_for_rays(n)` decides rent-or-buy online, counting rays and building the cuBQL tree at
+`_TRACED_MESH_FIXED_RAYS + _TRACED_MESH_RAYS_PER_FACE * n_faces` (8 M + 160): break-evens measured
+84-255 rays a face at 0.87-28 M faces, 230-2 150 at 16-69 k (cuBQL's fixed ~6 ms build overhead).
+cuBQL meshes answer AABB queries with the same candidate sets (the old "unsupported" docstring
+claim was false); a `max_hits`-capped query keeps a traversal-order-dependent subset. Probe trap: with `normals=None` the closest-face
 normal at a vertex is a tie the BVH breaks, so comparing builders without explicit normals reads
 as answers changing by up to 0.88.
 
