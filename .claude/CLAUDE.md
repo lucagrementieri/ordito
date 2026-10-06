@@ -4273,11 +4273,22 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   Dirichlet values**: the converged depth-8 and depth-9 dense solutions are not one scale apart
   (ratio 0.5-0.67 near the surface, 0.33 far, screening is not level-normalized), which put 0.15
   cells of error in a band that grew with more rounds.
-- **OPEN DEFECT: the default dense output is not watertight at depth 9.** The extraction is
-  watertight; `remove_degenerate_faces` then opens 80-110 boundary edges on bunny,
-  bunny_decimated and dragon (depth 8 bunny: 0), contrary to the docstring's "the default
-  `point_weight` emits no degenerate face". The level set grazes lattice nodes often enough at
-  513³ to emit zero-area triangles.
+- **FIXED (2026-10-06): the depth-9 output was opened by its own degenerate-face cleanup.**
+  `face_nondegenerate_mask` rejects an altitude or edge under `TOLERANCE_MERGE = 1e-8`, an
+  *absolute* length, and a marching-cubes vertex lands within rounding of a lattice node wherever
+  the level set grazes one: on bunny at depth 9, 44 slivers of 1.52 M faces, altitudes at most
+  3e-5 cells (~1e-8 m), vertices within ~3e-5 cells of a node, one exactly zero-area. Their count
+  grows as `tol / spacing` times the surface, so depth 8 had none and a 1e-3-scale cloud has them
+  at depth 5. `remove_degenerate_faces` welds nothing, so each dropped sliver left its neighbours'
+  edges unmatched: 76-110 boundary edges on bunny / bunny_decimated / dragon. Welding instead
+  makes non-manifold edges. The fix is `marching_cubes(edge_margin=)`: t clamped to
+  `[m, 1 - m]` keeps one shared vertex per edge (topology unchanged) and bounds every altitude by
+  >= 0.72 m spacings (brute force over all 513 case-table triangles at `m = 0.1`; 0.999 at `1e-3`).
+  `screened_poisson` passes `max(1e-3, 16 * TOLERANCE_MERGE / spacing)` capped at 0.1 to both
+  extractions: 0 degenerate faces and 0 open edges on all three meshes at depth 9, `point_weight=0`
+  clean too (it emitted 1-4 slivers a run on bunny at depths 7-8), vertices moved at most a
+  thousandth of a cell. Pinned by `test_poisson_small_scale_cloud_is_watertight_without_degenerate_faces`
+  (16-18 open edges without the margin, both devices) and the margin test in `test_levelset.py`.
 - **OPEN DEFECT: `method="adaptive"` on `dragon` at depth 9 dies with CUDA error 700** inside
   its CG (`linalg._row_path`'s read), reproduced on HEAD in a fresh process (Warp 1.18,
   2026-10-06). Depth 7 is fine. The adaptive backend's time at depth 9 on bunny (400 ms) is
@@ -4901,7 +4912,8 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   (`test_marching_cubes_is_warps_extraction_bit_for_bit`'s NaN arm bites on its removal). CUDA,
   min of interleaved runs: 2.98x / 2.37x / 2.79x / 2.9x at 64³ / 128³ / 257³ / 513³ (513³:
   26.9 -> 9.2 ms wall, 9.5 -> 2.8 ms device); CPU 1.31x / 1.58x / 1.59x at 64³-257³. No size
-  gate: it wins at every size. Warp's public `sparse_marching_cubes_from_cells` over the crossing
+  gate: it wins at every size. `edge_margin` (default 0, which keeps the identity) clamps t into
+  `[m, 1 - m]`; see §16.3 for why Poisson needs it. Warp's public `sparse_marching_cubes_from_cells` over the crossing
   cells was the first candidate (7.7 ms at 513³, same faces and vertex set) but is not bit-exact:
   it rebuilds corner positions from the cells' minimum subscript, sorts every corner's int64 code
   and reads back three times.

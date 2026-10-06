@@ -113,7 +113,11 @@ _MAX_CONE_WORK = 1 << 34
 
 
 def marching_cubes(
-    field: odt.Array3dFloat32, iso: float = 0.0, *, bounds: tuple[wp.vec3, wp.vec3] | None = None
+    field: odt.Array3dFloat32,
+    iso: float = 0.0,
+    *,
+    bounds: tuple[wp.vec3, wp.vec3] | None = None,
+    edge_margin: float = 0.0,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
     Extract the ``iso`` level set of a dense scalar lattice as a triangle mesh.
@@ -141,6 +145,13 @@ def marching_cubes(
         checked, so a pair passed the other way round is honoured rather than rejected: it mirrors
         the result along every axis it inverts, which flips the winding with it, and a pair whose
         corners coincide collapses every vertex onto that point.
+    edge_margin
+        Fraction of a lattice edge every vertex keeps from both of the edge's nodes
+        (``0 <= edge_margin < 0.5``). At ``0`` a vertex can land on, or arbitrarily close to, a
+        node where the field meets ``iso`` there, and the triangles around it degenerate into
+        slivers whose area is rounding noise; a positive margin moves such a vertex at most that
+        fraction of an edge and bounds every triangle's altitudes below by a fixed fraction of
+        ``edge_margin`` times the lattice spacing, without changing the topology.
 
     Returns
     -------
@@ -155,7 +166,7 @@ def marching_cubes(
     TypeError
         If ``field`` is not a rank-3 ``wp.float32`` array.
     ValueError
-        If any of ``field``'s dimensions is below 2.
+        If any of ``field``'s dimensions is below 2, or ``edge_margin`` is outside ``[0, 0.5)``.
 
     See Also
     --------
@@ -184,6 +195,8 @@ def marching_cubes(
     shape = tuple(int(dim) for dim in field.shape)
     if min(shape) < 2:
         raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
+    if not 0.0 <= edge_margin < 0.5:
+        raise ValueError(f"edge_margin must be in [0, 0.5), got {edge_margin}")
     nx, ny, nz = shape
 
     if bounds is None:
@@ -219,7 +232,7 @@ def marching_cubes(
         _launch.launch(
             kernel_levelset.marching_cubes_emit,
             dim=(nx, ny, nz),
-            inputs=[field, wp.float32(iso), lower, delta, table, counts],
+            inputs=[field, wp.float32(iso), lower, delta, wp.float32(edge_margin), table, counts],
             outputs=[vertices, faces],
             device=device,
         )

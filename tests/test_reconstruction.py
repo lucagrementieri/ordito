@@ -784,10 +784,11 @@ def test_poisson_screening_improves_fit(device: str, method: Literal["dense", "a
 
     On both backends, each on the cloud it was tuned against (``adaptive`` resolves a finer one).
     These are also the only reconstructions at ``point_weight=0``, which is why the
-    no-degenerate-face invariant is asserted here rather than in a test of its own (CLAUDE.md
-    section 7.4). That config is ill-conditioned -- the operator is held SPD by a ``1e-4`` floor
-    alone -- and the dense backend's raw marching-cubes output carried 27-64 zero-area triangles,
-    run to run, before ``screened_poisson``'s ``remove_degenerate_faces`` tail. They are not
+    no-degenerate-face invariant is asserted here as well as in
+    ``test_poisson_small_scale_cloud_is_watertight_without_degenerate_faces``. That config is
+    ill-conditioned -- the operator is held SPD by a ``1e-4`` floor alone -- and the dense
+    backend's raw marching-cubes output carried 27-64 zero-area triangles, run to run, before the
+    extraction kept its vertices off the lattice nodes. They are not
     cosmetic: a zero-area face has no normal to orient, and trimesh's ``closest_point`` divides by
     its zero-length edge, so ``_points_to_surface`` below emitted an intermittent
     ``RuntimeWarning: invalid value encountered in divide``. The screened side is included so the
@@ -992,6 +993,29 @@ def test_poisson_watertight_manifold(
     mean_tol, max_tol = (0.02, 0.06) if method == "dense" else (0.03, 0.08)
     assert abs(radius_od.mean() - 1.0) < mean_tol
     assert np.abs(radius_od - 1.0).max() < max_tol
+
+
+def test_poisson_small_scale_cloud_is_watertight_without_degenerate_faces(device: str) -> None:
+    """
+    Not a library comparison: a cloud at millimetre scale reconstructs closed and sliver-free.
+
+    ``face_nondegenerate_mask`` rejects an altitude under an *absolute* ``1e-8``, so how many
+    marching-cubes slivers fall under it grows as the lattice spacing shrinks -- at depth 9 on the
+    scan meshes, dozens a call. Without ``screened_poisson``'s edge margin they were dropped by its
+    degenerate-face cleanup and each opened the surface, since their neighbours do not share their
+    vertices: this cloud, the 642-point sphere scaled to radius ``1e-3``, came back with 16-18
+    boundary edges at depth 5 on both devices, the same thing the 0.2-m scans do at depth 9.
+    """
+    points_np, normals_np = _sphere_cloud(3)
+    points_wp, normals_wp = _to_warp(1e-3 * points_np, normals_np, device)
+
+    vertices_wp, faces_wp = od.reconstruction.screened_poisson(
+        points_wp, normals_wp, depth=5, full_depth=4
+    )
+
+    assert np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
+    assert od.validation.is_watertight(vertices_wp, faces_wp)
+    assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
 
 
 def test_poisson_adaptive_matches_dense(device: str):

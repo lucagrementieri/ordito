@@ -36,7 +36,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device, run_device_loop
-from ordito.constants import TILE_1D
+from ordito.constants import TILE_1D, TOLERANCE_MERGE
 from ordito.kernels import array as kernel_array
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels import reduce as kernel_reduce
@@ -494,9 +494,14 @@ def screened_poisson(
     vertices : wp.array[wp.vec3]
         ``(n_vertices,)`` iso-surface vertices on ``points.device``.
     faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` flat triangle index buffer, free of zero-area triangles
-        ([`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]) and oriented outward
-        ([`make_normals_outward`][ordito.repair.make_normals_outward]).
+        ``(3 * n_faces,)`` flat triangle index buffer, free of degenerate triangles in
+        [`face_nondegenerate_mask`][ordito.triangles.face_nondegenerate_mask]'s sense and oriented
+        outward ([`make_normals_outward`][ordito.repair.make_normals_outward]). The extraction
+        keeps every vertex a small fraction of a lattice edge off the lattice nodes, which bounds
+        every triangle's altitudes away from zero without changing the surface's topology, so the
+        guarantee costs no hole; a lattice so fine that its spacing nears the merge tolerance falls
+        back to dropping the faces
+        ([`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces]).
 
     Raises
     ------
@@ -533,13 +538,11 @@ def screened_poisson(
     depth (it already caps near-surface refinement at the sample spacing) and is the better choice
     when the depth wanted for the extraction lattice exceeds what the sampling supports.
 
-    **``point_weight=0`` is ill-conditioned, and its output is not reproducible.** Screening is what
-    conditions the operator; at ``0`` only the ``1e-4`` floor above keeps it SPD, so the conjugate
-    gradient stops on a solution whose level set is genuinely uncertain, and the face count (and
-    how many faces come out zero-area before the cleanup described under ``Returns``) varies
-    between runs on the same input; the surface is also not watertight. The default
-    ``point_weight=4`` is stable across runs and watertight. So ``0`` is for comparing *against* a
-    screened reconstruction, not for producing one -- and do not pin a count taken from it.
+    **``point_weight=0`` is ill-conditioned.** Screening is what conditions the operator; at ``0``
+    only the ``1e-4`` floor above keeps it SPD, so the conjugate gradient stops on a solution whose
+    level set is genuinely uncertain and can move between runs on the same input. So ``0`` is for
+    comparing *against* a screened reconstruction, not for producing one -- and do not pin a count
+    taken from it.
     """
     require_same_device(points=points, normals=normals)
     if not (3 <= full_depth <= depth <= 10):
@@ -606,16 +609,17 @@ def screened_poisson(
             odt.as_array3d(solution.reshape((res, res, res)), wp.float32),
             iso,
             bounds=(cube_lower, cube_upper),
+            edge_margin=_poisson_edge_margin(cube_size, res),
         )
 
-    # Drop zero-area triangles before orienting. Marching cubes emits one wherever the level set
-    # grazes a lattice node, and such a face has no normal for ``make_normals_outward`` to orient
-    # and hands the caller a NaN out of any closest-point query -- trimesh's ``closest_point``
-    # divides by the squared length of the zero-length edge. This is deliberately *not* the full
-    # ``_clean_reconstruction`` tail the other three reconstructions use: welding the coincident
-    # vertices as well preserves the boundary-edge count but manufactures non-manifold edges, and
-    # dedup would change the default path's output. As written it is **byte-identical** on a
-    # well-screened reconstruction -- the default ``point_weight`` emits no degenerate face at all.
+    # Both extractions keep every vertex ``_poisson_edge_margin`` of an edge off the lattice nodes,
+    # which is what makes the surface free of degenerate faces: without it a vertex lands within
+    # rounding of a node wherever the level set grazes one, and the slivers around it fall under
+    # ``face_nondegenerate_mask``'s absolute tolerance -- dozens a call at depth 9, and removing
+    # them opened the closed surface, since their neighbours do not share their vertices. This
+    # drop is then a guard for a lattice so fine its spacing nears that tolerance. It is
+    # deliberately *not* the full ``_clean_reconstruction`` tail the other three reconstructions
+    # use: welding coincident vertices manufactures non-manifold edges.
     vertices, faces = od.repair.remove_degenerate_faces(vertices, faces)
     if faces.size > 0:
         faces = od.repair.make_normals_outward(vertices, faces)
@@ -1286,7 +1290,7 @@ def _screened_poisson_adaptive(
         iso = _poisson_iso_value(sampled, normals, confidence)
 
         return _extract_poisson_surface_fem(
-            field, domain, iso, cube_lower, cube_upper, depth, res_fine, device
+            field, domain, iso, cube_lower, cube_upper, cube_size, depth, res_fine, device
         )
 
 
@@ -1296,6 +1300,7 @@ def _extract_poisson_surface_fem(
     iso: float,
     cube_lower: wp.vec3,
     cube_upper: wp.vec3,
+    cube_size: float,
     depth: int,
     res_fine: int,
     device: wp.DeviceLike,
@@ -1339,7 +1344,22 @@ def _extract_poisson_surface_fem(
         odt.as_array3d(values.reshape((res, res, res)), wp.float32),
         iso,
         bounds=(cube_lower, cube_upper),
+        edge_margin=_poisson_edge_margin(cube_size, res),
     )
+
+
+def _poisson_edge_margin(cube_size: float, res: int) -> float:
+    """
+    ``levelset.marching_cubes``' ``edge_margin`` for a ``res``-node lattice over the Poisson cube.
+
+    A margin ``m`` bounds every triangle's altitudes below by about ``0.7 * m`` lattice spacings
+    (the worst triangle of the case table at ``m = 0.1``), and ``face_nondegenerate_mask`` rejects
+    an altitude under ``TOLERANCE_MERGE``, an absolute length. So the margin is the smallest of
+    ``1e-3`` of an edge and what clears that tolerance sixteen-fold, capped at ``0.1``: a vertex
+    moves at most a thousandth of a cell at every ordinary scale.
+    """
+    spacing = cube_size / float(res - 1)
+    return min(0.1, max(1e-3, 16.0 * TOLERANCE_MERGE / spacing))
 
 
 def resample_uniform(

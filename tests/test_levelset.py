@@ -334,6 +334,41 @@ def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) 
         assert (faces_wp.numpy() == -1).any(), "the NaN arm never reached an edge with no vertex"
 
 
+def test_marching_cubes_edge_margin_removes_degenerate_triangles(device: str) -> None:
+    """
+    Not a library comparison: ``edge_margin`` keeps vertices off nodes without touching topology.
+
+    A sphere SDF quantized to sixteenths puts hundreds of lattice nodes exactly on ``iso``, where
+    every incident edge's vertex lands on the node and the triangles around it have zero area
+    (asserted, so the arm is not vacuous). A margin removes every degenerate triangle, leaves the
+    face buffer unchanged -- it moves vertices, it does not re-triangulate -- and moves no vertex
+    more than ``edge_margin`` lattice spacings.
+    """
+    axis_np = np.linspace(-1.0, 1.0, 33)
+    x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
+    sdf_np = np.sqrt(x_np**2 + y_np**2 + z_np**2) - 0.7
+    field_wp = odt.as_array3d(
+        wp.array(
+            (np.round(sdf_np * 16.0) / 16.0).astype(np.float32), dtype=wp.float32, device=device
+        ),
+        wp.float32,
+    )
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp)
+    margin_vertices_wp, margin_faces_wp = od.levelset.marching_cubes(field_wp, edge_margin=1e-3)
+
+    assert not np.all(od.triangles.face_nondegenerate_mask(vertices_wp, faces_wp).numpy())
+    assert np.all(od.triangles.face_nondegenerate_mask(margin_vertices_wp, margin_faces_wp).numpy())
+    assert np.array_equal(margin_faces_wp.numpy(), faces_wp.numpy())
+    # Index space: the lattice spacing is one, and a coordinate up to 32 rounds to a float32 ulp
+    # of 32 on each side of the difference.
+    slack = 2.0 * float(np.spacing(np.float32(32.0)))
+    assert np.abs(margin_vertices_wp.numpy() - vertices_wp.numpy()).max() <= 1e-3 + slack
+
+    for margin in (-0.1, 0.5):
+        with pytest.raises(ValueError, match="edge_margin"):
+            od.levelset.marching_cubes(field_wp, edge_margin=margin)
+
+
 def test_marching_cubes_empty_and_invalid(device: str) -> None:
     """Not a library comparison: a field that never crosses is empty, a 1-wide lattice raises."""
     field_wp = wp.array(np.full((8, 8, 8), 1.0, dtype=np.float32), dtype=wp.float32, device=device)

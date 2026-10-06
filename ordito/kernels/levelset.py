@@ -797,6 +797,7 @@ def marching_cubes_emit(
     iso: wp.float32,
     lower: wp.vec3,
     delta: wp.vec3,
+    margin: wp.float32,
     table: wp.array[wp.int32],
     offsets: wp.array[wp.vec2i],
     out_vertices: wp.array[wp.vec3],
@@ -824,7 +825,9 @@ def marching_cubes_emit(
             here = field[i, j, k]
             there = field[io, jo, ko]
             t = (iso - here) / (there - here)
-            t = wp.clamp(t, 0.0, 1.0)
+            # ``margin`` 0 is Warp's ``clamp(t, 0, 1)`` exactly; above 0 it keeps every vertex that
+            # fraction of the edge off both lattice nodes (``marching_cubes``' ``edge_margin``).
+            t = wp.clamp(t, margin, 1.0 - margin)
             here_pos = lower + wp.vec3(
                 wp.float32(i) * delta.x, wp.float32(j) * delta.y, wp.float32(k) * delta.z
             )
