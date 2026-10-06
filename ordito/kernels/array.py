@@ -1653,7 +1653,7 @@ def lattice_position(
     # A **node** lattice, not a cell-centre one: there is no half-step shift, so a lattice of
     # ``dims`` nodes with ``step = extent / (dims - 1)`` spans its box inclusively at both ends.
     # Both callers want that -- ``reconstruction``'s signed-distance sample grid, in the row-major
-    # order ``IsoSurfaceMarchingCubes`` expects, and ``voxels.lattice`` -- and neither is a
+    # order ``levelset.marching_cubes`` expects, and ``voxels.lattice`` -- and neither is a
     # candidate for ``wp.volume_index_to_world``, the spelling ``kernels/voxels.py``'s module
     # docstring records as preferred: both run *before* any ``wp.Volume`` exists, so there is no
     # volume id to pass. That is the same un-convertible half of the split that docstring names.

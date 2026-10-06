@@ -9,6 +9,7 @@ every output vertex must sit at the requested signed distance from the input.
 from __future__ import annotations
 
 import math
+from typing import cast
 
 import igl
 import numpy as np
@@ -22,6 +23,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 from pytorch3d.ops.marching_cubes import marching_cubes as p3d_marching_cubes
 from scipy.spatial import cKDTree
+from warp.geometry import IsoSurfaceMarchingCubes
 
 import ordito as od
 import ordito.typing as odt
@@ -281,6 +283,54 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     distance_np, match_np = map(np.asarray, cKDTree(vertices_p3d).query(vertices_wp.numpy()))
     assert distance_np.max() == 0.0, f"vertices differ by up to {distance_np.max():.3e}"
     assert len(set(match_np.tolist())) == match_np.size, "the vertex match is not a bijection"
+
+
+@pytest.mark.parametrize("case", ["torus", "anisotropic", "ties", "nan"])
+def test_marching_cubes_is_warps_extraction_bit_for_bit(device: str, case: str) -> None:
+    """
+    Class A: byte-identical to ``warp.geometry.IsoSurfaceMarchingCubes.extract``, buffer order too.
+
+    ``marching_cubes`` ports Warp's dense extraction with its own bookkeeping, and promises the same
+    vertex numbering, triangle order and interpolation arithmetic. The arms reach what a port gets
+    wrong: an anisotropic lattice with world bounds (the per-axis spacing), values quantized onto
+    ``iso`` (the ``>=`` side of every comparison), and NaN and infinite samples, where Warp's case
+    code reads NaN as below ``iso`` while its edge test never crosses -- so a face names an edge
+    with no vertex, and gets ``-1``.
+    """
+    rng = np.random.default_rng(7)
+    bounds = None
+    iso = 0.0
+    if case == "torus":
+        axis_np = np.linspace(-1.1, 1.1, 48)
+        x_np, y_np, z_np = np.meshgrid(axis_np, axis_np, axis_np, indexing="ij")
+        field_np = np.sqrt((np.sqrt(x_np**2 + y_np**2) - 0.65) ** 2 + z_np**2) - 0.28
+        bounds = (wp.vec3(-1.1, -1.1, -1.1), wp.vec3(1.1, 1.1, 1.1))
+    elif case == "anisotropic":
+        field_np = rng.standard_normal((17, 23, 31))
+        bounds = (wp.vec3(0.3, -2.0, 5.0), wp.vec3(1.7, 4.0, 5.5))
+    elif case == "ties":
+        field_np = np.round(rng.standard_normal((20, 20, 20)) * 2.0) / 2.0
+        iso = 0.5
+    else:
+        field_np = rng.standard_normal((16, 16, 16))
+        field_np[3:5, 4, 7] = np.nan
+        field_np[10, 10, 10] = np.inf
+    field_wp = odt.as_array3d(
+        wp.array(field_np.astype(np.float32), dtype=wp.float32, device=device), wp.float32
+    )
+    lower, upper = bounds if bounds is not None else (None, None)
+    # Warp annotates the field ``wp.array3d``, a static helper no runtime array is typed as.
+    vertices_warp, faces_warp = IsoSurfaceMarchingCubes.extract(
+        cast("wp.array3d[wp.float32]", field_wp), iso, lower=lower, upper=upper
+    )
+    vertices_wp, faces_wp = od.levelset.marching_cubes(field_wp, iso, bounds=bounds)
+    assert faces_warp.size > 0
+    assert np.array_equal(
+        vertices_wp.numpy().view(np.uint32), vertices_warp.numpy().view(np.uint32)
+    )
+    assert np.array_equal(faces_wp.numpy(), faces_warp.numpy())
+    if case == "nan":
+        assert (faces_wp.numpy() == -1).any(), "the NaN arm never reached an edge with no vertex"
 
 
 def test_marching_cubes_empty_and_invalid(device: str) -> None:

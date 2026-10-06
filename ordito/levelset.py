@@ -35,16 +35,18 @@ occupancy lattice, [`ordito.voxels`][ordito.voxels].
 
 from __future__ import annotations
 
+import functools
 import math
 from typing import Literal, cast
 
+import numpy as np
 import warp as wp
-from warp.geometry import IsoSurfaceMarchingCubes, sparse_marching_cubes
+from warp.geometry import sparse_marching_cubes
 
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import read_scalar, require_same_device
 from ordito.kernels import levelset as kernel_levelset
 
 # Bounds on the automatic ``voxel_size``, both expressed as a sample count across a span, and both
@@ -141,9 +143,15 @@ def marching_cubes(
 
     Notes
     -----
-    A thin wrapper over Warp's own ``warp.geometry.IsoSurfaceMarchingCubes``, so the triangulation,
-    its vertex deduplication and its handling of the ambiguous cube cases are Warp's rather than
-    ordito's. The consequence worth knowing is that the result is **not guaranteed manifold** at an
+    The triangulation is Warp's ``warp.geometry.IsoSurfaceMarchingCubes``: its case tables, its
+    vertex numbering (one vertex per crossing lattice edge, in row-major order of the edge's lower
+    node and then by axis), its triangle order and its interpolation, so the result equals
+    ``IsoSurfaceMarchingCubes.extract`` on the same lattice and bounds bit for bit, buffer order
+    included. What differs is the scratch it needs: a pair of counters per lattice node, about twice
+    the field, where Warp's extraction needs about eleven times the field -- the margin between
+    fitting a fine lattice on the device and not.
+
+    The consequence worth knowing is that the result is **not guaranteed manifold** at an
     ambiguous cell, and can carry duplicate vertices where two cells agree on a crossing —
     [`reconstruction.resample_uniform`][ordito.reconstruction.resample_uniform] runs
     [`ordito.repair`][ordito.repair] over it for exactly that reason.
@@ -152,15 +160,52 @@ def marching_cubes(
     shape = tuple(int(dim) for dim in field.shape)
     if min(shape) < 2:
         raise ValueError(f"field must be at least 2 wide along every axis, got {shape}")
+    nx, ny, nz = shape
 
     if bounds is None:
         lower = wp.vec3(0.0, 0.0, 0.0)
-        upper = wp.vec3(float(shape[0] - 1), float(shape[1] - 1), float(shape[2] - 1))
+        upper = wp.vec3(float(nx - 1), float(ny - 1), float(nz - 1))
     else:
-        lower, upper = bounds
-    # Warp annotates the field ``wp.array3d``, a static helper no runtime array is typed as.
-    volume = cast("wp.array3d[wp.float32]", field)
-    return IsoSurfaceMarchingCubes.extract(volume, float(iso), lower=lower, upper=upper)
+        lower, upper = wp.vec3(bounds[0]), wp.vec3(bounds[1])
+    # The spacing as ``IsoSurfaceMarchingCubes.extract`` forms it (Warp's ``resolve_domain_bounds``:
+    # a float32 difference divided by the cell count), so every interpolated vertex rounds as
+    # Warp's does.
+    cells_np = np.array((nx - 1, ny - 1, nz - 1), dtype=np.float32)
+    delta = wp.vec3(
+        (np.asarray(upper, dtype=np.float32) - np.asarray(lower, dtype=np.float32)) / cells_np
+    )
+
+    device = wp.get_device(field.device)
+    table = _marching_cubes_table(device.alias)
+    counts = _launch.empty(nx * ny * nz, dtype=wp.vec2i, device=device)
+    _launch.launch(
+        kernel_levelset.marching_cubes_counts,
+        dim=(nx, ny, nz),
+        inputs=[field, wp.float32(iso), table],
+        outputs=[counts],
+        device=device,
+    )
+    _launch.array_scan(counts, counts, inclusive=True)
+    # One read sizes both outputs: the scanned pair's last entry is the vertex and triangle totals.
+    totals = read_scalar(counts)
+    n_vertices, n_faces = int(totals[0]), int(totals[1])
+    vertices = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
+    faces = _launch.empty(3 * n_faces, dtype=wp.int32, device=device)
+    if n_vertices > 0:
+        _launch.launch(
+            kernel_levelset.marching_cubes_emit,
+            dim=(nx, ny, nz),
+            inputs=[field, wp.float32(iso), lower, delta, table, counts],
+            outputs=[vertices, faces],
+            device=device,
+        )
+    return vertices, faces
+
+
+@functools.cache
+def _marching_cubes_table(device: str) -> wp.array[wp.int32]:
+    """``kernels/levelset.MARCHING_CUBES_TABLE`` on the device ``device`` names, uploaded once."""
+    return _launch.array(kernel_levelset.MARCHING_CUBES_TABLE, dtype=wp.int32, device=device)
 
 
 def offset_mesh(

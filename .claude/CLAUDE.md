@@ -4231,6 +4231,33 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   walk (§14.2).
 - **Slab-chunked marching cubes is not viable**: `wp.MarchingCubes` is crack-free only *within*
   one grid, so welding independently computed slabs leaves non-manifold seams.
+- **Where a dense solve's time goes (bunny, Warp 1.18, 2026-10-06)**: depth 9 is 228-250 ms, of
+  which the 513³ level (splat, setup, MG-PCG) is 185 ms, levels 5-8 31 ms and the extraction
+  27 ms; device time 203 ms, bandwidth-bound at ~12 ms a finest round, 12-16 rounds a level.
+  Capping every level's rounds is a cascadic schedule with no code change: 4 rounds 2.15x at
+  0.014 cells mean surface error against the converged output, `solver_tolerance=1e-3` 1.39x at
+  0.0005 -- against a discretization scale of 0.13 cells (depth 9 vs 8). Extraction is now
+  `levelset.marching_cubes`' port (§16.5), 1.03-1.04x on the whole call at depths 7-9 (the
+  standalone 2.9x is mostly allocation the warm pool already hides here).
+- **A narrow-band brick hierarchy was prototyped, not adopted** (awaiting a decision). Finest
+  data only, every coarser level's right-hand side and screening its `Pᵀ` restriction (the MG
+  operator `2^(L-l) L_l + s W_l`), a dense depth-7 base, 8³ bricks near the samples above it,
+  Dirichlet ghosts `P x_coarse`: 10-19x at depth 9 (bunny, dragon), 3.5-5x at depth 8, and depth
+  10 runs (80 ms on dragon; dense is out of memory there). Error 0.01-0.04 cells against dense,
+  shrinking with band width, not rounds. **Independently splatted coarse levels cannot supply the
+  Dirichlet values**: the converged depth-8 and depth-9 dense solutions are not one scale apart
+  (ratio 0.5-0.67 near the surface, 0.33 far, screening is not level-normalized), which put 0.15
+  cells of error in a band that grew with more rounds.
+- **OPEN DEFECT: the default dense output is not watertight at depth 9.** The extraction is
+  watertight; `remove_degenerate_faces` then opens 80-110 boundary edges on bunny,
+  bunny_decimated and dragon (depth 8 bunny: 0), contrary to the docstring's "the default
+  `point_weight` emits no degenerate face". The level set grazes lattice nodes often enough at
+  513³ to emit zero-area triangles.
+- **OPEN DEFECT: `method="adaptive"` on `dragon` at depth 9 dies with CUDA error 700** inside
+  its CG (`linalg._row_path`'s read), reproduced on HEAD in a fresh process (Warp 1.18,
+  2026-10-06). Depth 7 is fine. The adaptive backend's time at depth 9 on bunny (400 ms) is
+  `fem.adaptive_nanogrid_from_field` 182 ms, two `fem.integrate` 62 ms, the CG 39 ms, the lattice
+  resample 17 ms and the extraction 27 ms.
 
 ### 16.4 `remesh`, `repair`, `creation`, `bounds`
 
@@ -4754,6 +4781,27 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 
 - Marching-cubes slab chunking is not viable (§16.3); pytorch3d's `marching_cubes` needs no
   convention fix at all (§7.6).
+- **`marching_cubes` is a port of `IsoSurfaceMarchingCubes.extract`, byte-identical including
+  buffer order** (2026-10-06, `kernels/levelset.marching_cubes_counts` / `_emit`). Warp's
+  extraction allocates 44 bytes of scratch a node (two zeroed `3n` count buffers, their scans,
+  a `(nx, ny, nz, 3)` edge-to-vertex table, the cell counts and scan: 11x the field, ~6 GB at
+  513³), runs two scans and two host reads. The port counts each node's crossing edges and its
+  cell's triangles into one `vec2i`, scans it once in place and reads one total (8 bytes a node);
+  the emit pass recovers an edge's vertex from its owner node's scanned count, recomputing which
+  of the owner's higher-axis edges cross. Vertex numbering (edge's lower node row-major, then
+  axis), triangle order, the spacing (`(upper - lower) / cells` in float32) and the lerp are
+  Warp's, so the outputs compare equal as bytes on both devices: tori, anisotropic world bounds,
+  exact ties at `iso`, reversed bounds, 2³ lattices, every Poisson / adaptive / `resample_uniform`
+  lattice on bunny, bunny_decimated and dragon at depths 7-9. **NaN is the trap**: Warp's case
+  code reads NaN as below `iso` while its edge test never crosses, so a face can name an edge
+  with no vertex and Warp writes `-1`; the port reproduces the `-1`
+  (`test_marching_cubes_is_warps_extraction_bit_for_bit`'s NaN arm bites on its removal). CUDA,
+  min of interleaved runs: 2.98x / 2.37x / 2.79x / 2.9x at 64³ / 128³ / 257³ / 513³ (513³:
+  26.9 -> 9.2 ms wall, 9.5 -> 2.8 ms device); CPU 1.31x / 1.58x / 1.59x at 64³-257³. No size
+  gate: it wins at every size. Warp's public `sparse_marching_cubes_from_cells` over the crossing
+  cells was the first candidate (7.7 ms at 513³, same faces and vertex set) but is not bit-exact:
+  it rebuilds corner positions from the cells' minimum subscript, sorts every corner's int64 code
+  and reads back three times.
 
 ### 16.6 `proximity`, `metrics`, `neighbors`
 

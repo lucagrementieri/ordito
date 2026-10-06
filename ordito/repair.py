@@ -2118,9 +2118,9 @@ def fix_self_intersections(
     **Success is not guaranteed by either method, and neither is asserted.** For ``"local"``: a
     region whose rim cannot be triangulated without crossing something, or one that grows to swallow
     the mesh, leaves intersections behind; the loop stops at ``max_iter`` and returns what it has.
-    For ``"voxel"``: the level set is clean, but Warp's ``IsoSurfaceMarchingCubes`` can emit a
-    touching or non-manifold pair at an ambiguous cell, and that is resolution-dependent -- a finer
-    lattice can introduce a handful of such faces where a coarser one has none. Check with
+    For ``"voxel"``: the level set is clean, but marching cubes can emit a touching or non-manifold
+    pair at an ambiguous cell, and that is resolution-dependent -- a finer lattice can introduce a
+    handful of such faces where a coarser one has none. Check with
     [`ordito.validation.is_self_intersecting`][ordito.validation.is_self_intersecting] when it
     matters.
 

@@ -436,10 +436,10 @@ def screened_poisson(
     smoothed vector field ``V`` (with a density weight ``W``), the indicator function ``x`` is
     recovered by solving the screened-Poisson system ``(L_N + point_weight * W) x = -div V``
     matrix-free with a Jacobi-preconditioned conjugate gradient, and the iso-surface is extracted
-    with ``warp.geometry.IsoSurfaceMarchingCubes`` at the iso-value given by the average of ``x``
-    over the input points. A **cascadic** coarse-to-fine schedule solves the system from
-    ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's initial
-    guess (mirroring PoissonRecon's multigrid hierarchy).
+    with [`levelset.marching_cubes`][ordito.levelset.marching_cubes] at the iso-value given by the
+    average of ``x`` over the input points. A **cascadic** coarse-to-fine schedule solves the
+    system from ``full_depth`` up to ``depth``, prolonging each level's solution as the next level's
+    initial guess (mirroring PoissonRecon's multigrid hierarchy).
 
     ``normals`` are **required** and must be globally consistently oriented (all pointing outward or
     all inward): the reconstruction encodes the surface orientation in the sign of the vector field,
@@ -1303,9 +1303,10 @@ def _extract_poisson_surface_fem(
     """
     Sample the adaptive ``field`` onto a dense lattice and marching-cube the ``iso`` surface.
 
-    The lattice resolution is capped at ``2**min(depth, 9) + 1``:
-    ``warp.geometry.IsoSurfaceMarchingCubes`` needs about nine times the field bytes in scratch, so
-    a full-cube call overflows above depth 9. A slab-chunked pass would lift that cap, but the
+    The lattice resolution is capped at ``2**min(depth, 9) + 1``: the lattice is a ``vec3``
+    sample position and a ``float32`` value per node before the extraction's own scratch (a pair of
+    counters a node), so a full-cube lattice at depth 10 does not fit the device. A slab-chunked
+    pass would lift that cap, but the
     extractor is crack-free only within a single grid -- its per-cell face triangulation is not
     consistent across independent invocations, so welding independent slabs leaves non-manifold
     seams -- and depth 9-10 already oversamples the spacing-capped solve, so the simple capped
