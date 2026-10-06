@@ -6339,6 +6339,42 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   0.11 ms on `sphere_small`); per-row `float64` atomics in the forward solve were replaced by
   fixed-order slot sums for reproducibility at no measurable cost.
 
+- **Routing (2026-10-07): factor where an operator or its pattern repeats, iterate where it does
+  not.** Interleaved A/B against the iteration, the factorization's analysis cached (as in the
+  benchmark harness):
+    - *Same operator object, second solve on* (`linalg._reused_factorization`): the heat
+      diffusions (`solve_spd_settled`) and the heat method's Poisson solve (`solve_spd(...,
+      factor_on_reuse=True)`): `heat_geodesic` with reused operators 7.4x / 7.4x / 14x / 37x / 12x
+      / 16x (`sphere_small` 2.0 -> 0.26 ms, potpourri3d 0.35; `sphere_med`, `saddle`,
+      `saddle_graded`, `hemisphere`, `bunny`), `transport_tangent_vectors` 9.1x / 10.4x (0.59 ms,
+      potpourri3d 3.0). `solve_spd_columns` and `spd_column_solver` default `factor_on_reuse=True`,
+      guarded by an order-free 64-bit fingerprint of the values (SplitMix-scrambled words summed
+      mod 2^64, one 8-byte read a solve; a *linear* mix failed: doubling every value moves each
+      word by `2^52` and the sum cancelled) that refactors on an in-place rewrite:
+      `solve_spd_columns` 31x / 159x (`saddle` / `saddle_graded`, 0.29 ms), `spd_column_solver`
+      once 36x / 180x, x50 2.1x / 10.3x (a warm start that already passes the test costs one
+      residual, no triangular solve).
+    - *Fresh operator, same pattern* (`cholesky.reused_sparse_cholesky`, a device fingerprint of
+      the pattern, 24-byte read): `harmonic(k=2)` 1.4x / 2.4x / 2.8x (`saddle_small` / `saddle` /
+      `hemisphere`), `lscm` 1.7x / 2.9x / 1.9x; `filter_implicit_fairing` refactors per pass once
+      the first pass's Chebyshev count is at least 60 (`saddle` ~20, `saddle_graded` ~170):
+      `saddle_graded` 2.5x (111 -> 44 ms), `saddle` / `hemisphere` 0.98-0.99x.
+    - **Declined, measured**: `arap` (warm-started short solves of a per-call operator; factor on
+      the second step 0.35-0.65x at 3 iterations, 0.44-1.06x at 10), `harmonic(k=1)` (0.34-0.5x),
+      `min_quad_with_fixed` by default (0.44-0.83x at 1 % / 50 % pinned; a cotangent block is
+      negative definite and the non-negated attempt fails first; `factorize=` is opt-in, `lscm` uses
+      it), `smooth_region_boundary` (its small band system is rewritten every pass: 0.25-0.37x with
+      a refactor per pass; that call site passes `factor_on_reuse=False`).
+- **The first solve still iterates, and the second pays the analysis once**: `harmonic(k=2)` /
+  `lscm` on `saddle` read 146 / 24 ms, 153 / 193 ms, then 7 ms per call; the host analysis is
+  130-220 ms at 17-35 k rows (nested dissection over hop distances without coordinates, 28 ms of
+  BFS, then the task maps). Analyses are kept per pattern (`_PLAN_CACHE`, four); a factorization
+  per operator (`linalg._FACTOR_CACHE`, weak keys, holding the storage through an alias). The
+  graded one-shot heat rows keep their commit-1 cost (`heat_geodesic` 0.76x, `transport` 0.25x,
+  `log_map` 0.61x against the wrong answer), most of it the settle CG that fails first and the
+  stacked `[vector; heat; heat]` factorization (two copies of the heat system) -- a lead: factor
+  the stack's blocks once each.
+
 #### One-block solves
 
 - **Small solves run as one launch, one block per column** (`cg_one_block`, gated at

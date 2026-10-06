@@ -180,3 +180,49 @@ def test_sparse_cholesky_rejects_mismatched_inputs(
             wp.zeros(n + 1, dtype=wp.float64, device=device),
             wp.zeros(n + 1, dtype=wp.float64, device=device),
         )
+
+
+def test_negated_factorization_solves_a_negative_definite_operator(
+    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh]
+) -> None:
+    """Class A at 1e-12: ``negated=True`` factors ``-A`` and still answers ``A x = b``."""
+    _, mesh_wp = hemisphere
+    system_np = -bsr_to_csr(_heat_system(mesh_wp))
+    n = system_np.shape[0]
+    rhs_np = np.random.default_rng(13).standard_normal(n)
+    factor = od.cholesky.sparse_cholesky(
+        scipy_to_bsr(sp.csr_matrix(system_np), device), mesh_wp.points, negated=True
+    )
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
+    expected = spla.spsolve(system_np.tocsc(), rhs_np)
+    assert factor.negated
+    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+
+def test_reused_sparse_cholesky_factors_from_a_patterns_second_request(
+    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A at 1e-12: ``None`` on a pattern's first request, a factorization from its second.
+
+    The second request is a fresh operator of the same pattern with other values, not the same
+    object, and the factorization is of its values.
+    """
+    _, mesh_wp = hemisphere
+    # Patterns other tests factored already would count as seen.
+    monkeypatch.setattr(od.cholesky, "_PLAN_CACHE", {})
+    monkeypatch.setattr(od.cholesky, "_PATTERNS_SEEN", set())
+    system_np = bsr_to_csr(_heat_system(mesh_wp))
+    jitter = sp.diags(np.linspace(1.0, 2.0, system_np.shape[0]))
+    first = od.cholesky.reused_sparse_cholesky(scipy_to_bsr(sp.csr_matrix(system_np), device))
+    second_np = sp.csr_matrix(system_np + jitter)
+    second = od.cholesky.reused_sparse_cholesky(scipy_to_bsr(second_np, device))
+    assert first is None
+    assert second is not None
+    n = system_np.shape[0]
+    rhs_np = np.random.default_rng(17).standard_normal(n)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    second.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
+    expected = spla.spsolve(second_np.tocsc(), rhs_np)
+    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())

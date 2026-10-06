@@ -368,7 +368,9 @@ def test_solve_spd_columns_two_columns_uses_batched_cg(device: str) -> None:
     """
     matrix_wp, rhs_wp, _dense, _rhs = _spd_system(device, n_rhs=2)
     solution_wp = wp.zeros_like(rhs_wp)
-    solver = od.linalg.spd_column_solver(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
+    solver = od.linalg.spd_column_solver(
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), factor_on_reuse=False
+    )
     assert isinstance(solver, od.linalg._BatchedCg)
 
 
@@ -493,7 +495,11 @@ def test_spd_column_solver_reads_a_rewritten_rhs_on_every_call(
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
     solver = od.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), check_every=check_every
+        matrix_wp,
+        rhs_wp,
+        odt.as_array2d(solution_wp, wp.float64),
+        check_every=check_every,
+        factor_on_reuse=False,
     )
     solver()
     second_np = np.roll(rhs_np, 1, axis=1) - 0.5 * rhs_np
@@ -503,6 +509,46 @@ def test_spd_column_solver_reads_a_rewritten_rhs_on_every_call(
     assert int(iterations.numpy()[0] if isinstance(iterations, wp.array) else iterations) > 0
     solution_np = np.linalg.solve(dense_np, second_np.T).T
     assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-5, atol=1e-5)
+
+
+def test_spd_column_solver_factors_its_operator_on_reuse(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: from the second call the state solves by factorization.
+
+    Zero iterations, and still re-reading a rewritten right-hand side.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
+    solution_wp = wp.zeros_like(rhs_wp)
+    solver = od.linalg.spd_column_solver(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
+    first, _, _ = solver()
+    for scale in (1.0, -0.5):
+        second_np = scale * np.roll(rhs_np, 1, axis=1)
+        rhs_wp.assign(np.ascontiguousarray(second_np))
+        iterations, _, _ = solver()
+        assert int(iterations.numpy()[0] if isinstance(iterations, wp.array) else iterations) == 0
+        solution_np = np.linalg.solve(dense_np, second_np.T).T
+        assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-9, atol=1e-9)
+    assert int(first.numpy()[0] if isinstance(first, wp.array) else first) > 0
+
+
+def test_solve_spd_columns_refactors_values_rewritten_in_place(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: values rewritten in place are refactored.
+
+    A repeated operator goes to its kept factorization; a rewrite of its values between solves is
+    detected by the fingerprint and the factorization redone.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    for _ in range(2):
+        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp)
+    assert np.allclose(solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, atol=1e-9)
+    matrix_wp.values.assign(2.0 * matrix_wp.values.numpy())
+    solution_wp.zero_()
+    iterations, _, _ = od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, check_every=1)
+    assert iterations == 0
+    expected_np = np.linalg.solve(2.0 * dense_np, rhs_np.T).T
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-9, atol=1e-9)
 
 
 def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
@@ -669,7 +715,9 @@ def test_pooled_squared_laplacian_state_follows_each_system(
         solution_wp = odt.as_array2d(
             wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device), wp.float64
         )
-        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner, factor_on_reuse=False
+        )
         return solution_wp.numpy()
 
     for matrix_wp, rhs_wp, _dense_np, _rhs_np in systems[:2]:
@@ -901,7 +949,11 @@ def test_adaptive_preconditioner_escalates_only_past_its_probe(device: str, shif
     matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device, k=64, n_rhs=2, shift=shift)
     solution_wp = wp.zeros_like(rhs_wp)
     solver = od.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), preconditioner="adaptive"
+        matrix_wp,
+        rhs_wp,
+        odt.as_array2d(solution_wp, wp.float64),
+        preconditioner="adaptive",
+        factor_on_reuse=False,
     )
     solver()
     assert isinstance(solver, od.linalg._AdaptiveCg)

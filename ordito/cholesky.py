@@ -33,7 +33,6 @@ order, so solves are reproducible on both devices.
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -43,9 +42,11 @@ import warp as wp
 
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import read_scalar, require_same_device
+from ordito._device import read_scalar, read_values, require_same_device
+from ordito.constants import TILE_1D
 from ordito.graph import connected_component_labels
 from ordito.kernels import cholesky as kernel_cholesky
+from ordito.kernels import reduce as kernel_reduce
 
 # Largest leaf of the nested-dissection tree, in rows.
 CHOLESKY_LEAF_ROWS = 32
@@ -76,10 +77,13 @@ class SparseCholesky:
         Device the factor lives on.
     nbytes : int
         Device memory the factorization holds, in bytes.
+    negated : bool
+        Whether ``-matrix`` was factored (a negative semi-definite operator).
     """
 
-    def __init__(self, plan: _Plan, matrix: odt.BsrMatrix[wp.float64]) -> None:
-        """Factor ``matrix`` over ``plan``'s structure."""
+    def __init__(self, plan: _Plan, matrix: odt.BsrMatrix[wp.float64], *, negated: bool) -> None:
+        """Factor ``matrix`` (or its negation) over ``plan``'s structure."""
+        self.negated = negated
         self.n = plan.n
         self.device = plan.device
         self.nbytes = plan.nbytes
@@ -109,7 +113,7 @@ class SparseCholesky:
         """
         require_same_device(matrix=matrix, factor=self)
         plan = self._plan
-        plan.factor(matrix, self._numeric)
+        plan.factor(matrix, self._numeric, -1.0 if self.negated else 1.0)
         if read_scalar(self._numeric.status, 0) != 0:
             raise ValueError("sparse_cholesky: the operator is not positive definite")
         self._matrix = matrix
@@ -132,8 +136,10 @@ class SparseCholesky:
         rhs
             ``(n,)`` right-hand side, or ``(n_columns, n)`` ``float64`` columns solved together.
         solution
-            Same shape as ``rhs``, overwritten with the answer. Read only on a singular component,
-            whose constant it supplies (see the module notes).
+            Same shape as ``rhs``: the initial guess, overwritten with the answer. Refinement
+            starts from it, so a guess that already passes ``tol`` costs one residual and no
+            triangular solve; on a singular component it supplies the constant (see the module
+            notes).
         tol
             Refinement stops once no entry moves by more than ``tol`` times the column's largest
             entry -- or, with ``componentwise``, times its own magnitude.
@@ -161,14 +167,23 @@ class SparseCholesky:
         solve = self._solves.get(n_columns)
         if solve is None or solve.key != key:
             solve = _Solve(
-                self._plan, self._numeric, self._matrix, n_columns, float(tol), bool(componentwise)
+                self._plan,
+                self._numeric,
+                self._matrix,
+                n_columns,
+                float(tol),
+                bool(componentwise),
+                -1.0 if self.negated else 1.0,
             )
             self._solves[n_columns] = solve
         solve.run(rhs.flatten(), solution.flatten())
 
 
 def sparse_cholesky(
-    matrix: odt.BsrMatrix[wp.float64], coordinates: wp.array[wp.vec3] | None = None
+    matrix: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None = None,
+    *,
+    negated: bool = False,
 ) -> SparseCholesky:
     """
     Sparse Cholesky factorization of a symmetric positive-(semi-)definite ``float64`` operator.
@@ -186,6 +201,9 @@ def sparse_cholesky(
     coordinates
         ``(n,)`` positions of the rows, for a geometric ordering: a mesh's vertices for a vertex
         operator. When ``None``, the ordering is computed from the pattern alone.
+    negated
+        Factor ``-matrix`` instead, for a negative (semi-)definite operator such as
+        [`cotmatrix`][ordito.laplacian.cotmatrix]; solves still answer ``matrix x = rhs``.
 
     Returns
     -------
@@ -221,11 +239,81 @@ def sparse_cholesky(
     """
     require_same_device(matrix=matrix, coordinates=coordinates)
     plan = _plan_cholesky(matrix, coordinates)
-    return SparseCholesky(plan, matrix)
+    return SparseCholesky(plan, matrix, negated=negated)
+
+
+def reused_sparse_cholesky(
+    matrix: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None = None,
+    *,
+    negated: bool = False,
+) -> SparseCholesky | None:
+    """
+    Sparse Cholesky factorization of ``matrix`` once its sparsity pattern repeats, else ``None``.
+
+    For a caller that assembles a fresh operator on every call over one mesh, where a single solve
+    does not repay a factorization's analysis but every later one does: the first request for a
+    pattern records it and returns ``None`` (the caller iterates instead); from the second on, the
+    pattern's analysis is built once and each request factors the operator's current values. The
+    pattern is recognized on the device (one 24-byte read), not by reading it back.
+
+    Parameters
+    ----------
+    matrix
+        ``(n, n)`` symmetric scalar ``float64`` operator, as for
+        [`sparse_cholesky`][ordito.cholesky.sparse_cholesky].
+    coordinates
+        ``(n,)`` positions of the rows, for the ordering, or ``None``.
+    negated
+        Factor ``-matrix`` instead.
+
+    Returns
+    -------
+    SparseCholesky | None
+        The factorization, or ``None`` on a pattern's first request -- and where none can be built
+        (over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not definite).
+
+    Raises
+    ------
+    RuntimeError
+        If ``matrix`` and ``coordinates`` are not on one device.
+
+    See Also
+    --------
+    [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
+    """
+    require_same_device(matrix=matrix, coordinates=coordinates)
+    if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
+        return None
+    key = (str(matrix.device), int(matrix.nrow), *_pattern_key(matrix))
+    if key in _PATTERNS_REFUSED:
+        return None
+    if key not in _PLAN_CACHE and key not in _PATTERNS_SEEN:
+        if len(_PATTERNS_SEEN) >= _PATTERNS_SEEN_ENTRIES:
+            _PATTERNS_SEEN.clear()
+        _PATTERNS_SEEN.add(key)
+        return None
+    try:
+        return SparseCholesky(_plan_cholesky(matrix, coordinates, key), matrix, negated=negated)
+    except ValueError:
+        # Over the budget or not definite: not retried for this pattern.
+        if len(_PATTERNS_REFUSED) >= _PATTERNS_SEEN_ENTRIES:
+            _PATTERNS_REFUSED.clear()
+        _PATTERNS_REFUSED.add(key)
+        return None
+
+
+# The patterns ``reused_sparse_cholesky`` was asked for once, and those it could not factor;
+# bounded like linalg's shape census.
+_PATTERNS_SEEN: set[tuple[object, ...]] = set()
+_PATTERNS_REFUSED: set[tuple[object, ...]] = set()
+_PATTERNS_SEEN_ENTRIES = 256
 
 
 def _plan_cholesky(
-    matrix: odt.BsrMatrix[wp.float64], coordinates: wp.array[wp.vec3] | None = None
+    matrix: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None = None,
+    key: tuple[object, ...] | None = None,
 ) -> _Plan:
     """Return the symbolic half of ``sparse_cholesky``: ordering, structure, every device map."""
     if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
@@ -233,23 +321,15 @@ def _plan_cholesky(
     n = int(matrix.nrow)
     if coordinates is not None and coordinates.size != n:
         raise ValueError(f"sparse_cholesky: coordinates has {coordinates.size} rows, expected {n}")
-    offsets32 = matrix.offsets.numpy()[: n + 1]
-    columns32 = matrix.columns.numpy()[: int(offsets32[-1])]
-    # A fresh operator of a pattern seen before -- the operators rebuilt per call over one mesh --
-    # takes that pattern's analysis: any elimination order is valid for any values, so only the
-    # pattern is keyed, not the coordinates that chose the order.
-    key = (
-        str(matrix.device),
-        n,
-        hashlib.blake2b(offsets32.tobytes() + columns32.tobytes()).digest(),
-    )
+    if key is None:
+        key = (str(matrix.device), n, *_pattern_key(matrix))
     plan = _PLAN_CACHE.pop(key, None)
     if plan is None:
+        offsets = matrix.offsets.numpy()[: n + 1].astype(np.int64)
+        columns = matrix.columns.numpy()[: int(offsets[-1])].astype(np.int64)
         coords = None if coordinates is None else coordinates.numpy().astype(np.float64)
         labels = connected_component_labels(matrix).numpy() if n > 0 else np.zeros(0, np.int32)
-        plan = _Plan(
-            offsets32.astype(np.int64), columns32.astype(np.int64), n, coords, labels, matrix.device
-        )
+        plan = _Plan(offsets, columns, n, coords, labels, matrix.device)
         while len(_PLAN_CACHE) >= _PLAN_CACHE_ENTRIES:
             _PLAN_CACHE.pop(next(iter(_PLAN_CACHE)))
     _PLAN_CACHE[key] = plan
@@ -261,9 +341,26 @@ def _plan_cholesky(
     return plan
 
 
+def _pattern_key(matrix: odt.BsrMatrix[wp.float64]) -> tuple[int, int, int]:
+    """Return ``matrix``'s stored-entry count and a 128-bit fingerprint of its pattern."""
+    n = int(matrix.nrow)
+    key = _launch.zeros(3, dtype=wp.uint64, device=matrix.device)
+    if n > 0:
+        _launch.launch_tiled(
+            kernel_cholesky.pattern_checksum,
+            dim=[kernel_reduce.blocks_1d(n)],
+            inputs=[matrix.offsets, matrix.columns, wp.int32(n)],
+            outputs=[key],
+            block_dim=TILE_1D,
+            device=matrix.device,
+        )
+    count, first, second = (int(x) for x in read_values(key, 0, 3))
+    return count, first, second
+
+
 # ``_plan_cholesky``'s analyses, least recently used first: each holds its pattern's device maps
 # (not a factor), bounded so a long session of distinct meshes does not accumulate them.
-_PLAN_CACHE: dict[tuple[str, int, bytes], _Plan] = {}
+_PLAN_CACHE: dict[tuple[object, ...], _Plan] = {}
 _PLAN_CACHE_ENTRIES = 4
 
 
@@ -523,7 +620,7 @@ class _Plan:
         )
         self.nbytes = nbytes
 
-    def factor(self, matrix: odt.BsrMatrix[wp.float64], numeric: _Numeric) -> None:
+    def factor(self, matrix: odt.BsrMatrix[wp.float64], numeric: _Numeric, sign: float) -> None:
         """Numeric factorization of ``matrix`` into ``blocks``; ``status`` flags a bad pivot."""
         device = self.device
         n = self.n
@@ -551,7 +648,7 @@ class _Plan:
             kernel_cholesky.scatter_entries,
             dim=self.entry_source.size,
             inputs=[matrix.values, self.entry_source, self.entry_target, self.entry_row,
-                    self.entry_col, numeric.pinned],
+                    self.entry_col, numeric.pinned, wp.float64(sign)],
             outputs=[fronts],
             device=device,
         )  # fmt: skip
@@ -699,8 +796,10 @@ class _Solve:
         n_columns: int,
         tol: float,
         componentwise: bool,
+        sign: float,
     ) -> None:
         device = plan.device
+        self.sign = sign
         total = plan.n * n_columns
         self.key = (n_columns, tol, componentwise)
         self.plan, self.numeric, self.matrix, self.n_columns = plan, numeric, matrix, n_columns
@@ -731,8 +830,8 @@ class _Solve:
             kernel_cholesky.residual_test,
             dim=(plan.n, self.n_columns),
             inputs=[matrix.offsets, matrix.columns, matrix.values, self.solution, self.rhs,
-                    self.rhs_scale, self.numeric.dropped, wp.int32(plan.n), wp.float64(self.tol),
-                    wp.int32(1 if self.componentwise else 0), self.state],
+                    self.rhs_scale, self.numeric.dropped, wp.float64(self.sign), wp.int32(plan.n),
+                    wp.float64(self.tol), wp.int32(1 if self.componentwise else 0), self.state],
             outputs=[self.residual],
             device=device,
         )  # fmt: skip
@@ -756,7 +855,9 @@ class _Solve:
 
     def _body(self) -> None:
         plan, device = self.plan, self.plan.device
-        _launch.zero_(self.solution)
+        # Refinement starts from the caller's solution: a warm start that already passes the test
+        # costs one residual and no triangular solve.
+        _launch.copy(self.solution, self.initial)
         _launch.zero_(self.rhs_scale)
         _launch.launch(
             kernel_cholesky.refine_start,

@@ -138,7 +138,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.cholesky import SparseCholesky, sparse_cholesky
+from ordito.cholesky import SparseCholesky, reused_sparse_cholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import cholesky as kernel_cholesky
@@ -301,6 +301,7 @@ def min_quad_with_fixed(
     tol: float = CG_TOLERANCE,
     check_every: int = CG_CHECK_EVERY,
     preconditioner: str = "adaptive",
+    factorize: bool = False,
 ) -> tuple[odt.Array2dFloat, wp.array[wp.int32], int]:
     """
     Minimize a quadratic form with pinned degrees of freedom.
@@ -333,6 +334,11 @@ def min_quad_with_fixed(
         to zero and which a V-cycle does not help, and whose solve is short when many degrees of
         freedom are pinned and long when few are -- the one case Jacobi wins and the other the
         polynomial does, with a probe to tell them apart.
+    factorize
+        Solve by a [`reused_sparse_cholesky`][ordito.cholesky.reused_sparse_cholesky]
+        factorization of the reduced system once its pattern repeats (a caller assembling ``q``
+        anew per call over one mesh), iterating only the first time. For a reduced system long to
+        iterate; a short one stays faster iterated.
 
     Returns
     -------
@@ -373,6 +379,10 @@ def min_quad_with_fixed(
         return odt.as_array2d(solution, wp.float64), free_map, n_free
 
     q_uu, rhs = assemble_interior_system(q, fixed_mask, free_map, fixed_values, n_free)
+    factorization = reused_sparse_cholesky(q_uu) if factorize else None
+    if factorization is not None:
+        factorization.solve(rhs, odt.as_array2d(solution, wp.float64), tol=tol)
+        return odt.as_array2d(solution, wp.float64), free_map, n_free
     solve_spd_columns(
         q_uu,
         rhs,
@@ -554,6 +564,8 @@ def solve_spd(
     check_every: int = CG_CHECK_EVERY_FALLBACK,
     preconditioner: wpl.LinearOperator | None = None,
     name: str = "solve_spd",
+    factor_on_reuse: bool = False,
+    coordinates: wp.array[wp.vec3] | None = None,
 ) -> tuple[int, float, float]:
     """
     Solve one symmetric positive-definite system by preconditioned conjugate gradient.
@@ -603,18 +615,26 @@ def solve_spd(
         through ``warp.optim.linear.cg``.
     name
         Caller name, used in the non-convergence warning.
+    factor_on_reuse
+        From the second solve against the same scalar ``float64`` or ``wp.mat22d`` operator on,
+        solve it by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] factorization kept for
+        the operator, refined to ``tol``. Only for an operator whose values are not rewritten in
+        place: a rewritten operator must be a new matrix.
+    coordinates
+        ``(n_points,)`` positions of ``matrix``'s (block) rows, for that factorization's ordering.
 
     Returns
     -------
     tuple[int, float, float]
         Whatever ``warp.optim.linear.cg`` returns: iteration count, residual and tolerance. Device
         1-element arrays instead of host scalars when ``check_every=0``, which belong to the kept
-        state and are overwritten by its next solve.
+        state and are overwritten by its next solve. A factorized solve reports zero iterations and
+        its tolerance for both the residual and the tolerance.
 
     Raises
     ------
     RuntimeError
-        If ``rhs`` and ``solution`` are not all on one device.
+        If ``rhs``, ``solution`` and ``coordinates`` are not all on one device.
 
     Warns
     -----
@@ -630,8 +650,19 @@ def solve_spd(
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     [`spd_column_solver`][ordito.linalg.spd_column_solver]
     """
-    require_same_device(rhs=rhs, solution=solution)
+    require_same_device(rhs=rhs, solution=solution, coordinates=coordinates)
     n_rows = int(rhs.shape[0])
+    if factor_on_reuse and rhs.ndim == 1 and matrix.values.dtype in (wp.float64, wp.mat22d):
+        blocks = odt.has_blocks(matrix, wp.mat22d)
+        scalar = _scalar_expansion(matrix) if blocks else cast("odt.BsrMatrix[wp.float64]", matrix)
+        factorization = _reused_factorization(matrix, scalar, coordinates, 2 if blocks else 1)
+        if factorization is not None:
+            factorization.solve(
+                _as_scalar_view(rhs) if blocks else rhs,
+                _as_scalar_view(solution) if blocks else solution,
+                tol=tol,
+            )
+            return _direct_result(tol, check_every, rhs.device)
     iteration_cap = CG_MAXITER_FACTOR * n_rows if maxiter is None else maxiter
     kind = _batched_preconditioner_kind(matrix, rhs, preconditioner)
     if kind is not None:
@@ -853,6 +884,7 @@ def solve_spd_columns(
     maxiter: int | None = None,
     check_every: int = CG_CHECK_EVERY,
     preconditioner: str | SquaredLaplacianPreconditioner = "diag",
+    factor_on_reuse: bool = True,
 ) -> tuple[int, float, float]:
     """
 
@@ -918,6 +950,13 @@ def solve_spd_columns(
         operator
         [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]
         builds instead of a name.
+    factor_on_reuse
+        From the second solve against the same operator on, solve it by a
+        [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] factorization kept for the operator,
+        refined to ``tol``, rather than iterating -- one solve does not repay a factorization, a
+        repeated one does whatever the conditioning. Values rewritten in place are detected (an
+        8-byte fingerprint read per solve) and refactored. A factorized solve reports zero
+        iterations.
 
     Returns
     -------
@@ -982,6 +1021,11 @@ def solve_spd_columns(
     [`replicated_operator`][ordito.linalg.replicated_operator]
     """
     require_same_device(rhs=rhs, solution=solution)
+    if factor_on_reuse and matrix.values.dtype == wp.float64 and rhs.dtype == wp.float64:
+        factorization = _reused_factorization(matrix, matrix, None, 1, verify_values=True)
+        if factorization is not None:
+            factorization.solve(rhs, solution, tol=tol)
+            return _direct_result(tol, check_every, rhs.device)
     result = _cg_columns(
         matrix,
         rhs,
@@ -1013,7 +1057,9 @@ def spd_column_solver(
     maxiter: int | None = None,
     check_every: int = CG_CHECK_EVERY,
     preconditioner: str = "diag",
-) -> _BatchedCg | _AdaptiveCg:
+    factor_on_reuse: bool = True,
+    coordinates: wp.array[wp.vec3] | None = None,
+) -> _BatchedCg | _AdaptiveCg | _FactoringColumns:
     """
     Pre-allocated batched conjugate-gradient state, for repeated solves of one operator.
 
@@ -1049,6 +1095,13 @@ def spd_column_solver(
         ``"auto"`` is **not** accepted: it decides on the first solve -- from that system's
         operator, and from the probe when the operator does not settle it -- and a hoisted state
         exists to be driven many times.
+    factor_on_reuse
+        From the second call on, solve by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
+        factorization of ``matrix`` (kept for it), refined to ``tol``, rather than iterating. The
+        first call runs the conjugate gradient: one solve does not repay a factorization. Values
+        rewritten in place between calls are detected and refactored.
+    coordinates
+        ``(n,)`` positions of ``matrix``'s rows, for that factorization's ordering.
 
     Returns
     -------
@@ -1082,8 +1135,8 @@ def spd_column_solver(
     --------
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     """
-    require_same_device(rhs=rhs, solution=solution)
-    return _cg_columns(
+    require_same_device(rhs=rhs, solution=solution, coordinates=coordinates)
+    state = _cg_columns(
         matrix,
         rhs,
         solution,
@@ -1094,6 +1147,45 @@ def spd_column_solver(
         run=False,
         caller="spd_column_solver",
     )
+    if not factor_on_reuse or matrix.values.dtype != wp.float64:
+        return state
+    return _FactoringColumns(state, matrix, rhs, solution, tol, check_every, coordinates)
+
+
+class _FactoringColumns:
+    """
+    ``spd_column_solver``'s state under ``factor_on_reuse``: the iteration, then the factorization.
+
+    The first call runs the conjugate-gradient state; every later one solves by the operator's
+    kept factorization (``_reused_factorization``), reading ``rhs`` and writing ``solution`` as the
+    iteration does.
+    """
+
+    def __init__(
+        self,
+        state: _BatchedCg | _AdaptiveCg,
+        matrix: odt.BsrMatrix[wp.float64],
+        rhs: odt.Array2dFloat,
+        solution: odt.Array2dFloat,
+        tol: float,
+        check_every: int,
+        coordinates: wp.array[wp.vec3] | None,
+    ) -> None:
+        self._state = state
+        self._matrix = matrix
+        self._rhs = rhs
+        self._solution = solution
+        self._tol = tol
+        self._check_every = check_every
+        self._coordinates = coordinates
+
+    def __call__(self) -> tuple[Any, Any, Any]:
+        """Solve, by the iteration on the first call and by the factorization after it."""
+        factorization = _reused_factorization(self._matrix, self._matrix, self._coordinates, 1)
+        if factorization is None:
+            return self._state()
+        factorization.solve(self._rhs, self._solution, tol=self._tol)
+        return _direct_result(self._tol, self._check_every, self._rhs.device)
 
 
 def solve_spd_settled(
@@ -1230,10 +1322,11 @@ def solve_spd_settled(
         rows_per_point = 2
     else:
         scalar = cast("odt.BsrMatrix[wp.float64]", matrix)
-    factor = _FACTOR_CACHE.get(operator)
-    if factor is not None and factor[0] == _storage_identity(operator):
-        # This operator already failed the settle check once: solve it directly.
-        factor[1].solve(
+    factorization = _reused_factorization(operator, scalar, coordinates, rows_per_point)
+    if factorization is not None:
+        # This operator's second solve, or one that already failed the settle check: solve it
+        # directly (``_reused_factorization``).
+        factorization.solve(
             _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
             tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
         )  # fmt: skip
@@ -1268,23 +1361,114 @@ def solve_spd_settled(
     )  # fmt: skip
     if read_scalar(flag, 0) == 0:
         return solver.iterations
-    try:
-        factorization = sparse_cholesky(
-            _storage_alias(scalar), _expanded_coordinates(coordinates, rows_per_point)
-        )
-    except ValueError as exc:
+    factorization = _kept_factorization(operator, scalar, coordinates, rows_per_point)
+    if factorization is None:
         warnings.warn(
-            f"solve_spd_settled: the settled iterate fails the componentwise backward-error check "
-            f"and the direct fallback is unavailable ({exc}); returning the iterate",
+            "solve_spd_settled: the settled iterate fails the componentwise backward-error check "
+            "and no factorization of the operator can be built; returning the iterate",
             stacklevel=2,
         )
         return solver.iterations
-    _FACTOR_CACHE[operator] = (_storage_identity(operator), factorization)
     factorization.solve(
         _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
         tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
     )  # fmt: skip
     return solver.iterations
+
+
+def _direct_result(tol: float, check_every: int, device: wp.DeviceLike) -> tuple[Any, Any, Any]:
+    """Return a factorized solve's report on ``solve_spd``'s terms: no iterations, at ``tol``."""
+    if check_every > 0:
+        return (0, tol, tol)
+    return (
+        _launch.zeros(1, dtype=wp.int32, device=device),
+        _launch.full(1, tol * tol, dtype=wp.float64, device=device),
+        _launch.full(1, tol * tol, dtype=wp.float64, device=device),
+    )
+
+
+def _reused_factorization(
+    operator: odt.SparseMatrix,
+    scalar: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None,
+    rows_per_point: int,
+    *,
+    verify_values: bool = False,
+) -> SparseCholesky | None:
+    """
+    Return ``operator``'s kept factorization, building it on the operator's second solve.
+
+    The first solve of an operator runs its iterative solver: a factorization costs a host
+    analysis of the pattern (cached per pattern) and a numeric pass, which a single
+    well-conditioned solve does not repay. A second solve against the same storage is the signal
+    that more follow. An operator whose factorization could not be built is remembered as such.
+    With ``verify_values``, a kept factorization is checked against a fingerprint of the operator's
+    current values (one 8-byte read) and refactored when they were rewritten in place.
+    """
+    identity = _storage_identity(operator)
+    kept = _FACTOR_CACHE.get(operator)
+    if kept is not None and kept[0] == identity:
+        factorization = kept[1]
+        if factorization is None or not verify_values:
+            return factorization
+        checksum = _value_checksum(scalar, kept[3])
+        if checksum != kept[2]:
+            try:
+                factorization.refactor(_storage_alias(scalar))
+            except ValueError:
+                _FACTOR_CACHE[operator] = (identity, None, 0, 0)
+                return None
+            _FACTOR_CACHE[operator] = (identity, factorization, checksum, kept[3])
+        return factorization
+    if _FACTOR_USES.get(operator) != identity:
+        _FACTOR_USES[operator] = identity
+        return None
+    return _kept_factorization(operator, scalar, coordinates, rows_per_point)
+
+
+def _kept_factorization(
+    operator: odt.SparseMatrix,
+    scalar: odt.BsrMatrix[wp.float64],
+    coordinates: wp.array[wp.vec3] | None,
+    rows_per_point: int,
+) -> SparseCholesky | None:
+    """
+    Factor ``operator`` (its scalar form ``scalar``) and keep the factorization for it.
+
+    A negative semi-definite operator (a cotangent Laplacian) is factored negated. ``None`` --
+    over the memory budget, or not definite -- is kept too, so the attempt is not repeated.
+    """
+    identity = _storage_identity(operator)
+    kept = _FACTOR_CACHE.get(operator)
+    if kept is not None and kept[0] == identity:
+        return kept[1]
+    points = _expanded_coordinates(coordinates, rows_per_point)
+    factorization: SparseCholesky | None = None
+    for negated in (False, True):
+        try:
+            factorization = sparse_cholesky(_storage_alias(scalar), points, negated=negated)
+            break
+        except ValueError:
+            continue
+    count = int(read_scalar(scalar.offsets, int(scalar.nrow)))
+    checksum = _value_checksum(scalar, count) if factorization is not None else 0
+    _FACTOR_CACHE[operator] = (identity, factorization, checksum, count)
+    return factorization
+
+
+def _value_checksum(scalar: odt.BsrMatrix[wp.float64], count: int) -> int:
+    """Return an order-free fingerprint of the operator's first ``count`` stored values."""
+    checksum = _launch.zeros(1, dtype=wp.uint64, device=scalar.device)
+    if count > 0:
+        _launch.launch_tiled(
+            kernel_cholesky.value_checksum,
+            dim=[kernel_reduce.blocks_1d(count)],
+            inputs=[scalar.values, wp.int32(count)],
+            outputs=[checksum],
+            block_dim=TILE_1D,
+            device=scalar.device,
+        )
+    return int(read_scalar(checksum, 0))
 
 
 def _storage_identity(matrix: odt.SparseMatrix) -> tuple[int, int, int]:
@@ -1310,11 +1494,16 @@ def _expanded_coordinates(
     return _launch.array(expanded, dtype=wp.vec3, device=coordinates.device)
 
 
-# The direct factorizations ``solve_spd_settled`` fell back to, keyed weakly by their operator. A
-# factorization holds its operator's storage through an alias, never the operator.
+# The factorizations ``_kept_factorization`` built, keyed weakly by their operator (``None`` where
+# none could be), with the fingerprint of the values they factor and the stored-entry count; and
+# the operators solved once (``_reused_factorization``). A factorization holds its operator's
+# storage through an alias, never the operator.
 _FACTOR_CACHE: weakref.WeakKeyDictionary[
-    odt.SparseMatrix, tuple[tuple[int, int, int], SparseCholesky]
+    odt.SparseMatrix, tuple[tuple[int, int, int], SparseCholesky | None, int, int]
 ] = weakref.WeakKeyDictionary()
+_FACTOR_USES: weakref.WeakKeyDictionary[odt.SparseMatrix, tuple[int, int, int]] = (
+    weakref.WeakKeyDictionary()
+)
 
 
 @overload

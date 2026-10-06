@@ -1277,6 +1277,8 @@ def _distance_from_heat(
         phi,
         tol=_CG_TOLERANCE,
         preconditioner=poisson_preconditioner,
+        factor_on_reuse=True,
+        coordinates=vertices,
     )
 
     # Shift so the field's mean over the sources is zero, and orient it positive -- the
