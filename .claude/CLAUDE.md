@@ -4289,9 +4289,22 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   clean too (it emitted 1-4 slivers a run on bunny at depths 7-8), vertices moved at most a
   thousandth of a cell. Pinned by `test_poisson_small_scale_cloud_is_watertight_without_degenerate_faces`
   (16-18 open edges without the margin, both devices) and the margin test in `test_levelset.py`.
-- **OPEN DEFECT: `method="adaptive"` on `dragon` at depth 9 dies with CUDA error 700** inside
-  its CG (`linalg._row_path`'s read), reproduced on HEAD in a fresh process (Warp 1.18,
-  2026-10-06). Depth 7 is fine. The adaptive backend's time at depth 9 on bunny (400 ms) is
+- **FIXED (2026-10-07): `method="adaptive"` on `dragon` at depth 9 died with CUDA error 700**
+  in its CG (`linalg._row_path`'s read only surfaced it). Cause: §3.7's capacity rule.
+  `fem.integrate` leaves each operator's `nnz` at its triplet capacity (331.7 M on `dragon`, for
+  147.4 M stiffness and 11.7 M screening entries), `bsr_axpy` sized the stiffness-plus-screening
+  merge from the field (663.5 M), and the pool reached 26.7 GB of 31 before a Warp call that
+  does not report an allocation failure ran out (the next module load failed, or a later read
+  saw error 700; per-stage syncs released the pool and hid it). `nnz_sync()` on both operands
+  first: peak 16.9 GB on `dragon` (the stiffness `fem.integrate` itself, 14.4 GB, is the next
+  ceiling), 8.64 -> 4.99 GB on bunny, identical matrix and surface, `happy_buddha` d9 runs too,
+  and the adaptive rows 1.12-1.19x faster. `fem.integrate(output=, add=True)` is not an
+  alternative: it merges through the same stale-`nnz` axpy and fails the same way. Pinned by
+  `test_poisson_adaptive_merges_its_operators_at_their_true_size`. compute-sanitizer also flags a
+  Warp-internal 512-byte CUB scan over-read (321 bytes past a 317-byte allocation) inside
+  `wp_volume_from_active_voxels_device` (the Nanogrid build), on every adaptive call; benign
+  outside the sanitizer, where it makes `Volume` creation fail -- an upstream report, not this
+  crash. The adaptive backend's time at depth 9 on bunny (400 ms) was
   `fem.adaptive_nanogrid_from_field` 182 ms, two `fem.integrate` 62 ms, the CG 39 ms, the lattice
   resample 17 ms and the extraction 27 ms.
 

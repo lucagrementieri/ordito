@@ -27,6 +27,7 @@ from meshlib import mrmeshnumpy as mn
 from meshlib import mrmeshpy as mm
 
 import ordito as od
+import ordito.typing as odt
 from ordito.kernels import reconstruction as kernel_reconstruction
 from ordito.kernels.algorithms import ball_pivoting as kernel_bpa
 from tests.comparisons import (
@@ -1052,6 +1053,44 @@ def test_poisson_adaptive_confidence_runs(device: str):
     )
     assert od.validation.is_watertight(vertices_wp, faces_wp)
     assert warp_to_trimesh(vertices_wp, faces_wp).euler_number == 2
+
+
+def test_poisson_adaptive_merges_its_operators_at_their_true_size(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: the stiffness-plus-screening merge sees true entry counts.
+
+    ``fem.integrate`` leaves a matrix's ``nnz`` field at its triplet capacity, and ``bsr_axpy``
+    sizes its merge from that field: on ``dragon`` at depth 9 the merge asked for four times the
+    entries the two operators hold, exhausted the device inside a Warp call that does not report
+    it, and the solve died later with CUDA error 700 -- too large a case for a test, so this pins
+    the cause instead. Both operands must reach ``bsr_axpy`` with ``nnz`` equal to their true
+    count; the arrays' larger capacity is asserted so the trap is live on this fixture.
+    """
+    seen: list[tuple[int, int, int]] = []
+    merge = odt.bsr_axpy
+
+    def recording_axpy(
+        x: odt.BsrMatrix[wp.float32], y: odt.BsrMatrix[wp.float32]
+    ) -> odt.BsrMatrix[wp.float32]:
+        for operand in (x, y):
+            n_rows = int(operand.nrow)
+            true_count = int(operand.offsets[n_rows : n_rows + 1].numpy()[0])
+            seen.append((int(operand.nnz), true_count, int(operand.values.shape[0])))
+        return merge(x, y)
+
+    monkeypatch.setattr(odt, "bsr_axpy", recording_axpy)
+    points_np, normals_np = _sphere_cloud(4)
+    points_wp, normals_wp = _to_warp(points_np, normals_np, device)
+    od.reconstruction.screened_poisson(
+        points_wp, normals_wp, depth=_poisson_depth(device), full_depth=4, method="adaptive"
+    )
+
+    assert len(seen) == 2
+    for nnz_field, true_count, capacity in seen:
+        assert nnz_field == true_count
+        assert capacity > true_count
 
 
 # ---------------------------------------------------------------------------

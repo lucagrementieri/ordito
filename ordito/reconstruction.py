@@ -1252,6 +1252,13 @@ def _screened_poisson_adaptive(
                 values={"screen": wp.float32(screen)},
             ),
         )
+        # ``fem.integrate`` leaves each matrix's ``nnz`` at its triplet *capacity* (2.25x the true
+        # stiffness count on ``dragon``, 28x the screening one), and ``bsr_axpy`` sizes its merge
+        # from that field: on ``dragon`` at depth 9 it asked for 663 M entries where 159 M exist,
+        # ran the device out of memory inside a Warp call that does not report it, and the solve
+        # died later with CUDA error 700. Repaired counts make the merge exactly the matrices' own.
+        matrix.nnz_sync()
+        screening.nnz_sync()
         matrix = odt.bsr_axpy(screening, matrix)  # ``matrix += screening``, in place
         rhs = cast(
             "wp.array[wp.float32]",
