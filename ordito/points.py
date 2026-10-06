@@ -674,12 +674,8 @@ def outlier_probability(
     ``propthreshold`` default is ``0.8``; threshold the result to reproduce a selection:
 
     ```python
-    from ordito.kernels import array as kernel_array
-
     probability = od.points.outlier_probability(neighbor_idx, neighbor_distance)
-    outlier_mask = wp.empty(probability.shape, dtype=wp.bool, device=probability.device)
-    wp.map(kernel_array.greater, probability, wp.float32(0.8), out=outlier_mask)
-    outliers = od.array.flatnonzero(outlier_mask)
+    outliers = np.flatnonzero(probability.numpy() > 0.8)  # indices of the selected points
     ```
 
     Parameters

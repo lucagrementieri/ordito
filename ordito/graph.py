@@ -740,17 +740,19 @@ def shortest_path_envelope(
 
     Examples
     --------
-    Geodesic-ish distance from vertex 0 along the mesh's edges — the mesh recipe for both readings,
-    since the weights are what make the envelope geometric:
+    Shortest-path distance from vertex 0 along the mesh's edges, weighted by edge length (an
+    upper bound on the geodesic distance, since paths may only follow edges):
 
     ```python
     n_vertices = int(v.shape[0])
     edges = od.edges.edges_unique(f, n_vertices=n_vertices, validate=False)[0]
     lengths = od.edges.edges_unique_length(v, f, edges)
     adjacency = od.graph.edges_to_csr(n_vertices, edges, lengths)
-    seed = wp.full(n_vertices, 1.0e6, dtype=wp.float32, device=v.device)
-    wp.copy(seed[:1], wp.zeros(1, dtype=wp.float32, device=v.device))
-    print(float(od.reduce.max(od.graph.shortest_path_envelope(adjacency, seed))))
+
+    seed = wp.full(n_vertices, 1.0e6, dtype=wp.float32, device=v.device)  # "unreached"
+    seed[:1].fill_(0.0)  # the source: vertex 0 at distance 0
+    distance = od.graph.shortest_path_envelope(adjacency, seed)
+    print(float(od.reduce.max(distance)))  # the farthest vertex's path length
     ```
 
     Notes

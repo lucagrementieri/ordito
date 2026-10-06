@@ -1,8 +1,7 @@
 # Concepts
 
-Four ideas shape every function in ordito. None of them are optional design flourishes — each
-one is a constraint the whole library is built against, and understanding them up front saves
-having to reverse-engineer them from a confusing signature later.
+Four ideas shape every function in ordito. Each is a constraint the whole library is built
+around, so knowing them up front explains most signatures before you read them.
 
 ## Arrays in, arrays out
 
@@ -10,88 +9,101 @@ The core API is free functions over [`warp.array`](https://nvidia.github.io/warp
 buffers. There is no mandatory mesh object and no hidden state:
 
 ```python
+import warp as wp
+
+import ordito as od
+
 vertices, faces = od.creation.icosphere(subdivisions=3)
-areas = od.triangles.face_areas(vertices, faces)  # a plain wp.array[wp.float32], nothing else
+normals, areas = od.triangles.face_normals_and_areas(vertices, faces)
+print(vertices.shape, faces.shape, areas.shape)  # (642,) (3840,) (1280,)
 ```
 
-A mesh is always the same two things — a `wp.array[wp.vec3]` of vertex positions and a
-**flat** `wp.array[wp.int32]` of length `3 * n_faces` — never a `(n_faces, 3)` array and never an
-object with methods. That flat layout is deliberate: it's the shape a Warp kernel indexes without
-a stride computation, and it's the one convention every function in the package agrees on, so a
-buffer produced by one function is always a valid argument to the next.
+A mesh is always the same two arrays: a `wp.array[wp.vec3]` of vertex positions and a **flat**
+`wp.array[wp.int32]` of length `3 * n_faces`, where triangle `f` is the three indices
+`faces[3 * f]`, `faces[3 * f + 1]`, `faces[3 * f + 2]`. Every function in the package uses this
+one layout, so the output of one is always a valid input to the next. To move between the flat
+layout and the `(n_faces, 3)` one at the host boundary:
+
+```python
+faces_rows = faces.numpy().reshape(-1, 3)  # (n_faces, 3), the layout trimesh and libigl use
+faces_flat = wp.array(faces_rows.reshape(-1), dtype=wp.int32, device=vertices.device)
+```
 
 The optional [`Trimesh`][ordito.mesh.Trimesh] class is a thin wrapper around exactly this pair,
-with derived quantities (normals, adjacency, boundary loops) computed lazily and cached on first
-access. It exists for convenience, not because the free functions need it — every one of
-`Trimesh`'s properties is also a public function you can call directly on raw arrays.
+which computes derived quantities (normals, adjacency, boundary loops) the first time you ask for
+them and caches them. It exists for convenience: each of its properties is also a public function
+you can call on the raw arrays.
 
-**Why not NumPy?** A `wp.array` is a real device buffer — on CUDA, an actual allocation on the
-GPU; the round trip through `.numpy()` is a real host readback with a real cost. Passing NumPy
-arrays as the primary interface would mean paying that cost at *every* function boundary rather
-than only where a caller actually needs the values back on the host (to print them, save them, or
-hand them to a plotting library). `wp.array(numpy_array, dtype=...)` and `warp_array.numpy()` are
-the two directions across that boundary; reach for them exactly as often as your pipeline needs
-data on the host and no more.
+**Why not NumPy?** On a GPU, a `wp.array` lives in GPU memory, and `.numpy()` copies it back to
+the host, waiting for the GPU to finish first. If every function took and returned NumPy arrays, a
+pipeline would pay that copy at every step. With Warp arrays it pays only where you actually need
+values on the host: to print them, save them, or hand them to another library.
+`wp.array(numpy_array, dtype=..., device=...)` and `warp_array.numpy()` are the two directions
+across that boundary.
 
 ## The device follows the data
 
 There is no global device switch. Every kernel launch and every allocation inherits the device of
-its own input arrays:
+the function's input arrays:
 
 ```python
-import warp as wp
-
 cpu_vertices, cpu_faces = od.creation.icosphere(subdivisions=2, device="cpu")
-gpu_vertices, gpu_faces = od.creation.icosphere(subdivisions=2, device="cuda:0")
+_, cpu_areas = od.triangles.face_normals_and_areas(cpu_vertices, cpu_faces)
+print(cpu_areas.device)  # cpu: the kernel ran on the CPU because its inputs live there
 
-od.triangles.face_areas(cpu_vertices, cpu_faces)  # runs on the CPU backend
-od.triangles.face_areas(gpu_vertices, gpu_faces)  # runs on cuda:0
+if wp.is_cuda_available():
+    gpu_vertices, gpu_faces = od.creation.icosphere(subdivisions=2, device="cuda:0")
+    _, gpu_areas = od.triangles.face_normals_and_areas(gpu_vertices, gpu_faces)
+    print(gpu_areas.device)  # cuda:0
 ```
 
-A function that allocates a *new* array without being given one to place it on (a primitive
-constructor like `od.creation.icosphere`) takes a `device=` keyword and defaults to Warp's current
-device — `wp.set_device("cuda:0")` (or a `wp.ScopedDevice`) sets that default for a whole block of
-code, same as any other Warp program.
+Passing arrays from two different devices to one function raises a `RuntimeError` naming them;
+move one with `array.to(device)` first.
 
-This is what makes chaining functions cheap: a pipeline of ten calls with no explicit `device=`
-anywhere runs entirely on one device, because each function's output already carries the device
-its input arrived on, and the next call reads it from there.
+A function with no input array to follow (a primitive constructor like `od.creation.icosphere`)
+takes a `device=` keyword and defaults to Warp's current device: CUDA when a GPU is present, the
+CPU otherwise. `wp.set_device(...)`, or a `with wp.ScopedDevice(...):` block, changes that
+default, as in any other Warp program.
+
+This is what makes chaining functions cheap: a pipeline of ten calls with no `device=` anywhere
+runs entirely on one device, because each output lives where its inputs did.
 
 ## Host syncs are budgeted
 
-A device-to-host readback (`.numpy()`, or reading a single scalar off a device array) is a real
-synchronization point — the GPU has to finish everything queued before it, and the value has to
-physically cross the PCIe bus. Wrappers avoid these wherever the computation doesn't need one, and
-where one genuinely is unavoidable (typically because a buffer's *size* depends on a value only
-the device knows, like how many triangles survived a filter), the function's docstring says so.
+Reading a value back to the host (`.numpy()`, or a function returning a Python `int`, `float` or
+`bool`) makes the CPU wait until the GPU has finished all the work queued before it. A few of
+those per call are cheap; one per iteration of a tight loop can dominate it. ordito's functions
+avoid readbacks they do not need. Where one is unavoidable, usually because the size of an output
+depends on a value only the device knows (how many faces survived a filter), the docstring says
+so.
 
-Some functions expose a keyword that lets a caller skip the inference behind such a readback,
-when the caller already knows the bound:
+Some functions do a readback only to *infer* something you may already know, and take it as a
+keyword instead:
 
 ```python
-# Without n_vertices, the function reads back a count to size an internal table.
-adjacency = od.adjacency.face_adjacency(faces)
+# Without n_vertices, the function reads back the largest index in faces to size its output.
+vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces)
 
-# If you already know how many vertices the mesh has, pass it and skip that readback.
-adjacency = od.adjacency.face_adjacency(faces, n_vertices=vertices.shape[0])
+# You already know the vertex count: pass it and skip that readback.
+vertex_faces, offsets = od.adjacency.vertex_face_adjacency(faces, n_vertices=vertices.shape[0])
 ```
 
-This matters most inside a loop — a saved readback is trivial once, and adds up over a thousand
-iterations of a solver or a remeshing pass.
+The answer is the same either way. A value you pass is trusted, not checked, so it must be a true
+bound (here, larger than every index in `faces`), as each such docstring states.
 
 ## Measured, not assumed
 
-Every public module has both a test file, comparing its output against an established CPU
-geometry-processing library (trimesh, libigl, Open3D, MeshLab, potpourri3d, PyTorch3D, and
-others — see [`ordito.validation`][ordito.validation]-style parity in the test suite), and a
-benchmark file. A performance change lands only with a before/after measurement behind it, and a
-correctness change is asserted on actual values, never on shape or "did it run" alone. The
-[Performance](performance.md) page and [Benchmarks](https://github.com/lucagrementieri/ordito/tree/main/benchmarks)
-in the repository are where that discipline is visible from the outside — every number quoted
-there is reproducible with the same commands the library's own test suite uses.
+Every public module has a test file and a benchmark file. Wherever an established library
+computes the same quantity (trimesh, libigl, Open3D, PyMeshLab, PyVista, MeshLib, PyMeshFix,
+potpourri3d, PyTorch3D, SciPy or NumPy), a test compares ordito's output with it value by value,
+not just its shape. Where libraries define a quantity differently (Chamfer distance squared or
+not, a signed distance negative inside or outside), the docstring says which convention ordito
+follows and how to get the other. Performance changes land with a before/after measurement;
+[Performance](performance.md) and [Benchmarks](benchmarks.md) show how to reproduce any published
+number.
 
 ## Where to next
 
-- **[Cookbook](cookbook/index.md)** — these four ideas applied to real tasks.
-- **[Migrating from another library](migrating-from/index.md)** — how these conventions map onto
+- **[Cookbook](cookbook/index.md)**: these four ideas applied to real tasks.
+- **[Migrating from another library](migrating-from/index.md)**: how these conventions map onto
   the API you already know.

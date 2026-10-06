@@ -1,10 +1,10 @@
 # Migrating from libigl
 
-libigl's input convention (`float64` `(n, 3)` vertices, `int64` `(n_faces, 3)` faces) is the
-closest of any reference library to ordito's own — the difference is entirely the face layout
-(flat `(3 * n_faces,)` `wp.int32` in ordito, `(n_faces, 3)` `int64` in libigl) and dtype
-(`float32` by default in ordito; pass `float64` arrays through where a solve genuinely needs the
-extra precision, as `heat_geodesic` itself does internally).
+libigl's input convention (`float64` `(n, 3)` vertices, `int64` `(n_faces, 3)` faces) differs
+from ordito's in layout and precision: ordito takes `float32` `wp.vec3` vertices and a flat
+`(3 * n_faces,)` `wp.int32` face buffer. Precision is not lost where it matters: solvers that
+need `float64` (the heat method, the parametrizations, the sparse solves) promote internally and
+document their output dtype.
 
 ```python
 import igl  # before
@@ -23,12 +23,12 @@ import ordito as od  # after
 | `igl.per_face_normals(V, F, Z)` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas] (normals and areas together) |
 | `igl.doublearea(V, F) / 2` | [`triangles.face_normals_and_areas`][ordito.triangles.face_normals_and_areas]'s area output |
 | `igl.heat_geodesics_precompute` + `igl.heat_geodesics_solve` | [`heat.heat_operators`][ordito.heat.heat_operators] + [`heat.heat_geodesic`][ordito.heat.heat_geodesic] |
-| `igl.exact_geodesic` | [`geodesic_walk`][ordito.geodesic_walk] (a direct combinatorial surface walk rather than the heat-method approximation) |
+| `igl.exact_geodesic` | No exact solver. [`heat.heat_geodesic`][ordito.heat.heat_geodesic] approximates the same distance (within about 1% on a sphere at 2 562 vertices; see the [cookbook](../cookbook/geodesic-distance.md)). |
 | `igl.harmonic(V, F, b, bc, k)` | [`parametrization.harmonic`][ordito.parametrization.harmonic] |
 | `igl.lscm(V, F, b, bc)` | [`parametrization.lscm`][ordito.parametrization.lscm] |
 | `igl.arap_precomputation` + `igl.arap_solve` | [`parametrization.arap`][ordito.parametrization.arap] |
 | `igl.min_quad_with_fixed` | [`linalg.min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] |
-| `igl.adjacency_matrix(F)` | [`adjacency.face_adjacency(faces)`][ordito.adjacency.face_adjacency] for face-face, or [`vertices`][ordito.vertices]/[`edges`][ordito.edges] helpers for vertex-vertex |
+| `igl.adjacency_matrix(F)` | [`edges.edges_unique`][ordito.edges.edges_unique] then [`graph.edges_to_csr`][ordito.graph.edges_to_csr] (vertex-vertex, as a sparse matrix); [`adjacency.face_adjacency`][ordito.adjacency.face_adjacency] for face-face pairs |
 | `igl.boundary_loop(F)` | [`boundary.longest_boundary_loop`][ordito.boundary.longest_boundary_loop] (all loops: [`boundary.boundary_loops`][ordito.boundary.boundary_loops]) |
 | `igl.upsample` / `igl.loop` | [`remesh.subdivide`][ordito.remesh.subdivide] / [`remesh.subdivide_loop`][ordito.remesh.subdivide_loop] |
 | `igl.decimate` | [`remesh.quadric_decimate`][ordito.remesh.quadric_decimate] |
@@ -40,11 +40,13 @@ import ordito as od  # after
 
 - **`igl`'s `(V, F)` positional convention becomes ordito's `(vertices, faces)` keyword-friendly
   one**, with `faces` flat rather than `(n_faces, 3)`.
-- **libigl bounds nothing** — an out-of-range face index is a process crash in libigl (documented
-  in this project's own test-oracle notes) and a `ValueError` or a defined result in ordito.
-  Don't port an "it happened to work" libigl call site without re-checking its inputs.
-- **`igl.min_quad_with_fixed` and friends return NumPy arrays libigl solved with its own
-  factorization (`Eigen::SimplicialLLT` under the hood); ordito's
-  [`linalg.solve_spd`][ordito.linalg.solve_spd] family solves on-device with conjugate gradient**,
-  optionally multigrid-preconditioned for large or ill-conditioned systems. Both converge to the
-  same answer; only the method (direct factorization vs. iterative solve) differs.
+- **Neither library checks every index on every path.** In libigl an out-of-range face index
+  crashes the process. ordito checks indices where a function documents it (a `Raises` entry, as
+  in [`repair.make_solid`][ordito.repair.make_solid]); elsewhere an out-of-range index is a wrong
+  answer or a memory error, not an exception. Validate meshes from untrusted files once, at load
+  time.
+- **libigl factorizes, ordito iterates.** `igl.min_quad_with_fixed` and friends solve with a
+  sparse direct factorization (Eigen's `SimplicialLLT`); ordito's
+  [`linalg.solve_spd`][ordito.linalg.solve_spd] family solves on the device with preconditioned
+  conjugate gradient. Both reach the same answer to the solver tolerance; an iterative solve's
+  cost grows with how ill-conditioned the system is, a factorization's does not.

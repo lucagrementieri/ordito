@@ -4,13 +4,13 @@
 [NVIDIA Warp](https://github.com/NVIDIA/warp). It provides mesh geometry, connectivity, queries,
 editing, and solvers as plain array-in / array-out functions backed by Warp kernels, with a
 [trimesh](https://trimesh.org)-inspired API. Every function runs on CUDA when a GPU is available
-and falls back to CPU otherwise — same code, same results.
+and falls back to CPU otherwise, with the same code.
 
 ## Highlights
 
-- **One dependency.** The runtime depends on `warp-lang` alone; NumPy is only needed to move data
-  in and out.
-- **Broad coverage.** 50 public modules and over 480 functions spanning primitives, topology,
+- **One dependency.** The runtime depends on `warp-lang` alone; NumPy comes with Warp; nothing else
+  (no SciPy, PyTorch or trimesh) is needed at runtime.
+- **Broad coverage.** 50 public modules and over 500 functions spanning primitives, topology,
   repair, remeshing, spatial queries, discrete differential operators, geodesics, sampling,
   surface reconstruction, and registration.
 - **Stays on the device.** Functions take Warp arrays and return Warp arrays, so pipelines compose
@@ -36,7 +36,7 @@ pip install ordito
 
 Requires Python ≥ 3.11 and `warp-lang` ≥ 1.18. A CUDA-capable GPU is recommended but not required.
 Mesh file I/O via [meshio](https://github.com/nschloe/meshio) is an optional extra:
-`pip install ordito[io]`.
+`pip install "ordito[io]"`.
 
 ## Quickstart
 
@@ -79,7 +79,7 @@ from each of them behind a single GPU-accelerated API:
 | Replaces | For | In ordito |
 |---|---|---|
 | [trimesh](https://github.com/mikedh/trimesh) | Mesh bookkeeping: edges, adjacency, boundary, validation, primitives, sampling, proximity | `edges`, `adjacency`, `boundary`, `validation`, `creation`, `sample`, `proximity`, the `Trimesh` class |
-| [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, exact/heat geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
+| [libigl](https://libigl.github.io/) ([Python bindings](https://github.com/libigl/libigl-python-bindings)) | Discrete differential geometry: cotangent Laplacians, mass matrices, curvature, parametrization, heat-method geodesics | `laplacian`, `energies`, `curvature`, `parametrization`, `heat` |
 | [Open3D](https://www.open3d.org/) | Point clouds, registration, and surface reconstruction: ICP, screened Poisson, ball pivoting | `points`, `registration`, `reconstruction` |
 | [MeshLab](https://www.meshlab.net/) ([PyMeshLab](https://github.com/cnr-isti-vislab/PyMeshLab)) | Mesh editing filters: isotropic remeshing, decimation, smoothing, hole filling, uniform resampling | `remesh`, `smoothing`, `holes`, `repair` |
 | [PyVista](https://pyvista.org/) (VTK) | The VTK toolkit: feature edges, cell-quality metrics, contouring and clipping, point location, arc-length and polyline measures, voxelization | `edges`, `triangles`, `intersection`, `levelset`, `proximity`, `polyline`, `voxels` |
@@ -92,14 +92,14 @@ from each of them behind a single GPU-accelerated API:
 `graph` and `proximity`) and NumPy's array primitives (`array`, `reduce`, `grouping`, `linalg`)
 round the set out to the eleven reference implementations the suite measures against.
 
-These libraries are not runtime dependencies — they are **test oracles**. Every ordito
-function ships with a regression test comparing its output against the corresponding reference
-implementation, and a parity gate in the test suite fails the build if a benchmarked
-implementation pair is neither value-tested nor explicitly exempted with a written reason. The
-benchmark suite spans 351 groups and 587 `(group, library)` pairs: 557 are claimed by a value
-test, 30 carry a written and categorised exemption, and none are left uncovered. When ordito and
-a reference disagree by definition rather than tolerance, the test says so and documents the
-measured difference.
+These libraries are not runtime dependencies; they are **test oracles**. Wherever one of them
+computes the same quantity as an ordito function, a regression test compares the two outputs
+value by value. A parity gate in the test suite fails the build if any library the benchmarks
+time against ordito is neither compared in a test nor exempted with a written reason. Today the
+benchmark suite has 357 groups and 584 `(group, library)` pairs: 554 are covered by a value test,
+30 carry a written exemption (typically a different algorithm answering a related question), and
+none are uncovered. Where ordito and a reference disagree by definition rather than by rounding
+(a sign convention, a squared distance), the docstring says so and the test pins the difference.
 
 ## Development
 

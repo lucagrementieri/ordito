@@ -327,11 +327,8 @@ def contains_points(
         generalized winding-number sign instead:
 
         ```python
-        from ordito.kernels import array as kernel_array
-
         signed = od.proximity.signed_distance_on_mesh(v, f, pts, sign_mode="winding")
-        inside = wp.empty(signed.shape, dtype=wp.bool, device=signed.device)
-        wp.map(kernel_array.less, signed, wp.float32(0.0), out=inside)
+        inside = signed.numpy() < 0.0  # negative inside, as for a closed mesh
         ```
 
         That mode needs a ``wp.Mesh`` built with ``support_winding_number=True``; without the flag

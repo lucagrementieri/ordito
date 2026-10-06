@@ -107,7 +107,7 @@ def procrustes(
         ``(n,)`` image of *a* under the transform.
         Only returned when ``return_cost=True``.
     cost:
-        Weighted sum of squared distances between *transformed* and *b*.
+        Weighted mean of squared distances between *transformed* and *b*.
         Only returned when ``return_cost=True``.
 
     Raises

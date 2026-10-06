@@ -10,8 +10,10 @@ positions (and, for the surface terms, the mesh vertices).
 
 Each term accumulates a *scaled* contribution into a length-1 loss accumulator via
 ``wp.atomic_add`` (which has a well-defined adjoint), so ``"sum"`` and ``"mean"``
-reductions differ only by the ``scale`` passed from Python scope. Following the
-``pytorch3d`` convention the distances are **squared** Euclidean distances.
+reductions differ only by the ``scale`` passed from Python scope. Each term is the Euclidean
+distance by default and its square under ``squared`` (``pytorch3d``'s convention), both formed by
+[`chamfer_term`][ordito.kernels.metrics.chamfer_term] from the squared distance the geometry
+computes.
 """
 
 import warp as wp
@@ -147,16 +149,34 @@ def point_triangle_sq_dist(p: wp.vec3, a: wp.vec3, b: wp.vec3, c: wp.vec3) -> wp
     return dist_sq
 
 
+@wp.func
+def chamfer_term(dist_sq: wp.float32, squared: wp.int32) -> wp.float32:
+    """
+    One Chamfer term from a squared distance: ``dist_sq`` itself under ``squared``, else its root.
+
+    The root is taken only for a positive ``dist_sq``. At zero the forward value is the same either
+    way, but ``sqrt``'s adjoint there is ``0.5 / sqrt(0)``, which would turn the zero gradient of a
+    coincident pair into a NaN for the whole accumulated loss; inside the branch the adjoint runs
+    only where it is finite, and a coincident pair keeps the zero subgradient ``dist_sq``'s own
+    adjoint gives it. ``squared`` is uniform across the launch, so the branch costs no divergence.
+    """
+    term = dist_sq
+    if squared == 0 and dist_sq > wp.float32(0.0):
+        term = wp.sqrt(dist_sq)
+    return term
+
+
 @wp.kernel
 def chamfer_nn_term_tiled(
     x: wp.array[wp.vec3],
     y: wp.array[wp.vec3],
     nearest: wp.array[wp.int32],
     scale: wp.float32,
+    squared: wp.int32,
     out_loss: wp.array[wp.float32],
 ) -> None:
     """
-    Accumulate ``scale * ||x[i] - y[nearest[i]]||^2`` into ``out_loss[0]``.
+    Accumulate ``scale * ||x[i] - y[nearest[i]]||`` into ``out_loss[0]``, squared under ``squared``.
 
     ``nearest[i]`` is the (fixed, non-differentiable) index in ``y`` closest to ``x[i]``.
     CUDA path, launched via ``wp.launch_tiled`` (block ``TILE_1D``): each block reduces its lanes
@@ -178,7 +198,7 @@ def chamfer_nn_term_tiled(
     contrib = wp.float32(0.0)
     if idx < x.shape[0]:
         diff = x[idx] - y[nearest[idx]]
-        contrib = scale * wp.length_sq(diff)
+        contrib = scale * chamfer_term(wp.length_sq(diff), squared)
     total = block_sum(contrib)
     if t == 0:
         wp.atomic_add(out_loss, 0, total)
@@ -190,11 +210,12 @@ def chamfer_nn_term_sliced(
     y: wp.array[wp.vec3],
     nearest: wp.array[wp.int32],
     scale: wp.float32,
+    squared: wp.int32,
     n_slices: wp.int32,
     out_loss: wp.array[wp.float32],
 ) -> None:
     """
-    Accumulate ``scale * ||x[i] - y[nearest[i]]||^2`` into ``out_loss[0]``.
+    Accumulate ``scale * ||x[i] - y[nearest[i]]||`` into ``out_loss[0]``, squared under ``squared``.
 
     Portable path, correct on both devices: one thread per slice walks a strided slice of ``x``,
     accumulates locally and commits one ``wp.atomic_add``. Both the dynamic loop and the atomic
@@ -216,7 +237,7 @@ def chamfer_nn_term_sliced(
     total = wp.float32(0.0)
     for idx in range(j, x.shape[0], n_slices):
         diff = x[idx] - y[nearest[idx]]
-        total = total + scale * wp.length_sq(diff)
+        total = total + scale * chamfer_term(wp.length_sq(diff), squared)
     wp.atomic_add(out_loss, 0, total)
 
 
@@ -227,10 +248,11 @@ def chamfer_surface_term_tiled(
     faces: wp.array[wp.int32],
     face_id: wp.array[wp.int32],
     scale: wp.float32,
+    squared: wp.int32,
     out_loss: wp.array[wp.float32],
 ) -> None:
     """
-    Accumulate ``scale * d(points[i], triangle face_id[i])^2`` into ``out_loss[0]``.
+    Accumulate ``scale * d(points[i], triangle face_id[i])`` into ``out_loss[0]``, squared or not.
 
     ``face_id[i]`` is the (fixed, non-differentiable) index of the triangle of the mesh
     closest to ``points[i]``. Gradients flow to both ``points`` and ``vertices``. Points
@@ -245,7 +267,7 @@ def chamfer_surface_term_tiled(
         f = face_id[idx]
         if f >= 0:
             a, b, c = face_vertices(vertices, faces, f)
-            contrib = scale * point_triangle_sq_dist(points[idx], a, b, c)
+            contrib = scale * chamfer_term(point_triangle_sq_dist(points[idx], a, b, c), squared)
     total = block_sum(contrib)
     if t == 0:
         wp.atomic_add(out_loss, 0, total)
@@ -258,11 +280,12 @@ def chamfer_surface_term_sliced(
     faces: wp.array[wp.int32],
     face_id: wp.array[wp.int32],
     scale: wp.float32,
+    squared: wp.int32,
     n_slices: wp.int32,
     out_loss: wp.array[wp.float32],
 ) -> None:
     """
-    Accumulate ``scale * d(points[i], triangle face_id[i])^2`` into ``out_loss[0]``.
+    Accumulate ``scale * d(points[i], triangle face_id[i])`` into ``out_loss[0]``, squared or not.
 
     ``face_id[i]`` is the (fixed, non-differentiable) index of the triangle of the mesh
     closest to ``points[i]``. Gradients flow to both ``points`` and ``vertices``. Points
@@ -279,5 +302,7 @@ def chamfer_surface_term_sliced(
         f = face_id[idx]
         if f >= 0:
             a, b, c = face_vertices(vertices, faces, f)
-            total = total + scale * point_triangle_sq_dist(points[idx], a, b, c)
+            total = total + scale * chamfer_term(
+                point_triangle_sq_dist(points[idx], a, b, c), squared
+            )
     wp.atomic_add(out_loss, 0, total)

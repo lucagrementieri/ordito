@@ -43,7 +43,8 @@ The first public release. Everything below is new, because there is no prior tag
 - **Spatial queries** (`proximity`, `ray`, `neighbors`, `intersection`, `metrics`) — closest
   point, signed distance, winding number, ray casting, BVH and hash-grid neighbour queries,
   triangle-triangle intersection, and Chamfer and Hausdorff distance differentiable through
-  `wp.Tape`.
+  `wp.Tape`. Chamfer reduces plain Euclidean distances by default; `squared=True` gives
+  PyTorch3D's squared convention.
 - **Point clouds, voxels and reconstruction** (`points`, `sample`, `voxels`, `reconstruction`,
   `registration`) — Poisson-disk and blue-noise sampling, farthest-point and voxel down-sampling,
   screened Poisson reconstruction, ball pivoting, Delaunay triangulation, and Procrustes and ICP

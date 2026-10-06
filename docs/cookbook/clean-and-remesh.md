@@ -49,7 +49,7 @@ print(
 remeshed_vertices, remeshed_faces = od.remesh.isotropic_remesh(
     repaired_vertices, repaired_faces, target_length=0.2
 )
-print("faces after remesh: ", remeshed_faces.shape[0] // 3)  # 680
+print("faces after remesh: ", remeshed_faces.shape[0] // 3)  # ~700 (varies slightly on CUDA)
 print(
     "watertight remeshed:", od.validation.is_watertight(remeshed_vertices, remeshed_faces)
 )  # True
@@ -57,23 +57,33 @@ print(
 
 ## What `make_solid` actually does
 
-[`repair.make_solid`][ordito.repair.make_solid] is a composite of smaller public functions run in
-a deliberate order, not a single opaque operation — reach for the pieces directly when only one
-stage applies:
+[`repair.make_solid`][ordito.repair.make_solid] is not one opaque operation: it runs smaller
+public functions in a deliberate order, and when only one stage applies to your mesh you can call
+that stage directly.
 
-1. Connectivity repair a mesh *loader* usually performs invisibly:
+1. **Validate the faces.** Every index must name an existing vertex, or it raises `ValueError`:
+   everything after this indexes vertices without a bounds check.
+2. **Connectivity repair**, the cleanup most mesh *loaders* do without telling you:
    [`remove_unreferenced_vertices`][ordito.repair.remove_unreferenced_vertices],
-   [`make_winding_consistent`][ordito.repair.make_winding_consistent],
+   [`make_winding_consistent`][ordito.repair.make_winding_consistent] and
    [`split_non_manifold_vertices`][ordito.repair.split_non_manifold_vertices].
-2. `keep_largest=True` → [`remove_small_components`][ordito.repair.remove_small_components] (this
-   is what drops the debris fragment above).
-3. `join_components=True` → [`holes.join_closest_components`][ordito.holes.join_closest_components],
-   for input that's meant to be one surface welded from several pieces rather than a largest piece
-   plus rubbish — the opposite intent from `keep_largest`, and the two compose.
-4. [`holes.fill_min_weight`][ordito.holes.fill_min_weight] for any boundary that remains.
-5. Alternating rounds of [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces],
-   [`collapse_small_triangles`][ordito.repair.collapse_small_triangles], and
-   [`fix_self_intersections`][ordito.repair.fix_self_intersections] until nothing changes.
+3. **Choose what to keep.** `keep_largest=True` (the default) runs
+   [`remove_small_components`][ordito.repair.remove_small_components], which is what drops the
+   debris above. `join_components=True` runs
+   [`holes.join_closest_components`][ordito.holes.join_closest_components] instead, for input
+   that is *meant* to be one surface but arrived in several pieces.
+4. **Fill every hole** with [`holes.fill_min_weight`][ordito.holes.fill_min_weight].
+5. **Clean up, until nothing changes** (at most `max_iter` rounds):
+   [`remove_degenerate_faces`][ordito.repair.remove_degenerate_faces],
+   [`collapse_small_triangles`][ordito.repair.collapse_small_triangles] and
+   [`fix_self_intersections`][ordito.repair.fix_self_intersections]. Cutting out a
+   self-intersection can open new holes or split off a fragment, so the small-component filter
+   runs again inside the loop.
+6. **Fill once more, last.** This closes the holes stage 5 opened. Nothing runs after it, because
+   a cleanup pass after a fill can delete the sliver that closed a small hole and reopen it.
+
+`make_solid` has no success flag: check the result with
+[`validation.is_watertight`][ordito.validation.is_watertight], as the recipe does.
 
 ## Tuning the remesh
 

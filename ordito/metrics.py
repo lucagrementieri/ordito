@@ -5,8 +5,10 @@ All metrics are fully GPU-resident: they compose the nearest-neighbor and
 point-to-surface primitives in [`proximity`][ordito.proximity] with the tiled reductions
 in [`reduce`][ordito.reduce], and never move per-element data to the host.
 
-Chamfer distances follow the ``pytorch3d`` convention and are built on **squared**
-Euclidean distances. Hausdorff distances follow libigl's ``igl::hausdorff`` and reduce the
+Chamfer distances reduce plain Euclidean distances by default, the usual definition of the
+metric. ``squared=True`` squares each distance before reducing instead, which is the ``pytorch3d``
+convention (``pytorch3d.loss.chamfer_distance``) and the one to pass when comparing against it.
+Hausdorff distances follow libigl's ``igl::hausdorff`` and reduce the
 (already Euclidean) per-element distances with a maximum, so no squaring or final square root is
 needed.
 
@@ -93,6 +95,7 @@ def chamfer_points_to_points(
     *,
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
+    squared: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_points_to_points(
@@ -101,6 +104,7 @@ def chamfer_points_to_points(
     *,
     point_reduction: None,
     single_directional: Literal[True],
+    squared: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_points_to_points(
@@ -109,10 +113,16 @@ def chamfer_points_to_points(
     *,
     point_reduction: None,
     single_directional: Literal[False] = ...,
+    squared: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_points_to_points(
-    x: wp.array[wp.vec3], y: wp.array[wp.vec3], *, point_reduction: None, single_directional: bool
+    x: wp.array[wp.vec3],
+    y: wp.array[wp.vec3],
+    *,
+    point_reduction: None,
+    single_directional: bool,
+    squared: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_points(
     x: wp.array[wp.vec3],
@@ -120,14 +130,15 @@ def chamfer_points_to_points(
     *,
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between two point clouds.
 
-    For each point in ``x`` the squared Euclidean distance to its nearest neighbor
-    in ``y`` is accumulated (and symmetrically for ``y`` into ``x`` unless
-    ``single_directional``), following the ``pytorch3d`` convention, whose ``single_directional``
-    keyword maps onto this one exactly.
+    For each point in ``x`` the Euclidean distance to its nearest neighbor in ``y`` is
+    accumulated (and symmetrically for ``y`` into ``x`` unless ``single_directional``).
+    ``pytorch3d.loss.chamfer_distance`` is this call with ``squared=True``; its
+    ``single_directional`` keyword maps onto this one exactly.
 
     Parameters
     ----------
@@ -136,18 +147,22 @@ def chamfer_points_to_points(
     y
         ``(m,)`` target point cloud.
     point_reduction
-        How to reduce the per-point squared distances of each direction:
+        How to reduce the per-point distances of each direction:
         ``"mean"`` (default), ``"sum"``, ``"max"``, or ``None`` to return the
-        per-point squared distances unreduced. ``"max"`` yields a directed
+        per-point distances unreduced. ``"max"`` yields a directed
         Hausdorff-like value.
     single_directional
         If ``True``, only the ``x -> y`` term is computed.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
     float or wp.array[wp.float32] or tuple
         The reduced Chamfer distance as a Python ``float`` when ``point_reduction``
-        is not ``None``. Otherwise the per-point squared distances: a single
+        is not ``None``. Otherwise the per-point distances: a single
         ``(n,)`` array when ``single_directional``, else an ``((n,), (m,))`` tuple.
         Empty inputs yield ``0.0`` (reduced) or empty arrays.
 
@@ -169,7 +184,7 @@ def chamfer_points_to_points(
     distances = _distances_points_to_points(x, y, single_directional)
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, x.device)
-    return _chamfer(distances, point_reduction, single_directional)
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 @overload
@@ -180,6 +195,7 @@ def chamfer_points_to_mesh(
     *,
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
+    squared: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_points_to_mesh(
@@ -189,6 +205,7 @@ def chamfer_points_to_mesh(
     *,
     point_reduction: None,
     single_directional: Literal[True],
+    squared: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_points_to_mesh(
@@ -198,6 +215,7 @@ def chamfer_points_to_mesh(
     *,
     point_reduction: None,
     single_directional: Literal[False] = ...,
+    squared: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_points_to_mesh(
@@ -207,6 +225,7 @@ def chamfer_points_to_mesh(
     *,
     point_reduction: None,
     single_directional: bool,
+    squared: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_points_to_mesh(
     points: wp.array[wp.vec3],
@@ -215,13 +234,14 @@ def chamfer_points_to_mesh(
     *,
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between a point cloud and a triangle mesh.
 
-    The forward term is the squared distance from each point to the mesh surface
+    The forward term is the distance from each point to the mesh surface
     (exact, via [`closest_point_on_mesh`][ordito.proximity.closest_point_on_mesh]);
-    the backward term is the squared distance from each mesh vertex to its nearest
+    the backward term is the distance from each mesh vertex to its nearest
     point in the cloud.
 
     Parameters
@@ -237,6 +257,10 @@ def chamfer_points_to_mesh(
         [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points].
     single_directional
         If ``True``, only the ``points -> mesh surface`` term is computed.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
@@ -266,7 +290,7 @@ def chamfer_points_to_mesh(
     distances = _distances_points_to_mesh(points, vertices, faces, single_directional)
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, points.device)
-    return _chamfer(distances, point_reduction, single_directional)
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 @overload
@@ -278,6 +302,7 @@ def chamfer_mesh_to_mesh(
     *,
     point_reduction: _PointReduction = ...,
     single_directional: bool = ...,
+    squared: bool = ...,
 ) -> float: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -288,6 +313,7 @@ def chamfer_mesh_to_mesh(
     *,
     point_reduction: None,
     single_directional: Literal[True],
+    squared: bool = ...,
 ) -> odt.Array1dFloat32: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -298,6 +324,7 @@ def chamfer_mesh_to_mesh(
     *,
     point_reduction: None,
     single_directional: Literal[False] = ...,
+    squared: bool = ...,
 ) -> tuple[odt.Array1dFloat32, odt.Array1dFloat32]: ...
 @overload
 def chamfer_mesh_to_mesh(
@@ -308,6 +335,7 @@ def chamfer_mesh_to_mesh(
     *,
     point_reduction: None,
     single_directional: bool,
+    squared: bool = ...,
 ) -> _UnreducedChamfer: ...
 def chamfer_mesh_to_mesh(
     vertices_a: wp.array[wp.vec3],
@@ -317,11 +345,12 @@ def chamfer_mesh_to_mesh(
     *,
     point_reduction: _PointReduction | None = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> float | _UnreducedChamfer:
     """
     Chamfer distance between two triangle meshes (vertex-to-surface).
 
-    The forward term is the squared distance from each vertex of mesh ``A`` to the
+    The forward term is the distance from each vertex of mesh ``A`` to the
     surface of mesh ``B``; the backward term is the reverse. This mirrors the
     vertex-based approach of libigl while accumulating (mean/sum) instead of maximizing.
 
@@ -336,6 +365,10 @@ def chamfer_mesh_to_mesh(
         [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points].
     single_directional
         If ``True``, only the ``A -> surface(B)`` term is computed.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
@@ -368,7 +401,7 @@ def chamfer_mesh_to_mesh(
     )
     if distances is None:
         return _empty_chamfer(point_reduction, single_directional, vertices_a.device)
-    return _chamfer(distances, point_reduction, single_directional)
+    return _chamfer(distances, point_reduction, single_directional, squared)
 
 
 # ---------------------------------------------------------------------------
@@ -377,12 +410,12 @@ def chamfer_mesh_to_mesh(
 #
 # The Chamfer functions above return a Python ``float`` (a host scalar) and are not
 # differentiable. The ``*_loss`` variants below instead return a length-1 ``wp.float32``
-# device array carrying the (squared, pytorch3d-convention) Chamfer loss, so gradients
+# device array carrying the Chamfer loss (squared under ``squared``), so gradients
 # can be back-propagated with a caller-owned ``wp.Tape``.
 #
 # Autodiff strategy (mirrors pytorch3d): the nearest-neighbor / closest-face assignment
 # is a non-differentiable ``argmin`` and is computed *outside* the tape; the assignment
-# is then held constant while the per-element squared distance is recomputed by a
+# is then held constant while the per-element distance is recomputed by a
 # differentiable kernel (see [`ordito.kernels.metrics`]). Gradients flow to the point
 # positions (and, for the surface terms, the mesh ``vertices``).
 #
@@ -405,6 +438,7 @@ def chamfer_points_to_points_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between two point clouds.
@@ -429,11 +463,15 @@ def chamfer_points_to_points_loss(
         Caller-owned ``wp.Tape`` into which the differentiable kernels are recorded. When
         ``None`` the loss is still computed but no operations are taped (no gradient).
     point_reduction
-        ``"mean"`` (default) or ``"sum"``; reduces the per-point squared distances of each
+        ``"mean"`` (default) or ``"sum"``; reduces the per-point distances of each
         direction. ``"max"`` and ``None`` are not supported (see
         [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points]).
     single_directional
         If ``True``, only the ``x -> y`` term is accumulated.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
@@ -466,11 +504,17 @@ def chamfer_points_to_points_loss(
     # Non-differentiable nearest-neighbor indices (computed outside the tape). The backward search
     # is chosen from the forward one's own distances -- see `_backward_nearest`.
     nearest_xy, distance_xy = _nearest(y, x)
-    terms = [lambda: _launch_nn_term(x, y, nearest_xy, _reduction_scale(point_reduction, n), loss)]
+    terms = [
+        lambda: _launch_nn_term(
+            x, y, nearest_xy, _reduction_scale(point_reduction, n), loss, squared=squared
+        )
+    ]
     if not single_directional:
         nearest_yx = _backward_nearest(x, y, distance_xy, nearest_xy)[0][0]
         terms.append(
-            lambda: _launch_nn_term(y, x, nearest_yx, _reduction_scale(point_reduction, m), loss)
+            lambda: _launch_nn_term(
+                y, x, nearest_yx, _reduction_scale(point_reduction, m), loss, squared=squared
+            )
         )
 
     _accumulate_chamfer_terms(tape, terms)
@@ -485,14 +529,15 @@ def chamfer_points_to_mesh_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between a point cloud and a triangle mesh.
 
     Squared-distance analogue of
     [`chamfer_points_to_mesh`][ordito.metrics.chamfer_points_to_mesh]. The forward term
-    is the exact point-to-surface squared distance (closest triangle held constant during
-    backprop); the backward term is the squared distance from each mesh vertex to its
+    is the exact point-to-surface distance (closest triangle held constant during
+    backprop); the backward term is the distance from each mesh vertex to its
     nearest point in the cloud. Gradients flow to ``points`` **and** ``vertices``.
 
     Parameters
@@ -509,6 +554,10 @@ def chamfer_points_to_mesh_loss(
         ``"mean"`` (default) or ``"sum"``.
     single_directional
         If ``True``, only the ``points -> mesh surface`` term is accumulated.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
@@ -543,14 +592,25 @@ def chamfer_points_to_mesh_loss(
     _, distance_forward, face_id = od.proximity.closest_point_on_mesh(vertices, faces, points)
     terms = [
         lambda: _launch_surface_term(
-            points, vertices, faces, face_id, _reduction_scale(point_reduction, n), loss
+            points,
+            vertices,
+            faces,
+            face_id,
+            _reduction_scale(point_reduction, n),
+            loss,
+            squared=squared,
         )
     ]
     if not single_directional:
         nearest_vp = _backward_nearest(points, vertices, distance_forward, face_id, faces)[0][0]
         terms.append(
             lambda: _launch_nn_term(
-                vertices, points, nearest_vp, _reduction_scale(point_reduction, v), loss
+                vertices,
+                points,
+                nearest_vp,
+                _reduction_scale(point_reduction, v),
+                loss,
+                squared=squared,
             )
         )
 
@@ -567,13 +627,14 @@ def chamfer_mesh_to_mesh_loss(
     tape: wp.Tape | None = None,
     point_reduction: _DiffReduction = "mean",
     single_directional: bool = False,
+    squared: bool = False,
 ) -> wp.array[wp.float32]:
     """
     Differentiable Chamfer loss between two triangle meshes (vertex-to-surface).
 
     Squared-distance analogue of
     [`chamfer_mesh_to_mesh`][ordito.metrics.chamfer_mesh_to_mesh]. The forward term is
-    the squared distance from each vertex of mesh ``A`` to the surface of mesh ``B`` (with
+    the distance from each vertex of mesh ``A`` to the surface of mesh ``B`` (with
     the closest triangle held constant during backprop); the backward term is the reverse.
     Gradients flow to both meshes' vertices.
 
@@ -589,6 +650,10 @@ def chamfer_mesh_to_mesh_loss(
         ``"mean"`` (default) or ``"sum"``.
     single_directional
         If ``True``, only the ``A -> surface(B)`` term is accumulated.
+    squared
+        Square each distance before reducing, as ``pytorch3d`` does. Off by default: the result
+        is then in squared units, and its ``"mean"`` is not a mean distance, which is easy to
+        misread.
 
     Returns
     -------
@@ -628,7 +693,13 @@ def chamfer_mesh_to_mesh_loss(
     )[2]
     terms = [
         lambda: _launch_surface_term(
-            vertices_a, vertices_b, faces_b, face_id_ab, _reduction_scale(point_reduction, va), loss
+            vertices_a,
+            vertices_b,
+            faces_b,
+            face_id_ab,
+            _reduction_scale(point_reduction, va),
+            loss,
+            squared=squared,
         )
     ]
     if not single_directional:
@@ -643,6 +714,7 @@ def chamfer_mesh_to_mesh_loss(
                 face_id_ba,
                 _reduction_scale(point_reduction, vb),
                 loss,
+                squared=squared,
             )
         )
 
@@ -812,31 +884,49 @@ def _validate_point_reduction(point_reduction: _PointReduction | None) -> None:
 
 
 def _chamfer(
-    distances: _Distances, point_reduction: _PointReduction | None, single_directional: bool
+    distances: _Distances,
+    point_reduction: _PointReduction | None,
+    single_directional: bool,
+    squared: bool,
 ) -> float | _UnreducedChamfer:
     """
     Combine forward/backward Euclidean distances into a Chamfer value.
 
-    Distances are squared element-wise (pytorch3d convention) before reduction. A reduced value
-    never materializes the squared array -- see
-    [`_reduce_squared`][ordito.metrics._reduce_squared].
+    Under ``squared`` the distances are squared element-wise before reduction (the ``pytorch3d``
+    convention), and a reduced value never materializes the squared array -- see
+    [`_reduce_squared`][ordito.metrics._reduce_squared]. Otherwise they are reduced as they are.
     """
+    backward = cast(wp.array[wp.float32], distances.backward)
     if point_reduction is None:
+        if not squared:
+            forward = cast(odt.Array1dFloat32, distances.forward)
+            return forward if single_directional else (forward, cast(odt.Array1dFloat32, backward))
         sq_forward = _square(distances.forward)
         if single_directional:
             return sq_forward
-        return sq_forward, _square(cast(wp.array[wp.float32], distances.backward))
+        return sq_forward, _square(backward)
 
-    reduced_forward = _reduce_squared(distances.forward, point_reduction, distances.forward_max)
+    reduce = _reduce_squared if squared else _reduce_plain
+    reduced_forward = reduce(distances.forward, point_reduction, distances.forward_max)
     if single_directional:
         return reduced_forward
-
-    reduced_backward = _reduce_squared(
-        cast(wp.array[wp.float32], distances.backward), point_reduction, None
-    )
+    reduced_backward = reduce(backward, point_reduction, None)
     if point_reduction == "max":
         return max(reduced_forward, reduced_backward)
     return reduced_forward + reduced_backward
+
+
+def _reduce_plain(
+    distances: wp.array[wp.float32], point_reduction: _PointReduction, known_max: float | None
+) -> float:
+    """Reduce non-empty Euclidean ``distances`` as they are; the unsquared sibling of the below."""
+    distances_1d = cast(odt.Array1dFloat32, distances)
+    if point_reduction == "max":
+        return known_max if known_max is not None else od.reduce.max(distances_1d)
+    total = od.reduce.sum(distances_1d)
+    if point_reduction == "mean":
+        return total / distances.size
+    return total
 
 
 def _square(distances: wp.array[wp.float32]) -> odt.Array1dFloat32:
@@ -1121,6 +1211,8 @@ def _launch_nn_term(
     nearest: odt.ArrayNdInt32,
     scale: float,
     loss: wp.array[wp.float32],
+    *,
+    squared: bool,
 ) -> None:
     """Accumulate the point-to-point Chamfer term for ``x`` into ``loss``."""
     _launch_reduction_pair(
@@ -1128,7 +1220,7 @@ def _launch_nn_term(
         kernel_metrics.chamfer_nn_term_sliced,
         x.size,
         x.device,
-        [x, y, nearest, wp.float32(scale)],
+        [x, y, nearest, wp.float32(scale), wp.int32(squared)],
         loss,
     )
 
@@ -1140,6 +1232,8 @@ def _launch_surface_term(
     face_id: wp.array[wp.int32],
     scale: float,
     loss: wp.array[wp.float32],
+    *,
+    squared: bool,
 ) -> None:
     """Accumulate the point-to-surface Chamfer term for ``points`` into ``loss``."""
     _launch_reduction_pair(
@@ -1147,7 +1241,7 @@ def _launch_surface_term(
         kernel_metrics.chamfer_surface_term_sliced,
         points.size,
         points.device,
-        [points, vertices, faces, face_id, wp.float32(scale)],
+        [points, vertices, faces, face_id, wp.float32(scale), wp.int32(squared)],
         loss,
     )
 

@@ -20,20 +20,21 @@ was measured against, and it is kept current rather than copied once and left to
   kernel over every element at once, rather than as a Python (or even a vectorized-but-still-
   single-threaded) loop.
 - **Sparse linear solves stay on the device.** Cotangent Laplacians, harmonic and LSCM
-  parametrization, the heat method, and screened-Poisson reconstruction all assemble their
-  operators and run their conjugate-gradient solves without a single host readback in the loop —
-  the CPU only sees a value once the solve has actually converged.
-- **The same code runs on Warp's CPU backend when no GPU is present.** There is no separate
-  code path to fall back to — correctness doesn't depend on which device you happen to be running
-  on, only speed does.
+  parametrization, the heat method and screened-Poisson reconstruction assemble their operators
+  on the GPU and run their conjugate-gradient iterations there. On CUDA the iteration loop is
+  recorded once as a CUDA graph that tests convergence on the device, so the host does not wait
+  on every iteration.
+- **The same code runs on Warp's CPU backend when no GPU is present.** The test suite runs on
+  both devices, so correctness does not depend on which one you use, only speed does. (Results can
+  differ in the last bits: floating-point sums on a GPU may add terms in a different order.)
 
 ## How to reproduce a number
 
 Every timing this project publishes — in its README, in a release's changelog, or on the
 [Benchmarks](benchmarks.md) page — comes from `benchmarks/`, built on
-[pytest-benchmark](https://pytest-benchmark.readthedocs.io) and run against nine established CPU
-geometry-processing libraries plus PyTorch3D's own CUDA kernels (the one reference with a GPU path
-of its own, and so the suite's only GPU-against-GPU comparison). Anyone can run the same
+[pytest-benchmark](https://pytest-benchmark.readthedocs.io) and run against nine established
+geometry-processing libraries. Eight run on the CPU; PyTorch3D also has CUDA kernels, so it is
+timed on both devices and is the suite's only GPU-against-GPU comparison. Anyone can run the same
 comparison:
 
 ```bash

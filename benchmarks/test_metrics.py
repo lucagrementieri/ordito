@@ -133,7 +133,9 @@ def test_chamfer_mesh_to_mesh_loss(bench_case: BenchCase) -> None:
 
     def run() -> wp.array[wp.float32]:
         tape = wp.Tape()
-        loss = od.metrics.chamfer_mesh_to_mesh_loss(vertices_a, faces, vertices_b, faces, tape=tape)
+        loss = od.metrics.chamfer_mesh_to_mesh_loss(
+            vertices_a, faces, vertices_b, faces, tape=tape, squared=True
+        )
         tape.backward(loss=loss)
         tape.zero()
         return loss
@@ -180,7 +182,7 @@ def test_chamfer_points_to_points(bench_case: BenchCase, single_directional: boo
         cloud_a, cloud_b = _clouds_wp(bench_case)
         chamfer = bench_case.run(
             lambda: od.metrics.chamfer_points_to_points(
-                cloud_a, cloud_b, single_directional=single_directional
+                cloud_a, cloud_b, single_directional=single_directional, squared=True
             )
         )
     elif single_directional:
@@ -235,7 +237,9 @@ def test_chamfer_points_to_points_coincident(bench_case: BenchCase) -> None:
     """
     skip_larger_than(bench_case, "dragon")
     cloud_a, cloud_b = _jittered_clouds_wp(bench_case)
-    chamfer = bench_case.run(lambda: od.metrics.chamfer_points_to_points(cloud_a, cloud_b))
+    chamfer = bench_case.run(
+        lambda: od.metrics.chamfer_points_to_points(cloud_a, cloud_b, squared=True)
+    )
     assert chamfer > 0.0
 
 
@@ -379,5 +383,7 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         return
     cloud = _clouds_wp(bench_case)[1]
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
-    chamfer = bench_case.run(lambda: od.metrics.chamfer_points_to_mesh(cloud, vertices, faces))
+    chamfer = bench_case.run(
+        lambda: od.metrics.chamfer_points_to_mesh(cloud, vertices, faces, squared=True)
+    )
     assert chamfer > 0.0

@@ -20,11 +20,14 @@ import ordito as od  # after
 |---|---|
 | `p3d_ops.knn_points(p, q, K=k)` | [`neighbors.query_nearest(points, queries, k)`][ordito.neighbors.query_nearest] |
 | `p3d_ops.ball_query(p, q, radius=r)` | [`neighbors.query_ball`][ordito.neighbors.query_ball] / [`query_ball_with_offsets`][ordito.neighbors.query_ball_with_offsets] |
-| `p3d_loss.chamfer_distance(a, b)` | [`metrics.chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss] (differentiable, via `wp.Tape`) or [`chamfer_points_to_points`][ordito.metrics.chamfer_points_to_points] for the plain (non-differentiable) distance |
+| `p3d_loss.chamfer_distance(a, b)` | [`metrics.chamfer_points_to_points(a, b, squared=True)`][ordito.metrics.chamfer_points_to_points], or [`chamfer_points_to_points_loss`][ordito.metrics.chamfer_points_to_points_loss] for a value differentiable through `wp.Tape` |
 | `p3d_ops.point_mesh_face_distance` | [`metrics.chamfer_points_to_mesh`][ordito.metrics.chamfer_points_to_mesh] / [`chamfer_points_to_mesh_loss`][ordito.metrics.chamfer_points_to_mesh_loss] |
 
-Remember to take a square root: every neighbour and Chamfer distance PyTorch3D returns is
-**squared**; ordito's are not.
+**Squared or not.** PyTorch3D's neighbour distances (`knn_points`, `ball_query`) are squared;
+ordito's `query_nearest` / `query_ball` distances are plain Euclidean, so take a square root of
+PyTorch3D's before comparing. Chamfer distance defaults to plain distances in ordito too, the
+usual definition; PyTorch3D sums *squared* distances, which ordito's Chamfer functions reproduce
+with `squared=True`.
 
 ## Mesh regularization losses
 

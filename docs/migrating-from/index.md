@@ -16,20 +16,35 @@ library doesn't expose, or an algorithm that's genuinely different rather than m
 
 Three things worth knowing before diving into a specific mapping:
 
-- **Every ordito function takes and returns `wp.array`, never `np.ndarray`.** A one-time
-  `wp.array(numpy_array, dtype=...)` / `warp_array.numpy()` pair is the whole conversion; see
+- **Every ordito function takes and returns `wp.array`, never `np.ndarray`.** Converting is
+  `wp.array(numpy_array, dtype=..., device=...)` in and `warp_array.numpy()` out; see
   [Concepts](../concepts.md#arrays-in-arrays-out) for why the boundary is drawn there.
 - **Faces are a flat `(3 * n_faces,)` `wp.int32` buffer, not `(n_faces, 3)`.** Every mapping table
-  below assumes this; reshape once at the boundary
-  (`faces_flat = faces_np.reshape(-1)`, `faces_rows = faces_flat.numpy().reshape(-1, 3)`) rather
-  than at every call site.
+  below assumes this. Convert once, where your data enters and leaves ordito:
+
+    ```python
+    import numpy as np
+    import trimesh
+    import warp as wp
+
+    import ordito as od
+
+    mesh_tm = trimesh.creation.icosphere()
+    vertices = wp.array(mesh_tm.vertices, dtype=wp.vec3)  # float64 rows become float32 vec3
+    faces = wp.array(mesh_tm.faces.reshape(-1), dtype=wp.int32)  # (n_faces, 3) -> flat
+    mesh = od.Trimesh(vertices, faces)
+
+    faces_rows = mesh.faces.numpy().reshape(-1, 3)  # and back to (n_faces, 3)
+    print(np.array_equal(faces_rows, mesh_tm.faces), mesh.area, mesh_tm.area)
+    ```
 - **There is no scene graph, viewer, or mesh "session" object.** ordito is a library of
   functions (plus one optional, stateless [`Trimesh`][ordito.mesh.Trimesh] convenience wrapper),
   not a mutable-document editor like a MeshLab `MeshSet` or an Open3D `TriangleMesh` with in-place
   filters. A function that would mutate its input in one of those libraries instead returns a new
   array in ordito.
 
-These pages name the closest ordito equivalent for each function; they are not exhaustive — the
-full picture is the generated [API Reference](../api/ordito/creation.md), and every mapping asserted here
-is one this project's own test suite checks by comparing outputs directly against the reference
-library, not merely by name.
+These pages name the closest ordito equivalent for each function; they are not exhaustive.
+The full picture is the [API Reference](../api/ordito/creation.md). Most rows are backed by a
+test that compares the two functions' outputs directly; where a row says the two differ (a
+convention, a sign, a different algorithm), that difference is measured and documented in the
+ordito function's docstring.

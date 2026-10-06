@@ -7,9 +7,9 @@ intentionally imperfect input.
 | Recipe | What it covers |
 |---|---|
 | [Cleaning and remeshing a rough mesh](clean-and-remesh.md) | `repair.make_solid` → `remesh.isotropic_remesh` on a mesh with a hole and stray debris |
-| [Point cloud to watertight surface](point-cloud-to-surface.md) | `reconstruction.screened_poisson` and `reconstruction.ball_pivoting`, side by side |
-| [Geodesic distance fields](geodesic-distance.md) | `heat.heat_geodesic`, precomputed operators, and where to go for vector heat / log maps |
-| [Aligning two scans](align-two-scans.md) | `registration.procrustes` for a coarse fit, `registration.icp` to refine it |
+| [Point cloud to watertight surface](point-cloud-to-surface.md) | Normal estimation, then `reconstruction.screened_poisson` and `reconstruction.ball_pivoting` side by side, and why sampling decides ball pivoting's holes |
+| [Geodesic distance fields](geodesic-distance.md) | `heat.heat_geodesic` checked against the exact distance on a sphere, reusing operators, and the vector heat family |
+| [Aligning two scans](align-two-scans.md) | `registration.procrustes` with known correspondences, `registration.icp` and `icp_point_to_plane` without, and how to tell when ICP stopped too early |
 
 Every recipe here is also a starting point rather than a finished pipeline — each links back into
 the relevant API reference page for the full set of keyword arguments a real use case will
