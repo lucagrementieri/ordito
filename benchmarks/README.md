@@ -214,9 +214,10 @@ unnarrowed second pass would time them twice and duplicate the rows. `tests/devi
 idea for the test suite.
 
 A full default run is **~18 minutes** on an RTX 5090 (measured: 1 097 s across all 33 modules, one
-process each, 999 cases plus 139 skipped). The four slowest modules are `test_reconstruction`
-(235 s), `test_laplacian` (95 s), `test_proximity` (85 s, the `O(Q x F)` winding number) and
-`test_smoothing` (70 s).
+process each, 999 cases plus 139 skipped). The four slowest modules were `test_reconstruction`
+(235 s), `test_laplacian` (95 s), `test_proximity` (85 s, then dominated by the brute-force
+`O(Q x F)` winding number, which is now an exact hierarchy sub-linear in the face count per query)
+and `test_smoothing` (70 s).
 
 The **pymeshlab** rows add roughly **six minutes** on top of that, spread over 26 modules; the
 largest single contributions are `test_heat_distance` (+40 s, its heat solver at `setup=full` rebuilds the
