@@ -628,6 +628,34 @@ def test_collapse_pass_commits_a_useful_fraction_on_a_structured_patch(device: s
     assert len(trimesh_outline_loops(warp_to_trimesh(out_vertices, out_faces))) == 1
 
 
+def _graded_height_field(n: int) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``z = x^2 - y^2`` over an ``n x n`` grid graded towards its centre, as host arrays.
+
+    ``(vertices, faces)``: ``(n * n, 3)`` float64 positions and a flat triangle index buffer. The
+    grading (sample spacing growing with the cube of the distance from the centre) makes it the
+    input that breaks a collapse guard: long thin faces on the rim, tiny ones in the middle, and
+    every quadric of the flat outer region close to singular. It is a height field, so every face
+    projects to the xy-plane with one winding.
+    """
+    samples = np.sign(np.linspace(-1.0, 1.0, n)) * np.abs(np.linspace(-1.0, 1.0, n)) ** 3
+    x_np, y_np = np.meshgrid(samples, samples, indexing="ij")
+    vertices_np = np.stack([x_np, y_np, x_np * x_np - y_np * y_np], axis=-1).reshape(-1, 3)
+    index_np = np.arange(n * n).reshape(n, n)
+    faces_np = np.stack(
+        [
+            index_np[:-1, :-1],
+            index_np[:-1, 1:],
+            index_np[1:, :-1],
+            index_np[:-1, 1:],
+            index_np[1:, 1:],
+            index_np[1:, :-1],
+        ],
+        axis=-1,
+    ).reshape(-1)
+    return vertices_np, faces_np.astype(np.int32)
+
+
 def test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face(device: str) -> None:
     """
     The collapse stage rejects a collapse that inverts an incident face, as the quadric one does.
@@ -653,22 +681,7 @@ def test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face(device: str) -> 
     zero-area face only at some targets, and at this one both arms bottom out around 5e-12, so the
     probe passed against the broken code.
     """
-    samples = np.sign(np.linspace(-1.0, 1.0, 133)) * np.abs(np.linspace(-1.0, 1.0, 133)) ** 3
-    x_np, y_np = np.meshgrid(samples, samples, indexing="ij")
-    vertices_np = np.stack([x_np, y_np, x_np * x_np - y_np * y_np], axis=-1).reshape(-1, 3)
-    index_np = np.arange(133 * 133).reshape(133, 133)
-    faces_np = np.stack(
-        [
-            index_np[:-1, :-1],
-            index_np[:-1, 1:],
-            index_np[1:, :-1],
-            index_np[:-1, 1:],
-            index_np[1:, 1:],
-            index_np[1:, :-1],
-        ],
-        axis=-1,
-    ).reshape(-1)
-    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np.astype(np.int32), device)
+    vertices_wp, faces_wp = numpy_to_warp(*_graded_height_field(133), device)
 
     n_vertices = vertices_wp.size
     target = 2.0 * od.edges.mean_edge_length(vertices_wp, faces_wp)
@@ -1532,42 +1545,31 @@ def test_quadric_decimate_is_monotone_in_the_target(device: str) -> None:
     assert counts == sorted(counts, reverse=True)
 
 
-def test_quadric_decimate_reaches_a_reachable_target_and_floors_on_feature_angle(
-    device: str,
-) -> None:
+def test_quadric_decimate_reaches_its_target_and_floors_on_feature_angle(device: str) -> None:
     """
     Not a library comparison: no reference exposes ``feature_angle``'s effect on the floor.
 
-    Two halves of one ``Notes`` claim, neither of which had a test. **The target is reached
-    exactly whenever it is reachable** -- pinned at 320 faces on ``icosphere(3)``, which is hit on
-    the nose. And **what stops a decimation short is the feature rule, not the normal-flip guard**:
-    at the default ``feature_angle`` a target of 20 stops at 98, because a sphere's own dihedral
-    angles grow as it is coarsened until every edge is sharper than 30 degrees and every vertex is
-    a frozen corner. Raising the angle lowers the floor monotonically and 180 degrees -- where
-    nothing is a feature -- reaches the target exactly.
-
-    Measured by mirroring ``quadric_collapse_candidates``' three early exits over the terminal
-    mesh, on four meshes crossed with five angles: **14 of 20 cells veto every remaining edge on
-    the feature rule and none at all on the normal-flip guard** (147/147 here, 195/195 on
-    ``icosphere(4)``, 186/186 on a cylinder). That census is recorded at ``COLLAPSE_MIN_NORMAL_DOT``
-    in ``kernels/remesh.py``, and it is the argument for *not* exposing that threshold as a second
-    keyword.
+    Two halves of one ``Notes`` claim. **The target is reached exactly whenever it is reachable**
+    -- at the default, which freezes no interior edge, both 320 and 20 faces of ``icosphere(3)``
+    are hit on the nose. And **a frozen-feature angle is what stops a decimation short**: at 30
+    degrees a target of 20 stops far above it, because a sphere's own dihedral angles grow as it
+    is coarsened until every edge is sharper than the angle and every vertex is a frozen corner.
+    Raising the angle lowers the floor monotonically.
 
     **Bug class excluded:** a floor that moves for a reason other than the parameter the docstring
-    names -- a decimation that silently stopped on the iteration cap, say, would give the same 98
-    at every angle. The angle sweep is what separates the two, and it is asserted as a strict
-    monotone decrease rather than at fixed values, since the exact floor is a property of the
-    input rather than of the contract.
+    names -- a decimation that silently stopped on the iteration cap, say, would give the same
+    floor at every angle. The angle sweep is what separates the two, and it is asserted as a
+    strict monotone decrease rather than at fixed values, since the exact floor is a property of
+    the input rather than of the contract.
     """
     _sphere_tm, vertices_wp, faces_wp = _icosphere_wp(device, subdivisions=3)
     n_faces = faces_wp.size // 3
     assert n_faces == 1280  # non-vacuity: the fixture the floors below were measured on
 
-    # Reachable target, hit exactly.
-    reachable = od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=320)[1].size // 3
-    assert reachable == 320
+    for target in (320, 20):
+        reached = od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=target)[1]
+        assert reached.size // 3 == target
 
-    # Unreachable at the default angle, and the floor falls as the angle rises.
     floors = [
         od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, feature_angle=angle)[
             1
@@ -1575,14 +1577,166 @@ def test_quadric_decimate_reaches_a_reachable_target_and_floors_on_feature_angle
         // 3
         for angle in (30.0, 45.0, 60.0, 180.0)
     ]
-    assert floors[0] > 20  # the default really does stop short
+    assert floors[0] > 20  # a frozen-feature angle really does stop short
     assert floors == sorted(floors, reverse=True)
     assert len(set(floors)) > 1  # the angle moves it, so the cap is not what binds
-    assert floors[-1] == 20  # nothing is a feature at 180 degrees, so the target is reached
+    assert floors[-1] == 20
 
-    # The iteration cap is not what stops the default: more passes give the identical mesh.
-    patient = od.remesh.quadric_decimate(vertices_wp, faces_wp, target_faces=20, max_iter=400)[1]
+    # The iteration cap is not what stops the 30-degree run: more passes give the identical mesh.
+    patient = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_faces=20, feature_angle=30.0, max_iter=400
+    )[1]
     assert patient.size // 3 == floors[0]
+
+
+@pytest.mark.parametrize("target_ratio", [0.5, 0.1])
+def test_quadric_decimate_keeps_rim_vertices_on_the_surface(
+    device: str, target_ratio: float
+) -> None:
+    """
+    Not a library comparison: a bound on how far any output vertex sits from the input surface.
+
+    A rim vertex's quadric is nearly singular in the direction off the rim, and on the graded
+    height field's flat outer region its minimizer slid far out: before the boundary constraint
+    plane one output vertex sat 1.16 bounding-box diagonals off the surface at a ratio of 0.5 and
+    0.96 at 0.1. The worst vertex is now 3.1e-4 and 1.1e-3 of the diagonal; the bound sits 2.7x
+    above the larger and over two orders of magnitude below the defect. Mutation probe: dropping
+    the constraint (``BOUNDARY_QUADRIC_WEIGHT = 0``) fails the 0.1 arm.
+
+    **Bug class excluded:** a placement that leaves the surface along a direction the quadric does
+    not constrain.
+    """
+    vertices_np, faces_np = _graded_height_field(65)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    diagonal = float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+
+    out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_ratio=target_ratio
+    )
+    target = math.ceil(target_ratio * (faces_np.size // 3))
+    assert target - 1 <= out_faces_wp.size // 3 <= target
+    _points, distance_wp, _faces = od.proximity.closest_point_on_mesh(
+        vertices_wp, faces_wp, out_vertices_wp
+    )
+    assert distance_wp.numpy().max() < 3e-3 * diagonal
+
+
+def test_quadric_decimate_keeps_the_boundary(device: str) -> None:
+    """
+    Not a library comparison: every input boundary vertex stays on the output, corners included.
+
+    The face planes say nothing about where a rim runs within the surface, so without the
+    Garland-Heckbert boundary constraint a collapse that pulls the rim inwards or cuts a corner
+    costs nothing, and boundaries were eroded first: on this patch at a tenth of its faces an input
+    rim vertex sat 0.13 of the bounding-box diagonal from the output and a corner of the square was
+    cut off by 0.8. With the constraint the worst rim vertex is within 9.2e-4 and all four corners
+    survive exactly.
+
+    **Bug class excluded:** a boundary collapse priced by the face planes alone.
+    """
+    n = 65
+    vertices_np, faces_np = _graded_height_field(n)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    diagonal = float(np.linalg.norm(np.ptp(vertices_np, axis=0)))
+    rim_np = od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
+    assert rim_np.size == 4 * (n - 1)  # non-vacuity: the whole square rim
+
+    out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
+        vertices_wp, faces_wp, target_ratio=0.1
+    )
+    _points, distance_wp, _faces = od.proximity.closest_point_on_mesh(
+        out_vertices_wp,
+        out_faces_wp,
+        wp.array(vertices_np[rim_np].astype(np.float32), dtype=wp.vec3, device=device),
+    )
+    assert distance_wp.numpy().max() < 3e-3 * diagonal
+    corners_np = vertices_np[[0, n - 1, n * (n - 1), n * n - 1]].astype(np.float32)
+    out_vertices_np = out_vertices_wp.numpy()
+    for corner_np in corners_np:
+        assert (out_vertices_np == corner_np).all(axis=1).any()
+
+
+def _closed_rings(faces_np: np.ndarray, n_vertices: int) -> list[set[int]]:
+    """Return each vertex's closed 1-ring over a flat triangle buffer."""
+    rings: list[set[int]] = [{v} for v in range(n_vertices)]
+    for a, b, c in faces_np.reshape(-1, 3):
+        rings[a] |= {b, c}
+        rings[b] |= {a, c}
+        rings[c] |= {a, b}
+    return rings
+
+
+@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere"])
+def test_quadric_decimate_commits_no_conflicting_collapses(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
+    """
+    Ordito against ordito: every pass's committed collapses are pairwise non-conflicting.
+
+    The pass commits an independent set over several rounds, and the set is only correct when no
+    committed collapse has an endpoint in another's closed 1-rings: that is the condition under
+    which applying them together is applying them one after another, so the link conditions, fold
+    vetoes and placements the scoring computed still hold. Nothing downstream checks it -- a
+    conflicting pair yields a plausible mesh. This reads each pass's collapse map (``remap[r] =
+    s``, in the numbering the pass started from) against the adjacency of the faces it started
+    from, on the pass that is issued and on the captured passes after it.
+
+    **Bug class excluded:** a win test that misses a conflict, across the rounds of a pass as well
+    as within one. Mutation probe: reading one endpoint's claim but not the other's fails both
+    fixtures.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    buffers = od.remesh._DecimationBuffers(
+        mesh_wp.points, mesh_wp.indices, len(mesh_tm.faces) // 10, wp.float32(math.pi)
+    )
+    checked = 0
+    for _ in range(3):
+        n_faces, n_vertices = (int(x) for x in buffers.state.numpy()[:2])
+        faces_np = buffers.faces.numpy()[: 3 * n_faces].copy()
+        if not buffers.run_pass():
+            break
+        remap_np = buffers._collapse_remap.numpy()[:n_vertices]
+        removed_np = np.flatnonzero(remap_np != np.arange(n_vertices))
+        pairs = [(int(remap_np[r]), int(r)) for r in removed_np]
+        assert len(pairs) > 1
+        assert buffers._round_state.numpy()[0] > 1
+        rings = _closed_rings(faces_np, n_vertices)
+        endpoints = [s for s, _r in pairs] + [r for _s, r in pairs]
+        assert len(set(endpoints)) == len(endpoints)  # no vertex in two collapses
+        owner = {v: i for i, (s, r) in enumerate(pairs) for v in (s, r)}
+        for i, (s, r) in enumerate(pairs):
+            for v in rings[s] | rings[r]:
+                assert owner.get(v, i) == i, f"collapses {pairs[i]} and {pairs[owner[v]]} conflict"
+        checked += 1
+    assert checked >= 2
+
+
+def test_quadric_decimate_commits_a_useful_fraction_on_a_flat_grid(device: str) -> None:
+    """
+    Not a library comparison: one pass removes a useful share of a regular flat grid's faces.
+
+    The structured-mesh guard of the quadric pass, beside the collapse stage's own
+    (``test_collapse_pass_commits_a_useful_fraction_on_a_structured_patch``). A flat grid is
+    the input where every candidate costs the same and the edge numbering is spatially monotone,
+    so a lock key ordered by the cost *rank* or by the index has a single minimum per region and
+    a pass commits a handful of collapses; the hashed, cost-bucketed key commits several percent of
+    the faces at once (7.2 % here, against 3.8 % under the disjoint-ring rule the independent set
+    used to require).
+
+    **Bug class excluded:** a spatially coherent lock key, and an independent-set rule stricter
+    than the conflict it has to exclude.
+    """
+    n = 65
+    samples = np.linspace(-1.0, 1.0, n)
+    x_np, y_np = np.meshgrid(samples, samples, indexing="ij")
+    vertices_np = np.stack([x_np, y_np, np.zeros_like(x_np)], axis=-1).reshape(-1, 3)
+    _graded_np, faces_np = _graded_height_field(n)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    n_faces = faces_np.size // 3
+    buffers = od.remesh._DecimationBuffers(vertices_wp, faces_wp, 10, wp.float32(math.pi))
+    assert buffers.run_pass()
+    removed = 1.0 - int(buffers.state.numpy()[0]) / n_faces
+    assert removed > 0.05
 
 
 def test_quadric_decimate_target_at_or_above_the_input_is_a_copy(device: str) -> None:
@@ -1657,7 +1811,7 @@ def test_quadric_decimate_padding_never_reaches_the_output(
     passes = 0
     while buffers.run_pass() and passes < 50:
         passes += 1
-        # ``[faces, vertices, edges, commits]``: the last slot is the pass's collapse count.
+        # ``[faces, vertices, edges, commits, removed faces]``.
         n_faces, n_vertices, n_edges = (int(x) for x in buffers.state.numpy()[:3])
         live_faces = buffers.faces.numpy()[: 3 * n_faces].reshape(-1, 3)
         assert n_edges <= buffers.n_edges, "the edge capacity bound was violated"
@@ -1673,96 +1827,73 @@ def test_quadric_decimate_padding_never_reaches_the_output(
 
 
 @wp.kernel  # pyright: ignore[reportUntypedFunctionDecorator]  # wp.kernel has no return annotation
-def _probe_winner_budget_rank(
-    cost: wp.array[wp.float32],
+def _probe_winner_faces_before(
     rank: wp.array[wp.int32],
     winners: wp.array[wp.int32],
     words: wp.array[wp.uint32],
     prefix: wp.array[wp.int32],
     chunk_offsets: wp.array[wp.int32],
-    out_position: wp.array[wp.int32],
+    out_faces: wp.array[wp.int32],
 ) -> None:
     i = wp.int32(wp.tid())  # pyright: ignore[reportArgumentType]  # Warp's stub types tid() loosely
-    k = winners[i]
-    out_position[i] = kernel_remesh.winner_budget_rank(  # pyright: ignore[reportIndexIssue]
-        cost[k],  # pyright: ignore[reportArgumentType]
-        rank[k],  # pyright: ignore[reportArgumentType]
-        k,  # pyright: ignore[reportArgumentType]
-        cost.shape[0],
+    out_faces[i] = kernel_remesh.winner_faces_before(  # pyright: ignore[reportIndexIssue]
+        rank[winners[i]],  # pyright: ignore[reportArgumentType]
         words,
         prefix,
         chunk_offsets,
     )
 
 
-@pytest.mark.parametrize("unrepresentable", [False, True])
-def test_winner_budget_rank_matches_the_round_sort_it_replaces(
-    device: str, unrepresentable: bool
-) -> None:
+def test_winner_faces_before_counts_the_cheaper_winners_faces(device: str) -> None:
     """
-    Not a library comparison: the oracle is the stable sort the decimation round used to run.
+    Not a library comparison: the oracle is a host prefix sum in the pass's cost order.
 
-    A collapse round keeps the ``budget`` cheapest of its winners, and it used to rank them with a
-    stable radix sort of ``winner ? cost : +inf`` over the edge index. It now reads the rank off a
-    word scan of two winner bitmasks (``kernels/remesh.winner_budget_rank``), which agrees with that
-    sort only through an argument about the pass's own cost ranking -- and the argument has a
-    separate branch for a winner whose cost is +inf or a NaN, which the round sort files among the
-    non-winners. No decimation on a finite mesh reaches that branch, so this drives the function
-    directly, against NumPy's stable ``argsort`` of the same keys, with costs tied in blocks so the
-    index tie-break is exercised too. ``m`` spans several ``SCAN_CHUNK`` s of words, so the chunk
-    offsets carry.
+    A collapse round commits its winners cheapest first until the pass's face budget is spent, and
+    reads how many faces the cheaper winners remove off a word scan of two bitmasks
+    (``kernels/remesh.winner_faces_before``): every winner at its cost rank, and the single-face
+    (boundary) winners at theirs. This drives the function directly against NumPy, with ranks a
+    random permutation and ``m`` spanning several ``SCAN_CHUNK`` s of words, so the chunk offsets
+    carry.
 
-    **Bug class excluded:** a rank off by the non-winners the round sort interleaves, a word or bit
-    off by one in the bitmask read, and a chunk offset dropped at a chunk boundary.
+    **Bug class excluded:** the second bitmask read from the start of the buffer rather than from
+    its own half, a word or bit off by one, and a chunk offset dropped at a chunk boundary.
     """
     rng = np.random.default_rng(7)
     m = 70_000
-    cost_np = rng.integers(0, 500, m).astype(np.float32) / np.float32(8.0)
-    if unrepresentable:
-        cost_np[rng.choice(m, 900, replace=False)] = np.inf
-        cost_np[rng.choice(m, 300, replace=False)] = np.nan
+    rank_np = rng.permutation(m).astype(np.int32)
     winner_np = rng.random(m) < 0.3
+    single_np = winner_np & (rng.random(m) < 0.2)
     assert winner_np.sum() > 1000
-    if unrepresentable:
-        assert (winner_np & np.isinf(cost_np)).any()
-        assert (winner_np & np.isnan(cost_np)).any()
-
-    # The pass's ranking: the same stable radix sort ``quadric_collapse_candidates`` feeds.
-    keys_wp = wp.array(np.concatenate([cost_np, np.zeros(m, np.float32)]), device=device)
-    order_wp = wp.array(np.concatenate([np.arange(m), np.zeros(m)]).astype(np.int32), device=device)
-    wp.utils.radix_sort_pairs(keys_wp, order_wp, count=m)
-    rank_np = np.empty(m, dtype=np.int32)
-    rank_np[order_wp.numpy()[:m]] = np.arange(m, dtype=np.int32)
+    assert single_np.sum() > 100
 
     half = -(-m // 32)
     bits_np = np.zeros(64 * half, dtype=bool)
     bits_np[rank_np[winner_np]] = True
-    bits_np[32 * half + np.flatnonzero(winner_np)] = True
+    bits_np[32 * half + rank_np[single_np]] = True
     words_np = np.packbits(bits_np.reshape(-1, 32)[:, ::-1], axis=1).view(">u4").ravel()
     words_wp = wp.array(words_np.astype(np.uint32), dtype=wp.uint32, device=device)
     scan = od.remesh._ExclusiveScan(2 * half, wp.get_device(device))
     scan.launch(words_wp, words=True)
 
     winners_np = np.flatnonzero(winner_np).astype(np.int32)
-    position_wp = warp_empty(len(winners_np), wp.int32, device)
+    faces_wp = warp_empty(len(winners_np), wp.int32, device)
     wp.launch(
-        _probe_winner_budget_rank,
+        _probe_winner_faces_before,
         dim=len(winners_np),
         inputs=[
-            wp.array(cost_np, device=device),
             wp.array(rank_np, device=device),
             wp.array(winners_np, device=device),
             words_wp,
             scan.prefix,
             scan.chunk_offsets,
-            position_wp,
+            faces_wp,
         ],
         device=device,
     )
-    round_keys_np = np.where(winner_np, cost_np, np.float32(np.inf))
-    expected_np = np.empty(m, dtype=np.int64)
-    expected_np[np.argsort(round_keys_np, kind="stable")] = np.arange(m)
-    assert np.array_equal(position_wp.numpy(), expected_np[winners_np])
+    removed_np = np.zeros(m, dtype=np.int64)
+    removed_np[rank_np[winner_np]] = np.where(single_np[winner_np], 1, 2)
+    expected_np = np.concatenate([[0], np.cumsum(removed_np)[:-1]])[rank_np[winners_np]]
+    assert np.array_equal(faces_wp.numpy(), expected_np)
 
 
 @pytest.mark.parametrize("target_ratio", [0.5, 0.1])

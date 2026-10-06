@@ -61,14 +61,22 @@ whose pass count depends on how contested the rings are — exactly what triangl
 three serial references are here (``igl.decimate``, open3d, pymeshlab), the best-referenced port in
 the package. Note MeshLab's filter defaults to ``autoclean=True`` and deletes unreferenced vertices,
 so its MeshSet is rebuilt per round; and the *quality* comparison lives in ``tests/test_remesh.py``,
-where ordito measures a **lower** Hausdorff error than all three at the same face count.
+where ordito measures a lower Hausdorff error than igl and open3d on ``icosphere(4)``. On
+``bunny`` and ``dragon`` at 0.1 and 0.01 its mean deviation is below MeshLib's, pymeshlab's and
+open3d's, and within 1.1x of the best at 0.5; its maximum ranges from below the best of them to 5x
+MeshLib's (``dragon`` at 0.5, where MeshLib's is unusually low). **That held only once it stopped
+freezing features by default** (every reference keeps none; at 30 degrees a scan could not go below
+about a tenth of its faces and its mean deviation was 3-60x the references') **and gained
+Garland-Heckbert's boundary planes**, without which rim vertices slid off the surface.
 
 **Ordito was long the slower one on that group, and the reason is the pass count rather than the
-per-pass work**: one hashed-key independent set commits a small fraction of the candidates, so
-reaching a tenth of the faces takes tens of passes, each paying a full edge/adjacency/quadric
-rebuild plus two radix sorts that a serial queue pays none of. Committing **several** independent
-sets against one rebuild closed part of it (see ``_QUADRIC_RATIOS`` for that and for what the other
-candidate lever was worth) and capturing the pass closed the rest.
+per-pass work**: an independent set commits a fraction of the candidates, so reaching a tenth of the
+faces takes many passes, each paying a full edge/adjacency/quadric rebuild plus two radix sorts that
+a serial queue pays none of. Committing **several** independent sets against one rebuild closed part
+of it (see ``_QUADRIC_RATIOS`` for that and for what the other candidate lever was worth),
+capturing the pass closed more, and relaxing the independence rule to the exact conflict (no
+endpoint of either collapse in the other's closed 1-rings, rather than disjoint rings) halved the
+pass count.
 
 ``cluster_decimate`` is the other **scan sweep** group and the interesting one to read against
 ``subdivide``: the same shape of work in reverse (bin, remap, dedup — no data dependence, no
@@ -771,9 +779,8 @@ def test_quadric_decimate(bench_case: BenchCase, target_ratio: float) -> None:
     """
     Greedy quadric collapses to a face budget: batched independent sets against four queues.
 
-    ``PolyData.decimate`` is ``vtkDecimatePro``, and it is the **best** of the four references on
-    output quality rather than merely another queue -- measurably less surface deviation than
-    ordito at the same face count (``tests/test_remesh.py`` carries the comparison). It takes a
+    ``PolyData.decimate`` is ``vtkDecimatePro``, the reference with the least surface deviation on
+    the test sphere (``tests/test_remesh.py`` carries the comparison). It takes a
     *reduction fraction* where the other four take a face count, so the ratio is
     converted rather than the count passed.
     """

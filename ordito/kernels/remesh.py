@@ -44,6 +44,7 @@ from ordito.kernels.scatter import (
     accumulate_endpoint_value,
     add_corner_triple,
     add_edge_valence,
+    endpoints_hold,
     lock_two_rings,
     mark_corners,
     record_edge_incidence,
@@ -64,11 +65,13 @@ from ordito.kernels.voxels import squared_distance_to_own_cell_center, voxel_cel
 
 wp.set_module_options({"enable_backward": False})
 
-# The collapse round loop's third state slot, **appended** after ``array.LOOP_ROUND`` and
-# ``LOOP_CONDITION`` so the shared two keep their numbers: the total commits as of the end of
-# the previous round, which is how ``end_collapse_round`` decides whether a round progressed.
+# The collapse round loop's state slots **appended** after ``array.LOOP_ROUND`` and
+# ``LOOP_CONDITION`` so the shared two keep their numbers: the total commits as of the end of the
+# previous round, which is how ``end_collapse_round`` decides whether a round progressed, and the
+# faces those commits removed, which is what the next round's face budget is measured against.
 COLLAPSE_COMMITS = wp.constant(wp.int32(2))
-COLLAPSE_STATE_SIZE = 3
+COLLAPSE_REMOVED_FACES = wp.constant(wp.int32(3))
+COLLAPSE_STATE_SIZE = 4
 
 # Delaunay / Delone edge-flip constants. The flip predicate runs in float64 deliberately:
 # circumcircle diameters of near-degenerate triangles round too coarsely in float32, which sends
@@ -1711,6 +1714,7 @@ DECIMATION_FACES = wp.constant(wp.int32(0))
 DECIMATION_VERTICES = wp.constant(wp.int32(1))
 DECIMATION_EDGES = wp.constant(wp.int32(2))
 DECIMATION_COMMITS = wp.constant(wp.int32(3))
+DECIMATION_REMOVED_FACES = wp.constant(wp.int32(4))
 
 # The claim table's value at a vertex no candidate has claimed yet: above every ``scramble_index``.
 UNCLAIMED_KEY = wp.constant(wp.int64(2**63 - 1))
@@ -1826,6 +1830,37 @@ def scramble_index(index: wp.int32) -> wp.int64:
     return (hashed << wp.int64(32)) | wp.int64(index)
 
 
+# Cost buckets of the quadric pass's lock key (``bucketed_lock_key``): one per halving of the cost
+# below the most expensive candidate in the pool, the rest sharing the cheapest bucket.
+LOCK_KEY_COST_BUCKETS = wp.constant(wp.int32(24))
+
+
+@wp.func
+def bucketed_lock_key(index: wp.int32, cost: wp.float32, reference: wp.float32) -> wp.int64:
+    # ``scramble_index`` with a coarse cost bucket in the top bits: within a neighbourhood the
+    # cheaper collapse wins, which is what a serial priority queue does, while candidates of one
+    # bucket still compete under the hash, so the key field keeps many local minima. A pure hash
+    # spreads the error and lets expensive collapses go first; a pure cost rank is spatially
+    # coherent on any smooth surface and commits a handful of collapses a pass.
+    #
+    # The bucket is the base-2 logarithm of ``cost / reference``, ``reference`` being the most
+    # expensive candidate's cost: ties share a bucket, so a flat region, where every candidate
+    # costs the same, stays hashed. A rank-based bucket does not, because tied costs rank in index
+    # order. Bucket 0 also holds zero costs; the top bits stay clear of the sign.
+    # Layout: 5 bits of bucket, 26 of hash, 32 of index -- still injective through the index.
+    level = wp.int32(LOCK_KEY_COST_BUCKETS - 1)
+    if reference > wp.float32(0.0) and cost < reference:
+        level = wp.int32(0)
+        if cost > wp.float32(0.0):
+            level = wp.clamp(
+                LOCK_KEY_COST_BUCKETS - 1 + wp.int32(wp.floor(wp.log2(cost / reference))),
+                0,
+                LOCK_KEY_COST_BUCKETS - 1,
+            )
+    hashed = wp.int64(lowbias32(wp.uint32(index)) & wp.uint32(0x3FFFFFF))
+    return (wp.int64(level) << wp.int64(58)) | (hashed << wp.int64(32)) | wp.int64(index)
+
+
 @wp.kernel(enable_backward=False)
 def claim_collapse_key(
     survivor: wp.array[wp.int32],
@@ -1834,9 +1869,10 @@ def claim_collapse_key(
     columns: wp.array[wp.int32],
     out_min_key: wp.array[wp.int64],
 ) -> None:
-    # The winning (smallest scrambled) key over the closed 1-rings of both endpoints. The quadric
-    # pass makes the same claim inside ``drop_locked_and_claim``, and both read the answer the same
-    # way (``scatter.two_rings_hold``).
+    # The winning (smallest scrambled) key over the closed 1-rings of both endpoints, read back by
+    # ``scatter.two_rings_hold``: winners have disjoint closed 1-rings. The quadric pass reads the
+    # same claim at the endpoints alone (``scatter.endpoints_hold``), the weaker rule that is
+    # still exactly the conflict to exclude.
     #
     # The key is ``scramble_index(k)`` and not ``k`` for the reason that function records: a min-key
     # lock over a *spatially monotone* key field has essentially one local minimum, so it commits a
@@ -2897,17 +2933,21 @@ def objective_flip_candidates(
 # equally good positions and picking one by inversion amplifies noise.
 QUADRIC_SINGULAR_EPS = wp.constant(wp.float64(1e-12))
 
-# A collapse is rejected when it would turn an incident face's normal by more than this. Zero would
-# allow a face to become exactly degenerate; 0.2 (~78 degrees) still permits real simplification of
-# a curved region while refusing an outright fold.
+# Weight of a boundary edge's constraint plane relative to its squared length
+# (``add_boundary_quadric``).
+BOUNDARY_QUADRIC_WEIGHT = wp.constant(wp.float64(1.0))
+
+# A collapse -- and a smoothing move -- is rejected when it would turn an incident face's normal by
+# more than this. 0.5 is 60 degrees per step.
 #
-# **Not exposed as a keyword.** A veto census over decimations that stopped short of their target
-# has the *feature* rule vetoing every remaining edge in most cases and this one vetoing none, so
-# the knob a caller short of their target needs is ``feature_angle``, which already exists; a second
-# one here would be a keyword for a constraint measured not to bind (section 4.2). Re-run that
-# census before widening this value -- it is what keeps the output free of inverted,
-# self-intersecting triangles, and nothing in the suite would notice it going soft.
-COLLAPSE_MIN_NORMAL_DOT = wp.constant(wp.float32(0.2))
+# The guard is *per step* and relative to the face as it stands, so it bounds each collapse's turn,
+# not a face's turn since the input: over several passes a face can turn further than any one step
+# allowed. At 0.2 (78 degrees) that drift folded a face of the graded height field in
+# ``test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face`` once the collapse stage committed
+# more per pass; at 0.5 neither decimator stops sooner on any mesh measured, and the quadric one's
+# Hausdorff distance fell. **Not exposed as a keyword**: nothing measured binds on it, and loosening
+# it is what lets inverted, self-intersecting triangles through.
+COLLAPSE_MIN_NORMAL_DOT = wp.constant(wp.float32(0.5))
 
 
 @wp.func
@@ -2994,6 +3034,45 @@ def add_face_quadric(
     add_corner_triple(out_quadrics, faces, f, quadric, quadric, quadric)
 
 
+@wp.func
+def add_boundary_quadric(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face: wp.int32,
+    u: wp.int32,
+    v: wp.int32,
+    out_quadrics: wp.array[wp.mat44d],
+) -> None:
+    # Garland-Heckbert's boundary constraint: the plane through boundary edge ``(u, v)``
+    # perpendicular to its one face ``face``, weighted by ``BOUNDARY_QUADRIC_WEIGHT`` times the
+    # squared edge length (an area, as the face quadrics' weights are), on both endpoints.
+    #
+    # The face planes alone say nothing about where the boundary runs within the surface, so a
+    # collapse that drags a rim inwards -- or cuts a corner of an open patch -- costs nothing, and
+    # boundaries were eroded first. Worse, a rim vertex's quadric is nearly singular along the
+    # rim's outward direction, and its minimizer slid there: every vertex an open mesh lost far
+    # off its surface (a sizeable fraction of the bounding-box diagonal on a scan with holes) was a
+    # rim vertex. This plane constrains exactly that direction.
+    #
+    # A truncated-pseudoinverse placement (minimize only along well-conditioned eigenvectors, keep
+    # the midpoint along the rest) was built for the same symptom and measured redundant once this
+    # constraint exists: no closed fixture or scan showed a spike without it, and it moved deviation
+    # by a few percent either way.
+    v0, v1, v2 = face_vertices_vec3d(vertices, faces, face)
+    p = to_vec3d(vertices[u])
+    edge = to_vec3d(vertices[v]) - p
+    normal = wp.cross(edge, wp.cross(v1 - v0, v2 - v0))
+    length = wp.length(normal)
+    if length <= wp.float64(0.0):
+        return
+    normal = normal / length
+    quadric = plane_quadric(
+        normal, -wp.dot(normal, p), BOUNDARY_QUADRIC_WEIGHT * wp.dot(edge, edge)
+    )
+    wp.atomic_add(out_quadrics, u, quadric)
+    wp.atomic_add(out_quadrics, v, quadric)
+
+
 # One decimation pass is replayed as a CUDA graph, and a replay pays a few microseconds of device
 # time per graph *node* on top of the node's own work, so the pass is written as few launches as
 # its data dependencies allow: every kernel below does all the work that can share its grid
@@ -3045,7 +3124,7 @@ def begin_decimation_pass(
     # counts and quadrics, the round loop's locks, claim keys and collapse map, the working
     # positions, the compaction's vertex marks, and the loop state (``end_collapse_round``'s slot
     # table, seeded with its condition at 1 because ``wp.capture_while`` tests it before the first
-    # round) and the pass's commit count.
+    # round) and the pass's commit and removed-face counts.
     t = wp.int32(wp.tid())
     if t < faces.shape[0] // 3:
         c = t * 3
@@ -3075,7 +3154,9 @@ def begin_decimation_pass(
         out_round_state[LOOP_ROUND] = 0
         out_round_state[LOOP_CONDITION] = 1
         out_round_state[COLLAPSE_COMMITS] = 0
+        out_round_state[COLLAPSE_REMOVED_FACES] = 0
         out_state[DECIMATION_COMMITS] = 0
+        out_state[DECIMATION_REMOVED_FACES] = 0
 
 
 # The pass's exclusive scans (``remesh._ExclusiveScan``). ``wp.utils.array_scan`` allocates its
@@ -3211,7 +3292,7 @@ def emit_pass_edges(
 ) -> None:
     # One launch per sorted live corner for everything the corner itself decides: the ascending
     # unique edge rows (the same ascending-key order ``unique_1d`` produces, which is what keeps the
-    # edge numbering -- and so ``scramble_index``'s lock keys -- identical to the composed path),
+    # edge numbering -- and so the hash in the lock keys -- identical to the composed path),
     # the edge's incident faces (``scatter.scatter_edge_incidence``, reached without the corner ->
     # edge map it reads), the corner's slot in its vertex's face list, and, from the last live
     # position, the live edge count. The exclusive scan of ``starts`` at ``i`` is the unique index
@@ -3251,9 +3332,12 @@ def count_pass_edges(
     out_feature_count: wp.array[wp.int32],
     out_adjacency_counts: wp.array[wp.int32],
     out_edge_slots: wp.array[wp.vec2i],
+    out_quadrics: wp.array[wp.mat44d],
 ) -> None:
     # Per live unique edge, once the incidence is complete: its feature vote (``_classify``'s
-    # count, ``is_feature_edge``) and its two entries' slots in the vertex-vertex CSR rows. A
+    # count, ``is_feature_edge``), a boundary edge's constraint quadric (``add_boundary_quadric``;
+    # the face quadrics are added by ``scatter_pass_adjacency``, into the same zeroed table), and
+    # its two entries' slots in the vertex-vertex CSR rows. A
     # degenerate edge ``(a, a)`` from a face with a repeated corner is one entry in row ``a``, as
     # the triplet build this replaces accumulated its two identical triplets into one.
     e = wp.int32(wp.tid())
@@ -3264,6 +3348,8 @@ def count_pass_edges(
     if is_feature_edge(vertices, faces, edge_face_count, edge_faces, e, feature_angle):
         wp.atomic_add(out_feature_count, u, 1)
         wp.atomic_add(out_feature_count, v, 1)
+    if edge_face_count[e] == 1 and u != v:
+        add_boundary_quadric(vertices, faces, edge_faces[e, 0], u, v, out_quadrics)
     slot_u = wp.atomic_add(out_adjacency_counts, u, 1)
     slot_v = wp.int32(-1)
     if u != v:
@@ -3325,18 +3411,15 @@ def quadric_collapse_candidates(
     out_survivor: wp.array[wp.int32],
     out_removed: wp.array[wp.int32],
     out_pos: wp.array[wp.vec3],
-    out_cost: wp.array[wp.float32],
     out_sort_keys: wp.array[wp.float32],
     out_sort_order: wp.array[wp.int32],
 ) -> None:
     # Garland-Heckbert candidate: the cost of collapsing this edge and where its survivor lands.
-    # ``out_cost`` is left at +inf for a rejected edge (and for every padded row past the live edge
-    # count), so the cost sort puts every rejection past every candidate and the budget cut never
-    # picks one up. The cost is written twice: once kept, once into the sort's key buffer beside an
-    # identity payload, so nothing is copied between here and that sort.
+    # The cost goes straight into the sort's key buffer beside an identity payload, so nothing is
+    # copied between here and that sort; it is left at +inf for a rejected edge (and for every
+    # padded row past the live edge count), so the sort puts every rejection past every candidate.
     k = wp.int32(wp.tid())
     out_survivor[k] = -1
-    out_cost[k] = wp.inf
     out_sort_keys[k] = wp.inf
     out_sort_order[k] = k
     if k >= state[DECIMATION_EDGES]:
@@ -3378,29 +3461,34 @@ def quadric_collapse_candidates(
     out_survivor[k] = s
     out_removed[k] = r
     out_pos[k] = target
-    out_cost[k] = cost
     out_sort_keys[k] = cost
 
 
 @wp.kernel
 def drop_past_half(
     order: wp.array[wp.int32],
+    sorted_cost: wp.array[wp.float32],
     state: wp.array[wp.int32],
     out_rank: wp.array[wp.int32],
     out_candidates: wp.array[wp.int32],
+    out_lock_key: wp.array[wp.int64],
 ) -> None:
     # Stage one of the selection: retire every candidate outside the cheapest half of the live
-    # edges, ``order`` being the ascending cost ranking. Ranking by cost rather than by edge index
-    # is the whole difference between a quadric decimation and a shortest-edge one: the cheapest
-    # collapse must win a contested ring.
+    # edges, ``order`` being the ascending cost ranking and ``sorted_cost`` the costs in it.
+    # Ranking by cost rather than by edge index is the whole difference between a quadric
+    # decimation and a shortest-edge one.
     #
     # It also records each edge's position in that ranking, which is what lets every round rank its
-    # winners with a scan rather than a sort (``commit_budgeted_collapses``).
+    # winners with a scan rather than a sort (``commit_budgeted_collapses``), and its lock key for
+    # the pass, bucketed against the most expensive candidate of the half (``bucketed_lock_key``).
     i = wp.int32(wp.tid())
     e = order[i]
     out_rank[e] = i
-    if i >= wp.max(wp.int32(1), state[DECIMATION_EDGES] // 2):
+    pool = wp.max(wp.int32(1), state[DECIMATION_EDGES] // 2)
+    if i >= pool:
         out_candidates[e] = -1
+        return
+    out_lock_key[e] = bucketed_lock_key(e, sorted_cost[i], sorted_cost[pool - 1])
 
 
 @wp.func
@@ -3413,17 +3501,19 @@ def unlocked_candidate(
     k: wp.int32,
 ) -> wp.int32:
     # Candidate ``k``'s survivor if it may take part in another independent-set round, else -1:
-    # retired is every candidate whose two closed 1-rings touch an already-collapsed neighbourhood.
+    # retired is every candidate with an endpoint in the closed 1-rings of a collapse already
+    # committed this pass, which by symmetry is every candidate that conflicts with one
+    # (``scatter.endpoints_hold``).
     #
-    # That disjointness is exactly what makes reusing the pass's scoring legal. A candidate whose
-    # closed 1-rings miss every locked vertex has *no incident face* holding a collapsed endpoint,
-    # so its endpoints' quadrics, its cost, its target position, its link condition and its
+    # Not conflicting is exactly what makes reusing the pass's scoring legal: no face incident to
+    # the candidate's endpoints has a vertex a commit moved or deleted, and no commit added or
+    # removed an edge at its endpoints, so its quadrics, cost, target position, link condition and
     # normal-flip veto are all still the ones the scoring pass computed. Fail that test and the
     # candidate must wait for the next geometry rebuild.
     s = candidates[k]
     if s < 0:
         return -1
-    if not two_rings_hold(offsets, columns, locked, s, removed[k], wp.int32(0)):
+    if not endpoints_hold(locked, s, removed[k], wp.int32(0)):
         return -1
     return s
 
@@ -3432,6 +3522,7 @@ def unlocked_candidate(
 def drop_locked_and_claim(
     candidates: wp.array[wp.int32],
     removed: wp.array[wp.int32],
+    lock_key: wp.array[wp.int64],
     offsets: wp.array[wp.int32],
     columns: wp.array[wp.int32],
     locked: wp.array[wp.int32],
@@ -3439,13 +3530,13 @@ def drop_locked_and_claim(
     out_min_key: wp.array[wp.int64],
     out_winner_words: wp.array[wp.uint32],
 ) -> None:
-    # First launch of a round: restore the pass's candidate list minus the locked ones
-    # (``unlocked_candidate``), and claim each survivor's closed 2-ring under its hashed key -- the
-    # lock half of ``claim_collapse_key``, which reads only this candidate's own survivor and so
-    # needs no barrier after the restore. On the first round ``locked`` is all-zero and the restore
-    # is the candidate list unchanged. Also clears the winner bitmask ``mark_collapse_winners``
-    # sets, whose last reader was the previous round's commit; launched over the edges or the
-    # mask's words, whichever is more.
+    # First launch of a round: restore the pass's candidate list minus the ones a commit
+    # invalidated (``unlocked_candidate``), and claim each survivor's closed 1-rings under its lock
+    # key (``scatter.lock_two_rings``), which reads only this candidate's own survivor and so needs
+    # no barrier after the restore. On the first round ``locked`` is all-zero and the restore is the
+    # candidate list unchanged. Also clears the winner bitmask ``mark_collapse_winners`` sets, whose
+    # last reader was the previous round's commit; launched over the edges or the mask's words,
+    # whichever is more.
     k = wp.int32(wp.tid())
     if k < out_winner_words.shape[0]:
         out_winner_words[k] = wp.uint32(0)
@@ -3454,16 +3545,16 @@ def drop_locked_and_claim(
     s = unlocked_candidate(candidates, removed, offsets, columns, locked, k)
     out_survivor[k] = s
     if s >= 0:
-        lock_two_rings(offsets, columns, s, removed[k], scramble_index(k), out_min_key)
+        lock_two_rings(offsets, columns, s, removed[k], lock_key[k], out_min_key)
 
 
 @wp.kernel(enable_backward=False)
 def mark_collapse_winners(
     survivor: wp.array[wp.int32],
     removed: wp.array[wp.int32],
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
+    lock_key: wp.array[wp.int64],
     min_key: wp.array[wp.int64],
+    edge_face_count: wp.array[wp.int32],
     rank: wp.array[wp.int32],
     out_survivor: wp.array[wp.int32],
     out_winner_words: wp.array[wp.uint32],
@@ -3472,53 +3563,38 @@ def mark_collapse_winners(
     # independent set is known. Trimming members from an independent set keeps it independent;
     # trimming the candidate list beforehand would change which set is found.
     #
-    # Each winner sets two bits of one bitmask that one word scan covers: bit ``rank[k]`` of the
-    # first half, which is in the pass's cost order, and bit ``k`` of the second, in edge order.
+    # Each winner sets bit ``rank[k]`` -- its place in the pass's cost order -- of the first half of
+    # one bitmask, and a winner that removes a single face (a boundary edge's collapse) sets the
+    # same bit of the second half, so one word scan gives every winner the count of winners, and
+    # of single-face winners, cheaper than itself (``winner_faces_before``).
     k = wp.int32(wp.tid())
     s = survivor[k]
     if s < 0:
         return
-    if not two_rings_hold(offsets, columns, min_key, s, removed[k], scramble_index(k)):
+    if not endpoints_hold(min_key, s, removed[k], lock_key[k]):
         out_survivor[k] = -1
         return
     p = rank[k]
-    half = out_winner_words.shape[0] // 2
-    wp.atomic_or(out_winner_words, p >> 5, wp.uint32(1) << wp.uint32(p & 31))
-    wp.atomic_or(out_winner_words, half + (k >> 5), wp.uint32(1) << wp.uint32(k & 31))
+    bit = wp.uint32(1) << wp.uint32(p & 31)
+    wp.atomic_or(out_winner_words, p >> 5, bit)
+    if edge_face_count[k] == 1:
+        wp.atomic_or(out_winner_words, out_winner_words.shape[0] // 2 + (p >> 5), bit)
 
 
 @wp.func
-def winner_budget_rank(
-    cost: wp.float32,
+def winner_faces_before(
     rank: wp.int32,
-    k: wp.int32,
-    m: wp.int32,
     words: wp.array[wp.uint32],
     prefix: wp.array[wp.int32],
     chunk_offsets: wp.array[wp.int32],
 ) -> wp.int32:
-    # Winner ``k``'s place in the round's ascending-cost order of winners, the order a stable radix
-    # sort of ``winner ? cost : +inf`` over the edge index would give -- from the word scan of
-    # ``mark_collapse_winners``' bitmask (``set_bits_before``) instead of from a sort.
-    #
-    # The pass's cost ranking is that same stable sort over the same key bits with every edge in
-    # it, so restricted to the winners it orders them identically, and the bits ahead of ``rank``
-    # count the winners ahead of ``k``. That is the whole answer for a cost that sorts before
-    # +inf. The round's sort also holds every *non*-winner at +inf, which only an unrepresentable
-    # cost can meet: a winner costing exactly +inf ties them and falls behind the ones of lower
-    # index, and one whose cost is a positive NaN sorts behind them all. ``wp.cast`` reads the
-    # float's bits.
-    half = words.shape[0] // 2
-    position = set_bits_before(words, prefix, chunk_offsets, 0, rank)
-    bits = wp.cast(cost, wp.int32)
-    if bits >= 0x7F800000:
-        winners = scanned_prefix(prefix, chunk_offsets, half)
-        non_winners_before = m - winners
-        if bits == 0x7F800000:
-            winners_before = set_bits_before(words, prefix, chunk_offsets, half, k) - winners
-            non_winners_before = k - winners_before
-        position += non_winners_before
-    return position
+    # Faces removed by the round's winners cheaper than the winner at cost rank ``rank``: two per
+    # winner, less one per single-face winner, both read off ``mark_collapse_winners``' bitmask by
+    # its word scan (``set_bits_before``). The pass's cost ranking is a stable total order, so the
+    # winners ahead of ``rank`` are exactly the ones a serial queue would commit first.
+    winners = set_bits_before(words, prefix, chunk_offsets, 0, rank)
+    single = set_bits_before(words, prefix, chunk_offsets, words.shape[0] // 2, rank)
+    return 2 * winners - (single - scanned_prefix(prefix, chunk_offsets, words.shape[0] // 2))
 
 
 @wp.kernel(enable_backward=False)
@@ -3526,7 +3602,7 @@ def commit_budgeted_collapses(
     survivor: wp.array[wp.int32],
     removed: wp.array[wp.int32],
     target_pos: wp.array[wp.vec3],
-    cost: wp.array[wp.float32],
+    edge_face_count: wp.array[wp.int32],
     rank: wp.array[wp.int32],
     winner_words: wp.array[wp.uint32],
     prefix: wp.array[wp.int32],
@@ -3542,39 +3618,40 @@ def commit_budgeted_collapses(
     out_locked: wp.array[wp.int32],
     out_min_key: wp.array[wp.int64],
 ) -> None:
-    # Apply the round's independent set up to its budget, then mark the closed 1-rings of both
-    # endpoints of every commit so the next round can tell which candidates it invalidated
-    # (``unlocked_candidate``). Launched over the edges or the vertices, whichever is wider: the
-    # vertex threads re-arm the claim keys for the next round, which is legal here because
-    # ``mark_collapse_winners`` was their last reader.
+    # Apply the round's independent set up to its face budget, cheapest first, then mark the closed
+    # 1-rings of every commit for the next round's conflict test (``unlocked_candidate``). Launched
+    # over the edges or the vertices, whichever is wider: the vertex threads re-arm the claim keys
+    # for the next round, which is legal here because ``mark_collapse_winners`` was their last
+    # reader. Plain stores for the marks: every write is the same value.
     #
-    # The budget is the rounds' shared one: ``(n_faces - target) // 2`` for the pass -- an interior
-    # collapse removes two faces -- less the commits of every round so far, which
-    # ``end_collapse_round`` has stored. Its floor of one while nothing has been committed is what
-    # lets a pass with a surplus of a single face still finish the job; it cannot manufacture a
-    # commit, because the budget only ever *trims* an independent set that is already chosen. A
-    # budget of zero commits nothing, which is how a pass that has exhausted its surplus stops.
-    #
-    # Plain stores for the locks: every write is the same value.
+    # The budget is in **faces**, shared by the pass's rounds: ``n_faces - target`` less the faces
+    # every earlier round removed, which ``end_collapse_round`` has stored. A collapse removes the
+    # faces on its edge -- two, or one on a boundary -- and a winner commits when the cheaper
+    # winners and itself fit. Counted in collapses instead, a boundary collapse would be charged
+    # two faces and every pass but the last would stop short of its share, leaving a tail of passes
+    # that commit one collapse each. A winner that would overshoot is still committed when it is the
+    # pass's first, so a pass with a surplus of one face on a closed mesh still finishes the job;
+    # that cannot manufacture a commit, because the budget only *trims* a chosen independent set.
+    # ``out_count`` is ``[commits, removed faces]`` for the pass.
     k = wp.int32(wp.tid())
     if k < out_min_key.shape[0]:
         out_min_key[k] = UNCLAIMED_KEY
-    m = survivor.shape[0]
-    if k >= m:
+    if k >= survivor.shape[0]:
         return
     s = survivor[k]
     if s < 0:
         return
-    committed = round_state[COLLAPSE_COMMITS]
-    budget = (state[DECIMATION_FACES] - target_faces) // 2 - committed
-    if committed == 0:
-        budget = wp.max(budget, wp.int32(1))
-    if winner_budget_rank(cost[k], rank[k], k, m, winner_words, prefix, chunk_offsets) >= budget:
+    removed_faces = round_state[COLLAPSE_REMOVED_FACES]
+    budget = state[DECIMATION_FACES] - target_faces - removed_faces
+    before = winner_faces_before(rank[k], winner_words, prefix, chunk_offsets)
+    own = wp.max(wp.int32(1), wp.min(edge_face_count[k], wp.int32(2)))
+    if before + own > budget and not (removed_faces == 0 and before == 0 and budget > 0):
         return
     r = removed[k]
     out_remap[r] = s
     out_positions[s] = target_pos[k]
     wp.atomic_add(out_count, 0, 1)
+    wp.atomic_add(out_count, 1, own)
     stamp_two_rings(offsets, columns, s, r, 1, out_locked)
 
 
@@ -3583,7 +3660,8 @@ def end_collapse_round(
     max_rounds: wp.int32, count: wp.array[wp.int32], out_state: wp.array[wp.int32]
 ) -> None:
     # dim=1, last op of a round: decide whether another round against this same scoring is worth
-    # running. ``begin_decimation_pass`` seeds the slot table.
+    # running, and store the round's totals for the next one's budget. ``begin_decimation_pass``
+    # seeds the slot table.
     #
     # It stops when the round committed nothing -- a further round cannot, since the state it
     # reads is then unchanged -- or at the round cap. A budget-exhausted pass stops through that
@@ -3592,6 +3670,7 @@ def end_collapse_round(
     out_state[LOOP_ROUND] = out_state[LOOP_ROUND] + wp.int32(1)
     progressed = count[0] > out_state[COLLAPSE_COMMITS]
     out_state[COLLAPSE_COMMITS] = count[0]
+    out_state[COLLAPSE_REMOVED_FACES] = count[1]
     keep_going = progressed and out_state[LOOP_ROUND] < max_rounds
     out_state[LOOP_CONDITION] = wp.where(keep_going, wp.int32(1), wp.int32(0))
 

@@ -259,11 +259,12 @@ def lock_two_rings(
     # half of a parallel independent set over edge candidates, so that whichever candidate wins
     # everywhere it touched has a neighbourhood disjoint from every other winner's.
     #
-    # Both of ``kernels/remesh.py``'s collapse paths run this once per pass, with the key
-    # ``remesh.scramble_index`` builds. Two properties of that key are load-bearing and both are
-    # recorded there: it must not be spatially monotone (a monotone key commits one collapse per
-    # pass), and it must be *injective*, or two candidates can tie and both believe they won --
-    # which is why it is 64 bits wide here rather than the natural int32 of a vertex index.
+    # Both of ``kernels/remesh.py``'s collapse paths run it, with the keys ``remesh.scramble_index``
+    # and ``remesh.bucketed_lock_key`` build. Two properties of
+    # those keys are load-bearing and both are recorded there: the key field must not be spatially
+    # monotone (a monotone key commits one collapse per pass), and the key must be *injective*, or
+    # two candidates can tie and both believe they won -- which is why it is 64 bits wide here
+    # rather than the natural int32 of a vertex index.
     wp.atomic_min(out_claim, s, key)
     wp.atomic_min(out_claim, r, key)
     for i in range(offsets[s], offsets[s + 1]):
@@ -313,6 +314,28 @@ def stamp_two_rings(
         out_marks[columns[i]] = value
     for i in range(offsets[r], offsets[r + 1]):
         out_marks[columns[i]] = value
+
+
+@wp.func
+def endpoints_hold(table: wp.array[Any], s: wp.int32, r: wp.int32, value: Any) -> wp.bool:
+    # Do both endpoints of the collapse ``(s, r)`` hold ``value`` in ``table``? The read half of
+    # the decimation pass's independent set: after ``lock_two_rings`` it is the win test (``value``
+    # the collapse's own key), and after ``stamp_two_rings`` the "no committed collapse conflicts"
+    # test (``value`` zero).
+    #
+    # Two collapses conflict when an endpoint of either lies in the other's closed 1-rings, and
+    # only then. A collapse ``(s, r)`` changes the faces incident to ``s`` or ``r`` and nothing
+    # else: it moves ``s`` and deletes ``r``. When neither endpoint of ``B`` lies in ``A``'s closed
+    # 1-rings, no face of ``A``'s star holds a vertex ``B`` moves or deletes, and ``B`` adds or
+    # removes no edge at ``A``'s endpoints, so ``A``'s link condition, fold veto, quadrics and
+    # placement are exactly the ones its scoring saw: the pair is equivalent to applying the two
+    # one after the other. The rings themselves may overlap.
+    #
+    # Adjacency is symmetric, so "an endpoint of ``B`` is in ``A``'s closed rings" is the same
+    # statement as "an endpoint of ``A`` is in ``B``'s", and reading the claim at the two endpoints
+    # alone decides the conflict both ways. ``two_rings_hold`` reads every ring vertex instead,
+    # which is the stricter disjoint-rings rule: it admits about half as many collapses a pass.
+    return table[s] == value and table[r] == value
 
 
 @wp.kernel

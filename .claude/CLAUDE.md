@@ -4342,13 +4342,79 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   halved and freed 250 000 faces of width (a loss on small meshes, hence the gate). A graph
   replay of many small nodes is not free device time (~3 us gap per node: 0.88 ms replayed vs
   ~0.58 ms of kernel time over 109 nodes), so **the lever is fewer nodes (fusion), not fewer
-  syncs**. A winner's rank in the cost order is read off two bitmasks (popcount plus a word
-  scan), exact against the old stable sort of `winner ? cost : +inf` including `inf` / `NaN`;
-  six per-round radix sorts were half of a replay's busy time. Scans inside the pass are a
+  syncs**. The faces a round's cheaper winners remove are read off two bitmasks in cost-rank
+  order (every winner, and the single-face boundary winners; popcount plus a word scan,
+  `winner_faces_before`); six per-round radix sorts were half of a replay's busy time. Scans
+  inside the pass are a
   private allocation-free chunked scan (`remesh._ExclusiveScan`), which a `capture_while` body
   needs and `wp.utils.array_scan` is not (§14.3). **Declined: `capture_while` for the pass**
   (42 replays 36.7 ms back to back vs 37.3 ms with per-pass readbacks: ~2 %); its
   allocations are dozens of buffers, not only scan scratch.
+- **`quadric_decimate` quality and pass count (2026-10-06).** Scaling first: the pass cost is
+  ~0.4 ms at 35 k faces and ~1 ms at 1 M (replayed), device-bound only at `lucy` (28 M faces,
+  1.3 s at 0.5 or 0.1: the first, widest passes dominate; float64 `mat44d` atomics in
+  `scatter_pass_adjacency` are 30 % of its device time). What sets the cost at every other size
+  is the **pass count**: each pass removed ~6.5 % of the faces, so 0.1 took 36-66 passes and 0.01
+  took 70-76, plus a tail of 3-20 near-empty passes. Four changes landed together:
+    - **Relaxed independence**: two collapses conflict exactly when an endpoint of either lies in
+      the other's closed 1-rings, and adjacency is symmetric, so the win test reads the claim at
+      the two endpoints only (`scatter.endpoints_hold`) instead of over both rings
+      (`two_rings_hold`, disjoint rings). Faces removed per pass 6.5 % -> 14.6 %; passes at 0.1
+      36-66 -> 16-19. A second "endpoint claim" table was built first and is redundant by that
+      symmetry. `test_quadric_decimate_commits_no_conflicting_collapses` checks every pass's
+      committed set against the pass-start adjacency.
+    - **Cost-bucketed lock key** (`bucketed_lock_key`: 24 base-2 buckets of `cost / most
+      expensive candidate`, then the hash, then the index): mean deviation -25 to -35 % and slivers
+      3-10x fewer, no extra passes. **A rank-based bucket is a trap**: tied costs (any flat
+      region) rank in index order, which is spatially monotone, so a flat CAD box took 90-100
+      passes and 40 % slivers; value-based buckets keep ties in one bucket.
+    - **Garland-Heckbert boundary planes** (`add_boundary_quadric`, weight 1 x |e|^2). Shipped
+      defect it fixes: every far-off vertex of an open mesh was a rim vertex whose quadric is near
+      singular off the rim -- `bunny` at 0.5 had one output vertex 0.40 bbox diagonals off the
+      surface (1.13 at 180 degrees), the graded saddle 0.90 at 0.1, rims eroded 528 -> 98 edges and
+      square corners cut off.
+    - **Face-counted budget**: a round commits winners while the cheaper winners' faces (2, or 1 on
+      a boundary) fit the surplus; counting collapses charged boundary collapses two faces and left
+      a tail of passes committing one collapse each.
+  Also `COLLAPSE_MIN_NORMAL_DOT` 0.2 -> 0.5 (below) and the default `feature_angle` 30 -> 180:
+  at 30 the per-pass reclassification freezes a coarsening scan (dihedral angles grow) and
+  crease-crease collapses are boundary-only, so `bunny` / `dragon` / `happy_buddha` could not go
+  below ~10 % (0.01 returned 8 160 / 88.7 k / 154 k faces) with mean deviation 3-60x MeshLib's.
+  Every reference decimator freezes nothing; the quadric itself keeps CAD creases (a subdivided
+  box at 0.01: 4e-9 of the diagonal). Against HEAD at its old default, one process, min of 5,
+  quiet box: saddle 1.64 / 2.22 / 2.33x at 0.5 / 0.1 / 0.01, saddle_graded 1.44 / 2.13 / 2.11x,
+  bunny 1.88 / 2.97 / 1.80x, dragon 2.37 / 2.95 / 2.09x, happy_buddha 1.98 / 2.97 / 2.24x; against
+  HEAD at 180 1.6-2.7x. Mean deviation at 0.1: bunny 8.8e-4 -> 1.67e-4, dragon 2.7e-4 -> 3.4e-5
+  (MeshLib 2.0e-4 / 4.4e-5, pymeshlab 2.1e-4 / 4.4e-5). Max on `dragon` at 0.5 stays 5x
+  MeshLib's (3.8e-4 vs 7.5e-5); 1st-percentile triangle quality at 0.01 is 0.008 on `dragon`
+  against 0.020 for HEAD at 180.
+- **Declined for `quadric_decimate`, all measured 2026-10-06 (do not re-propose without new
+  data):**
+    - **Truncated-pseudoinverse placement** (Lindstrom 2000 / dual-contouring QEF: minimize only
+      along eigenvectors above 1e-3 of the largest, keep the midpoint along the rest; float32
+      `eig3` on the trace-scaled block, since float64 `eig3` cost 0.77x at `dragon`). It removed
+      the spikes *before* the boundary planes existed; with them it measured redundant (no spike on
+      12 closed and parametric fixtures with the plain inverse) and moved deviation a few percent
+      either way (`dragon` 0.01 max 8.2e-3 truncated vs 4.9e-3 plain).
+    - A **hard triangle-quality veto** (reject a move leaving a face below a mean ratio and worse
+      than before): stalls on sliver-heavy input (`dragon` at 0.1 stopped at 193-296 k faces).
+      A **soft penalty** (cost x threshold / quality) bought little; the bucketed key got more.
+    - A **larger candidate pool** than the cheapest half: 0.75 saved 1-3 passes for 5-60 % worse
+      mean deviation, 1.0 was 2-6x worse. **Round cap 16** instead of 8: no change.
+    - **Features classified once on the input and carried** through compaction: 10x worse mean
+      at 0.01 on scans. **Crease-crease collapse along interior feature edges**: helps a CAD box
+      at 0.01 only; scans still floor.
+    - **Lindstrom quadric clustering to K x target, then QEM** (K = 2, 4, 8, at 0.01): the QEM
+      stage 3-7x faster but mean deviation 1.4-2x and max 1.5-4x worse, and 60-1 500
+      non-manifold edges in the output.
+    - Not built, priced: symmetric 10-double quadric storage written per face and gathered per
+      vertex through the vertex-face CSR (micro-probe of that stage 2.3x at `dragon`, 3.6x at
+      `lucy`; needs one more graph node and an `n_faces` x 80-byte buffer).
+- **`COLLAPSE_MIN_NORMAL_DOT` is per step, so a face can turn further over several passes.**
+  At 0.2 the relaxed rule's extra collapses folded a face of the graded height field in
+  `test_collapse_pass_vetoes_a_collapse_that_would_fold_a_face` (dot -0.11 against the analytic
+  surface normal after 5 passes; one pass has no fold). 0.5 removed it with no lost collapses on
+  either decimator and lowered the quadric one's Hausdorff (`dragon` 0.1: 5.2e-3 -> 2.4e-3).
 - **`remove_degree3_vertices`**: an interior degree-3 vertex is three faces whose opposite edges
   close a directed 3-cycle, and the cycle *is* the replacement; a telescoping `x - y` sum over
   the opposite edges is an exact "closed link" flag (0 for any closed link, non-zero for one

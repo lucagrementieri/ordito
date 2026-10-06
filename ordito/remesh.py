@@ -1675,7 +1675,7 @@ def quadric_decimate(
     *,
     target_faces: int | None = None,
     target_ratio: float | None = None,
-    feature_angle: float = 30.0,
+    feature_angle: float = 180.0,
     max_iter: int = 100,
     return_index: bool = False,
 ) -> (
@@ -1693,11 +1693,12 @@ def quadric_decimate(
     library exposes for the purpose (MeshLab's ``meshing_decimation_quadric_edge_collapse``,
     ``igl.decimate``, Open3D's ``simplify_quadric_decimation``).
 
-    Each vertex accumulates the area-weighted plane quadrics of its incident faces; the cost of
-    collapsing an edge is the residual of the summed quadric at its own minimizer, which is also
-    where the surviving vertex is placed. Cheap collapses are the ones that barely move the surface,
-    so the flat regions go first and the features last — the property that makes this the standard
-    method.
+    Each vertex accumulates the area-weighted plane quadrics of its incident faces, and a boundary
+    vertex also the plane through each of its boundary edges perpendicular to the edge's face; the
+    cost of collapsing an edge is the residual of the summed quadric at its own minimizer, which is
+    also where the surviving vertex is placed. Cheap collapses are the ones that barely move the
+    surface, so the flat regions go first and the sharp features last -- the quadric alone keeps a
+    crease, which is why no feature has to be frozen by default.
 
 
     Parameters
@@ -1714,10 +1715,13 @@ def quadric_decimate(
         Desired face count as a fraction of the input's, so ``0.1`` is MeshLab's usual "10 %". Must
         be in ``(0, 1]``.
     feature_angle
-        Dihedral angle in **degrees** above which an edge is a feature. Feature and boundary
-        structure is preserved exactly as in
-        [`isotropic_remesh`][ordito.remesh.isotropic_remesh]: corners are frozen, a crease vertex
-        only collapses along its own feature, and a crease is never dragged off it.
+        Dihedral angle in **degrees** above which an interior edge is frozen as a feature, as in
+        [`isotropic_remesh`][ordito.remesh.isotropic_remesh]: corners stay put, a crease vertex
+        only collapses along a boundary edge, and a crease is never dragged off it. The default,
+        180, freezes no interior edge -- boundary edges are always kept on the boundary -- which is
+        what igl, Open3D and MeshLab do. A smaller angle trades reach for preservation: the
+        dihedral angles of a coarsened surface grow, so on a scan an angle of 30 stops the
+        decimation near a tenth of the input whatever the target.
     max_iter
         Cap on collapse passes. Each pass commits a conflict-free independent set, so a large
         reduction needs many; the loop also stops early once the target is met or a pass commits
@@ -1732,9 +1736,10 @@ def quadric_decimate(
         ``(n_out_vertices,)`` simplified vertex positions on ``vertices.device``, compacted from
         index zero.
     faces : wp.array[wp.int32]
-        ``(3 * n_out_faces,)`` flat triangle index buffer. The count is a best effort at
-        ``target_faces`` and is **not** bounded by it: a mesh whose remaining edges all fail the
-        link condition or the normal-flip guard stops above the target — see Notes. Read the
+        ``(3 * n_out_faces,)`` flat triangle index buffer. The count is ``target_faces`` whenever
+        the target is reachable (one face below it at most, when a single interior collapse is
+        all that is left); it stops above the target when every remaining edge fails the link
+        condition, the normal-flip guard or the ``feature_angle`` rule -- see Notes. Read the
         returned count rather than assuming it.
     vertex_index : wp.array[wp.int32]
         ``(n_vertices,)`` **output** vertex each input vertex ended up in, or ``-1`` for an input
@@ -1766,20 +1771,20 @@ def quadric_decimate(
     -----
     **This is a batched-parallel greedy method, not the textbook serial one, and the difference is
     visible in the output.** Textbook QEM pops one edge at a time from a global priority queue,
-    which is inherently sequential. Here each pass scores every edge, ranks the candidates by cost,
-    and commits the cheapest *independent set* of them -- two collapses may commit together only if
-    their closed 1-rings are disjoint. So the sequence of collapses differs from a serial run's and
-    the resulting triangulation is not the same mesh, even though both are driven by the same
-    metric. Compare the two by deviation from the input rather than by equality. In exchange the
-    *quality* is competitive: committing an independent set spreads the error over the surface where
-    draining a priority queue concentrates it, and a max-norm error measure rewards that.
+    which is inherently sequential. Here each pass scores every edge, keeps the cheapest half as
+    candidates, and commits an *independent set* of them: two collapses may commit together only
+    if neither has an endpoint in the other's closed 1-rings, which is exactly when applying them
+    together equals applying them one after the other. Within a neighbourhood the cheaper collapse
+    wins -- the lock key orders candidates by a coarse cost bucket before a hash -- so the result
+    follows the serial queue's preference locally while the passes stay parallel. The sequence of
+    collapses still differs from a serial run's and the resulting triangulation is not the same
+    mesh, so compare the two by deviation from the input rather than by equality.
 
-    A pass commits **several independent sets against one scoring**, not one. A single hashed-key
-    round takes a small fraction of the candidates, because each winner locks the closed 1-rings of
-    both its endpoints, and rebuilding the geometry between rounds is comparatively expensive. So
-    the pass retires only the candidates the previous round's commits invalidated -- those whose
-    closed 1-rings touch a collapsed neighbourhood -- and runs another round until one finds nothing
-    new. That round loop runs **entirely on device**, as one ``wp.capture_while`` graph.
+    A pass commits **several independent sets against one scoring**, not one. Rebuilding the
+    geometry between rounds is comparatively expensive, so the pass retires only the candidates
+    the previous round's commits invalidated -- those that conflict with a committed collapse --
+    and runs another round until one finds nothing new. That round loop runs **entirely on
+    device**, as one ``wp.capture_while`` graph.
 
     The per-pass rebuild cost is dominated by the number of launches it issues rather than by the
     mesh size, which is why one edge grouping answers the feature classification, the incidence
@@ -1791,27 +1796,17 @@ def quadric_decimate(
 
     Four consequences to plan around:
 
-    - **The target is reached exactly whenever it is reachable, and it is ``feature_angle`` that
-      decides
-      whether it is.** A pass is budgeted at half the remaining surplus (an interior collapse
-      removes two faces), shared across its rounds, and the loop stops early when a pass can commit
-      nothing. What stops it is almost always the *feature* rule rather than the link condition or
-      the normal-flip guard: a surface's own dihedral angles grow as it is coarsened, so past some
-      face count every edge of a smooth mesh is sharper than ``feature_angle``, every vertex becomes
-      a frozen corner, and no collapse is legal at any ``max_iter``. **That floor is the parameter
-      working, not a limitation to route around** -- it is the same rule that keeps a cylinder's rim
-      and a box's creases intact. Raising ``feature_angle`` lowers it; at 180 degrees nothing is a
-      feature and the target is reached. Check the returned face count if it matters.
+    - **The budget is counted in faces.** A pass may remove the whole remaining surplus, cheapest
+      collapses first, charging two faces for an interior collapse and one for a boundary one, so
+      the target is met exactly rather than approached by passes that each remove a single face.
+    - **A boundary vertex also carries the plane through each of its boundary edges.** Without it
+      a rim vertex's quadric is nearly singular in the direction off the rim, collapses there cost
+      nothing, and the minimizer can slide a rim vertex far off the surface.
     - Every collapse is also checked against a **normal-flip guard**: an incident face whose normal
       would turn too far vetoes it. That is what keeps the output free of the inverted,
-      self-intersecting triangles an unguarded quadric method produces at high reduction ratios. It
-      is **not** usually what stops a decimation short, and is deliberately not exposed as a keyword
-      -- see ``COLLAPSE_MIN_NORMAL_DOT`` in ``kernels/remesh.py``, which records the veto census
-      this claim rests on.
-    - The independent set is chosen under a **hashed** lock key rather than by cost rank. That looks
-      like a detail and is not: on a structured mesh both the edge index and the quadric cost are
-      spatially monotone fields, and a monotone key has one local minimum, so either would commit
-      only a single collapse per pass. See ``scramble_index`` in ``kernels/remesh.py``.
+      self-intersecting triangles an unguarded quadric method produces at high reduction ratios,
+      and it is deliberately not exposed as a keyword -- see ``COLLAPSE_MIN_NORMAL_DOT`` in
+      ``kernels/remesh.py``.
     - **The output is not bit-reproducible on a mesh with tied costs.** The vertex-face incidence
       CSR is
       built by an atomic counting scatter, so a row's order varies run to run; where two candidate
@@ -1871,8 +1866,9 @@ class _DecimationBuffers:
     Attributes
     ----------
     state : wp.array[wp.int32]
-        ``[n_faces, n_vertices, n_edges, commits]``, the live prefix lengths and the pass's collapse
-        count. The one array the host reads, once per pass, to decide whether to run another.
+        ``[n_faces, n_vertices, n_edges, commits, removed_faces]``, the live prefix lengths and the
+        pass's collapse and removed-face counts. The one array the host reads, once per pass, to
+        decide whether to run another.
     """
 
     def __init__(
@@ -1911,14 +1907,14 @@ class _DecimationBuffers:
         _launch.copy(self._faces_store, faces, count=self.n_corners)
         # Allocated holding its seed rather than zeroed and then assigned: the zeroing is
         # discarded and the assign is a second upload of the same bytes. ``[faces, vertices,
-        # edges, commits]``: the last slot is the pass's collapse count, which the pass kernels
-        # reach through the ``_count`` view, so the one readback a pass ends with answers both
-        # "did it commit anything" and the next pass's size test.
+        # edges, commits, removed faces]``: the last two are the pass's collapse and removed-face
+        # counts, which the pass kernels reach through the ``_count`` view, so the one readback a
+        # pass ends with answers both "did it commit anything" and the next pass's size test.
         self.state = _launch.array(
-            [self.n_faces, self.n_vertices, 0, 0], dtype=wp.int32, device=device
+            [self.n_faces, self.n_vertices, 0, 0, 0], dtype=wp.int32, device=device
         )
         self._host_state = None
-        self._count = self.state[3:4]
+        self._count = self.state[3:5]
 
         n = self.n_corners
         self._keys_store = _launch.empty(2 * n, dtype=wp.uint64, device=device)
@@ -2018,12 +2014,13 @@ class _DecimationBuffers:
         self._survivor = _launch.empty(edges, dtype=wp.int32, device=device)
         self._removed = _launch.empty(edges, dtype=wp.int32, device=device)
         self._target_pos = _launch.empty(edges, dtype=wp.vec3, device=device)
-        self._cost = _launch.empty(edges, dtype=wp.float32, device=device)
         self._cost_rank = _launch.empty(edges, dtype=wp.int32, device=device)
+        self._lock_key = _launch.empty(edges, dtype=wp.int64, device=device)
         # ``radix_sort_pairs`` wants double-width key and payload buffers.
         self._sort_keys = _launch.empty(2 * edges, dtype=wp.float32, device=device)
         self._sort_order = _launch.empty(2 * edges, dtype=wp.int32, device=device)
-        # Two bitmasks of the round's winners, in cost order and in edge order, one word per 32.
+        # Two bitmasks of the round's winners in cost order, one word per 32: every winner, and the
+        # winners that remove a single face.
         self._winner_words = _launch.empty(2 * (-(-edges // 32)), dtype=wp.uint32, device=device)
         self._winner_scan = _ExclusiveScan(self._winner_words.size, device)
 
@@ -2156,7 +2153,6 @@ class _DecimationBuffers:
                 self._candidates,
                 self._removed,
                 self._target_pos,
-                self._cost,
                 self._sort_keys,
                 self._sort_order,
             ],
@@ -2166,15 +2162,15 @@ class _DecimationBuffers:
         # Two-stage selection, and both stages matter.
         #
         # Stage one narrows the field to the cheapest *half* of the candidate edges, which is what
-        # makes the method quadric-driven. Stage two picks a maximal independent set from those,
-        # locking each winner's closed 2-ring under a **hashed** key -- see ``scramble_index`` for
-        # why the obvious keys (edge index, or the cost itself) both collapse to one winner a pass
-        # on a structured mesh.
+        # makes the method quadric-driven. Stage two picks a maximal independent set from those
+        # under a lock key that is a coarse cost bucket over a hash -- see ``bucketed_lock_key`` for
+        # why neither the cost alone nor a hash alone will do.
         _launch.radix_sort_pairs(self._sort_keys, self._sort_order, count=self.n_edges)
         _launch.launch(
             kernel_remesh.drop_past_half,
             dim=self.n_edges,
-            inputs=[self._sort_order, self.state, self._cost_rank, self._candidates],
+            inputs=[self._sort_order, self._sort_keys, self.state],
+            outputs=[self._cost_rank, self._candidates, self._lock_key],
             device=device,
         )
         self._run_collapse_rounds(csr_offsets)
@@ -2238,6 +2234,7 @@ class _DecimationBuffers:
                 self._feature_count,
                 self._adjacency_counts,
                 self._edge_slots,
+                self._quadrics,
             ],
             device=device,
         )
@@ -2269,17 +2266,19 @@ class _DecimationBuffers:
 
         Everything the loop decides with lives in device arrays -- the pass's face count in
         ``state``, and ``_round_state``, the shared round-loop state (``kernels/array.py``'s
-        ``LOOP_ROUND`` / ``LOOP_CONDITION``) with a third slot appended for the commits so far --
-        so the body holds no host readback and the whole loop is a single ``wp.capture_while``
-        node, nested as an inner ``while`` node of the pass graph the caller is capturing.
+        ``LOOP_ROUND`` / ``LOOP_CONDITION``) with slots appended for the commits and removed faces
+        so far -- so the body holds no host readback and the whole loop is a single
+        ``wp.capture_while`` node, nested as an inner ``while`` node of the pass graph the caller
+        is capturing.
 
         A round is four launches and a scan: restore-and-claim, the win test, a scan of the
-        winners' flags that ranks them by cost, the budgeted commit (which also locks the
-        committed neighbourhoods and re-arms the claim keys), and the loop test. Every round runs
-        the identical body, which is what makes one graph enough: on the first round ``locked`` is
-        all-zero and the restore is the candidate list unchanged, and on the last the locks and
-        re-armed keys are scratch nobody reads again. A budget-exhausted pass stops the way a
-        saturated one does -- nothing commits, and ``end_collapse_round`` sees no progress.
+        winners' flags that ranks them by cost, the commit up to the face budget (which also marks
+        the committed collapses' neighbourhoods and re-arms the claim keys), and the loop test.
+        Every round runs the identical body, which is what makes one graph enough: on the first
+        round ``locked`` is all-zero and the restore is the candidate list unchanged, and on the
+        last the locks and re-armed keys are scratch nobody reads again. A budget-exhausted pass
+        stops the way a saturated one does -- nothing commits, and ``end_collapse_round`` sees no
+        progress.
         """
         device = self._device
         m = self.n_edges
@@ -2292,6 +2291,7 @@ class _DecimationBuffers:
                 inputs=[
                     self._candidates,
                     self._removed,
+                    self._lock_key,
                     csr_offsets,
                     self._adjacency,
                     self._locked,
@@ -2307,9 +2307,9 @@ class _DecimationBuffers:
                 inputs=[
                     self._survivor,
                     self._removed,
-                    csr_offsets,
-                    self._adjacency,
+                    self._lock_key,
                     self._min_key,
+                    self._edge_face_count,
                     self._cost_rank,
                     self._survivor,
                     self._winner_words,
@@ -2324,7 +2324,7 @@ class _DecimationBuffers:
                     self._survivor,
                     self._removed,
                     self._target_pos,
-                    self._cost,
+                    self._edge_face_count,
                     self._cost_rank,
                     self._winner_words,
                     self._winner_scan.prefix,
