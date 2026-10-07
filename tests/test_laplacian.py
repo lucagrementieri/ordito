@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Literal, cast
 
 import igl
@@ -1248,6 +1249,36 @@ def test_mass_matrix_assembled_matches_igl(request: pytest.FixtureRequest, mesh_
 #
 # Spans six public functions at once, so it mirrors no single position above.
 # -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("dtype", [wp.float32, wp.float64])
+def test_mass_matrix_entries_is_reproducible_and_exact(
+    request: pytest.FixtureRequest, mesh_name: str, dtype: type
+) -> None:
+    """
+    Not a library comparison: every call returns the same bits, the exactly rounded sum.
+
+    Each vertex's mass is its faces' ``float32`` areas summed exactly, then divided by three once:
+    ``math.fsum`` per vertex over the same areas, divided by three and rounded to ``dtype``, is
+    the oracle, and five calls must equal it bit for bit on both devices. The rounded-thirds
+    atomic scatter it replaced moved the last bits from call to call on CUDA, which a graded
+    biharmonic system (condition ~1e17) amplified to 2e-3 of its range between two
+    factorizations. The value's oracle is ``test_mass_matrix_assembled_matches_igl``.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    areas_np = od.triangles.face_normals_and_areas(vertices, faces)[1].numpy().astype(np.float64)
+    faces_np = faces.numpy()
+    rows: list[list[float]] = [[] for _ in range(vertices.size)]
+    for corner, vertex in enumerate(faces_np):
+        rows[int(vertex)].append(float(areas_np[corner // 3]))
+    exact_np = (np.array([math.fsum(row) for row in rows]) / 3.0).astype(
+        np.float32 if dtype == wp.float32 else np.float64
+    )
+    for _ in range(5):
+        mass_np = od.laplacian.mass_matrix_entries(vertices, faces, dtype=dtype).numpy()
+        assert np.array_equal(mass_np, exact_np)
 
 
 @pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)

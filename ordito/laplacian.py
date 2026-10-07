@@ -1297,31 +1297,54 @@ def mass_matrix_entries(
     Notes
     -----
     This is the diagonal of ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.
+
+    Reproducible bit for bit on both devices when the areas are computed here or given in
+    ``float32``: each vertex sums its faces' ``float32`` areas exactly in ``float64`` -- whatever
+    order the device commits them in -- and is divided by three once. Given ``float64`` areas, no
+    sum is exact and the result is reproducible only to rounding on CUDA.
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
     n_vertices = vertices.size
     device = vertices.device
-    mass = _launch.zeros(n_vertices, dtype=dtype, device=device)
     n_faces = faces.size // 3
-    if n_faces > 0:
-        if face_areas is not None and face_areas.size != n_faces:
-            raise ValueError(
-                f"face_areas must have length n_faces={n_faces}, got {face_areas.size}"
-            )
-        if face_areas is None:
-            _launch.launch(
-                kernel_scatter.SCATTER_FACE_AREA_THIRDS[dtype],
-                dim=n_faces,
-                inputs=[vertices, faces, dtype(3.0), mass],
-                device=device,
-            )
-        else:
-            _launch.launch(
-                kernel_scatter.SCATTER_FACE_THIRDS[face_areas.dtype, dtype],
-                dim=n_faces,
-                inputs=[faces, face_areas, dtype(3.0), mass],
-                device=device,
-            )
+    if face_areas is not None and n_faces > 0 and face_areas.size != n_faces:
+        raise ValueError(f"face_areas must have length n_faces={n_faces}, got {face_areas.size}")
+    if n_faces == 0:
+        return _launch.zeros(n_vertices, dtype=dtype, device=device)
+    if face_areas is not None and face_areas.dtype != wp.float32:
+        # ``float64`` areas have no exact ``float64`` sum: rounded thirds, committed atomically.
+        mass = _launch.zeros(n_vertices, dtype=dtype, device=device)
+        _launch.launch(
+            kernel_scatter.SCATTER_FACE_THIRDS[face_areas.dtype, dtype],
+            dim=n_faces,
+            inputs=[faces, face_areas, dtype(3.0), mass],
+            device=device,
+        )
+        return mass
+    # ``float32`` areas summed exactly in ``float64`` -- the same bits whatever order the atomics
+    # commit in -- then divided by three once, in the requested precision.
+    sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    if face_areas is None:
+        _launch.launch(
+            kernel_scatter.scatter_face_areas_exact,
+            dim=n_faces,
+            inputs=[vertices, faces, sums],
+            device=device,
+        )
+    else:
+        _launch.launch(
+            kernel_scatter.scatter_face_values_exact,
+            dim=n_faces,
+            inputs=[faces, face_areas, sums],
+            device=device,
+        )
+    mass = sums if dtype == wp.float64 else _launch.empty(n_vertices, dtype=dtype, device=device)
+    _launch.launch(
+        kernel_scatter.SCALE_FACE_SUMS[dtype],
+        dim=n_vertices,
+        inputs=[sums, wp.float64(3.0), mass],
+        device=device,
+    )
     return mass
 
 

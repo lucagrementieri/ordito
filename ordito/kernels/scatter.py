@@ -152,19 +152,38 @@ def scatter_face_thirds(
 
 
 @wp.kernel
-def scatter_face_area_thirds(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    count: wp.Float,
-    out_mass: wp.array[wp.Float],
+def scatter_face_areas_exact(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
 ) -> None:
-    # ``scatter_face_thirds`` with each face's area formed in the thread rather than read from a
-    # table: ``face_normals_and_area``, the body of ``triangles.face_normals_and_areas``, so the
-    # area is that table's entry bit for bit, and no area pass or buffer precedes the scatter.
+    # Each face's ``float32`` area into each of its corners' ``float64`` sum, unscaled. A
+    # ``float32`` value is exact in ``float64``, and a sum of them stays exact while one vertex's
+    # areas span less than ``2^(29 - log2(faces at it))``, so the atomic commit order changes no
+    # bit: the result is reproducible on CUDA, where a sum of rounded thirds was not. The area is
+    # ``face_normals_and_area``'s, bit for bit; ``scale_face_sums`` divides by three afterwards.
     f = wp.int32(wp.tid())
     _normal, area = face_normals_and_area(vertices, faces, f)
-    third = type(count)(area) / count
-    add_corner_triple(out_mass, faces, f, third, third, third)
+    value = wp.float64(area)
+    add_corner_triple(out_sum, faces, f, value, value, value)
+
+
+@wp.kernel
+def scatter_face_values_exact(
+    faces: wp.array[wp.int32], areas: wp.array[wp.float32], out_sum: wp.array[wp.float64]
+) -> None:
+    # ``scatter_face_areas_exact`` over a caller's ``float32`` area table.
+    f = wp.int32(wp.tid())
+    value = wp.float64(areas[f])
+    add_corner_triple(out_sum, faces, f, value, value, value)
+
+
+@wp.kernel
+def scale_face_sums(
+    sums: wp.array[wp.float64], count: wp.float64, out_mass: wp.array[wp.Float]
+) -> None:
+    # The exact per-vertex sums over ``count`` (three, for the barycentric mass), one rounding, in
+    # the requested precision; ``out_mass`` may be ``sums`` itself.
+    i = wp.int32(wp.tid())
+    out_mass[i] = type(out_mass[i])(sums[i] / count)
 
 
 @wp.func
@@ -523,7 +542,7 @@ DIVIDE_BY_DENSITY: OverloadTable
 SPLAT_GRID_TRILINEAR: OverloadTable
 SCATTER_ADD: OverloadTable
 SCATTER_FACE_THIRDS: OverloadTable
-SCATTER_FACE_AREA_THIRDS: OverloadTable
+SCALE_FACE_SUMS: OverloadTable
 SCATTER_SUM_SCALAR: OverloadTable
 SCATTER_SUM_VEC: OverloadTable
 SCATTER_WEIGHTED_SUM_VEC: OverloadTable
@@ -532,7 +551,7 @@ SCATTER_WEIGHTED_SUM_VEC: OverloadTable
 def _register_overloads() -> None:
     """Instantiate every concrete overload of this module's generic kernels."""
     global DIVIDE_BY_DENSITY, SPLAT_GRID_TRILINEAR, SCATTER_ADD
-    global SCATTER_FACE_AREA_THIRDS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR
+    global SCALE_FACE_SUMS, SCATTER_FACE_THIRDS, SCATTER_SUM_SCALAR
     global SCATTER_SUM_VEC, SCATTER_WEIGHTED_SUM_VEC
     DIVIDE_BY_DENSITY = OverloadTable(
         divide_by_density,
@@ -565,9 +584,8 @@ def _register_overloads() -> None:
             for d in _VALUE_DTYPES
         },
     )
-    SCATTER_FACE_AREA_THIRDS = OverloadTable(
-        scatter_face_area_thirds,
-        {d: [wp.array[wp.vec3], wp.array[wp.int32], d, wp.array[d]] for d in _VALUE_DTYPES},
+    SCALE_FACE_SUMS = OverloadTable(
+        scale_face_sums, {d: [wp.array[wp.float64], wp.float64, wp.array[d]] for d in _VALUE_DTYPES}
     )
     SCATTER_SUM_SCALAR = OverloadTable(
         scatter_sum_scalar,

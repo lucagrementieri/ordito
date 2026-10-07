@@ -6646,13 +6646,20 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       each later pass. 10 passes: `saddle_graded` 115 -> 57 ms (2.02x; ~170 rounds), 0.99-1.00x
       elsewhere (~20 rounds, never fires); factoring from pass 1 was 2.58x graded, 0.29-0.43x
       elsewhere. The earlier decline (0.94x) priced a *host* analysis.
-    - **Found, not fixed: `laplacian.mass_matrix_entries` is not reproducible on CUDA**: it scatters
-      face-area thirds with `float64` atomics, so the last bits move between calls. Invisible on an
-      ordinary system; the graded `k=2` system (condition 2.6e17) amplifies it to 1.6-2.1e-3 of the
-      range between two fresh factorizations (a reused factorization reproduces bit for bit, and
-      `cotmatrix`, `k_harmonic`, the interior extraction and the ordering are all bit-stable). Below
-      that answer's own ~1 % floor (above), so a reproducibility defect, not a correctness one; the
-      fix is a fixed-order gather over each vertex's faces.
+    - **`laplacian.mass_matrix_entries` is reproducible now (2026-10-07)**: it scattered rounded
+      `float64` thirds with atomics, so the last bits moved between calls on CUDA, which the graded
+      `k=2` system (condition 2.6e17) amplified to 1.6-2.1e-3 of the range between two fresh
+      factorizations (`cotmatrix`, `k_harmonic`, the extraction and the ordering were bit-stable).
+      Now each face's `float32` area goes into `float64` sums unscaled (`scatter.
+      scatter_face_areas_exact`; exact while one vertex's areas span under `2^(29 - log2 valence)`,
+      so the commit order changes no bit) and one pass divides by three (`scale_face_sums`). Equal
+      to a per-vertex `math.fsum` / 3 bit for bit on every fixture and on `saddle_graded`,
+      `fan_hub`, `bunny`, `dragon`, `happy_buddha`; graded `k=2` factorizations now agree exactly.
+      Cost +0.02 ms a call (0.019 -> 0.045 ms at 17 k vertices, 0.046 -> 0.070 at 0.54 M: the
+      extra launch). Declined: a fixed-order gather over a vertex-face table (deterministic too,
+      0.1-0.26 ms more: the table's sort or rescan; the rescan is quadratic at a hub vertex) and
+      fixed-point integer atomics (one global scale costs small vertices ~1e-7 relative, too coarse
+      for `float64` mass). `float64` areas passed by the caller keep the rounded-thirds scatter.
 
 #### One-block solves
 
