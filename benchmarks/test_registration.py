@@ -458,6 +458,15 @@ def test_icp_convergence(bench_case: BenchCase, degrees: float) -> None:
 
 
 @pytest.mark.benchmark(group="icp_mesh")
+@pytest.mark.noparity(
+    "pymeshlab",
+    oracle="pyvista",
+    reason="stochastic with no shared invariant: compute_matrix_by_icp_between_meshes converges "
+    "(RMS 1.2e-8) or stalls (0.047 / 0.108) on one input depending on the process's memory "
+    "layout -- byte-identical installs in two virtualenvs differing only in path give the two "
+    "answers deterministically; seeding, thread caps and its own parameters do not settle it. "
+    "pyvista is the oracle, in tests/test_registration.py::test_icp_mesh_matches_pyvista.",
+)
 @pytest.mark.benchaxis("scale")
 @pytest.mark.benchlibs("ordito", "pymeshlab", "pyvista")
 def test_icp_mesh(bench_case: BenchCase) -> None:

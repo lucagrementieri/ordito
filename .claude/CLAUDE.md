@@ -1688,6 +1688,13 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
   filter is a linear map, so its stencil is solvable by least squares** over random position sets.
 - **MeshLab writes a layer transform, not vertices**: `compute_matrix_by_icp_between_meshes`
   leaves `vertex_matrix()` unchanged; read `transform_matrix()` / `transformed_vertex_matrix()`.
+- **Its mesh-target ICP is not a reproducible oracle** (2026-10-07): on the notched-cube fixture
+  `compute_matrix_by_icp_between_meshes` converges (RMS 1.2e-8) or stalls (0.047 / 0.108) with
+  nothing relevant changed -- byte-identical pymeshlab / NumPy installs in two virtualenvs that
+  differ only in their path give the two answers deterministically, and so do in-pytest versus
+  standalone runs; seeding `rand`, the thread caps and its own parameters do not settle it
+  (consistent with a dependence on memory layout). It surfaced as two CPU failures that "moved"
+  with unrelated commits. `icp_mesh` / pymeshlab is a D exemption; pyvista is the oracle.
 
 **Licensing:** pymeshlab is GPL. `ordito/` may name it in prose; no ordito code may derive from
 its source.

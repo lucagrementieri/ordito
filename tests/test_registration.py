@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Literal, Required, TypedDict, cast
 
 import numpy as np
 import open3d as o3d
-import pymeshlab as ml
 import pytest
 import pytorch3d.ops as p3d_ops
 import pyvista as pv
@@ -891,25 +890,22 @@ def test_icp_transformed_is_matrix_image(
 
 
 @pytest.mark.parametrize("angle", [0.15, 0.30])
-@pytest.mark.parity("icp_mesh", "pymeshlab", "pyvista")
-def test_icp_mesh_matches_pymeshlab_and_pyvista(device: str, angle: float) -> None:
+@pytest.mark.parity("icp_mesh", "pyvista")
+def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     """
-    Mesh-target ICP against MeshLab's and VTK's: all three recover the exact alignment.
+    Mesh-target ICP against VTK's: both recover the alignment (MeshLab's is not a usable oracle).
 
-    **pymeshlab, Class B**: both recover the exact alignment, and agree to **0.0** RMS at both
-    offsets. ``compute_matrix_by_icp_between_meshes`` runs its correspondences against the
-    reference *mesh* rather than a point cloud, which is what makes it the equivalent of the
-    mesh-target ``icp`` rather than of ``icp_point_cloud``. Three named transforms, all of them
-    plumbing:
-
-    * The filter returns ``None`` and **does not move the vertices**. It writes the source layer's
-      *transformation matrix*, so ``vertex_matrix()`` reads back byte-identical to the input -- the
-      answer is in ``transform_matrix()`` / ``transformed_vertex_matrix()``. This is the trap here:
-      a comparison against ``vertex_matrix()`` looks like a total ICP failure (RMS unchanged at
-      0.105) and would be read as a disagreement.
-    * Both layers must carry faces; a face-less source raises ``Failed to apply filter``.
-    * ``samplenum`` is matched to the vertex count so both sides minimize over the same number of
-      correspondences.
+    **pymeshlab is exempt here, measured (2026-10-07)**: ``compute_matrix_by_icp_between_meshes``
+    on this exact input converges (RMS 1.2e-8) or stalls (0.047 at 0.15 rad, 0.108 at 0.30) from
+    run to run of nothing that should matter. Byte-identical pymeshlab and NumPy installs in two
+    virtualenvs that differ only in their path give the two answers deterministically, as does
+    running the filter inside or outside pytest; seeding ``rand``, the thread caps, the filter's own
+    parameters (more iterations, no sample reduction, a tighter target distance) do not settle it.
+    An answer that depends on where the process's memory lands is not a reference. Its benchmark
+    row stays as a cost comparison (``benchmarks/test_registration.py::test_icp_mesh``). Its traps,
+    for whoever revisits it: the filter writes the source layer's *transform* and leaves
+    ``vertex_matrix()`` untouched (read ``transformed_vertex_matrix()``), both layers need faces,
+    and at 64 vertices it raises.
 
     **pyvista, Class C**: both solvers recover the same rigid motion, compared through the aligned
     positions. A derived scalar rather than an element-wise match on the *matrix*, because ICP's
@@ -925,8 +921,7 @@ def test_icp_mesh_matches_pymeshlab_and_pyvista(device: str, angle: float) -> No
     rotationally symmetric shape: on an ``icosphere`` any rotation maps the surface onto itself, and
     measured there ordito reduces the RMS only 0.141 -> 0.124 while MeshLab's own result is equally
     arbitrary -- neither is wrong and the comparison is meaningless. A **notched** cube breaks every
-    symmetry, and on it both solvers drive the RMS to zero exactly. MeshLab also needs enough
-    samples: at 64 vertices the filter raises, so the cube is subdivided twice to 256. The starting
+    symmetry. The cube is subdivided twice to 256 vertices. The starting
     RMS is asserted large, so no comparison below is two failures agreeing.
 
     Two offsets, 0.15 and 0.30 rad, so the assert is not resting on one starting point.
@@ -939,20 +934,6 @@ def test_icp_mesh_matches_pymeshlab_and_pyvista(device: str, angle: float) -> No
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int32)
     rotation_np, translation_np = _rigid_transform(angle, [0.2, 0.7, 0.1], [0.05, -0.03, 0.04])
     source_np = vertices_np @ rotation_np.T.astype(np.float64) + translation_np
-
-    meshset_pml = ml.MeshSet()
-    meshset_pml.add_mesh(ml.Mesh(np.ascontiguousarray(vertices_np), faces_np))
-    meshset_pml.add_mesh(ml.Mesh(np.ascontiguousarray(source_np), faces_np))
-    meshset_pml.compute_matrix_by_icp_between_meshes(
-        referencemesh=0, sourcemesh=1, samplenum=vertices_np.shape[0]
-    )
-    meshset_pml.set_current_mesh(1)
-    # Read the *transformed* vertices: the filter writes the layer transform, not the positions.
-    assert np.allclose(meshset_pml.current_mesh().vertex_matrix(), source_np)
-    moved_pml = np.asarray(meshset_pml.current_mesh().transformed_vertex_matrix(), dtype=np.float64)
-    assert np.isclose(
-        np.linalg.det(np.asarray(meshset_pml.current_mesh().transform_matrix())[:3, :3]), 1.0
-    )
 
     source_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(source_np), faces_np)
     target_pv = pv.PolyData.from_regular_faces(np.ascontiguousarray(vertices_np), faces_np)
@@ -974,9 +955,7 @@ def test_icp_mesh_matches_pymeshlab_and_pyvista(device: str, angle: float) -> No
     moved_wp = transformed_wp.numpy().astype(np.float64)
 
     assert _rms(source_np, vertices_np) > 0.1
-    assert _rms(moved_pml, vertices_np) < 1e-4
     assert _rms(moved_wp, vertices_np) < 1e-4
-    assert np.allclose(moved_wp, moved_pml, rtol=1e-4, atol=1e-4)
     assert _rms(moved_pv, vertices_np) < 1e-2
     assert _rms(moved_wp, moved_pv) < 1e-2
 
