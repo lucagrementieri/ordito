@@ -18,7 +18,7 @@ import warp as wp
 
 import ordito as od
 import ordito.typing as odt
-from tests.conversions import bsr_to_csr, scipy_to_bsr
+from tests.conversions import bsr_to_csr, numpy_to_warp, scipy_to_bsr
 
 
 def _heat_system(mesh_wp: wp.Mesh) -> odt.BsrMatrix[wp.float64]:
@@ -226,3 +226,111 @@ def test_reused_sparse_cholesky_factors_from_a_patterns_second_request(
     second.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
     expected = spla.spsolve(second_np.tocsc(), rhs_np)
     assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+
+def _two_component_system(device: str) -> tuple[sp.csr_matrix, np.ndarray]:
+    sphere = tm.creation.icosphere(3)
+    shell = tm.creation.icosphere(2)
+    shell.vertices += 3.0
+    vertices_np = np.vstack([sphere.vertices, shell.vertices])
+    blocks = []
+    for part in (sphere, shell):
+        points, faces = numpy_to_warp(part.vertices, part.faces.astype(np.int32).ravel(), device)
+        blocks.append(bsr_to_csr(od.heat.heat_operators(points, faces)[0]))
+    return sp.csr_matrix(sp.block_diag(blocks)), vertices_np
+
+
+@pytest.mark.parametrize("ordering", ["geometric", "pattern"])
+def test_sparse_cholesky_orders_two_components(device: str, ordering: str) -> None:
+    """
+    Class A at 1e-12 componentwise: two disconnected surfaces in one operator against ``spsolve``.
+
+    The first bisection crosses no pattern edge, so it makes no separator and the two halves are
+    the roots of two dissection trees: the branch a single connected mesh never reaches.
+    """
+    system_np, vertices_np = _two_component_system(device)
+    n = system_np.shape[0]
+    rhs_np = np.zeros(n)
+    rhs_np[[0, n - 1]] = 1.0
+    expected = spla.spsolve(system_np.tocsc(), rhs_np)
+    coordinates = (
+        wp.array(vertices_np, dtype=wp.vec3, device=device) if ordering == "geometric" else None
+    )
+    factor = od.cholesky.sparse_cholesky(scipy_to_bsr(system_np, device), coordinates)
+    solution = wp.zeros(n, dtype=wp.float64, device=device)
+    factor.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution, componentwise=True)
+    assert np.ptp(np.log10(expected)) > 3.0
+    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=0.0)
+
+
+def _fill_case(case: str, device: str) -> tuple[sp.csr_matrix, wp.array[wp.vec3]]:
+    if case == "two_components":
+        system_np, vertices_np = _two_component_system(device)
+        return system_np, wp.array(vertices_np, dtype=wp.vec3, device=device)
+    mesh = tm.creation.icosphere(4)
+    vertices_np, faces_np = mesh.vertices, mesh.faces
+    if case == "cap":
+        kept, faces_np = np.unique(
+            faces_np[mesh.triangles_center[:, 2] > -0.3], return_inverse=True
+        )
+        vertices_np, faces_np = vertices_np[kept], faces_np.reshape(-1, 3)
+    points, faces = numpy_to_warp(vertices_np, faces_np.astype(np.int32).ravel(), device)
+    return bsr_to_csr(od.heat.heat_operators(points, faces)[0]), points
+
+
+@pytest.mark.parametrize("case", ["sphere", "cap", "two_components"])
+def test_symbolic_structure_is_the_factors_fill(
+    device: str, monkeypatch: pytest.MonkeyPatch, case: str
+) -> None:
+    """
+    Not a library comparison: each supernode's rows are its columns' fill in the exact factor.
+
+    No reference exposes a supernodal row structure. Each supernode's row structure must equal
+    the union of its columns' rows in the exact Cholesky factor of the permuted pattern, found by
+    a dense boolean elimination.
+
+    Refinement would hide a missing fill entry (the factor would only be approximate and the
+    solve would iterate to the same answer), so the structure is checked directly: a dropped
+    row or one too many both fail.
+    """
+    system_np, points = _fill_case(case, device)
+    n = system_np.shape[0]
+    monkeypatch.setattr(od.cholesky, "_PLAN_CACHE", {})
+    plan = od.cholesky._plan_cholesky(scipy_to_bsr(system_np, device), points)  # pyright: ignore[reportPrivateUsage]
+    perm = plan.perm.numpy()[:n]
+    assert np.array_equal(np.sort(perm), np.arange(n))
+    pattern = system_np[perm][:, perm].toarray() != 0.0
+    for j in range(n):
+        below = j + 1 + np.flatnonzero(pattern[j + 1 :, j])
+        pattern[np.ix_(below, below)] = True
+    ncol = plan.ncol.numpy()
+    c0 = plan.c0.numpy()
+    front_size = plan.front_size.numpy()
+    row_offsets = plan.row_offsets.numpy()
+    rows = plan.rows.numpy()
+    assert ncol.size > 16
+    for k in range(ncol.size):
+        last = c0[k] + ncol[k]
+        expected = last + np.flatnonzero(pattern[last:, c0[k] : last].any(axis=1))
+        got = rows[row_offsets[k] : row_offsets[k] + front_size[k] - ncol[k]]
+        assert np.array_equal(got, expected)
+
+
+def test_landmark_coordinates_match_the_host_search(device: str) -> None:
+    """
+    Ordito against ordito: the device's breadth-first searches give the host's coordinates.
+
+    The simultaneous searches of every component equal the host's frontier searches exactly, on
+    a pattern of two surfaces and an isolated row.
+
+    The host search is the oracle (it is the CPU device's path, so on the CPU this compares it
+    with itself); the isolated row is a component too small to search, which keeps zeros.
+    """
+    system_np, _ = _two_component_system(device)
+    system_np = sp.csr_matrix(sp.block_diag([system_np, sp.csr_matrix(np.ones((1, 1)))]))
+    system = scipy_to_bsr(system_np, device)
+    labels = od.graph.connected_component_labels(system)
+    coordinates = od.cholesky._landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
+    host = od.cholesky._host_landmark_coordinates(system, labels)  # pyright: ignore[reportPrivateUsage]
+    assert np.ptp(host[:, 2]) > 4.0
+    assert np.array_equal(coordinates.numpy().view(np.float32).reshape(-1, 3), host)

@@ -424,6 +424,13 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     ("cholesky", "refine_advance"): frozenset({"state"}),
     ("cholesky", "scatter_correction"): frozenset({"solution"}),
     ("cholesky", "project_null_space"): frozenset({"solution"}),
+    # The symbolic analysis' atomic cursors (compaction slots whose arrival order the following
+    # sort erases), and the breadth-first search's distances and loop state, advanced in place
+    # level by level inside a recorded loop.
+    ("cholesky", "gather_candidates"): frozenset({"cursors"}),
+    ("cholesky", "emit_rows"): frozenset({"cursors"}),
+    ("cholesky", "breadth_first_level"): frozenset({"distance", "state"}),
+    ("cholesky", "breadth_first_advance"): frozenset({"state"}),
     # in-place
     ("array", "sort_rows_insertion"): frozenset({"data"}),
     # ``neighbors`` is sorted in place: this kernel only orders the two slots each vertex already
