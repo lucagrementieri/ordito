@@ -224,6 +224,17 @@ def interior_system_csr(
 
 
 @wp.kernel
+def masks_differ(
+    first: wp.array[wp.bool], second: wp.array[wp.bool], out_flag: wp.array[wp.int32]
+) -> None:
+    # Whether a call pins the degrees of freedom a precomputed factorization was built for: the
+    # reduced operator depends on the pinned *set*, so two masks are compared, not index lists.
+    i = wp.int32(wp.tid())
+    if first[i] != second[i]:
+        out_flag[0] = 1
+
+
+@wp.kernel
 def free_coordinates(
     fixed_mask: wp.array[wp.bool],
     free_map: wp.array[wp.int32],

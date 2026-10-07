@@ -1763,6 +1763,33 @@ class HeatSolver:
             kept.factorization.release()
         self._systems.clear()
 
+    def factor(self) -> bool:
+        """
+        Factor the heat and Poisson systems now, before any solve.
+
+        What [`heat_geodesic`][ordito.heat.heat_geodesic] solves; once both are factored a call on
+        this solver's mesh runs no iteration. Without this, each is factored on its second solve
+        (or at once when its iterate fails the check).
+
+        Returns
+        -------
+        bool
+            Whether both systems hold a factorization: ``False`` when one is over
+            [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], and its solves
+            keep iterating.
+        """
+        operators = self.operators
+        factored = True
+        for role, matrix in (("heat", operators[0]), ("poisson", operators[3])):
+            kept = self._systems.get(role)
+            if kept is None:
+                kept = self._systems[role] = _KeptSystem(
+                    twl.OperatorFactorization(matrix, self._bound_mesh().vertices)
+                )
+            if kept.factorization.factorization is None and not kept.factorization.factor():
+                factored = False
+        return factored
+
     def diffuse(self, rhs: odt.ArrayNd, solution: odt.ArrayNd) -> None:
         """
         Diffuse scalar fields: solve the heat system ``(M - t L) u = rhs`` to settled entries.

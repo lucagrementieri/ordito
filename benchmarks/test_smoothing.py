@@ -462,14 +462,13 @@ def test_filter_implicit_fairing(bench_case: BenchCase) -> None:
     minutes of suite time spent measuring divergence at high precision. A collapsing free case can
     drive ``cot_entries_from_l2``'s division by ``4 * dbl_area`` to ``inf`` and return NaN.
 
-    **Declined (2026-10-07): a sparse Cholesky refactored per pass, pending a re-measurement.**
-    Every pass's system shares one pattern, so after a slow first pass the rest can refactor and
-    solve directly. It paid 2.4x on ``saddle_graded`` (46 against 113 ms) with the pattern's
-    analysis already built, and was declined when that analysis was a host pass dearer than the
-    call. The analysis now runs on the device; a full analysis on every pass is 0.09-0.15x on
-    ``saddle_small`` / ``saddle`` / ``hemisphere`` and 0.70x on ``saddle_graded``, but one analysis
-    per call and a refactor per pass (the declined design, holding nothing across calls) was not
-    re-measured: an open lead for ``saddle_graded``.
+    **A sparse Cholesky refactored per pass, chosen by the first pass (2026-10-07).** Every pass's
+    system shares one pattern, so once the first pass's Jacobi-Chebyshev solve takes at least
+    ``_FAIRING_FACTOR_ITERATIONS`` (60) rounds the call does one analysis and refactors per pass.
+    Nothing is kept across calls. CUDA, 10 passes, min of 5 interleaved: 2.02x on
+    ``saddle_graded`` (115 -> 57 ms; the first pass takes ~170 rounds there), 0.99-1.00x on
+    ``saddle_small`` / ``saddle`` / ``hemisphere``, where the rule never fires (~20 rounds).
+    Factoring from the first pass instead is 2.58x on ``saddle_graded`` and 0.29-0.43x elsewhere.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     with warnings.catch_warnings():

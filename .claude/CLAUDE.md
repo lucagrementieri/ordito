@@ -6106,7 +6106,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
     - **The bound is `max_i sum_j |L_ij| / D_i` for general positive `D`** (`kernels/linalg.
       scaled_row_abs_sums`), with the lower end scaled with it: the `1 + max(dominance(L), 1)` form
       is `D⁻¹L`'s bound only when `D = diag(L)`, and `harmonic(k=2)` (`L M⁻¹ L` is `L D⁻² L` with
-      `D = sqrt(M)`; `parametrization._solve_biharmonic`) diverged on it. `harmonic(k=2)` went 179
+      `D = sqrt(M)`; `parametrization._solve_biharmonic`, now `_fixed_vertex_system`) diverged on it. `harmonic(k=2)` went 179
       / 381 / 265 multigrid rounds -> 52 / 160 / 224 (2.2-3.7x).
     - `SquaredLaplacianPreconditioner.from_factors` builds it from assembled factors (§16.8).
 - **`preconditioner="adaptive"`**: Jacobi under `CG_CHEBYSHEV_PROBE_ITERATIONS = 150`, escalating
@@ -6466,8 +6466,8 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   flag, one read; converged iterates at `tol = 1e-8` sit at 5e-9 to 2.2e-7, the stalled one at
   7e-2), else factors into the caller's `OperatorFactorization` and solves **from zero** (from
   the rejected iterate the refinement stopped at a backward error of 5.9e-7, from zero 1.9e-12).
-  `min_quad_with_fixed` always runs it (a local factorization, dropped), so `lscm`, `harmonic`,
-  `tutte` get it; `_solve_biharmonic` passes one. A factorization refused for definiteness
+  `min_quad_with_fixed` always runs it, so `lscm`, `harmonic`, `tutte` get it (now through
+  `MinQuadWithFixedData`, next item). A factorization refused for definiteness
   (`cholesky.NotPositiveDefiniteError`, both signs) warns at once; one refused for size keeps
   iterating, warm-started, to the full cap. `min_quad_with_fixed(solver="direct")` factors first:
   `harmonic` takes it at `k >= 3`, where the iteration took 2 884-11 326 rounds (0.3-1.7 s) and
@@ -6494,6 +6494,41 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       compare `k > 1` against a barycentric reference, never `igl.harmonic` directly.
     - Fairing's passes are not routed through it: on `saddle_graded` they converge (172-196
       rounds) at backward errors 4e-7 to 1.1e-6, at the bar, and a verification would factor them.
+- **Factorizations prepared on the mesh (2026-10-07): `parametrization.FixedVertexSolver`, from
+  `Trimesh.fixed_vertex_solver()`, the heat family's `HeatSolver` pattern.** A fixed-vertex map's
+  reduced system depends on the operator and on *which* vertices are fixed, not on their values,
+  so one factorization per `(method, k)` serves every call fixing the same set.
+    - **One path for every call**: `min_quad_with_fixed` is `MinQuadWithFixedData(q, mask,
+      coordinates, factor=solver == "direct").solve(values, ...)`; an unfactored system's `solve`
+      runs the verified iteration and keeps the fallback factorization in its own slot. Every
+      `harmonic` / `tutte` / `lscm` call (both forms, `mesh.mesh_arguments`) goes through
+      `FixedVertexSolver.solve`: a kept system whose mask `matches` (one launch, 4-byte read) solves
+      factored; otherwise the call assembles and solves verified, and a `Trimesh` keeps any
+      factorization the solve built (fallback or `k >= 3`), replacing the one `(method, k)` held.
+      The `vertices, faces` form runs on a solver made for the call and logs at `INFO` when it
+      drops a factorization. **Nothing is factored automatically on reuse** (unlike the heat
+      family's second-solve rule): a `k == 1` iteration is 2-3 ms against a 9-13 ms prepare, so
+      reuse is the caller's call, made explicit with `FixedVertexSolver.factor(method,
+      fixed_indices, k=)`.
+    - **Measured** (CUDA, alternating processes against `main`, min of 3x5; `saddle_small` /
+      `saddle` / `hemisphere` / `saddle_graded`): prepare 9-18 ms once; a prepared call 0.25-0.39
+      ms, against the one-shot iteration 7-37x (`harmonic` `k=1`, `tutte`), 21-69x (`k=2`; graded
+      13.5 s wrong before the fix, 104 ms one-shot after), 22-114x (`lscm`). One-shot calls 0.93-1.01x
+      (the verification's read; mask copy and separate right-hand-side pass not separable from it).
+    - **`HeatSolver.factor()`** builds the heat and Poisson systems ahead of the first call
+      (`heat_geodesic` then runs no iteration); the second-solve rule stays for the rest.
+    - **Fairing refactors per pass once the first pass is slow** (`smoothing._FairingSolver`, call
+      local, nothing kept): first pass's Jacobi-Chebyshev rounds `>= 60` -> one analysis, refactor
+      each later pass. 10 passes: `saddle_graded` 115 -> 57 ms (2.02x; ~170 rounds), 0.99-1.00x
+      elsewhere (~20 rounds, never fires); factoring from pass 1 was 2.58x graded, 0.29-0.43x
+      elsewhere. The earlier decline (0.94x) priced a *host* analysis.
+    - **Found, not fixed: `laplacian.mass_matrix_entries` is not reproducible on CUDA**: it scatters
+      face-area thirds with `float64` atomics, so the last bits move between calls. Invisible on an
+      ordinary system; the graded `k=2` system (condition 2.6e17) amplifies it to 1.6-2.1e-3 of the
+      range between two fresh factorizations (a reused factorization reproduces bit for bit, and
+      `cotmatrix`, `k_harmonic`, the interior extraction and the ordering are all bit-stable). Below
+      that answer's own ~1 % floor (above), so a reproducibility defect, not a correctness one; the
+      fix is a fixed-order gather over each vertex's faces.
 
 #### One-block solves
 

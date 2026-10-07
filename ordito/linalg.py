@@ -415,32 +415,268 @@ def min_quad_with_fixed(
             f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'
         )
     _require_preconditioner_name(preconditioner, "min_quad_with_fixed")
-    device = fixed_mask.device
-    n_rhs = int(fixed_values.shape[0])
-    free_map, n_free = free_partition(fixed_mask)
+    system = MinQuadWithFixedData(q, fixed_mask, coordinates, factor=solver == "direct")
+    return system.solve(
+        fixed_values, tol=tol, check_every=check_every, preconditioner=preconditioner
+    )
 
-    solution = odt.as_array2d(
-        _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device), wp.float64
-    )
-    if n_free == 0:
-        return solution, free_map, n_free
 
-    q_uu, rhs = assemble_interior_system(q, fixed_mask, free_map, fixed_values, n_free)
-    factorization = OperatorFactorization(
-        q_uu, free_coordinates(coordinates, fixed_mask, free_map, n_free)
-    )
-    if solver == "direct":
-        factorization.factor()
-    solve_spd_columns(
-        q_uu,
-        rhs,
-        solution,
-        tol=tol,
-        check_every=check_every,
-        preconditioner=preconditioner,
-        factorization=factorization,
-    )
-    return solution, free_map, n_free
+def min_quad_with_fixed_precompute(
+    q: odt.SparseMatrix,
+    fixed_mask: wp.array[wp.bool],
+    *,
+    coordinates: wp.array[wp.vec3] | None = None,
+) -> MinQuadWithFixedData:
+    """
+    Factor ``min_quad_with_fixed``'s reduced system once, for any number of later solves.
+
+    Extracts ``Q_uu`` for the degrees of freedom ``fixed_mask`` leaves free and factors it
+    ([`sparse_cholesky`][ordito.cholesky.sparse_cholesky]); the returned data then solves the
+    minimization for any pinned values in a handful of launches. ``igl::min_quad_with_fixed``'s
+    precompute / solve split, without its ``Aeq`` block.
+
+    Parameters
+    ----------
+    q
+        ``(n_dofs, n_dofs)`` symmetric positive-semi-definite operator, ``float64``. Held by the
+        returned data, which reads it on every solve.
+    fixed_mask
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom. Copied.
+    coordinates
+        ``(n_points,)`` positions for the factorization's ordering, as
+        [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] takes them.
+
+    Returns
+    -------
+    MinQuadWithFixedData
+        The factored system. When ``Q_uu`` cannot be factored (over
+        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not definite) it
+        holds no factorization and its solves run ``min_quad_with_fixed``'s verified iteration.
+
+    Raises
+    ------
+    RuntimeError
+        If ``fixed_mask`` and ``coordinates`` are not on one device.
+
+    See Also
+    --------
+    [`MinQuadWithFixedData`][ordito.linalg.MinQuadWithFixedData]
+    [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]
+    """
+    require_same_device(fixed_mask=fixed_mask, coordinates=coordinates)
+    return MinQuadWithFixedData(q, fixed_mask, coordinates, factor=True)
+
+
+class MinQuadWithFixedData:
+    """
+    ``min_quad_with_fixed``'s reduced system for one pinned set, factored, for repeated solves.
+
+    Built by [`min_quad_with_fixed_precompute`][ordito.linalg.min_quad_with_fixed_precompute].
+    [`solve`][ordito.linalg.MinQuadWithFixedData.solve] answers the minimization for new pinned
+    values -- only the right-hand side is formed again -- and
+    [`matches`][ordito.linalg.MinQuadWithFixedData.matches] tells a caller whether a mask pins
+    the set this was built for.
+
+    Attributes
+    ----------
+    q : odt.SparseMatrix
+        The full operator.
+    fixed_mask : wp.array[wp.bool]
+        ``(n_dofs,)`` the pinned set, a copy of the one given.
+    free_map : wp.array[wp.int32]
+        ``(n_dofs,)`` compact remap of the free degrees of freedom.
+    n_free : int
+        Number of free degrees of freedom.
+    factorization : OperatorFactorization | None
+        The reduced operator's factorization slot; ``None`` when every degree of freedom is pinned.
+
+    Notes
+    -----
+    Holds the reduced operator and its factorization, device memory of the order of the
+    operator's fill-in, until [`release`][ordito.linalg.MinQuadWithFixedData.release] or until it
+    is dropped.
+
+    See Also
+    --------
+    [`min_quad_with_fixed_precompute`][ordito.linalg.min_quad_with_fixed_precompute]
+    """
+
+    def __init__(
+        self,
+        q: odt.SparseMatrix,
+        fixed_mask: wp.array[wp.bool],
+        coordinates: wp.array[wp.vec3] | None = None,
+        *,
+        factor: bool = True,
+    ) -> None:
+        """
+        Extract the reduced system of ``q`` over ``fixed_mask``'s free set; factor it if ``factor``.
+
+        Unfactored, the first [`solve`][ordito.linalg.MinQuadWithFixedData.solve] iterates and
+        builds the factorization only when the iteration's result fails its verification.
+        """
+        self.q = q
+        self.fixed_mask = _launch.clone(fixed_mask)
+        self.free_map, self.n_free = free_partition(self.fixed_mask)
+        self.factorization: OperatorFactorization | None = None
+        if self.n_free == 0:
+            return
+        device = fixed_mask.device
+        no_values = odt.as_array2d(
+            _launch.empty((0, fixed_mask.size), dtype=wp.float64, device=device), wp.float64
+        )
+        q_uu, _ = assemble_interior_system(
+            q, self.fixed_mask, self.free_map, no_values, self.n_free
+        )
+        self.factorization = OperatorFactorization(
+            q_uu, free_coordinates(coordinates, self.fixed_mask, self.free_map, self.n_free)
+        )
+        if factor:
+            self.factorization.factor()
+
+    @property
+    def factored(self) -> bool:
+        """Whether this system holds a factorization, so its solves run no iteration."""
+        return self.factorization is not None and self.factorization.factorization is not None
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory the factorization holds, in bytes; ``0`` when none is."""
+        return 0 if self.factorization is None else self.factorization.nbytes
+
+    def matches(self, fixed_mask: wp.array[wp.bool]) -> bool:
+        """
+        Whether ``fixed_mask`` pins exactly the set this system was built for.
+
+        Parameters
+        ----------
+        fixed_mask
+            ``(n_dofs,)`` mask to compare. One element-wise launch and a four-byte read.
+
+        Returns
+        -------
+        bool
+            ``True`` when the two masks are equal.
+
+        Raises
+        ------
+        RuntimeError
+            If ``fixed_mask`` is not on this system's device.
+        """
+        require_same_device(fixed_mask=fixed_mask, own=self.fixed_mask)
+        if fixed_mask.size != self.fixed_mask.size:
+            return False
+        if fixed_mask.size == 0:
+            return True
+        device = fixed_mask.device
+        flag = _launch.zeros(1, dtype=wp.int32, device=device)
+        _launch.launch(
+            kernel_linalg.masks_differ,
+            dim=fixed_mask.size,
+            inputs=[fixed_mask, self.fixed_mask],
+            outputs=[flag],
+            device=device,
+        )
+        return read_scalar(flag, 0) == 0
+
+    def solve(
+        self,
+        fixed_values: odt.Array2dFloat,
+        *,
+        tol: float = CG_TOLERANCE,
+        check_every: int = CG_CHECK_EVERY,
+        preconditioner: str | SquaredLaplacianPreconditioner = "adaptive",
+    ) -> tuple[odt.Array2dFloat, wp.array[wp.int32], int]:
+        """
+        Minimize for new pinned values.
+
+        By the factorization when this system holds one; otherwise by the verified iteration of
+        [`solve_spd_columns`][ordito.linalg.solve_spd_columns], which factors the system -- and
+        keeps the factorization here for every later solve -- when its result fails the
+        verification.
+
+        Parameters
+        ----------
+        fixed_values
+            ``(n_rhs, n_dofs)`` prescribed values; only the pinned entries are read.
+        tol
+            The factorization's refinement tolerance, or the iteration's relative residual
+            tolerance.
+        check_every
+            The iteration's host-check cadence, as
+            [`solve_spd_columns`][ordito.linalg.solve_spd_columns] takes it.
+        preconditioner
+            The iteration's preconditioner: a name
+            [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] accepts, or a
+            [`SquaredLaplacianPreconditioner`][ordito.linalg.SquaredLaplacianPreconditioner] of
+            the reduced system.
+
+        Returns
+        -------
+        tuple[odt.Array2dFloat, wp.array[wp.int32], int]
+            ``min_quad_with_fixed``'s ``(solution, free_map, n_free)``.
+
+        Raises
+        ------
+        ValueError
+            If ``preconditioner`` is a name outside the menu.
+        RuntimeError
+            If ``fixed_values`` is not on this system's device.
+
+        Warns
+        -----
+        UserWarning
+            As [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] warns, when nothing
+            could be factored and the iteration does not reach a verified solution.
+        """
+        require_same_device(fixed_values=fixed_values, own=self.fixed_mask)
+        if isinstance(preconditioner, str):
+            _require_preconditioner_name(preconditioner, "MinQuadWithFixedData.solve")
+        device = self.fixed_mask.device
+        n_rhs = int(fixed_values.shape[0])
+        solution = odt.as_array2d(
+            _launch.zeros((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
+        )
+        if self.factorization is None:
+            return solution, self.free_map, self.n_free
+        # Only the right-hand side changes with the values: the extraction's first pass forms it,
+        # and its row counts are scratch.
+        counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+        rhs = odt.as_array2d(
+            _launch.zeros((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
+        )
+        _launch.launch(
+            kernel_linalg.interior_row_counts,
+            dim=self.fixed_mask.size,
+            inputs=[
+                self.q.offsets,
+                self.q.columns,
+                self.q.values,
+                self.fixed_mask,
+                self.free_map,
+                fixed_values,
+                wp.float64(1.0),
+                None,
+                counts,
+                rhs,
+            ],
+            device=device,
+        )
+        solve_spd_columns(
+            cast("odt.BsrMatrix[wp.float64]", self.factorization.matrix),
+            rhs,
+            solution,
+            tol=tol,
+            check_every=check_every,
+            preconditioner=preconditioner,
+            factorization=self.factorization,
+        )
+        return solution, self.free_map, self.n_free
+
+    def release(self) -> None:
+        """Drop the factorization; later solves iterate, verified, until it is built again."""
+        if self.factorization is not None:
+            self.factorization.release()
 
 
 def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], int]:

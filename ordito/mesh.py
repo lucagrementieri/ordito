@@ -1630,6 +1630,51 @@ class Trimesh:
             solver = solvers[key] = od.heat.HeatSolver(self, t, use_robust=use_robust)
         return solver
 
+    def fixed_vertex_solver(self) -> od.parametrization.FixedVertexSolver:
+        """
+        Return this mesh's [`FixedVertexSolver`][ordito.parametrization.FixedVertexSolver].
+
+        Kept on the mesh: the factorizations of the fixed-vertex maps' systems
+        ([`harmonic`][ordito.parametrization.harmonic], [`tutte`][ordito.parametrization.tutte],
+        [`lscm`][ordito.parametrization.lscm]) live there, so a call given this mesh that fixes the
+        same vertices as a kept factorization runs no iteration. Build one ahead of the calls with
+        its [`factor`][ordito.parametrization.FixedVertexSolver.factor]:
+
+        ```python
+        import ordito as od
+
+        mesh = od.mesh.Trimesh(open_v, open_f)
+        loop = od.boundary.longest_boundary_loop(open_v, open_f)
+        mesh.fixed_vertex_solver().factor("harmonic", loop, k=2)
+        circle = od.parametrization.map_vertices_to_circle(open_v, loop)
+        uv = od.parametrization.harmonic(mesh, loop, circle, k=2)  # no iteration
+        uv_half = od.parametrization.harmonic(mesh, loop, circle, k=2)  # nor here
+        ```
+
+        Returns
+        -------
+        FixedVertexSolver
+            The kept solver; the same object on every call.
+
+        Notes
+        -----
+        Its factorizations hold device memory for as long as this mesh lives;
+        [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations] returns it without
+        dropping the mesh. They are not carried into the meshes `transform`, `invert` or
+        `with_vertices` return.
+
+        See Also
+        --------
+        [`heat_solver`][ordito.mesh.Trimesh.heat_solver]
+        [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations]
+        """
+        solver = self._cache.get("_fixed_vertex_solver")
+        if solver is None:
+            solver = self._cache["_fixed_vertex_solver"] = od.parametrization.FixedVertexSolver(
+                self
+            )
+        return cast("od.parametrization.FixedVertexSolver", solver)
+
     def contains(self, points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
         """
         Test which query points lie inside the mesh, by ray parity against the cached BVH.
@@ -2141,15 +2186,17 @@ class Trimesh:
 
     def release_factorizations(self) -> None:
         """
-        Drop every factorization the heat solvers keep on this mesh, keeping the mesh's cache.
+        Drop every factorization the solvers keep on this mesh, keeping the mesh's cache.
 
-        Each [`heat_solver`][ordito.mesh.Trimesh.heat_solver] is released (its factorizations and
-        solve counts dropped) and forgotten; the operators cached as properties stay. A later
-        solve starts counting afresh, so it factors again only when that pays.
+        Each [`heat_solver`][ordito.mesh.Trimesh.heat_solver] and the
+        [`fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver] is released (its
+        factorizations and solve counts dropped) and forgotten; the operators cached as properties
+        stay. A later solve starts counting afresh, so it factors again only when that pays.
 
         See Also
         --------
         [`heat_solver`][ordito.mesh.Trimesh.heat_solver]
+        [`fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]
         [`invalidate`][ordito.mesh.Trimesh.invalidate]
         """
         solvers = cast(
@@ -2158,6 +2205,9 @@ class Trimesh:
         )
         for solver in solvers.values():
             solver.release()
+        fixed = self._cache.pop("_fixed_vertex_solver", None)
+        if fixed is not None:
+            cast("od.parametrization.FixedVertexSolver", fixed).release()
 
     def invalidate(self) -> None:
         """

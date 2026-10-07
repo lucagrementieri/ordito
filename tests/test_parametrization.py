@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
-from typing import cast
+from typing import Any, cast
 
 import igl
 import numpy as np
@@ -12,6 +13,7 @@ import trimesh as tm
 import warp as wp
 
 import ordito as od
+import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
 from tests.conversions import (
     mesh_igl,
@@ -690,3 +692,149 @@ def test_solvers_reject_malformed_constraints(
     _, mesh_wp = hemisphere
     with pytest.raises(ValueError, match=message):
         call(mesh_wp)
+
+
+def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the sparse Cholesky factorizations built from here on through ``ordito.linalg``."""
+    built: list[int] = []
+    factor = od.linalg.sparse_cholesky
+
+    def counted(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
+        result = factor(*args, **kwargs)
+        built.append(result.n)
+        return result
+
+    monkeypatch.setattr(od.linalg, "sparse_cholesky", counted)
+    return built
+
+
+def _fixed_vertex_call(
+    method: str, mesh_wp: wp.Mesh, scale: float
+) -> tuple[wp.array[wp.int32], wp.array[wp.vec2]]:
+    """Return the fixed set and values a ``method`` call takes: the loop, or two of its vertices."""
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    loop = od.boundary.longest_boundary_loop(vertices, faces)
+    if method != "lscm":
+        circle = od.parametrization.map_vertices_to_circle(vertices, loop).numpy()
+        return loop, wp.array(scale * circle, dtype=wp.vec2, device=vertices.device)
+    loop_np = loop.numpy()
+    pins = wp.array(
+        np.array([loop_np[0], loop_np[loop_np.size // 2]], dtype=np.int32),
+        dtype=wp.int32,
+        device=vertices.device,
+    )
+    pins_uv = np.array([[0.0, 0.0], [scale, 0.0]], dtype=np.float32)
+    return pins, wp.array(pins_uv, dtype=wp.vec2, device=vertices.device)
+
+
+@pytest.mark.parametrize(
+    ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("harmonic", 3), ("tutte", 1), ("lscm", 1)]
+)
+def test_fixed_vertex_solver_factors_once_for_every_call_fixing_the_same_vertices(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str, k: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a prepared factorization serves later calls with no further build.
+
+    ``FixedVertexSolver.factor`` builds one factorization; two calls on the mesh with different
+    fixed *values* build none of their own and agree with the ``vertices, faces`` form (which
+    iterates below ``k == 3``, verified) to the solves' tolerance. The oracles are the igl tests
+    above (``test_harmonic_matches_igl``, ``test_tutte_matches_igl_reference``,
+    ``test_lscm_matches_igl``, ``test_polyharmonic_matches_reference``); this pins that the
+    prepared path solves the same system.
+    """
+    _, mesh_wp = hemisphere
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    function = getattr(od.parametrization, method)
+    keywords = {} if method == "lscm" else {"k": k}
+    built = _count_factorizations(monkeypatch)
+    mesh = od.Trimesh(vertices, faces)
+    fixed, _ = _fixed_vertex_call(method, mesh_wp, 1.0)
+    assert mesh.fixed_vertex_solver().factor(method, fixed, k=k)
+    assert len(built) == 1
+    assert mesh.fixed_vertex_solver().nbytes > 0
+    for scale in (1.0, 2.5):
+        fixed, values = _fixed_vertex_call(method, mesh_wp, scale)
+        before = len(built)
+        prepared = function(mesh, fixed, values, **keywords).numpy()
+        assert len(built) == before
+        # The ``vertices, faces`` form factors on its own at ``k >= 3``; that build is not counted.
+        direct = function(vertices, faces, fixed, values, **keywords).numpy()
+        assert np.allclose(prepared, direct, rtol=1e-5, atol=1e-5 * np.ptp(direct))
+    mesh.release_factorizations()
+    assert mesh.fixed_vertex_solver().nbytes == 0
+
+
+def test_fixed_vertex_solver_ignores_a_factorization_of_another_fixed_set(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: a call fixing other vertices than the kept factorization's solves anew.
+
+    The kept system's reduced operator is that of its own fixed set; a call fixing the loop less
+    one vertex must not be answered by it (it would solve a different system), so it iterates --
+    builds nothing at ``k == 1`` -- and agrees with the ``vertices, faces`` form. The kept
+    factorization stays and still serves its own set.
+    """
+    _, mesh_wp = hemisphere
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    mesh = od.Trimesh(vertices, faces)
+    loop, circle = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
+    mesh.fixed_vertex_solver().factor("harmonic", loop, k=1)
+    built = _count_factorizations(monkeypatch)
+    fewer = wp.array(loop.numpy()[1:], dtype=wp.int32, device=vertices.device)
+    fewer_uv = wp.array(circle.numpy()[1:], dtype=wp.vec2, device=vertices.device)
+    other = od.parametrization.harmonic(mesh, fewer, fewer_uv).numpy()
+    direct = od.parametrization.harmonic(vertices, faces, fewer, fewer_uv).numpy()
+    assert built == []
+    assert np.allclose(other, direct, rtol=1e-5, atol=1e-5 * np.ptp(direct))
+    own = od.parametrization.harmonic(mesh, loop, circle).numpy()
+    assert built == []
+    assert np.allclose(
+        own, od.parametrization.harmonic(vertices, faces, loop, circle).numpy(), atol=1e-5
+    )
+
+
+@pytest.mark.parametrize(("k", "discards"), [(1, False), (3, True)])
+def test_fixed_vertex_calls_say_when_they_discard_a_factorization(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], caplog: pytest.LogCaptureFixture, k: int, discards: bool
+) -> None:
+    """
+    Not a parity assert: the ``vertices, faces`` form logs at ``INFO`` exactly when it drops one.
+
+    ``k == 3`` is factored from the start, so the call builds a factorization it cannot keep and
+    says so; ``k == 1`` iterates on this mesh and builds none. Given a ``Trimesh``, the same
+    ``k == 3`` call keeps it on the mesh and logs nothing.
+    """
+    _, mesh_wp = hemisphere
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    loop, circle = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
+    with caplog.at_level(logging.INFO, logger="ordito.parametrization"):
+        od.parametrization.harmonic(vertices, faces, loop, circle, k=k)
+    infos = [r for r in caplog.records if r.levelno == logging.INFO and "Trimesh" in r.message]
+    assert len(infos) == (1 if discards else 0)
+    caplog.clear()
+    mesh = od.Trimesh(vertices, faces)
+    with caplog.at_level(logging.INFO, logger="ordito.parametrization"):
+        od.parametrization.harmonic(mesh, loop, circle, k=k)
+    assert [r for r in caplog.records if r.levelno == logging.INFO] == []
+    assert (mesh.fixed_vertex_solver().nbytes > 0) == discards
+
+
+@pytest.mark.parametrize(("method", "k"), [("arap", 1), ("harmonic", 0), ("lscm", 2)])
+def test_fixed_vertex_solver_rejects_an_off_menu_method_or_power(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str, k: int
+) -> None:
+    """Not a parity assert: ``factor`` and ``solve`` raise ``ValueError`` naming the argument."""
+    _, mesh_wp = hemisphere
+    solver = od.Trimesh(mesh_wp.points, mesh_wp.indices).fixed_vertex_solver()
+    loop, _ = _fixed_vertex_call("harmonic", mesh_wp, 1.0)
+    with pytest.raises(ValueError, match=r"method|k="):
+        solver.factor(method, loop, k=k)
+    mask = wp.zeros(mesh_wp.points.size, dtype=wp.bool, device=mesh_wp.points.device)
+    values = odt.as_array2d(
+        wp.zeros((2, mesh_wp.points.size), dtype=wp.float64, device=mesh_wp.points.device),
+        wp.float64,
+    )
+    with pytest.raises(ValueError, match=r"method|k="):
+        solver.solve(method, mask, values, k=k)

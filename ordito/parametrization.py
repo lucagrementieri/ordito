@@ -13,11 +13,22 @@ own shape, minimizing conformal rather than Dirichlet energy.
 [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle] supplies the boundary
 condition the fixed-boundary three need, and
 [`face_flipped_indices`][ordito.parametrization.face_flipped_indices] is the diagnostic that
-says whether a result is actually injective. Ports of the corresponding ``igl::`` routines; every
-solve is conjugate-gradient.
+says whether a result is actually injective. Ports of the corresponding ``igl::`` routines.
+
+The fixed-vertex maps (``harmonic``, ``tutte``, ``lscm``) take the mesh as an
+[`ordito.mesh.Trimesh`][ordito.mesh.Trimesh] or as its ``vertices`` and ``faces``. Their solves
+iterate, verified, and fall back to a sparse Cholesky factorization where the iteration fails;
+given a `Trimesh`, a factorization is kept on it
+([`Trimesh.fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]), and one built ahead
+with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] turns every
+later call fixing the same vertices into a factored solve with no iteration.
 """
 
 from __future__ import annotations
+
+import logging
+import weakref
+from typing import cast, overload
 
 import warp as wp
 
@@ -28,8 +39,11 @@ from ordito import _launch
 from ordito._device import require_same_device
 from ordito.kernels import parametrization as kernel_parametrization
 from ordito.laplacian import cotmatrix, cotmatrix_entries, graph_laplacian, mass_matrix_entries
+from ordito.mesh import Trimesh, mesh_arguments
 
 _CG_TOLERANCE = 1e-8
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def face_flipped_mask(vertices: wp.array[wp.vec2], faces: wp.array[wp.int32]) -> wp.array[wp.bool]:
@@ -200,12 +214,32 @@ def map_vertices_to_circle(
     return out_uv
 
 
+@overload
+def harmonic(
+    mesh: Trimesh,
+    boundary_indices: wp.array[wp.int32],
+    boundary_uv: wp.array[wp.vec2],
+    /,
+    *,
+    k: int = 1,
+) -> wp.array[wp.vec2]: ...
+@overload
 def harmonic(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     boundary_indices: wp.array[wp.int32],
     boundary_uv: wp.array[wp.vec2],
+    /,
     k: int = 1,
+) -> wp.array[wp.vec2]: ...
+def harmonic(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    boundary_indices: wp.array[wp.int32] | wp.array[wp.vec2] | None = None,
+    boundary_uv: wp.array[wp.vec2] | None = None,
+    k: int = 1,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.vec2]:
     """
     Harmonic parametrization with fixed boundary.
@@ -220,6 +254,9 @@ def harmonic(
 
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -286,28 +323,54 @@ def harmonic(
     precision, where no iteration converges. ``k >= 3`` is factored from the start, the iteration
     (under the multigrid preconditioner
     [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]) taken only when the
-    system cannot be factored. A factorization built here is dropped with the call.
+    system cannot be factored. Given a `Trimesh`, a factorization built here is kept on it, and
+    one prepared with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor]
+    serves every later call fixing the same vertices -- whatever their values -- with no
+    iteration; the ``vertices, faces`` form drops it, and says so at ``INFO``.
 
     On such an ill-conditioned system the answer itself is determined only to the system's own
     precision: direct solvers under different orderings agree to about a percent of the UV range
     there, as this one does with them.
     """
-    device, n_vertices = _validate_fixed_boundary_call(
-        vertices, faces, boundary_indices, boundary_uv, k, "harmonic"
+    bound, owned, arguments = mesh_arguments(
+        "harmonic", mesh, vertices, faces, (boundary_indices, boundary_uv, k), 2
     )
-    if n_vertices == 0:
-        return _launch.empty(0, dtype=wp.vec2, device=device)
-    laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
-    mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
-    return _solve_fixed_boundary(laplacian, mass_diag, k, vertices, boundary_indices, boundary_uv)
+    return _fixed_boundary_map(
+        bound,
+        owned,
+        "harmonic",
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("wp.array[wp.vec2]", arguments[1]),
+        cast("int", arguments[2]),
+    )
 
 
+@overload
+def tutte(
+    mesh: Trimesh,
+    boundary_indices: wp.array[wp.int32],
+    boundary_uv: wp.array[wp.vec2],
+    /,
+    *,
+    k: int = 1,
+) -> wp.array[wp.vec2]: ...
+@overload
 def tutte(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     boundary_indices: wp.array[wp.int32],
     boundary_uv: wp.array[wp.vec2],
+    /,
     k: int = 1,
+) -> wp.array[wp.vec2]: ...
+def tutte(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    boundary_indices: wp.array[wp.int32] | wp.array[wp.vec2] | None = None,
+    boundary_uv: wp.array[wp.vec2] | None = None,
+    k: int = 1,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.vec2]:
     """
     Tutte embedding with fixed boundary (uniform-Laplacian parametrization).
@@ -317,14 +380,17 @@ def tutte(
     cotangent one — for ``k == 1`` that Laplacian is the *only* difference. Because the uniform
     Laplacian's free-free block is a diagonally dominant M-matrix, the Tutte embedding of a mesh
     with a convex boundary is guaranteed bijective (fold-free), unlike the harmonic/conformal maps.
-    For
-    ``k > 1`` the mass matrix is the identity (matching libigl's ``speye`` graph-Laplacian variant).
+    For ``k > 1`` the mass matrix is the identity (matching libigl's ``speye`` graph-Laplacian
+    variant). Solved, and its factorizations kept, as [`harmonic`][ordito.parametrization.harmonic]
+    is (see its Notes).
 
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
-        ``(n_vertices,)`` mesh vertex positions (used for the count/device; the uniform weights
-        ignore geometry).
+        ``(n_vertices,)`` mesh vertex positions.
     faces
         ``(3 * n_faces,)`` triangle index buffer.
     boundary_indices
@@ -356,155 +422,55 @@ def tutte(
     [`graph_laplacian`][ordito.laplacian.graph_laplacian]
     [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]
     """
-    device, n_vertices = _validate_fixed_boundary_call(
-        vertices, faces, boundary_indices, boundary_uv, k, "tutte"
+    bound, owned, arguments = mesh_arguments(
+        "tutte", mesh, vertices, faces, (boundary_indices, boundary_uv, k), 2
     )
-    if n_vertices == 0:
-        return _launch.empty(0, dtype=wp.vec2, device=device)
-    laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
-    return _solve_fixed_boundary(laplacian, None, k, vertices, boundary_indices, boundary_uv)
+    return _fixed_boundary_map(
+        bound,
+        owned,
+        "tutte",
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("wp.array[wp.vec2]", arguments[1]),
+        cast("int", arguments[2]),
+    )
 
 
-def _validate_fixed_boundary_call(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
+def _fixed_boundary_map(
+    mesh: Trimesh,
+    owned: bool,
+    method: str,
     boundary_indices: wp.array[wp.int32],
     boundary_uv: wp.array[wp.vec2],
     k: int,
-    name: str,
-) -> tuple[wp.DeviceLike, int]:
-    """Shared ``harmonic`` / ``tutte`` preamble: device check, ``k`` validation, vertex count."""
+) -> wp.array[wp.vec2]:
+    """``harmonic`` / ``tutte`` on a resolved mesh: validate, pin the boundary, solve, scatter."""
+    vertices = mesh.vertices
     require_same_device(
-        vertices=vertices, faces=faces, boundary_indices=boundary_indices, boundary_uv=boundary_uv
+        vertices=vertices,
+        faces=mesh.faces,
+        boundary_indices=boundary_indices,
+        boundary_uv=boundary_uv,
     )
     if k < 1:
-        raise ValueError(f"{name} power k must be >= 1, got {k}.")
-    return vertices.device, vertices.size
-
-
-def _solve_fixed_boundary(
-    laplacian: odt.BsrMatrix[wp.float64],
-    mass_diag: wp.array[wp.float64] | None,
-    k: int,
-    vertices: wp.array[wp.vec3],
-    boundary_indices: wp.array[wp.int32],
-    boundary_uv: wp.array[wp.vec2],
-) -> wp.array[wp.vec2]:
-    """
-    Solve the fixed-boundary quadratic minimization shared by ``harmonic`` and ``tutte``.
-
-    Forms the positive-semi-definite operator ``Q = -L`` for ``k == 1`` and
-    ``Q = (-L) (M^-1 (-L))^(k-1)`` for ``k > 1`` (``M`` the diagonal mass, identity when
-    ``mass_diag is None``) via [`k_harmonic`][ordito.energies.k_harmonic],
-    then solves the interior Dirichlet system ``Q_uu x_u = -Q_ub bc`` per UV column with conjugate
-    gradient, keeping the fixed vertices at ``boundary_uv``. ``laplacian`` must be float64:
-    ``k > 1`` squares its condition number. ``vertices`` order a factorization, when one is built.
-    """
+        raise ValueError(f"{method} power k must be >= 1, got {k}.")
     device = vertices.device
     n_vertices = vertices.size
-    # A mesh with interior vertices and no fixed boundary is a singular Dirichlet system. Checked
-    # before ``k_harmonic`` assembles the (for k > 1, sparse-matrix-product) operator, since once
-    # every vertex is fixed (n_vertices > 0, n_boundary == 0 is impossible here because n_vertices
-    # > 0 implies interior vertices exist) this cannot be satisfied and the assembly would be
-    # wasted.
-    n_boundary = boundary_indices.size
+    if n_vertices == 0:
+        return _launch.empty(0, dtype=wp.vec2, device=device)
+    # A mesh with interior vertices and no fixed boundary is a singular Dirichlet system; checked
+    # before any operator is assembled.
     _require_fixed_vertices(
-        n_boundary,
+        boundary_indices.size,
         n_vertices,
         1,
         "harmonic / tutte require at least one fixed boundary vertex; the Dirichlet system is "
         "otherwise singular.",
     )
-
-    q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
     fixed_mask, fixed_values = _scatter_constraints(
         n_vertices, boundary_indices, boundary_uv, device
     )
-    if k == 2:
-        return _solve_biharmonic(laplacian, mass_diag, q, fixed_mask, fixed_values, vertices)
-
-    # ``k >= 3`` raises the Laplacian's condition number to the ``k``-th power: conjugate gradient
-    # needs thousands of rounds and still leaves an error of 1e-5 to 1e-2 of the range, where the
-    # factorization is one to two orders of magnitude faster and exact to rounding, so it goes
-    # first (the multigrid ``"auto"`` route remains for an operator it refuses). A plain
-    # (``k == 1``) Laplacian's solve is short, and with only the boundary pinned its rounds are
-    # many: the long solve the polynomial preconditioner is for.
-    sol, free_map, _ = twl.min_quad_with_fixed(
-        q,
-        fixed_mask,
-        odt.as_array2d(fixed_values, wp.float64),
-        tol=_CG_TOLERANCE,
-        preconditioner="auto" if k >= 2 else "chebyshev",
-        solver="direct" if k >= 3 else "iterative",
-        coordinates=vertices,
-    )
-
-    out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
-    _launch.launch(
-        kernel_parametrization.scatter_solution,
-        dim=n_vertices,
-        inputs=[fixed_mask, free_map, sol, fixed_values, out_uv],
-        device=device,
-    )
-    return out_uv
-
-
-def _solve_biharmonic(
-    laplacian: odt.BsrMatrix[wp.float64],
-    mass_diag: wp.array[wp.float64] | None,
-    q: odt.BsrMatrix[wp.float64],
-    fixed_mask: wp.array[wp.bool],
-    fixed_values: wp.array[wp.float64],
-    vertices: wp.array[wp.vec3],
-) -> wp.array[wp.vec2]:
-    """
-    ``_solve_fixed_boundary`` at ``k == 2``, preconditioned as the square of a Laplacian.
-
-    ``Q = L M^-1 L`` is fourth order, and its free block is spectrally close to
-    ``L_ff D^-2 L_ff`` with ``D = sqrt(M_f)`` -- the terms it drops are the one ring of the pinned
-    boundary -- which is exactly the system
-    [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner] inverts
-    with a fixed polynomial: no hierarchy to set up, where the smoothed-aggregation V-cycle
-    ``"auto"`` would build costs a setup of its own and still runs a few hundred rounds.
-
-    Verified as ``min_quad_with_fixed`` verifies: on a strongly graded mesh the system's condition
-    number nears ``1e17`` and the iteration stalls at a few percent residual, so the solve falls
-    back to a factorization of ``Q_uu``.
-    """
-    device = fixed_mask.device
-    n_vertices = vertices.size
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
-    free_map, n_free = twl.free_partition(fixed_mask)
-    sol = odt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
-    if n_free > 0:
-        q_uu, rhs = twl.assemble_interior_system(q, fixed_mask, free_map, fixed_values_2d, n_free)
-        no_values = odt.as_array2d(
-            _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
-        )
-        # ``-L``'s free block, negated as it is extracted.
-        l_ff, _ = twl.assemble_interior_system(
-            laplacian, fixed_mask, free_map, no_values, n_free, scale=-1.0
-        )
-        if mass_diag is None:
-            roots = _launch.full(n_free, 1.0, dtype=wp.float64, device=device)
-        else:
-            roots = _launch.empty(n_free, dtype=wp.float64, device=device)
-            _launch.launch(
-                kernel_parametrization.free_mass_roots,
-                dim=n_vertices,
-                inputs=[fixed_mask, free_map, mass_diag, roots],
-                device=device,
-            )
-        twl.solve_spd_columns(
-            q_uu,
-            rhs,
-            sol,
-            tol=_CG_TOLERANCE,
-            preconditioner=twl.squared_laplacian_preconditioner(l_ff, roots),
-            factorization=twl.OperatorFactorization(
-                q_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
-            ),
-        )
+    sol, free_map = _solve_fixed_vertices(mesh, owned, method, k, fixed_mask, fixed_values_2d)
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     _launch.launch(
         kernel_parametrization.scatter_solution,
@@ -753,7 +719,7 @@ def _scatter_constraints(
 
     ``fixed_mask`` marks the constrained vertices; ``fixed_values`` is the ``(2, n_vertices)``
     prescribed-UV buffer (row 0 = u, row 1 = v) the assembly and scatter kernels read. Shared by
-    [`_solve_fixed_boundary`][ordito.parametrization._solve_fixed_boundary] and
+    ``_fixed_boundary_map`` and
     [`arap`][ordito.parametrization.arap]; an empty ``indices`` yields an all-``False`` mask and
     an all-zero value buffer, which each caller rejects on its own terms.
 
@@ -779,11 +745,25 @@ def _scatter_constraints(
     return fixed_mask, fixed_values
 
 
+@overload
+def lscm(
+    mesh: Trimesh, pinned_indices: wp.array[wp.int32], pinned_uv: wp.array[wp.vec2], /
+) -> wp.array[wp.vec2]: ...
+@overload
 def lscm(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     pinned_indices: wp.array[wp.int32],
     pinned_uv: wp.array[wp.vec2],
+    /,
+) -> wp.array[wp.vec2]: ...
+def lscm(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    pinned_indices: wp.array[wp.int32] | wp.array[wp.vec2] | None = None,
+    pinned_uv: wp.array[wp.vec2] | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.vec2]:
     """
     Constrained least-squares conformal map.
@@ -801,10 +781,16 @@ def lscm(
     [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a sparse Cholesky
     factorization taking over a solve that does not converge within its budget. Closed meshes are
     valid input: the boundary vector-area matrix is then zero and the Hessian reduces to
-    ``-repdiag(L, 2)``.
+    ``-repdiag(L, 2)``. Given a `Trimesh`,
+    a factorization is kept on it; one prepared with
+    [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] (``"lscm"``, the
+    pinned indices) answers every later call pinning the same vertices with no iteration.
 
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -850,11 +836,19 @@ def lscm(
     ``Q`` of ``igl.lscm`` equals ``-repdiag(L, 2) - 2 A`` exactly (see
     [`lscm_hessian`][ordito.energies.lscm_hessian]).
     """
-    require_same_device(
-        vertices=vertices, faces=faces, pinned_indices=pinned_indices, pinned_uv=pinned_uv
+    bound, owned, arguments = mesh_arguments(
+        "lscm", mesh, vertices, faces, (pinned_indices, pinned_uv), 2
     )
-    device = vertices.device
-    n = vertices.size
+    pinned_indices = cast("wp.array[wp.int32]", arguments[0])
+    pinned_uv = cast("wp.array[wp.vec2]", arguments[1])
+    require_same_device(
+        vertices=bound.vertices,
+        faces=bound.faces,
+        pinned_indices=pinned_indices,
+        pinned_uv=pinned_uv,
+    )
+    device = bound.device
+    n = bound.n_vertices
     if n == 0:
         return _launch.empty(0, dtype=wp.vec2, device=device)
 
@@ -866,36 +860,10 @@ def lscm(
         "lscm requires at least two pinned vertices to remove the conformal map's "
         f"similarity-transform null space; got {n_pinned}.",
     )
-    if pinned_uv.size != n_pinned:
-        # The scatter kernel below indexes ``pinned_uv`` at every position up to
-        # ``pinned_indices.shape[0]``, so a shorter ``pinned_uv`` is an out-of-bounds read.
-        raise ValueError(
-            "pinned_indices and pinned_uv must have the same length, got "
-            f"{n_pinned} and {pinned_uv.size}."
-        )
-
-    q = od.energies.lscm_hessian(vertices, faces)
-    fixed_mask = _launch.zeros(2 * n, dtype=wp.bool, device=device)
-    fixed_values = _launch.zeros((1, 2 * n), dtype=wp.float64, device=device)
-    if n_pinned > 0:
-        _launch.launch(
-            kernel_parametrization.scatter_pinned_stacked,
-            dim=n_pinned,
-            inputs=[pinned_indices, pinned_uv, wp.int32(n), fixed_mask, fixed_values],
-            device=device,
-        )
-
-    # Two pinned vertices leave a system as long to solve as it is large: the polynomial
-    # preconditioner's case.
-    sol, free_map, _ = twl.min_quad_with_fixed(
-        q,
-        fixed_mask,
-        odt.as_array2d(fixed_values, wp.float64),
-        tol=_CG_TOLERANCE,
-        preconditioner="chebyshev",
-        coordinates=vertices,
+    fixed_mask, fixed_values = _pin_stacked(n, pinned_indices, pinned_uv, device)
+    sol, free_map = _solve_fixed_vertices(
+        bound, owned, "lscm", 1, fixed_mask, odt.as_array2d(fixed_values, wp.float64)
     )
-
     out_uv = _launch.empty(n, dtype=wp.vec2, device=device)
     _launch.launch(
         kernel_parametrization.scatter_solution_stacked,
@@ -906,6 +874,319 @@ def lscm(
     return out_uv
 
 
+_FIXED_VERTEX_METHODS = ("harmonic", "tutte", "lscm")
+
+
+class FixedVertexSolver:
+    """
+    Factorizations of the fixed-vertex maps' systems on one mesh, kept by the mesh.
+
+    What [`Trimesh.fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver] returns, and what
+    [`harmonic`][ordito.parametrization.harmonic], [`tutte`][ordito.parametrization.tutte] and
+    [`lscm`][ordito.parametrization.lscm] consult when given a `Trimesh`. Each map solves the
+    system its operator reduces to once the fixed vertices are eliminated, and that system depends
+    on *which* vertices are fixed -- not on the values they are fixed to -- so one factorization
+    per ``(method, k)`` serves every later call that fixes the same vertices: such a call runs no
+    iteration, only the factorization's solve.
+
+    A factorization is kept here when [`factor`][ordito.parametrization.FixedVertexSolver.factor]
+    builds it ahead of the calls, or when a call built one anyway: the iteration's result failed
+    its verification (see [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]), or the
+    system is factored from the start (``k >= 3``). A call fixing other vertices than the kept
+    factorization's solves as if none were kept, and replaces it with its own when it builds one.
+
+    Notes
+    -----
+    A kept factorization holds device memory of the order of its system's fill-in for as long as
+    this solver lives -- the mesh's lifetime -- reported by
+    [`nbytes`][ordito.parametrization.FixedVertexSolver.nbytes] and returned by
+    [`release`][ordito.parametrization.FixedVertexSolver.release] or
+    [`Trimesh.release_factorizations`][ordito.mesh.Trimesh.release_factorizations]. The solver
+    refers to its mesh weakly and is unusable once the mesh is gone.
+
+    See Also
+    --------
+    [`Trimesh.fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]
+    [`MinQuadWithFixedData`][ordito.linalg.MinQuadWithFixedData]
+    """
+
+    def __init__(self, mesh: Trimesh) -> None:
+        """Bind a solver to ``mesh``; nothing is assembled until a factorization is asked for."""
+        self._mesh = weakref.ref(mesh)
+        self._systems: dict[tuple[str, int], twl.MinQuadWithFixedData] = {}
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory this solver's kept factorizations hold, in bytes."""
+        return sum(system.nbytes for system in self._systems.values())
+
+    def release(self) -> None:
+        """Drop every kept factorization."""
+        for system in self._systems.values():
+            system.release()
+        self._systems.clear()
+
+    def factor(self, method: str, fixed_indices: wp.array[wp.int32], *, k: int = 1) -> bool:
+        """
+        Factor ``method``'s system with ``fixed_indices`` fixed, for every later call fixing them.
+
+        Parameters
+        ----------
+        method
+            ``"harmonic"``, ``"tutte"`` or ``"lscm"``: the map the factorization serves.
+        fixed_indices
+            ``(n_fixed,)`` the vertices the calls fix: ``boundary_indices`` of
+            [`harmonic`][ordito.parametrization.harmonic] / [`tutte`][ordito.parametrization.tutte],
+            ``pinned_indices`` of [`lscm`][ordito.parametrization.lscm]. Only the set matters,
+            not the order.
+        k
+            The harmonic power the calls pass (``1`` for ``"lscm"``).
+
+        Returns
+        -------
+        bool
+            Whether the calls will run no iteration: ``False`` when the system cannot be factored
+            (over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not
+            definite in ``float64``), and they keep iterating.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not one of the three, if ``k < 1``, or if ``k != 1`` for ``"lscm"``.
+        RuntimeError
+            If ``fixed_indices`` is not on the mesh's device.
+        """
+        _require_fixed_vertex_method(method, k, "FixedVertexSolver.factor")
+        mesh = self._bound_mesh()
+        require_same_device(vertices=mesh.vertices, fixed_indices=fixed_indices)
+        n_vertices = mesh.n_vertices
+        if n_vertices == 0:
+            return True
+        no_uv = _launch.zeros(fixed_indices.size, dtype=wp.vec2, device=mesh.device)
+        if method == "lscm":
+            fixed_mask, _ = _pin_stacked(n_vertices, fixed_indices, no_uv, mesh.device)
+        else:
+            fixed_mask, _ = _scatter_constraints(n_vertices, fixed_indices, no_uv, mesh.device)
+        system, _ = _fixed_vertex_system(mesh, method, k, fixed_mask, factor=True)
+        if system.factored:
+            self._keep(method, k, system)
+        return system.factored or system.n_free == 0
+
+    def solve(
+        self,
+        method: str,
+        fixed_mask: wp.array[wp.bool],
+        fixed_values: odt.Array2dFloat,
+        *,
+        k: int = 1,
+    ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
+        """
+        Solve ``method``'s reduced system: by the kept factorization if it fixes ``fixed_mask``.
+
+        Otherwise the system is assembled and solved verified, as
+        [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] solves it, and a factorization
+        that solve builds is kept here, replacing the one ``(method, k)`` held.
+
+        Parameters
+        ----------
+        method
+            ``"harmonic"``, ``"tutte"`` or ``"lscm"``.
+        fixed_mask
+            ``(n_dofs,)`` the fixed degrees of freedom: ``(n_vertices,)`` for ``harmonic`` /
+            ``tutte``, ``(2 * n_vertices,)`` (``u`` then ``v``) for ``lscm``.
+        fixed_values
+            ``(n_columns, n_dofs)`` prescribed values; only the fixed entries are read.
+        k
+            The harmonic power (``1`` for ``"lscm"``).
+
+        Returns
+        -------
+        solution : odt.Array2dFloat
+            ``(n_columns, n_free)`` values of the free degrees of freedom.
+        free_map : wp.array[wp.int32]
+            ``(n_dofs,)`` compact index of each free degree of freedom.
+
+        Raises
+        ------
+        ValueError
+            If ``method`` is not one of the three, if ``k < 1``, or if ``k != 1`` for ``"lscm"``.
+        RuntimeError
+            If ``fixed_mask`` and ``fixed_values`` are not on the mesh's device.
+
+        Warns
+        -----
+        UserWarning
+            When no verified solution is reached (see
+            [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]).
+        """
+        _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
+        mesh = self._bound_mesh()
+        require_same_device(
+            vertices=mesh.vertices, fixed_mask=fixed_mask, fixed_values=fixed_values
+        )
+        system = self._matching(method, k, fixed_mask)
+        preconditioner: str | twl.SquaredLaplacianPreconditioner = "adaptive"
+        built = system is None
+        if system is None:
+            system, preconditioner = _fixed_vertex_system(
+                mesh, method, k, fixed_mask, factor=method != "lscm" and k >= 3
+            )
+        solution, free_map, _ = system.solve(
+            fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner
+        )
+        if built and system.factored:
+            self._keep(method, k, system)
+            _LOGGER.debug("%s: kept the factorization of its k=%d system", method, k)
+        return solution, free_map
+
+    def _matching(
+        self, method: str, k: int, fixed_mask: wp.array[wp.bool]
+    ) -> twl.MinQuadWithFixedData | None:
+        """Return the kept system of ``(method, k)`` when it fixes exactly ``fixed_mask``."""
+        system = self._systems.get((method, k))
+        if system is not None and system.matches(fixed_mask):
+            return system
+        return None
+
+    def _keep(self, method: str, k: int, system: twl.MinQuadWithFixedData) -> None:
+        """Keep ``system``'s factorization for ``(method, k)``, releasing the one it replaces."""
+        previous = self._systems.get((method, k))
+        if previous is not None and previous is not system:
+            previous.release()
+        self._systems[(method, k)] = system
+
+    def _bound_mesh(self) -> Trimesh:
+        """Return the mesh this solver belongs to."""
+        mesh = self._mesh()
+        if mesh is None:
+            raise RuntimeError("FixedVertexSolver: its Trimesh no longer exists")
+        return mesh
+
+
+def _solve_fixed_vertices(
+    mesh: Trimesh,
+    owned: bool,
+    method: str,
+    k: int,
+    fixed_mask: wp.array[wp.bool],
+    fixed_values: odt.Array2dFloat,
+) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
+    """
+    Solve a fixed-vertex map's reduced system on the mesh's solver, or on one made for the call.
+
+    A caller-owned mesh keeps whatever factorization the solve builds; a ``vertices, faces`` call
+    drops it, saying so at ``INFO``.
+    """
+    solver = mesh.fixed_vertex_solver() if owned else FixedVertexSolver(mesh)
+    solution, free_map = solver.solve(method, fixed_mask, fixed_values, k=k)
+    if not owned and solver.nbytes > 0:
+        _LOGGER.info(
+            "%s: built a sparse Cholesky factorization (%d bytes) and is discarding it; pass an "
+            "ordito.mesh.Trimesh to keep it for later calls fixing the same vertices",
+            method,
+            solver.nbytes,
+        )
+        solver.release()
+    return solution, free_map
+
+
+def _require_fixed_vertex_method(method: str, k: int, caller: str) -> None:
+    """Validate a ``FixedVertexSolver`` menu argument and its harmonic power."""
+    if method not in _FIXED_VERTEX_METHODS:
+        raise ValueError(
+            f"{caller}: method must be one of {list(_FIXED_VERTEX_METHODS)}, got {method!r}."
+        )
+    if k < 1 or (method == "lscm" and k != 1):
+        raise ValueError(f"{caller}: k={k} is not a power {method} takes.")
+
+
+def _fixed_vertex_system(
+    mesh: Trimesh, method: str, k: int, fixed_mask: wp.array[wp.bool], *, factor: bool
+) -> tuple[twl.MinQuadWithFixedData, str | twl.SquaredLaplacianPreconditioner]:
+    """
+    Assemble ``method``'s reduced system over ``fixed_mask``'s free set, and its preconditioner.
+
+    ``harmonic`` / ``tutte`` minimize ``Q = -L`` at ``k == 1`` and ``Q = (-L) (M^-1 (-L))^(k-1)``
+    above ([`k_harmonic`][ordito.energies.k_harmonic]; ``M`` the barycentric lumped mass, the
+    identity for ``tutte``), ``lscm`` its Hessian; the operator is ``float64``, since ``k > 1``
+    raises the Laplacian's condition number to the ``k``-th power. The preconditioner is the one
+    the iteration runs under when the system is not factored: the Jacobi-Chebyshev polynomial for a
+    Laplacian (``k == 1``) or ``lscm`` -- with only the boundary or two vertices fixed their solves
+    are long -- and for ``k == 2`` the square of the Laplacian's polynomial
+    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]): the
+    free block of ``L M^-1 L`` is spectrally close to ``L_ff D^-2 L_ff`` with ``D = sqrt(M_f)``,
+    the terms it drops being the one ring of the fixed boundary. ``k >= 3`` is factored from the
+    start: conjugate gradient needs thousands of rounds there and still leaves an error of 1e-5 to
+    1e-2 of the range, so the multigrid ``"auto"`` route remains only for a system the
+    factorization refuses.
+    """
+    vertices, faces = mesh.vertices, mesh.faces
+    if method == "lscm":
+        q = od.energies.lscm_hessian(vertices, faces)
+        return twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=factor), "chebyshev"
+    if method == "harmonic":
+        laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
+        mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
+    else:
+        laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
+        mass_diag = None
+    q = od.energies.k_harmonic(laplacian, mass_diag, k=k)
+    system = twl.MinQuadWithFixedData(q, fixed_mask, vertices, factor=factor)
+    if k == 1:
+        return system, "chebyshev"
+    if k >= 3 or system.factored or system.n_free == 0:
+        return system, "auto"
+    device = fixed_mask.device
+    n_vertices = vertices.size
+    no_values = odt.as_array2d(
+        _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
+    )
+    # ``-L``'s free block, negated as it is extracted.
+    l_ff, _ = twl.assemble_interior_system(
+        laplacian, fixed_mask, system.free_map, no_values, system.n_free, scale=-1.0
+    )
+    if mass_diag is None:
+        roots = _launch.full(system.n_free, 1.0, dtype=wp.float64, device=device)
+    else:
+        roots = _launch.empty(system.n_free, dtype=wp.float64, device=device)
+        _launch.launch(
+            kernel_parametrization.free_mass_roots,
+            dim=n_vertices,
+            inputs=[fixed_mask, system.free_map, mass_diag, roots],
+            device=device,
+        )
+    return system, twl.squared_laplacian_preconditioner(l_ff, roots)
+
+
+def _pin_stacked(
+    n_vertices: int, indices: wp.array[wp.int32], uv: wp.array[wp.vec2], device: wp.DeviceLike
+) -> tuple[wp.array[wp.bool], wp.array[wp.float64]]:
+    """
+    ``lscm``'s pins over the stacked ``[u; v]`` unknowns: pin ``i`` fixes DOF ``i`` and ``i + n``.
+
+    Raises
+    ------
+    ValueError
+        If ``indices`` and ``uv`` have different lengths -- the scatter kernel indexes ``uv`` at
+        every position up to ``indices.shape[0]``, so a shorter ``uv`` is an out-of-bounds read.
+    """
+    n_pinned = indices.size
+    if uv.size != n_pinned:
+        raise ValueError(
+            f"pinned_indices and pinned_uv must have the same length, got {n_pinned} and {uv.size}."
+        )
+    fixed_mask = _launch.zeros(2 * n_vertices, dtype=wp.bool, device=device)
+    fixed_values = _launch.zeros((1, 2 * n_vertices), dtype=wp.float64, device=device)
+    if n_pinned > 0:
+        _launch.launch(
+            kernel_parametrization.scatter_pinned_stacked,
+            dim=n_pinned,
+            inputs=[indices, uv, wp.int32(n_vertices), fixed_mask, fixed_values],
+            device=device,
+        )
+    return fixed_mask, fixed_values
+
+
 def _require_fixed_vertices(n_fixed: int, n_vertices: int, min_required: int, message: str) -> None:
     """
     Raise ``ValueError(message)`` unless at least ``min_required`` vertices are fixed.
@@ -913,7 +1194,7 @@ def _require_fixed_vertices(n_fixed: int, n_vertices: int, min_required: int, me
     Waived when the mesh has fewer than ``min_required`` vertices, since it is then impossible to
     pin that many distinct ones. The shared arithmetic behind three otherwise-differently-worded
     guards: harmonic / tutte's "at least one fixed boundary vertex" (``min_required=1``, via
-    [`_solve_fixed_boundary`][ordito.parametrization._solve_fixed_boundary]), arap's "at least one
+    ``_fixed_boundary_map``), arap's "at least one
     fixed vertex" (``min_required=1``) and lscm's "at least two pinned vertices"
     (``min_required=2``). Each caller keeps its own message, since the *reason* the count is
     required differs (a singular Dirichlet system, translation invariance, a similarity-transform

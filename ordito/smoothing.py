@@ -60,6 +60,7 @@ import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch, laplacian
 from ordito._device import read_scalar, require_same_device
+from ordito.cholesky import SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import linalg as kernel_linalg
@@ -1704,6 +1705,7 @@ def filter_implicit_fairing(
 
     # The sparsity depends on the connectivity alone, so it is built once for every pass.
     pattern = laplacian.mesh_operator_pattern(faces, n)
+    fairing = _FairingSolver()
     for _ in range(iterations):
         current = _as_vec3(positions)
         # Rebuilt every iteration on purpose: the cotangent weights depend on ``current``, which
@@ -1753,14 +1755,7 @@ def filter_implicit_fairing(
             )
             # ``M - lamb L`` over the whole mesh, a solve long enough for the polynomial
             # preconditioner; the Dirichlet branch below is the same system less the pinned rows.
-            twl.solve_spd_columns(
-                system,
-                rhs,
-                solutions,
-                tol=twl.CG_TOLERANCE,
-                maxiter=10 * n,
-                preconditioner="chebyshev",
-            )
+            fairing.solve(system, rhs, solutions, maxiter=10 * n)
             _launch.map(
                 kernel_smoothing.combine_components,
                 solution_rows[0],
@@ -1787,14 +1782,7 @@ def filter_implicit_fairing(
             outputs=[solution_2d],
             device=device,
         )
-        twl.solve_spd_columns(
-            interior_system,
-            interior_rhs,
-            solution_2d,
-            tol=twl.CG_TOLERANCE,
-            maxiter=10 * dirichlet.n_free,
-            preconditioner="chebyshev",
-        )
+        fairing.solve(interior_system, interior_rhs, solution_2d, maxiter=10 * dirichlet.n_free)
         _launch.launch(
             kernel_smoothing.scatter_free_positions,
             dim=n,
@@ -1810,6 +1798,60 @@ def filter_implicit_fairing(
         )
 
     return _as_vec3(positions)
+
+
+class _FairingSolver:
+    """
+    Solve ``filter_implicit_fairing``'s passes by iteration, or by a refactored sparse Cholesky.
+
+    Every pass's system has the first one's pattern (the connectivity and the pinned set are fixed),
+    so a factorization's analysis is done once and each later pass refactors the new values. The
+    first pass's Jacobi-Chebyshev iteration count decides, with one read: at or above
+    ``_FAIRING_FACTOR_ITERATIONS`` a refactor and one refined solve cost less than the iteration.
+    Held for one call only; nothing outlives it.
+    """
+
+    def __init__(self) -> None:
+        self._factor: SparseCholesky | None = None
+        self._decided = False
+
+    def solve(
+        self,
+        system: odt.BsrMatrix[wp.float64],
+        rhs: odt.Array2dFloat,
+        solution: odt.Array2dFloat,
+        *,
+        maxiter: int,
+    ) -> None:
+        """Solve one pass's system for the three coordinate columns."""
+        if self._factor is not None:
+            try:
+                self._factor.refactor(system)
+            except ValueError:
+                self._factor = None
+            else:
+                self._factor.solve(rhs, solution, tol=twl.CG_TOLERANCE)
+                return
+        result = twl.solve_spd_columns(
+            system, rhs, solution, tol=twl.CG_TOLERANCE, maxiter=maxiter, preconditioner="chebyshev"
+        )
+        if self._decided:
+            return
+        self._decided = True
+        iterations = result[0]
+        # One read, on the first pass only: whether the iteration is long enough to factor.
+        count = int(read_scalar(iterations, 0)) if isinstance(iterations, wp.array) else iterations
+        if count >= _FAIRING_FACTOR_ITERATIONS:
+            try:
+                self._factor = sparse_cholesky(system)
+            except ValueError:
+                self._factor = None
+
+
+# The first fairing pass's Jacobi-Chebyshev iteration count at or above which the later passes
+# refactor and solve directly: a well-shaped patch stays well below it, a strongly graded one well
+# above.
+_FAIRING_FACTOR_ITERATIONS = 60
 
 
 class _Dirichlet(NamedTuple):

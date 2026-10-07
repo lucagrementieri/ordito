@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import warnings
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Literal, TypedDict, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import igl
 import numpy as np
@@ -24,6 +24,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from benchmarks.meshes import BUILDERS
 from ordito.kernels import smoothing as kernel_smoothing
 from tests.conversions import (
     meshlib_bitset_to_numpy,
@@ -1149,6 +1150,39 @@ def test_filter_implicit_fairing_pin_boundary_is_a_no_op_on_a_closed_mesh(
 # ---------------------------------------------------------------------------
 # refine_and_smooth_region (shared finisher of fill_smooth and stitch_smooth)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "factors"), [("saddle_graded", True), ("saddle_small", False)]
+)
+def test_filter_implicit_fairing_refactors_only_a_slow_system(
+    device: str, mesh_name: str, factors: bool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Ordito against ordito: the per-pass refactorization solves the same systems as the iteration.
+
+    On the graded patch the first pass's iteration runs past ``_FAIRING_FACTOR_ITERATIONS``, so the
+    call builds one factorization and refactors it for the later passes; on the uniform patch it
+    never does. Either way the result equals the all-iteration flow (the threshold raised out of
+    reach) to the solves' tolerance. The flow's oracle is
+    ``test_filter_implicit_fairing_matches_igl``.
+    """
+    vertices_np, faces_np = BUILDERS[mesh_name]()
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    built: list[int] = []
+    factor = od.smoothing.sparse_cholesky
+
+    def counted(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
+        result = factor(*args, **kwargs)
+        built.append(result.n)
+        return result
+
+    monkeypatch.setattr(od.smoothing, "sparse_cholesky", counted)
+    faired = od.smoothing.filter_implicit_fairing(vertices_wp, faces_wp, iterations=3).numpy()
+    assert len(built) == (1 if factors else 0)
+    monkeypatch.setattr(od.smoothing, "_FAIRING_FACTOR_ITERATIONS", 1 << 30)
+    iterated = od.smoothing.filter_implicit_fairing(vertices_wp, faces_wp, iterations=3).numpy()
+    assert np.allclose(faired, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
 
 
 def test_implicit_filters_cpu_match_cuda(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:

@@ -1704,6 +1704,33 @@ def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
     return built
 
 
+def test_heat_solver_factor_prepares_both_systems(
+    icosphere5: Icosphere5, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: ``HeatSolver.factor`` builds both systems before the first call.
+
+    After it the first ``heat_geodesic`` on the mesh builds nothing (no iteration either), where
+    without it the first call iterates and the second factors. The answer agrees with the
+    ``vertices, faces`` form's iteration to the solves' tolerance; its oracle is
+    ``test_heat_geodesic_matches_igl_far_from_the_sources``.
+    """
+    _, vertices_wp, faces_wp = icosphere5
+    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices_wp.device)
+    iterated = od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp).numpy()
+    built = _count_factorizations(monkeypatch)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    assert mesh.heat_solver().factor()
+    assert built == [vertices_wp.size] * 2
+    assert mesh.heat_solver().factor()
+    assert built == [vertices_wp.size] * 2
+    factored = od.heat.heat_geodesic(mesh, sources_wp).numpy()
+    assert built == [vertices_wp.size] * 2
+    assert np.allclose(factored, iterated, rtol=1e-5, atol=1e-6 * np.ptp(iterated))
+    mesh.release_factorizations()
+    assert mesh.heat_solver().nbytes == 0
+
+
 def test_trimesh_factors_on_the_second_solve_and_reuses_it(
     icosphere5: Icosphere5, monkeypatch: pytest.MonkeyPatch
 ) -> None:

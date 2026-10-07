@@ -163,6 +163,12 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
     factorization after ``linalg.CG_FACTOR_AFTER_ROUNDS`` rounds, 105 ms where it used to run its
     whole cap (13.5 s) and return a map 54 % of the range off. The verification costs ~0.1 ms on
     these rows (0.95x at ``k=1``, 0.99-1.0x at ``k=2``).
+
+    **A factorization prepared on a ``Trimesh`` is the reuse path** (2026-10-07,
+    ``FixedVertexSolver.factor``): it costs 9-16 ms once, after which each call fixing the same
+    vertices is a factored solve of 0.25-0.37 ms -- 7-37x the one-shot iteration at ``k=1``, 21-69x
+    at ``k=2`` (CUDA, min of 3x5 interleaved, ``saddle_small`` / ``saddle`` / ``hemisphere`` /
+    ``saddle_graded``). These rows time the one-shot form, which keeps nothing.
     """
     if bench_case.kind == "pymeshlab":
         _run_harmonic_pml(bench_case, order)
@@ -272,7 +278,9 @@ def test_lscm(bench_case: BenchCase) -> None:
     device and paid by every call it is 0.51x / 0.95x / 0.66x the iteration on ``saddle_small`` /
     ``saddle`` / ``hemisphere``, and 2.11x on ``saddle_graded`` (off this axis). The verified
     fallback does not take that 2.11x: on ``saddle_graded`` the iteration converges (855 rounds,
-    backward error 1.7e-8), so its result is kept.
+    backward error 1.7e-8), so its result is kept. A factorization prepared on a ``Trimesh``
+    (``FixedVertexSolver.factor("lscm", pins)``, 11-18 ms once) makes each later call with the same
+    pins 0.30-0.39 ms: 22x / 50x / 40x / 114x the one-shot iteration on the four meshes.
     """
     if bench_case.kind == "pymeshlab":  # MeshLab picks its own pins; there is no pin set to pass
         bench_case.run(
