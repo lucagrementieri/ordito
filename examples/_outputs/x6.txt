@@ -1,0 +1,3 @@
+section loop: 1174 points
+simplified: 17, resampled: 60
+smoothly upsampled from the simplified loop: 112

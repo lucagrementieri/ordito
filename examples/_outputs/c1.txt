@@ -1,0 +1,2 @@
+14 of 16 are watertight
+open: sphere_cap, grid

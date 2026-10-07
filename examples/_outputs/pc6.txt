@@ -1,0 +1,1 @@
+vertices with no probe within the radius: 9266

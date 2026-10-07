@@ -1,0 +1,3 @@
+64 vertices -> 62 triangles
+extruded: watertight True
+tilted loop: 62 triangles

@@ -1,0 +1,2 @@
+cells of 0.5% of the diagonal: 103143 faces
+cells of 1.5% of the diagonal: 12628 faces

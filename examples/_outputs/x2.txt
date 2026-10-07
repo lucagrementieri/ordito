@@ -1,0 +1,2 @@
+3 rims, the cut is 672 vertices long
+watertight after capping: True

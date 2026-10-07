@@ -1,0 +1,2 @@
+torus ray lengths: 4.000 to 4.000
+edge crossings per torus ray: up to 246

@@ -1,0 +1,3 @@
+knot: 580 of 25600 faces cross another face
+spheres: 148 + 148 colliding faces
+intersection curve: 148 segments

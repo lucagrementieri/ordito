@@ -1,0 +1,4 @@
+lattice (120, 119, 97), from -0.0402 to 0.0994
+iso -0.004: 58500 faces
+iso +0.000: 74428 faces
+iso +0.008: 102496 faces

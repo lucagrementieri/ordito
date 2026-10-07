@@ -1,0 +1,3 @@
+inside by ray parity:     24856 of 110592 grid points
+inside by winding number: 26899
+the two disagree on 2559

@@ -157,6 +157,7 @@ _EXTRA_TEST_FILES = frozenset(
         "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
         "docs_examples",  # runs the README's and docs/ pages' code blocks, which span modules
+        "examples",  # covers the examples/ gallery package (pages in step with code), not ordito
     }
 )
 _EXTRA_BENCHMARK_FILES = frozenset({"meshes"})  # mesh-fixture invariants, nothing timed

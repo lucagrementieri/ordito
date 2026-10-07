@@ -1,0 +1,5 @@
+             noisy: 3.50e-04
+         Laplacian: 3.03e-04
+            Taubin: 2.24e-04
+  Implicit fairing: 2.08e-04
+Two-step (normals): 2.40e-04

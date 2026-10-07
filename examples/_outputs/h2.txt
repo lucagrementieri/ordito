@@ -1,0 +1,3 @@
+rim sizes: [96, 75, 37, 52, 22, 36, 23, 42, 39, 40, 80]
+chord-free and simple: [False, False, False, False, False, False, False, True, True, True, True]
+after fill_small: 4 holes left, of [96, 75, 52, 80] edges

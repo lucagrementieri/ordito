@@ -1,0 +1,2 @@
+aspect ratio: median 1.231, worst 1666.9
+85 of 69451 faces have an aspect ratio above 4

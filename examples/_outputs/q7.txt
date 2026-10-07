@@ -1,0 +1,2 @@
+3473 faces: chamfer 1.28e-07, hausdorff 0.0087
+695 faces: chamfer 4.31e-06, hausdorff 0.0099

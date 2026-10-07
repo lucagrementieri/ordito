@@ -1,0 +1,2 @@
+2261 free vertices, largest move 0.0053
+160 rim edges

@@ -5691,6 +5691,12 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   **wrong on `bunny`** at every chunk and settle setting (distance 0.68-0.90 of range off igl's,
   scalar extension divergent to 1e5): obtuse triangles give the heat system positive off-diagonal
   entries and the polynomial's interval does not cover the far field's decay.
+- **A settled diffusion is accurate to ~1e-7, a factored one to ~1e-15** (2026-10-07,
+  `extend_scalar` on `bunny` against SciPy's `splu` of the same heat system): the iterated field
+  1.2e-7 off, the factored 1.4e-15 (the diffused indicator componentwise 4e-14 worst). That is the
+  settle rule's `_HEAT_CHANGE_TOLERANCE = 1e-6`, not a defect; but mixing the two in one
+  computation shows it -- eight extensions on one `Trimesh` (first iterated, the rest factored on
+  the second solve) summed to one within 1.7e-7, prefactored (`HeatSolver.factor()`) within 1.1e-15.
 - **`float32` is out for the heat method**: the implicit step decays by a near-constant factor per
   ring, so the far field falls below `float32`'s range (~1e-38, 1e-45 subnormal) within a few dozen
   rings (~1e-300 on the big meshes); the normalized gradient needs the *direction*, which

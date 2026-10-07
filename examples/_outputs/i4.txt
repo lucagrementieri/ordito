@@ -1,0 +1,2 @@
+248 crease edges: 176 convex, 72 concave
+hemisphere: 1 boundary loop of 96 vertices

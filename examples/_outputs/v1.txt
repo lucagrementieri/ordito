@@ -1,0 +1,3 @@
+grown: 53856 faces, volume 1.150e-03
+shrunk: 141636 faces, volume 5.941e-04
+shell: 139348 faces, volume 2.917e-04

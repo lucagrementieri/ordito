@@ -1,0 +1,5 @@
+zero-area faces: 4; faces after dropping them: 412
+faces after collapsing small ones: 416 -> 392
+welded: 4 slivers, worst aspect ratio 1591
+flipped: 0 slivers, worst aspect ratio 2
+seam vertices welded: 5

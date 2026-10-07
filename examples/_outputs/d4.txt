@@ -1,0 +1,1 @@
+31733 free vertices, 2826 pinned to 0, 275 pinned to 1

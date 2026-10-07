@@ -1,0 +1,3 @@
+k = 1: height at radius 0.5 is 0.323
+k = 2: height at radius 0.5 is 0.457
+k = 3: height at radius 0.5 is 0.486

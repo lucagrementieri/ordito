@@ -1,0 +1,5 @@
+input: 14656 voxels
+dilate: 22283 voxels
+erode: 8616 voxels
+opening: 13974 voxels
+closing: 14855 voxels

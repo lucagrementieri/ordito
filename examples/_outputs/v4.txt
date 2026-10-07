@@ -1,0 +1,3 @@
+surface: 5286 voxels
+solid: 14656 voxels
+point cloud: 4470 voxels

@@ -1,0 +1,2 @@
+axis-aligned box volume 3.221e-03, oriented box volume 2.396e-03
+standard deviations along the principal axes [0.04859596 0.03405995 0.02667325]

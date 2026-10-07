@@ -1,0 +1,2 @@
+41 components; the largest has 69451 faces, the next 80
+kept 69451 of 72651 faces

@@ -1,0 +1,1 @@
+spike filter: 40 moves, 40 of 6144 vertices changed

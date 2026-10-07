@@ -17,3 +17,6 @@ eventually need (a target edge length that varies over the surface, a feature-an
 solver tolerance). See also [Concepts](../concepts.md) for the design principles these recipes all
 lean on, and [Migrating from another library](../migrating-from/index.md) if you're translating an
 existing pipeline built on trimesh, Open3D, libigl, MeshLab, potpourri3d, or PyTorch3D.
+
+For a single operation rather than a pipeline, the [example gallery](../examples/index.md) shows
+nearly a hundred of them one at a time, each with its code and the picture it produces.

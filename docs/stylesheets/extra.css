@@ -25,3 +25,21 @@
   --md-accent-fg-color--transparent: rgba(152, 192, 0, 0.1);
   --md-typeset-a-color: #98c000;
 }
+
+/* Example gallery: credits line under each example, and thumbnail cards on the index. */
+.ordito-credits {
+  font-size: 0.75rem;
+  color: var(--md-default-fg-color--light);
+}
+.ordito-gallery.grid.cards > ul {
+  grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+}
+.ordito-gallery.grid.cards > ul > li {
+  text-align: center;
+  font-size: 0.7rem;
+}
+.ordito-gallery.grid.cards img {
+  display: block;
+  margin: 0 auto 0.3rem;
+  max-height: 9rem;
+}

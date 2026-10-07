@@ -1,0 +1,2 @@
+median angle to the true normal (ignoring sign): 4.15 degrees
+flipped relative to the true normal: 9.9% of points

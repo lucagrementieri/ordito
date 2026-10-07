@@ -1,0 +1,2 @@
+4000 points -> 7973 triangles
+boundary loops: 1, Euler 1

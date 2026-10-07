@@ -1,0 +1,4 @@
+ vase:  5120 faces, watertight True
+ ring:  4700 faces, watertight True
+prism:    36 faces, watertight True
+ knot:  6000 faces, watertight True

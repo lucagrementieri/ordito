@@ -1,0 +1,2 @@
+512 texels: median error 0.07% of the field's range
+ 32 texels: median error 1.43% of the field's range

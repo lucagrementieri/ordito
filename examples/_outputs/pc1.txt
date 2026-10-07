@@ -1,0 +1,3 @@
+437645 input points
+voxel grid: 6269, farthest point: 6269
+blue noise: 6184

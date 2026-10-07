@@ -22,10 +22,13 @@ import pytest
 import warp as wp
 
 _ROOT = Path(__file__).resolve().parent.parent
+# ``docs/examples/`` is the gallery: each block there is an excerpt of a script under ``examples/``,
+# which ``tests/test_examples.py`` runs and keeps the page in step with, so the pages are not run
+# a second time here.
 _PAGES = sorted(
     path.relative_to(_ROOT).as_posix()
     for path in [_ROOT / "README.md", *(_ROOT / "docs").rglob("*.md")]
-    if "```python" in path.read_text()
+    if "```python" in path.read_text() and "docs/examples/" not in path.as_posix()
 )
 _BLOCK = re.compile(r"^([ \t]*)```python\n(.*?)^\1```", re.MULTILINE | re.DOTALL)
 

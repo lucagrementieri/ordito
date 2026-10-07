@@ -1,0 +1,3 @@
+carried forward: edges_unique, face_adjacency, halfedge_twins, boundary_loops, laplacian_operator
+recomputed:      face_normals, edges_unique_length, vertex_defects, cotmatrix, heat_operators
+mean edge length 0.001593 -> 0.001443

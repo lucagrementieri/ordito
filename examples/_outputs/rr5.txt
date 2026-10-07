@@ -1,0 +1,3 @@
+ none: recovered a rotation of 28.4 degrees (true: 15.0)
+huber: recovered a rotation of 15.4 degrees (true: 15.0)
+tukey: recovered a rotation of 15.6 degrees (true: 15.0)

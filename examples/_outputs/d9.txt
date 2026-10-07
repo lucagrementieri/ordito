@@ -1,0 +1,2 @@
+543652 vertices, mean occlusion 0.301
+shape diameter: 543621 finite, median 0.0212

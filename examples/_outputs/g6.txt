@@ -1,0 +1,2 @@
+resolved vertices: 100.0%
+largest log-map radius (geodesic distance): 0.1718

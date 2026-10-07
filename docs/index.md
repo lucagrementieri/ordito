@@ -63,6 +63,9 @@ repair-then-remesh pipeline on a realistically broken mesh), or jump straight to
   nontrivial.
 - **[Cookbook](cookbook/index.md)** — task-oriented recipes: cleaning a scan, point clouds to
   watertight surfaces, geodesic distance fields, aligning two scans.
+- **[Examples](examples/index.md)** — a gallery of runnable examples, each with the image it
+  produces: creation, inspection, curvature, geodesics, parametrization, smoothing, remeshing,
+  repair, voxels, queries, cutting, point clouds, reconstruction and registration.
 - **[Migrating from another library](migrating-from/index.md)** — already know trimesh, libigl,
   Open3D, MeshLab, potpourri3d, or PyTorch3D? Start here.
 - **[Performance](performance.md)** — why the GPU path is fast, and how to check any number
