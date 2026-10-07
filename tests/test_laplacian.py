@@ -32,7 +32,14 @@ from tests.conversions import (
 )
 
 # Not ``conftest.MESHES``: this predates that constant and has never carried ``cave_cube``.
-_LAPLACIAN_MESHES = ["icosahedron", "half_torus", "hemisphere"]
+_LAPLACIAN_MESHES = ["icosahedron", "half_torus", "hemisphere", "saddle_graded"]
+
+# The intrinsic route takes ``float32`` edge lengths, and on ``saddle_graded``'s needles those
+# lengths do not determine the triangle: igl's own ``cotmatrix_entries``, handed its float64
+# lengths rounded to float32, moves by 1.2e-4 (296 entries past 1e-5), the area being
+# ``eps * aspect^2`` sensitive to the sides. So no length-based comparison can hold there, and
+# the positions-based ones above carry that fixture.
+_INTRINSIC_MESHES = [name for name in _LAPLACIAN_MESHES if name != "saddle_graded"]
 
 # -----------------------------------------------------------------------------------------
 # face_gradients (libigl `grad`, pyvista `compute_derivative`)
@@ -161,7 +168,11 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     round-trip) rather than a disagreement about the formula.
 
     The four-argument overload is the one to call: ``gradientInTri(b, c, vb, vc)`` assumes the value
-    at ``a`` is zero and returns a different vector, and nothing in the signature says so.
+    at ``a`` is zero and returns a different vector, and nothing in the signature says so. And the
+    **double** one (``Vector3d``), fed the same float32 corners: the float32 overload solves the
+    2x2 Gram system ``bb * cc - bc^2``, which cancels on a needle -- on ``saddle_graded`` it
+    returned ``None`` (``det <= 0``) for 16 faces and was off by up to 176 % on others, where the
+    double overload agrees with ordito to 2.0e-07 relative (gradients reach 6.8e5 there).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = np.asarray(mesh_tm.faces)
@@ -178,9 +189,9 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
         [
             [
                 *mm.gradientInTri(
-                    mm.Vector3f(*vertices_np[a].tolist()),
-                    mm.Vector3f(*vertices_np[b].tolist()),
-                    mm.Vector3f(*vertices_np[c].tolist()),
+                    mm.Vector3d(*vertices_np[a].tolist()),
+                    mm.Vector3d(*vertices_np[b].tolist()),
+                    mm.Vector3d(*vertices_np[c].tolist()),
                     float(field_np[a]),
                     float(field_np[b]),
                     float(field_np[c]),
@@ -319,7 +330,7 @@ def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64], ids=["float32", "float64"])
-@pytest.mark.parametrize("mesh_name", _LAPLACIAN_MESHES)
+@pytest.mark.parametrize("mesh_name", _INTRINSIC_MESHES)
 @pytest.mark.parity("cotmatrix_entries_intrinsic", "igl")
 def test_cotmatrix_entries_intrinsic(
     request: pytest.FixtureRequest, mesh_name: str, dtype: type[wp.float32 | wp.float64]
@@ -381,9 +392,12 @@ def test_cotmatrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
     **Null space, not a library comparison**: the constant vector must be in the operator's null
     space. Both sides are checked against the *property* rather than against each other -- igl at
-    1e-10 in float64 and ordito at 1e-4 in float32 -- which is what makes the differing thresholds
-    honest rather than a hidden tolerance. Catches a row that does not sum to zero, which a matrix
-    comparison at 1e-5 can miss on a large-valued row.
+    1e-10 in float64 and ordito at 1e-6 of each row's absolute sum in float32 -- which is what makes
+    the differing thresholds honest rather than a hidden tolerance. Catches a row that does not sum
+    to zero, which a matrix comparison at 1e-5 can miss on a large-valued row. Relative per row
+    because the float32 residual is a rounding of the row's own sum: measured at most 1.0e-7 of it
+    on every fixture, where an absolute bound (1e-4 on the vector norm, once) read 2.0e-3 on
+    ``saddle_graded``, whose rows reach 4 842.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)
@@ -405,7 +419,8 @@ def test_cotmatrix(request: pytest.FixtureRequest, mesh_name: str) -> None:
     ones = np.ones(vertices_np.shape[0], dtype=np.float64)
     assert np.linalg.norm(cast("np.ndarray", laplacian_igl @ ones)) < 1e-10
     ones_wp = np.ones(mesh_wp.points.size, dtype=np.float32)
-    assert np.linalg.norm(laplacian_wp @ ones_wp) < 1e-4
+    row_scale = np.asarray(abs(laplacian_wp).sum(axis=1)).ravel()
+    assert (np.abs(laplacian_wp @ ones_wp) / row_scale).max() < 1e-6
 
 
 @pytest.mark.parity("cotmatrix", "pytorch3d")
@@ -651,7 +666,7 @@ def test_mesh_operator_pattern_rejects_a_mismatch(icosahedron: tuple[tm.Trimesh,
 
 
 # --- robust_laplacian / mollify_intrinsic (libigl reference) ---------------------------
-@pytest.mark.parametrize("mesh_name", MESHES)
+@pytest.mark.parametrize("mesh_name", [name for name in MESHES if name != "saddle_graded"])
 def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -663,7 +678,10 @@ def test_robust_laplacian_is_unchanged_on_a_clean_mesh(
     plain = od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices)
 
     # Mollification adds nothing when every triangle is already non-degenerate, so with the flips
-    # turned off the operator must be the ordinary one up to the intrinsic route's rounding.
+    # turned off the operator must be the ordinary one up to the intrinsic route's rounding. Not on
+    # ``saddle_graded``, for ``_INTRINSIC_MESHES``' reason: there that rounding is 8.4e-6 of the
+    # row against the positions-built operator's 1.9e-7 (both against igl), past this tolerance on
+    # the near-zero entries.
     assert np.allclose(
         bsr_to_dense(robust, n_vertices), bsr_to_dense(plain, n_vertices), rtol=1e-4, atol=1e-5
     )
@@ -673,9 +691,9 @@ def test_robust_laplacian_keeps_couplings_the_plain_one_drops(
     sliver_patch: tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]],
 ) -> None:
     """
-    Mollification's purpose, on a mesh with a triangle too thin to have cotangents.
+    Mollification's purpose, on a mesh with a collinear triangle, which has no cotangents.
 
-    Both operators are *finite* -- ``cot_entries_from_l2`` refuses to divide by a zero area, so a
+    Both operators are *finite* -- the cotangent table refuses to divide by a zero area, so a
     degenerate face contributes nothing rather than an infinity. Contributing nothing is the only
     finite choice available (a zero-area triangle's angles are 0 or pi), but it is not free: that
     face's edge couplings vanish from the operator, which is what mollification exists to avoid.
@@ -780,6 +798,7 @@ def test_cotmatrix_entries_are_zero_for_a_zero_area_face(device: str) -> None:
     "mollify_intrinsic emits -- delta is asserted zero on these clean fixtures, and igl's "
     "intrinsic assembly over those lengths then confirms they are the plain edge lengths.",
 )
+# Not ``saddle_graded``: an intrinsic, length-based assembly -- see ``_INTRINSIC_MESHES``.
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
 def test_robust_laplacian_matches_igl_intrinsic_assembly(
     request: pytest.FixtureRequest, mesh_name: str
@@ -808,6 +827,7 @@ def test_robust_laplacian_matches_igl_intrinsic_assembly(
     )
 
 
+# Not ``saddle_graded``: an intrinsic, length-based assembly -- see ``_INTRINSIC_MESHES``.
 @pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
 @pytest.mark.parity("robust_laplacian", "igl")
 def test_robust_laplacian_matches_igl_intrinsic_delaunay(
@@ -943,7 +963,9 @@ def _connection_complex(matrix: odt.BsrMatrix[wp.mat22d], n_vertices: int) -> np
     "cached matrix -- so a row would price that build rather than the assembly, exactly as in the "
     "halfedge_transport_angles claim. The operator itself is what is comparable.",
 )
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "icosphere_coarse", "hemisphere"])
+@pytest.mark.parametrize(
+    "mesh_name", ["icosahedron", "icosphere_coarse", "hemisphere", "saddle_graded"]
+)
 def test_connection_laplacian_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -994,9 +1016,16 @@ def test_connection_laplacian_matches_potpourri3d(
 
     # Gauge-invariant 1: the magnitudes are the cotangent weights, phases removed.
     assert np.allclose(np.abs(connection_wp), np.abs(connection_pp), rtol=1e-4, atol=1e-5)
-    # Gauge-invariant 2: the spectrum, since a gauge change is a diagonal unitary conjugation.
+    # Gauge-invariant 2: the spectrum, since a gauge change is a diagonal unitary conjugation. So is
+    # a principal block's -- the conjugation restricted to it is still diagonal and unitary -- which
+    # keeps the dense eigensolve to the leading 1 024 vertices: on ``saddle_graded`` (4 624) the two
+    # full spectra cost 11 s on either device.
+    block = slice(0, min(n_vertices, 1024))
     assert np.allclose(
-        np.linalg.eigvalsh(connection_wp), np.linalg.eigvalsh(connection_pp), rtol=1e-4, atol=1e-5
+        np.linalg.eigvalsh(connection_wp[block, block]),
+        np.linalg.eigvalsh(connection_pp[block, block]),
+        rtol=1e-4,
+        atol=1e-5,
     )
 
 

@@ -4,7 +4,7 @@ import warp as wp
 
 from ordito.kernels.array import OverloadTable, csr_key, csr_run_start, sorted_run_end
 from ordito.kernels.halfedge import halfedge_destination
-from ordito.kernels.predicates import doublearea_from_lengths, squared_edge_lengths
+from ordito.kernels.predicates import doublearea_from_lengths, triangle_double_area
 from ordito.kernels.triangles import face_vertices, row_triple
 
 wp.set_module_options({"enable_backward": False})
@@ -56,13 +56,23 @@ def face_half_cotangents(
     # Face ``f``'s three half-cotangent weights, column ``e`` for the edge opposite corner ``e``:
     # one row of ``cotmatrix_entries``' table, for a kernel that needs a few faces' weights and not
     # the whole mesh's (``smoothing.band_dirichlet_values``).
+    #
+    # From positions each cotangent is ``dot / |cross|`` of the corner's two edges, with the cross
+    # product taken at the largest angle (``triangle_area_vector``): both are accurate to a few
+    # ``eps`` whatever the triangle's shape. The law of cosines the intrinsic overload has to use
+    # (``cot_entries_from_l2``) cancels the squared lengths against each other instead, and loses
+    # ``eps`` times the aspect ratio: on ``saddle_graded``'s aspect-4 900 needles that was 1.4e-4
+    # absolute on weights whose true value is 1e-4, against ``igl.cotmatrix_entries``' ``float64``.
+    # The zero-area guard is the one ``cot_entries_from_l2`` explains.
     v0, v1, v2 = face_vertices(vertices, faces, f)
-    l2_0, l2_1, l2_2 = squared_edge_lengths(v0, v1, v2)
-    l0 = wp.sqrt(l2_0)
-    l1 = wp.sqrt(l2_1)
-    l2 = wp.sqrt(l2_2)
-    dbl_area = doublearea_from_lengths(l0, l1, l2)
-    return cot_entries_from_l2(l2_0, l2_1, l2_2, dbl_area)
+    dbl_area = triangle_double_area(v0, v1, v2)
+    denominator = wp.float32(2.0) * dbl_area
+    if denominator <= wp.float32(0.0):
+        return wp.float32(0.0), wp.float32(0.0), wp.float32(0.0)
+    c0 = wp.dot(v1 - v0, v2 - v0) / denominator
+    c1 = wp.dot(v2 - v1, v0 - v1) / denominator
+    c2 = wp.dot(v0 - v2, v1 - v2) / denominator
+    return c0, c1, c2
 
 
 @wp.kernel

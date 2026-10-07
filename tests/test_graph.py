@@ -51,7 +51,9 @@ def test_edges_to_csr_roundtrip(device: str) -> None:
         assert set(row.tolist()) == neighbors[v]
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere", "unit_box"])
+@pytest.mark.parametrize(
+    "mesh_name", ["icosphere_coarse", "hemisphere", "saddle_graded", "unit_box"]
+)
 def test_edges_to_neighbor_lists_matches_igl(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -750,7 +752,7 @@ def _spike_field(n_vertices: int) -> np.ndarray:
 
 
 @pytest.mark.parametrize("threshold", [0.5, 1.0, 3.0])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("shortest_path_envelope", "pymeshlab")
 def test_shortest_path_envelope_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, threshold: float

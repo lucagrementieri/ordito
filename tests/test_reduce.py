@@ -8,7 +8,6 @@ import pymeshlab as ml
 import pytest
 import pytorch3d.ops.utils as p3d_ops_utils
 import torch
-import trimesh as tm
 import warp as wp
 
 import ordito.reduce as od_reduce
@@ -377,8 +376,11 @@ def test_weighted_sum_1d(device: str) -> None:
     assert np.allclose(got_wp, exp_np, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("weighted_sum", "pyvista")
-def test_weighted_sum_integrates_a_surface_field(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_weighted_sum_integrates_a_surface_field(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     Class A: ``sum(values * areas)`` is what VTK's ``integrate_data`` computes for a cell array.
 
@@ -392,7 +394,7 @@ def test_weighted_sum_integrates_a_surface_field(half_torus: tuple[tm.Trimesh, w
     -- a comparison against that number passes for any implementation that returns roughly zero, so
     it would be testing the fixture's symmetry rather than the reduction.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_pv = trimesh_to_pyvista(mesh_tm)
     areas_np = np.asarray(
         mesh_pv.compute_cell_sizes(length=False, area=True, volume=False).cell_data["Area"]

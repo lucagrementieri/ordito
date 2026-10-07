@@ -744,10 +744,14 @@ def test_oriented_bounding_box_volume_bands(request: pytest.FixtureRequest, mesh
     assert volume_tm > 0.0, "the reference produced a box before it is compared to"
     assert volume_tm * 0.88 <= volume_wp <= volume_tm * 1.02
 
-    cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points_np))
-    volume_o3d = cloud_o3d.get_minimal_oriented_bounding_box().volume()
-    assert volume_o3d > 0.0, "the reference produced a box before it is compared to"
-    assert volume_o3d * 0.90 <= volume_wp <= volume_o3d * 1.02
+    # open3d's minimal box collapses on ``saddle_graded``: extent ``[0, 0, 0]`` (``robust=True``
+    # too, and on the cloud's convex-hull vertices alone), where trimesh and pyvista both return
+    # 13.439 and ordito 13.439. A reference failure, so that fixture keeps the other two.
+    if mesh_name != "saddle_graded":
+        cloud_o3d = o3d.geometry.PointCloud(o3d.utility.Vector3dVector(points_np))
+        volume_o3d = cloud_o3d.get_minimal_oriented_bounding_box().volume()
+        assert volume_o3d > 0.0, "the reference produced a box before it is compared to"
+        assert volume_o3d * 0.90 <= volume_wp <= volume_o3d * 1.02
 
     box_pv = cast("pv.PolyData", pv.PolyData(points_np).oriented_bounding_box(as_composite=False))
     volume_pv = float(box_pv.volume)

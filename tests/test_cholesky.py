@@ -30,7 +30,7 @@ def _poisson_system(mesh_wp: wp.Mesh) -> odt.BsrMatrix[wp.float64]:
 
 
 @pytest.mark.parametrize("ordering", ["geometric", "pattern"])
-@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosphere", "hemisphere", "saddle_graded"])
 def test_sparse_cholesky_matches_spsolve(
     request: pytest.FixtureRequest, mesh_name: str, ordering: str
 ) -> None:
@@ -40,6 +40,11 @@ def test_sparse_cholesky_matches_spsolve(
     The right-hand side is one source's indicator, so the solution decays by orders of magnitude
     away from it and a componentwise comparison is the meaningful one. Both orderings (from the
     vertices, and from the pattern alone) must give the same system's answer.
+
+    On ``saddle_graded`` the bar is 1e-11, set by the system rather than the solver: there both
+    answers have a componentwise backward error of 5e-16 (ordito 4.3e-16 to 5.0e-16, SciPy 5.2e-16
+    to 5.3e-16), and the operator's componentwise conditioning turns that into forward differences
+    up to 1.67e-12. So the backward error is asserted too, against SciPy's own.
     """
     _, mesh_wp = request.getfixturevalue(mesh_name)
     system = _heat_system(mesh_wp)
@@ -54,7 +59,15 @@ def test_sparse_cholesky_matches_spsolve(
         wp.array(rhs_np, dtype=wp.float64, device=mesh_wp.device), solution, componentwise=True
     )
     assert np.ptp(np.log10(expected)) > 3.0
-    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=0.0)
+    rtol = 1e-11 if mesh_name == "saddle_graded" else 1e-12
+    assert np.allclose(solution.numpy(), expected, rtol=rtol, atol=0.0)
+    system_sp = bsr_to_csr(system)
+    abs_sp = abs(system_sp)
+
+    def backward_error(x: np.ndarray) -> float:
+        return float((np.abs(rhs_np - system_sp @ x) / (abs_sp @ np.abs(x) + np.abs(rhs_np))).max())
+
+    assert backward_error(solution.numpy()) <= 2.0 * backward_error(expected) + 1e-16
 
 
 def test_sparse_cholesky_solves_columns_together(

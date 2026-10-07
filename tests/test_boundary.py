@@ -233,7 +233,8 @@ def test_boundary_loops_matches_trimesh_outline(
     "a loop count. The count is the whole answer, so it is asserted here instead.",
 )
 @pytest.mark.parametrize(
-    ("mesh_name", "n_loops"), [("icosahedron", 0), ("hemisphere", 1), ("half_torus", 2)]
+    ("mesh_name", "n_loops"),
+    [("icosahedron", 0), ("hemisphere", 1), ("half_torus", 2), ("saddle_graded", 1)],
 )
 def test_boundary_loops_count_matches_pymeshfix(
     request: pytest.FixtureRequest, mesh_name: str, n_loops: int
@@ -718,14 +719,16 @@ def test_ears_match_igl(device: str, faces_np: np.ndarray, expected_ears: int) -
             assert tuple(directed_edges[3 * f + local_edge]) in boundary_set
 
 
-@pytest.mark.parametrize("mesh_name", OPEN_MESHES)
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
 def test_ears_none_on_smooth_boundary(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
-    Class D exemption in test form: neither library finds an ear on either open fixture.
+    Class D exemption in test form: neither library finds an ear on either subdivided rim.
 
     A rim built by subdivision never leaves a triangle with two boundary edges, so this is the
     negative half of ``test_ears_match_igl`` and is kept separate from it rather than standing in
-    for a comparison.
+    for a comparison. Not ``conftest.OPEN_MESHES``: ``saddle_graded`` is a split quad grid, two of
+    whose corners are single triangles -- ears, which both libraries find -- and ears are pure
+    connectivity, so its grading adds nothing ``test_ears_match_igl`` does not already cover.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = mesh_tm.faces.astype(np.int64)

@@ -35,15 +35,20 @@ def _upward_rays(mesh_tm: tm.Trimesh, n: int, seed: int) -> tuple[np.ndarray, np
     Drawing the origins from the unit square instead put every one of them outside the x-extent of
     both the ``icosahedron`` and ``hemisphere`` fixtures -- each translated by ``(-1, 0, 2)`` -- so
     all three ``intersects_*`` comparisons below ran on 256 misses, asserted that two all-miss
-    answers agree, and duplicated the all-miss test. Measured after the fix: 208 of 256
-    rays hit the icosahedron and 197 the hemisphere. ``test_ray_queries_miss_together`` keeps its
-    own construction, which misses for a robust reason -- firing ``+y`` from below never leaves the
-    plane ``z = min_z - 5`` -- rather than by an accident of where the fixture sits.
+    answers agree, and duplicated the all-miss test. Measured: 140 of 256 rays hit the
+    icosahedron, 134 the hemisphere and 174 ``saddle_graded``. ``test_ray_queries_miss_together``
+    keeps its own construction, which misses for a robust reason -- firing ``+y`` from below never
+    leaves the plane ``z = min_z - 5`` -- rather than by an accident of where the fixture sits.
     """
     rng = np.random.default_rng(seed)
+    # The footprint is widened by a tenth of its extent on each side so that some rays miss even a
+    # height field: ``saddle_graded`` covers its whole xy box, and a draw inside the box hit it 256
+    # times out of 256.
+    lower, upper = mesh_tm.bounds[0, :2], mesh_tm.bounds[1, :2]
+    margin = 0.1 * (upper - lower)
     origins_np = np.column_stack(
         (
-            rng.uniform(mesh_tm.bounds[0, :2], mesh_tm.bounds[1, :2], size=(n, 2)),
+            rng.uniform(lower - margin, upper + margin, size=(n, 2)),
             np.full(n, mesh_tm.bounds[0, 2] - 5.0),
         )
     ).astype(np.float32)
@@ -51,7 +56,7 @@ def _upward_rays(mesh_tm: tm.Trimesh, n: int, seed: int) -> tuple[np.ndarray, np
     return origins_np, directions_np
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 def test_intersects_match_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on ``intersects_first`` and ``intersects_any``, Class B on ``intersects_location``.
@@ -188,7 +193,7 @@ def _multi_ray_intersect_ml(
     return result_ml
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("intersects_first", "meshlib")
 @pytest.mark.parity("intersects_any", "meshlib")
 @pytest.mark.parity("intersects_location", "meshlib")
@@ -211,8 +216,9 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
     selecting the rows ``intersectingRays`` marks, in ray order, which is the order ordito's
     compaction already produces.
 
-    Non-vacuous: 208 of 256 rays hit the icosahedron and 197 the hemisphere, so neither the hit
-    mask nor the location table is empty or full, and the miss rays check the ``-1`` convention.
+    Non-vacuous: 140 of 256 rays hit the icosahedron, 134 the hemisphere and 174 the saddle, so
+    neither the hit mask nor the location table is empty or full, and the miss rays check the
+    ``-1`` convention.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     origins_np, directions_np = _upward_rays(mesh_tm, 256, seed=0)
@@ -253,7 +259,7 @@ def test_intersects_match_meshlib(request: pytest.FixtureRequest, mesh_name: str
 @pytest.mark.parity("intersects_first", "open3d")
 @pytest.mark.parity("intersects_any", "open3d")
 @pytest.mark.parity("intersects_location", "open3d")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 def test_intersects_match_open3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A on the first two, Class B on the third: Embree answers each group with its own method.

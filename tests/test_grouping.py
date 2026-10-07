@@ -53,7 +53,7 @@ def test_group(
 
 
 @pytest.mark.parity("group", "trimesh")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
 def test_group_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (row and group order): ``trimesh.grouping.group`` over the same edge inverse.

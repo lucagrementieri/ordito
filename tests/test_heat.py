@@ -50,7 +50,7 @@ from meshlib import mrmeshpy as mm
 import ordito as od
 import ordito.typing as odt
 from benchmarks.meshes import BUILDERS
-from tests.conftest import MESHES
+from tests.conftest import MESHES, saddle_graded_arrays
 from tests.conversions import (
     bsr_to_dense,
     meshlib_scalars_to_numpy,
@@ -65,7 +65,7 @@ from tests.conversions import (
 )
 
 # Not ``conftest.MESHES``: both predate that constant and neither has ever carried ``cave_cube``.
-_HEAT_MESHES = ["icosahedron", "hemisphere", "half_torus"]
+_HEAT_MESHES = ["icosahedron", "hemisphere", "half_torus", "saddle_graded"]
 _HEAT_MESHES_SMALL = ["icosahedron", "hemisphere"]
 
 Icosphere5 = tuple[tm.Trimesh, wp.array[wp.vec3], wp.array[wp.int32]]
@@ -92,38 +92,15 @@ def icosphere5(device: str) -> Icosphere5:
 GradedSaddle = tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]
 
 
-@functools.cache
-def _graded_saddle_np() -> tuple[np.ndarray, np.ndarray]:
-    """
-    Return a ``68 x 68`` grid lifted onto a saddle, its spacing cubed along one axis.
-
-    ``benchmarks``' ``saddle_graded`` at a quarter of the vertices: worst aspect ratio in the
-    thousands.
-    """
-    k = 68
-    step = np.linspace(-1.0, 1.0, k)
-    u, v = np.meshgrid(np.sign(step) * np.abs(step) ** 3, step, indexing="ij")
-    vertices = np.column_stack((u.ravel(), v.ravel(), 0.35 * (u * u - 0.6 * v * v).ravel()))
-    i, j = np.meshgrid(np.arange(k - 1), np.arange(k - 1), indexing="ij")
-    corner = (i * k + j).ravel()
-    faces = np.vstack(
-        (
-            np.column_stack((corner, corner + k, corner + k + 1)),
-            np.column_stack((corner, corner + k + 1, corner + 1)),
-        )
-    )
-    return vertices, faces.astype(np.int64)
-
-
 @pytest.fixture
 def graded_saddle(device: str) -> GradedSaddle:
     """
-    Return the graded saddle and its device buffers.
+    Return ``conftest``'s ``saddle_graded`` as host arrays and device buffers.
 
     The heat system there is ill-conditioned in places (Jacobi-scaled condition number in the
     millions), which is what the settle rule cannot see.
     """
-    vertices_np, faces_np = _graded_saddle_np()
+    vertices_np, faces_np = saddle_graded_arrays()
     vertices_wp, faces_wp = numpy_to_warp(vertices_np, np.ravel(faces_np), device)
     return vertices_np, faces_np, vertices_wp, faces_wp
 
@@ -238,7 +215,7 @@ def test_heat_operators_honour_an_explicit_diffusion_time(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere", "saddle_graded"])
 def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -249,6 +226,11 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     [`test_heat_geodesic_matches_igl`]. The first `Trimesh` call runs the same solves as the
     ``vertices, faces`` form (equal to 1e-12); the second goes to the factorizations the mesh kept,
     which agree to the Poisson solve's tolerance (1e-6 of the range here; measured below 1e-9).
+
+    On ``saddle_graded`` the first comparison is at 1e-8 of the range instead: on CUDA the
+    ``vertices, faces`` call is not bit-reproducible there -- two identical calls differ by up to
+    6.4e-10 of the range (exactly 0 on the CPU device, 4e-16 on ``icosphere_coarse``) -- because
+    the float atomics' ordering noise is amplified by the ill-conditioned solves.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp = wp.array(
@@ -263,7 +245,10 @@ def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     second_np = od.heat.heat_geodesic(mesh, sources_wp).numpy()
 
     assert internal_np.max() > 0.0
-    assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
+    if mesh_name == "saddle_graded":
+        assert np.abs(first_np - internal_np).max() < 1e-8 * np.ptp(internal_np)
+    else:
+        assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
     assert mesh.heat_solver().nbytes > 0
     assert np.abs(second_np - internal_np).max() < 1e-6 * np.ptp(internal_np)
 
@@ -278,8 +263,20 @@ def _heat_geodesic_igl(
 
 @pytest.mark.parametrize(
     ("mesh_name", "n_sources"),
-    [("icosahedron", 1), ("hemisphere", 1), ("icosahedron", 2)],
-    ids=["icosahedron", "hemisphere", "icosahedron_two_sources"],
+    [
+        ("icosahedron", 1),
+        ("hemisphere", 1),
+        ("icosahedron", 2),
+        ("saddle_graded", 1),
+        ("saddle_graded", 2),
+    ],
+    ids=[
+        "icosahedron",
+        "hemisphere",
+        "icosahedron_two_sources",
+        "saddle_graded",
+        "saddle_graded_two_sources",
+    ],
 )
 @pytest.mark.parity("heat_geodesic", "igl")
 @pytest.mark.parity("heat_geodesic_conditioning", "igl")
@@ -571,7 +568,9 @@ def test_heat_geodesic_matches_potpourri3d_plain_and_pymeshlab(
         assert error.max() < 0.05 * diameter
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["icosahedron", "hemisphere", "half_torus", "saddle_graded", "torus"]
+)
 @pytest.mark.parity("heat_geodesic", "pyvista")
 def test_heat_geodesic_is_bounded_by_the_graph_distance(
     request: pytest.FixtureRequest, mesh_name: str
@@ -616,10 +615,17 @@ def test_heat_geodesic_is_bounded_by_the_graph_distance(
         assert graph_pv > 0.0  # the reference answered, so the bound is not vacuous
         assert heat_np[int(target)] <= graph_pv
 
-    # The lower bound bites only at range -- see the docstring.
+    # The lower bound bites only at range -- see the docstring -- and only where the Euclidean
+    # distance sits further below the geodesic than the method's own error. Not on
+    # ``saddle_graded``: corner to corner the straight line (2.828) is 0.6 % short of the exact
+    # geodesic (2.846, ``igl.exact_geodesic``) while the heat method lands 1.5 % short -- ordito at
+    # 2.8039, potpourri3d's identical method at 2.8032 -- so there it is the method's error, not a
+    # scale bug, that crosses the line.
     farthest = int(np.argmax(np.linalg.norm(mesh_tm.vertices - mesh_tm.vertices[0], axis=1)))
     euclidean_np = float(np.linalg.norm(mesh_tm.vertices[farthest] - mesh_tm.vertices[0]))
-    assert euclidean_np <= heat_np[farthest] <= float(mesh_pv.geodesic_distance(0, farthest))
+    assert heat_np[farthest] <= float(mesh_pv.geodesic_distance(0, farthest))
+    if mesh_name != "saddle_graded":
+        assert euclidean_np <= heat_np[farthest]
 
 
 # --- the heat method's robust path (potpourri3d use_robust=True reference) -------------
@@ -727,6 +733,7 @@ def _distance_pp(
 # returns NaN), and on ``half_torus`` the two libraries agree only to a correlation of 0.39 — both
 # are solving a degenerate problem there and degrade differently. The structural tests below still
 # cover ``half_torus``, and they pass.
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity(
     "heat_signed_distance_constraint",
     "potpourri3d",
@@ -740,7 +747,7 @@ def _distance_pp(
     ("level_set_constraint", "constraint_pp"), [("zero_set", "ZeroSet"), ("none", "None")]
 )
 def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh], level_set_constraint: str, constraint_pp: str
+    request: pytest.FixtureRequest, mesh_name: str, level_set_constraint: str, constraint_pp: str
 ) -> None:
     """
     Class C (correlation plus a mean-error bound), on both settings of the constraint.
@@ -766,7 +773,7 @@ def test_heat_signed_distance_level_set_constraint_matches_potpourri3d(
     and negating it gives ``r = -0.94``, so both fail. What that probe also found and this test
     inherits: the ``hemisphere`` error bound has only **1.19x** headroom on unshuffled input.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, curve_np, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
 
     distance_wp = od.heat.heat_signed_distance(
@@ -1166,13 +1173,23 @@ def test_transport_tangent_vectors_matches_potpourri3d(
     direction -- so the named transform expresses both answers in each library's *own* frames and
     compares the resulting world vectors, which are gauge-invariant. Comparing the raw ``vec2``
     components instead is exactly what section 6 forbids here.
+
+    **The source is the first interior vertex, not vertex 0.** At a boundary source the gauge fix
+    does not hold: potpourri3d's tangent coordinates there are not those of the frame
+    ``get_tangent_frames`` reports, so every transported direction came out rotated by exactly the
+    angle between the two libraries' ``basis_x`` at the source -- 0.93 degrees on ``hemisphere``
+    (the median this test used to record), 14.77 degrees at ``saddle_graded``'s corner. From an
+    interior source that offset is 0. (Neither library transports a boundary *corner*'s vector to
+    a constant field on a flat disk -- the tangent angles there are rescaled -- so a corner source
+    tests no transport either.)
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     solver_pp = _solver_pp(mesh_tm)
     basis_x_pp, basis_y_pp, _ = (np.asarray(basis) for basis in solver_pp.get_tangent_frames())
     basis_x, basis_y, _ = _frames(mesh_wp)
 
-    source = 0
+    border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
+    source = int(np.flatnonzero(~border)[0])
     vector = np.array([[1.0, 0.0]], dtype=np.float32)
     # The same *world* vector for both libraries: ordito's basis_x at the source, re-expressed in
     # potpourri3d's frame there.
@@ -1195,11 +1212,13 @@ def test_transport_tangent_vectors_matches_potpourri3d(
         np.linalg.norm(world_wp, axis=1) * np.linalg.norm(world_pp, axis=1) + 1e-12
     )
     angle = np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
-    # Measured: 0.93 degrees median on ``hemisphere``, 0.03 on ``half_torus``. The *median* is the
+    # Measured medians from the interior source: 0.0 (icosahedron), 0.0056 (hemisphere), 0.018
+    # (half_torus), 0.0 (saddle_graded) degrees, so 0.1 clears the worst by 5x and still fails the
+    # 0.93-degree constant offset a boundary source produced on ``hemisphere``. The *median* is the
     # statistic to use: on the cut locus (and on a 12-vertex icosahedron, most of which is cut
-    # locus)
-    # the transported direction is genuinely undefined and the two libraries disagree freely there.
-    assert np.median(angle) < 2.0
+    # locus) the transported direction is genuinely undefined and the two libraries disagree
+    # freely there.
+    assert np.median(angle) < 0.1
 
 
 def test_transport_on_a_graded_mesh_matches_a_direct_solve(
@@ -1427,7 +1446,7 @@ def test_log_map_radius_is_the_geodesic_distance(
 # on
 # ``cave_cube`` (zero cotangent weights, as above), and a 12-vertex icosahedron is too coarse for
 # either library's log map to mean much.
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parity("log_map", "potpourri3d")
 def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -1437,30 +1456,38 @@ def test_log_map_matches_potpourri3d(request: pytest.FixtureRequest, mesh_name: 
     measure angles in *one* tangent plane, the source vertex's -- so the transform recovers that
     angle from the two ``basis_x`` directions and rotates potpourri3d's answer by it. The fixture
     choice is explained in the comment above: neither ``cave_cube`` nor ``icosahedron`` can serve.
+
+    The source is the first interior vertex, for the reason
+    [`test_transport_tangent_vectors_matches_potpourri3d`] gives: at a boundary source the gauge
+    fix does not hold (vertex 0 is a corner of ``saddle_graded``, where the median error was 19.7 %
+    of the diagonal; on ``hemisphere`` the boundary source read 10 % where the interior one reads
+    6.8 %).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     solver_pp = _solver_pp(mesh_tm)
     basis_x_pp, basis_y_pp, _ = (np.asarray(basis) for basis in solver_pp.get_tangent_frames())
     basis_x, _, _ = _frames(mesh_wp)
 
-    logarithm_wp = od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0).numpy()
-    logarithm_pp = np.asarray(solver_pp.compute_log_map(0, "VectorHeat"))
+    border = np.asarray(igl.is_border_vertex(mesh_tm.faces.astype(np.int64)), dtype=bool)
+    source = int(np.flatnonzero(~border)[0])
+    logarithm_wp = od.heat.log_map(mesh_wp.points, mesh_wp.indices, source).numpy()
+    logarithm_pp = np.asarray(solver_pp.compute_log_map(source, "VectorHeat"))
 
     # Both maps live in the source vertex's tangent plane but measure angles from their own
     # reference
     # direction, so potpourri3d's has to be rotated into ordito's before the two can be compared.
-    cosine = float(basis_x[0] @ basis_x_pp[0])
-    sine = float(basis_x[0] @ basis_y_pp[0])
+    cosine = float(basis_x[source] @ basis_x_pp[source])
+    sine = float(basis_x[source] @ basis_y_pp[source])
     rotation = np.array([[cosine, sine], [-sine, cosine]])
     aligned_pp = logarithm_pp @ rotation.T
 
     scale = float(np.linalg.norm(mesh_tm.vertices.max(axis=0) - mesh_tm.vertices.min(axis=0)))
     error = np.linalg.norm(logarithm_wp - aligned_pp, axis=1)
     # The two constructions differ (this one reads the angle off the distance gradient), so they
-    # agree
-    # only to a few percent of the mesh scale, improving with resolution: measured 10% of the
-    # bounding
-    # diagonal on ``hemisphere`` (97 vertices) and 2.8% on ``half_torus`` (544).
+    # agree only to a few percent of the mesh scale: measured 6.8 % of the bounding diagonal on
+    # ``hemisphere`` (97 vertices), 2.1 % on ``half_torus`` (544) and 10.9 % on ``saddle_graded``,
+    # where most of it is potpourri3d's radius -- 3.4 % of the diagonal off ``igl.exact_geodesic``
+    # in the median, against ordito's 0.46 % (1.5 % against 5.0 % on ``hemisphere``).
     assert np.median(error) < 0.15 * scale
 
 
@@ -1570,13 +1597,16 @@ def test_reused_operators_give_the_same_transport(
     # cut locus only, where the direction is round-off and the two solves' round-off differs (the
     # icosahedron's antipode: 0.06 apart; see ``transport_tangent_vectors``' Notes); the log map's
     # radius is compared everywhere. The signed field integrates the normalized diffused field,
-    # whose direction at that antipode is round-off, so on the icosahedron alone the two solves'
-    # signed fields differ there by 3.9e-3 of their span.
+    # whose direction at that antipode is round-off, so on the icosahedron alone the signed field is
+    # round-off throughout: a 2e-7 relative perturbation of the vertices -- their own float32
+    # rounding -- moves it by 8-11 % of its span. The two solves' fields differ by 1.4e-2 of the
+    # span (5.2e-3 before the cotangents were formed as ``dot / |cross|``, an ulp-level change of
+    # every weight), so the bound is 5e-2 there: above that floor, below the perturbation's reach.
     resolved = od.heat.transport_tangent_vectors(mesh_wp.points, mesh_wp.indices, sources, vectors)[
         1
     ].numpy()
     assert resolved.any()
-    signed_tolerance = 1e-2 if mesh_name == "icosahedron" else 1e-5
+    signed_tolerance = 5e-2 if mesh_name == "icosahedron" else 1e-5
     points, indices = mesh_wp.points, mesh_wp.indices
     everywhere = np.ones_like(resolved)
     # Each row: the field from ``vertices, faces``, the same field from the mesh, where to compare.
@@ -1763,14 +1793,15 @@ def test_trimesh_factors_on_the_second_solve_and_reuses_it(
 
 
 @pytest.fixture
-def saddle_graded(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+def saddle_graded_benchmark(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """Return ``benchmarks``' ``saddle_graded`` (17 689 vertices) on ``device``."""
     vertices_np, faces_np = BUILDERS["saddle_graded"]()
     return numpy_to_warp(vertices_np, np.ravel(faces_np), device)
 
 
 def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
-    saddle_graded: tuple[wp.array[wp.vec3], wp.array[wp.int32]], monkeypatch: pytest.MonkeyPatch
+    saddle_graded_benchmark: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """
     Class A at 1e-10 of the range: the diffused heat against ``scipy``'s solve of the same system.
@@ -1780,7 +1811,7 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
     mesh keeps: the second solve builds nothing. The reference is ``spsolve`` on the solver's own
     heat system, so the comparison is of the linear solve alone.
     """
-    vertices_wp, faces_wp = saddle_graded
+    vertices_wp, faces_wp = saddle_graded_benchmark
     mesh = od.Trimesh(vertices_wp, faces_wp)
     built = _count_factorizations(monkeypatch)
     solver = mesh.heat_solver()
@@ -1810,7 +1841,7 @@ def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
 
 @pytest.mark.parametrize("on_trimesh", [False, True], ids=["vertices_faces", "trimesh"])
 def test_a_discarded_factorization_is_logged(
-    saddle_graded: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
+    saddle_graded_benchmark: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
     caplog: pytest.LogCaptureFixture,
     on_trimesh: bool,
 ) -> None:
@@ -1820,7 +1851,7 @@ def test_a_discarded_factorization_is_logged(
     On the graded saddle the heat solve falls back to a factorization. The ``vertices, faces``
     call then drops it and says so; the `Trimesh` call keeps it and says nothing.
     """
-    vertices_wp, faces_wp = saddle_graded
+    vertices_wp, faces_wp = saddle_graded_benchmark
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices_wp.device)
     mesh = od.Trimesh(vertices_wp, faces_wp)
     with caplog.at_level(logging.INFO, logger="ordito.heat"):

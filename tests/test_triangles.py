@@ -50,23 +50,25 @@ def test_face_normals_and_areas(icosahedron: tuple[tm.Trimesh, wp.Mesh]):
 @pytest.mark.parity("face_normals_and_areas", "pytorch3d")
 def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]):
     """
-    Class A: ``mesh_face_areas_normals`` is bit-identical to ordito's, on both outputs.
+    Class A at ``1e-6``: ``mesh_face_areas_normals`` against ordito's, on both outputs.
 
-    Not merely within tolerance -- **exactly** 0.0 on this fixture, because the two implementations
-    are the same three lines: ``(v1 - v0) x (v2 - v0)``, its norm halved for the area, and the same
-    cross product normalized for the normal. Worth having as a separate test from the trimesh one
-    for that reason: a reference that agrees to 1e-7 leaves room for a different summation order,
-    and one that agrees to 0.0 does not.
+    Both are ``float32`` from the same positions, but no longer the same three lines: pytorch3d
+    forms ``(v1 - v0) x (v2 - v0)`` at the first corner, ordito at the corner of the largest angle
+    (``kernels/predicates.triangle_area_vector``), which is the same vector in exact arithmetic and
+    differs here by rounding -- 2.0e-07 relative on the areas, 1.2e-07 on the normals, measured
+    against each other; against a ``float64`` cross product of the same ``float32`` corners ordito
+    is 1.1e-07 / 8.1e-08 off and pytorch3d 1.6e-07 / 1.1e-07. They were bit-identical while both
+    used the first corner, which on ``saddle_graded``'s needles is off by 6.7e-05 on CUDA.
+
+    Not run on ``saddle_graded``: pytorch3d divides each normal by ``max(|n|, eps)``, so a face of
+    double area under its ``eps`` comes back short -- normals off by up to 0.80 there.
 
     Note the areas come back **float32** whatever the ``Meshes`` was built from -- the C++ kernel
     casts -- so a float64 comparison here would be measuring pytorch3d's own downcast.
 
-    The ``Meshes`` is built on the **ordito side's own device**, which is what makes the exact
-    claim hold on both: pytorch3d has separate CPU and CUDA kernels, and each agrees bit-for-bit
-    with ordito's on the same device while a ``pytorch3d``-on-host against ``ordito``-on-CUDA
-    comparison lands at 1.86e-09 on the areas and 1.19e-07 on the normals. So this is also one of
-    the tests section 6's device rule asks for -- it exercises the reference's *own* two backends
-    rather than trusting the CPU pass.
+    The ``Meshes`` is built on the **ordito side's own device**: pytorch3d has separate CPU and
+    CUDA kernels, so this is also one of the tests section 6's device rule asks for -- it
+    exercises the reference's *own* two backends rather than trusting the CPU pass.
     """
     mesh_tm, mesh_wp = icosphere
     mesh_p3d = trimesh_to_pytorch3d(mesh_tm, str(mesh_wp.points.device))
@@ -77,13 +79,14 @@ def test_face_normals_and_areas_matches_pytorch3d(icosphere: tuple[tm.Trimesh, w
 
     assert areas_p3d.shape == (mesh_tm.faces.shape[0],)
     assert_nonconstant(areas_p3d.cpu().numpy(), tol=1e-5)
-    assert np.array_equal(areas_wp.numpy(), areas_p3d.cpu().numpy())
-    assert np.array_equal(normals_wp.numpy(), normals_p3d.cpu().numpy())
+    assert np.allclose(areas_wp.numpy(), areas_p3d.cpu().numpy(), rtol=1e-6, atol=0.0)
+    assert np.allclose(normals_wp.numpy(), normals_p3d.cpu().numpy(), rtol=0.0, atol=1e-6)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "igl", "potpourri3d", "pymeshlab")
 def test_face_normals_and_areas_against_the_partial_references(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    request: pytest.FixtureRequest, mesh_name: str
 ):
     """
     The three references that each answer *half* of this function, so the benchmark can be read.
@@ -108,7 +111,7 @@ def test_face_normals_and_areas_against_the_partial_references(
     mesh of 20 congruent triangles a factor-of-two error in one reference and a wrong *constant* in
     ordito are indistinguishable.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = faces_igl(mesh_tm)
 
@@ -282,8 +285,9 @@ def test_corner_normals_edge_cases(device: str, unit_box: tuple[tm.Trimesh, wp.M
         od.triangles.corner_normals(vertices_wp, faces_wp, weighting="sine")  # pyright: ignore[reportArgumentType]  # deliberately off-menu
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "open3d")
-def test_face_normals_matches_open3d(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_normals_matches_open3d(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A on the normals half; the areas reduce to open3d's one total.
 
@@ -292,7 +296,7 @@ def test_face_normals_matches_open3d(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     (``get_surface_area`` is the total), so the sum is compared as its class-B reduction.
     ``half_torus`` for the same varying-area reason as the partial-references test.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     mesh_o3d = trimesh_to_open3d(mesh_tm)
@@ -301,8 +305,9 @@ def test_face_normals_matches_open3d(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     assert np.isclose(float(areas_wp.numpy().sum()), mesh_o3d.get_surface_area(), rtol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "pyvista")
-def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_normals_and_areas_match_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A on both halves, from the one reference that answers both -- in two calls.
 
@@ -313,7 +318,7 @@ def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     compare ordito's normals against a *different* orientation, and ``split_vertices`` would change
     the point count. ``half_torus`` for the varying-area reason the partial-references test gives.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     normals_wp, areas_wp = od.triangles.face_normals_and_areas(mesh_wp.points, mesh_wp.indices)
 
     mesh_pv = trimesh_to_pyvista(mesh_tm)
@@ -333,6 +338,7 @@ def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     )
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parametrize(
     ("metric", "filter_metric"),
     [
@@ -344,10 +350,10 @@ def test_face_normals_and_areas_match_pyvista(half_torus: tuple[tm.Trimesh, wp.M
 )
 @pytest.mark.parity("face_quality", "pymeshlab")
 def test_face_quality_against_pymeshlab(
-    half_torus: tuple[tm.Trimesh, wp.Mesh], metric: FaceQualityMetric, filter_metric: str
+    request: pytest.FixtureRequest, mesh_name: str, metric: FaceQualityMetric, filter_metric: str
 ):
     """Class B (per-measure naming): the four VCG measures, against the filter they came from."""
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_scalar_by_aspect_ratio_per_face(metric=filter_metric)
     quality_pml = meshset_pml.current_mesh().face_scalar_array()
@@ -356,6 +362,7 @@ def test_face_quality_against_pymeshlab(
     assert np.allclose(quality_wp.numpy(), quality_pml, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parametrize(
     ("metric", "measure", "reciprocal"),
     [
@@ -367,7 +374,8 @@ def test_face_quality_against_pymeshlab(
 )
 @pytest.mark.parity("face_quality", "pyvista")
 def test_face_quality_against_the_verdict_measures(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    request: pytest.FixtureRequest,
+    mesh_name: str,
     metric: FaceQualityMetric,
     measure: Literal["area", "radius_ratio", "shape", "aspect_frobenius"],
     reciprocal: bool,
@@ -393,7 +401,7 @@ def test_face_quality_against_the_verdict_measures(
     value, while ``distortion`` is a constant ``1.0`` on ordinary input. So the measure is asserted
     to *vary* across faces before it is compared -- on ``half_torus`` it does, by construction.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     quality_pv = np.asarray(trimesh_to_pyvista(mesh_tm).cell_quality(measure).cell_data[measure])
     # Neither a null (-1.0) nor a constant: both would pass an allclose against a broken port.
     assert quality_pv.min() > 0.0
@@ -410,8 +418,9 @@ def test_face_quality_against_the_verdict_measures(
         assert np.allclose(radius_ratio_wp.numpy() * quality_pv, 1.0, rtol=1e-4, atol=1e-4)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_angles", "trimesh", "igl")
-def test_face_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_angles(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A on both references: ``(n_faces, 3)`` interior angles, element-wise, no transform.
 
@@ -424,7 +433,7 @@ def test_face_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     ``half_torus`` rather than ``icosahedron`` because every corner of an icosahedron's faces
     carries the same angle, which is exactly the fixture a shifted row would survive.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     angles_igl = igl.internal_angles(
         np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64), faces_igl(mesh_tm)
     )
@@ -437,8 +446,9 @@ def test_face_angles(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(angles_wp.numpy().sum(axis=1), np.pi, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_angles", "pyvista")
-def test_face_angles_extremes_against_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_angles_extremes_against_pyvista(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: VTK gives the two *extremes* only, in **degrees**.
 
@@ -447,7 +457,7 @@ def test_face_angles_extremes_against_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     min/max along the row, and the comparison cannot see the third angle or which corner each
     belongs to. That is what keeps the igl / trimesh row above the element-wise oracle.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     quality_pv = trimesh_to_pyvista(mesh_tm).cell_quality(["min_angle", "max_angle"])
 
     angles_np = np.degrees(od.triangles.face_angles(mesh_wp.points, mesh_wp.indices).numpy())
@@ -462,6 +472,7 @@ def test_face_angles_extremes_against_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     assert_nonconstant(np.asarray(quality_pv.cell_data["min_angle"]), tol=1.0)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_normals_and_areas", "meshlib")
 @pytest.mark.parity(
     "face_centroids",
@@ -492,7 +503,7 @@ def test_face_angles_extremes_against_pyvista(half_torus: tuple[tm.Trimesh, wp.M
     "the timed rows. What sumAngles adds is a second, independent route to the same numbers: the "
     "per-vertex sum of the table, which is the quantity vertex_defects is built from.",
 )
-def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_per_face_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A for three per-face families at once, all element-wise in face order.
 
@@ -500,9 +511,12 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     conventions the others leave open. Its ``computePerFaceNormals`` is **normalized** (|n| = 1 to
     6e-08 measured), unlike pymeshlab's ``face_normal_matrix()``, which is the raw cross product at
     magnitude ``2 * area``; and its ``triangleAspectRatio`` is exactly the measure
-    [`face_quality`][ordito.triangles.face_quality] calls ``aspect_ratio`` -- **0.0** difference,
+    [`face_quality`][ordito.triangles.face_quality] calls ``aspect_ratio`` -- 3.8e-07 relative,
     where pyvista names the same quantity ``radius_ratio`` and igl gives it only as a ratio of two
-    other arrays.
+    other arrays. Its **double** overload on the three float32 corners, not the per-face one: that
+    computes in float32 from the ``s - a`` differences, which cancel on a needle -- 0.22 % off on
+    ``saddle_graded`` (and so was ordito, with the same formula, until it formed the Heron product
+    from the area vector).
 
     One named transform, the same one ``igl.doublearea`` needs: ``dblArea`` is twice the area.
     Everything else is direct. Three of MeshLib's four entry points here are **per-face** rather
@@ -520,7 +534,7 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     fixture-level disagreement (a converter dropping a vertex, a face buffer reshaped wrong) shows
     up in all of them at once and is distinguishable from a real per-quantity bug.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     topology_ml, points_ml = mesh_ml.topology, mesh_ml.points
     n_faces = mesh_wp.indices.size // 3
@@ -539,7 +553,13 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     centroids_wp = od.triangles.face_centroids(mesh_wp.points, mesh_wp.indices)
     assert np.allclose(centroids_wp.numpy(), centroids_ml, rtol=1e-5, atol=1e-5)
 
-    aspect_ml = np.array([mm.triangleAspectRatio(topology_ml, points_ml, f) for f in faces_ml])
+    corners_np = np.asarray(mesh_tm.vertices, dtype=np.float32)[np.asarray(mesh_tm.faces)]
+    aspect_ml = np.array(
+        [
+            mm.triangleAspectRatio(*(mm.Vector3d(*corner.tolist()) for corner in face))
+            for face in corners_np
+        ]
+    )
     aspect_wp = od.triangles.face_quality(mesh_wp.points, mesh_wp.indices, metric="aspect_ratio")
     assert_nonconstant(aspect_ml, tol=0.1)  # non-vacuity: a constant would pass any tolerance
     assert np.allclose(aspect_wp.numpy(), aspect_ml, rtol=1e-5, atol=1e-5)
@@ -573,10 +593,11 @@ def test_per_face_quantities_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh
     assert np.allclose(sums_wp, sums_ml, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("face_quality", "igl")
-def test_face_quality_aspect_ratio_against_igl(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_face_quality_aspect_ratio_against_igl(request: pytest.FixtureRequest, mesh_name: str):
     """Class B (a derived ratio): igl gives the circumradius and inradius as two arrays."""
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
     aspect_igl = np.asarray(igl.circumradius(vertices_np, faces_np)[0]) / (  # pyright: ignore[reportCallIssue]  # the stub drops V's name
@@ -669,14 +690,15 @@ def test_face_nondegenerate_mask(hemisphere: tuple[tm.Trimesh, wp.Mesh], with_de
     assert np.array_equal(nondegenerate_wp.numpy().astype(bool), nondegenerate_tm)
 
 
-def test_barycentric_to_points(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+def test_barycentric_to_points(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: barycentric-to-Cartesian against trimesh, on random unnormalized coordinates.
 
     The coordinates are not normalized to sum to one, which is deliberate: both libraries treat
     them as affine weights, and normalizing would hide a divide the other does not do.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     barycentric_np = np.random.default_rng(31).random((mesh_tm.triangles.shape[0], 3))
     points_tm = tm.triangles.barycentric_to_points(mesh_tm.triangles, barycentric_np)
 
@@ -685,9 +707,10 @@ def test_barycentric_to_points(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(points_wp.numpy(), points_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parametrize("method", ["cramer", "cross"])
 @pytest.mark.parity("points_to_barycentric", "trimesh", "igl")
-def test_points_to_barycentric(hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str):
+def test_points_to_barycentric(request: pytest.FixtureRequest, mesh_name: str, method: str):
     """
     Class A on both references, against *both* of trimesh's solver methods.
 
@@ -706,7 +729,7 @@ def test_points_to_barycentric(hemisphere: tuple[tm.Trimesh, wp.Mesh], method: s
     wrong rather than the in-plane solve would still pass a "sums to one" check, which is why the
     comparison is against two independent solvers instead.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     barycentric_np = np.random.default_rng(32).random((mesh_tm.triangles.shape[0], 3))
     points_np = tm.triangles.barycentric_to_points(mesh_tm.triangles, barycentric_np)
@@ -789,7 +812,8 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
     assert not np.all(np.isfinite(barycentric_tm))
 
 
-def test_closest_point(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+def test_closest_point(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: the per-triangle closest point against ``trimesh.triangles.closest_point``.
 
@@ -797,7 +821,7 @@ def test_closest_point(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     triangle, so there is no tie between faces and the point itself is comparable rather than
     only its distance.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = np.random.default_rng(33).random((mesh_tm.triangles.shape[0], 3))
     closest_points_tm = tm.triangles.closest_point(mesh_tm.triangles, points_np)
 
@@ -806,6 +830,7 @@ def test_closest_point(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(closest_points_wp.numpy(), closest_points_tm, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity(
     "triangle_closest_point",
     "meshlib",
@@ -824,7 +849,7 @@ def test_closest_point(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     "price the same pass twice. MeshLib's triPoint is per-point besides, so the row would time the "
     "loop.",
 )
-def test_soup_quantities_match_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_soup_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A on the projection and Class B on the interpolation, for the module's two soup ops.
 
@@ -845,7 +870,7 @@ def test_soup_quantities_match_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     ``MeshTriPoint`` whose coordinates do not sum to one is outside the face and MeshLib is entitled
     to a different answer; the affine-weights claim stays with the trimesh oracle.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     faces_np = np.asarray(mesh_tm.faces)
     vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float32)
     n_faces = faces_np.shape[0]
@@ -900,7 +925,7 @@ def test_soup_quantities_match_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(points_wp.numpy(), interpolated_ml, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("face_centroids", "igl", "pyvista")
 def test_face_centroids(request: pytest.FixtureRequest, mesh_name: str):
     """

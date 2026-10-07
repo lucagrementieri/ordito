@@ -113,6 +113,7 @@ def _noisy_icosphere_3(device: str) -> tuple[tm.Trimesh, wp.array[wp.vec3], wp.a
         pytest.param("icosahedron", 8, False, False, id="icosahedron"),
         pytest.param("half_torus", 8, False, False, id="half_torus"),
         pytest.param("hemisphere", 8, False, False, id="hemisphere"),
+        pytest.param("saddle_graded", 8, False, False, id="saddle_graded"),
         pytest.param("icosahedron", 8, True, False, id="icosahedron-volume_constraint"),
         pytest.param("half_torus", 6, False, True, id="half_torus-pluggable_operator"),
     ],
@@ -199,8 +200,23 @@ def test_filter_laplacian_matches_pymeshlab(device: str, iterations: int) -> Non
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
-@pytest.mark.parametrize("lamb", [0.5, 5.0, 50.0])
+@pytest.mark.parametrize(
+    ("lamb", "mesh_name"),
+    [
+        pytest.param(
+            lamb,
+            mesh_name,
+            # BiCGSTAB on the graded saddle's lamb = 50 system is the device's cost: 15.5 s on the
+            # CPU device, 0.10 s on CUDA.
+            marks=[pytest.mark.slow_cpu(15.5)]
+            if (mesh_name, lamb) == ("saddle_graded", 50.0)
+            else [],
+            id=f"{lamb}-{mesh_name}",
+        )
+        for lamb in (0.5, 5.0, 50.0)
+        for mesh_name in ("icosahedron", "hemisphere", "half_torus", "saddle_graded")
+    ],
+)
 def test_filter_laplacian_implicit_on_open_meshes(
     request: pytest.FixtureRequest, mesh_name: str, lamb: float
 ) -> None:
@@ -391,7 +407,7 @@ def test_inflate_deflates_and_handles_edge_cases(device: str) -> None:
         od.smoothing.inflate(vertices_wp, faces_wp, 0.1, iterations=-1)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("filter_humphrey", "trimesh")
 def test_filter_humphrey(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -818,7 +834,7 @@ def test_relax_approx_needs_a_radius_that_reaches(device: str) -> None:
         od.smoothing.relax_approx(vertices_wp, faces_wp, 0.3, max_displacement=-1.0)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("filter_taubin", "trimesh")
 def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
@@ -1002,7 +1018,9 @@ def test_filter_mut_dif_laplacian(
     strongly-saddled meshes (e.g. ``half_torus``) the filter is chaotically sensitive to input
     precision (the float64 trimesh reference itself diverges by ~1e-2 under a float32 input
     round-trip). The hemisphere has no such near-zero normal residual, so float32 warp matches the
-    float64 reference tightly.
+    float64 reference tightly. ``saddle_graded`` is the same case as ``half_torus``, more so: a
+    1e-7 relative perturbation of its (float32-exact) vertices moves trimesh's own answer by 0.036,
+    16x ordito's 2.3e-3 distance from it.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 

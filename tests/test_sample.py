@@ -108,8 +108,9 @@ def test_sample_fibonacci_cone_invalid(device: str) -> None:
         od.sample.sample_fibonacci_cone(8, 4.0, device=device)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("sample_surface", "trimesh", "igl")
-def test_sample_surface(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_sample_surface(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B, three samplers against the area law they all claim: per-face frequency / area fraction.
 
@@ -123,7 +124,7 @@ def test_sample_surface(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     construction, so a uniform-per-face sampler fails the assert; on an icosahedron, where every
     face has the same area, it would pass.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     count = 10_000
     n_faces = int(mesh_tm.faces.shape[0])
     face_idx_tm = tm.sample.sample_surface(mesh_tm, count, seed=0)[1]

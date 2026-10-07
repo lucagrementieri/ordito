@@ -424,7 +424,7 @@ def test_chamfer_points_to_points_loss_grad_on_either_backward_search(
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
 def test_chamfer_and_hausdorff_mesh_to_mesh(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: both metrics are reductions of ``igl.point_mesh_squared_distance`` in each direction.

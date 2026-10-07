@@ -69,8 +69,9 @@ def test_crease_edges_thresholds(
     assert np.allclose(lengths_np, 1.0, rtol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity("crease_edges", "pymeshlab")
-def test_crease_edges_matches_pymeshlab(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_crease_edges_matches_pymeshlab(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (selection to edge rows): the same dihedral threshold, reported as a selection.
 
@@ -78,7 +79,7 @@ def test_crease_edges_matches_pymeshlab(hemisphere: tuple[tm.Trimesh, wp.Mesh]) 
     is on the vertex set the two edge lists span — which is the quantity a caller of either one
     actually uses (it is what gets duplicated by a cut, or pinned by a solver).
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     angle = 40.0
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
     meshset_pml.compute_selection_crease_per_edge(angledegneg=-angle, angledegpos=angle)
@@ -616,7 +617,7 @@ def _quad_mesh(device: str) -> tuple[wp.array[wp.int32], np.ndarray]:
 
 
 @pytest.mark.parity("uv_seam_edges", "pymeshlab")
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
 @pytest.mark.parametrize("include_boundary", [True, False])
 def test_uv_seam_vertex_mask_matches_pymeshlab(
     request: pytest.FixtureRequest, mesh_name: str, include_boundary: bool
@@ -653,7 +654,7 @@ def test_uv_seam_vertex_mask_matches_pymeshlab(
         assert bool((mask_wp.numpy() != selected_pml).any()) == (not mesh_tm.is_watertight)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 def test_uv_seam_edges_matches_igl_port(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B (row-set canonicalization): all three blocks equal the ``igl::seam_edges`` CPU port.

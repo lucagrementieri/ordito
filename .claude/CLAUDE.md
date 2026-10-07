@@ -1386,11 +1386,33 @@ Reuse `tests/conftest.py` fixtures (each returns `(mesh_tm, mesh_wp)`):
 | `boy_surface` | Closed, watertight, **non-orientable**, χ = 1: the `False` branch of `is_orientable` / `face_orientation_bits`, `make_winding_consistent`'s impossible case |
 | `mobius` | Non-orientable with a boundary: same predicates, one 78-edge loop, χ = 0 |
 | `bohemian_dome` | Closed genus 1 that self-intersects: `homology_generators` at genus 1, `is_self_intersecting` on a closed input |
+| `saddle_graded` | Open disk, one rim, clean, but triangles of aspect ratio ~4 900 (longest edge over its altitude): every open-mesh comparison, to meet an ill-conditioned operator |
 
-The last three (built by `creation.parametric_surface`) are the only non-orientable / odd-χ
+The bohemian three (built by `creation.parametric_surface`) are the only non-orientable / odd-χ
 inputs; a boolean predicate asserted only on orientable fixtures tests one branch.
 `parametric_surface` builds thirteen more surfaces that are not fixtures yet: add one rather than
 hand-rolling a degenerate mesh.
+
+**`saddle_graded` is in `OPEN_MESHES` (so in `MESHES`) and in every parity list whose function
+takes an open manifold disk.** It is `benchmarks`' mesh at 68 x 68 (4 624 vertices, 8 978 faces;
+`conftest.saddle_graded_arrays`, vertices rounded to `float32` so a reference and ordito see one
+geometry): the spacing is cubed along `x`, so the worst aspect ratio matches the 133 x 133
+benchmark's (4 858 against 4 719). It reproduced both failures the benchmark mesh exposed (heat
+method 4.4 % mean / 38 % worst off `igl.exact_geodesic` before the settle fix; `harmonic(k=2)`
+29 % of the range off a SciPy solve, a strict xfail until fixed) and found more (§12.4, §16.8,
+§16.12). **Where a test excludes it, the reason is written beside the list with numbers**; the
+recurring ones:
+
+- *Not ordito*: a reference's float32 formula cancels on its needles (§7.6: MeshLib's
+  `gradientInTri` / `triangleAspectRatio` float overloads, pytorch3d's normal clamp) -- switch the
+  reference to its double overload rather than exclude.
+- *The premise*: its rim is a 268-vertex saddle curve, not planar (fill comparisons that rest on
+  every triangulation covering one region; `_PLANAR_RIM_MESHES` in `test_holes.py`), and two of its
+  corners are ears.
+- *Input precision*: an intrinsic (edge-length) path takes `float32` lengths, which do not
+  determine a needle -- igl's own cotangents move by 1.2e-4 when its lengths are rounded
+  (`_INTRINSIC_MESHES`); a transform re-rounds the vertices (an edge moves 0.39 %).
+- *A boundary source*: gauge-fixed potpourri3d comparisons need an interior source (§7.6).
 
 - **Do not** call `tm.creation.box()` or hand-roll `wp.Mesh(...)` unless the case needs a bespoke
   degenerate mesh. **Never construct a zero-triangle `wp.Mesh` on CUDA** (corrupts the allocator,
@@ -1624,6 +1646,14 @@ vertices, `int32` faces).
 - **A zero cotangent weight** (both opposite angles right, i.e. every diagonal-split quad grid:
   `cave_cube`, `half_torus`) erases that edge's phase from `get_connection_laplacian()`, so it
   cannot be an oracle there (`tests/test_tangent.py`).
+- **At a boundary source its tangent coordinates are not those of `get_tangent_frames`.**
+  Transporting from a boundary vertex, every direction comes out rotated by exactly the angle
+  between ordito's and potpourri3d's `basis_x` there (0.93 degrees on `hemisphere`, which the
+  transport test recorded as agreement; 14.77 at `saddle_graded`'s corner); from an interior
+  source the offset is 0. At a rim *corner* neither library carries a vector to a constant field on
+  a flat disk (the tangent angles are rescaled there). Gauge-fixed comparisons (transport, log
+  map) take an interior source. Its `compute_log_map` radius is the less accurate one on a graded
+  mesh: 3.4 % of the diagonal off `igl.exact_geodesic` (median) against ordito's 0.46 %.
 
 #### pymeshlab (`ml`)
 
@@ -1674,6 +1704,9 @@ where it is a *better* oracle than the incumbent. Every trap **fails green**:
   vertex over its two boundary neighbours alone (oracle on closed fixtures only);
   `apply_coord_two_steps_smoothing` at defaults moves a noisy cube further from clean (its fit
   step rounds corners).
+- **`meshing_close_holes` reports a hole closed and leaves edges open** on a non-planar rim: on
+  `saddle_graded`'s 268-edge saddle rim it returned `closed_holes: 1`, `new_faces: 260` (not 266)
+  and 8 open edges. Assert watertightness on the result, not the dict.
 - `MeshSet(verbose=False)` is default but ICP, the point-cloud normal estimator and the VCG
   reconstructor print anyway (pytest fd capture absorbs it).
 - **`face_normal_matrix()` after `compute_normal_per_face()` is unnormalised** (`2 * area`): it
@@ -1734,6 +1767,9 @@ CPU-only; only `open3d.t` has GPU kernels.
   *distances*.
 - **`get_oriented_bounding_box` is PCA of the hull** (minimizes nothing); comparable is
   `get_minimal_oriented_bounding_box`.
+- **`get_minimal_oriented_bounding_box` can collapse to a zero box**: extent `[0, 0, 0]` on
+  `saddle_graded`'s tilted cloud (`robust=True` too, and on the cloud's hull vertices alone), where
+  trimesh and pyvista both return 13.439. Assert `volume > 0` before comparing.
 - **`remove_radius_outlier` is nondeterministic** (shared `KDTreeFlann` across an omp loop whose
   radius search is not thread-safe: three keep sets over eight runs), so not a class-A oracle.
   Evaluate its published rule (`count > nb_points`, self counted) through
@@ -1945,6 +1981,18 @@ would make rows incomparable).
   partner). `mn.getNumpyGaussianCurvature` is the pointwise **angle defect**: it pairs with
   `vertices.vertex_defects`, **not** `curvature.discrete_gaussian_curvature` (the
   Cohen-Steiner/Morvan ball measure).
+- **The float overloads cancel on a needle; call the `Vector3d` ones.** `gradientInTri` solves
+  the Gram system `bb * cc - bc^2`, which in float32 returned `None` for 16 of `saddle_graded`'s
+  faces and was off by up to 176 % on others (the double overload agrees with ordito to 2e-7);
+  `triangleAspectRatio` forms `s - a` differences, 0.22 % off there. Both are bound at both
+  precisions; the per-`FaceId` forms are float32.
+- **`makeThickMesh` smooths the shift directions** unless `ThickenParams.normalsTrustFactor` is
+  large: at its default 1 the shell sat 6.8e-3 (14 % of the thickness) off a raw-pseudonormal
+  offset on `saddle_graded`, invisible on `hemisphere`; at 1e6 it is 1.6e-6 off.
+- **`dihedralAngle` decides convexity by sign; `face_adjacency_convex` (trimesh's rule) by the
+  unshared vertex's projection against `TOLERANCE_MERGE`, an absolute length.** The projection is
+  the dihedral times that vertex's distance from the edge, so on needles concave pairs of dihedral
+  up to 9.4e-5 read convex (208 rows of `saddle_graded`). Compare signs only outside the band.
 
 **Licensing: MeshLib is not open source.** The wheel and `reference/MeshLib` are under AMV
 Consulting's *"NON-COMMERCIAL & education"* agreement (terminable, non-transferable, commercial
@@ -2114,6 +2162,10 @@ package may import torch (a 2.5 GB install).
 - **`mesh_normal_consistency` counts pairs**: an edge with `k` faces contributes `C(k, 2)` terms;
   `adjacency.face_adjacency` keeps only exactly-two-face edges. Equal on edge-manifold input
   (0.0155947 over 480 pairs), 0.777 vs 0.0 on three faces sharing an edge.
+- **`mesh_face_areas_normals` divides each normal by `max(|n|, eps)`**, so a face whose doubled
+  area is under `eps` returns a *short* normal: up to 0.80 off unit on `saddle_graded`. It forms
+  the cross product at the first corner (ordito at the largest angle, §12.4), so the two agree to
+  rounding (2e-7) rather than bit for bit.
 - **`ops.taubin_smoothing` rebuilds and row-normalizes its operator every half-pass**: a fixed
   operator sits 4.1e-03 / 6.5e-03 / 9.9e-03 away at 1 / 3 / 10 iterations;
   `smoothing.filter_taubin(recompute=True)` closes it to 2.4e-07 at ~23x the cost. `num_iter`
@@ -2653,6 +2705,32 @@ Consequence: the shared argmin/argmax/swap helpers in `kernels/array.py` are con
   under each *calling* module's options, so every module using `triangle_cross` would need it).
   Write degeneracy tests with **scale-aware inputs** (vertices ~1e-2) and never assume CPU/GPU
   bit-agreement on zero-area faces.
+  A face with an exactly **repeated** vertex is now exactly zero on both devices: the area vector
+  is formed at the largest angle (next bullet), where one of the two edges is the zero vector.
+- **A triangle's area vector, cotangents and Heron product are formed where they do not cancel**
+  (2026-10-07, found by `saddle_graded`'s aspect-4 900 needles). `predicates.triangle_area_vector`
+  takes `cross(b - a, c - a)` at the corner opposite the longest edge: at a small angle the two
+  edges are near-parallel and the cross product cancels (`eps / sin(angle)` relative), while the
+  largest angle is at least 60 degrees. Every normal, area, circumdiameter and quality measure
+  goes through it (`triangle_normal`, `triangle_double_area`, `triangles.triangle_cross`). The
+  cotangents from positions are `dot / |area vector|` per corner (`laplacian.face_half_cotangents`)
+  instead of the law of cosines, whose squared lengths cancel; the aspect and radius ratios form
+  `8 (s - a)(s - b)(s - c)` as `2 |area vector|^2 / s` instead of from the differences. Measured on
+  `saddle_graded` against `float64`, before / after: unit normals 6.7e-5 / 1.0e-7 on CUDA (7.0e-6
+  on CPU: FMA contraction of the cancelling products made CUDA 10x worse), half-cotangents 1.4e-4
+  absolute on weights of 1e-4 / 2.4e-4 on weights of 2 400 (every entry within 1e-5 + 1e-5
+  relative of igl), aspect ratio 2.2e-3 / 3.7e-7 relative, radius ratio 3.4e-5 / 3.8e-7; the
+  `k = 1` harmonic map built on the cotangent matrix moved from 4.7e-6 to 4.8e-9 of a direct solve
+  on igl's matrix. Everywhere else the change is rounding (the pytorch3d normals test went from
+  bit-identical to 2e-7), and the kernels are memory-bound, so it is free: device time per call at
+  8 M faces 0.204 / 0.203 ms (normals and areas), 0.180 / 0.180 (cotangent table), 0.122 / 0.122
+  (aspect ratio). Two consequences: a *sliver* (height 1e-9 on a unit edge) now has its
+  true, huge cotangent (-1.25e8) where the `float32` lengths' rounding used to read it as zero area,
+  so `conftest.sliver_patch` became exactly collinear to keep testing the zero-area rule; and the
+  intrinsic overloads (`cotmatrix_entries_intrinsic`, `robust_laplacian`, mollification), which
+  only have `float32` lengths, keep the law of cosines and cannot represent a needle at all --
+  igl's own cotangents move by 1.2e-4 when its lengths are rounded to `float32`.
+  `cotmatrix_entries_intrinsic(dtype=wp.float64)` also computes in `float32` and casts (open).
 - **The same contraction makes `-orient2d(p)` and `orient2d(mirror_y(p))` different predicates on
   CUDA** (a near-collinear vertex flips its convex/reflex verdict). `kernels/polyline.mirror_y`
   evaluates the mirrored loop explicitly. **Never substitute an algebraic identity inside a sign
@@ -2664,6 +2742,8 @@ Consequence: the shared argmin/argmax/swap helpers in `kernels/array.py` are con
   (`proximity.closest_point_on_mesh`). **Test such a bound** by asserting exactness against the same
   Warp query and an *improvement ratio* against an independent oracle, not `independent_distance <=
   bound`.
+  On a needle the *point* is worse than the distance: on `saddle_graded` (CPU device) the point
+  sat 1.9e-4 from the float64-exact one while the distance agreed to 1.5e-7 (CUDA: 1.6e-7 both).
 - **`wp.length(d) < r` and `wp.length_sq(d) < r*r` are not the same predicate in float32** (10 of
   200k rows disagree at the boundary, the same 10 on both devices). Rule: §2.4.
 - **`NaN` breaks a binary search, and how depends on the convention.** `searchsorted(side="right")`
@@ -5445,6 +5525,12 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   (fixed-rim Jacobi solve: 0.17 ms recording + 1.18 ms for 52 rounds; squared-Laplacian: 0.85 +
   2.33 ms for 21, of a 22 ms call; the polynomial's 682 tiny `chebyshev_step` launches are 3.8 ms
   of 9.3 ms device). Small systems take the one-block solve (§16.16).
+- **The extrinsic cotangents are `dot / |cross|` at the largest angle since 2026-10-07** (§12.4):
+  the law of cosines on `float32` squared lengths had read `saddle_graded`'s near-right corners at
+  1.4e-4 absolute against weights of 1e-4. The intrinsic route (`robust_laplacian`,
+  `cotmatrix_entries_intrinsic`) still holds `float32` lengths and is 8.4e-6 of the row off igl
+  there (the positions-built operator 1.9e-7): a needle is not representable by its rounded
+  lengths, so its graded comparisons are excluded (`_INTRINSIC_MESHES`), not loosened.
 - **`laplacian` module notes**: `robust_laplacian`'s negative-weight residue is entirely
   *boundary* edges, not Delaunay violations (a boundary edge has one opposite angle); the only
   remedy is Steiner points, which the contract forbids (CLOSED). The interior half is fixed by
@@ -5646,6 +5732,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `heat_geodesic`'s device-side one without orientation, and curve segments are derived per thread
   (binary search into the offsets). `log_map` folds two maps into `log_map_from_angles`;
   `transport_tangent_vectors` folds the extension's division into `transported_and_resolved`.
+- **On `saddle_graded` the CUDA heat solves are not bit-reproducible run to run**: two identical
+  `heat_geodesic` calls differ by up to 6.4e-10 of the range (exactly 0 on the CPU device, 4e-16 on
+  `icosphere_coarse`), the float atomics' ordering noise amplified by the ill-conditioned systems.
+  Its componentwise backward error after the Cholesky fallback is 5e-16, SciPy's own; the forward
+  difference to `spsolve` reaches 1.7e-12 componentwise there. The heat method itself lands 1.5 %
+  short corner to corner (2.8039 against the exact 2.846, potpourri3d 2.8032), below the straight
+  line (2.828) -- a discretization error, not a scale bug.
 - **`log_map` is not reproducible at the cut locus on CUDA** (one `icosphere(5)` vertex at radius
   ~pi differed by 3e-2 across builds and 3e-3 between runs); the docstring calls that angle
   arbitrary. Compare off the antipode.
@@ -5699,6 +5792,12 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 - **Solve parity through the halfedge mates, not an adjacency table**:
   `validation.face_flip_mask` runs the parity union-find straight off `halfedge.halfedge_mates`
   (`make_winding_consistent`).
+- **`face_adjacency_convex` is trimesh's rule, and on needles it is not the dihedral's sign**: a
+  pair is convex when the unshared vertex's projection is below `TOLERANCE_MERGE`, an absolute
+  length, and that projection is the dihedral times the vertex's distance from the edge -- ~6.6e-6
+  on `saddle_graded`, where concave pairs of dihedral up to 9.4e-5 read convex (208 of 13 333 rows
+  against MeshLib's signed `dihedralAngle`). Matches trimesh by construction; a caller wanting the
+  sign of a nearly flat edge on a fine mesh should read `face_adjacency_projections`.
 - **A halfedge's mate answers "is this edge manifold"**: 1, 2 or 3+ is the mate code (`-1`, a
   partner, `<= -2`), so a per-face or per-halfedge manifold mask is one kernel after the pairing,
   not `unique_1d` plus inverse plus counts plus a gather. The twin rule is one `@wp.func`,
@@ -5918,6 +6017,23 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       `stitch_dp_diag` stays as the reference schedule (`_run_stitch_dp(tiled=False)`). A
       `@wp.struct` type cannot be annotated (the decorator rebinds the name to a `Struct` *value*):
       a helper taking a bundle names `warp._src.codegen.StructInstance`.
+- **FIXED (2026-10-07): the `min_area` retry fired on metrics that never reject a triangle.**
+  `fill_min_weight` re-ran a loop under `min_area` whenever its total reached `BAD_METRIC` (1e10),
+  for every metric. Only `plane_normalized`, `plane` and `complex_fill` score a triangle *as* bad;
+  for the others a total that high is a genuine sum -- `min_tri_angle` charges `exp(25 sin 60)` ~
+  2.5e9 a sliver, and `saddle_graded`'s 268-vertex rim needs 172 of them (3.548e11) -- and the
+  retry silently returned a `min_area` fill scoring 3.685e11 under the metric asked for, 3.8 %
+  above MeshLib's optimum. The retry is now confined to the three rejecting metrics
+  (`holes._METRICS_WITH_BAD_TERMS`) and the answer is MeshLib's exactly; the
+  `test_fill_min_weight_matches_meshlib[min_tri_angle-saddle_graded]` arm is the regression test.
+  On the same rim, with the kernel metrics now accurate on slivers (§12.4): eight of nine metrics
+  meet MeshLib's optimum to 3e-5 or beat it (`complex_fill` 1.4 % lower: MeshLib's float32 aspect
+  ratio is 0.22 % rounding there); `plane` does not, because one triangle lying in a plane through
+  the hole normal (cosine -1.3e-8 against it) is feasible to MeshLib and flipped to ordito, which
+  costs 13 % on the CPU device (on CUDA the rim normal's float atomics decide it either way);
+  without the forbidden-chord rule ordito reaches 365.8 against MeshLib's 375.2. Open3D's fill of
+  that rim reuses the two mesh edges closing the grid's ear corners (non-manifold), which is why it
+  scores below ordito's (759 617 against 769 927; ordito 759 151 without the rule).
 - **Every other NumPy site in the module was priced and kept**: the `stitch_loops` monotonicity
   correction (LIS over the association array), the band traceback and `bridge_edges_smooth`'s
   Hermite strip are host-sequential or fixed-size (§3.8); `_PackedLoops`' cumsums and uploads are

@@ -30,7 +30,8 @@ def test_principal_curvature(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
     assert np.allclose(pv2_wp.numpy(), pv2_igl, atol=1e-3, rtol=1e-3)
 
 
-def test_principal_curvature_half_torus(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
+def test_principal_curvature_half_torus(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Values and directions against libigl where curvature varies, on both shape-operator paths.
 
@@ -44,7 +45,7 @@ def test_principal_curvature_half_torus(half_torus: tuple[tm.Trimesh, wp.Mesh]) 
     appreciably at high-anisotropy vertices where ``PV1 - PV2`` is large. The bulk of vertices
     therefore stay close to libigl.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     vertices_np = np.array(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.array(mesh_tm.faces, dtype=np.int32)
@@ -149,8 +150,9 @@ def test_principal_curvature_directions_match_pymeshlab(torus: tuple[tm.Trimesh,
     assert dots_np.min() > 0.99, f"worst |dot| {dots_np.min():.4f}"
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity("discrete_gaussian_curvature", "trimesh")
-def test_discrete_gaussian_curvature(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_discrete_gaussian_curvature(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: the Cohen-Steiner/Morvan ball measure against trimesh's, at the same radius.
 
@@ -159,7 +161,7 @@ def test_discrete_gaussian_curvature(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     points, which is enough because the measure is local and each one integrates an independent
     1-ring.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 
     face_angles_tm = mesh_tm.face_angles
     points_tm = mesh_tm.vertices[:4]

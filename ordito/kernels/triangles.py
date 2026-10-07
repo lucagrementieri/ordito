@@ -15,6 +15,7 @@ from ordito.kernels.predicates import (
     side_lengths,
     stable_normalize,
     triangle_aabb,
+    triangle_area_vector,
     triangle_aspect_ratio,
     triangle_double_area,
     triangle_normal,
@@ -209,9 +210,14 @@ def face_signed_volumes(
 def triangle_cross(
     vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face_index: wp.int32
 ) -> wp.vec3:
-    """Unnormalized normal of face ``face_index``: the cross product of its two first edges."""
+    """
+    Unnormalized normal of face ``face_index``: ``cross(v1 - v0, v2 - v0)``, twice its area.
+
+    Formed by [`triangle_area_vector`][ordito.kernels.predicates.triangle_area_vector] at the
+    corner of the largest angle, the well-conditioned one.
+    """
     v0, v1, v2 = face_vertices(vertices, faces, face_index)
-    return wp.cross(v1 - v0, v2 - v0)
+    return triangle_area_vector(v0, v1, v2)
 
 
 @wp.func
@@ -322,11 +328,18 @@ def triangle_radius_ratio(a: Any, b: Any, c: Any) -> wp.Float:
     # VCG ``QualityRadii`` ("inradius/circumradius"): the ratio of the two radii, rescaled so an
     # equilateral triangle reads 1 (the bare geometric ratio is 1/2 there). Symmetric in the three
     # side lengths; zero for a degenerate triangle.
+    #
+    # ``(ab + ca - bc)(bc + ab - ca)(ca + bc - ab)`` is ``8 (s - a)(s - b)(s - c)``, which is
+    # ``2 |cross|^2 / s``: formed from the area vector rather than from the differences, which
+    # cancel on a needle (the reasoning of ``predicates.triangle_aspect_ratio``, whose reciprocal
+    # this is).
     bc, ca, ab = side_lengths(a, b, c)
     product = ab * ca * bc
     if product <= type(product)(0.0):
         return type(product)(0.0)
-    return (ab + ca - bc) * (bc + ab - ca) * (ca + bc - ab) / product
+    half_perimeter = (ab + ca + bc) / type(product)(2.0)
+    double_area_sq = wp.length_sq(triangle_area_vector(a, b, c))
+    return type(product)(2.0) * double_area_sq / (half_perimeter * product)
 
 
 @wp.func
@@ -339,7 +352,7 @@ def triangle_area_max_side(a: Any, b: Any, c: Any) -> wp.Float:
     longest_sq = wp.max(wp.max(wp.length_sq(ab), wp.length_sq(ac)), wp.length_sq(wp.sub(c, b)))
     if longest_sq <= type(longest_sq)(0.0):
         return type(longest_sq)(0.0)
-    return wp.length(wp.cross(ab, ac)) / longest_sq
+    return triangle_double_area(a, b, c) / longest_sq
 
 
 @wp.func
@@ -351,7 +364,7 @@ def triangle_mean_ratio(a: Any, b: Any, c: Any) -> wp.Float:
     sum_sq = wp.length_sq(ab) + wp.length_sq(ac) + wp.length_sq(wp.sub(c, b))
     if sum_sq <= type(sum_sq)(0.0):
         return type(sum_sq)(0.0)
-    return type(sum_sq)(2.0) * wp.sqrt(type(sum_sq)(3.0)) * wp.length(wp.cross(ab, ac)) / sum_sq
+    return type(sum_sq)(2.0) * wp.sqrt(type(sum_sq)(3.0)) * triangle_double_area(a, b, c) / sum_sq
 
 
 @wp.func

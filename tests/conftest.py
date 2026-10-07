@@ -19,6 +19,7 @@ import os
 for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
     os.environ.setdefault(_var, "8")
 
+import functools  # noqa: E402
 from types import CodeType  # noqa: E402
 
 import numpy as np  # noqa: E402
@@ -262,8 +263,13 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
 CLOSED_MESHES = ["icosahedron", "cave_cube"]
 """Watertight, and one convex and one not -- ``cave_cube`` is a hollow non-convex shell."""
 
-OPEN_MESHES = ["hemisphere", "half_torus"]
-"""Curved with a boundary: one rim on ``hemisphere``, two on ``half_torus``."""
+OPEN_MESHES = ["hemisphere", "half_torus", "saddle_graded"]
+"""
+Curved with a boundary: one rim on ``hemisphere``, two on ``half_torus``, one on ``saddle_graded``.
+
+``saddle_graded`` is the ill-conditioned member: triangles of aspect ratio ~4 900 on an otherwise
+plain disk, so a comparison tuned on the two well-shaped meshes meets an extreme operator here.
+"""
 
 MESHES = CLOSED_MESHES + OPEN_MESHES
 """The default four-fixture sweep: closed and open, convex and not, in that order."""
@@ -398,6 +404,58 @@ def hemisphere(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     return hemisphere, trimesh_to_warp(hemisphere, device)
 
 
+SADDLE_GRADED_RESOLUTION = 68
+"""Grid side of ``saddle_graded``: 4 624 vertices, 8 978 faces."""
+
+
+@functools.cache
+def saddle_graded_arrays() -> tuple[np.ndarray, np.ndarray]:
+    """
+    Return ``saddle_graded``'s ``(n_vertices, 3)`` vertices and ``(n_faces, 3)`` faces.
+
+    ``benchmarks/meshes.py``'s ``saddle_graded`` at a quarter of its vertices: a ``68 x 68`` grid
+    lifted onto the saddle ``z = 0.35 (x^2 - 0.6 y^2)``, its spacing cubed along ``x``. An even
+    side puts the two finest columns either side of ``x = 0`` (gap ``2 / 67^3``) against a ``y``
+    spacing of ``2 / 67``, so the worst triangle's aspect ratio (longest edge over its altitude)
+    is 4 858, the benchmark mesh's 4 719 at 133 x 133.
+
+    The vertices are rounded to ``float32`` and held as ``float64``, so a reference library and
+    ordito's ``float32`` buffers see the same geometry: on operators this ill-conditioned the
+    rounding of the input alone is not negligible.
+    """
+    k = SADDLE_GRADED_RESOLUTION
+    step = np.linspace(-1.0, 1.0, k)
+    u, v = np.meshgrid(np.sign(step) * np.abs(step) ** 3, step, indexing="ij")
+    vertices = np.column_stack((u.ravel(), v.ravel(), 0.35 * (u * u - 0.6 * v * v).ravel()))
+    i, j = np.meshgrid(np.arange(k - 1), np.arange(k - 1), indexing="ij")
+    corner = (i * k + j).ravel()
+    faces = np.vstack(
+        (
+            np.column_stack((corner, corner + k, corner + k + 1)),
+            np.column_stack((corner, corner + k + 1, corner + 1)),
+        )
+    )
+    return vertices.astype(np.float32).astype(np.float64), faces.astype(np.int64)
+
+
+@pytest.fixture
+def saddle_graded(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Graded saddle: an open disk whose triangles reach an aspect ratio of ~4 900.
+
+    One rim, every vertex manifold, consistently wound, no degenerate face -- an input every
+    open-mesh function accepts -- yet its cotangent operators are ill-conditioned in places
+    (Jacobi-scaled condition number in the millions). It is the fixture that exposed two silent
+    wrong answers no other fixture reached: the heat method's settled CG iterate (4.4 % mean, 38 %
+    worst of the range off ``igl.exact_geodesic``, against the method's own 1.1 % / 6.2 %) and the
+    ``k = 2`` harmonic map (29 % of the range off a SciPy direct solve of the same system). Built
+    without trimesh's processing, so the face buffer is the grid's own.
+    """
+    vertices_np, faces_np = saddle_graded_arrays()
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
 @pytest.fixture
 def boy_surface(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """
@@ -514,15 +572,20 @@ def sliver_patch(
     device: str,
 ) -> tuple[np.ndarray, np.ndarray, wp.array[wp.vec3], wp.array[wp.int32]]:
     """
-    Build a patch with one near-zero-area triangle, thin enough to break the triangle inequality.
+    Build a patch with one zero-area triangle: collinear corners, the triangle inequality tight.
 
     Mollification and the robust Laplacian are only interesting on a mesh that needs them: the
-    plain cotangent Laplacian returns NaN here, the robust one must not. Returned as both NumPy
-    (``float64``, for the CPU references) and Warp (``float32``, where the inequality actually
-    fails) so the two sides see the same mesh.
+    plain cotangent Laplacian has no cotangent for the collinear face and drops its couplings, the
+    robust one must not. Returned as both NumPy (``float64``, for the CPU references) and Warp
+    (``float32``) -- the corners are exact in both, so the two sides see the same mesh.
+
+    The middle corner sat at ``y = 1e-9`` until the cotangents were formed as ``dot / |cross|``:
+    that is a sliver of height 1e-9, not a degenerate face, and its true cotangent (-1.25e8) is
+    what the plain operator now returns, where the law of cosines on ``float32`` lengths -- whose
+    rounding broke the inequality -- had read it as zero.
     """
     vertices_np = np.array(
-        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 1e-9, 0.0], [0.5, 1.0, 0.0]], dtype=np.float64
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.5, 0.0, 0.0], [0.5, 1.0, 0.0]], dtype=np.float64
     )
     faces_np = np.array([[0, 1, 2], [0, 2, 3], [2, 1, 3]], dtype=np.int32)
     return (

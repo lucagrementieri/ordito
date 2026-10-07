@@ -24,10 +24,11 @@ from tests.conversions import (
 )
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("vertex_normals", "open3d", "pymeshlab")
 @pytest.mark.parity("mean_vertex_normals", "pymeshlab")
 def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
-    half_torus: tuple[tm.Trimesh, wp.Mesh],
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     The two unweighted-and-area weightings against the libraries that implement the same ones.
@@ -43,7 +44,7 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     ``vertex_normals`` benchmark group timed it as though it were the same quantity; it is now
     exempted there with a redirect to open3d.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
 
     area_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
@@ -71,8 +72,9 @@ def test_vertex_normal_weightings_match_open3d_and_pymeshlab(
     assert not np.allclose(area_wp.numpy(), mean_wp.numpy(), atol=1e-3)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("mean_vertex_normals", "pyvista")
-def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_mean_vertex_normals_match_pyvista(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A, and the row names ``mean_vertex_normals`` for a measured reason.
 
@@ -86,7 +88,7 @@ def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh
     The array comes back **float32**, which is the tolerance floor on VTK's side rather than
     ordito's.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_wp.points.size
     face_normals_wp, _areas_wp = od.triangles.face_normals_and_areas(
         mesh_wp.points, mesh_wp.indices
@@ -108,7 +110,8 @@ def test_mean_vertex_normals_match_pyvista(half_torus: tuple[tm.Trimesh, wp.Mesh
 
 
 @pytest.mark.parametrize(
-    ("mesh_name", "scale"), [("half_torus", 1.0), ("icosphere", 3e-6), ("icosphere", 1e-9)]
+    ("mesh_name", "scale"),
+    [("half_torus", 1.0), ("saddle_graded", 1.0), ("icosphere", 3e-6), ("icosphere", 1e-9)],
 )
 def test_vertex_normals_area_matches_igl_at_any_scale(
     request: pytest.FixtureRequest, mesh_name: str, scale: float
@@ -171,8 +174,9 @@ def test_vertex_normals_match_pytorch3d(icosphere: tuple[tm.Trimesh, wp.Mesh]) -
     assert not np.allclose(angle_wp.numpy(), normals_p3d, rtol=1e-5, atol=1e-6)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("vertex_normals", "meshlib")
-def test_vertex_normal_weightings_match_meshlib(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_vertex_normal_weightings_match_meshlib(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A, and the reason to have it: MeshLib pins *which* weighting each name means.
 
@@ -187,7 +191,7 @@ def test_vertex_normal_weightings_match_meshlib(half_torus: tuple[tm.Trimesh, wp
     No other reference in the suite distinguishes these: igl exposes an area mode and trimesh an
     angle-weighted one, but neither can say what the other's name would mean.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = mesh_tm.vertices.shape[0]
     vertices_wp = points_to_warp(mesh_tm.vertices, mesh_wp.device)
 
@@ -354,7 +358,7 @@ def test_vertex_normals_are_reproducible(half_torus: tuple[tm.Trimesh, wp.Mesh])
         assert np.array_equal(runs[0], other)
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["half_torus", "icosahedron", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("vertex_defects", "trimesh", "igl", "meshlib", "pyvista")
 def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """

@@ -1372,7 +1372,7 @@ def test_isin_max_index_rejects_a_value_that_would_wrap_int32(device: str, wide_
     assert np.array_equal(od.array.isin(elements_wp, test_wp).numpy(), expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("index_bound", "trimesh")
 def test_index_bound_matches_the_index_maximum(
     request: pytest.FixtureRequest, mesh_name: str

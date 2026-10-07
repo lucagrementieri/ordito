@@ -195,7 +195,7 @@ def test_trace_from_vertex_stops_at_the_boundary(hemisphere: tuple[tm.Trimesh, w
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
 @pytest.mark.parity("trace_from_face", "potpourri3d")
 def test_trace_from_face_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str

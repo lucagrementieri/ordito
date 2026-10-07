@@ -18,8 +18,9 @@ from tests.conversions import (
 )
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("average_onto_faces", "igl", "pyvista")
-def test_average_onto_faces(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_average_onto_faces(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A on both: the vertex-to-face mean, element-wise, no transform.
 
@@ -27,7 +28,7 @@ def test_average_onto_faces(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     1.3e-07 here); the array has to be seeded on the mesh and read back by name rather than passed,
     which is where the answer lives rather than a transform of it.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(0)
 
     faces_np = np.array(mesh_tm.faces, dtype=np.int64)
@@ -44,8 +45,9 @@ def test_average_onto_faces(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(face_values_wp.numpy(), face_values_pv, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("average_onto_vertices", "pymeshlab", "igl", "pyvista")
-def test_average_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_average_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A against libigl, Class B against MeshLab's face-to-vertex scalar transfer.
 
@@ -58,7 +60,7 @@ def test_average_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     VTK's ``cell_data_to_point_data`` is Class A as well (measured 8.7e-08) and needs no weighting
     flag: it is the unweighted incident-cell mean.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(1)
 
     n_vertices = mesh_tm.vertices.shape[0]
@@ -91,8 +93,9 @@ def test_average_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(vertex_values_wp.numpy(), vertex_values_pv, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded"])
 @pytest.mark.parity("average_from_edges_onto_vertices", "igl")
-def test_average_from_edges_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]):
+def test_average_from_edges_onto_vertices(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A: the edge-to-vertex mean, over igl's own halfedge numbering.
 
@@ -101,7 +104,7 @@ def test_average_from_edges_onto_vertices(half_torus: tuple[tm.Trimesh, wp.Mesh]
     ordito has no ``orient_halfedges`` of its own to pair against igl's, and giving each side its
     own numbering would make a mismatch of index conventions look like a mismatch of averages.
     """
-    mesh_tm, mesh_wp = half_torus
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     rng = np.random.default_rng(2)
 
     n_vertices = mesh_tm.vertices.shape[0]

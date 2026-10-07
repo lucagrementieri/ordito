@@ -1728,9 +1728,10 @@ def _vtk_clip_closed_surface(
     return pv.wrap(clipper.GetOutput()).triangulate()
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity("clip_mesh_with_field", "pyvista")
 def test_clip_mesh_with_field_capped_leaves_an_input_boundary_open(
-    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
     Class A against ``vtkClipClosedSurface`` on an open input: only the section is sealed.
@@ -1741,7 +1742,7 @@ def test_clip_mesh_with_field_capped_leaves_an_input_boundary_open(
     of them), the same area (an open surface has no volume to compare). Sealing every boundary
     loop instead would close the rim and fail the open-edge count.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     device = str(mesh_wp.device)
     # The fixture's dome axis and rim centre, as it rotates and translates a z-up hemisphere.
     rim_np = mesh_tm.vertices[

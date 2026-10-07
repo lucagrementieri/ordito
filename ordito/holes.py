@@ -322,6 +322,13 @@ _METRIC_IDS = {
 # Metrics that accumulate with ``max`` instead of ``sum`` (kernel COMBINE_MAX == 1); default sum.
 _METRIC_COMBINE = {"max_dihedral": 1}
 _BAD_TRIANGULATION_METRIC = 1e10  # kernel ``BAD_METRIC``; a forced-bad triangulation reaches it.
+# The metrics whose per-triangle or per-edge term can *be* ``BAD_METRIC`` -- a flipped, tilted or
+# degenerate triangle, a folded dihedral -- and so the only ones whose total reaching it means a bad
+# triangle was forced, which is what the ``min_area`` retry is for. The others never score a term
+# as bad; their total reaches ``BAD_METRIC`` only as a genuine sum (``min_tri_angle`` charges
+# ``exp(25 * sin 60)`` ~ 2.5e9 per sliver, so four slivers do it), and retrying those under
+# ``min_area`` would silently answer a different question than the one asked.
+_METRICS_WITH_BAD_TERMS = frozenset({"plane_normalized", "plane", "complex_fill"})
 
 
 class _EdgeTable:
@@ -456,17 +463,23 @@ def fill_min_weight(
           triangles flipped or tilted more than 60 degrees off the hole plane; falls back to
           ``"min_area"`` when the best triangulation is still bad (non-planar/degenerate).
         - ``"min_area"`` — summed triangle area; never rejects a triangulation as bad, which is
-          what makes it the fallback the other metrics fall back *to*. That is a statement about
-          the metric only: see ``resolve_multiple_edges`` for the one thing that can still leave an
-          interval unfilled under it.
+          what makes it the fallback the rejecting metrics fall back *to*. That is a statement
+          about the metric only: see ``resolve_multiple_edges`` for the one thing that can still
+          leave an interval unfilled under it.
         - ``"circumscribed"`` — summed circumcircle diameter.
-        - ``"plane"`` — circumcircle diameter with a flipped-normal penalty.
-        - ``"min_tri_angle"`` — maximizes the minimal triangle angle.
+        - ``"plane"`` — circumcircle diameter with a flipped-normal penalty; falls back to
+          ``"min_area"`` when every triangulation needs a flipped triangle.
+        - ``"min_tri_angle"`` — maximizes the minimal triangle angle. Never falls back: a hole whose
+          every triangulation has slivers keeps its best one under this metric.
         - ``"edge_length"`` — summed new-edge length.
         - ``"universal"`` — circumcircle diameter plus a dihedral-smoothing edge term; the smooth,
           general-purpose choice.
         - ``"max_dihedral"`` — minimizes the maximal dihedral angle.
-        - ``"complex_fill"`` — area/aspect triangle term plus a strong dihedral edge term.
+        - ``"complex_fill"`` — area/aspect triangle term plus a strong dihedral edge term; falls
+          back to ``"min_area"`` like ``"plane_normalized"``.
+
+        Only the three metrics that can reject a triangle fall back; the others always return
+        their own optimum.
 
         The dihedral (edge-based) metrics — ``universal``, ``max_dihedral``, ``complex_fill``,
         ``edge_length`` — blend into the surrounding surface via ``smooth_boundary``.
@@ -672,7 +685,7 @@ def _fill_packed_loops(
         prev,
     )
 
-    if primary_id != min_area_id:
+    if metric in _METRICS_WITH_BAD_TERMS:
         # *Which* loops the primary metric failed on is decided on device and fed straight back in
         # as the re-run's active mask, so the fallback is one more batched pass rather than a branch
         # per loop. Loops the primary metric handled keep their ``prev`` rows. The mask overwrites

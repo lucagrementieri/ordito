@@ -700,7 +700,7 @@ def test_submesh_from_face_indices_matches_trimesh_on_short_lists(
 
 
 @pytest.mark.parametrize("selection", ["random_third", "all_faces"])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 def test_submesh_from_face_indices_matches_trimesh(
     request: pytest.FixtureRequest, mesh_name: str, selection: str
 ) -> None:
@@ -732,7 +732,7 @@ def test_submesh_from_face_indices_matches_trimesh(
     assert np.array_equal(submesh_faces_wp.numpy(), submesh_tm.faces.reshape(-1))
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "half_torus", "saddle_graded"])
 def test_submeshes_from_face_groups_matches_single(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

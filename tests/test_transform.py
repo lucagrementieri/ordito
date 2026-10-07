@@ -495,7 +495,16 @@ def test_classify_transform_projective_matrix_is_singular() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("mesh_name", MESHES)
+# Not ``conftest.MESHES``: on ``saddle_graded`` the recomputation is not an oracle. Its finest
+# columns sit within 3e-6 of ``x = 0``, so rounding the moved vertices back to ``float32`` (at
+# coordinates near 1.5 after the translation) changes an edge length by up to 0.39 %, and the
+# mesh recomputed from them is a different mesh -- its needle faces' normals and angles move by
+# more than the 1e-4 this compares at, while the carried values are the exact transform of the
+# original's.
+_CARRY_MESHES = [mesh_name for mesh_name in MESHES if mesh_name != "saddle_graded"]
+
+
+@pytest.mark.parametrize("mesh_name", _CARRY_MESHES)
 @pytest.mark.parametrize(("kind", "matrix"), TRANSFORMS[1:], ids=[k for k, _ in TRANSFORMS[1:]])
 def test_carried_cache_matches_recomputation(
     request: pytest.FixtureRequest, mesh_name: str, kind: TransformKind, matrix: wp.mat44

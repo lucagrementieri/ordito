@@ -150,7 +150,7 @@ def test_halfedge_tangent_angles_span_the_rescaled_disk(
     "factorization -- and the phases then have to be divided out of it weight by weight. A row "
     "would price that solver build under this group's name; the holonomy is still comparable.",
 )
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 def test_halfedge_transport_angle_holonomy_matches_potpourri3d(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -206,7 +206,7 @@ def test_halfedge_transport_angles_are_antisymmetric(
     assert np.allclose(round_trip, 0.0, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("face_tangent_frames", "igl")
 def test_face_tangent_frames_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """

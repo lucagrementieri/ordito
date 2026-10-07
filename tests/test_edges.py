@@ -33,7 +33,7 @@ if TYPE_CHECKING:
     import pyvista as pv
 
 # Not ``conftest.MESHES``: this predates that constant and has never carried ``cave_cube``.
-_EDGE_MESHES = ["icosahedron", "half_torus", "hemisphere"]
+_EDGE_MESHES = ["icosahedron", "half_torus", "hemisphere", "saddle_graded"]
 
 # ---------------------------------------------------------------------------
 # helpers

@@ -969,7 +969,7 @@ def test_icp_mesh_matches_pyvista(device: str, angle: float) -> None:
     "time either the build or a warmed query depending on call order, the hazard CLAUDE.md "
     "section 7.6 records. Its cloud form already carries the timed row.",
 )
-@pytest.mark.parametrize("mesh_name", ["half_torus", "unit_box"])
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "unit_box"])
 def test_icp_point_to_plane_mesh_matches_meshlib(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

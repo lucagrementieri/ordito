@@ -2138,7 +2138,7 @@ def test_flip_to_delaunay_region_gated(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(faces_before[~region_np], faces_after[~region_np])
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "cave_cube"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded", "cave_cube"])
 def test_flip_topology_matches_the_composed_adjacency(
     mesh_name: str, request: pytest.FixtureRequest
 ) -> None:
@@ -2574,7 +2574,7 @@ def test_intrinsic_delaunay_resolves_interior_violations_via_multi_edges(device:
     assert min(weight[e] for e in boundary) < -1e-6
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "torus"])
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "torus"])
 @pytest.mark.parity("intrinsic_delaunay", "igl")
 def test_intrinsic_delaunay_metric_matches_igl(
     request: pytest.FixtureRequest, mesh_name: str
@@ -2643,7 +2643,7 @@ def _undirected_intrinsic_lengths(faces_np: np.ndarray, lengths_np: np.ndarray) 
     return np.sort(lengths[first].astype(np.float64))
 
 
-@pytest.mark.parametrize("mesh_name", ["half_torus", "torus"])
+@pytest.mark.parametrize("mesh_name", ["half_torus", "saddle_graded", "torus"])
 @pytest.mark.parity(
     "intrinsic_delaunay",
     "meshlib",
@@ -3380,9 +3380,11 @@ def test_subdivide_to_size_preserves_surface_and_reports_its_source_faces(
     assert index_np.min() >= 0
     assert index_np.max() < n_in_faces
 
-    # Every output-face centroid lies inside its claimed source triangle.
-    centroids = new_v_np[new_f_np].mean(axis=1)
-    src = vertices_np[faces_np[index_np]]
+    # Every output-face centroid lies inside its claimed source triangle. The barycentrics are
+    # taken in float64: the Gram determinant below cancels catastrophically on a sliver, and in
+    # float32 it reached zero on ``saddle_graded``'s aspect-4 900 faces, dividing by zero.
+    centroids = new_v_np[new_f_np].astype(np.float64).mean(axis=1)
+    src = vertices_np[faces_np[index_np]].astype(np.float64)
     a, b, c = src[:, 0], src[:, 1], src[:, 2]
     v0, v1, v2 = b - a, c - a, centroids - a
     d00 = np.einsum("ij,ij->i", v0, v0)

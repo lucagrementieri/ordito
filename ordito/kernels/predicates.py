@@ -56,10 +56,38 @@ def orient2d(a: Any, b: Any, c: Any):
 
 
 @wp.func
+def triangle_area_vector(a: Any, b: Any, c: Any):
+    # ``cross(b - a, c - a)`` -- twice the vector area of triangle ABC -- formed at the corner
+    # opposite the longest edge, which is the same vector in exact arithmetic and the
+    # well-conditioned one in floating point. At any corner the two edge vectors are near-parallel
+    # exactly when that corner's angle is small, and their cross product then cancels: the error
+    # is ``eps / sin(angle)`` relative, i.e. ``eps`` times the aspect ratio on a needle. The
+    # largest angle is at least 60 degrees, so there the error is a few ``eps`` whatever the
+    # shape. Measured on ``saddle_graded``'s aspect-4 900 needles: unit normals off ``float64`` by
+    # 6.7e-5 at the first corner on CUDA (FMA contraction of the cancelling products makes it 10x
+    # the CPU's 7.0e-6), 1.2e-7 here on both devices.
+    #
+    # The tie-break also keeps a face with a repeated vertex exactly zero on CUDA: one of the two
+    # edges at the chosen corner is then the zero vector, where the first-corner form left FMA's
+    # ~1e-8 residue (CLAUDE.md section 12.4).
+    ab = b - a
+    bc = c - b
+    ca = a - c
+    l_ab = wp.length_sq(ab)
+    l_bc = wp.length_sq(bc)
+    l_ca = wp.length_sq(ca)
+    if l_bc >= l_ca and l_bc >= l_ab:
+        return wp.cross(ab, -ca)  # corner a
+    if l_ca >= l_ab:
+        return wp.cross(bc, -ab)  # corner b
+    return wp.cross(ca, -bc)  # corner c
+
+
+@wp.func
 def triangle_normal(a: Any, b: Any, c: Any):
     # Unit normal of triangle ABC, or the zero vector when the triangle is degenerate. Warp's
     # ``kEps`` is 0, so ``normalize`` already returns the zero vector for a zero-length input.
-    return wp.normalize(wp.cross(b - a, c - a))
+    return wp.normalize(triangle_area_vector(a, b, c))
 
 
 @wp.func
@@ -85,7 +113,7 @@ def triangle_double_area(a: Any, b: Any, c: Any) -> wp.Float:
     # Twice the area of triangle ABC: the norm of the edge cross product.
     # Kept undivided because most callers either compare it against zero or fold the half into a
     # constant of their own.
-    return wp.length(wp.cross(b - a, c - a))
+    return wp.length(triangle_area_vector(a, b, c))
 
 
 @wp.func
@@ -362,7 +390,7 @@ def _circumdiameter_sq_from_sides(
     # degenerate-side dispatch has ruled out a repeated vertex: the squared circumdiameter from the
     # three squared side lengths and the doubled-area cross product. Zero area (collinear, distinct
     # vertices) means no circumcircle at all.
-    f = wp.length_sq(wp.cross(b - a, c - a))
+    f = wp.length_sq(triangle_area_vector(a, b, c))
     if f <= type(ab)(0.0):
         return float_inf(ab)
     return ab * ca * bc / f
@@ -420,16 +448,19 @@ def mincircle_diameter_sq(a: Any, b: Any, c: Any) -> wp.Float:
 
 @wp.func
 def triangle_aspect_ratio(a: Any, b: Any, c: Any) -> wp.Float:
-    # Circum-radius over twice the in-radius. Grows without bound for slivers, so a degenerate
-    # triangle returns +inf.
+    # Circum-radius over twice the in-radius, ``abc / (8 (s - a)(s - b)(s - c))``. Grows without
+    # bound for slivers, so a degenerate triangle returns +inf.
+    #
+    # The Heron product is formed as ``8 A^2 / s`` from the area vector rather than from the
+    # differences ``s - a``: on a needle those cancel, and in float32 that read
+    # ``saddle_graded``'s aspect-2 400 faces up to 0.22 % off float64 (3.7e-7 now; the reciprocal
+    # ``triangles.triangle_radius_ratio`` 3.4e-5 before). ``8 A^2`` is ``2 |area vector|^2``.
     bc, ca, ab = side_lengths(a, b, c)
-    half_perimeter = (bc + ca + ab) / type(bc)(2.0)
-    denominator = (
-        type(bc)(8.0) * (half_perimeter - bc) * (half_perimeter - ca) * (half_perimeter - ab)
-    )
-    if denominator <= type(bc)(0.0):
+    double_area_sq = wp.length_sq(triangle_area_vector(a, b, c))
+    if double_area_sq <= type(bc)(0.0):
         return float_inf(bc)
-    return bc * ca * ab / denominator
+    half_perimeter = (bc + ca + ab) / type(bc)(2.0)
+    return bc * ca * ab * half_perimeter / (type(bc)(2.0) * double_area_sq)
 
 
 @wp.func

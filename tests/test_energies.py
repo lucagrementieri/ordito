@@ -170,7 +170,7 @@ def test_laplacian_smoothing_loss_methods_are_three_quantities(
 
 
 @pytest.mark.parametrize("k", [1, 2, 3])
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("k_harmonic", "igl")
 def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, k: int) -> None:
     """
@@ -198,13 +198,16 @@ def test_k_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str, 
     assert np.allclose(q_wp, q_igl, rtol=1e-9, atol=1e-9 * scale)
 
 
-def test_k_harmonic_identity_mass_and_power_guard(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
+def test_k_harmonic_identity_mass_and_power_guard(
+    request: pytest.FixtureRequest, mesh_name: str
+) -> None:
     """
     With ``mass=None`` the operator is the plain power ``(-L)^k``, the ``tutte`` flavor.
 
     Checked against scipy's own sparse product; ``k < 1`` must raise.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
     faces_np = np.ascontiguousarray(mesh_tm.faces, dtype=np.int64)
 
@@ -227,7 +230,10 @@ _HESSIAN_ENERGIES = {
 @pytest.mark.parametrize(
     ("energy", "mesh_name"),
     [
-        *(("hessian_energy", name) for name in ("icosahedron", "hemisphere", "half_torus")),
+        *(
+            ("hessian_energy", name)
+            for name in ("icosahedron", "hemisphere", "half_torus", "saddle_graded")
+        ),
         *(
             ("curved_hessian_energy", name)
             for name in ("icosahedron", "hemisphere", "half_torus", "torus")
@@ -324,7 +330,7 @@ _CROUZEIX_RAVIART = {
 }
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parametrize("operator", list(_CROUZEIX_RAVIART))
 @pytest.mark.parity("crouzeix_raviart_cotmatrix", "igl")
 @pytest.mark.parity("crouzeix_raviart_massmatrix", "igl")
@@ -346,11 +352,16 @@ def test_crouzeix_raviart_operators_match_igl(
     operator_od, operator_igl = _CROUZEIX_RAVIART[operator]
 
     edges_igl, edge_map_igl = _igl_edge_arguments(mesh_wp)
-    matrix_igl = operator_igl(vertices_np, faces_np, edges_igl, edge_map_igl).toarray()
-    matrix_wp = bsr_to_csr(operator_od(mesh_wp.points, mesh_wp.indices)).toarray()
+    matrix_igl = operator_igl(vertices_np, faces_np, edges_igl, edge_map_igl).tocsr()
+    matrix_wp = bsr_to_csr(operator_od(mesh_wp.points, mesh_wp.indices))
 
     assert matrix_wp.shape == matrix_igl.shape == (len(edges_igl), len(edges_igl))
-    assert np.allclose(matrix_wp, matrix_igl, rtol=1e-5, atol=1e-5)
+    # ``np.allclose`` of the dense forms, entry for entry, without densifying: every entry where
+    # the two differ is stored in their difference, and everywhere else both agree exactly. On
+    # ``saddle_graded``'s 13 333 edges the dense pair was 2.8 GB and 3.9 s a call.
+    difference = (matrix_wp - matrix_igl).tocoo()
+    reference = np.asarray(matrix_igl[difference.row, difference.col]).ravel()
+    assert np.all(np.abs(difference.data) <= 1e-5 + 1e-5 * np.abs(reference))
 
 
 def test_crouzeix_raviart_shared_edge_numbering(half_torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
@@ -423,7 +434,7 @@ def _lscm_q_igl(mesh_tm: tm.Trimesh) -> sp.csr_matrix:
     return hessian_igl.tocsr()
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: igl exposes the Hessian only as ``igl.lscm``'s second return, so it comes from there.
@@ -438,7 +449,7 @@ def test_lscm_hessian_matches_igl(request: pytest.FixtureRequest, mesh_name: str
     assert np.allclose(hessian_wp, _lscm_q_igl(mesh_tm).toarray(), rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 def test_vector_area_matrix_matches_igl_derived(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:

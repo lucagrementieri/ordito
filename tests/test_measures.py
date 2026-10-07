@@ -79,8 +79,9 @@ def test_volume_inward_normals_negative(icosahedron: tuple[tm.Trimesh, wp.Mesh])
     assert np.isclose(volume_wp, -mesh_tm.volume, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity("surface_centroid", "trimesh", "meshlib", "pymeshlab")
-def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_surface_centroid(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class A against trimesh and MeshLib, Class B against MeshLab: the area-weighted centroid.
 
@@ -105,7 +106,7 @@ def test_surface_centroid(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     the comparison a test of the area weighting: on ``hemisphere`` they sit about 0.02 apart, some
     400x the 1e-5 tolerance.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh_ml = trimesh_to_meshlib(mesh_tm)
     measures_pml = trimesh_to_pymeshlab(mesh_tm).get_geometric_measures()
 

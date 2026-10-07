@@ -15,6 +15,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from ordito.constants import TOLERANCE_MERGE
 from tests.comparisons import lexsort_rows, same_partition
 from tests.conftest import CLOSED_MESHES
 from tests.conversions import (
@@ -27,7 +28,7 @@ from tests.conversions import (
 
 # Not ``conftest.MESHES``: ``cave_cube`` is dropped because its coplanar box faces make every
 # adjacency angle exactly 0 or pi/2, so the three curved fixtures carry the coverage here.
-_ADJACENCY_MESHES = ["icosahedron", "half_torus", "hemisphere"]
+_ADJACENCY_MESHES = ["icosahedron", "half_torus", "hemisphere", "saddle_graded"]
 
 
 def _adjacency_order(adjacency_np: np.ndarray) -> np.ndarray:
@@ -496,7 +497,7 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
             assert np.isclose(angles_wp_lookup[key], angle_tm, rtol=1e-4, atol=5e-4)
 
 
-@pytest.mark.parametrize("mesh_name", ["cave_cube", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["cave_cube", "half_torus", "saddle_graded"])
 @pytest.mark.parity(
     "face_adjacency_angles",
     "meshlib",
@@ -559,9 +560,18 @@ def test_face_adjacency_angles_matches_meshlib(
     dihedral_ml = np.array([signed_ml[pair] for pair in pairs_wp])
 
     assert np.allclose(angles_wp, np.abs(dihedral_ml), rtol=1e-5, atol=1e-5)
-    # The sign, which is ordito's other function: positive dihedral <-> a locally convex pair.
-    creased = angles_wp > 1e-6
-    assert np.array_equal(dihedral_ml > 1e-6, convex_wp & creased)
+    # The sign, which is ordito's other function: positive dihedral <-> a locally convex pair --
+    # where both definitions decide by a sign. ``face_adjacency_convex`` is trimesh's: convex when
+    # the unshared vertex's *projection* is below ``TOLERANCE_MERGE``, an absolute length, so a
+    # pair whose projection sits inside that band reads convex whatever its dihedral. The
+    # projection is the dihedral times the unshared vertex's distance from the edge, which on
+    # ``saddle_graded``'s needles is ~6.6e-6, so concave pairs of dihedral up to 9.4e-5 fall in the
+    # band there (208 of 13 333 rows); outside it the two signs agree on every row of every fixture.
+    projections_wp = od.adjacency.face_adjacency_projections(
+        mesh_wp.points, mesh_wp.indices, adjacency_wp, adjacency_edges_wp
+    ).numpy()
+    decided = (np.abs(dihedral_ml) > 1e-6) & (np.abs(projections_wp) >= TOLERANCE_MERGE)
+    assert np.array_equal((dihedral_ml > 0.0)[decided], convex_wp[decided])
     assert int((dihedral_ml < -1e-6).sum()) > 0  # both branches present, or the sign claim is one
     assert int((dihedral_ml > 1e-6).sum()) > 0
 
@@ -782,7 +792,7 @@ def _two_copies(mesh_tm: tm.Trimesh) -> tm.Trimesh:
     return doubled_tm
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "half_torus", "saddle_graded"])
 @pytest.mark.parity("face_connected_component_labels", "igl", "meshlib", "pyvista")
 @pytest.mark.parity("face_connected_component_labels_depth", "igl", "scipy")
 def test_face_connected_component_labels_matches_igl_scipy_meshlib_and_pyvista(

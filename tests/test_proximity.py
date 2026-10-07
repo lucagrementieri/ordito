@@ -142,7 +142,7 @@ def test_query_mesh_aabb_with_offsets(device: str) -> None:
         assert np.array_equal(got_np, expected_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "hemisphere", "saddle_graded"])
 @pytest.mark.parity("closest_point_on_mesh", "meshlib", "pyvista")
 def test_closest_point_on_mesh_matches_references(
     request: pytest.FixtureRequest, mesh_name: str
@@ -187,6 +187,12 @@ def test_closest_point_on_mesh_matches_references(
     directions (their angular defects sum to 4 pi) -- so the tie fraction grows with the query
     radius. The index is therefore left to the MeshLib pair, whose ``findProjection`` reports the
     face on ordito's own soup numbering.
+
+    On ``saddle_graded`` the *point* is compared at 6e-4: on the CPU device ordito's closest point
+    sits 1.9e-4 from the float64-exact one (trimesh and pyvista agree to 4e-16) while the distance
+    agrees to 1.5e-7 -- the query lands on a needle, where Warp's ``mesh_query_point_no_sign``
+    places the point along the needle no better than that (on CUDA, 1.6e-7). The distances keep
+    their 1e-5.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     points_np = _random_queries_np()
@@ -197,8 +203,9 @@ def test_closest_point_on_mesh_matches_references(
     closest_np, distances_np, faces_np = closest_wp.numpy(), distances_wp.numpy(), faces_wp.numpy()
 
     # trimesh.
+    point_tolerance = 6e-4 if mesh_name == "saddle_graded" else 1e-5
     closest_tm, distance_tm, _triangle_id_tm = tm.proximity.closest_point(mesh_tm, points_np)
-    assert np.allclose(closest_np, closest_tm, rtol=1e-5, atol=1e-5)
+    assert np.allclose(closest_np, closest_tm, rtol=point_tolerance, atol=point_tolerance)
     assert np.allclose(distances_np, distance_tm, rtol=1e-5, atol=1e-5)
 
     # MeshLib.
@@ -215,7 +222,7 @@ def test_closest_point_on_mesh_matches_references(
     distances_ml = np.sqrt(np.array([result.distSq for result in projections_ml]))
     faces_ml = np.array([int(result.proj.face) for result in projections_ml], dtype=np.int32)
     assert np.allclose(distances_np, distances_ml, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_np, points_ml, rtol=1e-4, atol=1e-4)
+    assert np.allclose(closest_np, points_ml, rtol=1e-4, atol=max(1e-4, point_tolerance))
 
     # Every face disagreement is a tie: the same distance, on a face sharing a corner or an edge.
     disagree_np = faces_np != faces_ml
@@ -238,7 +245,7 @@ def test_closest_point_on_mesh_matches_references(
     distances_pv = np.linalg.norm(points_np - closest_pv, axis=1)
     assert distances_pv.min() > 0.0  # non-vacuity: no query sits on the surface
     assert np.allclose(distances_np, distances_pv, rtol=1e-5, atol=1e-5)
-    assert np.allclose(closest_np, closest_pv, rtol=1e-5, atol=1e-5)
+    assert np.allclose(closest_np, closest_pv, rtol=point_tolerance, atol=point_tolerance)
 
 
 def test_closest_point_on_mesh_ambiguous_edge(device: str) -> None:
@@ -1257,7 +1264,9 @@ def test_signed_distance_on_mesh_matches_pyvista(
     assert np.allclose(signed_wp.numpy(), signed_pv, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus"])
+@pytest.mark.parametrize(
+    "mesh_name", ["icosahedron", "cave_cube", "hemisphere", "half_torus", "saddle_graded"]
+)
 def test_signed_distance_on_mesh_winding_sign_matches_exact_winding_number(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
@@ -1507,7 +1516,7 @@ def _force_winding_tree(monkeypatch: pytest.MonkeyPatch, *, enabled: bool) -> No
         monkeypatch.setattr(kernel_proximity, name, threshold)
 
 
-@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere"])
+@pytest.mark.parametrize("mesh_name", ["icosahedron", "cave_cube", "hemisphere", "saddle_graded"])
 @pytest.mark.parametrize("path", ["serial", "tiled", "tree"])
 @pytest.mark.parity("winding_number", "igl")
 @pytest.mark.parity(
@@ -1644,7 +1653,7 @@ def _winding_soup(mesh_tm: tm.Trimesh, seed: int) -> tuple[np.ndarray, np.ndarra
 
 
 @pytest.mark.parametrize(
-    "mesh_name", ["icosphere", "cave_cube", "hemisphere", "mobius", "boy_surface"]
+    "mesh_name", ["icosphere", "cave_cube", "hemisphere", "saddle_graded", "mobius", "boy_surface"]
 )
 @pytest.mark.parametrize("soup", [False, True], ids=["mesh", "soup"])
 def test_winding_number_tree_matches_the_direct_sum(

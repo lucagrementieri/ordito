@@ -550,7 +550,10 @@ def test_offset_mesh_resolves_what_survives_a_large_inward_offset(
             for distance in (0.08, -0.04)
         ),
         # The open arms pin only that the gate keeps the dense lattice, which one distance shows.
-        *((name, False, 0.08) for name in ("boy_surface", "hemisphere", "half_torus")),
+        *(
+            (name, False, 0.08)
+            for name in ("boy_surface", "hemisphere", "half_torus", "saddle_graded")
+        ),
     ],
 )
 def test_offset_mesh_sparse_extraction_matches_the_dense_lattice(
@@ -952,8 +955,9 @@ def test_thicken_mesh_closes_into_a_solid(request: pytest.FixtureRequest, mesh_n
     assert volume > 0.5 * mesh_tm.area * thickness
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity("thicken_mesh", "meshlib")
-def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_thicken_mesh_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class B: the same shell as ``makeThickMesh``, under a nearest-neighbour vertex bijection.
 
@@ -969,10 +973,14 @@ def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
 
     ``ThickenParams`` splits the displacement into ``insideOffset`` and ``outsideOffset``, so the
     single-sided default here is ``(thickness, 0)`` -- passed explicitly, since it is the parameter
-    that would otherwise decide the comparison.
+    that would otherwise decide the comparison. And ``normalsTrustFactor`` is raised to 1e6:
+    MeshLib *smooths* the field of shift directions unless it trusts the raw pseudonormals, which
+    is invisible on ``hemisphere`` and is not ordito's rule -- on ``saddle_graded`` its default 1
+    put the shell 6.8e-3 (14 % of the thickness) off ordito's raw-pseudonormal one, 1e6 puts it
+    1.6e-6 off, with the volumes equal to 9 digits.
     """
     thickness = 0.05
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     shell_vertices_wp, shell_faces_wp = od.levelset.thicken_mesh(
         mesh_wp.points, mesh_wp.indices, thickness
     )
@@ -980,6 +988,7 @@ def test_thicken_mesh_matches_meshlib(hemisphere: tuple[tm.Trimesh, wp.Mesh]) ->
     parameters_ml = mm.ThickenParams()
     parameters_ml.insideOffset = thickness
     parameters_ml.outsideOffset = 0.0
+    parameters_ml.normalsTrustFactor = 1e6
     shell_ml = meshlib_to_trimesh(mm.makeThickMesh(trimesh_to_meshlib(mesh_tm), parameters_ml))
     assert shell_ml.faces.shape[0] > 0  # non-vacuity: the reference produced a shell
 
