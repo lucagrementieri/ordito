@@ -7,9 +7,9 @@ Decimation, subdivision, isotropic remeshing, local refinement and Delaunay flip
 [`quadric_decimate`][ordito.remesh.quadric_decimate] simplifies the dragon to a face budget by
 Garland-Heckbert edge collapses: each collapse is priced by how far it moves the surface, so
 flat regions are thinned first and the scales, teeth and creases survive longest. The
-wireframe close-ups of the snout show the same three levels. The feature angle is raised from
-its default: on a scan almost every edge is "sharp" at 30 degrees, and frozen features put a
-floor under the reachable face count.
+wireframe close-ups of the snout show the same three levels. Nothing is frozen by default
+(``feature_angle=180``): the quadric error itself is what keeps creases, so even a scan full of
+sharp edges reaches a 1 % budget.
 
 ```python
 import ordito as od
@@ -18,16 +18,12 @@ from examples import data
 vertices, faces = data.load("dragon", device)
 results = {}
 for ratio in (0.1, 0.01):
-    # The default 30-degree feature angle freezes the scan's many sharp edges and stops
-    # well short of 1 %; 90 degrees keeps only the strong creases.
-    results[ratio] = od.remesh.quadric_decimate(
-        vertices, faces, target_ratio=ratio, feature_angle=90.0
-    )
+    results[ratio] = od.remesh.quadric_decimate(vertices, faces, target_ratio=ratio)
     print(f"{ratio:.0%}: {faces.shape[0] // 3} -> {results[ratio][1].shape[0] // 3} faces")
 ```
 
 ```text title="Output"
-10%: 871414 -> 87141 faces
+10%: 871414 -> 87142 faces
 1%: 871414 -> 8714 faces
 ```
 
@@ -97,7 +93,7 @@ print("faces per level:", [f.shape[0] // 3 for _, f in loop])
 ```
 
 ```text title="Output"
-faces per level: [500, 2000, 8000, 32000]
+faces per level: [499, 1996, 7984, 31936]
 ```
 
 ![Subdivision: midpoint and Loop](../assets/examples/r3.webp)

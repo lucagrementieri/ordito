@@ -1,1 +1,1 @@
-faces per level: [500, 2000, 8000, 32000]
+faces per level: [499, 1996, 7984, 31936]

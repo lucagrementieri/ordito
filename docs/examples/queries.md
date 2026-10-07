@@ -299,8 +299,8 @@ for ratio in (0.05, 0.01):
 ```
 
 ```text title="Output"
-3473 faces: chamfer 1.28e-07, hausdorff 0.0087
-695 faces: chamfer 4.31e-06, hausdorff 0.0099
+3473 faces: chamfer 1.99e-04, hausdorff 0.0009
+695 faces: chamfer 7.87e-04, hausdorff 0.0021
 ```
 
 ![Chamfer and Hausdorff distances](../assets/examples/q7.webp)
