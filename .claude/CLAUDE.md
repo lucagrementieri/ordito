@@ -4533,7 +4533,7 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   HEAD at 180 1.6-2.7x. Mean deviation at 0.1: bunny 8.8e-4 -> 1.67e-4, dragon 2.7e-4 -> 3.4e-5
   (MeshLib 2.0e-4 / 4.4e-5, pymeshlab 2.1e-4 / 4.4e-5). Max on `dragon` at 0.5 stays 5x
   MeshLib's (3.8e-4 vs 7.5e-5); 1st-percentile triangle quality at 0.01 is 0.008 on `dragon`
-  against 0.020 for HEAD at 180.
+  against 0.020 for HEAD at 180 (0.064 with the face-quality guard, measured and not adopted, below).
 - **Declined for `quadric_decimate`, all measured 2026-10-06 (do not re-propose without new
   data):**
     - **Truncated-pseudoinverse placement** (Lindstrom 2000 / dual-contouring QEF: minimize only
@@ -4582,6 +4582,84 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
       13 -> 40-75 us a launch, dragon about 2x), though `bunny` has 223 boundary edges: float64
       `sqrt` / division in a divergent branch of a 96-register kernel. Doing it once per edge in
       `count_pass_edges` costs that kernel nothing measurable.
+- **`quadric_decimate`'s worst cases, diagnosed (2026-10-07).** Detector: each output against
+  the input with igl's float64 AABB both ways (output vertices plus 400 k area-weighted samples to
+  the input, `o2i`; referenced input vertices plus 200 k samples to the output, `i2o`), as
+  fractions of the bbox diagonal; triangle mean-ratio percentiles; open and non-manifold edges;
+  MeshLib `decimateMesh` and pymeshlab `meshing_decimation_quadric_edge_collapse` through the same
+  detector. Five meshes (saddle, saddle_graded, bunny, dragon, happy_buddha) x 0.5 / 0.1 / 0.01 =
+  15 cells.
+    - **A single maximum is noise; read p99.9 and the geometric mean over the cells.** `main`
+      against the gather commit (the same algorithm, only the summation order) moves a cell's
+      maximum by 0.78-1.32x and its p99.9 by 0.81-1.05x while the 15-cell geometric means stay
+      within 1-4 %. Every verdict below is a 15-cell geometric-mean ratio against the gather commit,
+      the cell range in brackets. MeshLib on that scale: mean `o2i` 1.14x [0.78, 1.64], `o2i` p99.9
+      1.00x, `i2o` p99.9 0.86x [0.35, 1.73], 1st-percentile quality 1.84x [0.80, 70].
+    - **Worst `o2i`: boundaries.** On `dragon` at 0.5 the 15 worst faces all touch an output rim
+      vertex (0.5 % of faces do); the 50 worst vertices are 48 % rim. The 3.84e-4 vertex (MeshLib's
+      worst: 5.65e-5) is placed in pass 3 by a rim collapse in a two-face strip whose boundary
+      planes meet 2.87 edge lengths away: the free optimum extrapolates. The worst `i2o` on
+      `dragon` is all on the input rim (eroded holes).
+    - **Worst `i2o` on a closed scan: thin parts collapsed onto their mid-surface.** On
+      `happy_buddha` at 0.01 the 500 worst input vertices sit where the input is 1.3e-2 thick
+      (median ray thickness; the mesh's median is 1e-1), 7.5e-3 from the output: half the
+      thickness. MeshLib's sit at 6.7e-2. p99.9 5.12e-3 against MeshLib's 1.79e-3.
+    - **Worst triangles at 0.01: rim needles.** On `dragon` every face of the worst 1 % touches
+      the boundary (22 % of faces do), 87 % of them needles: a hole's rim keeps the input's density
+      while the surface around it coarsens a hundredfold.
+- **Measured, not adopted (owner's decision, 2026-10-07): a face-quality guard.** Design, for
+  whoever revisits it: a constant `COLLAPSE_MIN_FACE_QUALITY = 0.1` tested inside the fold veto's
+  existing walk over the moved vertex's faces (a `min_quality` argument to `move_flips_normal`,
+  forming each face's mean ratio before and after the move): a quadric collapse may not take a
+  triangle from a mean ratio of at least 0.1 to below it. Declined on its price -- the mean
+  deviation and time below -- against a quality gain the owner judged not worth it by default. Not the declined hard veto: that one also refused
+  to let an already-bad face get worse, which is what stalled sliver-heavy scans; this one ignores
+  faces already below the bound, every target was reached, pass counts moved by at most one.
+  15-cell ratios: 1st-percentile quality 1.16x [0.83, 7.43] (`dragon` 0.01 0.0086 -> 0.064, MeshLib
+  0.067; the 2026-10-06 overhaul's 0.020 restored and passed), `i2o` p99.9 0.99x [0.50, 1.22]
+  (`happy_buddha` 0.01 5.12e-3 -> 2.56e-3), at mean `o2i` 1.03x [0.98, 1.10] and `o2i` p99.9 1.05x
+  [0.97, 1.21]; no non-manifold edge anywhere. Time against the gather commit, interleaved
+  processes, min of 12 (lucy 4): saddle / saddle_graded / bunny 0.95-1.07x, dragon 0.94 / 1.00 /
+  0.95x, happy_buddha 0.92 / 0.94 / 0.95x, lucy 0.93 / 0.95 / 0.98x at 0.5 / 0.1 / 0.01 (the
+  candidate kernel 1.18 -> 1.83 ms at `dragon` 0.5: 68 -> 77 registers). As a second walk over the
+  rows after the fold veto it cost 0.84-0.94x; re-reading the face only when the moved one fails
+  (lazy) was slower still (2.2 ms, 89 registers). Thresholds 0.05 / 0.07: mean 1.020 / 1.022x,
+  quality 1.13x / 1.11x (`dragon` 0.01 3.7x / 4.2x). A relative form (below 0.1 *and* below half
+  its quality before) lost quality on `happy_buddha` (0.27x). Its test case, for a revisit:
+  `icosphere(4)` with 40 single-face holes decimated to 0.05 -- worst mean ratio 0.040 unguarded,
+  0.101 guarded, MeshLib 0.186; it fails on both devices with the threshold at 0.
+- **Declined for `quadric_decimate`'s worst cases, 2026-10-07 (15-cell ratios as above; do not
+  re-propose without new data):**
+    - **Accumulated (Garland-Heckbert) quadrics instead of the pass's memoryless ones** (each
+      survivor carries `Q_s + Q_r` through the commit and the compaction; boundary planes once):
+      mean `o2i` 1.21x [1.08, 1.34], p99.9 1.27x, quality 0.90x. The memoryless quadric is what the
+      overhaul's mean rests on. **Mixed** (`Q_mem + a Q_acc`): a = 0.1 changes nothing (1.007x mean),
+      a = 1 costs 1.07x mean and fixes no tail. **Memory for the boundary planes only** (pass-0
+      rim planes carried, faces memoryless): mean 1.008x, `i2o` max 1.15x.
+    - **Boundary-collapse placement on the segment** (quadric minimized along the edge): fixes the
+      `dragon` 0.5 extrapolated rim vertex (3.84e-4 -> 1.29e-4) but erodes convex rims, since every
+      rim collapse then cuts the chord: `dragon` 0.1 `i2o` max 2.3e-3 -> 6.4e-3, geomean `i2o` max
+      1.33x [0.79, 2.74]. **Falling back to the segment only when the free optimum leaves the
+      closed 1-rings' bounding box** -- all edges 1.23x `i2o` max [0.97, 2.42], rim edges only
+      1.26x [0.88, 3.48]; both fix the same `dragon` vertex and lose elsewhere. With boundary
+      memory added: 1.35x / 1.45x.
+    - **Boundary plane weight** 10 / 100 (from 1): `i2o` max 0.94 / 0.93x but quality 0.91 /
+      0.88x and 15-70 % more rim edges kept on `dragon` (0.01 quality 0.0045 / 0.0036).
+    - **Tighter singular-quadric threshold** (`QUADRIC_SINGULAR_EPS` 1e-6, midpoint more often):
+      mean 1.14x [1.00, 1.72]. **A Tikhonov stabilizer toward the midpoint** (placement only,
+      1e-3 / 1e-2 of the quadric's trace): mean 1.02 / 1.10x, quality 1.08 / 1.11x, no tail fixed.
+    - **Area-normalized cost** (error over the quadric's area, power 1 / 0.5): mean 1.06 / 1.02x,
+      no `happy_buddha` tail fixed.
+    - **Vetoing a collapse whose endpoints' summed face normals oppose** (dot < 0, or < -0.5): the
+      only change that fixed the thin parts (`happy_buddha` 0.01 `i2o` p99.9 5.12e-3 -> 1.74e-3,
+      0.1 0.59x; 15-cell `i2o` p99.9 0.90x [0.34, 1.02]) at mean 1.006x, but it keeps thin parts
+      only by modelling them with slivers: quality 0.89x [0.21, 1.01] (`happy_buddha` 0.01 0.0176 ->
+      0.0037), and with the (unadopted) quality guard on top mean 1.036x [0.98, 1.19]. A cost multiplier
+      instead of the veto (x10, x100 at fully opposed) changed nothing (0.98-0.99x `i2o` p99.9):
+      the thin collapses happen whatever their cost once the cheapest half reaches them. OPEN: a
+      thin-part rule that keeps the quality guard's floor.
+    - **A rim-needle veto** (faces whose two other corners are rim vertices may not drop below
+      0.05 / 0.1 and worse): quality 0.96x, rims denser; the needles are not where it looks.
 - **`isotropic_remesh`'s collapse stage takes the same exact conflict rule** (`commit_collapses`
   reads the claim at the endpoints, `scatter.endpoints_hold`; `two_rings_hold` is gone). The
   stage always ran its full `max_passes=5` at ~1.8 % of the faces a pass and never converged.
