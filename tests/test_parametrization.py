@@ -122,7 +122,7 @@ def test_flipped_faces_on_known_windings(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parity("map_vertices_to_circle", "igl")
 def test_map_vertices_to_circle_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """Class A: the arc-length circle map against ``igl.map_vertices_to_circle``, no transform."""
@@ -146,6 +146,7 @@ def test_map_vertices_to_circle_single_vertex_loop(device: str):
     assert np.isfinite(circle_wp.numpy()).all()
 
 
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "saddle_graded"])
 @pytest.mark.parity(
     "graph_laplacian",
     "igl",
@@ -157,7 +158,7 @@ def test_map_vertices_to_circle_single_vertex_loop(device: str):
     "but takes an adjacency matrix, which ordito's face buffer is not, so its row would time "
     "the same composition one step earlier. benchmarks/test_laplacian.py carries the decline.",
 )
-def test_graph_laplacian_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
+def test_graph_laplacian_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: igl has no ``graph_laplacian``, so the reference is assembled from its adjacency.
 
@@ -166,7 +167,7 @@ def test_graph_laplacian_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     ``F.max() + 1`` rather than ``len(V)`` (section 6), which is why this runs on ``hemisphere``,
     where every vertex is referenced.
     """
-    mesh_tm, mesh_wp = hemisphere
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, faces_np = mesh_igl(mesh_tm)
     n_vertices = mesh_wp.points.size
 
@@ -182,7 +183,7 @@ def test_graph_laplacian_matches_igl(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.allclose(operator_dense, laplacian_igl, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parity("harmonic", "igl")
 @pytest.mark.parity("harmonic_conditioning", "igl")
 def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
@@ -320,7 +321,7 @@ def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
         assert np.allclose(again, first, rtol=1e-5, atol=1e-5)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 def test_tutte_matches_igl_reference(request: pytest.FixtureRequest, mesh_name: str):
     """
     Class B: igl has no ``tutte``, so the reference is its fixed-value minimizer on ``D - A``.
@@ -383,7 +384,7 @@ def _arap_igl(
     )
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parity("arap", "igl")
 def test_arap_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -478,7 +479,7 @@ def test_arap_all_vertices_fixed(hemisphere: tuple[tm.Trimesh, wp.Mesh]):
     assert np.array_equal(uv_wp.numpy(), fixed_uv_np)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus", "saddle_graded"])
 @pytest.mark.parity("lscm", "igl")
 def test_lscm_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     """
@@ -838,3 +839,55 @@ def test_fixed_vertex_solver_rejects_an_off_menu_method_or_power(
     )
     with pytest.raises(ValueError, match=r"method|k="):
         solver.solve(method, mask, values, k=k)
+
+
+@pytest.mark.parametrize(
+    ("method", "k"), [("harmonic", 1), ("harmonic", 2), ("tutte", 1), ("lscm", 1)]
+)
+def test_solver_direct_factors_at_once_and_keeps_it_on_the_mesh(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh],
+    method: str,
+    k: int,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """
+    Ordito against ordito: ``solver="direct"`` is ``factor`` folded into the first call.
+
+    On a ``Trimesh`` the first call factors (one build) and keeps it, so later default-``solver``
+    calls fixing the same vertices build nothing; each agrees with the ``vertices, faces`` form's
+    verified iteration to the solves' tolerance (the igl oracles are the tests above). The
+    ``vertices, faces`` form under ``"direct"`` factors too, and says at ``INFO`` that it drops it.
+    """
+    _, mesh_wp = hemisphere
+    vertices, faces = mesh_wp.points, mesh_wp.indices
+    function = getattr(od.parametrization, method)
+    keywords = {} if method == "lscm" else {"k": k}
+    fixed, values = _fixed_vertex_call(method, mesh_wp, 1.0)
+    iterated = function(vertices, faces, fixed, values, **keywords).numpy()
+    built = _count_factorizations(monkeypatch)
+    mesh = od.Trimesh(vertices, faces)
+    direct = function(mesh, fixed, values, solver="direct", **keywords).numpy()
+    assert len(built) == 1
+    again = function(mesh, fixed, values, **keywords).numpy()
+    assert len(built) == 1
+    for result in (direct, again):
+        assert np.allclose(result, iterated, rtol=1e-5, atol=1e-5 * np.ptp(iterated))
+    with caplog.at_level(logging.INFO, logger="ordito.parametrization"):
+        function(vertices, faces, fixed, values, solver="direct", **keywords)
+    assert len(built) == 2
+    assert [r for r in caplog.records if r.levelno == logging.INFO and "Trimesh" in r.message]
+
+
+@pytest.mark.parametrize("method", ["harmonic", "tutte", "lscm"])
+def test_fixed_vertex_maps_reject_an_off_menu_solver(
+    hemisphere: tuple[tm.Trimesh, wp.Mesh], method: str
+) -> None:
+    """Not a parity assert: ``solver`` outside the menu raises ``ValueError`` naming it."""
+    _, mesh_wp = hemisphere
+    fixed, values = _fixed_vertex_call(method, mesh_wp, 1.0)
+    function = getattr(od.parametrization, method)
+    with pytest.raises(ValueError, match="solver"):
+        function(mesh_wp.points, mesh_wp.indices, fixed, values, solver="cholesky")
+    with pytest.raises(ValueError, match="solver"):
+        function(od.Trimesh(mesh_wp.points, mesh_wp.indices), fixed, values, solver="cholesky")

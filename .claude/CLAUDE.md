@@ -1399,8 +1399,8 @@ takes an open manifold disk.** It is `benchmarks`' mesh at 68 x 68 (4 624 vertic
 geometry): the spacing is cubed along `x`, so the worst aspect ratio matches the 133 x 133
 benchmark's (4 858 against 4 719). It reproduced both failures the benchmark mesh exposed (heat
 method 4.4 % mean / 38 % worst off `igl.exact_geodesic` before the settle fix; `harmonic(k=2)`
-29 % of the range off a SciPy solve, a strict xfail until fixed) and found more (§12.4, §16.8,
-§16.12). **Where a test excludes it, the reason is written beside the list with numbers**; the
+29 % of the range off a SciPy solve, fixed by the verified fixed-value solves, §16.16) and found
+more (§12.4, §16.8, §16.12). **Where a test excludes it, the reason is written beside the list with numbers**; the
 recurring ones:
 
 - *Not ordito*: a reference's float32 formula cancels on its needles (§7.6: MeshLib's
@@ -6632,7 +6632,8 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       drops a factorization. **Nothing is factored automatically on reuse** (unlike the heat
       family's second-solve rule): a `k == 1` iteration is 2-3 ms against a 9-13 ms prepare, so
       reuse is the caller's call, made explicit with `FixedVertexSolver.factor(method,
-      fixed_indices, k=)`.
+      fixed_indices, k=)` or `solver="direct"` on the first call (`"auto"`, the default, iterates;
+      factoring every one-shot call is 0.48-0.95x on the well-conditioned rows, so it stays opt-in).
     - **Measured** (CUDA, alternating processes against `main`, min of 3x5; `saddle_small` /
       `saddle` / `hemisphere` / `saddle_graded`): prepare 9-18 ms once; a prepared call 0.25-0.39
       ms, against the one-shot iteration 7-37x (`harmonic` `k=1`, `tutte`), 21-69x (`k=2`; graded

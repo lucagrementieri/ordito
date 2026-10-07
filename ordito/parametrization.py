@@ -20,15 +20,16 @@ The fixed-vertex maps (``harmonic``, ``tutte``, ``lscm``) take the mesh as an
 iterate, verified, and fall back to a sparse Cholesky factorization where the iteration fails;
 given a `Trimesh`, a factorization is kept on it
 ([`Trimesh.fixed_vertex_solver`][ordito.mesh.Trimesh.fixed_vertex_solver]), and one built ahead
-with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] turns every
-later call fixing the same vertices into a factored solve with no iteration.
+with [`FixedVertexSolver.factor`][ordito.parametrization.FixedVertexSolver.factor] -- or by a
+call with ``solver="direct"`` -- turns every later call fixing the same vertices into a factored
+solve with no iteration.
 """
 
 from __future__ import annotations
 
 import logging
 import weakref
-from typing import cast, overload
+from typing import Literal, cast, overload
 
 import warp as wp
 
@@ -222,6 +223,7 @@ def harmonic(
     /,
     *,
     k: int = 1,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 @overload
 def harmonic(
@@ -231,6 +233,8 @@ def harmonic(
     boundary_uv: wp.array[wp.vec2],
     /,
     k: int = 1,
+    *,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 def harmonic(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -240,6 +244,7 @@ def harmonic(
     k: int = 1,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]:
     """
     Harmonic parametrization with fixed boundary.
@@ -270,6 +275,13 @@ def harmonic(
         Harmonic power (``>= 1``). ``k > 1`` additionally uses the barycentric lumped mass matrix
         [`mass_matrix_entries`][ordito.laplacian.mass_matrix_entries]. The operator is assembled in
         float64 (built native, never recast) so the ill-conditioned ``k > 1`` solve is accurate.
+    solver
+        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
+        when the iteration's result fails the check (always at ``k >= 3``, where the iteration does
+        not converge). ``"direct"`` factors it at once (a sparse Cholesky); given a `Trimesh`, the
+        factorization is kept on it, so every later call fixing the same vertices -- whatever their
+        values -- is a factored solve with no iteration. Pays from about the second such call; a
+        one-shot call is usually faster under ``"auto"``.
 
     Returns
     -------
@@ -280,8 +292,8 @@ def harmonic(
     ------
     ValueError
         If ``k < 1``, if there are interior vertices but ``boundary_indices`` is empty (the
-        Dirichlet system would be singular), or if ``boundary_indices`` and ``boundary_uv`` have
-        different lengths.
+        Dirichlet system would be singular), if ``boundary_indices`` and ``boundary_uv`` have
+        different lengths, or if ``solver`` is not ``"auto"`` or ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one
         device.
@@ -342,6 +354,7 @@ def harmonic(
         cast("wp.array[wp.int32]", arguments[0]),
         cast("wp.array[wp.vec2]", arguments[1]),
         cast("int", arguments[2]),
+        solver,
     )
 
 
@@ -353,6 +366,7 @@ def tutte(
     /,
     *,
     k: int = 1,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 @overload
 def tutte(
@@ -362,6 +376,8 @@ def tutte(
     boundary_uv: wp.array[wp.vec2],
     /,
     k: int = 1,
+    *,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 def tutte(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -371,6 +387,7 @@ def tutte(
     k: int = 1,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]:
     """
     Tutte embedding with fixed boundary (uniform-Laplacian parametrization).
@@ -401,6 +418,13 @@ def tutte(
         [`map_vertices_to_circle`][ordito.parametrization.map_vertices_to_circle]).
     k
         Laplacian power (``>= 1``). ``k == 1`` is the classic Tutte embedding.
+    solver
+        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
+        when the iteration's result fails the check (always at ``k >= 3``). ``"direct"`` factors it
+        at once (a sparse Cholesky); given a `Trimesh`, the factorization is kept on it, so every
+        later call fixing the same vertices -- whatever their values -- is a factored solve with no
+        iteration. Pays from about the second such call; a one-shot call is usually faster under
+        ``"auto"``.
 
     Returns
     -------
@@ -410,8 +434,9 @@ def tutte(
     Raises
     ------
     ValueError
-        If ``k < 1``, if there are interior vertices but ``boundary_indices`` is empty, or if
-        ``boundary_indices`` and ``boundary_uv`` have different lengths.
+        If ``k < 1``, if there are interior vertices but ``boundary_indices`` is empty, if
+        ``boundary_indices`` and ``boundary_uv`` have different lengths, or if ``solver`` is not
+        ``"auto"`` or ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one
         device.
@@ -432,6 +457,7 @@ def tutte(
         cast("wp.array[wp.int32]", arguments[0]),
         cast("wp.array[wp.vec2]", arguments[1]),
         cast("int", arguments[2]),
+        solver,
     )
 
 
@@ -442,6 +468,7 @@ def _fixed_boundary_map(
     boundary_indices: wp.array[wp.int32],
     boundary_uv: wp.array[wp.vec2],
     k: int,
+    solver: str,
 ) -> wp.array[wp.vec2]:
     """``harmonic`` / ``tutte`` on a resolved mesh: validate, pin the boundary, solve, scatter."""
     vertices = mesh.vertices
@@ -453,6 +480,7 @@ def _fixed_boundary_map(
     )
     if k < 1:
         raise ValueError(f"{method} power k must be >= 1, got {k}.")
+    _require_solver_name(solver, method)
     device = vertices.device
     n_vertices = vertices.size
     if n_vertices == 0:
@@ -470,7 +498,9 @@ def _fixed_boundary_map(
         n_vertices, boundary_indices, boundary_uv, device
     )
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
-    sol, free_map = _solve_fixed_vertices(mesh, owned, method, k, fixed_mask, fixed_values_2d)
+    sol, free_map = _solve_fixed_vertices(
+        mesh, owned, method, k, fixed_mask, fixed_values_2d, solver
+    )
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     _launch.launch(
         kernel_parametrization.scatter_solution,
@@ -747,7 +777,12 @@ def _scatter_constraints(
 
 @overload
 def lscm(
-    mesh: Trimesh, pinned_indices: wp.array[wp.int32], pinned_uv: wp.array[wp.vec2], /
+    mesh: Trimesh,
+    pinned_indices: wp.array[wp.int32],
+    pinned_uv: wp.array[wp.vec2],
+    /,
+    *,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 @overload
 def lscm(
@@ -756,6 +791,8 @@ def lscm(
     pinned_indices: wp.array[wp.int32],
     pinned_uv: wp.array[wp.vec2],
     /,
+    *,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]: ...
 def lscm(
     mesh: Trimesh | wp.array[wp.vec3] | None = None,
@@ -764,6 +801,7 @@ def lscm(
     pinned_uv: wp.array[wp.vec2] | None = None,
     *,
     vertices: wp.array[wp.vec3] | None = None,
+    solver: Literal["auto", "direct"] = "auto",
 ) -> wp.array[wp.vec2]:
     """
     Constrained least-squares conformal map.
@@ -802,6 +840,12 @@ def lscm(
     pinned_uv
         ``(n_pinned,)`` target UV positions for ``pinned_indices``, in the same order (igl's
         ``bc``).
+    solver
+        ``"auto"`` (default) solves by conjugate gradient, verified, and factors the system only
+        when the iteration's result fails the check. ``"direct"`` factors it at once (a sparse
+        Cholesky); given a `Trimesh`, the factorization is kept on it, so every later call fixing
+        the same vertices -- whatever their values -- is a factored solve with no iteration. Pays
+        from about the second such call; a one-shot call is usually faster under ``"auto"``.
 
     Returns
     -------
@@ -811,8 +855,9 @@ def lscm(
     Raises
     ------
     ValueError
-        If fewer than two vertices are pinned (and the mesh has at least two vertices), or if
-        ``pinned_indices`` and ``pinned_uv`` have different lengths.
+        If fewer than two vertices are pinned (and the mesh has at least two vertices), if
+        ``pinned_indices`` and ``pinned_uv`` have different lengths, or if ``solver`` is not
+        ``"auto"`` or ``"direct"``.
     RuntimeError
         If ``vertices``, ``faces``, ``pinned_indices`` and ``pinned_uv`` are not all on one device.
 
@@ -841,6 +886,7 @@ def lscm(
     )
     pinned_indices = cast("wp.array[wp.int32]", arguments[0])
     pinned_uv = cast("wp.array[wp.vec2]", arguments[1])
+    _require_solver_name(solver, "lscm")
     require_same_device(
         vertices=bound.vertices,
         faces=bound.faces,
@@ -862,7 +908,7 @@ def lscm(
     )
     fixed_mask, fixed_values = _pin_stacked(n, pinned_indices, pinned_uv, device)
     sol, free_map = _solve_fixed_vertices(
-        bound, owned, "lscm", 1, fixed_mask, odt.as_array2d(fixed_values, wp.float64)
+        bound, owned, "lscm", 1, fixed_mask, odt.as_array2d(fixed_values, wp.float64), solver
     )
     out_uv = _launch.empty(n, dtype=wp.vec2, device=device)
     _launch.launch(
@@ -890,7 +936,8 @@ class FixedVertexSolver:
     iteration, only the factorization's solve.
 
     A factorization is kept here when [`factor`][ordito.parametrization.FixedVertexSolver.factor]
-    builds it ahead of the calls, or when a call built one anyway: the iteration's result failed
+    builds it ahead of the calls, when a call asks for one (``solver="direct"``), or when a call
+    built one anyway: the iteration's result failed
     its verification (see [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]), or the
     system is factored from the start (``k >= 3``). A call fixing other vertices than the kept
     factorization's solves as if none were kept, and replaces it with its own when it builds one.
@@ -979,6 +1026,7 @@ class FixedVertexSolver:
         fixed_values: odt.Array2dFloat,
         *,
         k: int = 1,
+        solver: Literal["auto", "direct"] = "auto",
     ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
         """
         Solve ``method``'s reduced system: by the kept factorization if it fixes ``fixed_mask``.
@@ -998,6 +1046,9 @@ class FixedVertexSolver:
             ``(n_columns, n_dofs)`` prescribed values; only the fixed entries are read.
         k
             The harmonic power (``1`` for ``"lscm"``).
+        solver
+            ``"auto"`` iterates, verified, and factors only when the check fails (or at
+            ``k >= 3``); ``"direct"`` factors at once. A factorization either builds is kept.
 
         Returns
         -------
@@ -1009,7 +1060,8 @@ class FixedVertexSolver:
         Raises
         ------
         ValueError
-            If ``method`` is not one of the three, if ``k < 1``, or if ``k != 1`` for ``"lscm"``.
+            If ``method`` is not one of the three, if ``k < 1``, if ``k != 1`` for ``"lscm"``, or
+            if ``solver`` is not ``"auto"`` or ``"direct"``.
         RuntimeError
             If ``fixed_mask`` and ``fixed_values`` are not on the mesh's device.
 
@@ -1020,6 +1072,7 @@ class FixedVertexSolver:
             [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]).
         """
         _require_fixed_vertex_method(method, k, "FixedVertexSolver.solve")
+        _require_solver_name(solver, "FixedVertexSolver.solve")
         mesh = self._bound_mesh()
         require_same_device(
             vertices=mesh.vertices, fixed_mask=fixed_mask, fixed_values=fixed_values
@@ -1029,7 +1082,11 @@ class FixedVertexSolver:
         built = system is None
         if system is None:
             system, preconditioner = _fixed_vertex_system(
-                mesh, method, k, fixed_mask, factor=method != "lscm" and k >= 3
+                mesh,
+                method,
+                k,
+                fixed_mask,
+                factor=solver == "direct" or (method != "lscm" and k >= 3),
             )
         solution, free_map, _ = system.solve(
             fixed_values, tol=_CG_TOLERANCE, preconditioner=preconditioner
@@ -1070,6 +1127,7 @@ def _solve_fixed_vertices(
     k: int,
     fixed_mask: wp.array[wp.bool],
     fixed_values: odt.Array2dFloat,
+    solver: str,
 ) -> tuple[odt.Array2dFloat, wp.array[wp.int32]]:
     """
     Solve a fixed-vertex map's reduced system on the mesh's solver, or on one made for the call.
@@ -1077,17 +1135,25 @@ def _solve_fixed_vertices(
     A caller-owned mesh keeps whatever factorization the solve builds; a ``vertices, faces`` call
     drops it, saying so at ``INFO``.
     """
-    solver = mesh.fixed_vertex_solver() if owned else FixedVertexSolver(mesh)
-    solution, free_map = solver.solve(method, fixed_mask, fixed_values, k=k)
-    if not owned and solver.nbytes > 0:
+    held = mesh.fixed_vertex_solver() if owned else FixedVertexSolver(mesh)
+    solution, free_map = held.solve(
+        method, fixed_mask, fixed_values, k=k, solver=cast("Literal['auto', 'direct']", solver)
+    )
+    if not owned and held.nbytes > 0:
         _LOGGER.info(
             "%s: built a sparse Cholesky factorization (%d bytes) and is discarding it; pass an "
             "ordito.mesh.Trimesh to keep it for later calls fixing the same vertices",
             method,
-            solver.nbytes,
+            held.nbytes,
         )
-        solver.release()
+        held.release()
     return solution, free_map
+
+
+def _require_solver_name(solver: str, caller: str) -> None:
+    """Validate the fixed-vertex maps' ``solver`` menu argument."""
+    if solver not in ("auto", "direct"):
+        raise ValueError(f'{caller}: solver must be "auto" or "direct", got {solver!r}.')
 
 
 def _require_fixed_vertex_method(method: str, k: int, caller: str) -> None:
