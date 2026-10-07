@@ -497,6 +497,10 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``quadric_decimate``'s provenance column, folded one pass at a time: the array is the previous
     # pass's answer *and* this pass's, so it is in place and ``out_`` would read as write-only.
     ("remesh", "compact_decimation_pass"): frozenset({"index"}),
+    # The decimation pass's boundary-plane table: ``count_pass_edges`` accumulates into it and this
+    # kernel folds each entry into its vertex's quadric and re-zeroes it for the next pass, so it is
+    # persistent scratch whose zero state is the invariant, not an output.
+    ("remesh", "gather_vertex_quadrics"): frozenset({"boundary_quadrics", "boundary_flags"}),
     # ``intrinsic_delaunay``'s halfedge-twin flip engine mutates the mesh it was handed rather than
     # producing a fresh one each round: ``edge_lengths`` is the caller's own metric, read pre-flip
     # and overwritten in the same launch, and ``twin`` is the incrementally-maintained twin table

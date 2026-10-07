@@ -4499,7 +4499,7 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
 - **`quadric_decimate` quality and pass count (2026-10-06).** Scaling first: the pass cost is
   ~0.4 ms at 35 k faces and ~1 ms at 1 M (replayed), device-bound only at `lucy` (28 M faces,
   1.3 s at 0.5 or 0.1: the first, widest passes dominate; float64 `mat44d` atomics in
-  `scatter_pass_adjacency` are 30 % of its device time). What sets the cost at every other size
+  `scatter_pass_adjacency` were 30 % of its device time, since gathered, below). What sets the cost at every other size
   is the **pass count**: each pass removed ~6.5 % of the faces, so 0.1 took 36-66 passes and 0.01
   took 70-76, plus a tail of 3-20 near-empty passes. Four changes landed together:
     - **Relaxed independence**: two collapses conflict exactly when an endpoint of either lies in
@@ -4553,9 +4553,35 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
     - **Lindstrom quadric clustering to K x target, then QEM** (K = 2, 4, 8, at 0.01): the QEM
       stage 3-7x faster but mean deviation 1.4-2x and max 1.5-4x worse, and 60-1 500
       non-manifold edges in the output.
-    - Not built, priced: symmetric 10-double quadric storage written per face and gathered per
-      vertex through the vertex-face CSR (micro-probe of that stage 2.3x at `dragon`, 3.6x at
-      `lucy`; needs one more graph node and an `n_faces` x 80-byte buffer).
+    - (Built 2026-10-07: the symmetric 10-double gather, next entry.)
+- **The decimation pass gathers its vertex quadrics** (2026-10-07,
+  `kernel_remesh.gather_vertex_quadrics`, `SymmetricQuadric`): each face writes its area-weighted
+  plane quadric once as ten doubles (`begin_decimation_pass`), and one thread per vertex sums its
+  vertex-face row **in ascending face order** (a rescan of the row, linear in its length per step;
+  rows over `QUADRIC_ORDERED_ROW_MAX = 64` are summed as stored). The `mat44d` float64 atomics of
+  `scatter_pass_adjacency` are gone; the boundary planes are computed once per boundary edge in
+  `count_pass_edges` and atomically added into a separate per-vertex table that the gather folds
+  and re-zeroes. One graph node more per pass. Quadric region (`begin` + `count` + `scatter` +
+  `gather`, every pass issued, min of 3): saddle 0.617 -> 0.574 ms, bunny 0.857 -> 0.724, dragon
+  6.02 -> 2.57 (2.35x), lucy 196 -> 78 ms (2.51x), all at 0.1. Whole call against `main`,
+  interleaved processes, min of 12 (lucy 4): saddle / saddle_graded / bunny 0.99-1.03x at every
+  ratio (noise), dragon 1.17 / 1.13 / 1.15x at 0.5 / 0.1 / 0.01, happy_buddha 1.20 / 1.20 /
+  1.18x, lucy 1.21 / 1.24 / 1.23x (404 -> 334, 609 -> 490, 699 -> 567 ms); pass counts and outputs'
+  deviation unchanged within one pass and the noise of a reordered sum.
+    - **The output is now reproducible run to run on CUDA** (it already was on CPU): every scan
+      mesh and both saddles at 0.5 / 0.1 / 0.01 gave one hash in 3-5 runs, where `main` gave 5 of 5
+      distinct on `saddle_graded` and `bunny` (the float64 atomic order changed the last bits of
+      costs that tie, and the stable cost sort then kept a different edge). Exceptions, by
+      construction: a vertex with more than 64 incident faces, and one where three or more
+      boundary edges meet (two atomic adds onto zero commute exactly; three do not; `lucy` has one
+      such input vertex). Pinned by `test_quadric_decimate_is_reproducible` (graded height field at
+      0.75 / 0.5 / 0.25, where `main` gave 5 distinct meshes in 5 runs; at 0.1 it happened to give
+      1, so 0.1 is not an arm).
+    - **The boundary planes must not be computed in the gather.** Recomputing each boundary
+      edge's plane from the face mask per endpoint inside the gather made it 3-4x slower (bunny
+      13 -> 40-75 us a launch, dragon about 2x), though `bunny` has 223 boundary edges: float64
+      `sqrt` / division in a divergent branch of a 96-register kernel. Doing it once per edge in
+      `count_pass_edges` costs that kernel nothing measurable.
 - **`isotropic_remesh`'s collapse stage takes the same exact conflict rule** (`commit_collapses`
   reads the claim at the endpoints, `scatter.endpoints_hold`; `two_rings_hold` is gone). The
   stage always ran its full `max_passes=5` at ~1.8 % of the faces a pass and never converged.

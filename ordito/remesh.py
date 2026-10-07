@@ -1797,12 +1797,12 @@ def quadric_decimate(
       self-intersecting triangles an unguarded quadric method produces at high reduction ratios,
       and it is deliberately not exposed as a keyword -- see ``COLLAPSE_MIN_NORMAL_DOT`` in
       ``kernels/remesh.py``.
-    - **The output is not bit-reproducible on a mesh with tied costs.** The vertex-face incidence
-      CSR is
-      built by an atomic counting scatter, so a row's order varies run to run; where two candidate
-      edges tie on cost, which one the sort keeps varies with it. On a mesh with many ties this can
-      move the two-sided Hausdorff distance noticeably between otherwise identical runs, so **treat
-      the max-norm as a band, not a value** -- the mean deviation is far more stable.
+    - **The output is reproducible run to run on either device**: each vertex quadric is summed
+      over its faces in a fixed order, so every cost, every tie between equal costs and every
+      placement repeats. The exceptions are a vertex with more than 64 incident faces and one
+      where three or more boundary edges meet, whose sums take whatever order the pass's atomics
+      produced. The CPU and CUDA devices need not agree with each other: the GPU contracts
+      floating-point expressions differently.
     """
     require_same_device(vertices=vertices, faces=faces)
     n_faces = faces.size // 3
@@ -1911,13 +1911,22 @@ class _DecimationBuffers:
         self._order_store = _launch.empty(2 * n, dtype=wp.int32, device=device)
         self._starts_store = _launch.empty(n, dtype=wp.int32, device=device)
         self._corner_slots_store = _launch.empty(n, dtype=wp.int32, device=device)
+        self._face_quadrics_store = _launch.empty(
+            self.n_faces, dtype=kernel_remesh.SymmetricQuadric, device=device
+        )
+        # Boundary constraint planes per vertex, accumulated by ``count_pass_edges`` and folded
+        # and re-zeroed by ``gather_vertex_quadrics`` every pass, so zeroed once here.
+        self._boundary_quadrics = _launch.zeros(
+            v_cap, dtype=kernel_remesh.SymmetricQuadric, device=device
+        )
+        self._boundary_flags = _launch.zeros(v_cap, dtype=wp.int32, device=device)
         self._remapped_store = _launch.empty(n, dtype=wp.int32, device=device)
         # Per-vertex state the pass accumulates into or starts from; ``begin_decimation_pass``
         # resets all of it.
         self._positions = _launch.empty(v_cap, dtype=wp.vec3, device=device)
         self._collapse_remap = _launch.empty(v_cap, dtype=wp.int32, device=device)
         self._feature_count = _launch.empty(v_cap, dtype=wp.int32, device=device)
-        self._quadrics = _launch.empty(v_cap, dtype=wp.mat44d, device=device)
+        self._quadrics = _launch.empty(v_cap, dtype=kernel_remesh.SymmetricQuadric, device=device)
         self._locked = _launch.empty(v_cap, dtype=wp.int32, device=device)
         self._min_key = _launch.empty(v_cap, dtype=wp.int64, device=device)
         # Vertex-vertex then vertex-face incidence counts, one row per vertex each and a closing
@@ -1975,6 +1984,7 @@ class _DecimationBuffers:
         self._order = odt.as_dense(self._order_store[: 2 * n])
         self._starts = odt.as_dense(self._starts_store[:n])
         self._corner_slots = odt.as_dense(self._corner_slots_store[:n])
+        self._face_quadrics = odt.as_dense(self._face_quadrics_store[:faces])
         self._remapped = odt.as_dense(self._remapped_store[:n])
         self._start_scan = _ExclusiveScan(n, device)
         # The compaction's keep flags, faces first and vertices after, and their one scan.
@@ -2111,7 +2121,7 @@ class _DecimationBuffers:
                 self._edge_face_count,
                 self._adjacency_counts,
                 self._feature_count,
-                self._quadrics,
+                self._face_quadrics,
                 self._locked,
                 self._min_key,
                 self._collapse_remap,
@@ -2125,6 +2135,19 @@ class _DecimationBuffers:
         offsets = self._group_edges()
         csr_offsets = odt.as_dense(offsets[: v_cap + 1])
         face_offsets = offsets[v_cap:]
+        _launch.launch(
+            kernel_remesh.gather_vertex_quadrics,
+            dim=v_cap,
+            inputs=[
+                self._face_quadrics,
+                face_offsets,
+                self._adjacency,
+                self._boundary_quadrics,
+                self._boundary_flags,
+            ],
+            outputs=[self._quadrics],
+            device=device,
+        )
         _launch.launch(
             kernel_remesh.quadric_collapse_candidates,
             dim=self.n_edges,
@@ -2224,7 +2247,8 @@ class _DecimationBuffers:
                 self._feature_count,
                 self._adjacency_counts,
                 self._edge_slots,
-                self._quadrics,
+                self._boundary_quadrics,
+                self._boundary_flags,
             ],
             device=device,
         )
@@ -2233,7 +2257,6 @@ class _DecimationBuffers:
             kernel_remesh.scatter_pass_adjacency,
             dim=max(n, 2 * v_cap + 1),
             inputs=[
-                self.vertices,
                 self.faces,
                 self._unique_edges,
                 self._edge_slots,
@@ -2244,7 +2267,6 @@ class _DecimationBuffers:
                 wp.int32(v_cap),
                 self._adjacency,
                 self._adjacency_offsets,
-                self._quadrics,
             ],
             device=device,
         )

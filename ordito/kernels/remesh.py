@@ -42,7 +42,6 @@ from ordito.kernels.predicates import (
 )
 from ordito.kernels.scatter import (
     accumulate_endpoint_value,
-    add_corner_triple,
     add_edge_valence,
     endpoints_hold,
     lock_two_rings,
@@ -2947,102 +2946,105 @@ BOUNDARY_QUADRIC_WEIGHT = wp.constant(wp.float64(1.0))
 COLLAPSE_MIN_NORMAL_DOT = wp.constant(wp.float32(0.5))
 
 
+# A quadric is symmetric, so it is stored as its ten distinct entries rather than as a
+# ``wp.mat44d``: ``[a00, a01, a02, a11, a12, a22, b0, b1, b2, c]`` for ``Q = [[A, b], [b^T, c]]``,
+# so that ``[p, 1]^T Q [p, 1] = p^T A p + 2 b.p + c``. 80 bytes where the matrix is 128, and every
+# per-vertex quadric is *written* by one thread (``gather_vertex_quadrics``) rather than accumulated
+# by float64 atomics.
+SymmetricQuadric = wp.types.vector(length=10, dtype=wp.float64)
+
+
 @wp.func
-def plane_quadric(normal: wp.vec3d, offset: wp.float64, weight: wp.float64) -> wp.mat44d:
+def plane_quadric(normal: wp.vec3d, offset: wp.float64, weight: wp.float64) -> SymmetricQuadric:
     # Garland-Heckbert fundamental quadric of the plane ``dot(normal, x) + offset = 0``, scaled by
-    # ``weight``. Laid out so that ``[p, 1]^T Q [p, 1]`` is the weighted squared distance to the
-    # plane: the leading 3x3 block is ``n n^T``, the last row and column are ``offset * n``, and the
-    # corner is ``offset^2``.
+    # ``weight``, so that ``quadric_error`` is the weighted squared distance to the plane: ``A`` is
+    # ``n n^T``, ``b`` is ``offset * n`` and ``c`` is ``offset^2``.
     a = weight * normal[0]
     b = weight * normal[1]
     c = weight * normal[2]
     d = weight * offset
-    return wp.mat44d(
+    return SymmetricQuadric(
         a * normal[0],
         a * normal[1],
         a * normal[2],
-        a * offset,
-        b * normal[0],
         b * normal[1],
         b * normal[2],
-        b * offset,
-        c * normal[0],
-        c * normal[1],
         c * normal[2],
+        a * offset,
+        b * offset,
         c * offset,
-        d * normal[0],
-        d * normal[1],
-        d * normal[2],
         d * offset,
     )
 
 
 @wp.func
-def quadric_error(quadric: wp.mat44d, p: wp.vec3d) -> wp.float64:
+def quadric_error(quadric: SymmetricQuadric, p: wp.vec3d) -> wp.float64:
     # ``[p, 1]^T Q [p, 1]``: the accumulated squared distance from ``p`` to every plane folded into
     # ``Q``. Clamped at zero, since a float64 sum of positive-semidefinite terms can still land a
     # hair below it and a negative "error" would sort ahead of every real candidate.
-    homogeneous = wp.vec4d(p[0], p[1], p[2], wp.float64(1.0))
-    return wp.max(wp.float64(0.0), wp.dot(homogeneous, quadric * homogeneous))
+    x = p[0]
+    y = p[1]
+    z = p[2]
+    two = wp.float64(2.0)
+    quadratic = (
+        quadric[0] * x * x
+        + quadric[3] * y * y
+        + quadric[5] * z * z
+        + two * (quadric[1] * x * y + quadric[2] * x * z + quadric[4] * y * z)
+    )
+    linear = two * (quadric[6] * x + quadric[7] * y + quadric[8] * z)
+    return wp.max(wp.float64(0.0), quadratic + linear + quadric[9])
 
 
 @wp.func
-def quadric_optimum(quadric: wp.mat44d, fallback: wp.vec3d) -> wp.vec3d:
-    # Position minimizing the quadric: solve ``A p = -b`` for the leading 3x3 block ``A`` and the
-    # last column ``b``. ``fallback`` (the edge midpoint) is returned when ``A`` is singular
-    # relative to its own scale, which is the planar case -- there the minimum is a whole plane and
-    # inverting a near-singular matrix would place the vertex arbitrarily far away.
+def quadric_optimum(quadric: SymmetricQuadric, fallback: wp.vec3d) -> wp.vec3d:
+    # Position minimizing the quadric: solve ``A p = -b``. ``fallback`` (the edge midpoint) is
+    # returned when ``A`` is singular relative to its own scale, which is the planar case -- there
+    # the minimum is a whole plane and inverting a near-singular matrix would place the vertex
+    # arbitrarily far away.
     a = wp.mat33d(
-        quadric[0, 0],
-        quadric[0, 1],
-        quadric[0, 2],
-        quadric[1, 0],
-        quadric[1, 1],
-        quadric[1, 2],
-        quadric[2, 0],
-        quadric[2, 1],
-        quadric[2, 2],
+        quadric[0],
+        quadric[1],
+        quadric[2],
+        quadric[1],
+        quadric[3],
+        quadric[4],
+        quadric[2],
+        quadric[4],
+        quadric[5],
     )
-    scale = wp.abs(quadric[0, 0]) + wp.abs(quadric[1, 1]) + wp.abs(quadric[2, 2])
+    scale = wp.abs(quadric[0]) + wp.abs(quadric[3]) + wp.abs(quadric[5])
     if scale <= wp.float64(0.0):
         return fallback
     if wp.abs(wp.determinant(a)) <= QUADRIC_SINGULAR_EPS * scale * scale * scale:
         return fallback
-    b = wp.vec3d(quadric[0, 3], quadric[1, 3], quadric[2, 3])
+    b = wp.vec3d(quadric[6], quadric[7], quadric[8])
     return -(wp.inverse(a) * b)
 
 
 @wp.func
-def add_face_quadric(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    f: wp.int32,
-    out_quadrics: wp.array[wp.mat44d],
-) -> None:
-    # Area-weighted plane quadric of face ``f``, scattered onto its three corners. Area weighting is
+def face_quadric(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], f: wp.int32
+) -> SymmetricQuadric:
+    # Area-weighted plane quadric of face ``f``; zero for a degenerate face. Area weighting is
     # Garland-Heckbert's: a large triangle constrains its vertices more than a sliver does.
     v0, v1, v2 = face_vertices_vec3d(vertices, faces, f)
     cross = wp.cross(v1 - v0, v2 - v0)
     double_area = wp.length(cross)
     if double_area <= wp.float64(0.0):
-        return
+        return SymmetricQuadric()
     normal = cross / double_area
-    quadric = plane_quadric(normal, -wp.dot(normal, v0), double_area * wp.float64(0.5))
-    add_corner_triple(out_quadrics, faces, f, quadric, quadric, quadric)
+    return plane_quadric(normal, -wp.dot(normal, v0), double_area * wp.float64(0.5))
 
 
 @wp.func
-def add_boundary_quadric(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    face: wp.int32,
-    u: wp.int32,
-    v: wp.int32,
-    out_quadrics: wp.array[wp.mat44d],
-) -> None:
+def boundary_quadric(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], face: wp.int32, u: wp.int32, v: wp.int32
+) -> SymmetricQuadric:
     # Garland-Heckbert's boundary constraint: the plane through boundary edge ``(u, v)``
     # perpendicular to its one face ``face``, weighted by ``BOUNDARY_QUADRIC_WEIGHT`` times the
-    # squared edge length (an area, as the face quadrics' weights are), on both endpoints.
+    # squared edge length (an area, as the face quadrics' weights are). Both endpoints add it;
+    # ``u`` and ``v`` are the edge's row in ``unique_edges``, so the two see the same bits.
     #
     # The face planes alone say nothing about where the boundary runs within the surface, so a
     # collapse that drags a rim inwards -- or cuts a corner of an open patch -- costs nothing, and
@@ -3061,13 +3063,9 @@ def add_boundary_quadric(
     normal = wp.cross(edge, wp.cross(v1 - v0, v2 - v0))
     length = wp.length(normal)
     if length <= wp.float64(0.0):
-        return
+        return SymmetricQuadric()
     normal = normal / length
-    quadric = plane_quadric(
-        normal, -wp.dot(normal, p), BOUNDARY_QUADRIC_WEIGHT * wp.dot(edge, edge)
-    )
-    wp.atomic_add(out_quadrics, u, quadric)
-    wp.atomic_add(out_quadrics, v, quadric)
+    return plane_quadric(normal, -wp.dot(normal, p), BOUNDARY_QUADRIC_WEIGHT * wp.dot(edge, edge))
 
 
 # One decimation pass is replayed as a CUDA graph, and a replay pays a few microseconds of device
@@ -3077,7 +3075,7 @@ def add_boundary_quadric(
 #
 #   begin_decimation_pass -> sort corner keys -> mark_unique_edge_starts -> scan ->
 #   emit_pass_edges -> count_pass_edges -> scan -> scatter_pass_adjacency ->
-#   quadric_collapse_candidates -> sort costs -> drop_past_half ->
+#   gather_vertex_quadrics -> quadric_collapse_candidates -> sort costs -> drop_past_half ->
 #   [drop_locked_and_claim -> mark_collapse_winners -> scan -> commit_budgeted_collapses ->
 #    end_collapse_round]* -> remap_and_mark_faces -> scan -> compact_decimation_pass
 #
@@ -3087,6 +3085,16 @@ def add_boundary_quadric(
 # offset tables and the two payloads' positions in one shared buffer. Neither CSR's row order is
 # sorted -- a row is filled in atomic arrival order -- and nothing reads it in order: the link
 # condition counts, the lock and the claim take unions and minima, and the flip veto is an any.
+#
+# **The vertex quadrics are gathered, not scattered.** Each face writes its plane quadric once
+# (``begin_decimation_pass``) and each vertex sums its faces' in one thread
+# (``gather_vertex_quadrics``), which costs a graph node over scattering each face's quadric onto
+# its corners with float64 atomics, and buys a fixed summation order: the sum is reproducible, so
+# the pass is. The scatter's atomics were the pass's largest kernel at scale; on the quadric
+# region (``begin`` / ``count`` / ``scatter`` / ``gather``) the gather measured 2.35x at
+# ``dragon`` and 2.51x at ``lucy``, 1.07-1.18x on 35-69 k faces, and the whole call 1.13-1.24x
+# from ``dragon`` up, level (0.99-1.03x) below. The symmetric 10-double storage is part of it: a
+# ``mat44d`` quadric moves 128 bytes where 80 suffice.
 
 
 @wp.kernel
@@ -3100,7 +3108,7 @@ def begin_decimation_pass(
     out_edge_face_count: wp.array[wp.int32],
     out_adjacency_counts: wp.array[wp.int32],
     out_feature_count: wp.array[wp.int32],
-    out_quadrics: wp.array[wp.mat44d],
+    out_face_quadrics: wp.array[SymmetricQuadric],
     out_locked: wp.array[wp.int32],
     out_min_key: wp.array[wp.int64],
     out_remap: wp.array[wp.int32],
@@ -3116,9 +3124,12 @@ def begin_decimation_pass(
     # key so bounding the grouping by ``3 * n_faces`` excludes the padding exactly. The identity
     # payload is what makes the radix sort an argsort (``array.sort_pair_indices``).
     #
+    # Each live face's plane quadric is written here too, from the positions the pass starts with:
+    # ``gather_vertex_quadrics`` sums them per vertex once the vertex-face rows exist.
+    #
     # Everything else is the state the rest of the pass accumulates into or starts from, reset here
     # rather than by one memset or copy each: the edge incidence and adjacency counts, the feature
-    # counts and quadrics, the round loop's locks, claim keys and collapse map, the working
+    # counts, the round loop's locks, claim keys and collapse map, the working
     # positions, the compaction's vertex marks, and the loop state (``end_collapse_round``'s slot
     # table, seeded with its condition at 1 because ``wp.capture_while`` tests it before the first
     # round) and the pass's commit and removed-face counts.
@@ -3131,6 +3142,7 @@ def begin_decimation_pass(
             out_keys[c + 2] = EDGE_KEY_PAD
         else:
             write_face_edge_keys(faces, t, c, base, out_keys)
+            out_face_quadrics[t] = face_quadric(vertices, faces, t)
         out_order[c + 0] = c + 0
         out_order[c + 1] = c + 1
         out_order[c + 2] = c + 2
@@ -3140,7 +3152,6 @@ def begin_decimation_pass(
         out_adjacency_counts[t] = 0
     if t < out_remap.shape[0]:
         out_feature_count[t] = 0
-        out_quadrics[t] = wp.mat44d()
         out_locked[t] = 0
         out_min_key[t] = UNCLAIMED_KEY
         out_remap[t] = t
@@ -3329,12 +3340,16 @@ def count_pass_edges(
     out_feature_count: wp.array[wp.int32],
     out_adjacency_counts: wp.array[wp.int32],
     out_edge_slots: wp.array[wp.vec2i],
-    out_quadrics: wp.array[wp.mat44d],
+    out_boundary_quadrics: wp.array[SymmetricQuadric],
+    out_boundary_flags: wp.array[wp.int32],
 ) -> None:
     # Per live unique edge, once the incidence is complete: its feature vote (``_classify``'s
-    # count, ``is_feature_edge``), a boundary edge's constraint quadric (``add_boundary_quadric``;
-    # the face quadrics are added by ``scatter_pass_adjacency``, into the same zeroed table), and
-    # its two entries' slots in the vertex-vertex CSR rows. A
+    # count, ``is_feature_edge``), its two entries' slots in the vertex-vertex CSR rows, and a
+    # boundary edge's constraint plane (``boundary_quadric``), added to both endpoints' entries of
+    # a separate table and flagged there for ``gather_vertex_quadrics``, which folds the table into
+    # the vertex quadrics and leaves it zeroed for the next pass. Two terms added to zero give the
+    # same sum in either order, so the table is the same run to run wherever no vertex ends three
+    # or more boundary edges -- every vertex of a manifold boundary. A
     # degenerate edge ``(a, a)`` from a face with a repeated corner is one entry in row ``a``, as
     # the triplet build this replaces accumulated its two identical triplets into one.
     e = wp.int32(wp.tid())
@@ -3346,7 +3361,11 @@ def count_pass_edges(
         wp.atomic_add(out_feature_count, u, 1)
         wp.atomic_add(out_feature_count, v, 1)
     if edge_face_count[e] == 1 and u != v:
-        add_boundary_quadric(vertices, faces, edge_faces[e, 0], u, v, out_quadrics)
+        plane = boundary_quadric(vertices, faces, edge_faces[e, 0], u, v)
+        wp.atomic_add(out_boundary_quadrics, u, plane)
+        wp.atomic_add(out_boundary_quadrics, v, plane)
+        out_boundary_flags[u] = 1
+        out_boundary_flags[v] = 1
     slot_u = wp.atomic_add(out_adjacency_counts, u, 1)
     slot_v = wp.int32(-1)
     if u != v:
@@ -3356,7 +3375,6 @@ def count_pass_edges(
 
 @wp.kernel
 def scatter_pass_adjacency(
-    vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     unique_edges: wp.array2d[wp.int32],
     edge_slots: wp.array[wp.vec2i],
@@ -3367,13 +3385,11 @@ def scatter_pass_adjacency(
     vertex_capacity: wp.int32,
     out_adjacency: wp.array[wp.int32],
     out_offsets: wp.array[wp.int32],
-    out_quadrics: wp.array[wp.mat44d],
 ) -> None:
     # Launched over the corners or the offset table, whichever is longer. Thread ``t`` places live
     # edge ``t``'s two vertex-vertex entries and live corner ``t``'s vertex-face entry at the slots
-    # the counting kernels drew, writes entry ``t`` of the offset table the scan left split in two,
-    # and adds live face ``t``'s quadric -- independent work that only needs the counts and the
-    # zeroed quadrics, so it shares this one launch.
+    # the counting kernels drew, and writes entry ``t`` of the offset table the scan left split in
+    # two -- independent work that only needs the counts, so it shares this one launch.
     t = wp.int32(wp.tid())
     if t < out_offsets.shape[0]:
         out_offsets[t] = scanned_prefix(count_prefix, count_chunk_offsets, t)
@@ -3388,8 +3404,62 @@ def scatter_pass_adjacency(
     if t < live_faces * 3:
         row = scanned_prefix(count_prefix, count_chunk_offsets, vertex_capacity + faces[t])
         out_adjacency[row + corner_slots[t]] = t // 3
-    if t < live_faces:
-        add_face_quadric(vertices, faces, t, out_quadrics)
+
+
+# Rows longer than this are summed in their stored order instead of ascending face order:
+# ``gather_vertex_quadrics`` finds each next face by a rescan of the row, quadratic in its length,
+# which a hub vertex (a cone apex with tens of thousands of faces) cannot afford.
+QUADRIC_ORDERED_ROW_MAX = wp.constant(64)
+
+
+@wp.func
+def next_row_face(
+    vertex_faces: wp.array[wp.int32], lo: wp.int32, hi: wp.int32, last: wp.int32
+) -> wp.int32:
+    # The smallest face of row ``[lo, hi)`` above ``last``, or ``INT32_MAX`` past the last one.
+    next_face = wp.int32(INT32_MAX_CONSTANT)
+    for j in range(lo, hi):
+        f = vertex_faces[j]
+        if f > last and f < next_face:
+            next_face = f
+    return next_face
+
+
+@wp.kernel
+def gather_vertex_quadrics(
+    face_quadrics: wp.array[SymmetricQuadric],
+    vertex_face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    boundary_quadrics: wp.array[SymmetricQuadric],
+    boundary_flags: wp.array[wp.int32],
+    out_quadrics: wp.array[SymmetricQuadric],
+) -> None:
+    # Each vertex's quadric: its faces' planes, summed by one thread over its vertex-face row in
+    # **ascending face order** -- the row itself is in atomic arrival order -- so the sum, and every
+    # cost and placement read from it, is the same run to run on every device (a row longer than
+    # ``QUADRIC_ORDERED_ROW_MAX`` is summed as stored), then the boundary planes
+    # ``count_pass_edges`` accumulated for it, whose entry is reset here for the next pass. A
+    # degenerate face that names ``v`` twice is visited once on an ordered row and twice on a
+    # stored one, which is the same sum: its plane is zero. The dummy vertex's row is empty, so its
+    # quadric is zero, as is every unreferenced vertex's.
+    v = wp.int32(wp.tid())
+    lo = vertex_face_offsets[v]
+    hi = vertex_face_offsets[v + 1]
+    ordered = hi - lo <= QUADRIC_ORDERED_ROW_MAX
+    q = SymmetricQuadric()
+    last = wp.int32(-1)
+    for j in range(lo, hi):
+        f = vertex_faces[j]
+        if ordered:
+            f = next_row_face(vertex_faces, lo, hi, last)
+            last = f
+        if f != INT32_MAX_CONSTANT:
+            q = q + face_quadrics[f]
+    if boundary_flags[v] != 0:
+        q = q + boundary_quadrics[v]
+        boundary_quadrics[v] = SymmetricQuadric()
+        boundary_flags[v] = 0
+    out_quadrics[v] = q
 
 
 @wp.kernel
@@ -3397,7 +3467,7 @@ def quadric_collapse_candidates(
     unique_edges: wp.array2d[wp.int32],
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    quadrics: wp.array[wp.mat44d],
+    quadrics: wp.array[SymmetricQuadric],
     feature_count: wp.array[wp.int32],
     edge_face_count: wp.array[wp.int32],
     offsets: wp.array[wp.int32],

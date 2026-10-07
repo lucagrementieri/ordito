@@ -1545,6 +1545,34 @@ def test_quadric_decimate_is_monotone_in_the_target(device: str) -> None:
     assert counts == sorted(counts, reverse=True)
 
 
+@pytest.mark.parametrize("target_ratio", [0.75, 0.5, 0.25])
+def test_quadric_decimate_is_reproducible(device: str, target_ratio: float) -> None:
+    """
+    Ordito against ordito: repeated runs on one input return byte-identical meshes.
+
+    The per-vertex quadrics are summed over each vertex's faces in ascending face order, not in the
+    arrival order of the incidence rows a pass builds with atomics, so every cost, every tie the
+    cost sort breaks and every placement is the same run to run on both devices. The graded height
+    field is the input that exposes an order-dependent sum: its flat outer region is full of
+    candidates whose costs differ only in their last bits, so a reordered float64 sum changes which
+    collapse a pass commits. Mutation probe: accumulating the face quadrics with atomics, as the
+    pass once did, gave a different mesh on every one of five CUDA runs at each of these ratios
+    (and the same mesh five times at 0.1, which is why 0.1 is not one of them).
+
+    **Bug class excluded:** an order-dependent floating-point reduction in the pass.
+    """
+    vertices_np, faces_np = _graded_height_field(65)
+    vertices_wp, faces_wp = numpy_to_warp(vertices_np, faces_np, device)
+    outputs = []
+    for _ in range(3):
+        out_vertices_wp, out_faces_wp = od.remesh.quadric_decimate(
+            vertices_wp, faces_wp, target_ratio=target_ratio
+        )
+        outputs.append((out_vertices_wp.numpy().tobytes(), out_faces_wp.numpy().tobytes()))
+    assert len(outputs[0][1]) > 0
+    assert outputs[1:] == outputs[:-1]
+
+
 def test_quadric_decimate_reaches_its_target_and_floors_on_feature_angle(device: str) -> None:
     """
     Not a library comparison: no reference exposes ``feature_angle``'s effect on the floor.
