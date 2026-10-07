@@ -1,0 +1,6 @@
+faces: 70416 -> 67730
+components: 43 -> 1
+holes: 13 -> 0
+winding consistent: False -> True
+watertight: False -> True
+volume: 0.000651 -> 0.000752

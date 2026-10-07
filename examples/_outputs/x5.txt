@@ -1,0 +1,2 @@
+grown: 3393 vertices, shrunk: 1735
+extracted patch: 3237 faces

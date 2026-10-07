@@ -1,0 +1,2 @@
+components: 4 -> 1
+bridge triangles: 6

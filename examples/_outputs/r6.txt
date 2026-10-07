@@ -1,0 +1,6 @@
+input: 412 negative half-cotangents
+flip_to_delaunay: 24 negative half-cotangents
+intrinsic_delaunay: 23 negative half-cotangents
+230 intrinsic flips
+cotmatrix: 410 negative off-diagonal entries
+robust_laplacian: 8 negative off-diagonal entries

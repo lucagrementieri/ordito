@@ -1,0 +1,2 @@
+cropped mesh: 21705 of 69451 faces
+cropped cloud: 11169 of 30000 points

@@ -1,0 +1,2 @@
+largest inscribed ball: radius 0.0412, median 0.0148
+62492 of 69451 balls above a tenth of the largest

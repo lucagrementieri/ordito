@@ -1,0 +1,2 @@
+recovered scale 1.6001 (true 1.6)
+rms residual 0.00087, jitter 0.00087

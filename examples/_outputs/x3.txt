@@ -1,0 +1,2 @@
+clipped disk: 14163 faces
+split mesh: 14163 faces inside, 70625 in all

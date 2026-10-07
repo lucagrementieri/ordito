@@ -1,0 +1,5 @@
+cotmatrix carried through the rotation: True
+ original: volume 7.549e-04
+  rotated: volume 7.549e-04
+ mirrored: volume 7.549e-04
+ inverted: volume -7.549e-04

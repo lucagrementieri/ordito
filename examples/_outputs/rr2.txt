@@ -1,0 +1,2 @@
+58599 triangles over 30000 points
+53 boundary loops left open

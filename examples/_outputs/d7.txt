@@ -1,0 +1,2 @@
+height: 25 curves over 20 levels
+distance: 31 curves over 20 levels

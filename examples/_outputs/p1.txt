@@ -1,0 +1,4 @@
+   Tutte: 0 flipped triangles
+Harmonic: 0 flipped triangles
+    LSCM: 0 flipped triangles
+    ARAP: 0 flipped triangles

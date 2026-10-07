@@ -1,0 +1,2 @@
+69451 face gradients
+|grad f| from 0.33 to 84.8

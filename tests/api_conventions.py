@@ -144,6 +144,7 @@ _EXTRA_TEST_FILES = frozenset(
         "array_indexing_probe",  # ditto: Python-scope gather semantics, section 3.4
         "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
+        "examples",  # covers the examples/ gallery package (pages in step with code), not ordito
     }
 )
 _EXTRA_BENCHMARK_FILES = frozenset({"meshes"})  # mesh-fixture invariants, nothing timed

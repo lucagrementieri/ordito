@@ -1,0 +1,3 @@
+self-intersecting faces: 325 of 9216
+local: 10122 faces, 0 still intersecting
+voxel: 54484 faces, 0 still intersecting

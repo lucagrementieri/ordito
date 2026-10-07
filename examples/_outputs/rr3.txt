@@ -1,0 +1,2 @@
+local triangulation: 59903 faces, 8 holes
+resampled: 74560 faces, watertight True

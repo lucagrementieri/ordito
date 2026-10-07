@@ -1,0 +1,2 @@
+smoothed vs original: -0.00278 to 0.00263
+clearance 0.02464 between faces 16023 and 54012

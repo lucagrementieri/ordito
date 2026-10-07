@@ -1,0 +1,4 @@
+  bunny scan:  69451 faces, 1 bodies, Euler -3, 5 boundary loops, watertight False
+ solid bunny:  69658 faces, 1 bodies, Euler  2, 0 boundary loops, watertight True
+Möbius strip:  12482 faces, 1 bodies, Euler  0, 1 boundary loops, watertight False
+  broken box:     25 faces, 3 bodies, Euler  3, 0 boundary loops, watertight False

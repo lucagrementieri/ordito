@@ -1,0 +1,2 @@
+cad_part: 720 edges, 248 sharper than 30° (176 convex, 72 concave), 0 on the boundary
+bunny: 104288 edges, 550 sharper than 40° (331 convex, 219 concave), 223 on the boundary

@@ -1,0 +1,2 @@
+437645 vertices, ball radius 0.00181
+median |mean curvature measure| 0.000791

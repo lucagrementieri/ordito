@@ -1,0 +1,3 @@
+statistical: flags 657, of which 657 strays
+     radius: flags 765, of which 765 strays
+ LoOP > 0.8: flags 402, of which 402 strays

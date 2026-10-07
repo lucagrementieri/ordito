@@ -1,0 +1,5 @@
+from the ear       : farthest point at 0.2396
+from the nose      : farthest point at 0.2115
+from the tail      : farthest point at 0.2409
+from the front foot: farthest point at 0.2201
+vector bundle reuses the scalar one: True

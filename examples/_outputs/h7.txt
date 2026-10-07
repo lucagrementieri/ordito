@@ -1,0 +1,4 @@
+non-manifold vertices: 3
+faces on a non-manifold edge: 3
+removed: 22 faces, 15 vertices, manifold: False
+split: 25 faces, 19 vertices, manifold: True

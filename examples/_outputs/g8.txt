@@ -1,0 +1,2 @@
+torus: 2 loops, length 10.79 -> 8.04 (65 sweeps)
+handles: 18 loops, length 485.80 -> 451.22 (11 sweeps)

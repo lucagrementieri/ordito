@@ -1,0 +1,4 @@
+          Laplacian: volume x 0.904
+           Humphrey: volume x 1.003
+ Relax, keep volume: volume x 1.005
+Mut. dif. Laplacian: volume x 1.000

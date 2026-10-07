@@ -1,0 +1,2 @@
+27005 of 110592 grid points are inside
+3000 samples on a surface of area 0.0582

@@ -1,0 +1,3 @@
+1104 points certified on the hull (subset)
+6340 points that may be on it (superset), of 30000
+9513 points above the plane

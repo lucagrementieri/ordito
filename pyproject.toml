@@ -322,7 +322,7 @@ exclude = [
     # ordito/kernels/ is inherently un-typecheckable. Excluded wholesale.
     "ordito/kernels",
 ]
-include = ["benchmarks", "tests", "ordito"]
+include = ["benchmarks", "examples", "tests", "ordito"]
 pythonVersion = "3.11"
 # Test-only stubs for reference libraries that ship none a checker can read (pymeshlab).
 stubPath = "tests/typings"
@@ -350,6 +350,11 @@ root = "tests"
 extraPaths = ["."]
 reportMissingTypeStubs = "none"
 root = "benchmarks"
+
+[[tool.basedpyright.executionEnvironments]]
+extraPaths = ["."]
+reportMissingTypeStubs = "none"
+root = "examples"
 
 [[tool.basedpyright.executionEnvironments]]
 root = "."

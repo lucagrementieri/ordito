@@ -1,0 +1,4 @@
+winding consistent: False
+faces to flip: 55574 of 69451
+consistent: signed volume -0.000770
+outward: signed volume +0.000770

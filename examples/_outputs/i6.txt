@@ -1,0 +1,1 @@
+area- and angle-weighted vertex normals differ by up to 41.9 degrees

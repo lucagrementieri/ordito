@@ -1,0 +1,3 @@
+   random: mean cosine between neighbours -0.001
+ t = 1e-3: mean cosine between neighbours 0.975
+ t = 1e-2: mean cosine between neighbours 0.982

@@ -1,0 +1,3 @@
+point-to-point: median distance to the target 0.00259
+point-to-plane: median distance to the target 0.00084
+point-to-plane recovered a rotation of 15.1 degrees

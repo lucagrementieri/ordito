@@ -1,0 +1,2 @@
+box: 489940 faces, watertight False
+ball: 328380 faces, watertight True

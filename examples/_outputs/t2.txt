@@ -1,0 +1,3 @@
+6 bodies, volume 1.350
+recombined: 5036 faces in 6 bodies
+upper half: 918 faces in 4 bodies

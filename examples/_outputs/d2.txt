@@ -1,0 +1,2 @@
+k_max >= k_min at every vertex: True
+median curvatures: k_max 45.5, k_min 1.3

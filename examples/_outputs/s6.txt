@@ -1,0 +1,4 @@
+     scan: triangle area spread (std / mean) 0.249
+equalized: triangle area spread (std / mean) 0.161
+    noisy: mean distance from the clean scan 3.50e-04
+  relaxed: mean distance from the clean scan 1.82e-04

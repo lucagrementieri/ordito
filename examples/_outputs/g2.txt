@@ -1,0 +1,2 @@
+ear -> tail: 0.2362 along edges, 0.2251 across faces
+chin -> tail: 0.2137 along edges, 0.2018 across faces

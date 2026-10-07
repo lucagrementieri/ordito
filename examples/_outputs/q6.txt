@@ -1,0 +1,2 @@
+k nearest: farthest neighbour at [0.0147 0.0151 0.0151 0.0162 0.0134]
+ball of radius 0.012: counts [255, 243, 231, 245, 327]

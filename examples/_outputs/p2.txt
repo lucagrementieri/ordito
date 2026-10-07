@@ -1,0 +1,2 @@
+2 loops, 177 cut edges; the cut mesh has 1 boundary loop
+seams found from the UV chart: 177 edges
