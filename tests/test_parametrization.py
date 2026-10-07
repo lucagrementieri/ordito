@@ -7,11 +7,19 @@ import igl
 import numpy as np
 import pytest
 import scipy.sparse
+import scipy.sparse.linalg
 import trimesh as tm
 import warp as wp
 
 import ordito as od
-from tests.conversions import mesh_igl, numpy_to_warp_uv, points_to_warp_uv, warp_empty
+from benchmarks.meshes import BUILDERS
+from tests.conversions import (
+    mesh_igl,
+    numpy_to_warp,
+    numpy_to_warp_uv,
+    points_to_warp_uv,
+    warp_empty,
+)
 
 
 def _face_flipped_indices_np(vertices_np: np.ndarray, faces_np: np.ndarray) -> np.ndarray:
@@ -198,22 +206,20 @@ def test_harmonic_matches_igl(request: pytest.FixtureRequest, mesh_name: str):
     assert np.allclose(uv_wp.numpy(), uv_igl, rtol=1e-4, atol=1e-4)
 
 
-@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
-def test_biharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name: str):
-    # k=2 (biharmonic). igl.harmonic's default mass is Voronoi, but ordito uses the barycentric
-    # lumped mass, so compare against a barycentric-mass biharmonic solved directly in SciPy.
-    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    vertices_np, faces_np = mesh_igl(mesh_tm)
-    n_vertices = mesh_wp.points.size
+def _polyharmonic_reference(
+    vertices_np: np.ndarray,
+    faces_np: np.ndarray,
+    boundary_np: np.ndarray,
+    boundary_uv_np: np.ndarray,
+    k: int,
+) -> np.ndarray:
+    """
+    ``harmonic(k)`` solved directly in SciPy over igl's cotangent and barycentric mass matrices.
 
-    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
-    boundary_np = boundary_wp.numpy().astype(np.int64)
-    boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
-
-    uv_wp = od.parametrization.harmonic(
-        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=2
-    )
-
+    ``Q = -L (M^-1 (-L))^(k - 1)``, the interior block factored by ``spsolve``. igl.harmonic's own
+    default mass is Voronoi, where ordito uses the barycentric lumped mass, so the reference is
+    assembled here rather than taken from ``igl.harmonic`` at ``k > 1``.
+    """
     laplacian = igl.cotmatrix(vertices_np, faces_np)
     mass_inv = scipy.sparse.diags(
         1.0
@@ -221,18 +227,77 @@ def test_biharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name:
             igl.massmatrix(vertices_np, faces_np, igl.MASSMATRIX_TYPE_BARYCENTRIC).diagonal()
         )
     )
+    product = -laplacian
+    for _ in range(k - 1):
+        product = product @ mass_inv @ (-laplacian)
     # scipy-stubs type the product as ``_spbase | ArrayND``, neither of which it gives ``tocsc``.
-    biharmonic = ((-laplacian) @ mass_inv @ (-laplacian)).tocsc()  # pyright: ignore[reportAttributeAccessIssue]
+    operator = scipy.sparse.csr_matrix(product)
+    n_vertices = vertices_np.shape[0]
     interior = np.setdiff1d(np.arange(n_vertices), boundary_np)
     solution = scipy.sparse.linalg.spsolve(
-        biharmonic[np.ix_(interior, interior)],
-        -(biharmonic[np.ix_(interior, boundary_np)] @ boundary_uv_np),
+        operator[interior][:, interior].tocsc(),
+        -(operator[interior][:, boundary_np] @ boundary_uv_np),
     )
     uv_ref = np.zeros((n_vertices, 2))
     uv_ref[boundary_np] = boundary_uv_np
     uv_ref[interior] = solution
+    return uv_ref
+
+
+@pytest.mark.parametrize("k", [2, 3])
+@pytest.mark.parametrize("mesh_name", ["hemisphere", "half_torus"])
+def test_polyharmonic_matches_reference(request: pytest.FixtureRequest, mesh_name: str, k: int):
+    """
+    Class B: igl's operators with the barycentric mass, solved directly, at ``1e-4``.
+
+    The named transform is the mass: igl.harmonic's default is Voronoi. ``k == 3`` is solved by a
+    factorization; its conjugate gradient used to stop at its tolerance 1e-5 to 1e-2 of the range
+    away from the answer on these fixtures.
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np, faces_np = mesh_igl(mesh_tm)
+
+    boundary_wp, boundary_uv_wp = _circle_boundary(mesh_wp)
+    boundary_np = boundary_wp.numpy().astype(np.int64)
+    boundary_uv_np = boundary_uv_wp.numpy().astype(np.float64)
+
+    uv_wp = od.parametrization.harmonic(
+        mesh_wp.points, mesh_wp.indices, boundary_wp, boundary_uv_wp, k=k
+    )
+    uv_ref = _polyharmonic_reference(vertices_np, faces_np, boundary_np, boundary_uv_np, k)
 
     assert np.allclose(uv_wp.numpy(), uv_ref, rtol=1e-4, atol=1e-4)
+
+
+def test_biharmonic_on_a_graded_patch_matches_a_direct_solve(device: str):
+    """
+    Class B against ``_polyharmonic_reference`` on the graded saddle, at 7 % of the UV range.
+
+    The graded patch's biharmonic system has a condition number near 1e17, past what conjugate
+    gradient reaches in ``float64``: it stalled at a 3 % residual for its whole iteration cap and
+    returned a map 0.54 of the range away, with no warning. The solve is verified now and falls
+    back to a factorization. The bar is the system's own ambiguity: direct solves under four
+    SuperLU orderings disagree with each other by 0.6 to 2.2 % of the range (ordito sits 1.4 % from
+    the default one), all with backward errors below 1e-8.
+    """
+    vertices_np, faces_np = BUILDERS["saddle_graded"]()
+    vertices_wp, faces_wp = numpy_to_warp(
+        np.asarray(vertices_np), np.asarray(faces_np, dtype=np.int32).ravel(), device
+    )
+    boundary_wp = od.boundary.longest_boundary_loop(vertices_wp, faces_wp)
+    boundary_uv_wp = od.parametrization.map_vertices_to_circle(vertices_wp, boundary_wp)
+
+    uv_wp = od.parametrization.harmonic(vertices_wp, faces_wp, boundary_wp, boundary_uv_wp, k=2)
+    uv_ref = _polyharmonic_reference(
+        vertices_wp.numpy().astype(np.float64),
+        np.asarray(faces_np, dtype=np.int64),
+        boundary_wp.numpy().astype(np.int64),
+        boundary_uv_wp.numpy().astype(np.float64),
+        2,
+    )
+
+    assert np.ptp(uv_ref) > 1.0
+    assert np.abs(uv_wp.numpy() - uv_ref).max() < 0.07 * np.ptp(uv_ref)
 
 
 def test_biharmonic_is_deterministic(hemisphere: tuple[tm.Trimesh, wp.Mesh]):

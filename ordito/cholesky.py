@@ -62,6 +62,18 @@ _SINGULAR_ROW_SUM = 1e-10
 _INT32_MAX = 2**31 - 1
 
 
+class NotPositiveDefiniteError(ValueError):
+    """
+    The operator met a pivot that is not positive: it is not definite, at least in ``float64``.
+
+    Raised by [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] and
+    [`SparseCholesky.refactor`][ordito.cholesky.SparseCholesky.refactor]; a ``ValueError``, so a
+    caller catching that sees it too. Distinct from the operator being too large to factor, which
+    an iteration may still solve: a symmetric operator this cannot factor either way round is past
+    what conjugate gradient converges on as well.
+    """
+
+
 class SparseCholesky:
     """
     A sparse Cholesky factorization on the device.
@@ -104,7 +116,7 @@ class SparseCholesky:
 
         Raises
         ------
-        ValueError
+        NotPositiveDefiniteError
             If the operator is not positive definite on its non-singular components (a pivot that
             is not positive).
         RuntimeError
@@ -114,7 +126,7 @@ class SparseCholesky:
         plan = self._plan
         plan.factor(matrix, self._numeric, -1.0 if self.negated else 1.0)
         if read_scalar(self._numeric.status, 0) != 0:
-            raise ValueError("sparse_cholesky: the operator is not positive definite")
+            raise NotPositiveDefiniteError("sparse_cholesky: the operator is not positive definite")
         self._matrix = matrix
         for solve in self._solves.values():
             solve.matrix = matrix
@@ -190,8 +202,9 @@ def sparse_cholesky(
     Orders the operator by nested dissection, factors it on the device and returns the
     factorization, whose [`solve`][ordito.cholesky.SparseCholesky.solve] answers any later
     right-hand side in a fixed number of device passes. The ordering and the symbolic analysis run
-    on the device too, reading back a few small counts per level of the dissection; an analysis
-    is kept per sparsity pattern, so a later operator of the same pattern skips it.
+    on the device too, reading back a few small counts per level of the dissection. The analysis
+    belongs to the returned factorization: [`refactor`][ordito.cholesky.SparseCholesky.refactor]
+    reuses it for another operator of the same pattern, and nothing is kept across calls.
 
     Parameters
     ----------
@@ -213,10 +226,11 @@ def sparse_cholesky(
     Raises
     ------
     ValueError
-        If ``matrix`` is not square scalar ``float64``, ``coordinates`` does not have ``n`` rows,
+        If ``matrix`` is not square scalar ``float64``, ``coordinates`` does not have ``n`` rows, or
         the factorization would exceed
-        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or the operator is not
-        positive definite.
+        [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET].
+    NotPositiveDefiniteError
+        If the operator is not positive definite.
     RuntimeError
         If ``matrix`` and ``coordinates`` are not on one device.
 

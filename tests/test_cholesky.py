@@ -148,7 +148,7 @@ def test_sparse_cholesky_rejects_an_indefinite_operator(
 ) -> None:
     _, mesh_wp = icosahedron
     negated = scipy_to_bsr(-bsr_to_csr(_heat_system(mesh_wp)), device)
-    with pytest.raises(ValueError, match="not positive definite"):
+    with pytest.raises(od.cholesky.NotPositiveDefiniteError, match="not positive definite"):
         od.cholesky.sparse_cholesky(negated, mesh_wp.points)
 
 

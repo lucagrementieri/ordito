@@ -188,6 +188,87 @@ def test_min_quad_with_fixed_matches_pymeshlab_harmonic_field(
     assert np.allclose(field_wp, field_igl, rtol=1e-5, atol=1e-5)
 
 
+def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count ``sparse_cholesky`` calls ``ordito.linalg`` makes: one list entry per factorization."""
+    calls: list[int] = []
+    original = od.linalg.sparse_cholesky
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "sparse_cholesky", counted)
+    return calls
+
+
+def _pinned_grid(device: str) -> tuple[Any, ...]:
+    """Return a 24 x 24 grid Laplacian with its border pinned, and the dense interior solution."""
+    matrix_wp, values_wp, dense_np, values_np = _grid_laplacian_system(device, n_rhs=2)
+    k = 24
+    fixed_np = np.zeros((k, k), dtype=bool)
+    fixed_np[[0, -1], :] = True
+    fixed_np[:, [0, -1]] = True
+    fixed_np = fixed_np.ravel()
+    free_np, pinned_np = np.flatnonzero(~fixed_np), np.flatnonzero(fixed_np)
+    expected_np = np.linalg.solve(
+        dense_np[np.ix_(free_np, free_np)],
+        -(dense_np[np.ix_(free_np, pinned_np)] @ values_np[:, pinned_np].T),
+    ).T
+    fixed_wp = wp.array(fixed_np, dtype=wp.bool, device=device)
+    return matrix_wp, fixed_wp, values_wp, expected_np
+
+
+@pytest.mark.parametrize("solver", ["iterative", "direct"])
+def test_min_quad_with_fixed_solvers_agree(
+    device: str, solver: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve`` of the dense interior block, for both solvers.
+
+    ``"iterative"`` converges inside its budget and factors nothing; ``"direct"`` factors once and
+    runs no conjugate gradient at all.
+    """
+    matrix_wp, fixed_wp, values_wp, expected_np = _pinned_grid(device)
+    factorizations = _count_factorizations(monkeypatch)
+    if solver == "direct":
+
+        def refuse(*_args: object, **_kwargs: object) -> None:
+            raise AssertionError("a direct solve reached the conjugate gradient")
+
+        monkeypatch.setattr(od.linalg, "_cg_columns", refuse)
+    solution_wp, _, _ = od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp, solver=solver)
+    assert len(factorizations) == (1 if solver == "direct" else 0)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+
+
+def test_min_quad_with_fixed_factors_a_solve_that_misses_its_budget(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: an iteration out of budget falls back to a factor.
+
+    A two-round budget cannot converge on the grid, so the verification rejects the iterate and
+    the factorization answers -- to ``1e-9``, which no two-round iterate is within.
+    """
+    matrix_wp, fixed_wp, values_wp, expected_np = _pinned_grid(device)
+    monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_ROUNDS", 2)
+    factorizations = _count_factorizations(monkeypatch)
+    solution_wp, _, _ = od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp)
+    assert len(factorizations) == 1
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-9, atol=1e-9)
+
+
+def test_min_quad_with_fixed_rejects_off_menu_choices(device: str) -> None:
+    """Off-menu ``solver`` and ``preconditioner`` raise, the latter under the direct solver too."""
+    matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
+    with pytest.raises(ValueError, match="unknown solver 'cholesky'"):
+        od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp, solver="cholesky")
+    with pytest.raises(ValueError, match="unknown preconditioner 'jacobi'"):
+        od.linalg.min_quad_with_fixed(
+            matrix_wp, fixed_wp, values_wp, solver="direct", preconditioner="jacobi"
+        )
+
+
 # --- free_partition / assemble_interior_system ---------------------------------------------
 
 
@@ -213,6 +294,26 @@ def test_free_partition_ranks_the_unpinned_degrees_of_freedom(device: str) -> No
     # Only the free entries carry meaning, which is what the docstring promises; the pinned slots
     # hold whatever the compaction left there.
     assert np.array_equal(free_map_wp.numpy()[free_np], np.arange(n_free, dtype=np.int32))
+
+
+@pytest.mark.parametrize("n_points", [12, 4])
+def test_free_coordinates_places_each_free_row_at_its_point(device: str, n_points: int) -> None:
+    """
+    Class A, against a NumPy gather: free row ``r`` sits at point ``dof mod n_points``.
+
+    ``n_points = 4`` is the stacked case (three components per point), ``12`` one point a row.
+    """
+    _matrix_wp, fixed_wp, _values_wp, _dense_np, _rhs_np, fixed_np = _pinned_system(device)
+    free_map_wp, n_free = od.linalg.free_partition(fixed_wp)
+    points_np = np.random.default_rng(4).standard_normal((n_points, 3)).astype(np.float32)
+    points_wp = wp.array(points_np, dtype=wp.vec3, device=device)
+
+    placed_wp = od.linalg.free_coordinates(points_wp, fixed_wp, free_map_wp, n_free)
+
+    assert placed_wp is not None
+    expected_np = points_np[np.flatnonzero(~fixed_np) % n_points]
+    assert np.array_equal(placed_wp.numpy(), expected_np)
+    assert od.linalg.free_coordinates(None, fixed_wp, free_map_wp, n_free) is None
 
 
 def test_assemble_interior_system_matches_a_numpy_partition(device: str) -> None:
@@ -553,6 +654,96 @@ def test_solve_spd_columns_keeps_nothing_between_calls(device: str) -> None:
         assert iterations > 0
         expected_np = np.linalg.solve(dense_np, rhs_np.T).T
         assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+@pytest.mark.parametrize("budget", [None, 2])
+def test_solve_spd_columns_verified_solve_factors_only_when_it_must(
+    device: str, budget: int | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: the factorization is built exactly when needed.
+
+    Under the default budget the iteration converges, passes its verification and leaves the
+    caller's ``OperatorFactorization`` empty; under a two-round budget it is rejected, factored
+    into it and solved there. A held factorization then answers the next solve with no iteration.
+    """
+    if budget is not None:
+        monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_ROUNDS", budget)
+    matrix_wp, rhs_wp, dense_np, rhs_np = _grid_laplacian_system(device)
+    expected_np = np.linalg.solve(dense_np, rhs_np.T).T
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    iterations, _, _ = od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, solution_wp, tol=1e-10, check_every=1, factorization=held
+    )
+    assert (held.factorization is not None) == (budget is not None)
+    assert (iterations == 0) == (budget is not None)
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+
+    assert held.factor()
+    solution_wp.zero_()
+    iterations, _, _ = od.linalg.solve_spd_columns(
+        matrix_wp, rhs_wp, solution_wp, tol=1e-10, check_every=1, factorization=held
+    )
+    assert iterations == 0
+    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-8, atol=1e-8)
+
+
+def test_solve_spd_columns_warns_when_no_verified_solution_exists(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unconverged iterate whose operator cannot be factored warns, at ``check_every=0`` too."""
+    matrix_wp, rhs_wp, _, _ = _grid_laplacian_system(device)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    monkeypatch.setattr(held, "factor", lambda: False)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    with pytest.warns(UserWarning, match="cannot be factored"):
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, maxiter=4, check_every=0, factorization=held
+        )
+
+
+def test_solve_spd_columns_does_not_iterate_on_past_an_indefinite_operator(
+    device: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    An operator indefinite either way round is refused at once: the budget, then a warning.
+
+    Only an operator too large to factor keeps iterating to the full cap; this one, with both
+    signs on its diagonal, is past what conjugate gradient converges on, so the solve runs its
+    budget once and warns rather than spending the remaining ``maxiter``.
+    """
+    n = 64
+    signs_np = np.where(np.arange(n) % 2 == 0, 1.0, -1.0)
+    laplacian_np = 2.0 * np.eye(n) - np.eye(n, k=1) - np.eye(n, k=-1)
+    matrix_wp = scipy_to_bsr(sp.coo_matrix(laplacian_np + 3.0 * np.diag(signs_np)), device)
+    rhs_wp = odt.as_array2d(wp.ones((1, n), dtype=wp.float64, device=device), wp.float64)
+    solution_wp = odt.as_array2d(wp.zeros((1, n), dtype=wp.float64, device=device), wp.float64)
+    monkeypatch.setattr(od.linalg, "CG_FACTOR_AFTER_ROUNDS", 4)
+    runs: list[int] = []
+    original = od.linalg._cg_columns
+
+    def counted(*args: Any, **kwargs: Any) -> Any:
+        runs.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(od.linalg, "_cg_columns", counted)
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    with pytest.warns(UserWarning, match="cannot be factored"):
+        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, factorization=held)
+    assert held.factorization is None
+    assert len(runs) == 1
+
+
+def test_solve_spd_columns_rejects_another_operators_factorization(device: str) -> None:
+    """A factorization is matched to its operator by identity, as in ``solve_spd_settled``."""
+    matrix_wp, rhs_wp, _, _ = _grid_laplacian_system(device)
+    other_wp, _, _, _ = _grid_laplacian_system(device)
+    solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
+    with pytest.raises(ValueError, match="another operator"):
+        od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, factorization=od.linalg.OperatorFactorization(other_wp)
+        )
 
 
 def test_solve_spd_settled_solves_by_a_held_factorization(device: str) -> None:

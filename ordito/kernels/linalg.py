@@ -223,6 +223,35 @@ def interior_system_csr(
             slot += 1
 
 
+@wp.kernel
+def free_coordinates(
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    coordinates: wp.array[wp.vec3],
+    out_coordinates: wp.array[wp.vec3],
+) -> None:
+    # The reduced system's row positions, for its factorization's geometric ordering: degree of
+    # freedom ``i`` sits at point ``i mod n_points``, so stacked components (``lscm``'s ``[u; v]``)
+    # share their vertex's position with no stacked copy of the coordinates.
+    i = wp.int32(wp.tid())
+    ri = free_row(fixed_mask, free_map, i)
+    if ri < 0:
+        return
+    out_coordinates[ri] = coordinates[i % coordinates.shape[0]]
+
+
+@wp.kernel
+def flag_unconverged_columns(
+    residual: wp.array[wp.float64], threshold: wp.array[wp.float64], out_flag: wp.array[wp.int32]
+) -> None:
+    # A conjugate-gradient result's verdict, on the device: a column whose last residual is above
+    # its threshold did not converge. Writes into the flag the backward-error test shares, so one
+    # four-byte read answers both.
+    column = wp.int32(wp.tid())
+    if residual[column] > threshold[column]:
+        out_flag[0] = 1
+
+
 @wp.func
 def csr_row_diagonal(
     offsets: wp.array[wp.int32],

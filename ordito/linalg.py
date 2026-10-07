@@ -76,15 +76,15 @@ exactly where the solve it replaces is long enough to amortize that setup and lo
 well-conditioned or already-fast-converging system. See
 [`CG_MULTIGRID_DOMINANCE`][ordito.linalg.CG_MULTIGRID_DOMINANCE] for how the gate decides.
 
-A GPU sparse direct solver (cuDSS through ``nvmath-python`` and CuPy) was considered and declined
-for the same reason the multilevel preconditioner is gated: its cost is a host-side symbolic
-factorization plan, flat regardless of conditioning, so it wins exactly on the systems the multigrid
-gate already routes to a hierarchy and loses everywhere CG converges quickly. It would also add an
-optional CUDA-only dependency, and a direct solver is singular on the empty rows CG tolerates
-(unreferenced free vertices, which a caller would have to pin and restore). Reusing a factorization
-plan across solves of one sparsity pattern is comparatively cheap, so a caller that resolves the
-same operator repeatedly (as ``arap`` already does with its own preconditioner) is the shape that
-would benefit.
+**A direct factorization** is the other half of the module, through
+[`sparse_cholesky`][ordito.cholesky.sparse_cholesky]: its cost is a symbolic analysis and a numeric
+factorization, flat regardless of conditioning, so it loses to the iteration where conjugate
+gradient converges quickly and wins where it does not, or where one operator is solved many times.
+A caller keeps one in an [`OperatorFactorization`][ordito.linalg.OperatorFactorization], and the
+verified solves -- [`solve_spd_columns`][ordito.linalg.solve_spd_columns] given one,
+[`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] always,
+[`solve_spd_settled`][ordito.linalg.solve_spd_settled] -- buy it exactly when the iteration's result
+fails its check. Nothing in this module keeps a factorization across calls on its own.
 
 Nothing cheap predicts in advance which side of the multigrid-versus-Jacobi line a system falls on,
 which is why ``preconditioner="auto"`` uses a capped Jacobi probe rather than a heuristic predictor
@@ -99,18 +99,19 @@ is conditioning: only a system whose off-diagonal dominance clears
 Laplacian (``tutte``, ``min_quad_with_fixed`` on a raw cotangent matrix) and ``lscm``'s coupled u/v
 system sit below that bar and a forced hierarchy regresses them, where a *squared* operator
 (``harmonic`` at ``k >= 3``) sits comfortably above it. So
-[`harmonic`][ordito.parametrization.harmonic] passes ``"auto"`` at ``k >= 3``, and
+[`harmonic`][ordito.parametrization.harmonic] passes ``"auto"`` at ``k >= 3`` for the iteration it
+falls back to when the system cannot be factored (it factors first there), and
 [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] defaults to ``"adaptive"``. At ``k = 2``
 the operator is ``L M^-1 L``, which
 [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner] inverts as the
 square of a Laplacian, and ``harmonic`` takes that instead.
 
-!!! warning "``harmonic`` at ``k=2`` on a strongly graded patch may not converge under Jacobi"
-    A ``k=2`` biharmonic operator on a strongly graded patch can be outside what
-    Jacobi-preconditioned conjugate gradient reaches in ``float64`` at all: the iteration can hit
-    its cap and return a residual several orders of magnitude above the requested tolerance, with
-    nothing but a ``UserWarning`` to say so, producing a visibly wrong UV map. A caller who needs
-    that combination should pass a stronger preconditioner and check the warning.
+A ``k=2`` biharmonic operator on a strongly graded patch is outside what any preconditioned
+conjugate gradient reaches in ``float64``: its condition number nears the reciprocal of the unit
+round-off, and the iteration stalls at a residual of a few percent. That is the case the verified
+solves exist for -- the stalled iterate fails its check after
+[`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds and the factorization
+answers.
 
 The heat system ``M - tL`` that [`heat_geodesic`][ordito.heat.heat_geodesic] solves needs no
 multilevel help of its own: it converges in a small, size-independent number of iterations, because
@@ -138,7 +139,7 @@ import ordito as od
 import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, require_same_device
-from ordito.cholesky import SparseCholesky, sparse_cholesky
+from ordito.cholesky import NotPositiveDefiniteError, SparseCholesky, sparse_cholesky
 from ordito.constants import TILE_1D
 from ordito.kernels import array as kernel_array
 from ordito.kernels import cholesky as kernel_cholesky
@@ -165,6 +166,21 @@ SETTLE_BACKWARD_ERROR = 1e-6
 
 # Componentwise backward error the direct fallback refines to.
 SETTLE_DIRECT_TOLERANCE = 1e-12
+
+# Rounds a solve holding a fallback factorization (``solve_spd_columns(factorization=...)``, which
+# every ``min_quad_with_fixed`` solve does) iterates before it stops and factors instead: the rent
+# of a rent-or-buy choice. A factorization of the reduced systems the parametrizations solve costs
+# about what 200-400 conjugate-gradient rounds do, and every well-posed solve measured converges
+# well inside the budget (18-855 rounds; ``lscm`` on a graded patch is the longest), so the budget
+# stops a solve that is not converging -- a biharmonic system with a condition number near 1e17
+# stalls at a few percent residual for its whole ``10 n`` cap -- long before the cap would.
+CG_FACTOR_AFTER_ROUNDS = 1000
+
+# The componentwise backward error ``|b - A x|_i / (|A| |x| + |b|)_i`` a verified solve's iterate
+# may carry anywhere -- or 100 times the solve's tolerance, if that is larger -- before the solve
+# falls back to its factorization. A converged iterate at a relative residual of ``1e-8`` sits at
+# 5e-9 to 2.2e-7 on the parametrizations' systems; one that is not the system's answer at 1e-2.
+VERIFIED_BACKWARD_ERROR = 1e-6
 
 # How often the conjugate-gradient loop tests the residual against the tolerance. ``0`` means
 # "every iteration, on device": ``warp.optim.linear`` then drives the loop with ``wp.capture_while``
@@ -301,6 +317,8 @@ def min_quad_with_fixed(
     tol: float = CG_TOLERANCE,
     check_every: int = CG_CHECK_EVERY,
     preconditioner: str = "adaptive",
+    solver: str = "iterative",
+    coordinates: wp.array[wp.vec3] | None = None,
 ) -> tuple[odt.Array2dFloat, wp.array[wp.int32], int]:
     """
     Minimize a quadratic form with pinned degrees of freedom.
@@ -310,6 +328,14 @@ def min_quad_with_fixed(
     parametrization solvers need: several *independent* columns over ``n_vertices`` unknowns
     (``harmonic`` / ``tutte``, one column per UV coordinate) and a single *coupled* column over
     ``2 * n_vertices`` unknowns (``lscm``).
+
+    The solve is verified: it runs as
+    [`solve_spd_columns`][ordito.linalg.solve_spd_columns] does with a ``factorization``, so a
+    conjugate-gradient result that has not converged within
+    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, or fails the
+    componentwise backward-error test, is replaced by a solve through a
+    [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] factorization of ``Q_uu``, built for the
+    call and dropped.
 
     Parameters
     ----------
@@ -333,6 +359,15 @@ def min_quad_with_fixed(
         to zero and which a V-cycle does not help, and whose solve is short when many degrees of
         freedom are pinned and long when few are -- the one case Jacobi wins and the other the
         polynomial does, with a probe to tell them apart.
+    solver
+        ``"iterative"`` (the default) runs the verified conjugate gradient above. ``"direct"``
+        factors ``Q_uu`` first and solves by the factorization, iterating (verified, to the full
+        cap) only when it cannot be factored: the choice for a system whose iteration is known to
+        be long or inaccurate, such as a ``k >= 3`` polyharmonic operator.
+    coordinates
+        ``(n_points,)`` positions for the factorization's geometric ordering, degree of freedom
+        ``i`` at point ``i mod n_points`` -- a mesh's vertices for a vertex operator, or for one
+        stacking per-vertex components as ``lscm`` does. ``None`` orders by the pattern alone.
 
     Returns
     -------
@@ -345,8 +380,19 @@ def min_quad_with_fixed(
 
     Raises
     ------
+    ValueError
+        If ``solver`` is not ``"iterative"`` or ``"direct"``, or ``preconditioner`` is not a name
+        [`solve_spd_columns`][ordito.linalg.solve_spd_columns] accepts.
     RuntimeError
-        If ``fixed_mask`` and ``fixed_values`` are not all on one device.
+        If ``fixed_mask``, ``fixed_values`` and ``coordinates`` are not all on one device.
+
+    Warns
+    -----
+    UserWarning
+        When neither the iteration nor a factorization reaches a verified solution: ``Q_uu`` is
+        over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET] or not definite in
+        ``float64``, and conjugate gradient fails to converge within ``CG_MAXITER_FACTOR * n_free``
+        iterations.
 
     Notes
     -----
@@ -363,25 +409,38 @@ def min_quad_with_fixed(
     [`assemble_interior_system`][ordito.linalg.assemble_interior_system]
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     """
-    require_same_device(fixed_mask=fixed_mask, fixed_values=fixed_values)
+    require_same_device(fixed_mask=fixed_mask, fixed_values=fixed_values, coordinates=coordinates)
+    if solver not in ("iterative", "direct"):
+        raise ValueError(
+            f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'
+        )
+    _require_preconditioner_name(preconditioner, "min_quad_with_fixed")
     device = fixed_mask.device
     n_rhs = int(fixed_values.shape[0])
     free_map, n_free = free_partition(fixed_mask)
 
-    solution = _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device)
+    solution = odt.as_array2d(
+        _launch.zeros((n_rhs, n_free), dtype=wp.float64, device=device), wp.float64
+    )
     if n_free == 0:
-        return odt.as_array2d(solution, wp.float64), free_map, n_free
+        return solution, free_map, n_free
 
     q_uu, rhs = assemble_interior_system(q, fixed_mask, free_map, fixed_values, n_free)
+    factorization = OperatorFactorization(
+        q_uu, free_coordinates(coordinates, fixed_mask, free_map, n_free)
+    )
+    if solver == "direct":
+        factorization.factor()
     solve_spd_columns(
         q_uu,
         rhs,
-        odt.as_array2d(solution, wp.float64),
+        solution,
         tol=tol,
         check_every=check_every,
         preconditioner=preconditioner,
+        factorization=factorization,
     )
-    return odt.as_array2d(solution, wp.float64), free_map, n_free
+    return solution, free_map, n_free
 
 
 def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], int]:
@@ -410,6 +469,58 @@ def free_partition(fixed_mask: wp.array[wp.bool]) -> tuple[wp.array[wp.int32], i
     [`mask_to_compact_ranks`][ordito.array.mask_to_compact_ranks]
     """
     return od.array.mask_to_compact_ranks(fixed_mask, invert=True)
+
+
+def free_coordinates(
+    coordinates: wp.array[wp.vec3] | None,
+    fixed_mask: wp.array[wp.bool],
+    free_map: wp.array[wp.int32],
+    n_free: int,
+) -> wp.array[wp.vec3] | None:
+    """
+    Positions of the reduced system's rows, for its factorization's ordering.
+
+    Parameters
+    ----------
+    coordinates
+        ``(n_points,)`` positions, degree of freedom ``i`` at point ``i mod n_points``: a mesh's
+        vertices, for a vertex operator or one stacking per-vertex components. ``None`` passes
+        through.
+    fixed_mask
+        ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
+    free_map
+        ``(n_dofs,)`` compact remap from [`free_partition`][ordito.linalg.free_partition].
+    n_free
+        Number of unpinned degrees of freedom.
+
+    Returns
+    -------
+    wp.array[wp.vec3] | None
+        ``(n_free,)`` position of each free degree of freedom, or ``None`` for ``None``.
+
+    Raises
+    ------
+    RuntimeError
+        If ``coordinates``, ``fixed_mask`` and ``free_map`` are not all on one device.
+
+    See Also
+    --------
+    [`OperatorFactorization`][ordito.linalg.OperatorFactorization]
+    [`free_partition`][ordito.linalg.free_partition]
+    """
+    require_same_device(coordinates=coordinates, fixed_mask=fixed_mask, free_map=free_map)
+    if coordinates is None or coordinates.size == 0:
+        return None
+    device = fixed_mask.device
+    out = _launch.empty(n_free, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel_linalg.free_coordinates,
+        dim=fixed_mask.size,
+        inputs=[fixed_mask, free_map, coordinates],
+        outputs=[out],
+        device=device,
+    )
+    return out
 
 
 def assemble_interior_system(
@@ -853,9 +964,9 @@ def solve_spd_columns(
     maxiter: int | None = None,
     check_every: int = CG_CHECK_EVERY,
     preconditioner: str | SquaredLaplacianPreconditioner = "diag",
+    factorization: OperatorFactorization | None = None,
 ) -> tuple[int, float, float]:
     """
-
     Solve one symmetric positive-definite operator against several right-hand-side columns.
 
     Single batched conjugate-gradient call: all ``n_rhs`` columns advance together and convergence
@@ -918,6 +1029,17 @@ def solve_spd_columns(
         operator
         [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]
         builds instead of a name.
+    factorization
+        ``None``, or an [`OperatorFactorization`][ordito.linalg.OperatorFactorization] of
+        ``matrix``, which makes the solve *verified*. One that already holds a factorization is
+        solved by directly, with no iteration. Otherwise the iteration runs at most
+        [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds (or ``maxiter``,
+        if fewer), and its result must have converged and pass a componentwise backward-error
+        test ([`VERIFIED_BACKWARD_ERROR`][ordito.linalg.VERIFIED_BACKWARD_ERROR]); one that does
+        not is solved again by factoring ``matrix`` into ``factorization``, where the caller keeps
+        it. An operator that cannot be factored keeps iterating, warm-started, to the full
+        ``maxiter`` -- unless it is not definite in ``float64``, which no iteration solves either.
+        The verification reads back one flag whatever ``check_every`` is.
 
     Returns
     -------
@@ -931,7 +1053,8 @@ def solve_spd_columns(
     ------
     ValueError
         If ``preconditioner`` is not one of the five names above. It is rejected rather than
-        treated as ``"diag"``, so a misspelling cannot turn into a silently slower solve.
+        treated as ``"diag"``, so a misspelling cannot turn into a silently slower solve. Or if
+        ``factorization`` holds another operator than ``matrix``.
     RuntimeError
         If ``rhs`` and ``solution`` are not all on one device.
 
@@ -941,7 +1064,8 @@ def solve_spd_columns(
         When the solve exhausts ``maxiter`` without reaching ``tol``, on the same terms as
         [`solve_spd`][ordito.linalg.solve_spd]. A batched solve converges on its *worst* column,
         so hitting the cap here means at least one column is unsolved. Only detectable when
-        ``check_every > 0``.
+        ``check_every > 0`` -- or, under ``factorization``, whenever the result fails its
+        verification and the operator cannot be factored.
 
     Notes
     -----
@@ -982,6 +1106,19 @@ def solve_spd_columns(
     [`replicated_operator`][ordito.linalg.replicated_operator]
     """
     require_same_device(rhs=rhs, solution=solution)
+    if factorization is not None:
+        if factorization.matrix is not matrix:
+            raise ValueError("solve_spd_columns: factorization holds another operator than matrix")
+        return _solve_columns_verified(
+            matrix,
+            rhs,
+            solution,
+            factorization,
+            tol=tol,
+            maxiter=maxiter,
+            check_every=check_every,
+            preconditioner=preconditioner,
+        )
     result = _cg_columns(
         matrix,
         rhs,
@@ -1002,6 +1139,120 @@ def solve_spd_columns(
             "solve_spd_columns",
         )
     return result
+
+
+def _solve_columns_verified(
+    matrix: odt.BsrMatrix[wp.float64],
+    rhs: odt.Array2dFloat,
+    solution: odt.Array2dFloat,
+    factorization: OperatorFactorization,
+    *,
+    tol: float,
+    maxiter: int | None,
+    check_every: int,
+    preconditioner: str | SquaredLaplacianPreconditioner,
+) -> tuple[Any, Any, Any]:
+    """
+    ``solve_spd_columns`` under a ``factorization``: iterate under a budget, verify, else factor.
+
+    Rent or buy: the iteration may spend up to ``CG_FACTOR_AFTER_ROUNDS`` rounds, about what the
+    factorization would cost, and its result is kept only if it converged and passes the
+    componentwise backward-error test. Otherwise the factorization is bought and solves the
+    system from zero. An operator that cannot be factored has only the iteration left, which then
+    continues from its iterate to the full cap and warns if it still fails -- unless the refusal was
+    the operator's definiteness, when it warns at once.
+    """
+    n = int(rhs.shape[1])
+    cap = maxiter if maxiter is not None else CG_MAXITER_FACTOR * n
+    if factorization.factorization is not None:
+        factorization.solve(rhs, solution, tol=tol)
+        return _direct_result(tol, check_every, rhs.device)
+    rent = min(cap, CG_FACTOR_AFTER_ROUNDS)
+    result = _cg_columns(
+        matrix,
+        rhs,
+        solution,
+        tol=tol,
+        maxiter=rent,
+        check_every=check_every,
+        preconditioner=preconditioner,
+        run=True,
+        caller="solve_spd_columns",
+    )
+    if _verified(matrix, rhs, solution, result, tol):
+        return result
+    if factorization.factor():
+        # From zero, not from the rejected iterate: refinement corrects an initial guess through
+        # its residual, and the error of that correction scales with the residual's size, so a bad
+        # guess leaves a backward error the refinement's step test can stop above (5.9e-7 against
+        # 1.9e-12 from zero, on a graded biharmonic system).
+        solution.zero_()
+        factorization.solve(rhs, solution, tol=tol)
+        return _direct_result(tol, check_every, rhs.device)
+    # An operator too large to factor may still converge under the iteration; one the
+    # factorization finds indefinite either way round is past what conjugate gradient reaches too.
+    if cap > rent and not factorization._indefinite:  # pyright: ignore[reportPrivateUsage]
+        result = _cg_columns(
+            matrix,
+            rhs,
+            solution,
+            tol=tol,
+            maxiter=cap - rent,
+            check_every=check_every,
+            preconditioner=preconditioner,
+            run=True,
+            caller="solve_spd_columns",
+        )
+        if _verified(matrix, rhs, solution, result, tol):
+            return result
+    warnings.warn(
+        "solve_spd_columns: conjugate gradient did not reach a verified solution in "
+        f"{cap} iterations and the operator cannot be factored (over "
+        "CHOLESKY_MEMORY_BUDGET, or not definite in float64); the result is the last iterate, "
+        "not a solution.",
+        stacklevel=3,
+    )
+    return result
+
+
+def _verified(
+    matrix: odt.BsrMatrix[wp.float64],
+    rhs: odt.Array2dFloat,
+    solution: odt.Array2dFloat,
+    result: tuple[Any, Any, Any],
+    tol: float,
+) -> bool:
+    """
+    Whether a conjugate-gradient result converged and its solution passes the backward-error test.
+
+    The convergence half reads the solver's own residual against its threshold; the other half
+    recomputes the residual from ``matrix``, entry by entry against ``(|A| |x| + |b|)_i``, which a
+    recurrence residual drifting from the true one -- an operator ill-conditioned in places --
+    cannot fool. Both write one device flag, read back once.
+    """
+    _iterations, residual, threshold = result
+    if not isinstance(residual, wp.array) and float(residual) > float(threshold):
+        return False
+    device = rhs.device
+    n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
+    flag = _launch.zeros(1, dtype=wp.int32, device=device)
+    if isinstance(residual, wp.array):
+        _launch.launch(
+            kernel_linalg.flag_unconverged_columns,
+            dim=residual.shape[0],
+            inputs=[residual, threshold],
+            outputs=[flag],
+            device=device,
+        )
+    _launch.launch(
+        kernel_cholesky.backward_error_exceeds,
+        dim=(n, n_columns),
+        inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
+                wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol))],
+        outputs=[flag],
+        device=device,
+    )  # fmt: skip
+    return read_scalar(flag, 0) == 0
 
 
 def spd_column_solver(
@@ -1211,6 +1462,8 @@ class OperatorFactorization:
         self._coordinates = coordinates
         self._factorization: SparseCholesky | None = None
         self._refused = False
+        # Whether the refusal was the operator's definiteness, not its size.
+        self._indefinite = False
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -1249,15 +1502,20 @@ class OperatorFactorization:
             else cast("odt.BsrMatrix[wp.float64]", self._matrix)
         )
         points = _expanded_coordinates(self._coordinates, 2 if blocks else 1)
+        indefinite = True
         for negated in (False, True):
             try:
                 self._factorization = sparse_cholesky(
                     _storage_alias(scalar), points, negated=negated
                 )
+            except NotPositiveDefiniteError:
+                continue
             except ValueError:
+                indefinite = False
                 continue
             return True
         self._refused = True
+        self._indefinite = indefinite
         return False
 
     def solve(
@@ -1294,6 +1552,7 @@ class OperatorFactorization:
         """Drop the factorization and forget a refused attempt; the next ``factor`` builds anew."""
         self._factorization = None
         self._refused = False
+        self._indefinite = False
 
 
 def solve_spd_settled(
@@ -1582,16 +1841,8 @@ def _cg_columns(
     # anything else as ``"diag"``, so without this an unrecognised string -- ``"jacobi"``,
     # ``"amg"``, a capitalised ``"Multigrid"`` -- runs a Jacobi solve silently, bit-identically to
     # ``"diag"`` and with nothing but the clock to tell the caller.
-    if not isinstance(preconditioner, SquaredLaplacianPreconditioner) and preconditioner not in (
-        "diag",
-        "chebyshev",
-        "adaptive",
-        "multigrid",
-    ):
-        raise ValueError(
-            f'{caller}: unknown preconditioner {preconditioner!r}, expected "diag", "chebyshev", '
-            '"adaptive", "multigrid" or "auto".'
-        )
+    if not isinstance(preconditioner, SquaredLaplacianPreconditioner):
+        _require_preconditioner_name(preconditioner, caller)
     if preconditioner == "adaptive":
         state = _AdaptiveCg(
             matrix,
@@ -1649,6 +1900,22 @@ def _cg_columns(
         pooled=True,
     )
     return cast("tuple[int, float, float]", state.solve(rhs.flatten(), solution.flatten()))
+
+
+def _require_preconditioner_name(preconditioner: str, caller: str) -> None:
+    """
+    Raise unless ``preconditioner`` names one the column solvers build.
+
+    Validated rather than left to fall through: every branch of ``_cg_columns`` tests for one name
+    and treats anything else as ``"diag"``, so an unrecognised string -- ``"jacobi"``, ``"amg"``, a
+    capitalised ``"Multigrid"`` -- would otherwise run a Jacobi solve silently, bit-identically to
+    ``"diag"`` and with nothing but the clock to tell the caller.
+    """
+    if preconditioner not in ("diag", "chebyshev", "adaptive", "multigrid", "auto"):
+        raise ValueError(
+            f'{caller}: unknown preconditioner {preconditioner!r}, expected "diag", "chebyshev", '
+            '"adaptive", "multigrid" or "auto".'
+        )
 
 
 def _one_block_eligible(

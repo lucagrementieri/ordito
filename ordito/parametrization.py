@@ -214,7 +214,9 @@ def harmonic(
     [`cotmatrix`][ordito.laplacian.cotmatrix] subject to the boundary vertices being pinned to
     ``boundary_uv``. For ``k == 1`` this is the harmonic map (each interior UV is the
     cotangent-weighted average of its neighbors); ``k == 2`` is the biharmonic map, and so on. The
-    interior system is solved with conjugate gradient.
+    interior system is solved with conjugate gradient at ``k <= 2`` and by a sparse Cholesky
+    factorization above, the iterative result verified and replaced by the factorization's when it
+    is not the system's answer (see Notes).
 
     Parameters
     ----------
@@ -247,6 +249,14 @@ def harmonic(
         If ``vertices``, ``faces``, ``boundary_indices`` and ``boundary_uv`` are not all on one
         device.
 
+    Warns
+    -----
+    UserWarning
+        When no verified solution is reached (see
+        [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]): the interior system cannot be
+        factored -- too large, or not definite in ``float64``, which a high ``k`` on a strongly
+        graded mesh reaches -- and conjugate gradient does not converge.
+
     See Also
     --------
     [`tutte`][ordito.parametrization.tutte]
@@ -258,16 +268,29 @@ def harmonic(
 
     Notes
     -----
-    Matches ``igl::harmonic``, ``k`` included.
+    Matches ``igl::harmonic`` at ``k == 1``. Above, igl's default mass matrix is the Voronoi one
+    where this uses the barycentric lumped mass; ``igl::harmonic`` given a barycentric
+    ``massmatrix`` is the same map.
 
-    The interior system is solved iteratively (conjugate gradient) rather than by direct
-    factorization. Squaring the operator squares its condition number, so each ``k`` gets its own
-    preconditioner: the Jacobi-Chebyshev polynomial
-    ([`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner]) at ``k == 1``, the
+    Each ``k`` is solved its own way, since raising the operator to the ``k``-th power raises its
+    condition number to it. ``k == 1`` runs conjugate gradient under the Jacobi-Chebyshev polynomial
+    ([`chebyshev_preconditioner`][ordito.linalg.chebyshev_preconditioner]), ``k == 2`` under the
     square of that Laplacian's polynomial
-    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]) at
-    ``k == 2``, and an automatic multigrid preconditioner
-    ([`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]) above.
+    ([`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner]). Both
+    results are verified -- converged within
+    [`CG_FACTOR_AFTER_ROUNDS`][ordito.linalg.CG_FACTOR_AFTER_ROUNDS] rounds, with a componentwise
+    backward error under
+    [`VERIFIED_BACKWARD_ERROR`][ordito.linalg.VERIFIED_BACKWARD_ERROR] -- and a result that is not
+    is replaced by a [`sparse_cholesky`][ordito.cholesky.sparse_cholesky] solve: on a strongly
+    graded mesh the ``k == 2`` system's condition number nears the reciprocal of ``float64``'s
+    precision, where no iteration converges. ``k >= 3`` is factored from the start, the iteration
+    (under the multigrid preconditioner
+    [`multigrid_preconditioner`][ordito.linalg.multigrid_preconditioner]) taken only when the
+    system cannot be factored. A factorization built here is dropped with the call.
+
+    On such an ill-conditioned system the answer itself is determined only to the system's own
+    precision: direct solvers under different orderings agree to about a percent of the UV range
+    there, as this one does with them.
     """
     device, n_vertices = _validate_fixed_boundary_call(
         vertices, faces, boundary_indices, boundary_uv, k, "harmonic"
@@ -276,9 +299,7 @@ def harmonic(
         return _launch.empty(0, dtype=wp.vec2, device=device)
     laplacian = cotmatrix(vertices, faces, dtype=wp.float64)
     mass_diag = mass_matrix_entries(vertices, faces, dtype=wp.float64) if k > 1 else None
-    return _solve_fixed_boundary(
-        laplacian, mass_diag, k, n_vertices, boundary_indices, boundary_uv, device
-    )
+    return _solve_fixed_boundary(laplacian, mass_diag, k, vertices, boundary_indices, boundary_uv)
 
 
 def tutte(
@@ -341,9 +362,7 @@ def tutte(
     if n_vertices == 0:
         return _launch.empty(0, dtype=wp.vec2, device=device)
     laplacian = graph_laplacian(vertices, faces, dtype=wp.float64)
-    return _solve_fixed_boundary(
-        laplacian, None, k, n_vertices, boundary_indices, boundary_uv, device
-    )
+    return _solve_fixed_boundary(laplacian, None, k, vertices, boundary_indices, boundary_uv)
 
 
 def _validate_fixed_boundary_call(
@@ -367,10 +386,9 @@ def _solve_fixed_boundary(
     laplacian: odt.BsrMatrix[wp.float64],
     mass_diag: wp.array[wp.float64] | None,
     k: int,
-    n_vertices: int,
+    vertices: wp.array[wp.vec3],
     boundary_indices: wp.array[wp.int32],
     boundary_uv: wp.array[wp.vec2],
-    device: wp.DeviceLike,
 ) -> wp.array[wp.vec2]:
     """
     Solve the fixed-boundary quadratic minimization shared by ``harmonic`` and ``tutte``.
@@ -380,8 +398,10 @@ def _solve_fixed_boundary(
     ``mass_diag is None``) via [`k_harmonic`][ordito.energies.k_harmonic],
     then solves the interior Dirichlet system ``Q_uu x_u = -Q_ub bc`` per UV column with conjugate
     gradient, keeping the fixed vertices at ``boundary_uv``. ``laplacian`` must be float64:
-    ``k > 1`` squares its condition number.
+    ``k > 1`` squares its condition number. ``vertices`` order a factorization, when one is built.
     """
+    device = vertices.device
+    n_vertices = vertices.size
     # A mesh with interior vertices and no fixed boundary is a singular Dirichlet system. Checked
     # before ``k_harmonic`` assembles the (for k > 1, sparse-matrix-product) operator, since once
     # every vertex is fixed (n_vertices > 0, n_boundary == 0 is impossible here because n_vertices
@@ -401,21 +421,22 @@ def _solve_fixed_boundary(
         n_vertices, boundary_indices, boundary_uv, device
     )
     if k == 2:
-        return _solve_biharmonic(laplacian, mass_diag, q, fixed_mask, fixed_values, n_vertices)
+        return _solve_biharmonic(laplacian, mass_diag, q, fixed_mask, fixed_values, vertices)
 
-    # ``k >= 3`` raises the Laplacian's condition number to the ``k``-th power, which is what
-    # makes a multigrid hierarchy worth building (``k == 2`` is the square of a Laplacian, handled
-    # above). Routed through ``"auto"`` rather than forced, so the gate's own size floor can still
-    # decline a system too small to repay the setup cost; the switch is on ``k`` rather than on the
-    # gate alone because a plain (``k == 1``) Laplacian's rows nearly sum to zero and wants
-    # iterations, not levels -- and with only the boundary pinned they are many, which is the long
-    # solve the polynomial preconditioner is for.
+    # ``k >= 3`` raises the Laplacian's condition number to the ``k``-th power: conjugate gradient
+    # needs thousands of rounds and still leaves an error of 1e-5 to 1e-2 of the range, where the
+    # factorization is one to two orders of magnitude faster and exact to rounding, so it goes
+    # first (the multigrid ``"auto"`` route remains for an operator it refuses). A plain
+    # (``k == 1``) Laplacian's solve is short, and with only the boundary pinned its rounds are
+    # many: the long solve the polynomial preconditioner is for.
     sol, free_map, _ = twl.min_quad_with_fixed(
         q,
         fixed_mask,
         odt.as_array2d(fixed_values, wp.float64),
         tol=_CG_TOLERANCE,
         preconditioner="auto" if k >= 2 else "chebyshev",
+        solver="direct" if k >= 3 else "iterative",
+        coordinates=vertices,
     )
 
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
@@ -434,7 +455,7 @@ def _solve_biharmonic(
     q: odt.BsrMatrix[wp.float64],
     fixed_mask: wp.array[wp.bool],
     fixed_values: wp.array[wp.float64],
-    n_vertices: int,
+    vertices: wp.array[wp.vec3],
 ) -> wp.array[wp.vec2]:
     """
     ``_solve_fixed_boundary`` at ``k == 2``, preconditioned as the square of a Laplacian.
@@ -445,8 +466,13 @@ def _solve_biharmonic(
     [`squared_laplacian_preconditioner`][ordito.linalg.squared_laplacian_preconditioner] inverts
     with a fixed polynomial: no hierarchy to set up, where the smoothed-aggregation V-cycle
     ``"auto"`` would build costs a setup of its own and still runs a few hundred rounds.
+
+    Verified as ``min_quad_with_fixed`` verifies: on a strongly graded mesh the system's condition
+    number nears ``1e17`` and the iteration stalls at a few percent residual, so the solve falls
+    back to a factorization of ``Q_uu``.
     """
     device = fixed_mask.device
+    n_vertices = vertices.size
     fixed_values_2d = odt.as_array2d(fixed_values, wp.float64)
     free_map, n_free = twl.free_partition(fixed_mask)
     sol = odt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
@@ -475,6 +501,9 @@ def _solve_biharmonic(
             sol,
             tol=_CG_TOLERANCE,
             preconditioner=twl.squared_laplacian_preconditioner(l_ff, roots),
+            factorization=twl.OperatorFactorization(
+                q_uu, twl.free_coordinates(vertices, fixed_mask, free_map, n_free)
+            ),
         )
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     _launch.launch(
@@ -768,9 +797,11 @@ def lscm(
     the boundary vector-area term, so it needs only a few pins — typically **two** — to fix the
     remaining similarity-transform (rotation + scale + translation) degree of freedom.
 
-    The interior system is solved with conjugate gradient. Closed meshes are valid input: the
-    boundary vector-area matrix is then zero and the
-    Hessian reduces to ``-repdiag(L, 2)``.
+    The interior system is solved with conjugate gradient, verified as
+    [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed] verifies it, with a sparse Cholesky
+    factorization taking over a solve that does not converge within its budget. Closed meshes are
+    valid input: the boundary vector-area matrix is then zero and the Hessian reduces to
+    ``-repdiag(L, 2)``.
 
     Parameters
     ----------
@@ -798,6 +829,12 @@ def lscm(
         ``pinned_indices`` and ``pinned_uv`` have different lengths.
     RuntimeError
         If ``vertices``, ``faces``, ``pinned_indices`` and ``pinned_uv`` are not all on one device.
+
+    Warns
+    -----
+    UserWarning
+        When no verified solution is reached (see
+        [`min_quad_with_fixed`][ordito.linalg.min_quad_with_fixed]).
 
     See Also
     --------
@@ -856,6 +893,7 @@ def lscm(
         odt.as_array2d(fixed_values, wp.float64),
         tol=_CG_TOLERANCE,
         preconditioner="chebyshev",
+        coordinates=vertices,
     )
 
     out_uv = _launch.empty(n, dtype=wp.vec2, device=device)

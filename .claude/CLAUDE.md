@@ -6421,9 +6421,9 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
     - `lscm`: a factored reduced system 45 / 193 / 243 / 195 ms against 5.9 / 18.9 / 14.4 / 43 ms
       iterated (the four meshes above); the cache's steady state was 4.1-8.8 ms. The reduced
       pattern depends on the pins, so a `Trimesh` could reuse it only for repeated identical pins.
-    - `harmonic(k=2)`: 30 / 118 / 166 ms factored against 6.1 / 16 / 25 ms iterated. **Open lead:**
-      on `saddle_graded` the `k=2` iteration takes 13.5 s against 118 ms factored (not on the
-      `harmonic` benchmark's axis); a capped iteration falling back to a factorization would fix it.
+    - `harmonic(k=2)`: 30 / 118 / 166 ms factored against 6.1 / 16 / 25 ms iterated (host
+      analysis). The `saddle_graded` case was a correctness defect, fixed by the verified solve
+      (next items).
     - `filter_implicit_fairing`: its call-local refactor-per-pass (`_FairingSolver`) paid only
       through the plan cache (`saddle_graded` 46 ms) and is 0.94x with the analysis per call (120
       against 113 ms iterated): reverted to the iteration.
@@ -6449,12 +6449,51 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   `saddle` / `hemisphere` / `saddle_graded`): `lscm` 0.51x / 0.95x / 0.66x / **2.11x**;
   `harmonic(k=2)` 0.48x / 0.85x / 1.15x / **693x**; `filter_implicit_fairing` with a *full analysis
   every pass* 0.09x / 0.12x / 0.15x / 0.70x. So no per-call default flips on well-conditioned
-  meshes. **Open defect (pre-existing on `main`)**: `harmonic(k=2)` on `saddle_graded` iterates
-  13.5 s and returns a map 0.54 of its range from `igl.harmonic`, with no warning (cause not
-  diagnosed); the factored solve takes 19.5 ms and agrees. The fix is the heat family's verify-then-factor fallback (`solve_spd_settled`'s
-  backward-error test), which holds nothing across calls; `lscm` on `saddle_graded` would take the
-  same 2.1x through it. Not measured: fairing's one analysis per call with a refactor per pass
-  (the design declined above, 46 against 113 ms with the analysis already built).
+  meshes.
+- **Verified fixed-value solves (2026-10-07, branch `solver-factor`): the `k=2` graded defect was a
+  non-converging iteration that never warned.** `harmonic(k=2)` on `saddle_graded` ran its whole
+  `10 n` cap (171 610 rounds, 13.5 s) and returned a map 0.54 of the range off. Its reduced system
+  `Q_uu = (L M^-1 L)_uu` has eigenvalues from 1.0e-2 to 2.7e15 (condition 2.6e17, `eigsh`; mass
+  spread 3e4), past `float64`: the squared-Laplacian polynomial stalled at a relative residual of
+  15-26 % after 30 000 rounds (worse than Jacobi), Jacobi and the V-cycle at ~1e-3, so no
+  iteration reaches `tol`; the stalled iterate's componentwise backward error is 7e-2. It was
+  silent because `solve_spd_columns` / `min_quad_with_fixed` default to `check_every=0`, which
+  never warns (`check_every=50` printed the cap warning). Not a stale `nnz` (the extraction's
+  count is exact). Fix (`linalg._solve_columns_verified`): `solve_spd_columns(factorization=)`
+  iterates at most `CG_FACTOR_AFTER_ROUNDS = 1000` rounds (rent: a factorization of these
+  systems is 200-400 rounds' worth), then accepts the result only if it converged **and** its
+  componentwise backward error is under `max(VERIFIED_BACKWARD_ERROR = 1e-6, 100 tol)` (one
+  flag, one read; converged iterates at `tol = 1e-8` sit at 5e-9 to 2.2e-7, the stalled one at
+  7e-2), else factors into the caller's `OperatorFactorization` and solves **from zero** (from
+  the rejected iterate the refinement stopped at a backward error of 5.9e-7, from zero 1.9e-12).
+  `min_quad_with_fixed` always runs it (a local factorization, dropped), so `lscm`, `harmonic`,
+  `tutte` get it; `_solve_biharmonic` passes one. A factorization refused for definiteness
+  (`cholesky.NotPositiveDefiniteError`, both signs) warns at once; one refused for size keeps
+  iterating, warm-started, to the full cap. `min_quad_with_fixed(solver="direct")` factors first:
+  `harmonic` takes it at `k >= 3`, where the iteration took 2 884-11 326 rounds (0.3-1.7 s) and
+  stopped 2e-5 to 7e-3 of the range off the direct answer; factored 11-31 ms.
+  `min_quad_with_fixed(coordinates=)` (dof `i` at point `i mod n_points`, so `lscm`'s stacked
+  `[u; v]` needs no copy; `linalg.free_coordinates`) gives the factorization a geometric order:
+  20-25 % faster than landmarks (saddle `k=1` 14.1 -> 10.8 ms).
+    - **Measured** (CUDA, separate processes alternating base/fix, min of 3x5): one-shot costs
+      0.1 ms more (the verification's kernels and read; `k=1` 0.95x at 2-3 ms, `k=2` / `lscm`
+      0.99-1.0x) on `saddle_small` / `saddle` / `hemisphere`; `saddle_graded` `k=1` / `lscm` level
+      (12.0 / 43.9 ms, they converge in 212 / 855 rounds), `k=2` 13 497 -> 105 ms, `k=3`
+      81.9 s -> 0.60 s (refused as indefinite; igl raises "Failed to compute harmonic map").
+    - **`lscm` on `saddle_graded` is not faster through the fallback** (the plan predicted 2.1x):
+      its iteration converges (855 rounds, backward error 1.7e-8), so it is kept. Its 6.9e-4
+      distance from `igl.lscm` there is the operator: `cotmatrix` computes weights in `float32`
+      (documented), 1.1e-4 of the largest entry off igl's `float64` ones on the graded slivers;
+      igl's own answer and `spsolve` of igl's `Q` agree to 7e-8, ordito's iterate and its direct
+      solve to 2.7e-7.
+    - **The graded `k=2` answer is determined only to ~1 %**: `spsolve` of the barycentric system
+      under four SuperLU orderings disagrees with itself by 0.6-2.2 % of the range (backward errors
+      1e-10 to 5e-9); ordito sits 1.4 % from the default ordering. The regression test
+      (`test_biharmonic_on_a_graded_patch_matches_a_direct_solve`) bounds it at 7 % (main: 54 %).
+      `igl.harmonic` uses Voronoi mass at `k > 1` (`MASSMATRIX_TYPE_DEFAULT`), ordito barycentric:
+      compare `k > 1` against a barycentric reference, never `igl.harmonic` directly.
+    - Fairing's passes are not routed through it: on `saddle_graded` they converge (172-196
+      rounds) at backward errors 4e-7 to 1.1e-6, at the bar, and a verification would factor them.
 
 #### One-block solves
 

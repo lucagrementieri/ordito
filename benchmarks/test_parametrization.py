@@ -158,10 +158,11 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
     symbolic analysis on the device and paid by every call, a factored solve is 0.48x / 0.85x /
     1.15x the iteration on ``saddle_small`` / ``saddle`` / ``hemisphere``; it read faster only while
     ``ordito.cholesky`` kept each pattern's analysis across calls, a cache ``.claude/CLAUDE.md``
-    section 16.16 rejects. **Open defect off this axis**: on ``saddle_graded`` the ``k=2`` iteration
-    runs 13.5 s and returns a map 54 % of its range away from ``igl.harmonic`` with no warning,
-    where a factored solve takes 19.5 ms and agrees; the fix is the heat method's verify-then-factor
-    fallback.
+    section 16.16 rejects. Off this axis, on ``saddle_graded``, the ``k=2`` system is past what
+    any iteration converges on (condition number ~1e17): the solve is verified and falls back to a
+    factorization after ``linalg.CG_FACTOR_AFTER_ROUNDS`` rounds, 105 ms where it used to run its
+    whole cap (13.5 s) and return a map 54 % of the range off. The verification costs ~0.1 ms on
+    these rows (0.95x at ``k=1``, 0.99-1.0x at ``k=2``).
     """
     if bench_case.kind == "pymeshlab":
         _run_harmonic_pml(bench_case, order)
@@ -269,8 +270,9 @@ def test_lscm(bench_case: BenchCase) -> None:
 
     **Declined (2026-10-07): a sparse Cholesky of the reduced system.** With the analysis on the
     device and paid by every call it is 0.51x / 0.95x / 0.66x the iteration on ``saddle_small`` /
-    ``saddle`` / ``hemisphere``, and 2.11x on ``saddle_graded`` (off this axis): a lead for the same
-    verify-then-factor fallback as ``test_harmonic``'s, not a default.
+    ``saddle`` / ``hemisphere``, and 2.11x on ``saddle_graded`` (off this axis). The verified
+    fallback does not take that 2.11x: on ``saddle_graded`` the iteration converges (855 rounds,
+    backward error 1.7e-8), so its result is kept.
     """
     if bench_case.kind == "pymeshlab":  # MeshLab picks its own pins; there is no pin set to pass
         bench_case.run(
