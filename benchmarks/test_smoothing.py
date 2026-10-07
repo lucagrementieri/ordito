@@ -462,12 +462,14 @@ def test_filter_implicit_fairing(bench_case: BenchCase) -> None:
     minutes of suite time spent measuring divergence at high precision. A collapsing free case can
     drive ``cot_entries_from_l2``'s division by ``4 * dbl_area`` to ``inf`` and return NaN.
 
-    **Declined (2026-10-07): a sparse Cholesky refactored per pass.** Every pass's system shares one
-    pattern, so after a slow first pass the rest can refactor and solve directly. It paid 2.4x on
-    ``saddle_graded`` only while ``ordito.cholesky`` kept each pattern's analysis across calls; with
-    the analysis paid by the call it is 0.94x there (and never triggers on ``saddle``). Caching the
-    analysis is memory held across calls, which ``.claude/CLAUDE.md`` section 16.16 rejects, and the
-    operator moves every pass, so a ``Trimesh`` could keep only that analysis: the passes iterate.
+    **Declined (2026-10-07): a sparse Cholesky refactored per pass, pending a re-measurement.**
+    Every pass's system shares one pattern, so after a slow first pass the rest can refactor and
+    solve directly. It paid 2.4x on ``saddle_graded`` (46 against 113 ms) with the pattern's
+    analysis already built, and was declined when that analysis was a host pass dearer than the
+    call. The analysis now runs on the device; a full analysis on every pass is 0.09-0.15x on
+    ``saddle_small`` / ``saddle`` / ``hemisphere`` and 0.70x on ``saddle_graded``, but one analysis
+    per call and a refactor per pass (the declined design, holding nothing across calls) was not
+    re-measured: an open lead for ``saddle_graded``.
     """
     vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
     with warnings.catch_warnings():

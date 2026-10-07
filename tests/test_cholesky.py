@@ -200,34 +200,6 @@ def test_negated_factorization_solves_a_negative_definite_operator(
     assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
 
 
-def test_reused_sparse_cholesky_factors_from_a_patterns_second_request(
-    device: str, hemisphere: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """
-    Class A at 1e-12: ``None`` on a pattern's first request, a factorization from its second.
-
-    The second request is a fresh operator of the same pattern with other values, not the same
-    object, and the factorization is of its values.
-    """
-    _, mesh_wp = hemisphere
-    # Patterns other tests factored already would count as seen.
-    monkeypatch.setattr(od.cholesky, "_PLAN_CACHE", {})
-    monkeypatch.setattr(od.cholesky, "_PATTERNS_SEEN", set())
-    system_np = bsr_to_csr(_heat_system(mesh_wp))
-    jitter = sp.diags(np.linspace(1.0, 2.0, system_np.shape[0]))
-    first = od.cholesky.reused_sparse_cholesky(scipy_to_bsr(sp.csr_matrix(system_np), device))
-    second_np = sp.csr_matrix(system_np + jitter)
-    second = od.cholesky.reused_sparse_cholesky(scipy_to_bsr(second_np, device))
-    assert first is None
-    assert second is not None
-    n = system_np.shape[0]
-    rhs_np = np.random.default_rng(17).standard_normal(n)
-    solution = wp.zeros(n, dtype=wp.float64, device=device)
-    second.solve(wp.array(rhs_np, dtype=wp.float64, device=device), solution)
-    expected = spla.spsolve(second_np.tocsc(), rhs_np)
-    assert np.allclose(solution.numpy(), expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
-
-
 def _two_component_system(device: str) -> tuple[sp.csr_matrix, np.ndarray]:
     sphere = tm.creation.icosphere(3)
     shell = tm.creation.icosphere(2)
@@ -279,9 +251,7 @@ def _fill_case(case: str, device: str) -> tuple[sp.csr_matrix, wp.array[wp.vec3]
 
 
 @pytest.mark.parametrize("case", ["sphere", "cap", "two_components"])
-def test_symbolic_structure_is_the_factors_fill(
-    device: str, monkeypatch: pytest.MonkeyPatch, case: str
-) -> None:
+def test_symbolic_structure_is_the_factors_fill(device: str, case: str) -> None:
     """
     Not a library comparison: each supernode's rows are its columns' fill in the exact factor.
 
@@ -295,7 +265,6 @@ def test_symbolic_structure_is_the_factors_fill(
     """
     system_np, points = _fill_case(case, device)
     n = system_np.shape[0]
-    monkeypatch.setattr(od.cholesky, "_PLAN_CACHE", {})
     plan = od.cholesky._plan_cholesky(scipy_to_bsr(system_np, device), points)  # pyright: ignore[reportPrivateUsage]
     perm = plan.perm.numpy()[:n]
     assert np.array_equal(np.sort(perm), np.arange(n))

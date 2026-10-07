@@ -6325,7 +6325,7 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   product per row and a fixed-order chunk sum (forward), and the transposed pair (backward); no
   float atomics, so solves repeat bit for bit; refined against the operator until the residual
   passes its test, componentwise for the heat fields. Graph-recorded with `capture_while` and
-  replayed. Symbolic analysis is cached per pattern content (`_PLAN_CACHE`, 4 entries; see the
+  replayed. Each factorization owns its symbolic analysis; nothing is cached per pattern (see the
   ownership bullet below).
 - **Measured** (heat system `M - tL`, RTX 5090): numeric refactor 1.7 / 2.2 / 4.1 ms
   (`sphere_small` / `saddle_graded` / `sphere_med`), against a level-batched cuSOLVER yardstick
@@ -6444,6 +6444,17 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   0.76x, `transport` 0.25x, `log_map` 0.61x against the wrong answer), most of it the settle CG
   that fails first and the stacked `[vector; heat; heat]` factorization (two copies of the heat
   system) -- a lead: factor the stack's blocks once each.
+- **The declines above, re-measured with the analysis on the device** (2026-10-07, CUDA, min of 5
+  interleaved, factor-and-solve on every call against the current iteration, `saddle_small` /
+  `saddle` / `hemisphere` / `saddle_graded`): `lscm` 0.51x / 0.95x / 0.66x / **2.11x**;
+  `harmonic(k=2)` 0.48x / 0.85x / 1.15x / **693x**; `filter_implicit_fairing` with a *full analysis
+  every pass* 0.09x / 0.12x / 0.15x / 0.70x. So no per-call default flips on well-conditioned
+  meshes. **Open defect (pre-existing on `main`)**: `harmonic(k=2)` on `saddle_graded` iterates
+  13.5 s and returns a map 0.54 of its range from `igl.harmonic`, with no warning (cause not
+  diagnosed); the factored solve takes 19.5 ms and agrees. The fix is the heat family's verify-then-factor fallback (`solve_spd_settled`'s
+  backward-error test), which holds nothing across calls; `lscm` on `saddle_graded` would take the
+  same 2.1x through it. Not measured: fairing's one analysis per call with a refactor per pass
+  (the design declined above, 46 against 113 ms with the analysis already built).
 
 #### One-block solves
 

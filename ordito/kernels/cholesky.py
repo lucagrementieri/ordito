@@ -29,7 +29,7 @@ one-lane blocks run the same code.
 import warp as wp
 
 from ordito.kernels.array import ordered_float_bits
-from ordito.kernels.reduce import block_barrier, block_chunk_1d, block_sum
+from ordito.kernels.reduce import block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
 
@@ -690,70 +690,6 @@ def backward_error_exceeds(
         scale += wp.abs(term)
     if wp.abs(total) > tolerance * scale:
         out_flag[0] = 1
-
-
-@wp.func
-def splitmix(value: wp.uint64) -> wp.uint64:
-    # SplitMix64's finalizer: a bijective, nonlinear scramble of 64 bits, so that a sum of
-    # scrambled words fingerprints a set without the cancellations a linear mix allows (doubling
-    # every value moves each word's exponent by one, which a linear mix can sum away).
-    x = value
-    x = (x ^ (x >> wp.uint64(30))) * wp.uint64(0xBF58476D1CE4E5B9)
-    x = (x ^ (x >> wp.uint64(27))) * wp.uint64(0x94D049BB133111EB)
-    return x ^ (x >> wp.uint64(31))
-
-
-@wp.kernel
-def value_checksum(
-    values: wp.array[wp.float64], count: wp.int32, out_checksum: wp.array[wp.uint64]
-) -> None:
-    # An order-free fingerprint of an operator's first ``count`` values: each value's bits, mixed
-    # with its index and scrambled, summed modulo 2^64 (integer addition, so the result does not
-    # depend on the order the blocks commit in). ``linalg`` compares it to decide whether a kept
-    # factorization still factors the operator's current values.
-    block, lane = wp.tid()
-    start, remaining = block_chunk_1d(count, block)
-    local = wp.uint64(0)
-    k = lane
-    while k < remaining:
-        e = start + k
-        index = wp.uint64(e) * wp.uint64(0x9E3779B97F4A7C15)
-        local += splitmix(wp.cast(values[e], wp.uint64) ^ index)
-        k += wp.block_dim()
-    total = block_sum(local)
-    if lane == 0:
-        wp.atomic_add(out_checksum, 0, total)
-
-
-@wp.kernel
-def pattern_checksum(
-    offsets: wp.array[wp.int32],
-    columns: wp.array[wp.int32],
-    n: wp.int32,
-    out_key: wp.array[wp.uint64],
-) -> None:
-    # An order-free fingerprint of a sparsity pattern: ``out_key`` (zeroed by the caller) receives
-    # the stored-entry count, then two sums over the stored entries of their scrambled (row,
-    # column) pairs under two keys, modulo 2^64. Keys ``ordito.cholesky``'s per-pattern analyses
-    # with one 24-byte read instead of the pattern itself.
-    block, lane = wp.tid()
-    start, remaining = block_chunk_1d(n, block)
-    first = wp.uint64(0)
-    second = wp.uint64(0)
-    k = lane
-    while k < remaining:
-        row = start + k
-        for e in range(offsets[row], offsets[row + 1]):
-            pair = (wp.uint64(row) << wp.uint64(32)) | wp.uint64(columns[e])
-            first += splitmix(pair)
-            second += splitmix(pair ^ wp.uint64(0xA0761D6478BD642F))
-        k += wp.block_dim()
-    total = block_sum(wp.vec2ul(first, second))
-    if lane == 0:
-        wp.atomic_add(out_key, 1, total[0])
-        wp.atomic_add(out_key, 2, total[1])
-        if block == 0:
-            out_key[0] = wp.uint64(offsets[n])
 
 
 # --------------------------------------------------------------------------------------

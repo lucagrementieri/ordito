@@ -44,10 +44,8 @@ import ordito.typing as odt
 from ordito import _launch
 from ordito._device import read_scalar, read_values, record_device_loop, require_same_device
 from ordito.array import arange
-from ordito.constants import TILE_1D
 from ordito.graph import connected_component_labels
 from ordito.kernels import cholesky as kernel_cholesky
-from ordito.kernels import reduce as kernel_reduce
 
 # Largest leaf of the nested-dissection tree, in rows.
 CHOLESKY_LEAF_ROWS = 32
@@ -244,78 +242,8 @@ def sparse_cholesky(
     return SparseCholesky(plan, matrix, negated=negated)
 
 
-def reused_sparse_cholesky(
-    matrix: odt.BsrMatrix[wp.float64],
-    coordinates: wp.array[wp.vec3] | None = None,
-    *,
-    negated: bool = False,
-) -> SparseCholesky | None:
-    """
-    Sparse Cholesky factorization of ``matrix`` once its sparsity pattern repeats, else ``None``.
-
-    For a caller that assembles a fresh operator on every call over one mesh, where a single solve
-    does not repay a factorization's analysis but every later one does: the first request for a
-    pattern records it and returns ``None`` (the caller iterates instead); from the second on, the
-    pattern's analysis is built once and each request factors the operator's current values. The
-    pattern is recognized on the device (one 24-byte read), not by reading it back.
-
-    Parameters
-    ----------
-    matrix
-        ``(n, n)`` symmetric scalar ``float64`` operator, as for
-        [`sparse_cholesky`][ordito.cholesky.sparse_cholesky].
-    coordinates
-        ``(n,)`` positions of the rows, for the ordering, or ``None``.
-    negated
-        Factor ``-matrix`` instead.
-
-    Returns
-    -------
-    SparseCholesky | None
-        The factorization, or ``None`` on a pattern's first request -- and where none can be built
-        (over [`CHOLESKY_MEMORY_BUDGET`][ordito.cholesky.CHOLESKY_MEMORY_BUDGET], or not definite).
-
-    Raises
-    ------
-    RuntimeError
-        If ``matrix`` and ``coordinates`` are not on one device.
-
-    See Also
-    --------
-    [`sparse_cholesky`][ordito.cholesky.sparse_cholesky]
-    """
-    require_same_device(matrix=matrix, coordinates=coordinates)
-    if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
-        return None
-    key = (str(matrix.device), int(matrix.nrow), *_pattern_key(matrix))
-    if key in _PATTERNS_REFUSED:
-        return None
-    if key not in _PLAN_CACHE and key not in _PATTERNS_SEEN:
-        if len(_PATTERNS_SEEN) >= _PATTERNS_SEEN_ENTRIES:
-            _PATTERNS_SEEN.clear()
-        _PATTERNS_SEEN.add(key)
-        return None
-    try:
-        return SparseCholesky(_plan_cholesky(matrix, coordinates, key), matrix, negated=negated)
-    except ValueError:
-        # Over the budget or not definite: not retried for this pattern.
-        if len(_PATTERNS_REFUSED) >= _PATTERNS_SEEN_ENTRIES:
-            _PATTERNS_REFUSED.clear()
-        _PATTERNS_REFUSED.add(key)
-        return None
-
-
-# The patterns ``reused_sparse_cholesky`` was asked for once, and those it could not factor;
-# bounded like linalg's shape census.
-_PATTERNS_SEEN: set[tuple[object, ...]] = set()
-_PATTERNS_REFUSED: set[tuple[object, ...]] = set()
-_PATTERNS_SEEN_ENTRIES = 256
-
-
 def _plan_cholesky(
-    matrix: odt.BsrMatrix[wp.float64],
-    coordinates: wp.array[wp.vec3] | None = None,
-    key: tuple[object, ...] | None = None,
+    matrix: odt.BsrMatrix[wp.float64], coordinates: wp.array[wp.vec3] | None = None
 ) -> _Plan:
     """Return the symbolic half of ``sparse_cholesky``: ordering, structure, every device map."""
     if matrix.values.dtype != wp.float64 or int(matrix.nrow) != int(matrix.ncol):
@@ -323,50 +251,20 @@ def _plan_cholesky(
     n = int(matrix.nrow)
     if coordinates is not None and coordinates.size != n:
         raise ValueError(f"sparse_cholesky: coordinates has {coordinates.size} rows, expected {n}")
-    if key is None:
-        key = (str(matrix.device), n, *_pattern_key(matrix))
-    plan = _PLAN_CACHE.pop(key, None)
-    if plan is None:
-        labels = (
-            connected_component_labels(matrix)
-            if n > 0
-            else _launch.empty(0, dtype=wp.int32, device=matrix.device)
-        )
-        if coordinates is None:
-            coordinates = _landmark_coordinates(matrix, labels)
-        plan = _Plan(matrix, coordinates, labels)
-        while len(_PLAN_CACHE) >= _PLAN_CACHE_ENTRIES:
-            _PLAN_CACHE.pop(next(iter(_PLAN_CACHE)))
-    _PLAN_CACHE[key] = plan
+    labels = (
+        connected_component_labels(matrix)
+        if n > 0
+        else _launch.empty(0, dtype=wp.int32, device=matrix.device)
+    )
+    if coordinates is None:
+        coordinates = _landmark_coordinates(matrix, labels)
+    plan = _Plan(matrix, coordinates, labels)
     if plan.nbytes > CHOLESKY_MEMORY_BUDGET:
         raise ValueError(
             f"sparse_cholesky: the factorization needs {plan.nbytes} bytes, above "
             f"CHOLESKY_MEMORY_BUDGET ({CHOLESKY_MEMORY_BUDGET})"
         )
     return plan
-
-
-def _pattern_key(matrix: odt.BsrMatrix[wp.float64]) -> tuple[int, int, int]:
-    """Return ``matrix``'s stored-entry count and a 128-bit fingerprint of its pattern."""
-    n = int(matrix.nrow)
-    key = _launch.zeros(3, dtype=wp.uint64, device=matrix.device)
-    if n > 0:
-        _launch.launch_tiled(
-            kernel_cholesky.pattern_checksum,
-            dim=[kernel_reduce.blocks_1d(n)],
-            inputs=[matrix.offsets, matrix.columns, wp.int32(n)],
-            outputs=[key],
-            block_dim=TILE_1D,
-            device=matrix.device,
-        )
-    count, first, second = (int(x) for x in read_values(key, 0, 3))
-    return count, first, second
-
-
-# ``_plan_cholesky``'s analyses, least recently used first: each holds its pattern's device maps
-# (not a factor), bounded so a long session of distinct meshes does not accumulate them.
-_PLAN_CACHE: dict[tuple[object, ...], _Plan] = {}
-_PLAN_CACHE_ENTRIES = 4
 
 
 class _Plan:
