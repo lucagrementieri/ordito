@@ -20,7 +20,7 @@ Every partial product lands in its own slot and every sum reads its slots in a f
 solve is bit-reproducible on each device (no float atomics).
 
 ``ordito.cholesky`` refines every solve against the operator itself (``residual_test``, one more
-solve, ``scatter_correction``) until the residual passes its test.
+solve, whose last level adds the correction) until the residual passes its test.
 
 Every kernel that cooperates strides its lanes by ``wp.block_dim()``, so the CPU device's
 one-lane blocks run the same code.
@@ -28,7 +28,7 @@ one-lane blocks run the same code.
 
 import warp as wp
 
-from ordito.kernels.array import ordered_float_bits
+from ordito.kernels.array import binary_search_index, ordered_float_bits, scanned_count
 from ordito.kernels.reduce import block_barrier, block_sum
 
 wp.set_module_options({"enable_backward": False})
@@ -58,11 +58,16 @@ def mark_nonsingular_components(
     labels: wp.array[wp.int32],
     tolerance: wp.float64,
     out_singular: wp.array[wp.int32],
+    out_pinned: wp.array[wp.int32],
+    out_dropped: wp.array[wp.int32],
 ) -> None:
     # A component is singular when every one of its rows sums to zero (a Laplacian's constant null
     # space); ``out_singular`` is seeded with ones and any row that does not sum to zero clears its
-    # component. An empty row (an unreferenced vertex) sums to zero: a component of one.
+    # component. An empty row (an unreferenced vertex) sums to zero: a component of one. Row ``i``
+    # also clears its two pin flags, which ``pin_singular_components`` then sets.
     i = wp.int32(wp.tid())
+    out_pinned[i] = 0
+    out_dropped[i] = 0
     total = wp.float64(0.0)
     diagonal = wp.float64(0.0)
     for e in range(offsets[i], offsets[i + 1]):
@@ -79,16 +84,23 @@ def pin_singular_components(
     component_last: wp.array[wp.int32],
     perm: wp.array[wp.int32],
     singular: wp.array[wp.int32],
+    component_diagonal: wp.array[wp.int64],
     out_pinned: wp.array[wp.int32],
     out_dropped: wp.array[wp.int32],
+    out_fronts: wp.array[wp.float64],
 ) -> None:
     # One pin per singular component, at its last-eliminated row: that row's equation is dropped
     # and its unknown held at zero, which leaves a consistent system solvable. ``out_pinned`` is
-    # indexed in elimination order, ``out_dropped`` in the operator's own.
+    # indexed in elimination order, ``out_dropped`` in the operator's own. A pinned row's diagonal
+    # is the identity's even where the operator stores none (an unreferenced vertex's empty row),
+    # so it is set here in the zeroed fronts; ``scatter_entries``, which runs after, writes the
+    # same one wherever the operator does store it.
     c = wp.int32(wp.tid())
     pin = singular[component_label[c]]
     out_pinned[component_last[c]] = pin
     out_dropped[perm[component_last[c]]] = pin
+    if pin != 0:
+        out_fronts[component_diagonal[c]] = wp.float64(1.0)
 
 
 # --------------------------------------------------------------------------------------
@@ -121,20 +133,6 @@ def scatter_entries(
 @wp.func
 def front_index(base: wp.int64, size: wp.int64, row: wp.int32, column: wp.int32) -> wp.int64:
     return base + wp.int64(row) * size + wp.int64(column)
-
-
-@wp.kernel
-def set_pinned_diagonals(
-    component_label: wp.array[wp.int32],
-    component_diagonal: wp.array[wp.int64],
-    singular: wp.array[wp.int32],
-    out_fronts: wp.array[wp.float64],
-) -> None:
-    # A pinned row's diagonal is the identity's even where the operator stores none (an
-    # unreferenced vertex's empty row).
-    c = wp.int32(wp.tid())
-    if singular[component_label[c]] != 0:
-        out_fronts[component_diagonal[c]] = wp.float64(1.0)
 
 
 @wp.kernel
@@ -214,29 +212,39 @@ def factor_columns(
 
 
 @wp.func
-def invert_column(
+def panel_span(ncol: wp.int32, panel: wp.int32) -> tuple[wp.int32, wp.int32]:
+    # Columns ``[first, last)`` of a front's panel ``panel``; empty (``last <= first``) once the
+    # front's ``ncol`` columns are exhausted, which a level's narrower fronts reach first.
+    first = panel * PANEL
+    return first, wp.min(first + PANEL, ncol)
+
+
+@wp.func
+def substitute_panel(
     base: wp.int64,
-    size: wp.int32,
-    column: wp.int64,
-    c: wp.int32,
+    m64: wp.int64,
     first: wp.int32,
     last: wp.int32,
+    start: wp.int32,
     fronts: wp.array[wp.float64],
-    blocks: wp.array[wp.float64],
+    target: wp.array[wp.float64],
+    target_base: wp.int64,
 ) -> None:
-    # Forward substitution of one solve-block column's rows ``[first, last)`` -- the panel's own
-    # triangle -- the panel's entries held in registers.
-    m64 = wp.int64(size)
+    # Forward substitution of ``target[target_base + j]``, ``j`` in ``[first, last)``, against the
+    # factored panel's own lower triangle, in place, the solved entries held in registers. Entries
+    # below ``start`` are left alone and enter the later rows as zero: a solve-block column ``c``
+    # of ``L11^-1`` is zero above its diagonal. ``panel_rows`` calls it for a row of the front
+    # below the panel (``target`` the front itself) and for a column of the solve block.
     values = panel_vector()
     for q1 in range(PANEL):
         j = first + wp.int32(q1)
-        if j < last and j >= c:
-            total = blocks[column + wp.int64(j)]
+        if j < last and j >= start:
+            total = target[target_base + wp.int64(j)]
             for q2 in range(PANEL):
                 if wp.int32(q2) < wp.int32(q1):
-                    total -= fronts[front_index(base, m64, j, first + wp.int32(q2))] * values[q2]
+                    total -= values[q2] * fronts[front_index(base, m64, j, first + wp.int32(q2))]
             values[q1] = total / fronts[front_index(base, m64, j, j)]
-            blocks[column + wp.int64(j)] = values[q1]
+            target[target_base + wp.int64(j)] = values[q1]
 
 
 @wp.kernel
@@ -260,7 +268,6 @@ def factor_panel(
     front_offset: wp.array[wp.int64],
     ncol: wp.array[wp.int32],
     front_size: wp.array[wp.int32],
-    block_offset: wp.array[wp.int64],
     panel: wp.int32,
     fronts: wp.array[wp.float64],
     status: wp.array[wp.int32],
@@ -270,11 +277,9 @@ def factor_panel(
     # block, and ``update_panel`` spreads the panel's rank-``PANEL`` update.
     b, lane = wp.tid()
     k = level[b]
-    ns = ncol[k]
-    first = panel * PANEL
-    if first >= ns:
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
         return
-    last = wp.min(first + PANEL, ns)
     base = front_offset[k]
     size = front_size[k]
     width = wp.block_dim()
@@ -295,36 +300,26 @@ def panel_rows(
 ) -> None:
     # After ``factor_panel``, one thread per row below the panel's diagonal block (``L[i, panel] =
     # A[i, panel] L_pp^-T``, forward substitution against the factored block) and, past
-    # ``rows_below``, one per solve-block column (the panel rows' own triangle, ``invert_column``).
+    # ``rows_below``, one per solve-block column (the panel rows' own triangle). Both are
+    # ``substitute_panel``.
     b, t = wp.tid()
     k = level[b]
-    ns = ncol[k]
-    first = panel * PANEL
-    if first >= ns:
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
         return
-    last = wp.min(first + PANEL, ns)
     size = front_size[k]
     base = front_offset[k]
     m64 = wp.int64(size)
     if t >= rows_below:
         c = t - rows_below
         if c < last:
-            invert_column(base, size, block_offset[k] + wp.int64(c) * m64, c, first, last,
-                          fronts, blocks)  # fmt: skip
+            substitute_panel(base, m64, first, last, c, fronts, blocks,
+                             block_offset[k] + wp.int64(c) * m64)  # fmt: skip
         return
     row = last + t
     if row >= size:
         return
-    values = panel_vector()
-    for q1 in range(PANEL):
-        j = first + wp.int32(q1)
-        if j < last:
-            total = fronts[front_index(base, m64, row, j)]
-            for q2 in range(PANEL):
-                if wp.int32(q2) < wp.int32(q1):
-                    total -= values[q2] * fronts[front_index(base, m64, j, first + wp.int32(q2))]
-            values[q1] = total / fronts[front_index(base, m64, j, j)]
-            fronts[front_index(base, m64, row, j)] = values[q1]
+    substitute_panel(base, m64, first, last, first, fronts, fronts, front_index(base, m64, row, 0))
 
 
 @wp.kernel
@@ -342,11 +337,9 @@ def update_panel(
     # trailing lower triangle and of the solve block's rows below the panel.
     b, t = wp.tid()
     k = level[b]
-    ns = ncol[k]
-    first = panel * PANEL
-    if first >= ns:
+    first, last = panel_span(ncol[k], panel)
+    if last <= first:
         return
-    last = wp.min(first + PANEL, ns)
     base = front_offset[k]
     size = front_size[k]
     m64 = wp.int64(size)
@@ -450,6 +443,23 @@ def forward_partial(
     )  # fmt: skip
 
 
+@wp.func
+def slot_sum(
+    parts: wp.array[wp.float64],
+    base: wp.int64,
+    slot: wp.int32,
+    stride: wp.int32,
+    begin: wp.int32,
+    end: wp.int32,
+) -> wp.float64:
+    # A row's partial products ``begin <= q < end``, at ``slot + q * stride``, summed in order:
+    # the fixed order that makes a solve bit-reproducible.
+    value = wp.float64(0.0)
+    for q in range(begin, end):
+        value += parts[base + wp.int64(slot + q * stride)]
+    return value
+
+
 @wp.kernel
 def forward_finalize(
     row_slot: wp.array[wp.int32],
@@ -466,12 +476,9 @@ def forward_finalize(
     # A level's solve-block rows: their chunks summed in order. A diagonal-block row is the
     # forward solution's entry; a lower row is a contribution to an ancestor (``-1 - pair``).
     t, column = wp.tid()
-    base = wp.int64(column) * wp.int64(n_parts)
-    slot = row_slot[t]
-    stride = row_stride[t]
-    value = wp.float64(0.0)
-    for q in range(row_count[t]):
-        value += parts[base + wp.int64(slot + q * stride)]
+    value = slot_sum(
+        parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], 0, row_count[t]
+    )
     target = row_target[t]
     if target >= 0:
         out_forward[column * n + target] = value
@@ -529,22 +536,27 @@ def backward_finalize(
     row_target: wp.array[wp.int32],
     pinned: wp.array[wp.int32],
     parts: wp.array[wp.float64],
+    perm: wp.array[wp.int32],
+    refined: wp.array[wp.float64],
     n: wp.int32,
     n_parts: wp.int32,
-    out_solution: wp.array[wp.float64],
+    out_correction: wp.array[wp.float64],
 ) -> None:
-    # A level's solution entries: their chunks summed in order.
+    # A level's entries of the correction (in elimination order, which the next level's
+    # ``backward_partial`` reads): their chunks summed in order. Each is also added to the refined
+    # solution at its operator row: every row is finished by exactly one level, so this is the
+    # whole correction's scatter, one launch fewer per refinement round.
     t, column = wp.tid()
-    base = wp.int64(column) * wp.int64(n_parts)
-    slot = row_slot[t]
-    stride = row_stride[t]
-    value = wp.float64(0.0)
-    for q in range(row_first[t], row_count[t]):
-        value += parts[base + wp.int64(slot + q * stride)]
+    value = slot_sum(
+        parts, wp.int64(column) * wp.int64(n_parts), row_slot[t], row_stride[t], row_first[t],
+        row_count[t],
+    )  # fmt: skip
     i = row_target[t]
     if pinned[i] != 0:
         value = wp.float64(0.0)
-    out_solution[column * n + i] = value
+    out_correction[column * n + i] = value
+    target = column * n + perm[i]
+    refined[target] = refined[target] + value
 
 
 # --------------------------------------------------------------------------------------
@@ -558,14 +570,40 @@ def refine_start(
     n: wp.int32,
     state: wp.array[wp.int32],
     rhs_scale: wp.array[wp.float64],
+    initial: wp.array[wp.float64],
+    out_solution: wp.array[wp.float64],
 ) -> None:
-    # Arm the refinement loop and record each column's largest right-hand-side entry.
+    # Arm the refinement loop, record each column's largest right-hand-side entry, and start the
+    # solution from the caller's initial guess.
     i, column = wp.tid()
+    out_solution[column * n + i] = initial[column * n + i]
     if i == 0 and column == 0:
         state[REFINE_CONDITION] = 0
         state[REFINE_PENDING] = 0
         state[REFINE_ROUND] = 0
     wp.atomic_max(rhs_scale, column, wp.abs(rhs[column * n + i]))
+
+
+@wp.func
+def residual_and_scale(
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    solution: wp.array[wp.float64],
+    rhs: wp.array[wp.float64],
+    offset: wp.int32,
+    i: wp.int32,
+) -> tuple[wp.float64, wp.float64]:
+    # Row ``i`` of ``b - A x`` in ``float64`` and its Oettli-Prager scale ``(|A| |x| + |b|)_i``,
+    # for the column starting at ``offset``: the componentwise backward error is their ratio.
+    b = rhs[offset + i]
+    total = b
+    scale = wp.abs(b)
+    for e in range(offsets[i], offsets[i + 1]):
+        term = values[e] * solution[offset + columns[e]]
+        total -= term
+        scale += wp.abs(term)
+    return total, scale
 
 
 @wp.kernel
@@ -591,13 +629,7 @@ def residual_test(
     # from never passing). Stored times ``sign``: the factored operator's right-hand side.
     i, column = wp.tid()
     offset = column * n
-    b = rhs[offset + i]
-    total = b
-    scale = wp.abs(b)
-    for e in range(offsets[i], offsets[i + 1]):
-        term = values[e] * solution[offset + columns[e]]
-        total -= term
-        scale += wp.abs(term)
+    total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
     out_residual[offset + i] = sign * total
     if componentwise == 0:
         scale = wp.max(scale, rhs_scale[column])
@@ -615,17 +647,6 @@ def refine_advance(cap: wp.int32, state: wp.array[wp.int32]) -> None:
     )
     state[REFINE_PENDING] = 0
     state[REFINE_ROUND] = state[REFINE_ROUND] + 1
-
-
-@wp.kernel
-def scatter_correction(
-    correction: wp.array[wp.float64], perm: wp.array[wp.int32], n: wp.int32,
-    solution: wp.array[wp.float64],
-) -> None:  # fmt: skip
-    # Add a permuted correction to the solution.
-    i, column = wp.tid()
-    target = column * n + perm[i]
-    solution[target] = solution[target] + correction[column * n + i]
 
 
 @wp.kernel
@@ -674,22 +695,23 @@ def backward_error_exceeds(
     rhs: wp.array[wp.float64],
     n: wp.int32,
     tolerance: wp.float64,
+    residual: wp.array[wp.float64],
+    threshold: wp.array[wp.float64],
     out_flag: wp.array[wp.int32],
 ) -> None:
     # The componentwise backward error of a solution (Oettli and Prager): ``|b - A x|_i`` against
     # ``(|A| |x| + |b|)_i``. Above ``tolerance`` anywhere, the solution is not the system's to
-    # within its own entries' size, whatever its residual norm says.
+    # within its own entries' size, whatever its residual norm says. Given a conjugate-gradient
+    # result's per-column ``residual`` and ``threshold`` (or ``None``), row 0 of each column also
+    # flags a column that did not converge, so one four-byte read answers both questions.
     i, column = wp.tid()
     offset = column * n
-    b = rhs[offset + i]
-    total = b
-    scale = wp.abs(b)
-    for e in range(offsets[i], offsets[i + 1]):
-        term = values[e] * solution[offset + columns[e]]
-        total -= term
-        scale += wp.abs(term)
+    total, scale = residual_and_scale(offsets, columns, values, solution, rhs, offset, i)
     if wp.abs(total) > tolerance * scale:
         out_flag[0] = 1
+    if i == 0 and residual.shape[0] > 0:
+        if residual[column] > threshold[column]:
+            out_flag[0] = 1
 
 
 # --------------------------------------------------------------------------------------
@@ -911,16 +933,16 @@ def dissection_relabel(
 @wp.kernel
 def dissection_compact(
     vertices: wp.array[wp.int32],
-    keep: wp.array[wp.int32],
     kept_through: wp.array[wp.int32],
     next_segment: wp.array[wp.int32],
     out_order: wp.array[wp.int32],
     out_order_segment: wp.array[wp.int32],
 ) -> None:
-    # The survivors in sorted order (``kept_through`` is ``keep``'s inclusive scan).
+    # The survivors in sorted order: ``kept_through`` is the keep flags' inclusive scan, done in
+    # place, from which each position recovers its own flag.
     p = wp.int32(wp.tid())
-    if keep[p] != 0:
-        q = kept_through[p] - 1
+    q, kept = scanned_count(kept_through, p)
+    if kept != 0:
         out_order[q] = vertices[p]
         out_order_segment[q] = next_segment[p]
 
@@ -1035,6 +1057,13 @@ def height_starts(
         out_starts[hh] = p
 
 
+# ``structure_cursors`` slots: pending rows kept for a later height, rows passed up, and the
+# height's distinct rows.
+CURSOR_KEPT = wp.constant(0)
+CURSOR_PASSED = wp.constant(1)
+CURSOR_UNIQUE = wp.constant(2)
+
+
 @wp.kernel
 def gather_candidates(
     own_keys: wp.array[wp.uint64],
@@ -1051,66 +1080,65 @@ def gather_candidates(
     out_kept: wp.array[wp.uint64],
 ) -> None:
     # The row candidates of one height's supernodes: their own entries, then the rows their
-    # descendants passed up (``pending``, whose other entries wait for a later height). The
-    # candidates are sorted and deduplicated next, so the cursors' arrival order does not matter.
+    # descendants passed up (``pending``). A pending row another height takes is moved to
+    # ``out_kept`` and its candidate slot holds ``key_mask``, above every real key (rows below
+    # ``2^key_bits - 1``), so the sort puts those slots last and the host need not count them
+    # first. The candidates are sorted and deduplicated next, so the cursor's arrival order does
+    # not matter.
     t = wp.int32(wp.tid())
+    out_values[t] = t
     if t < own_count:
         out_candidates[t] = own_keys[own_begin + t] & key_mask
-        out_values[t] = t
         return
     key = pending[t - own_count]
     if height[wp.int32(key // wp.uint64(n))] == level:
-        q = own_count + wp.atomic_add(cursors, 0, 1)
-        out_candidates[q] = key
-        out_values[q] = q
+        out_candidates[t] = key
     else:
-        out_kept[wp.atomic_add(cursors, 1, 1)] = key
-
-
-@wp.kernel
-def mark_key_runs(keys: wp.array[wp.uint64], out_flags: wp.array[wp.int32]) -> None:
-    p = wp.int32(wp.tid())
-    out_flags[p] = wp.where(p == 0 or keys[p] != keys[wp.max(p - 1, 0)], 1, 0)
-
-
-@wp.kernel
-def compact_key_runs(
-    keys: wp.array[wp.uint64],
-    flags: wp.array[wp.int32],
-    ends: wp.array[wp.int32],
-    out_unique: wp.array[wp.uint64],
-) -> None:
-    p = wp.int32(wp.tid())
-    if flags[p] != 0:
-        out_unique[ends[p] - 1] = keys[p]
+        out_candidates[t] = key_mask
+        out_kept[wp.atomic_add(cursors, CURSOR_KEPT, 1)] = key
 
 
 @wp.kernel
 def emit_rows(
-    unique: wp.array[wp.uint64],
+    candidates: wp.array[wp.uint64],
+    run_ends: wp.array[wp.int32],
+    key_mask: wp.uint64,
     n: wp.int32,
     level_base: wp.int32,
     parent: wp.array[wp.int32],
     column_end: wp.array[wp.int32],
-    pending_base: wp.int32,
     cursors: wp.array[wp.int32],
+    out_unique: wp.array[wp.uint64],
     out_row_start: wp.array[wp.int32],
     out_nrow: wp.array[wp.int32],
     out_pending: wp.array[wp.uint64],
 ) -> None:
-    # One height's row structure is final: record each supernode's run, and pass every row past
-    # the parent's columns up to the parent.
-    i = wp.int32(wp.tid())
-    key = unique[i]
+    # One height's row structure is final, from its sorted candidates and the in-place inclusive
+    # scan of their run starts: each distinct row is stored, each supernode's run recorded, and
+    # every row past the parent's columns passed up to the parent, after the rows
+    # ``gather_candidates`` kept. The last thread (``run_ends`` is exactly the height's capacity;
+    # ``candidates`` is twice it, the sort's scratch) publishes the distinct count: the scan's
+    # total, less the run of placeholder keys if there is one.
+    p = wp.int32(wp.tid())
+    key = candidates[p]
+    if p == run_ends.shape[0] - 1:
+        cursors[CURSOR_UNIQUE] = run_ends[p] - wp.where(key == key_mask, 1, 0)
+    if key == key_mask:
+        return
+    i, starts = scanned_count(run_ends, p)
+    if starts == 0:
+        return
+    out_unique[i] = key
     k = wp.int32(key // wp.uint64(n))
     row = wp.int32(key % wp.uint64(n))
-    if i == 0 or wp.int32(unique[wp.max(i - 1, 0)] // wp.uint64(n)) != k:
+    # ``candidates[p - 1]`` is the previous distinct row: placeholders sort last.
+    if p == 0 or wp.int32(candidates[wp.max(p - 1, 0)] // wp.uint64(n)) != k:
         out_row_start[k] = level_base + i
     wp.atomic_add(out_nrow, k, 1)
-    p = parent[k]
-    if p >= 0 and row >= column_end[p]:
-        q = pending_base + wp.atomic_add(cursors, 2, 1)
-        out_pending[q] = wp.uint64(p) * wp.uint64(n) + wp.uint64(row)
+    q = parent[k]
+    if q >= 0 and row >= column_end[q]:
+        slot = cursors[CURSOR_KEPT] + wp.atomic_add(cursors, CURSOR_PASSED, 1)
+        out_pending[slot] = wp.uint64(q) * wp.uint64(n) + wp.uint64(row)
 
 
 @wp.kernel
@@ -1231,16 +1259,9 @@ def parent_locals(
 
 @wp.func
 def level_item(offsets: wp.array[wp.int32], t: wp.int32) -> wp.int32:
-    # The supernode (index into the level-major order) whose run of items holds item ``t``.
-    low = wp.int32(0)
-    high = offsets.shape[0] - 1
-    while high - low > 1:
-        mid = (low + high) // 2
-        if offsets[mid] <= t:
-            low = mid
-        else:
-            high = mid
-    return low
+    # The supernode (index into the level-major order) whose run of items holds item
+    # ``t < offsets[-1]``: the last ``j`` with ``offsets[j] <= t``, so empty runs are skipped.
+    return binary_search_index(offsets, t) - 1
 
 
 @wp.func
@@ -1428,21 +1449,6 @@ def contribution_keys(
 # --------------------------------------------------------------------------------------
 # Symbolic analysis: components
 # --------------------------------------------------------------------------------------
-
-
-@wp.kernel
-def seed_index_sort(
-    keys: wp.array[wp.int32], out_keys: wp.array[wp.int32], out_values: wp.array[wp.int32]
-) -> None:
-    i = wp.int32(wp.tid())
-    out_keys[i] = keys[i]
-    out_values[i] = i
-
-
-@wp.kernel
-def mark_label_runs(sorted_labels: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
-    p = wp.int32(wp.tid())
-    out_flags[p] = wp.where(p == 0 or sorted_labels[p] != sorted_labels[wp.max(p - 1, 0)], 1, 0)
 
 
 @wp.kernel

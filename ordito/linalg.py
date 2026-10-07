@@ -519,6 +519,7 @@ class MinQuadWithFixedData:
         self.fixed_mask = _launch.clone(fixed_mask)
         self.free_map, self.n_free = free_partition(self.fixed_mask)
         self.factorization: OperatorFactorization | None = None
+        self._match_flag: wp.array[wp.int32] | None = None
         if self.n_free == 0:
             return
         device = fixed_mask.device
@@ -528,6 +529,9 @@ class MinQuadWithFixedData:
         q_uu, _ = assemble_interior_system(
             q, self.fixed_mask, self.free_map, no_values, self.n_free
         )
+        # The right-hand side's extraction pass also counts each free row's kept entries, which
+        # only the system's assembly above needed: scratch every solve rewrites.
+        self._row_counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
         self.factorization = OperatorFactorization(
             q_uu, free_coordinates(coordinates, self.fixed_mask, self.free_map, self.n_free)
         )
@@ -569,7 +573,11 @@ class MinQuadWithFixedData:
         if fixed_mask.size == 0:
             return True
         device = fixed_mask.device
-        flag = _launch.zeros(1, dtype=wp.int32, device=device)
+        if self._match_flag is None:
+            self._match_flag = _launch.zeros(1, dtype=wp.int32, device=device)
+        else:
+            _launch.zero_(self._match_flag)
+        flag = self._match_flag
         _launch.launch(
             kernel_linalg.masks_differ,
             dim=fixed_mask.size,
@@ -639,11 +647,11 @@ class MinQuadWithFixedData:
         )
         if self.factorization is None:
             return solution, self.free_map, self.n_free
-        # Only the right-hand side changes with the values: the extraction's first pass forms it,
-        # and its row counts are scratch.
-        counts = _launch.empty(self.n_free, dtype=wp.int32, device=device)
+        # Only the right-hand side changes with the values: the extraction's first pass forms
+        # every free row of it.
+        counts = self._row_counts
         rhs = odt.as_array2d(
-            _launch.zeros((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
+            _launch.empty((n_rhs, self.n_free), dtype=wp.float64, device=device), wp.float64
         )
         _launch.launch(
             kernel_linalg.interior_row_counts,
@@ -662,6 +670,10 @@ class MinQuadWithFixedData:
             ],
             device=device,
         )
+        if self.factorization.factorization is not None:
+            # Factored: ``solve_spd_columns``' first branch, without its report.
+            self.factorization.solve(rhs, solution, tol=tol)
+            return solution, self.free_map, self.n_free
         solve_spd_columns(
             cast("odt.BsrMatrix[wp.float64]", self.factorization.matrix),
             rhs,
@@ -1402,7 +1414,7 @@ def _solve_columns_verified(
     cap = maxiter if maxiter is not None else CG_MAXITER_FACTOR * n
     if factorization.factorization is not None:
         factorization.solve(rhs, solution, tol=tol)
-        return _direct_result(tol, check_every, rhs.device)
+        return _direct_result(factorization, tol, check_every, rhs.device)
     rent = min(cap, CG_FACTOR_AFTER_ROUNDS)
     result = _cg_columns(
         matrix,
@@ -1424,7 +1436,7 @@ def _solve_columns_verified(
         # 1.9e-12 from zero, on a graded biharmonic system).
         solution.zero_()
         factorization.solve(rhs, solution, tol=tol)
-        return _direct_result(tol, check_every, rhs.device)
+        return _direct_result(factorization, tol, check_every, rhs.device)
     # An operator too large to factor may still converge under the iteration; one the
     # factorization finds indefinite either way round is past what conjugate gradient reaches too.
     if cap > rent and not factorization._indefinite:  # pyright: ignore[reportPrivateUsage]
@@ -1472,19 +1484,13 @@ def _verified(
     device = rhs.device
     n_columns, n = int(rhs.shape[0]), int(rhs.shape[1])
     flag = _launch.zeros(1, dtype=wp.int32, device=device)
-    if isinstance(residual, wp.array):
-        _launch.launch(
-            kernel_linalg.flag_unconverged_columns,
-            dim=residual.shape[0],
-            inputs=[residual, threshold],
-            outputs=[flag],
-            device=device,
-        )
+    on_device = isinstance(residual, wp.array)
     _launch.launch(
         kernel_cholesky.backward_error_exceeds,
         dim=(n, n_columns),
         inputs=[matrix.offsets, matrix.columns, matrix.values, solution.flatten(), rhs.flatten(),
-                wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol))],
+                wp.int32(n), wp.float64(max(VERIFIED_BACKWARD_ERROR, 100.0 * tol)),
+                residual if on_device else None, threshold if on_device else None],
         outputs=[flag],
         device=device,
     )  # fmt: skip
@@ -1638,7 +1644,7 @@ class _FactoringColumns:
         if self._calls == 1 or not self._factorization.factor():
             return self._state()
         self._factorization.solve(self._rhs, self._solution, tol=self._tol)
-        return _direct_result(self._tol, self._check_every, self._rhs.device)
+        return _direct_result(self._factorization, self._tol, self._check_every, self._rhs.device)
 
 
 class OperatorFactorization:
@@ -1700,6 +1706,9 @@ class OperatorFactorization:
         self._refused = False
         # Whether the refusal was the operator's definiteness, not its size.
         self._indefinite = False
+        # A factored solve's device report per tolerance (``_direct_result``), built once: three
+        # one-element arrays a call is three allocations on a path that costs a few launches.
+        self._reports: dict[float, tuple[Any, Any, Any]] = {}
 
     @property
     def matrix(self) -> odt.SparseMatrix:
@@ -1934,7 +1943,7 @@ def solve_spd_settled(
             _columns_view(rhs_flat, n_columns), _columns_view(solution_flat, n_columns),
             tol=SETTLE_DIRECT_TOLERANCE, componentwise=True,
         )  # fmt: skip
-        return _launch.zeros(1, dtype=wp.int32, device=rhs.device)
+        return _direct_result(factorization, SETTLE_DIRECT_TOLERANCE, 0, rhs.device)[0]
     solver = _cached_solver(
         scalar,
         n_columns,
@@ -1959,7 +1968,7 @@ def solve_spd_settled(
         kernel_cholesky.backward_error_exceeds,
         dim=(int(scalar.nrow), n_columns),
         inputs=[scalar.offsets, scalar.columns, scalar.values, solution_flat, rhs_flat,
-                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR)],
+                wp.int32(int(scalar.nrow)), wp.float64(SETTLE_BACKWARD_ERROR), None, None],
         outputs=[flag],
         device=rhs.device,
     )  # fmt: skip
@@ -1980,15 +1989,26 @@ def solve_spd_settled(
     return solver.iterations
 
 
-def _direct_result(tol: float, check_every: int, device: wp.DeviceLike) -> tuple[Any, Any, Any]:
-    """Return a factorized solve's report on ``solve_spd``'s terms: no iterations, at ``tol``."""
+def _direct_result(
+    factorization: OperatorFactorization, tol: float, check_every: int, device: wp.DeviceLike
+) -> tuple[Any, Any, Any]:
+    """
+    Return a factorized solve's report on ``solve_spd``'s terms: no iterations, at ``tol``.
+
+    The device form's arrays are built once per tolerance and held by ``factorization``: every
+    factored solve at one tolerance reports the same constant values.
+    """
     if check_every > 0:
         return (0, tol, tol)
-    return (
-        _launch.zeros(1, dtype=wp.int32, device=device),
-        _launch.full(1, tol * tol, dtype=wp.float64, device=device),
-        _launch.full(1, tol * tol, dtype=wp.float64, device=device),
-    )
+    report = factorization._reports.get(tol)  # pyright: ignore[reportPrivateUsage]
+    if report is None:
+        report = (
+            _launch.zeros(1, dtype=wp.int32, device=device),
+            _launch.full(1, tol * tol, dtype=wp.float64, device=device),
+            _launch.full(1, tol * tol, dtype=wp.float64, device=device),
+        )
+        factorization._reports[tol] = report  # pyright: ignore[reportPrivateUsage]
+    return report
 
 
 def _columns_view(vector: wp.array[wp.float64], n_columns: int) -> odt.ArrayNd:
@@ -2001,12 +2021,18 @@ def _columns_view(vector: wp.array[wp.float64], n_columns: int) -> odt.ArrayNd:
 def _expanded_coordinates(
     coordinates: wp.array[wp.vec3] | None, rows_per_point: int
 ) -> wp.array[wp.vec3] | None:
-    """Return one position per scalar row: each block row's, ``rows_per_point`` times."""
+    """Return one position per scalar row: each block row's, ``rows_per_point`` (1 or 2) times."""
     if coordinates is None or rows_per_point == 1:
         return coordinates
-    # Host-side: ``sparse_cholesky`` reads its coordinates back once anyway.
-    expanded = np.repeat(coordinates.numpy(), rows_per_point, axis=0)
-    return _launch.array(expanded, dtype=wp.vec3, device=coordinates.device)
+    expanded = _launch.empty(2 * coordinates.size, dtype=wp.vec3, device=coordinates.device)
+    _launch.launch(
+        kernel_linalg.stacked_positions,
+        dim=coordinates.size,
+        inputs=[coordinates, wp.int32(0)],
+        outputs=[expanded],
+        device=coordinates.device,
+    )
+    return expanded
 
 
 @overload

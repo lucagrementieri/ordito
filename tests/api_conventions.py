@@ -414,16 +414,15 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # The multifrontal factorization works in place: ``fronts`` holds each front's operator
     # entries, then its factor and the Schur complement its parent extends; ``blocks`` the solve
     # blocks each panel's update rewrites. The refinement loop's ``state`` / ``rhs_scale`` are its
-    # condition, round and scale words, read and rewritten every round; ``solution`` is corrected
-    # (``scatter_correction``) and shifted (``project_null_space``) in place.
+    # condition, round and scale words, read and rewritten every round; the solution is corrected
+    # (``backward_finalize``'s ``refined``) and shifted (``project_null_space``) in place.
     ("cholesky", "extend_add"): frozenset({"fronts"}),
-    ("cholesky", "panel_rows"): frozenset({"fronts"}),
     ("cholesky", "seed_blocks"): frozenset({"blocks"}),
     ("cholesky", "update_panel"): frozenset({"fronts", "blocks"}),
     ("cholesky", "refine_start"): frozenset({"state", "rhs_scale"}),
     ("cholesky", "residual_test"): frozenset({"state"}),
     ("cholesky", "refine_advance"): frozenset({"state"}),
-    ("cholesky", "scatter_correction"): frozenset({"solution"}),
+    ("cholesky", "backward_finalize"): frozenset({"refined"}),
     ("cholesky", "project_null_space"): frozenset({"solution"}),
     # The symbolic analysis' atomic cursors (compaction slots whose arrival order the following
     # sort erases), and the breadth-first search's distances and loop state, advanced in place

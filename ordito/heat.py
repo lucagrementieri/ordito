@@ -1951,7 +1951,7 @@ def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[
     n_vertices = vertices.size
     positions = _launch.empty((2 + n_scalars) * n_vertices, dtype=wp.vec3, device=vertices.device)
     _launch.launch(
-        kernel_heat.stacked_positions,
+        kernel_linalg.stacked_positions,
         dim=n_vertices,
         inputs=[vertices, wp.int32(n_scalars)],
         outputs=[positions],

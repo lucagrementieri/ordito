@@ -252,15 +252,19 @@ def free_coordinates(
 
 
 @wp.kernel
-def flag_unconverged_columns(
-    residual: wp.array[wp.float64], threshold: wp.array[wp.float64], out_flag: wp.array[wp.int32]
+def stacked_positions(
+    vertices: wp.array[wp.vec3], n_scalars: wp.int32, out_positions: wp.array[wp.vec3]
 ) -> None:
-    # A conjugate-gradient result's verdict, on the device: a column whose last residual is above
-    # its threshold did not converge. Writes into the flag the backward-error test shares, so one
-    # four-byte read answers both.
-    column = wp.int32(wp.tid())
-    if residual[column] > threshold[column]:
-        out_flag[0] = 1
+    # The vertex of every row of a ``[vector system; scalar system x n_scalars]`` stack, for a
+    # factorization's geometric ordering: the vector system's interleaved two rows (a
+    # ``wp.mat22d`` operator's scalar expansion), then one row per scalar system.
+    v = wp.int32(wp.tid())
+    n = vertices.shape[0]
+    position = vertices[v]
+    out_positions[2 * v] = position
+    out_positions[2 * v + 1] = position
+    for k in range(n_scalars):
+        out_positions[2 * n + k * n + v] = position
 
 
 @wp.func

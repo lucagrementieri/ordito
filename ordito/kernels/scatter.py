@@ -153,26 +153,24 @@ def scatter_face_thirds(
 
 @wp.kernel
 def scatter_face_areas_exact(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], out_sum: wp.array[wp.float64]
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    areas: wp.array[wp.float32],
+    out_sum: wp.array[wp.float64],
 ) -> None:
     # Each face's ``float32`` area into each of its corners' ``float64`` sum, unscaled. A
     # ``float32`` value is exact in ``float64``, and a sum of them stays exact while one vertex's
     # areas span less than ``2^(29 - log2(faces at it))``, so the atomic commit order changes no
     # bit: the result is reproducible on CUDA, where a sum of rounded thirds was not. The area is
-    # ``face_normals_and_area``'s, bit for bit; ``scale_face_sums`` divides by three afterwards.
+    # the caller's ``areas[f]``, or, given ``None``, ``face_normals_and_area``'s, bit for bit;
+    # ``scale_face_sums`` divides by three afterwards.
     f = wp.int32(wp.tid())
-    _normal, area = face_normals_and_area(vertices, faces, f)
+    area = wp.float32(0.0)
+    if areas.shape[0] > 0:
+        area = areas[f]
+    else:
+        _normal, area = face_normals_and_area(vertices, faces, f)
     value = wp.float64(area)
-    add_corner_triple(out_sum, faces, f, value, value, value)
-
-
-@wp.kernel
-def scatter_face_values_exact(
-    faces: wp.array[wp.int32], areas: wp.array[wp.float32], out_sum: wp.array[wp.float64]
-) -> None:
-    # ``scatter_face_areas_exact`` over a caller's ``float32`` area table.
-    f = wp.int32(wp.tid())
-    value = wp.float64(areas[f])
     add_corner_triple(out_sum, faces, f, value, value, value)
 
 

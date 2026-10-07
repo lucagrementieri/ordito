@@ -1324,20 +1324,12 @@ def mass_matrix_entries(
     # ``float32`` areas summed exactly in ``float64`` -- the same bits whatever order the atomics
     # commit in -- then divided by three once, in the requested precision.
     sums = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    if face_areas is None:
-        _launch.launch(
-            kernel_scatter.scatter_face_areas_exact,
-            dim=n_faces,
-            inputs=[vertices, faces, sums],
-            device=device,
-        )
-    else:
-        _launch.launch(
-            kernel_scatter.scatter_face_values_exact,
-            dim=n_faces,
-            inputs=[faces, face_areas, sums],
-            device=device,
-        )
+    _launch.launch(
+        kernel_scatter.scatter_face_areas_exact,
+        dim=n_faces,
+        inputs=[vertices, faces, face_areas, sums],
+        device=device,
+    )
     mass = sums if dtype == wp.float64 else _launch.empty(n_vertices, dtype=dtype, device=device)
     _launch.launch(
         kernel_scatter.SCALE_FACE_SUMS[dtype],

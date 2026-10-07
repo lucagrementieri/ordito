@@ -522,6 +522,31 @@ def sort_segment(offsets: wp.array[wp.int32], data: wp.array[wp.int32], segment:
         gap = gap // 3
 
 
+@wp.func
+def next_row_entry(
+    values: wp.array[wp.int32],
+    begin: wp.int32,
+    end: wp.int32,
+    previous_value: wp.int32,
+    previous_slot: wp.int32,
+) -> tuple[wp.int32, wp.int32]:
+    # The entry of ``values[begin:end]`` that follows ``(previous_value, previous_slot)`` in
+    # ``(value, slot)`` order -- a row visited in ascending value order whatever order it is
+    # stored in, a repeated value once per occurrence. Start from ``(-1, -1)``; an O(row) scan, for
+    # rows of a few entries: what makes a ``float`` sum over an unordered CSR row (a vertex-face
+    # row filled in atomic arrival order) the same bits run to run
+    # (``smoothing.equal_area_position``, ``remesh.gather_vertex_quadrics``).
+    best_value = wp.int32(INT32_MAX_CONSTANT)
+    best_slot = wp.int32(-1)
+    for slot in range(begin, end):
+        value = values[slot]
+        after = value > previous_value or (value == previous_value and slot > previous_slot)
+        if after and (value < best_value or (value == best_value and slot < best_slot)):
+            best_value = value
+            best_slot = slot
+    return best_value, best_slot
+
+
 @wp.kernel
 def sort_segments(offsets: wp.array[wp.int32], data: wp.array[wp.int32]) -> None:
     # One thread per segment, in-place ascending sort of ``data[offsets[s] : offsets[s + 1]]``.

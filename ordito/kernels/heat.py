@@ -329,21 +329,6 @@ def seed_source_scalars(
 
 
 @wp.kernel
-def stacked_positions(
-    vertices: wp.array[wp.vec3], n_scalars: wp.int32, out_positions: wp.array[wp.vec3]
-) -> None:
-    # The vertex of every row of a ``[vector system; scalar system x n_scalars]`` stack: the
-    # vector system's interleaved two rows, then one row per scalar system.
-    v = wp.int32(wp.tid())
-    n = vertices.shape[0]
-    position = vertices[v]
-    out_positions[2 * v] = position
-    out_positions[2 * v + 1] = position
-    for k in range(n_scalars):
-        out_positions[2 * n + k * n + v] = position
-
-
-@wp.kernel
 def seed_transport_sources(
     sources: wp.array[wp.int32],
     vectors: wp.array[wp.vec2],

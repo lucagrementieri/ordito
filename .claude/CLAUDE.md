@@ -5820,6 +5820,21 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   settled (1e-7 on the saddle and spheres); on `saddle_graded`, which never settles, `log_map`'s
   distance error vs `igl.exact_geodesic` moved 9.4 -> 9.7 % mean at the same 336 rounds. **Stack
   only systems that settle together.**
+    - **DECLINED (2026-10-07, built and reverted): factoring the stack per block.** Solving
+      `[vector; heat x k]`'s direct path by the solver's own `"vector"` and `"heat"`
+      factorizations (no stack factorization; heat factored once, shared with the plain
+      diffusions) cut the kept memory 297 -> 111 MB (`ico5`) and 112 -> 45 MB (graded 68 x 68),
+      but lost on speed everywhere: a factored `transport_tangent_vectors` 0.495 -> 0.515 ms and
+      0.337 -> 0.413 ms (two refinement graphs a solve instead of one), the one-shot graded
+      `transport` 21.6 -> 24.2 ms and `log_map` 26.3 -> 31.9 ms (two symbolic analyses cost more
+      than one of the stack: each pays its per-level launches and readbacks).
+- **DECLINED (2026-10-07, built and reverted): deferring the settle check's read to the end of
+  the call.** Each diffusion wrote its backward-error verdict into a slot, the call read them all
+  once its consumers were queued, and a failed one factored and re-ran the call. Level on every
+  well-conditioned row (`heat_geodesic` on `ico5` 3.50 / 3.47-3.52 ms: the host had nothing to
+  run ahead with), and a loss on the failure path, which re-runs the Poisson tail: graded
+  `heat_geodesic` 21.0 -> 27.5 ms, `log_map` 26.5 -> 39.3 ms. The one read per settled diffusion
+  stays where it is.
 - **A fresh operator of a seen shape takes a pooled state** (§16.16): zero `ScopedCapture`s per
   call (was 2-3).
 - **`heat_operators` / `vector_heat_operators` write their systems over the Laplacian's own
@@ -6604,6 +6619,22 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
       `_estimate` prices both `float64` arenas at 4 bytes an entry, so `nbytes` undercounts the
       held solve blocks by half and the transient front arena (allocated by every `factor` call,
       1.6 GB on `dragon`) at half its peak; the budget therefore admits roughly twice what it says.
+    - **The analysis loops allocate once and read once a height** (2026-10-07). The dissection's
+      depth loop holds every buffer at its largest (`n` vertices, `n // 33` segments: no segment
+      of a live depth has under 33 rows) and compacts the survivors into `order` itself through
+      an in-place scan (`array.scanned_count`): ten allocations a depth fewer. The row
+      structure's height loop sorts the whole capacity with a placeholder key (`2^key_bits - 1`,
+      above every row) standing in for the pending rows another height takes, moves those into
+      the next height's buffer directly, and emits the rows straight from the sorted candidates:
+      one 12-byte read a height where it took three, two launches and a copy fewer. Bit-identical
+      solves and `nbytes` on both devices (`ico5`, `bunny`, `dragon`, with and without
+      coordinates); plan + factor 1.05x on `ico5` / `bunny`, 1.015x on `dragon`.
+    - **The numeric and solve paths fused** (2026-10-07): the pin flags are cleared by
+      `mark_nonsingular_components` and the pinned diagonal set by `pin_singular_components`
+      (two memsets and a launch fewer a factorization), the correction is added to the solution
+      by the backward sweep's last level (`backward_finalize`, a node fewer a refinement round),
+      and `refine_start` copies the initial guess. Solves bit-identical; 1.00x at one column,
+      1.02-1.03x at three.
 - **`float64` factor, not `float32` plus refinement**: a `float32` factor converged under float64
   refinement (heat componentwise in 2-3 refinements, the graded Laplacian in 4-12) but every
   refinement is a solve; the `float64` factor's one solve passes the test at once, and its numeric

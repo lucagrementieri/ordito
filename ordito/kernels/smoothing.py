@@ -1,6 +1,13 @@
 import warp as wp
 
-from ordito.kernels.array import greater, inverse_or_one, sort_segment, to_vec3, to_vec3d
+from ordito.kernels.array import (
+    greater,
+    inverse_or_one,
+    next_row_entry,
+    sort_segment,
+    to_vec3,
+    to_vec3d,
+)
 from ordito.kernels.laplacian import face_half_cotangents, operator_row
 from ordito.kernels.linalg import free_row, selected_row, solve_normal_equations
 from ordito.kernels.predicates import angle_defect, closest_point_on_segment, plane_basis
@@ -1588,29 +1595,6 @@ def equal_area_position_f64(
         return current
     target = wp.inverse(matrix) * rhs
     return to_vec3(target)
-
-
-@wp.func
-def next_row_entry(
-    values: wp.array[wp.int32],
-    begin: wp.int32,
-    end: wp.int32,
-    previous_value: wp.int32,
-    previous_slot: wp.int32,
-) -> tuple[wp.int32, wp.int32]:
-    # The entry of ``values[begin:end]`` that follows ``(previous_value, previous_slot)`` in
-    # ``(value, slot)`` order -- a row visited in ascending value order whatever order it is
-    # stored in, a repeated value once per occurrence. Start from ``(-1, -1)``; an O(row) scan, for
-    # rows of a few entries.
-    best_value = wp.int32(2147483647)
-    best_slot = wp.int32(-1)
-    for slot in range(begin, end):
-        value = values[slot]
-        after = value > previous_value or (value == previous_value and slot > previous_slot)
-        if after and (value < best_value or (value == best_value and slot < best_slot)):
-            best_value = value
-            best_slot = slot
-    return best_value, best_slot
 
 
 # ``equal_area_position``'s float32 path is trusted while its system's determinant is at least this

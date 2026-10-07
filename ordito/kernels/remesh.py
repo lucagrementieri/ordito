@@ -9,6 +9,7 @@ from ordito.kernels.array import (
     LOOP_ROUND,
     binary_search_sorted_contains,
     lowbias32,
+    next_row_entry,
     pack_edge_key,
     pack_index_triple,
     scanned_slot,
@@ -3407,22 +3408,10 @@ def scatter_pass_adjacency(
 
 
 # Rows longer than this are summed in their stored order instead of ascending face order:
-# ``gather_vertex_quadrics`` finds each next face by a rescan of the row, quadratic in its length,
-# which a hub vertex (a cone apex with tens of thousands of faces) cannot afford.
+# ``gather_vertex_quadrics`` finds each next face by a rescan of the row (``array.next_row_entry``),
+# quadratic in its length, which a hub vertex (a cone apex with tens of thousands of faces) cannot
+# afford.
 QUADRIC_ORDERED_ROW_MAX = wp.constant(64)
-
-
-@wp.func
-def next_row_face(
-    vertex_faces: wp.array[wp.int32], lo: wp.int32, hi: wp.int32, last: wp.int32
-) -> wp.int32:
-    # The smallest face of row ``[lo, hi)`` above ``last``, or ``INT32_MAX`` past the last one.
-    next_face = wp.int32(INT32_MAX_CONSTANT)
-    for j in range(lo, hi):
-        f = vertex_faces[j]
-        if f > last and f < next_face:
-            next_face = f
-    return next_face
 
 
 @wp.kernel
@@ -3439,8 +3428,8 @@ def gather_vertex_quadrics(
     # cost and placement read from it, is the same run to run on every device (a row longer than
     # ``QUADRIC_ORDERED_ROW_MAX`` is summed as stored), then the boundary planes
     # ``count_pass_edges`` accumulated for it, whose entry is reset here for the next pass. A
-    # degenerate face that names ``v`` twice is visited once on an ordered row and twice on a
-    # stored one, which is the same sum: its plane is zero. The dummy vertex's row is empty, so its
+    # degenerate face that names ``v`` twice is visited once per occurrence; its plane is zero, so
+    # it adds nothing either way. The dummy vertex's row is empty, so its
     # quadric is zero, as is every unreferenced vertex's.
     v = wp.int32(wp.tid())
     lo = vertex_face_offsets[v]
@@ -3448,13 +3437,13 @@ def gather_vertex_quadrics(
     ordered = hi - lo <= QUADRIC_ORDERED_ROW_MAX
     q = SymmetricQuadric()
     last = wp.int32(-1)
+    slot = wp.int32(-1)
     for j in range(lo, hi):
         f = vertex_faces[j]
         if ordered:
-            f = next_row_face(vertex_faces, lo, hi, last)
-            last = f
-        if f != INT32_MAX_CONSTANT:
-            q = q + face_quadrics[f]
+            last, slot = next_row_entry(vertex_faces, lo, hi, last, slot)
+            f = last
+        q = q + face_quadrics[f]
     if boundary_flags[v] != 0:
         q = q + boundary_quadrics[v]
         boundary_quadrics[v] = SymmetricQuadric()
