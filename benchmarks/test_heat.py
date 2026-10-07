@@ -46,8 +46,9 @@ All three libraries split this into mesh-dependent setup (assembly, and for the 
 factorization) and a per-source solve, and the ``heat_geodesic`` group reports both points:
 ``setup=full`` puts the setup **inside** the timed callable, which is what a caller computing one
 field pays — timing a back-substitution against a full iterative solve would compare nothing — and
-``setup=amortized`` hoists it out. On ordito's side that is a real API path (``heat_operators`` fed
-back through ``heat_geodesic(..., operators=...)``), not a benchmark-only shortcut. The other groups
+``setup=amortized`` hoists it out. On ordito's side that is a real API path (a ``Trimesh`` passed to
+``heat_geodesic``, which keeps the operators and, from its second call, their factorizations; the
+row warms it with two calls before timing), not a benchmark-only shortcut. The other groups
 report ``full`` only. A single source vertex throughout: the method's cost is essentially
 independent of the number of sources, which change only the right-hand side.
 
@@ -209,11 +210,14 @@ def _run_case(bench_case: BenchCase, *, amortized: bool = False) -> None:
     if bench_case.kind == "ordito":
         vertices, faces = bench_case.vertices_wp, bench_case.faces_wp
         sources = _sources_wp(bench_case)
-        operators = od.heat.heat_operators(vertices, faces) if amortized else None
-        distance = bench_case.run(
-            lambda: od.heat.heat_geodesic(vertices, faces, sources, operators=operators),
-            rounds=_GEODESIC_ROUNDS,
-        )
+        if amortized:
+            mesh = od.Trimesh(vertices, faces)
+            for _ in range(2):
+                od.heat.heat_geodesic(mesh, sources)
+            solve = lambda: od.heat.heat_geodesic(mesh, sources)  # noqa: E731
+        else:
+            solve = lambda: od.heat.heat_geodesic(vertices, faces, sources)  # noqa: E731
+        distance = bench_case.run(solve, rounds=_GEODESIC_ROUNDS)
         assert distance.shape == (n_vertices,)
         return
 
@@ -525,13 +529,18 @@ def _run_transport(bench_case: BenchCase, *, amortized: bool) -> None:
         vectors = wp.array(
             np.array([[1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=bench_case.device
         )
-        operators = od.heat.vector_heat_operators(vertices, faces) if amortized else None
-        transported, resolved = bench_case.run(
-            lambda: od.heat.transport_tangent_vectors(
-                vertices, faces, sources, vectors, operators=operators
-            ),
-            rounds=_VECTOR_HEAT_ROUNDS,
-        )
+        if amortized:
+            mesh = od.Trimesh(vertices, faces)
+            for _ in range(2):
+                od.heat.transport_tangent_vectors(mesh, sources, vectors)
+            transport = lambda: od.heat.transport_tangent_vectors(  # noqa: E731
+                mesh, sources, vectors
+            )
+        else:
+            transport = lambda: od.heat.transport_tangent_vectors(  # noqa: E731
+                vertices, faces, sources, vectors
+            )
+        transported, resolved = bench_case.run(transport, rounds=_VECTOR_HEAT_ROUNDS)
         assert transported.shape == (n_vertices,)
         assert resolved.shape == (n_vertices,)
     elif amortized:

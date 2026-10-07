@@ -151,7 +151,17 @@ def _run_harmonic_pml(bench_case: BenchCase, order: int) -> None:
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 @pytest.mark.parametrize("order", _HARMONIC_ORDERS)
 def test_harmonic(bench_case: BenchCase, order: int) -> None:
-    """Fixed-boundary harmonic map, at the Laplacian and the much stiffer bilaplacian."""
+    """
+    Fixed-boundary harmonic map, at the Laplacian and the much stiffer bilaplacian.
+
+    **Declined (2026-10-07): solving ``k=2`` by a sparse Cholesky of the reduced system.** It read
+    1.5-2.7x faster than the iteration only while ``ordito.cholesky`` kept each pattern's analysis
+    across calls (a cache ``.claude/CLAUDE.md`` section 16.16 rejects); with the analysis paid by
+    the call a factored solve is 4.9x / 7.4x / 6.6x slower than iterating on ``saddle_small`` /
+    ``saddle`` / ``hemisphere``. Its pattern depends on the pinned set, so a ``Trimesh`` could reuse
+    it only for a repeated call with the same boundary. Open lead: on ``saddle_graded`` (not on
+    this axis) the ``k=2`` iteration is 114x slower than a factorization with its analysis.
+    """
     if bench_case.kind == "pymeshlab":
         _run_harmonic_pml(bench_case, order)
         return
@@ -253,7 +263,14 @@ def test_arap(bench_case: BenchCase, iterations: int) -> None:
 @pytest.mark.benchaxis("patch")
 @pytest.mark.benchlibs("ordito", "igl", "pymeshlab")
 def test_lscm(bench_case: BenchCase) -> None:
-    """Free-boundary conformal map: two pins, so the free block is nearly the whole system."""
+    """
+    Free-boundary conformal map: two pins, so the free block is nearly the whole system.
+
+    **Declined (2026-10-07): a sparse Cholesky of the reduced system**, for the reason
+    ``test_harmonic`` gives: 1.6-2.8x only with the analysis cached across calls, and 7.7x / 10x /
+    17x slower than the iteration on ``saddle_small`` / ``saddle`` / ``hemisphere`` (4.5x on
+    ``saddle_graded``) with the analysis paid by the call.
+    """
     if bench_case.kind == "pymeshlab":  # MeshLab picks its own pins; there is no pin set to pass
         bench_case.run(
             lambda: (

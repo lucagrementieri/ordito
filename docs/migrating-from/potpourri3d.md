@@ -3,11 +3,10 @@
 potpourri3d (the Python binding for geometry-central) is the reference for the heat-method
 family — vector heat, parallel transport, log maps, and signed heat — and ordito's
 [`ordito.heat`][ordito.heat] module mirrors that scope. The main structural difference:
-potpourri3d builds a stateful `*Solver` object per mesh and reuses it across calls; ordito
-separates that into an explicit, cacheable operator bundle
-([`heat.heat_operators`][ordito.heat.heat_operators] /
-[`heat.vector_heat_operators`][ordito.heat.vector_heat_operators]) you pass back into each
-solve.
+potpourri3d builds a stateful `*Solver` object per mesh and reuses it across calls; in ordito
+the state lives on the mesh: pass an [`ordito.Trimesh`][ordito.mesh.Trimesh] to the heat
+functions and it keeps their operators and factorizations (its
+[`heat_solver`][ordito.mesh.Trimesh.heat_solver]) for every later call.
 
 ```python
 import potpourri3d as pp3d  # before
@@ -18,8 +17,8 @@ import ordito as od  # after
 
 | potpourri3d | ordito |
 |---|---|
-| `pp3d.MeshHeatMethodDistanceSolver(V, F)` then `.compute_distance(source)` | [`heat.heat_operators(vertices, faces)`][ordito.heat.heat_operators] then [`heat.heat_geodesic(vertices, faces, sources, operators=...)`][ordito.heat.heat_geodesic] |
-| `pp3d.MeshVectorHeatSolver(V, F)` then `.extend_scalar(sources, values)` | [`heat.vector_heat_operators`][ordito.heat.vector_heat_operators] then [`heat.extend_scalar`][ordito.heat.extend_scalar] |
+| `pp3d.MeshHeatMethodDistanceSolver(V, F)` then `.compute_distance(source)` | `mesh = od.Trimesh(vertices, faces)` then [`heat.heat_geodesic(mesh, sources)`][ordito.heat.heat_geodesic] |
+| `pp3d.MeshVectorHeatSolver(V, F)` then `.extend_scalar(sources, values)` | `mesh = od.Trimesh(vertices, faces)` then [`heat.extend_scalar(mesh, sources, values)`][ordito.heat.extend_scalar] |
 | `.transport_tangent_vector(source, vector)` | [`heat.transport_tangent_vectors`][ordito.heat.transport_tangent_vectors] |
 | `.compute_log_map(source)` | [`heat.log_map`][ordito.heat.log_map] |
 | `pp3d.SignedHeatSolver(V, F)` then `.compute_distance(curve)` | [`heat.heat_signed_distance`][ordito.heat.heat_signed_distance] |
@@ -29,10 +28,11 @@ import ordito as od  # after
 
 ## What's different, not just renamed
 
-- **Operators are explicit, not hidden inside a solver object.** Where potpourri3d builds a
-  solver per mesh and calls methods on it, ordito returns the operators as a plain value you pass
-  back into each call (see
-  [Many source sets on one mesh](../cookbook/geodesic-distance.md#many-source-sets-on-one-mesh)).
+- **The solver state lives on the mesh, not in a solver object.** Where potpourri3d builds a
+  solver per mesh and calls methods on it, ordito's functions take a `Trimesh` that keeps the
+  operators and factorizations (see
+  [Many source sets on one mesh](../cookbook/geodesic-distance.md#many-source-sets-on-one-mesh));
+  the `vertices, faces` form keeps nothing between calls.
 - **The defaults discretize differently.** potpourri3d's solvers default to `use_robust=True`,
   which mollifies the mesh and builds an intrinsic Delaunay Laplacian; ordito defaults to the
   plain cotangent Laplacian (`use_robust=False`). To compare the two outputs, construct the

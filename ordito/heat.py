@@ -28,6 +28,13 @@ and [`log_map`][ordito.heat.log_map]'s radius *is* ``heat_geodesic``'s answer.
 All three run in ``float64``, because the diffused field decays exponentially and underflows
 ``float32``. They run on either device.
 
+Every solver takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh] or as its
+``vertices`` and ``faces``. The `Trimesh` is where the method's state lives: its
+[`HeatSolver`][ordito.heat.HeatSolver] per diffusion time holds the operators and the sparse
+Cholesky factorizations that make later solves on the same mesh cheap, for as long as the mesh
+lives (or until [`Trimesh.release_factorizations`][ordito.mesh.Trimesh.release_factorizations]).
+Nothing is kept between calls of the ``vertices, faces`` form.
+
 The operators these solvers assemble are **not** here -- the cotangent and connection Laplacians
 live in [`ordito.laplacian`][ordito.laplacian], tangent frames in
 [`ordito.tangent_space`][ordito.tangent_space], and the batched conjugate-gradient machinery in
@@ -36,7 +43,10 @@ live in [`ordito.laplacian`][ordito.laplacian], tangent frames in
 
 from __future__ import annotations
 
-from typing import cast
+import logging
+import weakref
+from dataclasses import dataclass
+from typing import cast, overload
 
 import warp as wp
 import warp.optim.linear as wpl
@@ -60,8 +70,11 @@ from ordito.laplacian import (
     mesh_operator_pattern,
     mollify_intrinsic,
 )
+from ordito.mesh import Trimesh, mesh_arguments
 from ordito.tangent_space import vertex_tangent_frames
 from ordito.triangles import face_normals_and_areas
+
+_LOGGER = logging.getLogger(__name__)
 
 # Every solve here is a conjugate-gradient one and they all converge at the same tolerance; it was
 # spelled three times when these were three modules.
@@ -130,10 +143,11 @@ def heat_operators(
     Assemble the source-independent operators the heat method solves against.
 
     Every quantity here depends on the mesh alone, not on the source set, so a caller computing
-    distance from many different sources on one mesh can build these once and pass them back through
-    ``heat_geodesic(..., operators=...)``. That is the split
-    ``potpourri3d.MeshHeatMethodDistanceSolver`` and ``igl::heat_geodesics`` expose as a stateful
-    solver object; here it stays a plain tuple of buffers.
+    distance from many different sources on one mesh builds these once: a
+    [`Trimesh`][ordito.mesh.Trimesh] passed to [`heat_geodesic`][ordito.heat.heat_geodesic] keeps
+    them (and the factorizations of their systems) in its [`HeatSolver`][ordito.heat.HeatSolver].
+    That is the split ``potpourri3d.MeshHeatMethodDistanceSolver`` and ``igl::heat_geodesics``
+    expose as a stateful solver object.
 
     Parameters
     ----------
@@ -196,10 +210,11 @@ def heat_operators(
     [`heat_geodesic`][ordito.heat.heat_geodesic] need not rebuild all three on every call, which
     is unnecessary work whenever the mesh is unchanged across several solves. The solver
     **state** is not in the tuple: [`solve_spd`][ordito.linalg.solve_spd] keeps one per operator
-    itself, owning its own buffers, so passing these operators back also replays the solves'
-    recorded loops rather than recording them again -- and, as with the polynomial's vectors below,
-    two solves against one operator must run on one stream. The remaining lever for repeated calls
-    is conditioning. The Poisson solve is the long one -- ``-L`` is the
+    itself, owning its own buffers, so solving against these operators again (as a
+    [`HeatSolver`][ordito.heat.HeatSolver] does) also replays the solves' recorded loops rather
+    than recording them again -- and, as with the polynomial's vectors below, two solves against
+    one operator must run on one stream. A `HeatSolver` also factors a system it solves a second
+    time, which no preconditioner competes with. The Poisson solve is the long one -- ``-L`` is the
     ill-conditioned operator here, where the heat system's mass term keeps it close to diagonal --
     so it takes the polynomial preconditioner and the heat system keeps Jacobi, which a
     well-conditioned solve of a few tens of iterations cannot beat. The polynomial holds working
@@ -236,13 +251,32 @@ def heat_operators(
     return _heat_operators(vertices, faces, t, use_robust=use_robust, cot_entries=cot_entries)[0]
 
 
+@overload
+def heat_geodesic(
+    mesh: Trimesh,
+    sources: wp.array[wp.int32],
+    /,
+    *,
+    t: float | None = None,
+    use_robust: bool = False,
+) -> wp.array[wp.float64]: ...
+@overload
 def heat_geodesic(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     sources: wp.array[wp.int32],
+    /,
     t: float | None = None,
-    operators: HeatOperators | None = None,
     *,
+    use_robust: bool = False,
+) -> wp.array[wp.float64]: ...
+def heat_geodesic(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    sources: wp.array[wp.int32] | None = None,
+    t: float | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
     use_robust: bool = False,
 ) -> wp.array[wp.float64]:
     """
@@ -258,8 +292,18 @@ def heat_geodesic(
     The computation runs in ``float64``: the diffused heat decays exponentially away from the
     source and would underflow ``float32``, collapsing the far field.
 
+    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh] or as its ``vertices`` and
+    ``faces``. The `Trimesh` form keeps what the method builds for the mesh -- the
+    [`heat_operators`][ordito.heat.heat_operators] and, once a system is solved a second time or
+    the heat solve needs one, its sparse Cholesky factorization (see
+    [`HeatSolver`][ordito.heat.HeatSolver]) -- so distance from many source sets on one mesh pays
+    for them once. The ``vertices, faces`` form builds them for the call and drops them.
+
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -269,37 +313,55 @@ def heat_geodesic(
         the nearest source and is zero at the source set.
     t
         Diffusion time. When ``None``, defaults to the squared mean edge length (the
-        ``igl::heat_geodesics`` default), which balances accuracy and smoothing. Ignored when
-        ``operators`` is given, which already fixes it.
-    operators
-        Optional precomputed [`heat_operators`][ordito.heat.heat_operators] for this mesh.
-        They depend on the mesh only, so passing them back skips the assembly on every solve after
-        the first — worth it when computing distance from many different source sets.
+        ``igl::heat_geodesics`` default), which balances accuracy and smoothing.
     use_robust
         Forwarded to [`heat_operators`][ordito.heat.heat_operators]: build the Laplacian
         from mollified edge lengths, which is what makes the solves survive degenerate triangles.
-        Ignored when ``operators`` is supplied. ``potpourri3d.MeshHeatMethodDistanceSolver`` has
-        the same flag and defaults it to ``True``; this defaults to ``False`` so the plain call
-        stays exactly ``igl::heat_geodesics``.
+        ``potpourri3d.MeshHeatMethodDistanceSolver`` has the same flag and defaults it to ``True``;
+        this defaults to ``False`` so the plain call stays exactly ``igl::heat_geodesics``.
 
     Returns
     -------
     wp.array[wp.float64]
-        ``(n_vertices,)`` geodesic distance field on ``vertices.device``.
+        ``(n_vertices,)`` geodesic distance field on the mesh's device.
 
     Raises
     ------
     RuntimeError
         If ``vertices``, ``faces`` and ``sources`` are not all on one device.
 
+    Notes
+    -----
+    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
+    factorization it is about to drop (the heat solve's verification failed on an ill-conditioned
+    mesh), since the `Trimesh` form would have kept it for the next call.
+
     See Also
     --------
+    [`HeatSolver`][ordito.heat.HeatSolver]
     [`heat_operators`][ordito.heat.heat_operators]
     [`cotmatrix`][ordito.laplacian.cotmatrix]
     [`mean_unique_edge_length`][ordito.edges.mean_unique_edge_length]
     [`marching_triangles`][ordito.intersection.marching_triangles]
     """
-    require_same_device(vertices=vertices, faces=faces, sources=sources, operators=operators)
+    bound, owned, arguments = mesh_arguments(
+        "heat_geodesic", mesh, vertices, faces, (sources, t), 1
+    )
+    return _heat_geodesic(
+        bound,
+        owned,
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("float | None", arguments[1]),
+        use_robust,
+    )
+
+
+def _heat_geodesic(
+    mesh: Trimesh, owned: bool, sources: wp.array[wp.int32], t: float | None, use_robust: bool
+) -> wp.array[wp.float64]:
+    """``heat_geodesic`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    vertices, faces = mesh.vertices, mesh.faces
+    require_same_device(vertices=vertices, faces=faces, sources=sources)
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
@@ -307,9 +369,7 @@ def heat_geodesic(
     if n_vertices == 0 or n_faces == 0 or sources.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
 
-    if operators is None:
-        operators = heat_operators(vertices, faces, t, use_robust=use_robust)
-    heat_system, heat_preconditioner = operators[0], operators[1]
+    solver = mesh.heat_solver(t, use_robust=use_robust)
 
     # Heat solve: (M - t L) u = u0, with u0 the source indicator, run until every vertex's heat has
     # converged relative to its own size (the settle rule at ``_HEAT_CHECK_ROUNDS``) -- not to a
@@ -325,17 +385,10 @@ def heat_geodesic(
     )
 
     heat = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    twl.solve_spd_settled(
-        heat_system,
-        u0,
-        heat,
-        check_rounds=_HEAT_CHECK_ROUNDS,
-        change_tolerance=_HEAT_CHANGE_TOLERANCE,
-        settle_rounds=_HEAT_SETTLE_ROUNDS,
-        preconditioner=heat_preconditioner,
-        coordinates=vertices,
-    )
-    return _distance_from_heat(vertices, faces, sources, operators, heat)
+    solver.diffuse(u0, heat)
+    distance = _distance_from_heat(mesh, solver, sources, heat)
+    _log_discarded("heat_geodesic", owned, solver)
+    return distance
 
 
 # --------------------------------------------------------------------------------------
@@ -343,16 +396,39 @@ def heat_geodesic(
 # --------------------------------------------------------------------------------------
 
 
+@overload
+def heat_signed_distance(
+    mesh: Trimesh,
+    curve_vertices: wp.array[wp.int32],
+    /,
+    *,
+    curve_offsets: wp.array[wp.int32] | None = None,
+    t: float | None = None,
+    closed: bool = True,
+    level_set_constraint: str = "zero_set",
+) -> wp.array[wp.float64]: ...
+@overload
 def heat_signed_distance(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     curve_vertices: wp.array[wp.int32],
+    /,
     curve_offsets: wp.array[wp.int32] | None = None,
     t: float | None = None,
     *,
     closed: bool = True,
     level_set_constraint: str = "zero_set",
-    operators: od.heat.VectorHeatOperators | None = None,
+) -> wp.array[wp.float64]: ...
+def heat_signed_distance(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    curve_vertices: wp.array[wp.int32] | None = None,
+    curve_offsets: wp.array[wp.int32] | None = None,
+    t: float | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
+    closed: bool = True,
+    level_set_constraint: str = "zero_set",
 ) -> wp.array[wp.float64]:
     """
     Signed distance from every vertex to a set of oriented curves.
@@ -368,8 +444,16 @@ def heat_signed_distance(
        normalized, giving a unit field that approximates the signed distance's gradient;
     3. a Poisson solve integrates the field back into a scalar.
 
+    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the
+    [`vector_heat_operators`][ordito.heat.vector_heat_operators] and the factorizations later calls
+    reuse (see [`heat_geodesic`][ordito.heat.heat_geodesic]), or as its ``vertices`` and
+    ``faces``.
+
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -394,17 +478,11 @@ def heat_signed_distance(
         ``"none"`` solves unconstrained and then shifts the field so the curve's mean is zero,
         which leaves the level set slightly off the curve but is cheaper and pins nothing. Both are
         modes ``potpourri3d`` offers under the same names.
-    operators
-        Optional precomputed
-        [`vector_heat_operators`][ordito.heat.vector_heat_operators] for this mesh — the
-        vector heat system, the scalar operators and the frames. They depend on the mesh alone, so
-        passing them back skips every assembly on calls after the first, which for this method is
-        three matrices.
 
     Returns
     -------
     wp.array[wp.float64]
-        ``(n_vertices,)`` signed distance field on ``vertices.device``.
+        ``(n_vertices,)`` signed distance field on the mesh's device.
 
     Raises
     ------
@@ -414,6 +492,11 @@ def heat_signed_distance(
         If ``vertices``, ``faces``, ``curve_vertices`` and ``curve_offsets`` are not all on one
         device.
 
+    Notes
+    -----
+    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
+    factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
+
     See Also
     --------
     [`heat_geodesic`][ordito.heat.heat_geodesic]
@@ -421,6 +504,32 @@ def heat_signed_distance(
     [`homology_generators`][ordito.homology.homology_generators]
     [`signed_distance_on_mesh`][ordito.proximity.signed_distance_on_mesh]
     """
+    bound, owned, arguments = mesh_arguments(
+        "heat_signed_distance", mesh, vertices, faces, (curve_vertices, curve_offsets, t), 1
+    )
+    return _heat_signed_distance(
+        bound,
+        owned,
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("wp.array[wp.int32] | None", arguments[1]),
+        cast("float | None", arguments[2]),
+        closed=closed,
+        level_set_constraint=level_set_constraint,
+    )
+
+
+def _heat_signed_distance(
+    mesh: Trimesh,
+    owned: bool,
+    curve_vertices: wp.array[wp.int32],
+    curve_offsets: wp.array[wp.int32] | None,
+    t: float | None,
+    *,
+    closed: bool,
+    level_set_constraint: str,
+) -> wp.array[wp.float64]:
+    """``heat_signed_distance`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    vertices, faces = mesh.vertices, mesh.faces
     require_same_device(
         vertices=vertices, faces=faces, curve_vertices=curve_vertices, curve_offsets=curve_offsets
     )
@@ -434,11 +543,10 @@ def heat_signed_distance(
     if n_vertices == 0 or n_faces == 0 or curve_vertices.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
 
-    if operators is None:
-        operators = od.heat.vector_heat_operators(vertices, faces, t)
-    vector_system, scalar, frames, vector_preconditioner = operators
+    solver = mesh.heat_solver(t)
+    _, scalar, frames, _ = solver.vector_operators
     basis_x, basis_y, vertex_normals = frames
-    poisson_system, poisson_preconditioner = scalar[3], scalar[4]
+    poisson_system = scalar[3]
     cot_entries, face_normals = scalar[5], scalar[6]
 
     # Stage 1: splat each segment's normal onto its endpoints, one thread per curve entry, each
@@ -464,9 +572,8 @@ def heat_signed_distance(
     # Stage 2: diffuse the tangent field; only its direction is kept. No absolute floor may decide
     # which vectors vanished -- this field carries the mesh's scale, and one zeroes most of it on a
     # mesh not near unit scale (confirmed: 111 of 162 vertices at a 1e-6 scale).
-    diffused = od.heat.diffuse_tangent_field(
-        vector_system, source, preconditioner=vector_preconditioner
-    )
+    diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=device)
+    solver.diffuse_tangent(source, diffused)
     # The divergence kernel normalizes each corner without underflow, zero only where the field is
     # exactly zero: it is converged per vertex (the settle rule at ``_HEAT_CHECK_ROUNDS``), so its
     # far field is a direction however small.
@@ -483,12 +590,13 @@ def heat_signed_distance(
     )
 
     if level_set_constraint == "zero_set":
-        return _solve_poisson_zero_set(
+        field = _solve_poisson_zero_set(
             poisson_system, divergence, curve_vertices, n_vertices, device
         )
-    return _solve_poisson_shifted(
-        poisson_system, poisson_preconditioner, divergence, curve_vertices, n_vertices, device
-    )
+    else:
+        field = _solve_poisson_shifted(solver, divergence, curve_vertices, vertices)
+    _log_discarded("heat_signed_distance", owned, solver)
+    return field
 
 
 def _solve_poisson_zero_set(
@@ -546,12 +654,10 @@ def _solve_poisson_zero_set(
 
 
 def _solve_poisson_shifted(
-    operator: odt.BsrMatrix[wp.float64],
-    preconditioner: wpl.LinearOperator,
+    solver: HeatSolver,
     divergence: wp.array[wp.float64],
     curve_vertices: wp.array[wp.int32],
-    n_vertices: int,
-    device: wp.DeviceLike,
+    vertices: wp.array[wp.vec3],
 ) -> wp.array[wp.float64]:
     """
     Solve the Poisson problem unconstrained, then shift so the curve's mean value is zero.
@@ -560,9 +666,11 @@ def _solve_poisson_shifted(
     gradient handles while the right-hand side is consistent; the shift afterwards picks that
     constant, and putting the curve at zero is the choice that makes the result a distance.
     """
+    device = vertices.device
+    n_vertices = vertices.size
     # ``divergence`` is already the -div right-hand side the -L operator takes.
     field = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    twl.solve_spd(operator, divergence, field, tol=_CG_TOLERANCE, preconditioner=preconditioner)
+    solver.solve_poisson(divergence, field)
     # ``heat_geodesic``'s device-side shift onto the sources, without its orientation: one launch
     # sized to the curve for the mean, one to apply it, and nothing read back.
     n_sources = curve_vertices.size
@@ -633,13 +741,11 @@ def vector_heat_operators(
        is measured in;
     4. the vector system's own Jacobi preconditioner.
 
-    Pass the result back through any solver's ``operators=`` argument to skip the assembly of all
-    four on every call after the first. That is the split ``potpourri3d.MeshVectorHeatSolver`` gets
-    from being an object; here it stays a plain tuple.
-    [`diffuse_tangent_field`][ordito.heat.diffuse_tangent_field] threads the fourth piece into
-    [`solve_spd`][ordito.linalg.solve_spd]'s own ``preconditioner=``, so a caller running many
-    transports or log maps against one mesh pays for it once rather than on
-    every diffusion solve.
+    A [`Trimesh`][ordito.mesh.Trimesh] keeps the result
+    ([`Trimesh.vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators], or its
+    [`HeatSolver`][ordito.heat.HeatSolver] at another ``t``), so a caller running many transports
+    or log maps against one mesh pays for the assembly once. That is the split
+    ``potpourri3d.MeshVectorHeatSolver`` gets from being an object.
 
     Parameters
     ----------
@@ -862,13 +968,32 @@ def _edge_length_sums(
     return sum_and_count
 
 
+@overload
+def extend_scalar(
+    mesh: Trimesh,
+    sources: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    /,
+    *,
+    t: float | None = None,
+) -> wp.array[wp.float64]: ...
+@overload
 def extend_scalar(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     sources: wp.array[wp.int32],
     values: wp.array[wp.float64],
+    /,
     t: float | None = None,
-    operators: od.heat.HeatOperators | None = None,
+) -> wp.array[wp.float64]: ...
+def extend_scalar(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    sources: wp.array[wp.int32] | wp.array[wp.float64] | None = None,
+    values: wp.array[wp.float64] | None = None,
+    t: float | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.float64]:
     """
     Extend values from a few source vertices over the whole surface by nearest-source interpolation.
@@ -879,8 +1004,15 @@ def extend_scalar(
     stays close to the value of the nearest source, and blends smoothly where two sources compete.
     Matches ``potpourri3d.MeshVectorHeatSolver.extend_scalar``.
 
+    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the operators
+    and factorizations later calls reuse (see [`heat_geodesic`][ordito.heat.heat_geodesic]), or as
+    its ``vertices`` and ``faces``.
+
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -891,24 +1023,48 @@ def extend_scalar(
         ``(n_sources,)`` value carried by each source.
     t
         Diffusion time; defaults to the squared mean edge length.
-    operators
-        Optional precomputed [`heat_operators`][ordito.heat.heat_operators] for this mesh.
 
     Returns
     -------
     wp.array[wp.float64]
-        ``(n_vertices,)`` extended field on ``vertices.device``.
+        ``(n_vertices,)`` extended field on the mesh's device.
 
     Raises
     ------
     RuntimeError
         If ``vertices``, ``faces``, ``sources`` and ``values`` are not all on one device.
 
+    Notes
+    -----
+    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
+    factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
+
     See Also
     --------
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     [`heat_geodesic`][ordito.heat.heat_geodesic]
     """
+    bound, owned, arguments = mesh_arguments(
+        "extend_scalar", mesh, vertices, faces, (sources, values, t), 2
+    )
+    return _extend_scalar(
+        bound,
+        owned,
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("wp.array[wp.float64]", arguments[1]),
+        cast("float | None", arguments[2]),
+    )
+
+
+def _extend_scalar(
+    mesh: Trimesh,
+    owned: bool,
+    sources: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    t: float | None,
+) -> wp.array[wp.float64]:
+    """``extend_scalar`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces, sources=sources, values=values)
     device = vertices.device
     n_vertices = vertices.size
@@ -916,34 +1072,10 @@ def extend_scalar(
     if n_vertices == 0 or faces.size == 0 or n_sources == 0:
         return _launch.zeros(n_vertices, dtype=wp.float64, device=device)
 
-    if operators is None:
-        operators = heat_operators(vertices, faces, t)
-    diffused_indicator, diffused_values = _extend(operators[0], sources, values, vertices)
-    # Converged per vertex, so only an exactly zero indicator -- a component no source reaches --
-    # has no value to extend (``divide_nonzero``).
-    extended = _launch.empty(n_vertices, dtype=wp.float64, device=device)
-    _launch.map(kernel_heat.divide_nonzero, diffused_values, diffused_indicator, out=extended)
-    return extended
-
-
-def _extend(
-    heat_system: odt.BsrMatrix[wp.float64],
-    sources: wp.array[wp.int32],
-    values: wp.array[wp.float64],
-    vertices: wp.array[wp.vec3],
-) -> tuple[wp.array[wp.float64], wp.array[wp.float64]]:
-    """
-    ``extend_scalar``'s diffusion: the diffused source indicator and the diffused ``values``.
-
-    Their ratio is the extension; it is left to the caller so ``transport_tangent_vectors`` can
-    form it in the map that consumes it rather than in a pass and a buffer of its own.
-    """
-    n_sources = sources.size
-    n_vertices = vertices.size
-    device = vertices.device
+    solver = mesh.heat_solver(t)
     # The indicator and the weighted values diffuse through the same operator, so they are one
-    # batched two-column solve (``linalg.solve_spd_columns``) rather than two independent ones,
-    # which shares the launches and converges on the worse-behaved of the two columns.
+    # batched two-column solve rather than two independent ones, which shares the launches and
+    # converges on the worse-behaved of the two columns.
     rhs = odt.as_array2d(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
@@ -956,25 +1088,46 @@ def _extend(
     diffused = odt.as_array2d(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
-    twl.solve_spd_settled(
-        heat_system,
-        rhs,
-        diffused,
-        check_rounds=_HEAT_CHECK_ROUNDS,
-        change_tolerance=_HEAT_CHANGE_TOLERANCE,
-        settle_rounds=_HEAT_SETTLE_ROUNDS,
-        coordinates=vertices,
+    solver.diffuse(rhs, diffused)
+    # Converged per vertex, so only an exactly zero indicator -- a component no source reaches --
+    # has no value to extend (``divide_nonzero``).
+    extended = _launch.empty(n_vertices, dtype=wp.float64, device=device)
+    _launch.map(
+        kernel_heat.divide_nonzero,
+        odt.as_dense(diffused[1]),
+        odt.as_dense(diffused[0]),
+        out=extended,
     )
-    return odt.as_dense(diffused[0]), odt.as_dense(diffused[1])
+    _log_discarded("extend_scalar", owned, solver)
+    return extended
 
 
+@overload
+def transport_tangent_vectors(
+    mesh: Trimesh,
+    sources: wp.array[wp.int32],
+    vectors: wp.array[wp.vec2],
+    /,
+    *,
+    t: float | None = None,
+) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]: ...
+@overload
 def transport_tangent_vectors(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     sources: wp.array[wp.int32],
     vectors: wp.array[wp.vec2],
+    /,
     t: float | None = None,
-    operators: VectorHeatOperators | None = None,
+) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]: ...
+def transport_tangent_vectors(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    sources: wp.array[wp.int32] | wp.array[wp.vec2] | None = None,
+    vectors: wp.array[wp.vec2] | None = None,
+    t: float | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]:
     """
     Parallel-transport tangent vectors from a few source vertices to every vertex.
@@ -984,6 +1137,9 @@ def transport_tangent_vectors(
     extension of the source magnitudes supplies the length. The result at each vertex is the source
     vector carried along the shortest path to it. Matches
     ``potpourri3d.MeshVectorHeatSolver.transport_tangent_vectors``, which returns the vectors alone.
+    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the operators
+    and factorizations later calls reuse (see [`heat_geodesic`][ordito.heat.heat_geodesic]), or as
+    its ``vertices`` and ``faces``.
 
     The second return exists because the vectors are not self-describing: a zero is ambiguous and a
     *non*-zero one is not always meaningful. A vertex is unresolved when the diffused direction that
@@ -1002,6 +1158,9 @@ def transport_tangent_vectors(
 
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -1011,13 +1170,7 @@ def transport_tangent_vectors(
     vectors
         ``(n_sources,)`` tangent vectors, each in *its own source vertex's* frame.
     t
-        Diffusion time; defaults to the squared mean edge length. Ignored when ``operators`` is
-        given, which already fixes it.
-    operators
-        Optional precomputed
-        [`vector_heat_operators`][ordito.heat.vector_heat_operators] for this mesh: they
-        depend on the mesh alone, so passing them back skips the assembly on every call after the
-        first.
+        Diffusion time; defaults to the squared mean edge length.
 
     Returns
     -------
@@ -1056,7 +1209,31 @@ def transport_tangent_vectors(
         then decided by the arithmetic -- on CUDA enough round-off survives to be scaled up to full
         length in an arbitrary direction, while on CPU the same point can cancel to exactly zero and
         read as unreached. ``resolved`` is ``False`` on both, and is the only way to tell.
+
+    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
+    factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
     """
+    bound, owned, arguments = mesh_arguments(
+        "transport_tangent_vectors", mesh, vertices, faces, (sources, vectors, t), 2
+    )
+    return _transport_tangent_vectors(
+        bound,
+        owned,
+        cast("wp.array[wp.int32]", arguments[0]),
+        cast("wp.array[wp.vec2]", arguments[1]),
+        cast("float | None", arguments[2]),
+    )
+
+
+def _transport_tangent_vectors(
+    mesh: Trimesh,
+    owned: bool,
+    sources: wp.array[wp.int32],
+    vectors: wp.array[wp.vec2],
+    t: float | None,
+) -> tuple[wp.array[wp.vec2], wp.array[wp.bool]]:
+    """``transport_tangent_vectors`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces, sources=sources, vectors=vectors)
     device = vertices.device
     n_vertices = vertices.size
@@ -1067,17 +1244,14 @@ def transport_tangent_vectors(
             _launch.zeros(n_vertices, dtype=wp.bool, device=device),
         )
 
-    if operators is None:
-        operators = vector_heat_operators(vertices, faces, t)
-    vector_system, scalar, _, _ = operators
+    solver = mesh.heat_solver(t)
 
     # The vector field and the magnitudes' two-column extension do not interact and settle at the
     # same round, so they diffuse as one solve over the block-diagonal stack
-    # ``[vector system; heat system; heat system]`` (``_stacked_fields``): one settle loop in the
-    # launches of one, where two back to back paid for two. Its Jacobi diagonal and narrowed values
-    # are per row, so they are the two systems' own, and its settle test reads the union, which is
-    # the later of the two stops.
-    stack = twl.block_diag((vector_system, scalar[0], scalar[0]))
+    # ``[vector system; heat system; heat system]`` (``HeatSolver.diffuse_stacked``): one settle
+    # loop in the launches of one, where two back to back paid for two. Its Jacobi diagonal and
+    # narrowed values are per row, so they are the two systems' own, and its settle test reads the
+    # union, which is the later of the two stops.
     rhs_field, rhs = _stacked_fields(n_vertices, 2, device)
     _launch.launch(
         kernel_heat.seed_transport_sources,
@@ -1087,15 +1261,7 @@ def transport_tangent_vectors(
         device=device,
     )
     direction, diffused = _stacked_fields(n_vertices, 2, device)
-    twl.solve_spd_settled(
-        stack,
-        rhs,
-        diffused,
-        check_rounds=_HEAT_CHECK_ROUNDS,
-        change_tolerance=_HEAT_CHANGE_TOLERANCE,
-        settle_rounds=_HEAT_SETTLE_ROUNDS,
-        coordinates=_stacked_positions(vertices, 2),
-    )
+    solver.diffuse_stacked(rhs, diffused, 2)
     diffused_indicator = diffused[2 * n_vertices : 3 * n_vertices]
     diffused_magnitudes = diffused[3 * n_vertices :]
 
@@ -1113,15 +1279,23 @@ def transport_tangent_vectors(
         wp.float64(_RESOLVED_FRACTION),
         out=[transported, resolved],
     )
+    _log_discarded("transport_tangent_vectors", owned, solver)
     return transported, resolved
 
 
+@overload
+def log_map(mesh: Trimesh, source: int, /, *, t: float | None = None) -> wp.array[wp.vec2]: ...
+@overload
 def log_map(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    source: int,
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], source: int, /, t: float | None = None
+) -> wp.array[wp.vec2]: ...
+def log_map(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | int | None = None,
+    source: int | None = None,
     t: float | None = None,
-    operators: VectorHeatOperators | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
 ) -> wp.array[wp.vec2]:
     """
     Logarithmic map: every vertex's position in the source vertex's tangent plane.
@@ -1140,10 +1314,15 @@ def log_map(
     it. This is
     the ``VectorHeat`` strategy in ``potpourri3d.MeshVectorHeatSolver.compute_log_map``; its
     ``AffineLocal`` and ``AffineAdaptive`` strategies solve a small dense problem per vertex and are
-    deliberately not ported.
+    deliberately not ported. Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh],
+    which keeps the operators and factorizations later calls reuse (see
+    [`heat_geodesic`][ordito.heat.heat_geodesic]), or as its ``vertices`` and ``faces``.
 
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -1151,13 +1330,9 @@ def log_map(
     source
         Index of the vertex the map is centred on.
     t
-        Diffusion time; defaults to the squared mean edge length. Ignored when ``operators`` is
-        given.
-    operators
-        Optional precomputed
-        [`vector_heat_operators`][ordito.heat.vector_heat_operators]. Pass the same bundle
-        used elsewhere when the frames matter: the *angles* this function returns are measured from
-        the source's ``basis_x``.
+        Diffusion time; defaults to the squared mean edge length. The *angles* this function
+        returns are measured from the source's ``basis_x`` in
+        [`Trimesh.vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames].
 
     Returns
     -------
@@ -1173,20 +1348,31 @@ def log_map(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
+    Notes
+    -----
+    The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
+    factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
+
     See Also
     --------
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     [`trace_from_vertex`][ordito.geodesic_walk.trace_from_vertex]
     """
+    bound, owned, arguments = mesh_arguments("log_map", mesh, vertices, faces, (source, t), 1)
+    return _log_map(bound, owned, cast("int", arguments[0]), cast("float | None", arguments[1]))
+
+
+def _log_map(mesh: Trimesh, owned: bool, source: int, t: float | None) -> wp.array[wp.vec2]:
+    """``log_map`` on a `Trimesh`; ``owned`` is whether the caller passed it."""
+    vertices, faces = mesh.vertices, mesh.faces
     require_same_device(vertices=vertices, faces=faces)
     device = vertices.device
     n_vertices = vertices.size
     if n_vertices == 0 or faces.size == 0:
         return _launch.zeros(n_vertices, dtype=wp.vec2, device=device)
 
-    if operators is None:
-        operators = vector_heat_operators(vertices, faces, t)
-    vector_system, scalar, frames, _ = operators
+    solver = mesh.heat_solver(t)
+    _, scalar, frames, _ = solver.vector_operators
     basis_x, basis_y, _ = frames
 
     # The source's own reference direction transported outwards -- the "which way was x?" field
@@ -1194,7 +1380,6 @@ def log_map(
     # ``direction`` -- and ``heat_geodesic``'s heat, diffused together as one solve over
     # ``[vector system; heat system]`` for the reason ``transport_tangent_vectors`` gives.
     sources = _launch.full(1, source, dtype=wp.int32, device=device)
-    stack = twl.block_diag((vector_system, scalar[0]))
     rhs_field, rhs = _stacked_fields(n_vertices, 1, device)
     _launch.launch(
         kernel_heat.seed_log_map_source,
@@ -1204,21 +1389,11 @@ def log_map(
         device=device,
     )
     transported_raw, diffused = _stacked_fields(n_vertices, 1, device)
-    twl.solve_spd_settled(
-        stack,
-        rhs,
-        diffused,
-        check_rounds=_HEAT_CHECK_ROUNDS,
-        change_tolerance=_HEAT_CHANGE_TOLERANCE,
-        settle_rounds=_HEAT_SETTLE_ROUNDS,
-        coordinates=_stacked_positions(vertices, 1),
-    )
+    solver.diffuse_stacked(rhs, diffused, 1)
 
     # Radial direction: the unit gradient of the distance field, averaged onto vertices and
     # expressed in each vertex's frame.
-    distance = _distance_from_heat(
-        vertices, faces, sources, scalar, odt.as_dense(diffused[2 * n_vertices :])
-    )
+    distance = _distance_from_heat(mesh, solver, sources, odt.as_dense(diffused[2 * n_vertices :]))
     normals, areas = scalar[6], scalar[7]
     n_faces = faces.size // 3
     vertex_gradient = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
@@ -1237,25 +1412,23 @@ def log_map(
         inputs=[vertex_gradient, basis_x, basis_y, transported_raw, distance, logarithm],
         device=device,
     )
+    _log_discarded("log_map", owned, solver)
     return logarithm
 
 
 def _distance_from_heat(
-    vertices: wp.array[wp.vec3],
-    faces: wp.array[wp.int32],
-    sources: wp.array[wp.int32],
-    operators: HeatOperators,
-    heat: wp.array[wp.float64],
+    mesh: Trimesh, solver: HeatSolver, sources: wp.array[wp.int32], heat: wp.array[wp.float64]
 ) -> wp.array[wp.float64]:
     """
     ``heat_geodesic`` from the diffused heat on: the divergence, the Poisson solve and the shift.
 
     Split out so ``log_map`` can diffuse the heat inside a stacked solve of its own.
     """
+    vertices, faces = mesh.vertices, mesh.faces
     device = vertices.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
-    _, _, _, poisson_system, poisson_preconditioner, cot_entries, normals, areas = operators
+    _, _, _, _, _, cot_entries, normals, areas = solver.operators
 
     # Integrated divergence b = div(X) of the unit field X = -grad(u)/|grad(u)|, then a Poisson
     # solve L phi = b, i.e. (-L) phi = -b with the positive semi-definite operator. One launch: the
@@ -1271,15 +1444,7 @@ def _distance_from_heat(
     )
 
     phi = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
-    twl.solve_spd(
-        poisson_system,
-        neg_divergence,
-        phi,
-        tol=_CG_TOLERANCE,
-        preconditioner=poisson_preconditioner,
-        factor_on_reuse=True,
-        coordinates=vertices,
-    )
+    solver.solve_poisson(neg_divergence, phi)
 
     # Shift so the field's mean over the sources is zero, and orient it positive -- the
     # ``igl::heat_geodesics_solve`` convention, which makes a single source's distance exactly
@@ -1320,25 +1485,6 @@ def _stacked_fields(
     return odt.as_dense(storage[:n_vertices]), odt.as_dense(flat[:rows])
 
 
-def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[wp.vec3]:
-    """
-    Return the vertex of every row of ``_stacked_fields``' stack.
-
-    A vector system's two rows, then each scalar system's one: the ordering of the factorization a
-    failed settle falls back to.
-    """
-    n_vertices = vertices.size
-    positions = _launch.empty((2 + n_scalars) * n_vertices, dtype=wp.vec3, device=vertices.device)
-    _launch.launch(
-        kernel_heat.stacked_positions,
-        dim=n_vertices,
-        inputs=[vertices, wp.int32(n_scalars)],
-        outputs=[positions],
-        device=vertices.device,
-    )
-    return positions
-
-
 def tangent_to_world(
     tangent: wp.array[wp.vec2], basis_x: wp.array[wp.vec3], basis_y: wp.array[wp.vec3]
 ) -> wp.array[wp.vec3]:
@@ -1377,10 +1523,24 @@ def tangent_to_world(
     return world
 
 
+@overload
+def diffuse_tangent_field(
+    mesh: Trimesh, source: wp.array[wp.vec2d], /, *, t: float | None = None
+) -> wp.array[wp.vec2d]: ...
+@overload
 def diffuse_tangent_field(
     system: odt.SparseMatrix,
     source: wp.array[wp.vec2d],
+    /,
     *,
+    preconditioner: wpl.LinearOperator | None = None,
+) -> wp.array[wp.vec2d]: ...
+def diffuse_tangent_field(
+    mesh: Trimesh | odt.SparseMatrix | None = None,
+    source: wp.array[wp.vec2d] | None = None,
+    *,
+    t: float | None = None,
+    system: odt.SparseMatrix | None = None,
     preconditioner: wpl.LinearOperator | None = None,
 ) -> wp.array[wp.vec2d]:
     """
@@ -1394,16 +1554,25 @@ def diffuse_tangent_field(
     Only the *directions* of the result carry meaning: magnitudes decay away from the source, and
     every caller replaces them, either with a scalar extension or by normalizing outright.
 
+    Takes an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], whose
+    [`HeatSolver`][ordito.heat.HeatSolver] at ``t`` holds the system and keeps its factorization
+    for later calls, or the vector heat ``system`` itself.
+
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``system``.
     system
         ``(n_vertices, n_vertices)`` vector heat system from
         [`vector_heat_operators`][ordito.heat.vector_heat_operators].
     source
         ``(n_vertices,)`` right-hand side, in each vertex's own tangent frame.
+    t
+        With a `Trimesh`: the diffusion time; defaults to the squared mean edge length.
     preconditioner
-        ``None``, or the Jacobi preconditioner for ``system`` -- the fourth field of
-        [`vector_heat_operators`][ordito.heat.vector_heat_operators]'s return. The solve is
+        With ``system``: ``None``, or the Jacobi preconditioner for ``system`` -- the fourth field
+        of [`vector_heat_operators`][ordito.heat.vector_heat_operators]'s return. The solve is
         Jacobi-preconditioned either way (see
         [`solve_spd_settled`][ordito.linalg.solve_spd_settled]).
 
@@ -1417,15 +1586,52 @@ def diffuse_tangent_field(
     ValueError
         If ``preconditioner`` is neither ``None`` nor ``system``'s own Jacobi preconditioner.
 
+    Notes
+    -----
+    The ``system`` form logs at ``INFO`` on the ``ordito.heat`` logger when the solve's
+    verification failed and it built a factorization it is about to drop, which the `Trimesh` form
+    would have kept.
+
     See Also
     --------
     [`vector_heat_operators`][ordito.heat.vector_heat_operators]
     [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors]
     """
+    if source is None:
+        raise TypeError("diffuse_tangent_field: source is required")
+    if isinstance(mesh, Trimesh):
+        if system is not None or preconditioner is not None:
+            raise TypeError("diffuse_tangent_field: a Trimesh takes no system or preconditioner")
+        return _diffuse_tangent_field_on(mesh, source, t)
+    if mesh is not None:
+        if system is not None:
+            raise TypeError("diffuse_tangent_field: system given by position and by keyword")
+        system = mesh
+    if system is None or t is not None:
+        raise TypeError("diffuse_tangent_field: pass a Trimesh (and t), or a system")
+    return _diffuse_tangent_field(system, source, preconditioner)
+
+
+def _diffuse_tangent_field_on(
+    mesh: Trimesh, source: wp.array[wp.vec2d], t: float | None
+) -> wp.array[wp.vec2d]:
+    """``diffuse_tangent_field`` on a `Trimesh`'s vector heat system at ``t``."""
+    n_vertices = source.size
+    diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
+    if n_vertices > 0:
+        mesh.heat_solver(t).diffuse_tangent(source, diffused)
+    return diffused
+
+
+def _diffuse_tangent_field(
+    system: odt.SparseMatrix, source: wp.array[wp.vec2d], preconditioner: wpl.LinearOperator | None
+) -> wp.array[wp.vec2d]:
+    """``diffuse_tangent_field`` against a given ``system``, keeping no factorization."""
     n_vertices = source.size
     diffused = _launch.zeros(n_vertices, dtype=wp.vec2d, device=source.device)
     if n_vertices == 0:
         return diffused
+    factorization = twl.OperatorFactorization(system)
     twl.solve_spd_settled(
         system,
         source,
@@ -1434,5 +1640,306 @@ def diffuse_tangent_field(
         change_tolerance=_HEAT_CHANGE_TOLERANCE,
         settle_rounds=_HEAT_SETTLE_ROUNDS,
         preconditioner=preconditioner,
+        factorization=factorization,
     )
+    if factorization.factorization is not None:
+        _LOGGER.info(
+            "diffuse_tangent_field: built a sparse Cholesky factorization of the system (%d "
+            "bytes) and is discarding it; pass an ordito.mesh.Trimesh to keep it for later calls",
+            factorization.nbytes,
+        )
     return diffused
+
+
+class HeatSolver:
+    """
+    The heat method's operators and solves on one mesh at one diffusion time, kept by the mesh.
+
+    What [`Trimesh.heat_solver`][ordito.mesh.Trimesh.heat_solver] returns, and what every function
+    of this module runs on when it is given a `Trimesh`: the
+    [`heat_operators`][ordito.heat.heat_operators] (and
+    [`vector_heat_operators`][ordito.heat.vector_heat_operators]) at ``t``, assembled on first use,
+    and a sparse Cholesky factorization of each system it solves, built when it pays. The split
+    ``potpourri3d.MeshHeatMethodDistanceSolver`` and ``MeshVectorHeatSolver`` expose as solver
+    objects.
+
+    A system is factored (an [`OperatorFactorization`][ordito.linalg.OperatorFactorization]
+    kept here) in two cases. On its **second** solve, because the first one does not repay a
+    factorization's analysis and every later one does, whatever the conditioning -- the
+    rent-or-buy choice, made online. And at once when a diffusion's settled conjugate-gradient
+    iterate fails its backward-error check
+    ([`solve_spd_settled`][ordito.linalg.solve_spd_settled]), which only a factorization answers
+    correctly. A one-shot solve on a well-conditioned mesh therefore costs what the iteration costs.
+    Each decision is logged at ``DEBUG`` on the ``ordito.heat`` logger.
+
+    Attributes
+    ----------
+    t : float | None
+        The diffusion time; ``None`` for the default, the squared mean unique-edge length.
+    use_robust : bool
+        Whether the scalar operators are built from mollified edge lengths (see
+        [`heat_operators`][ordito.heat.heat_operators]).
+
+    Notes
+    -----
+    A kept factorization holds device memory of the order of its system's fill-in for as long as
+    this solver lives -- the mesh's lifetime -- reported by
+    [`nbytes`][ordito.heat.HeatSolver.nbytes] and returned by
+    [`release`][ordito.heat.HeatSolver.release] or
+    [`Trimesh.release_factorizations`][ordito.mesh.Trimesh.release_factorizations]. The solver
+    refers to its mesh weakly and is unusable once the mesh is gone.
+
+    See Also
+    --------
+    [`Trimesh.heat_solver`][ordito.mesh.Trimesh.heat_solver]
+    [`heat_geodesic`][ordito.heat.heat_geodesic]
+    """
+
+    def __init__(self, mesh: Trimesh, t: float | None = None, *, use_robust: bool = False) -> None:
+        """Bind a solver to ``mesh`` at ``t``; nothing is assembled until first use."""
+        self.t = None if t is None else float(t)
+        self.use_robust = bool(use_robust)
+        self._mesh = weakref.ref(mesh)
+        self._operators: HeatOperators | None = None
+        self._vector_operators: VectorHeatOperators | None = None
+        self._systems: dict[str, _KeptSystem] = {}
+
+    @property
+    def operators(self) -> HeatOperators:
+        """[`heat_operators`][ordito.heat.heat_operators] for the mesh at ``t``."""
+        if self._operators is None:
+            mesh = self._bound_mesh()
+            if self.t is None and not self.use_robust:
+                # The mesh's own cached bundle, so the property and this solver share one assembly.
+                self._operators = mesh.heat_operators
+            else:
+                self._operators = heat_operators(
+                    mesh.vertices,
+                    mesh.faces,
+                    self.t,
+                    use_robust=self.use_robust,
+                    cot_entries=None if self.use_robust else mesh.cotmatrix_entries,
+                )
+        return self._operators
+
+    @property
+    def vector_operators(self) -> VectorHeatOperators:
+        """
+        [`vector_heat_operators`][ordito.heat.vector_heat_operators] for the mesh at ``t``.
+
+        Its scalar bundle is [`operators`][ordito.heat.HeatSolver.operators], one assembly.
+
+        Raises
+        ------
+        ValueError
+            If this solver was built with ``use_robust``: the connection Laplacian has no mollified
+            counterpart.
+        """
+        if self.use_robust:
+            raise ValueError("HeatSolver: the vector heat operators have no use_robust variant")
+        if self._vector_operators is None:
+            mesh = self._bound_mesh()
+            if self.t is None:
+                self._vector_operators = mesh.vector_heat_operators
+            else:
+                self._vector_operators = vector_heat_operators(
+                    mesh.vertices,
+                    mesh.faces,
+                    self.t,
+                    scalar_operators=self._operators,
+                    frames=mesh.vertex_tangent_frames,
+                )
+            self._operators = self._vector_operators[1]
+        return self._vector_operators
+
+    @property
+    def nbytes(self) -> int:
+        """Device memory this solver's kept factorizations hold, in bytes."""
+        return sum(kept.factorization.nbytes for kept in self._systems.values())
+
+    def release(self) -> None:
+        """Drop every kept factorization and forget the solve counts; the operators stay."""
+        for kept in self._systems.values():
+            kept.factorization.release()
+        self._systems.clear()
+
+    def diffuse(self, rhs: odt.ArrayNd, solution: odt.ArrayNd) -> None:
+        """
+        Diffuse scalar fields: solve the heat system ``(M - t L) u = rhs`` to settled entries.
+
+        Parameters
+        ----------
+        rhs
+            ``(n_vertices,)`` right-hand side, or ``(n_columns, n_vertices)`` columns diffused
+            together, ``float64``.
+        solution
+            Same shape: the initial guess, overwritten with the diffused field.
+        """
+        operators = self.operators
+        # Columns are solved together under the Jacobi preconditioner the settle solve builds.
+        preconditioner = operators[1] if rhs.ndim == 1 else None
+        self._settle("heat", operators[0], rhs, solution, preconditioner=preconditioner)
+
+    def diffuse_tangent(self, rhs: wp.array[wp.vec2d], solution: wp.array[wp.vec2d]) -> None:
+        """
+        Diffuse a tangent field: solve the vector heat system ``(M + t L_connection) X = rhs``.
+
+        Parameters
+        ----------
+        rhs
+            ``(n_vertices,)`` right-hand side, each vector in its vertex's tangent frame.
+        solution
+            ``(n_vertices,)`` initial guess, overwritten with the diffused field.
+
+        Raises
+        ------
+        ValueError
+            If this solver was built with ``use_robust``.
+        """
+        vector_system, _, _, preconditioner = self.vector_operators
+        self._settle("vector", vector_system, rhs, solution, preconditioner=preconditioner)
+
+    def diffuse_stacked(
+        self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64], n_scalars: int
+    ) -> None:
+        """
+        Diffuse a tangent field and ``n_scalars`` scalar fields as one solve.
+
+        The two systems do not interact and settle at the same round, so they run as one solve
+        over the block-diagonal stack ``[vector system; heat system x n_scalars]``
+        ([`block_diag`][ordito.linalg.block_diag]), in the launches of one.
+
+        Parameters
+        ----------
+        rhs
+            ``((2 + n_scalars) * n_vertices,)`` right-hand side: the tangent field as interleaved
+            ``float64`` pairs, then each scalar field.
+        solution
+            Same layout: the initial guess, overwritten with the diffused fields.
+        n_scalars
+            Scalar fields after the tangent field.
+
+        Raises
+        ------
+        ValueError
+            If this solver was built with ``use_robust``.
+        """
+        role = f"stack{n_scalars}"
+        kept = self._systems.get(role)
+        if kept is None:
+            vector_system, scalar, _, _ = self.vector_operators
+            stack = twl.block_diag((vector_system, *(scalar[0],) * n_scalars))
+            positions = _stacked_positions(self._bound_mesh().vertices, n_scalars)
+            kept = self._systems[role] = _KeptSystem(twl.OperatorFactorization(stack, positions))
+        self._settle(role, kept.factorization.matrix, rhs, solution)
+
+    def solve_poisson(self, rhs: wp.array[wp.float64], solution: wp.array[wp.float64]) -> None:
+        """
+        Solve the Poisson system ``-L phi = rhs`` to the heat method's tolerance.
+
+        Parameters
+        ----------
+        rhs
+            ``(n_vertices,)`` right-hand side; consistent (summing to zero over each component),
+            as a divergence is.
+        solution
+            ``(n_vertices,)`` initial guess, overwritten with the answer, which is defined up to a
+            constant per component.
+        """
+        operators = self.operators
+        kept = self._kept("poisson", operators[3])
+        if kept.factorization.factorization is not None:
+            kept.factorization.solve(rhs, solution, tol=_CG_TOLERANCE)
+            return
+        twl.solve_spd(operators[3], rhs, solution, tol=_CG_TOLERANCE, preconditioner=operators[4])
+
+    def _settle(
+        self,
+        role: str,
+        matrix: odt.SparseMatrix,
+        rhs: odt.ArrayNd,
+        solution: odt.ArrayNd,
+        *,
+        preconditioner: wpl.LinearOperator | None = None,
+    ) -> None:
+        """Run one settled diffusion of ``role``'s system, factored when that pays or is needed."""
+        kept = self._kept(role, matrix)
+        held = kept.factorization.factorization is not None
+        twl.solve_spd_settled(
+            matrix,
+            rhs,
+            solution,
+            check_rounds=_HEAT_CHECK_ROUNDS,
+            change_tolerance=_HEAT_CHANGE_TOLERANCE,
+            settle_rounds=_HEAT_SETTLE_ROUNDS,
+            preconditioner=preconditioner,
+            factorization=kept.factorization,
+        )
+        if not held and kept.factorization.factorization is not None:
+            _LOGGER.debug(
+                "HeatSolver: the %s system's settled iterate failed its backward-error check; "
+                "factored it",
+                role,
+            )
+
+    def _kept(self, role: str, matrix: odt.SparseMatrix) -> _KeptSystem:
+        """Count a solve of ``role``'s system, factoring it on its second (rent or buy)."""
+        kept = self._systems.get(role)
+        if kept is None:
+            kept = self._systems[role] = _KeptSystem(
+                twl.OperatorFactorization(matrix, self._bound_mesh().vertices)
+            )
+        kept.solves += 1
+        if (
+            kept.solves >= 2
+            and kept.factorization.factorization is None
+            and kept.factorization.factor()
+        ):
+            _LOGGER.debug("HeatSolver: factored the %s system on its second solve", role)
+        return kept
+
+    def _bound_mesh(self) -> Trimesh:
+        """Return the mesh this solver belongs to."""
+        mesh = self._mesh()
+        if mesh is None:
+            raise RuntimeError("HeatSolver: its Trimesh no longer exists")
+        return mesh
+
+
+@dataclass
+class _KeptSystem:
+    """One system a ``HeatSolver`` solves: its factorization slot and how often it was solved."""
+
+    factorization: twl.OperatorFactorization
+    solves: int = 0
+
+
+def _stacked_positions(vertices: wp.array[wp.vec3], n_scalars: int) -> wp.array[wp.vec3]:
+    """
+    Return the vertex of every row of ``_stacked_fields``' stack.
+
+    A vector system's two rows, then each scalar system's one: the ordering of the factorization a
+    failed settle falls back to.
+    """
+    n_vertices = vertices.size
+    positions = _launch.empty((2 + n_scalars) * n_vertices, dtype=wp.vec3, device=vertices.device)
+    _launch.launch(
+        kernel_heat.stacked_positions,
+        dim=n_vertices,
+        inputs=[vertices, wp.int32(n_scalars)],
+        outputs=[positions],
+        device=vertices.device,
+    )
+    return positions
+
+
+def _log_discarded(name: str, owned: bool, solver: HeatSolver) -> None:
+    """Log that a call on a temporary `Trimesh` is dropping the factorizations it built."""
+    if owned or solver.nbytes == 0:
+        return
+    _LOGGER.info(
+        "%s: built a sparse Cholesky factorization (%d bytes) and is discarding it; pass an "
+        "ordito.mesh.Trimesh to keep it for later calls",
+        name,
+        solver.nbytes,
+    )

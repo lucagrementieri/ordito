@@ -5479,7 +5479,10 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   explicit release, scoped context manager or byte cap). It would speed the large-mesh rows
   1.3-1.7x only by holding memory a real caller would not expect held, so the benchmark win is
   not a fair one. Do not re-propose it, nor any other mechanism whose gain comes from keeping
-  memory reserved across calls (raising the pool's release threshold included).
+  memory reserved across calls (raising the pool's release threshold included). **The rule covers
+  factorizations too (2026-10-07)**: a hidden module cache of them was removed; a factorization
+  lives on an object the caller owns and can release (a `Trimesh`'s `HeatSolver`, a
+  `spd_column_solver` state, a `linalg.OperatorFactorization`; §16.16).
 - **`cotmatrix` allocated 9.4 GB a call at `lucy`** for a matrix under 1 GB (three 1.28 GB
   12-triplet buffers and 5.2 GB of `bsr_from_triplets` scratch). It now emits six off-diagonal
   triplets per face plus one diagonal slot per vertex (the tail's rows prefilled with
@@ -5555,17 +5558,18 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   the failures. A conditioning bound was tried as the trigger and does not separate them
   (`bunny_decimated` reads 1.9e4 and is fine; a 1.5-graded saddle reads 392 and is broken).
   `solve_spd_settled` now verifies its result against `SETTLE_BACKWARD_ERROR = 1e-6` (one 4-byte
-  read) and on failure solves by a `cholesky.sparse_cholesky` factorization, kept for the operator
-  so its later solves skip the CG (§16.16). Fixed: 1.11 % / 5.74 % on `saddle_graded` (potpourri3d
+  read) and on failure solves by a `cholesky.sparse_cholesky` factorization, built in the caller's
+  `linalg.OperatorFactorization` -- for the heat family, the `Trimesh`'s `heat.HeatSolver` -- so
+  that mesh's later solves skip the CG (§16.16). Fixed: 1.11 % / 5.74 % on `saddle_graded` (potpourri3d
   1.15 / 5.77); the 68 x 68 graded saddle's one-shot and reused-operator distance is 2.6e-4 of the
   range off potpourri3d (was 0.38) and its transport 2.4e-6 degrees off `spsolve` (was 180);
   `test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d` /
   `test_transport_on_a_graded_mesh_matches_a_direct_solve` fail on the old code. Cost, interleaved
   A/B: the verification read 0.95-1.01x on every well-conditioned row; the graded one-shot rows pay
   the CG that failed plus the factorization (`heat_geodesic` 0.75x, `transport` 0.23x, `log_map`
-  0.58x, `extend_scalar` 0.56x, now correct), the graded reused-operator rows go straight to the
-  factor (`heat_geodesic` 1.13x, its Poisson CG is the rest; `transport` 10.3x, 6.1 -> 0.59 ms,
-  potpourri3d 3.0).
+  0.58x, `extend_scalar` 0.56x, now correct), the graded rows on a kept `Trimesh` go straight to
+  the factor (`heat_geodesic` 1.13x, its Poisson CG is the rest; `transport` 10.3x, 6.1 -> 0.59
+  ms, potpourri3d 3.0).
 - **`heat_geodesic` was wrong far from its sources past a dozen rings, and the same defect sat
   under every heat-diffusion entry point.** On `icosphere(5)` from one source the worst error was
   2.34 against the great-circle distance (igl 0.019). A CG iterate after `k` rounds is a
@@ -6321,7 +6325,8 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   product per row and a fixed-order chunk sum (forward), and the transposed pair (backward); no
   float atomics, so solves repeat bit for bit; refined against the operator until the residual
   passes its test, componentwise for the heat fields. Graph-recorded with `capture_while` and
-  replayed. Symbolic analysis is cached per pattern content (`_PLAN_CACHE`, 4 entries).
+  replayed. Symbolic analysis is cached per pattern content (`_PLAN_CACHE`, 4 entries; see the
+  ownership bullet below).
 - **Measured** (heat system `M - tL`, RTX 5090): numeric refactor 1.7 / 2.2 / 4.1 ms
   (`sphere_small` / `saddle_graded` / `sphere_med`), against a level-batched cuSOLVER yardstick
   (torch) of 1.5 / 5.4 / 8.0 ms in `float64`; a solve 0.11 / 0.20 / 0.25 ms (two residual tests
@@ -6339,41 +6344,68 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
   0.11 ms on `sphere_small`); per-row `float64` atomics in the forward solve were replaced by
   fixed-order slot sums for reproducibility at no measurable cost.
 
-- **Routing (2026-10-07): factor where an operator or its pattern repeats, iterate where it does
-  not.** Interleaved A/B against the iteration, the factorization's analysis cached (as in the
-  benchmark harness):
-    - *Same operator object, second solve on* (`linalg._reused_factorization`): the heat
-      diffusions (`solve_spd_settled`) and the heat method's Poisson solve (`solve_spd(...,
-      factor_on_reuse=True)`): `heat_geodesic` with reused operators 7.4x / 7.4x / 14x / 37x / 12x
-      / 16x (`sphere_small` 2.0 -> 0.26 ms, potpourri3d 0.35; `sphere_med`, `saddle`,
-      `saddle_graded`, `hemisphere`, `bunny`), `transport_tangent_vectors` 9.1x / 10.4x (0.59 ms,
-      potpourri3d 3.0). `solve_spd_columns` and `spd_column_solver` default `factor_on_reuse=True`,
-      guarded by an order-free 64-bit fingerprint of the values (SplitMix-scrambled words summed
-      mod 2^64, one 8-byte read a solve; a *linear* mix failed: doubling every value moves each
-      word by `2^52` and the sum cancelled) that refactors on an in-place rewrite:
-      `solve_spd_columns` 31x / 159x (`saddle` / `saddle_graded`, 0.29 ms), `spd_column_solver`
-      once 36x / 180x, x50 2.1x / 10.3x (a warm start that already passes the test costs one
-      residual, no triangular solve).
-    - *Fresh operator, same pattern* (`cholesky.reused_sparse_cholesky`, a device fingerprint of
-      the pattern, 24-byte read): `harmonic(k=2)` 1.4x / 2.4x / 2.8x (`saddle_small` / `saddle` /
-      `hemisphere`), `lscm` 1.7x / 2.9x / 1.9x; `filter_implicit_fairing` refactors per pass once
-      the first pass's Chebyshev count is at least 60 (`saddle` ~20, `saddle_graded` ~170):
-      `saddle_graded` 2.5x (111 -> 44 ms), `saddle` / `hemisphere` 0.98-0.99x.
-    - **Declined, measured**: `arap` (warm-started short solves of a per-call operator; factor on
-      the second step 0.35-0.65x at 3 iterations, 0.44-1.06x at 10), `harmonic(k=1)` (0.34-0.5x),
-      `min_quad_with_fixed` by default (0.44-0.83x at 1 % / 50 % pinned; a cotangent block is
-      negative definite and the non-negated attempt fails first; `factorize=` is opt-in, `lscm` uses
-      it), `smooth_region_boundary` (its small band system is rewritten every pass: 0.25-0.37x with
-      a refactor per pass; that call site passes `factor_on_reuse=False`).
-- **The first solve still iterates, and the second pays the analysis once**: `harmonic(k=2)` /
-  `lscm` on `saddle` read 146 / 24 ms, 153 / 193 ms, then 7 ms per call; the host analysis is
+- **Ownership (2026-10-07): a factorization lives on an object the caller holds, never in a module
+  cache.** The first cut kept them in hidden cross-call caches (`linalg._FACTOR_CACHE`, weak per
+  operator with a 64-bit value fingerprint, `factor_on_reuse=` on `solve_spd` / `solve_spd_columns`
+  / `spd_column_solver`, and `cholesky.reused_sparse_cholesky` over a per-pattern plan cache);
+  the owner rejected memory held across calls by hidden caches (the §16.9 rule), so all of it is
+  gone from `linalg` and every caller. What holds one now:
+    - **`linalg.OperatorFactorization`**: a caller-owned slot for one operator (scalar or
+      `wp.mat22d`, factored negated if negative semi-definite), `factor()` once (a refusal is
+      remembered), `solve()`, `release()`, `nbytes`. `solve_spd_settled(factorization=)` builds its
+      fallback there, and solves by it directly when it already holds one; without it the
+      fallback's factorization is built for the solve and dropped.
+    - **`spd_column_solver(factorize=True)`** owns one, built on the state's second call (`arap`
+      passes `False`). `solve_spd`, `solve_spd_columns` and `min_quad_with_fixed` keep nothing.
+    - **The heat family keeps them on a `Trimesh`**: `Trimesh.heat_solver(t, use_robust=)` returns a
+      `heat.HeatSolver` per key, in `_cache["_heat_solvers"]`, carried by no transform; it holds
+      the operators (the mesh's own `heat_operators` / `vector_heat_operators` at the defaults) and
+      one `OperatorFactorization` per system it solves (`heat`, `poisson`, `vector`, and the stacks
+      `stack1` = `[vector; heat]` for `log_map`, `stack2` = `[vector; heat; heat]` for transport).
+      A system is factored on its **second** solve (rent or buy: a one-shot call costs what the
+      iteration costs) or at once when its settled iterate fails the check (correctness); both
+      logged at `DEBUG` on `ordito.heat`. `Trimesh.release_factorizations()` drops them. The solver
+      refers to its mesh weakly (`Trimesh.__slots__` has `__weakref__`): a strong reference made a
+      cycle, freeing a mesh's device memory only at the next garbage collection.
+    - **Every heat function takes a `Trimesh` or `vertices, faces`** (two `typing.overload`s with
+      positional-only parameters over one implementation whose parameters carry both forms' names,
+      resolved by the public `mesh.mesh_arguments`; `operators=` is gone). The `vertices, faces`
+      form wraps a temporary `Trimesh` and logs at `INFO` exactly when it drops a factorization it
+      built (the graded fallback). **An implementation of `(*args, **kwargs)` is the wrong
+      shape**: griffe checks the documented parameters against the implementation's signature
+      alone (86 warnings, which `--strict` passes silently), and a per-module `docstring_options`
+      through `api-autonav`'s `module_options` does not reach it.
+  Interleaved A/B against the cached form (CUDA, min of 5, cholesky's plan cache warm on both):
+  `heat_geodesic` and `transport_tangent_vectors` one-shot 0.99-1.00x, repeated on a `Trimesh`
+  against reused `operators=` 0.99-1.05x, on `saddle_small` / `saddle` / `hemisphere` /
+  `saddle_graded`. What the caches bought outside heat, priced with the analysis paid by the call
+  (the plan cache cleared), and declined:
+    - `lscm`: a factored reduced system 45 / 193 / 243 / 195 ms against 5.9 / 18.9 / 14.4 / 43 ms
+      iterated (the four meshes above); the cache's steady state was 4.1-8.8 ms. The reduced
+      pattern depends on the pins, so a `Trimesh` could reuse it only for repeated identical pins.
+    - `harmonic(k=2)`: 30 / 118 / 166 ms factored against 6.1 / 16 / 25 ms iterated. **Open lead:**
+      on `saddle_graded` the `k=2` iteration takes 13.5 s against 118 ms factored (not on the
+      `harmonic` benchmark's axis); a capped iteration falling back to a factorization would fix it.
+    - `filter_implicit_fairing`: its call-local refactor-per-pass (`_FairingSolver`) paid only
+      through the plan cache (`saddle_graded` 46 ms) and is 0.94x with the analysis per call (120
+      against 113 ms iterated): reverted to the iteration.
+  The column solvers' one-shot speedups (`solve_spd_columns` 31x / 159x) were the cache too. What
+  the kept factorizations buy over the iteration (first-cut measurement, unchanged here): a
+  repeated `heat_geodesic` on one mesh 7.4x / 7.4x / 14x / 37x / 12x / 16x (`sphere_small` 2.0 ->
+  0.26 ms, potpourri3d 0.35; `sphere_med`, `saddle`, `saddle_graded`, `hemisphere`, `bunny`),
+  `transport_tangent_vectors` 9.1x / 10.4x (0.59 ms, potpourri3d 3.0); a `spd_column_solver` state
+  36x / 180x on its later calls (`saddle` / `saddle_graded`). Declined then and still: factoring
+  `arap`'s state (warm-started short solves of a per-call operator: 0.35-1.06x; it passes
+  `factorize=False`), `harmonic(k=1)` (0.34-0.5x), `smooth_region_boundary` (0.25-0.37x).
+- **`cholesky._plan_cholesky` still keeps analyses across calls** (`_PLAN_CACHE`, four), as does
+  `reused_sparse_cholesky` (`_PATTERNS_SEEN`, `_PATTERNS_REFUSED`), owned by the `ordito.cholesky`
+  port: no ordito caller uses `reused_sparse_cholesky` any more, and every number above that
+  includes an analysis was taken with the plan cache cleared. The first-time host analysis is
   130-220 ms at 17-35 k rows (nested dissection over hop distances without coordinates, 28 ms of
-  BFS, then the task maps). Analyses are kept per pattern (`_PLAN_CACHE`, four); a factorization
-  per operator (`linalg._FACTOR_CACHE`, weak keys, holding the storage through an alias). The
-  graded one-shot heat rows keep their commit-1 cost (`heat_geodesic` 0.76x, `transport` 0.25x,
-  `log_map` 0.61x against the wrong answer), most of it the settle CG that fails first and the
-  stacked `[vector; heat; heat]` factorization (two copies of the heat system) -- a lead: factor
-  the stack's blocks once each.
+  BFS, then the task maps). The graded one-shot heat rows keep their commit-1 cost
+  (`heat_geodesic` 0.76x, `transport` 0.25x, `log_map` 0.61x against the wrong answer), most of it
+  the settle CG that fails first and the stacked `[vector; heat; heat]` factorization (two copies
+  of the heat system) -- a lead: factor the stack's blocks once each.
 
 #### One-block solves
 

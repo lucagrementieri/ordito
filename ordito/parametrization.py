@@ -437,9 +437,7 @@ def _solve_biharmonic(
     n_vertices: int,
 ) -> wp.array[wp.vec2]:
     """
-    ``_solve_fixed_boundary`` at ``k == 2``: factored once the pattern repeats, else iterated.
-
-    The iteration (``_solve_biharmonic_iterated``) is preconditioned as the square of a Laplacian.
+    ``_solve_fixed_boundary`` at ``k == 2``, preconditioned as the square of a Laplacian.
 
     ``Q = L M^-1 L`` is fourth order, and its free block is spectrally close to
     ``L_ff D^-2 L_ff`` with ``D = sqrt(M_f)`` -- the terms it drops are the one ring of the pinned
@@ -454,15 +452,30 @@ def _solve_biharmonic(
     sol = odt.as_array2d(_launch.zeros((2, n_free), dtype=wp.float64, device=device), wp.float64)
     if n_free > 0:
         q_uu, rhs = twl.assemble_interior_system(q, fixed_mask, free_map, fixed_values_2d, n_free)
-        # Fourth order and long to iterate: once the pattern repeats (a later call over this
-        # mesh), a factorization of the reduced system replaces the iteration.
-        factorization = od.cholesky.reused_sparse_cholesky(q_uu)
-        if factorization is not None:
-            factorization.solve(rhs, sol, tol=_CG_TOLERANCE)
+        no_values = odt.as_array2d(
+            _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
+        )
+        # ``-L``'s free block, negated as it is extracted.
+        l_ff, _ = twl.assemble_interior_system(
+            laplacian, fixed_mask, free_map, no_values, n_free, scale=-1.0
+        )
+        if mass_diag is None:
+            roots = _launch.full(n_free, 1.0, dtype=wp.float64, device=device)
         else:
-            _solve_biharmonic_iterated(
-                laplacian, mass_diag, q_uu, rhs, sol, fixed_mask, free_map, n_free, n_vertices
+            roots = _launch.empty(n_free, dtype=wp.float64, device=device)
+            _launch.launch(
+                kernel_parametrization.free_mass_roots,
+                dim=n_vertices,
+                inputs=[fixed_mask, free_map, mass_diag, roots],
+                device=device,
             )
+        twl.solve_spd_columns(
+            q_uu,
+            rhs,
+            sol,
+            tol=_CG_TOLERANCE,
+            preconditioner=twl.squared_laplacian_preconditioner(l_ff, roots),
+        )
     out_uv = _launch.empty(n_vertices, dtype=wp.vec2, device=device)
     _launch.launch(
         kernel_parametrization.scatter_solution,
@@ -471,45 +484,6 @@ def _solve_biharmonic(
         device=device,
     )
     return out_uv
-
-
-def _solve_biharmonic_iterated(
-    laplacian: odt.BsrMatrix[wp.float64],
-    mass_diag: wp.array[wp.float64] | None,
-    q_uu: odt.BsrMatrix[wp.float64],
-    rhs: odt.Array2dFloat,
-    sol: odt.Array2dFloat,
-    fixed_mask: wp.array[wp.bool],
-    free_map: wp.array[wp.int32],
-    n_free: int,
-    n_vertices: int,
-) -> None:
-    """Iterate the reduced bilaplacian under the squared-Laplacian polynomial preconditioner."""
-    device = fixed_mask.device
-    no_values = odt.as_array2d(
-        _launch.empty((0, n_vertices), dtype=wp.float64, device=device), wp.float64
-    )
-    # ``-L``'s free block, negated as it is extracted.
-    l_ff, _ = twl.assemble_interior_system(
-        laplacian, fixed_mask, free_map, no_values, n_free, scale=-1.0
-    )
-    if mass_diag is None:
-        roots = _launch.full(n_free, 1.0, dtype=wp.float64, device=device)
-    else:
-        roots = _launch.empty(n_free, dtype=wp.float64, device=device)
-        _launch.launch(
-            kernel_parametrization.free_mass_roots,
-            dim=n_vertices,
-            inputs=[fixed_mask, free_map, mass_diag, roots],
-            device=device,
-        )
-    twl.solve_spd_columns(
-        q_uu,
-        rhs,
-        sol,
-        tol=_CG_TOLERANCE,
-        preconditioner=twl.squared_laplacian_preconditioner(l_ff, roots),
-    )
 
 
 def arap(
@@ -710,7 +684,7 @@ def arap(
         preconditioner="chebyshev",
         # The global steps are warm-started, short Jacobi-Chebyshev solves of an operator rebuilt
         # per call, which a factorization on the second step does not beat: ARAP keeps iterating.
-        factor_on_reuse=False,
+        factorize=False,
     )
 
     for _ in range(max_iterations):
@@ -882,7 +856,6 @@ def lscm(
         odt.as_array2d(fixed_values, wp.float64),
         tol=_CG_TOLERANCE,
         preconditioner="chebyshev",
-        factorize=True,
     )
 
     out_uv = _launch.empty(n, dtype=wp.vec2, device=device)

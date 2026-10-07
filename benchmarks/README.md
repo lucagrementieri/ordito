@@ -961,7 +961,8 @@ Two things shape every potpourri3d row:
   only `compute_*` would compare a back-substitution against a full iterative solve. Where ordito
   has its own reusable precompute the amortized case is measured explicitly instead of argued about:
   `heat_geodesic` carries a `setup=full`/`setup=amortized` parameter layer, and on ordito's side the
-  amortized row is a real API path (`heat_operators` passed back through `heat_geodesic`).
+  amortized row is a real API path (a `Trimesh` passed to `heat_geodesic`, warmed by two calls
+  so it holds its factorizations).
 - **Its defaults do more work than ordito's.** `MeshHeatMethodDistanceSolver(use_robust=True)` and
   `MeshVectorHeatSolver(use_intrinsic_delaunay=True)` mollify and flip to an intrinsic Delaunay
   triangulation first. Every row here passes `False` so both sides discretize the same triangulation;

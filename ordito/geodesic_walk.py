@@ -30,6 +30,7 @@ that one solves a vector-heat system -- and geodesic *distance* by the heat meth
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import cast, overload
 
 import warp as wp
 
@@ -39,6 +40,7 @@ from ordito import _launch
 from ordito._device import read_scalar, read_values, require_same_device
 from ordito.halfedge import halfedge_twins, vertex_one_rings
 from ordito.kernels import geodesic_walk as kernel_geodesic_walk
+from ordito.mesh import Trimesh, mesh_arguments
 
 _DEFAULT_MAX_STEPS = 4096
 
@@ -400,14 +402,35 @@ def descend_field(
     return _trace(kernel_geodesic_walk.descent_paths, inputs, n_paths, device)
 
 
+@overload
+def geodesic_path(
+    mesh: Trimesh,
+    source: wp.array[wp.int32],
+    targets: wp.array[wp.int32],
+    /,
+    *,
+    t: float | None = None,
+    max_steps: int = _DEFAULT_MAX_STEPS,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+@overload
 def geodesic_path(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     source: wp.array[wp.int32],
     targets: wp.array[wp.int32],
+    /,
     *,
     t: float | None = None,
-    operators: od.heat.HeatOperators | None = None,
+    max_steps: int = _DEFAULT_MAX_STEPS,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]: ...
+def geodesic_path(
+    mesh: Trimesh | wp.array[wp.vec3] | None = None,
+    faces: wp.array[wp.int32] | None = None,
+    source: wp.array[wp.int32] | None = None,
+    targets: wp.array[wp.int32] | None = None,
+    *,
+    vertices: wp.array[wp.vec3] | None = None,
+    t: float | None = None,
     max_steps: int = _DEFAULT_MAX_STEPS,
 ) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
     """
@@ -420,8 +443,15 @@ def geodesic_path(
     thousand independent walks -- which is why the signature is one source and many targets rather
     than a list of pairs.
 
+    Takes the mesh as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh], which keeps the heat
+    method's operators and factorizations for the next call (several sources traced on one mesh),
+    or as its ``vertices`` and ``faces``.
+
     Parameters
     ----------
+    mesh
+        The mesh, as an [`ordito.mesh.Trimesh`][ordito.mesh.Trimesh]; or, in its place,
+        ``vertices`` and ``faces``.
     vertices
         ``(n_vertices,)`` mesh vertex positions.
     faces
@@ -434,9 +464,6 @@ def geodesic_path(
     t
         Heat diffusion time, forwarded to
         [`heat_geodesic`][ordito.heat.heat_geodesic]. ``None`` uses its default.
-    operators
-        Prebuilt [`HeatOperators`][ordito.heat.HeatOperators] for this mesh, to spare the
-        factorization when several sources are traced on one mesh.
     max_steps
         Cap on steps per path.
 
@@ -478,11 +505,22 @@ def geodesic_path(
     [`ordito.heat.heat_geodesic`][ordito.heat.heat_geodesic]
         The field, when the distance is wanted and not the path.
     """
-    require_same_device(
-        vertices=vertices, faces=faces, source=source, targets=targets, operators=operators
+    bound, owned, arguments = mesh_arguments(
+        "geodesic_path", mesh, vertices, faces, (source, targets), 2
     )
-    distance = od.heat.heat_geodesic(vertices, faces, source, t, operators)
-    return descend_field(vertices, faces, distance, targets, stop_value=0.0, max_steps=max_steps)
+    source = cast("wp.array[wp.int32]", arguments[0])
+    targets = cast("wp.array[wp.int32]", arguments[1])
+    require_same_device(vertices=bound.vertices, faces=bound.faces, source=source, targets=targets)
+    # The ``vertices, faces`` form hands them on, so ``heat_geodesic`` builds and drops the mesh
+    # (and logs a factorization it drops); a `Trimesh` keeps its heat solver for the next source.
+    distance = (
+        od.heat.heat_geodesic(bound, source, t=t)
+        if owned
+        else od.heat.heat_geodesic(bound.vertices, bound.faces, source, t)
+    )
+    return descend_field(
+        bound.vertices, bound.faces, distance, targets, stop_value=0.0, max_steps=max_steps
+    )
 
 
 def shorten_loop(

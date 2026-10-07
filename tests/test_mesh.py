@@ -1276,3 +1276,37 @@ def test_a_precomputed_argument_does_not_change_the_answer(
             assert np.allclose(left, right, rtol=1e-5, atol=1e-5), name
         else:
             assert np.array_equal(left, right), name
+
+
+def test_mesh_arguments_resolves_both_forms(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: the argument shift ``mesh_arguments`` exists for.
+
+    A `Trimesh` call's positional arguments land one parameter early and are moved back, each
+    taken from its own keyword where the caller named it; a ``vertices, faces`` call is passed
+    through and wrapped in a new mesh. Every call below is one ``f(mesh, faces, a, b, t, *,
+    vertices)`` would receive.
+    """
+    _, mesh_wp = icosahedron
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    a, b = object(), object()
+    resolve = od.mesh.mesh_arguments
+    # f(mesh, a, b): a lands in ``faces``, b in the first argument's slot.
+    assert resolve("f", mesh, None, a, (b, None, None), 2) == (mesh, True, (a, b, None))
+    # f(mesh, a, b, t=0.5) and f(mesh, a, second=b, t=0.5).
+    assert resolve("f", mesh, None, a, (b, None, 0.5), 2) == (mesh, True, (a, b, 0.5))
+    assert resolve("f", mesh, None, a, (None, b, 0.5), 2) == (mesh, True, (a, b, 0.5))
+    # f(mesh, first=a, second=b): nothing positional, nothing moves.
+    assert resolve("f", mesh, None, None, (a, b, None), 2) == (mesh, True, (a, b, None))
+    # f(vertices, faces, a, b, 0.5) and f(vertices=..., faces=..., ...).
+    for first, vertices in ((mesh_wp.points, None), (None, mesh_wp.points)):
+        built, owned, rest = resolve("f", first, vertices, mesh_wp.indices, (a, b, 0.5), 2)
+        assert not owned
+        assert rest == (a, b, 0.5)
+        assert built.vertices.ptr == mesh_wp.points.ptr
+    with pytest.raises(TypeError, match="positional"):
+        resolve("f", mesh, None, a, (b, 0.5, None), 2)
+    with pytest.raises(TypeError, match="not both"):
+        resolve("f", mesh, mesh_wp.points, a, (b, None, None), 2)
+    with pytest.raises(TypeError, match="vertices and faces"):
+        resolve("f", None, None, mesh_wp.indices, (a, b, None), 2)

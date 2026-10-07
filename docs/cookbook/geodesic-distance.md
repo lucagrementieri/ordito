@@ -43,19 +43,23 @@ sparse solves, instead of a shortest-path search over the surface for every sour
 ## Many source sets on one mesh
 
 Most of the cost is building the sparse operators (the Laplacian and mass matrix behind both
-solves), and they depend on the mesh alone, not on the sources. When you need distances from many
-different source sets on the *same* mesh (one per frame of an animation, one per candidate in a
-sampling loop), build them once with [`heat.heat_operators`][ordito.heat.heat_operators] and pass
-them back in:
+solves) and solving against them, and the operators depend on the mesh alone, not on the sources.
+When you need distances from many different source sets on the *same* mesh (one per frame of an
+animation, one per candidate in a sampling loop), pass an [`ordito.Trimesh`][ordito.mesh.Trimesh]
+instead of `vertices, faces`. The mesh keeps the operators, and from the second call on a sparse
+Cholesky factorization of each system, so every later source set costs a few triangular solves:
 
 ```python
-operators = od.heat.heat_operators(vertices, faces)
+mesh = od.Trimesh(vertices, faces)
 
 for seed in (0, 100, 200):
     sources = wp.array([seed], dtype=wp.int32, device=vertices.device)
-    distance = od.heat.heat_geodesic(vertices, faces, sources, operators=operators)
+    distance = od.heat.heat_geodesic(mesh, sources)
     print(seed, f"{distance.numpy().max():.3f}")  # about pi from every seed
 ```
+
+The factorizations hold device memory for as long as the mesh lives;
+[`Trimesh.release_factorizations`][ordito.mesh.Trimesh.release_factorizations] returns it.
 
 Several sources in one array give the distance to the *nearest* of them:
 `wp.array([0, 100], dtype=wp.int32, device=...)`.
@@ -78,6 +82,6 @@ The same machinery extends to tangent vectors, in [`ordito.heat`][ordito.heat]:
   distance to a set of oriented curves on the surface, positive inside the region a
   counter-clockwise curve encloses and negative outside it.
 
-These solve a vector-valued diffusion, so their reusable operators come from
-[`heat.vector_heat_operators`][ordito.heat.vector_heat_operators] rather than `heat_operators`,
-passed back through the same `operators=` keyword.
+They take the same `Trimesh`, which keeps their operators
+([`Trimesh.vector_heat_operators`][ordito.mesh.Trimesh.vector_heat_operators]) and
+factorizations in the same way.

@@ -33,6 +33,7 @@ Comparing tangent fields across libraries needs care in two places, and both are
 from __future__ import annotations
 
 import functools
+import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -48,6 +49,7 @@ from meshlib import mrmeshpy as mm
 
 import ordito as od
 import ordito.typing as odt
+from benchmarks.meshes import BUILDERS
 from tests.conftest import MESHES
 from tests.conversions import (
     bsr_to_dense,
@@ -237,16 +239,16 @@ def test_heat_operators_honour_an_explicit_diffusion_time(
 
 
 @pytest.mark.parametrize("mesh_name", ["icosphere_coarse", "hemisphere"])
-def test_heat_geodesic_with_supplied_operators_matches_building_them_internally(
+def test_heat_geodesic_on_a_trimesh_matches_vertices_and_faces(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    The caching contract: passing the operators back gives the same distances, to 6.7e-16.
+    Ordito against ordito: the two forms of the call are one computation.
 
-    This is the reason the tuple is public -- a caller solving from many source sets on one mesh
-    builds it once -- so what has to be pinned is that the supplied path is not a *different*
-    computation. Not a reference comparison; the oracle for the distances themselves is
-    [`test_heat_geodesic_matches_igl`].
+    Not a parity assert; the oracle for the distances themselves is
+    [`test_heat_geodesic_matches_igl`]. The first `Trimesh` call runs the same solves as the
+    ``vertices, faces`` form (equal to 1e-12); the second goes to the factorizations the mesh kept,
+    which agree to the Poisson solve's tolerance (1e-6 of the range here; measured below 1e-9).
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     sources_wp = wp.array(
@@ -254,15 +256,16 @@ def test_heat_geodesic_with_supplied_operators_matches_building_them_internally(
         dtype=wp.int32,
         device=mesh_wp.points.device,
     )
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
 
-    operators = od.heat.heat_operators(mesh_wp.points, mesh_wp.indices)
-    supplied_np = od.heat.heat_geodesic(
-        mesh_wp.points, mesh_wp.indices, sources_wp, operators=operators
-    ).numpy()
     internal_np = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources_wp).numpy()
+    first_np = od.heat.heat_geodesic(mesh, sources_wp).numpy()
+    second_np = od.heat.heat_geodesic(mesh, sources_wp).numpy()
 
     assert internal_np.max() > 0.0
-    assert np.allclose(supplied_np, internal_np, rtol=1e-12, atol=1e-12)
+    assert np.allclose(first_np, internal_np, rtol=1e-12, atol=1e-12)
+    assert mesh.heat_solver().nbytes > 0
+    assert np.abs(second_np - internal_np).max() < 1e-6 * np.ptp(internal_np)
 
 
 def _heat_geodesic_igl(
@@ -408,7 +411,7 @@ def test_heat_geodesic_matches_igl_far_from_the_sources(
     assert np.abs(distance_wp - distance_igl).max() < 5e-3 * np.ptp(distance_igl)
 
 
-@pytest.mark.parametrize("reuse", [False, True], ids=["one_shot", "operators"])
+@pytest.mark.parametrize("reuse", [False, True], ids=["one_shot", "trimesh"])
 def test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d(
     device: str, graded_saddle: GradedSaddle, reuse: bool
 ) -> None:
@@ -420,14 +423,16 @@ def test_heat_geodesic_on_a_graded_mesh_matches_potpourri3d(
     the range off potpourri3d (and 4.4 % mean, 38 % worst off ``igl.exact_geodesic``, against the
     method's own 1.1 % / 6.2 %). The settled iterate's componentwise backward error flags it and
     the solve falls back to a direct factorization. Measured agreement 2.6e-4 of the range, both
-    one-shot and with reused operators (whose second call goes to the factorization directly).
+    one-shot and on a `Trimesh` (whose second call goes to the kept factorizations directly).
     """
     vertices_np, faces_np, vertices_wp, faces_wp = graded_saddle
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
-    operators = od.heat.heat_operators(vertices_wp, faces_wp) if reuse else None
+    mesh = od.Trimesh(vertices_wp, faces_wp)
     for _ in range(2 if reuse else 1):
-        distance_wp = od.heat.heat_geodesic(
-            vertices_wp, faces_wp, sources_wp, operators=operators
+        distance_wp = (
+            od.heat.heat_geodesic(mesh, sources_wp)
+            if reuse
+            else od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp)
         ).numpy()
         distance_pp = pp3d.MeshHeatMethodDistanceSolver(
             vertices_np, faces_np.astype(np.int32), use_robust=False
@@ -1211,7 +1216,8 @@ def test_transport_on_a_graded_mesh_matches_a_direct_solve(
     """
     _, _, vertices_wp, faces_wp = graded_saddle
     n_vertices = vertices_wp.size
-    operators = od.heat.vector_heat_operators(vertices_wp, faces_wp)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    operators = mesh.vector_heat_operators
     offsets = operators[0].offsets.numpy()[: n_vertices + 1]
     system_sp = sp.bsr_matrix(
         (
@@ -1227,9 +1233,7 @@ def test_transport_on_a_graded_mesh_matches_a_direct_solve(
     expected = field_np[0::2] + 1j * field_np[1::2]
     sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=device)
     vectors_wp = wp.array(np.array([[1.0, 0.0]], dtype=np.float32), dtype=wp.vec2, device=device)
-    transported_wp, resolved_wp = od.heat.transport_tangent_vectors(
-        vertices_wp, faces_wp, sources_wp, vectors_wp, operators=operators
-    )
+    transported_wp, resolved_wp = od.heat.transport_tangent_vectors(mesh, sources_wp, vectors_wp)
     transported = transported_wp.numpy()
     resolved = resolved_wp.numpy()
     angle = np.degrees(np.abs(np.angle((transported[:, 0] + 1j * transported[:, 1]) / expected)))
@@ -1547,61 +1551,94 @@ def test_reused_operators_give_the_same_transport(
     request: pytest.FixtureRequest, mesh_name: str
 ) -> None:
     """
-    Ordito against ordito: a precomputed ``vector_heat_operators`` bundle changes no answer.
+    Ordito against ordito: a `Trimesh`, solved twice, changes no answer.
 
-    Not a parity assert: the fresh calls carry the potpourri3d oracle. Covers the three consumers
-    of the bundle -- transport, the log map, and the signed heat method, which assembles three
-    matrices.
+    Not a parity assert: the ``vertices, faces`` calls carry the potpourri3d oracle. Covers the
+    three consumers of the vector bundle -- transport, the log map, and the signed heat method,
+    which assembles three matrices -- each called twice on one mesh, so the second call goes to the
+    factorizations the first one's solves earned.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     _, _, curve_wp = _one_ring_cycle(mesh_tm, mesh_wp)
     sources, vectors = _unit_transport_source(mesh_wp.device)
-    operators = od.heat.vector_heat_operators(mesh_wp.points, mesh_wp.indices)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
 
-    # Reusing the operators must be an optimization and nothing else: the same assembly, so the same
+    # Reusing the mesh must be an optimization and nothing else: the same assembly, so the same
     # matrices, so the same answer. Not *bit* for bit, though — conjugate gradient reduces with
-    # atomics, so two identical solves can differ in their last bits. Measured: transport agrees to
-    # 2e-15, and the log map to 4e-7 absolute, which is float32 epsilon on its own output.
-    for fresh, reused in (
+    # atomics, and the factorization answers to its own tolerance. Measured: transport agrees to
+    # 2e-15, and the log map to 4e-7 absolute, which is float32 epsilon on its own output. Off the
+    # cut locus only, where the direction is round-off and the two solves' round-off differs (the
+    # icosahedron's antipode: 0.06 apart; see ``transport_tangent_vectors``' Notes); the log map's
+    # radius is compared everywhere. The signed field integrates the normalized diffused field,
+    # whose direction at that antipode is round-off, so on the icosahedron alone the two solves'
+    # signed fields differ there by 3.9e-3 of their span.
+    resolved = od.heat.transport_tangent_vectors(mesh_wp.points, mesh_wp.indices, sources, vectors)[
+        1
+    ].numpy()
+    assert resolved.any()
+    signed_tolerance = 1e-2 if mesh_name == "icosahedron" else 1e-5
+    points, indices = mesh_wp.points, mesh_wp.indices
+    everywhere = np.ones_like(resolved)
+    # Each row: the field from ``vertices, faces``, the same field from the mesh, where to compare.
+    calls: list[tuple[Callable[[], np.ndarray], Callable[[], np.ndarray], np.ndarray, float]] = [
         (
-            od.heat.transport_tangent_vectors(mesh_wp.points, mesh_wp.indices, sources, vectors)[0],
-            od.heat.transport_tangent_vectors(
-                mesh_wp.points, mesh_wp.indices, sources, vectors, operators=operators
-            )[0],
+            lambda: od.heat.transport_tangent_vectors(points, indices, sources, vectors)[0].numpy(),
+            lambda: od.heat.transport_tangent_vectors(mesh, sources, vectors)[0].numpy(),
+            resolved,
+            1e-5,
         ),
         (
-            od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0),
-            od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0, operators=operators),
+            lambda: od.heat.log_map(points, indices, 0).numpy(),
+            lambda: od.heat.log_map(mesh, 0).numpy(),
+            resolved,
+            1e-5,
         ),
         (
-            od.heat.heat_signed_distance(mesh_wp.points, mesh_wp.indices, curve_wp),
-            od.heat.heat_signed_distance(
-                mesh_wp.points, mesh_wp.indices, curve_wp, operators=operators
-            ),
+            lambda: np.linalg.norm(od.heat.log_map(points, indices, 0).numpy(), axis=1),
+            lambda: np.linalg.norm(od.heat.log_map(mesh, 0).numpy(), axis=1),
+            everywhere,
+            1e-5,
         ),
-    ):
-        # Compared against the *field's* magnitude rather than per element: a component that is
-        # near-zero in a field of size one carries no information about the solve's agreement.
-        span = float(np.abs(fresh.numpy()).max())
-        assert np.allclose(fresh.numpy(), reused.numpy(), rtol=0.0, atol=1e-5 * span)
+        (
+            lambda: od.heat.heat_signed_distance(points, indices, curve_wp).numpy(),
+            lambda: od.heat.heat_signed_distance(mesh, curve_wp).numpy(),
+            everywhere,
+            signed_tolerance,
+        ),
+    ]
+    for on_vertices, on_mesh, rows, tolerance in calls:
+        fresh = on_vertices()
+        for _ in range(2):
+            reused = on_mesh()
+            # Compared against the *field's* magnitude rather than per element: a component that is
+            # near-zero in a field of size one carries no information about the solve's agreement.
+            span = float(np.abs(fresh).max())
+            assert np.allclose(fresh[rows], reused[rows], rtol=0.0, atol=tolerance * span)
+    assert mesh.heat_solver().nbytes > 0
 
 
-def test_operators_fix_the_diffusion_time(icosahedron: tuple[tm.Trimesh, wp.Mesh]) -> None:
+def test_trimesh_keeps_one_heat_solver_per_diffusion_time(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh],
+) -> None:
+    """
+    Ordito against ordito: a `Trimesh` solves at the ``t`` it is asked for, with a solver per ``t``.
+
+    Not a parity assert. ``t`` lives in the assembled system, so a solver kept for one ``t`` must
+    never answer for another: ``t`` differs by six orders of magnitude between the two calls, so a
+    wrong key would not be subtle.
+    """
     _, mesh_wp = icosahedron
     sources, vectors = _unit_transport_source(mesh_wp.device)
-    slow = od.heat.vector_heat_operators(mesh_wp.points, mesh_wp.indices, t=1.0)
-
-    # ``t`` lives in the assembled system, so a bundle built with one ``t`` must win over the
-    # argument rather than being silently re-derived. A wrong precedence here would not be subtle:
-    # ``t`` differs by six orders of magnitude between the two.
-    with_bundle, _ = od.heat.transport_tangent_vectors(
-        mesh_wp.points, mesh_wp.indices, sources, vectors, t=1e-6, operators=slow
-    )
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    od.heat.transport_tangent_vectors(mesh, sources, vectors, t=1e-6)
+    on_mesh, _ = od.heat.transport_tangent_vectors(mesh, sources, vectors, t=1.0)
     direct, _ = od.heat.transport_tangent_vectors(
         mesh_wp.points, mesh_wp.indices, sources, vectors, t=1.0
     )
     span = float(np.abs(direct.numpy()).max())
-    assert np.allclose(with_bundle.numpy(), direct.numpy(), rtol=0.0, atol=1e-5 * span)
+    assert np.allclose(on_mesh.numpy(), direct.numpy(), rtol=0.0, atol=1e-5 * span)
+    assert mesh.heat_solver(1.0) is mesh.heat_solver(1.0)
+    assert mesh.heat_solver(1.0) is not mesh.heat_solver(1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -1609,9 +1646,10 @@ def test_operators_fix_the_diffusion_time(icosahedron: tuple[tm.Trimesh, wp.Mesh
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("on_trimesh", [False, True], ids=["system", "trimesh"])
 @pytest.mark.parametrize("mesh_name", _HEAT_MESHES_SMALL)
 def test_diffuse_tangent_field_solves_its_own_system(
-    request: pytest.FixtureRequest, mesh_name: str
+    request: pytest.FixtureRequest, mesh_name: str, on_trimesh: bool
 ) -> None:
     """
     Class A: the result satisfies ``(M + t L_connection) X = source`` to the solver's tolerance.
@@ -1619,13 +1657,13 @@ def test_diffuse_tangent_field_solves_its_own_system(
     This entry point is public because the *source* is where the vector-valued methods differ while
     the solve is shared, so what has to be pinned is the equation rather than any particular field.
     Applying the operator back to the answer is the direct check, and it is independent of the CG
-    path that produced it. Measured residual 1.5e-09 against a unit source.
+    path that produced it. Measured residual 1.5e-09 against a unit source. Both forms: the
+    system, and a `Trimesh` whose own vector heat system the solve must be.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     n_vertices = int(mesh_tm.vertices.shape[0])
-    vector_system, _scalar, _frames, _preconditioner = od.heat.vector_heat_operators(
-        mesh_wp.points, mesh_wp.indices
-    )
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    vector_system = mesh.vector_heat_operators[0]
 
     source_np = np.zeros((n_vertices, 2))
     source_np[0] = [1.0, 0.0]
@@ -1634,13 +1672,181 @@ def test_diffuse_tangent_field_solves_its_own_system(
         np.ascontiguousarray(source_np), dtype=wp.vec2d, device=mesh_wp.points.device
     )
 
-    diffused_wp = od.heat.diffuse_tangent_field(vector_system, source_wp)
+    diffused_wp = (
+        od.heat.diffuse_tangent_field(mesh, source_wp)
+        if on_trimesh
+        else od.heat.diffuse_tangent_field(vector_system, source_wp)
+    )
 
     # Non-trivial: diffusion reaches every vertex, so this is not solving for zero.
     assert np.all(np.linalg.norm(diffused_wp.numpy(), axis=1) > 0.0)
     residual_wp = wp.zeros(n_vertices, dtype=wp.vec2d, device=mesh_wp.points.device)
     odt.bsr_mv(vector_system, diffused_wp, residual_wp, alpha=1.0, beta=0.0)
     assert np.abs(residual_wp.numpy() - source_np).max() < 1e-7
+
+
+# ---------------------------------------------------------------------------
+# HeatSolver: what a Trimesh keeps between calls
+# ---------------------------------------------------------------------------
+
+
+def _count_factorizations(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+    """Count the sparse Cholesky factorizations built from here on, by every caller."""
+    built: list[int] = []
+    factor = od.linalg.sparse_cholesky
+
+    def counted(*args: Any, **kwargs: Any) -> od.cholesky.SparseCholesky:
+        result = factor(*args, **kwargs)
+        built.append(result.n)
+        return result
+
+    monkeypatch.setattr(od.linalg, "sparse_cholesky", counted)
+    return built
+
+
+def test_trimesh_factors_on_the_second_solve_and_reuses_it(
+    icosphere5: Icosphere5, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: a solver-state invariant.
+
+    On a well-conditioned mesh the first call iterates and builds nothing (it costs what a one-shot
+    call costs); the second factors each system it solves -- the heat system and the Poisson
+    system, two -- and the third builds none and reuses both. The ``vertices, faces`` form never
+    factors here, however often it is called. The answers carry their oracle in
+    ``test_heat_geodesic_matches_igl_far_from_the_sources``; here they only agree with each other
+    to the solves' tolerances.
+    """
+    _, vertices_wp, faces_wp = icosphere5
+    built = _count_factorizations(monkeypatch)
+    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices_wp.device)
+    for _ in range(2):
+        od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp)
+    assert built == []
+
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    distances = []
+    for expected in ([], [vertices_wp.size] * 2, [vertices_wp.size] * 2):
+        distances.append(od.heat.heat_geodesic(mesh, sources_wp).numpy())
+        assert built == expected
+    span = np.ptp(distances[0])
+    assert span > 1.0
+    assert np.abs(distances[1] - distances[0]).max() < 1e-6 * span
+    assert np.abs(distances[2] - distances[1]).max() < 1e-12 * span
+
+
+@pytest.fixture
+def saddle_graded(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """Return ``benchmarks``' ``saddle_graded`` (17 689 vertices) on ``device``."""
+    vertices_np, faces_np = BUILDERS["saddle_graded"]()
+    return numpy_to_warp(vertices_np, np.ravel(faces_np), device)
+
+
+def test_graded_heat_diffusion_falls_back_to_a_factorization_that_matches_scipy(
+    saddle_graded: tuple[wp.array[wp.vec3], wp.array[wp.int32]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Class A at 1e-10 of the range: the diffused heat against ``scipy``'s solve of the same system.
+
+    On ``saddle_graded`` the settled conjugate-gradient iterate fails its backward-error check, so
+    the first solve on a `Trimesh` falls back to a factorization at once -- one build -- which the
+    mesh keeps: the second solve builds nothing. The reference is ``spsolve`` on the solver's own
+    heat system, so the comparison is of the linear solve alone.
+    """
+    vertices_wp, faces_wp = saddle_graded
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    built = _count_factorizations(monkeypatch)
+    solver = mesh.heat_solver()
+    n_vertices = vertices_wp.size
+    rhs_np = np.zeros(n_vertices)
+    rhs_np[0] = 1.0
+    heat_wp = wp.zeros(n_vertices, dtype=wp.float64, device=vertices_wp.device)
+    solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=vertices_wp.device), heat_wp)
+    assert built == [n_vertices]
+    assert solver.nbytes > 0
+
+    system = solver.operators[0]
+    offsets = system.offsets.numpy()[: n_vertices + 1]
+    system_sp = sp.csr_matrix(
+        (system.values.numpy()[: offsets[-1]], system.columns.numpy()[: offsets[-1]], offsets),
+        shape=(n_vertices, n_vertices),
+    )
+    heat_np = spla.spsolve(system_sp.tocsc(), rhs_np)
+    assert np.ptp(heat_np) > 0.0
+    assert np.abs(heat_wp.numpy() - heat_np).max() < 1e-10 * np.ptp(heat_np)
+
+    heat_wp.zero_()
+    solver.diffuse(wp.array(rhs_np, dtype=wp.float64, device=vertices_wp.device), heat_wp)
+    assert built == [n_vertices]
+    assert np.abs(heat_wp.numpy() - heat_np).max() < 1e-10 * np.ptp(heat_np)
+
+
+@pytest.mark.parametrize("on_trimesh", [False, True], ids=["vertices_faces", "trimesh"])
+def test_a_discarded_factorization_is_logged(
+    saddle_graded: tuple[wp.array[wp.vec3], wp.array[wp.int32]],
+    caplog: pytest.LogCaptureFixture,
+    on_trimesh: bool,
+) -> None:
+    """
+    Not a library comparison: the ``INFO`` record says exactly when a factorization is dropped.
+
+    On the graded saddle the heat solve falls back to a factorization. The ``vertices, faces``
+    call then drops it and says so; the `Trimesh` call keeps it and says nothing.
+    """
+    vertices_wp, faces_wp = saddle_graded
+    sources_wp = wp.array(np.array([0], dtype=np.int32), dtype=wp.int32, device=vertices_wp.device)
+    mesh = od.Trimesh(vertices_wp, faces_wp)
+    with caplog.at_level(logging.INFO, logger="ordito.heat"):
+        if on_trimesh:
+            od.heat.heat_geodesic(mesh, sources_wp)
+        else:
+            od.heat.heat_geodesic(vertices_wp, faces_wp, sources_wp)
+    discarded = [r for r in caplog.records if r.levelno == logging.INFO and "discard" in r.message]
+    assert len(discarded) == (0 if on_trimesh else 1)
+    assert (mesh.heat_solver().nbytes > 0) == on_trimesh
+
+
+def test_nothing_is_logged_where_nothing_was_factored(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], caplog: pytest.LogCaptureFixture
+) -> None:
+    """
+    Not a library comparison: a one-shot call on a well-conditioned mesh builds nothing to drop.
+
+    So the ``vertices, faces`` form logs nothing at ``INFO``.
+    """
+    _, mesh_wp = icosahedron
+    sources, vectors = _unit_transport_source(mesh_wp.device)
+    with caplog.at_level(logging.INFO, logger="ordito.heat"):
+        od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, sources)
+        od.heat.transport_tangent_vectors(mesh_wp.points, mesh_wp.indices, sources, vectors)
+        od.heat.log_map(mesh_wp.points, mesh_wp.indices, 0)
+    assert [r for r in caplog.records if r.levelno >= logging.INFO] == []
+
+
+def test_release_factorizations_frees_them(
+    icosahedron: tuple[tm.Trimesh, wp.Mesh], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Not a library comparison: ``Trimesh.release_factorizations`` drops what the solvers kept.
+
+    After two calls the mesh holds two factorizations; released, it holds none, and the next call
+    starts counting afresh (it iterates, building nothing).
+    """
+    _, mesh_wp = icosahedron
+    sources, _ = _unit_transport_source(mesh_wp.device)
+    mesh = od.Trimesh(mesh_wp.points, mesh_wp.indices)
+    built = _count_factorizations(monkeypatch)
+    for _ in range(2):
+        od.heat.heat_geodesic(mesh, sources)
+    solver = mesh.heat_solver()
+    assert len(built) == 2
+    assert solver.nbytes > 0
+    mesh.release_factorizations()
+    assert solver.nbytes == 0
+    assert mesh.heat_solver() is not solver
+    assert mesh.heat_solver().nbytes == 0
+    od.heat.heat_geodesic(mesh, sources)
+    assert len(built) == 2
 
 
 # ---------------------------------------------------------------------------

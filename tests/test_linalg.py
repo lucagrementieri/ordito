@@ -369,7 +369,7 @@ def test_solve_spd_columns_two_columns_uses_batched_cg(device: str) -> None:
     matrix_wp, rhs_wp, _dense, _rhs = _spd_system(device, n_rhs=2)
     solution_wp = wp.zeros_like(rhs_wp)
     solver = od.linalg.spd_column_solver(
-        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), factor_on_reuse=False
+        matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64), factorize=False
     )
     assert isinstance(solver, od.linalg._BatchedCg)
 
@@ -499,7 +499,7 @@ def test_spd_column_solver_reads_a_rewritten_rhs_on_every_call(
         rhs_wp,
         odt.as_array2d(solution_wp, wp.float64),
         check_every=check_every,
-        factor_on_reuse=False,
+        factorize=False,
     )
     solver()
     second_np = np.roll(rhs_np, 1, axis=1) - 0.5 * rhs_np
@@ -511,11 +511,12 @@ def test_spd_column_solver_reads_a_rewritten_rhs_on_every_call(
     assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-5, atol=1e-5)
 
 
-def test_spd_column_solver_factors_its_operator_on_reuse(device: str) -> None:
+def test_spd_column_solver_factors_its_operator_from_its_second_call(device: str) -> None:
     """
     Class A, against ``numpy.linalg.solve``: from the second call the state solves by factorization.
 
-    Zero iterations, and still re-reading a rewritten right-hand side.
+    Zero iterations, and still re-reading a rewritten right-hand side. The factorization is the
+    state's own: a second state over the same operator iterates again on its first call.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = wp.zeros_like(rhs_wp)
@@ -529,26 +530,59 @@ def test_spd_column_solver_factors_its_operator_on_reuse(device: str) -> None:
         solution_np = np.linalg.solve(dense_np, second_np.T).T
         assert np.allclose(solution_wp.numpy(), solution_np, rtol=1e-9, atol=1e-9)
     assert int(first.numpy()[0] if isinstance(first, wp.array) else first) > 0
+    fresh = od.linalg.spd_column_solver(matrix_wp, rhs_wp, odt.as_array2d(solution_wp, wp.float64))
+    solution_wp.zero_()
+    again, _, _ = fresh()
+    assert int(again.numpy()[0] if isinstance(again, wp.array) else again) > 0
 
 
-def test_solve_spd_columns_refactors_values_rewritten_in_place(device: str) -> None:
+def test_solve_spd_columns_keeps_nothing_between_calls(device: str) -> None:
     """
-    Class A, against ``numpy.linalg.solve``: values rewritten in place are refactored.
+    Class A, against ``numpy.linalg.solve``: a repeated one-shot solve iterates every time.
 
-    A repeated operator goes to its kept factorization; a rewrite of its values between solves is
-    detected by the fingerprint and the factorization redone.
+    ``solve_spd_columns`` holds no factorization across calls: its second call over the same
+    operator runs the conjugate gradient again.
     """
     matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
     solution_wp = odt.as_array2d(wp.zeros_like(rhs_wp), wp.float64)
     for _ in range(2):
-        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp)
-    assert np.allclose(solution_wp.numpy(), np.linalg.solve(dense_np, rhs_np.T).T, atol=1e-9)
-    matrix_wp.values.assign(2.0 * matrix_wp.values.numpy())
-    solution_wp.zero_()
-    iterations, _, _ = od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, check_every=1)
-    assert iterations == 0
-    expected_np = np.linalg.solve(2.0 * dense_np, rhs_np.T).T
-    assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-9, atol=1e-9)
+        solution_wp.zero_()
+        iterations, _, _ = od.linalg.solve_spd_columns(
+            matrix_wp, rhs_wp, solution_wp, check_every=1
+        )
+        assert iterations > 0
+        expected_np = np.linalg.solve(dense_np, rhs_np.T).T
+        assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-5, atol=1e-5)
+
+
+def test_solve_spd_settled_solves_by_a_held_factorization(device: str) -> None:
+    """
+    Class A, against ``numpy.linalg.solve``: a held factorization answers with zero rounds.
+
+    An ``OperatorFactorization`` factored by its holder is solved by directly; released, the next
+    solve iterates again.
+    """
+    matrix_wp, rhs_wp, dense_np, rhs_np = _spd_system(device)
+    rhs_1d = odt.as_dense(rhs_wp[0])
+    held = od.linalg.OperatorFactorization(matrix_wp)
+    assert held.factor()
+    assert held.nbytes > 0
+    expected_np = np.linalg.solve(dense_np, rhs_np[0])
+    for factored in (True, False):
+        solution_wp = wp.zeros(rhs_1d.shape[0], dtype=wp.float64, device=device)
+        rounds = od.linalg.solve_spd_settled(
+            matrix_wp,
+            rhs_1d,
+            solution_wp,
+            check_rounds=16,
+            change_tolerance=1e-6,
+            settle_rounds=192,
+            factorization=held,
+        )
+        assert (int(rounds.numpy()[0]) == 0) == factored
+        assert np.allclose(solution_wp.numpy(), expected_np, rtol=1e-6, atol=1e-6)
+        held.release()
+    assert held.nbytes == 0
 
 
 def test_solve_spd_warns_when_it_runs_out_of_iterations(device: str) -> None:
@@ -715,9 +749,7 @@ def test_pooled_squared_laplacian_state_follows_each_system(
         solution_wp = odt.as_array2d(
             wp.zeros(rhs_wp.shape, dtype=rhs_wp.dtype, device=rhs_wp.device), wp.float64
         )
-        od.linalg.solve_spd_columns(
-            matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner, factor_on_reuse=False
-        )
+        od.linalg.solve_spd_columns(matrix_wp, rhs_wp, solution_wp, preconditioner=preconditioner)
         return solution_wp.numpy()
 
     for matrix_wp, rhs_wp, _dense_np, _rhs_np in systems[:2]:
@@ -953,7 +985,7 @@ def test_adaptive_preconditioner_escalates_only_past_its_probe(device: str, shif
         rhs_wp,
         odt.as_array2d(solution_wp, wp.float64),
         preconditioner="adaptive",
-        factor_on_reuse=False,
+        factorize=False,
     )
     solver()
     assert isinstance(solver, od.linalg._AdaptiveCg)

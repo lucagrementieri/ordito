@@ -348,7 +348,9 @@ class Trimesh:
     [`trimesh.Trimesh`][]
     """
 
-    __slots__ = ("_cache", "_faces", "_vertices")
+    # ``__weakref__``: a ``HeatSolver`` kept in the cache refers back to its mesh weakly, so the two
+    # are no reference cycle and the mesh's device memory goes when the mesh does.
+    __slots__ = ("__weakref__", "_cache", "_faces", "_vertices")
 
     def __init__(
         self,
@@ -1520,17 +1522,15 @@ class Trimesh:
         """
         Source-independent operator bundle for the heat method, at the default diffusion time.
 
-        Pass it to [`heat_geodesic`][ordito.heat.heat_geodesic] or
-        [`geodesic_path`][ordito.geodesic_walk.geodesic_path] through their ``operators=``
-        argument: everything in the bundle depends on the mesh alone, so distance from many
-        different source sets costs one assembly.
+        What [`heat_geodesic`][ordito.heat.heat_geodesic] and the other heat solvers use when
+        given this mesh (through `heat_solver`): everything in the bundle depends on the mesh
+        alone, so distance from many different source sets costs one assembly.
 
         Notes
         -----
         At ``t = None`` (the squared mean unique-edge length, ``igl::heat_geodesics``' default) and
-        ``use_robust=False``. A mesh with degenerate triangles, or a caller sweeping ``t``, wants
-        [`heat_operators`][ordito.heat.heat_operators] directly -- and can still pass this
-        class's `cotmatrix_entries` into it.
+        ``use_robust=False``. Another ``t`` or ``use_robust`` is
+        [`heat_solver`][ordito.mesh.Trimesh.heat_solver]'s, which keeps its own bundle.
 
         See Also
         --------
@@ -1548,16 +1548,15 @@ class Trimesh:
 
         ``(vector_system, scalar, frames, preconditioner)``: the ``2 x 2``-block connection system,
         the scalar `heat_operators`, the `vertex_tangent_frames`, and the connection system's own
-        Jacobi preconditioner. Pass it to
+        Jacobi preconditioner. What
         [`transport_tangent_vectors`][ordito.heat.transport_tangent_vectors],
-        [`log_map`][ordito.heat.log_map],
-        [`extend_scalar`][ordito.heat.extend_scalar] or
-        [`heat_signed_distance`][ordito.heat.heat_signed_distance] through their
-        ``operators=`` argument.
+        [`log_map`][ordito.heat.log_map] and
+        [`heat_signed_distance`][ordito.heat.heat_signed_distance] use when given this mesh.
 
         Its second and third fields are this class's own `heat_operators` and
         `vertex_tangent_frames`, so the three properties share one assembly however they are
-        reached.
+        reached: built first, this assembles the scalar bundle itself and caches it as
+        `heat_operators`.
 
         Notes
         -----
@@ -1572,12 +1571,64 @@ class Trimesh:
         [`heat_operators`][ordito.mesh.Trimesh.heat_operators]
         [`vertex_tangent_frames`][ordito.mesh.Trimesh.vertex_tangent_frames]
         """
-        return od.heat.vector_heat_operators(
+        bundle = od.heat.vector_heat_operators(
             self._vertices,
             self._faces,
-            scalar_operators=self.heat_operators,
+            scalar_operators=cast(
+                "od.heat.HeatOperators | None", self._cache.get("heat_operators")
+            ),
             frames=self.vertex_tangent_frames,
         )
+        # The scalar bundle the vector assembly built alongside (one sparsity pattern for both)
+        # is this class's own `heat_operators`.
+        self._cache.setdefault("heat_operators", bundle[1])
+        return bundle
+
+    def heat_solver(
+        self, t: float | None = None, *, use_robust: bool = False
+    ) -> od.heat.HeatSolver:
+        """
+        Return this mesh's [`HeatSolver`][ordito.heat.HeatSolver] at diffusion time ``t``.
+
+        Kept on the mesh, one per ``(t, use_robust)``: the operators the heat solvers assemble and
+        the factorizations they build live there, so the functions of
+        [`ordito.heat`][ordito.heat] given this mesh reuse them on every later call. At the
+        defaults its operators are `heat_operators` and `vector_heat_operators`.
+
+        Parameters
+        ----------
+        t
+            Diffusion time; ``None`` for the squared mean unique-edge length.
+        use_robust
+            Build the scalar operators from mollified edge lengths (see
+            [`heat_operators`][ordito.heat.heat_operators]).
+
+        Returns
+        -------
+        HeatSolver
+            The kept solver; the same object on every call with the same arguments.
+
+        Notes
+        -----
+        A solver's factorizations hold device memory for as long as this mesh lives;
+        [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations] returns it without
+        dropping the mesh. They are not carried into the meshes `transform`, `invert` or
+        `with_vertices` return.
+
+        See Also
+        --------
+        [`ordito.heat.HeatSolver`][]
+        [`release_factorizations`][ordito.mesh.Trimesh.release_factorizations]
+        """
+        solvers = cast(
+            "dict[tuple[float | None, bool], od.heat.HeatSolver]",
+            self._cache.setdefault("_heat_solvers", {}),
+        )
+        key = (None if t is None else float(t), bool(use_robust))
+        solver = solvers.get(key)
+        if solver is None:
+            solver = solvers[key] = od.heat.HeatSolver(self, t, use_robust=use_robust)
+        return solver
 
     def contains(self, points: wp.array[wp.vec3]) -> wp.array[wp.bool]:
         """
@@ -2088,6 +2139,26 @@ class Trimesh:
             *od.combine.concatenate([(self._vertices, self._faces), (other.vertices, other.faces)])
         )
 
+    def release_factorizations(self) -> None:
+        """
+        Drop every factorization the heat solvers keep on this mesh, keeping the mesh's cache.
+
+        Each [`heat_solver`][ordito.mesh.Trimesh.heat_solver] is released (its factorizations and
+        solve counts dropped) and forgotten; the operators cached as properties stay. A later
+        solve starts counting afresh, so it factors again only when that pays.
+
+        See Also
+        --------
+        [`heat_solver`][ordito.mesh.Trimesh.heat_solver]
+        [`invalidate`][ordito.mesh.Trimesh.invalidate]
+        """
+        solvers = cast(
+            "dict[tuple[float | None, bool], od.heat.HeatSolver]",
+            self._cache.pop("_heat_solvers", {}),
+        )
+        for solver in solvers.values():
+            solver.release()
+
     def invalidate(self) -> None:
         """
         Clear every cached value, including the `warp_mesh` BVH.
@@ -2097,3 +2168,87 @@ class Trimesh:
         go stale.
         """
         self._cache.clear()
+
+
+def mesh_arguments(
+    name: str,
+    mesh: object,
+    vertices: object,
+    faces: object,
+    arguments: tuple[object, ...],
+    n_positional: int,
+) -> tuple[Trimesh, bool, tuple[object, ...]]:
+    """
+    Resolve a call that takes a `Trimesh` or, in its place, ``vertices`` and ``faces``.
+
+    For a function declared ``f(mesh, faces, *arguments, *, vertices)`` so that both
+    ``f(trimesh, a, b, *, c)`` and ``f(vertices, faces, a, b, c)`` bind: in the `Trimesh` form the
+    first ``n_positional`` arguments may be positional, and each lands one parameter early (the
+    first in ``faces``); this moves them back, taking each from its own keyword where the caller
+    named it instead. Every later argument of the `Trimesh` form is keyword-only, so it is bound in
+    place. ``None`` stands for an argument not given, and the positional ones are never ``None``.
+
+    Parameters
+    ----------
+    name
+        The calling function's name, for the error messages.
+    mesh
+        The first parameter: a `Trimesh`, the vertex buffer of the other form, or ``None`` when
+        the caller passed ``vertices`` by keyword.
+    vertices
+        The ``vertices`` keyword, or ``None``.
+    faces
+        The second parameter: the face buffer, or in the `Trimesh` form the first argument after
+        the mesh.
+    arguments
+        The parameters after ``faces``, in order, as bound.
+    n_positional
+        Leading arguments of the `Trimesh` form that may be passed by position.
+
+    Returns
+    -------
+    mesh : Trimesh
+        The mesh: the caller's, or a new one over ``vertices`` and ``faces``.
+    owned : bool
+        Whether the caller passed the `Trimesh` (and so keeps what it caches).
+    arguments : tuple
+        ``arguments`` in the `Trimesh` form's order: the positional ones moved back into place.
+
+    Raises
+    ------
+    TypeError
+        If neither a `Trimesh` nor both ``vertices`` and ``faces`` are given, if a `Trimesh` comes
+        with ``vertices``, or if a `Trimesh` comes with more than ``n_positional`` arguments by
+        position.
+    """
+    if isinstance(mesh, Trimesh):
+        if vertices is not None:
+            raise TypeError(f"{name}: pass a Trimesh or vertices and faces, not both")
+        if faces is None:
+            return mesh, True, arguments
+        moved = [faces]
+        for j in range(1, n_positional):
+            moved.append(arguments[j] if arguments[j - 1] is None else arguments[j - 1])
+        # A positional argument past the last one the `Trimesh` form takes by position lands in the
+        # slot of that last one.
+        if (
+            n_positional <= len(arguments)
+            and arguments[n_positional - 1] is not None
+            and (n_positional == 1 or arguments[n_positional - 2] is not None)
+        ):
+            raise TypeError(
+                f"{name} takes {n_positional} positional argument(s) after a Trimesh; pass the "
+                "rest by keyword"
+            )
+        return mesh, True, (*moved, *arguments[n_positional:])
+    if mesh is not None:
+        if vertices is not None:
+            raise TypeError(f"{name}: vertices given by position and by keyword")
+        vertices = mesh
+    if vertices is None or faces is None:
+        raise TypeError(f"{name}: pass a Trimesh, or vertices and faces")
+    return (
+        Trimesh(cast("wp.array[wp.vec3]", vertices), cast("wp.array[wp.int32]", faces)),
+        False,
+        arguments,
+    )

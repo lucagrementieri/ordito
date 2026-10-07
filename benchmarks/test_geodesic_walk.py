@@ -213,7 +213,8 @@ def test_geodesic_path(bench_case: BenchCase, n_paths: int) -> None:
     is asked of it.
 
     ordito's cost at *one* path is almost entirely the factorization, not the walk -- which is the
-    honest caveat on the left column and the reason ``operators=`` exists on the wrapper.
+    honest caveat on the left column and the reason the wrapper takes a ``Trimesh``, which keeps
+    it for the next source.
     """
     device = bench_case.device
     rng = np.random.default_rng(4)
