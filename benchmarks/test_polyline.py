@@ -65,7 +65,7 @@ operations through a single-cell ``PolyData``. Two hazards decide every row:
   reports the deletions while ``points.size()`` is unchanged and only ``topology.numValidVerts()``
   reflects them. ``totalLength()`` is already correct before packing, so a *length* comparison
   passes unpacked while a *point-count* one silently reads the input's count and reads as a no-op.
-  CLAUDE.md section 7.6's ``getNumpyFaces``-without-``pack()`` rule, in a class it does not name.
+  The ``getNumpyFaces``-without-``pack()`` rule, in a class it does not name.
 
 Three groups stay ordito-only, per function rather than blanket: **``polyline_radius``** (no
 reference computes it — ``findCenterFromPoints`` is a centroid and ``findMaxProjectionOnPolyline``

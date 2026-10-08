@@ -463,7 +463,7 @@ def test_marching_triangles_matches_potpourri3d_and_igl(
     """
     Class B against both references, each through its own named transform.
 
-    **potpourri3d** reports hits in its own element numbering. Section 6 records the decode:
+    **potpourri3d** reports hits in its own element numbering. The decode is
     ``(element_index, coords)`` pairs dispatched on ``len(coords)`` through ``pp3d.edges``, and its
     closed curves repeat their first point where ordito's do not. Both transforms are on the
     reference side; curve count, closed flags, total length and the point sets are then compared

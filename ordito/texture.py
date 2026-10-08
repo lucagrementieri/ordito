@@ -393,7 +393,7 @@ def _check_uv_in_range(uv: wp.array[wp.vec2]) -> None:
     silently *clamped* to the nearest edge pixel, so dropping the guard trades a raised public-API
     error for a plausible wrong
     answer -- the same trade ``_device.require_same_device`` is argued from. If a caller ever
-    samples in a loop, the shape to add is CLAUDE.md section 3.10's ``validate=False`` keyword
+    samples in a loop, the shape to add is a ``validate=False`` keyword
     **with** an in-repo caller passing it, not an unconditional removal; the rasterizers reach
     this (or, for the discrete one, the same test fused with its label check) through
     ``_check_rasterize_inputs`` and pay a far smaller share, since their own work

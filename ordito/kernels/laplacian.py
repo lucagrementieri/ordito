@@ -299,7 +299,7 @@ def mesh_operator_keys(
         out_keys[t * 6 + e * 2 + 1] = csr_key(j, i, n_vertices, n_vertices)
         out_order[t * 6 + e * 2] = t * 3 + e
         out_order[t * 6 + e * 2 + 1] = t * 3 + e
-        # Range-checked at the write (CLAUDE.md 12.1): an index past the vertex count must not
+        # Range-checked at the write: an index past the vertex count must not
         # become a store past the tail.
         vertex = faces[t * 3 + e]
         if diagonal == 1 and vertex >= 0 and vertex < n_vertices:
@@ -663,7 +663,7 @@ def add_constant(length: wp.float32, delta: wp.float32) -> wp.float32:
 
 
 # Concrete overloads, registered at import -- see the long-form rationale in
-# ``ordito/kernels/reduce.py`` and the rule in CLAUDE.md section 2.5. In short: these kernels are
+# ``ordito/kernels/reduce.py``. In short: these kernels are
 # generic, Warp instantiates an overload on the first launch at each new dtype, and a module's hash
 # covers the instantiated set -- so a lazily-created overload rebuilds the whole module.
 #

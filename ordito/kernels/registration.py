@@ -230,7 +230,7 @@ def procrustes_matrix(
     if use_scale:
         # Shifted second-moment identity: sum w |a - centroid|^2 / S_w = sum w |a - p|^2 / S_w
         # minus |centroid - p|^2. Mathematically non-negative, but computed as a difference of two
-        # independently tile-reduced sums (CLAUDE.md section 12.4, non-associative float32
+        # independently tile-reduced sums (non-associative float32
         # accumulation), so a near-degenerate cloud (tightly clustered, or exactly duplicated
         # points) can land it at a tiny negative value from cancellation alone -- floored the same
         # way ``solve_spd6`` below floors its own Cholesky pivot for the identical reason, rather
@@ -327,7 +327,7 @@ def fit_transform_and_accumulate_cost(
     # from 16 k to 0.87 M points, level at 14 M, and 1.00-1.02x on ``icp``'s recorded rounds. The
     # cost slot the reduction commits is not one the fit reads.
     #
-    # The reduction is the lane-strided single-slot form of CLAUDE.md section 13.2, striding by
+    # The reduction is the lane-strided single-slot form, striding by
     # ``wp.block_dim()`` so it needs no ``prefers_tiled_reduction`` branch. The transform only
     # became worth fusing in once that reduction was flat: as one ``wp.atomic_add`` per thread to a
     # constant slot it dominated, and at a launch floor removing a launch is most of the pair.
@@ -379,7 +379,7 @@ def target_unit_normal(normals: wp.array[wp.vec3], index: wp.int32) -> wp.vec3:
     The one reading of the normal table both the point-to-plane fit and its robust scale use, so
     the two cannot measure residuals differently: a caller's ``target_normals`` need not be unit.
     A mesh target's normals come from ``face_normals_and_areas``, which writes an exact zero vector
-    for a degenerate face (CLAUDE.md section 12.4) -- a plain ``wp.normalize`` there is ``0/0``,
+    for a degenerate face -- a plain ``wp.normalize`` there is ``0/0``,
     and one poisoned lane's NaN would spread to a whole block through a tile reduction. Same guard,
     same zero tolerance, as ``transform.transform_normal_mat33``'s identical hazard.
     """

@@ -1733,7 +1733,7 @@ def test_fill_smooth_invariants(saddle_graded: tuple[tm.Trimesh, wp.Mesh]):
     No boundary loop left, winding consistent, and the input's vertices unmoved in the prefix
     -- that last separates *filling* from remeshing the whole surface. MeshLab supplies the
     volume comparison in [`test_fill_smooth_statistics_vs_meshlib`]; it cannot supply these,
-    because it closes nothing at its own default (section 6).
+    because it closes nothing at its own default.
     """
     _, mesh_wp = saddle_graded
     n_v0 = mesh_wp.points.size

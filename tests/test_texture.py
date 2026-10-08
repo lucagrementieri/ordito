@@ -615,7 +615,7 @@ def test_rejects_invalid_arguments(device: str, call: Callable[[str], object], m
 
     Each documented ``ValueError`` of the four entry points. The row-count guard matters more than
     its message: without it the rasterizing kernel indexes the shorter buffer out of range, which
-    on the cpu device is host-heap corruption rather than a wrong answer (CLAUDE.md section 12.1).
+    on the cpu device is host-heap corruption rather than a wrong answer.
     ``remap_discrete_attribute_from_uv`` reaches its ``[0, 1]`` guard only *indirectly*, through
     its ``remap_attribute_from_uv`` call, so its documented ``Raises`` entry is a claim about a
     guard it does not itself run -- the kind that goes stale unnoticed.

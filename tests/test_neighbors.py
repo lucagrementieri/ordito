@@ -48,7 +48,7 @@ def test_mesh_from_points_answers_the_nearest_point(device: str) -> None:
     Reached through ``query_nearest(k=1, backend="bvh")``, whose search the mesh is. Queries sit
     up to a cloud diameter off the cloud, which is the regime the mesh descent exists for; the face
     index is the point index, so indices are compared as well as distances. The empty cloud
-    raises rather than building a triangle-free ``wp.Mesh`` (``.claude/CLAUDE.md`` section 12.1).
+    raises rather than building a triangle-free ``wp.Mesh``.
     """
     rng = np.random.default_rng(3)
     points = rng.random((500, 3), dtype=np.float32)
@@ -983,7 +983,7 @@ def test_knn_sorted_insert_rejects_nan_instead_of_writing_past_its_row(device: s
     ``KNN_ROW_BUCKETS`` entry, which is what makes this a kernel-level test rather than a
     ``query_nearest`` one: the public call allocates exactly ``(m, k)``, so the overrun of the last
     query's row lands past the whole allocation and is invisible from Python (host-heap corruption
-    on the CPU device, section 12 of ``.claude/CLAUDE.md``).
+    on the CPU device).
 
     The canary is the second row of a two-row output with **one** thread launched, so nothing is
     entitled to touch it. Mutation probe: deleting the ``wp.isnan`` guard from
@@ -1868,7 +1868,7 @@ def test_geodesic_ball_chunks_agree(
     benchmarked=False,
     reason="findPointsInBall reports each neighbour through a Python callback, so a benchmark row "
     "would time 20 000 queries' worth of callback dispatch rather than MeshLib's traversal -- the "
-    "same reason section 6 bars a per-vertex Python loop from a benchmark row. There is no batched "
+    "same reason a per-vertex Python loop is not a benchmark row. There is no batched "
     "radius form: PointsProjector answers k=1 only (and does carry the query_nearest_bvh_k1 row), "
     "and findNClosestPointsPerPoint takes a neighbour count rather than a radius. scipy and open3d "
     "carry the timed rows for this group.",
@@ -2012,7 +2012,7 @@ def test_query_nearest_matches_meshlib(
     BVH one.
 
     This is the batched form deliberately. ``findFewClosestPoints`` is per query and a Python loop
-    over it would time the loop, which is the same reason section 6 prefers ``mrmeshnumpy``'s
+    over it would time the loop, which is why ``mrmeshnumpy``'s
     batched curvature calls.
     """
     rng = np.random.default_rng(11)

@@ -1128,7 +1128,7 @@ def _distances_mesh_to_mesh(
     The two ``closest_point_on_mesh`` calls below have no data dependency between them, and were
     one of five such pairs across the tree measured against a two-``wp.Stream`` overlap (joined by
     ``wait_stream``) instead of the sequential default-stream form -- indistinguishable from noise
-    on all five. See CLAUDE.md section 14.9 for the two structural reasons (host-launch-overhead
+    on all five. The two structural reasons are host-launch-overhead
     dominance and CG's periodic host-readback check). Kept sequential; do not reintroduce stream
     overlap here without a call site whose own device share is much larger.
     """

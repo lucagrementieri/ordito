@@ -597,7 +597,7 @@ def icp_point_to_plane(
     if not is_mesh and target_normals is not None and target_normals.size != target_vertices.size:
         # ``target_normals`` feeds ``accumulate_point_to_plane`` below, indexed by a nearest-vertex
         # id that ranges over ``target_vertices``; a shorter buffer is an out-of-bounds read on
-        # both devices (CLAUDE.md §12.1), not merely a wrong answer.
+        # both devices, not merely a wrong answer.
         raise ValueError(
             "target_normals must have the same length as target_vertices, got "
             f"{target_normals.size} and {target_vertices.size}."

@@ -580,7 +580,7 @@ def estimate_normals(
     # The launch is one thread per *point* and each reads its own row, so a table with fewer rows
     # than the cloud is an out-of-bounds read rather than a short answer -- and on the CPU device a
     # Warp array is host heap, so that is heap corruption with no exception in release mode
-    # (CLAUDE.md section 12.1). The sibling ``outlier_probability`` checks the same pair of shapes;
+    # The sibling ``outlier_probability`` checks the same pair of shapes;
     # this one only checked the rank.
     if int(neighbor_idx.shape[0]) != n:
         raise ValueError(

@@ -679,7 +679,7 @@ def arap(
     )
 
     # Weight-folded rest edges of the isometrically flattened triangles (internal buffer, plain
-    # wp.empty; kernels index it as wp.array2d per CLAUDE.md).
+    # wp.empty; kernels index it as wp.array2d).
     rest_edges = _launch.empty((n_faces, 3), dtype=wp.vec2d, device=device)
     # Pre-loop buffers (no allocation inside the loop). ``sol`` (2, n_interior) holds the
     # warm-started CG solution per column; the same launch seeds it from ``uv_init``'s interior

@@ -776,7 +776,7 @@ def sphere_cap(
 
     # Both buffers are written entirely on the device from the two counts and three scalars. The
     # lattice is a closed form in the vertex and triangle index -- no ring depends on the one
-    # before it -- which is the case CLAUDE.md section 3.8 sanctions for a template whose output
+    # before it -- which is the case that justifies a device build for a template whose output
     # scales with a resolution parameter, and the same conversion ``grid``, ``icosphere`` and
     # ``parametric_surface`` already took. The host build it replaces looped over rings in Python
     # and was quadratic in the ring count, against a flat device cost -- so the device path wins at
@@ -1740,7 +1740,7 @@ def truncated_prisms(
     out_faces = _launch.empty(24 * n_faces, dtype=wp.int32, device=device)
     # Inverted in NumPy, on the matrix that is already in hand, rather than with ``wp.inverse``:
     # a Warp builtin at Python scope routes through builtin dispatch and is several times dearer,
-    # and the two agree to float32 rounding (``wp.inverse`` works in float32). Section 13.1.
+    # and the two agree to float32 rounding (``wp.inverse`` works in float32).
     to_plane = wp.mat44(*transform_np.flatten())
     from_plane = wp.mat44(*np.linalg.inv(transform_np).flatten())
     _launch.launch(

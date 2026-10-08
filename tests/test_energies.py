@@ -465,7 +465,7 @@ def test_vector_area_matrix_matches_igl_derived(
     ``A = (-repdiag(L, 2) - Q) / 2`` inverts the definition of the LSCM Hessian, giving an
     independent reference out of ``igl.cotmatrix`` and ``igl.lscm`` -- both of which ordito is
     compared against separately, so the derivation does not smuggle in ordito's own answer.
-    Section 6 lists this among the C++ functions with no Python binding.
+    It is among the C++ functions with no Python binding.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np, faces_np = mesh_igl(mesh_tm)

@@ -67,7 +67,7 @@ def block_chunk_1d(n: wp.int32, block: wp.int32) -> tuple[wp.int32, wp.int32]:
 
 # The three block-wide reductions of one value per lane, correct on **every** lane and a full
 # block barrier either side, so a caller runs them outside its ``lane == 0`` commit guard. On the
-# CPU device a block is one lane and each returns that lane's own value (CLAUDE.md section 2.2).
+# CPU device a block is one lane and each returns that lane's own value.
 #
 # ``block_sum`` passes ``preserve_type=True``: a plain ``wp.tile(v)`` of a vector decomposes it and
 # sums its components together, where this reduces a ``wp.vec3`` / ``wp.mat33`` /
@@ -263,8 +263,8 @@ def _reduce_1d_tiled(tile_reduce, atomic, scalar, name, dtype, partials=False):
         if remaining <= 0:
             return
 
-        # First chunk seeds the accumulator (both branches assign it -- see CLAUDE.md section 1.4 on
-        # Warp's conditional scoping).
+        # First chunk seeds the accumulator (both branches assign it -- Warp's conditional
+        # scoping).
         if remaining >= TILE_1D:
             tile = wp.tile_load(values, shape=TILE_1D, offset=base, storage="register")
             result = tile_reduce(tile)[0]
@@ -358,7 +358,7 @@ def _reduce_2d_tiled(tile_reduce, atomic, scalar, name, dtype):
 
     Reached only for a **non-contiguous** rank-2 array: ``reduce._flattened_for_global`` flattens
     every contiguous one onto the 1-D kernel instead, which carries the anti-contention
-    ``TILES_PER_BLOCK_1D`` fold this kernel does not (CLAUDE.md section 13.2) — flattening a
+    ``TILES_PER_BLOCK_1D`` fold this kernel does not — flattening a
     contiguous buffer is a free reshape, so there is no reason to fold this kernel's atomics too. A
     non-contiguous view (a column slice, a transpose) is the rare remaining caller.
     """
@@ -520,8 +520,8 @@ _GLOBAL_DTYPES = (wp.int32, wp.int64, wp.uint32, wp.uint64, wp.float32, wp.float
 
 # A **per-axis** reduction is only ever reached with an index or a geometry dtype: nothing in the
 # package reduces a table of 64-bit keys along an axis, and the six-dtype cross product over these
-# 24 kernels would be 72 more kernels to compile on every rebuild for no call site (CLAUDE.md
-# section 4.2). A caller who does reduce a ``wp.uint64`` table along an axis pays one fork, once.
+# 24 kernels would be 72 more kernels to compile on every rebuild for no call site.
+# A caller who does reduce a ``wp.uint64`` table along an axis pays one fork, once.
 _AXIS_DTYPES = (wp.int32, wp.float32, wp.float64)
 
 
@@ -701,7 +701,7 @@ def _reduce_bool_1d_tiled(block_reduce, atomic, scalar, identity, name):
     """
     axis=None over a ``wp.bool`` mask, read as bytes instead of through an ``int32`` copy.
 
-    ``wp.Scalar`` does not instantiate for ``wp.bool`` (CLAUDE.md section 12.4), so the factories
+    ``wp.Scalar`` does not instantiate for ``wp.bool``, so the factories
     above cannot serve a mask and the wrapper used to widen one with ``array.astype`` first: an
     allocation of ``4n`` bytes, a launch, a full read of ``n`` and a full write of ``4n``, after
     which the reduction read ``4n`` rather than ``n`` -- nine bytes of traffic per mask byte, plus
@@ -711,7 +711,7 @@ def _reduce_bool_1d_tiled(block_reduce, atomic, scalar, identity, name):
     ``wp.tile_load`` of a ``bool`` array, so the block's chunk is walked by the lanes rather than
     loaded as tiles: each lane strides by ``wp.block_dim()`` -- never by ``TILE_1D``, which is what
     keeps it correct on the CPU device, where ``wp.launch_tiled`` runs one lane per block and
-    ``wp.block_dim()`` reads 1 (section 2.2) -- accumulates in a register, and the block folds the
+    ``wp.block_dim()`` reads 1 -- accumulates in a register, and the block folds the
     per-lane values with a single block reduction (``block_reduce``, one of ``block_sum`` /
     ``block_max`` / ``block_min``). That is one tile reduction per block where
     the tile-load form runs ``TILES_PER_BLOCK_1D`` of them, and the strided reads are coalesced
@@ -1122,8 +1122,7 @@ def minmax_vec3_pair_chunked(
 # lazily, on the first launch at each new dtype — which changes the module hash and recompiles
 # every kernel in this file. Registering every (kernel, dtype) pair the wrapper's dispatch can
 # reach gives the module one hash for its whole lifetime. Registration is not compilation, so it
-# costs milliseconds of import and nothing on a process that never reduces anything (CLAUDE.md
-# section 2.5).
+# costs milliseconds of import and nothing on a process that never reduces anything.
 #
 # The trade is honest about one thing: the *single* compile is bigger, since the module holds ~110
 # concrete kernels rather than the ~40 a lazy fork built. That is the cost of editing this file,
@@ -1136,8 +1135,7 @@ def minmax_vec3_pair_chunked(
 # - **A new generic kernel here must be added to a group below, and a new dtype to the right
 #   tuple.** ``test_generic_kernels_register_their_overloads`` catches the first; nothing catches
 #   the second, because a missing dtype does not fail — it re-forks the chain on its first launch.
-#   The symptom is a test or a script that suddenly takes tens of seconds; read it as a rebuild
-#   (CLAUDE.md section 15.1).
+#   The symptom is a test or a script that suddenly takes tens of seconds; read it as a rebuild.
 # - **The dtype set is the one ``ordito.reduce`` dispatches over**, not every dtype ``wp.Scalar``
 #   admits: an unused overload is compile time paid on every rebuild. The boolean reductions are
 #   ``wp.int32`` only because ``_reduce_bool`` converts the mask first, and ``wp.bool`` is not a
@@ -1153,7 +1151,7 @@ def minmax_vec3_pair_chunked(
 
 # Nothing in this module is generic any more, so there is no ``_register_overloads`` here: every
 # kernel above is a concrete factory instantiation, which is what a registered overload *is*. The
-# rule in CLAUDE.md section 2.5 is unchanged and still binds every other kernel module -- what
+# registration rule is unchanged and still binds every other kernel module -- what
 # changed is that the tables now hand the wrapper the concrete kernel instead of making
 # ``wp.launch`` re-derive it (see the note above ``MIN1D_TILED``).
 
@@ -1168,10 +1166,10 @@ def minmax_vec3_pair_chunked(
 # readback.
 #
 # **A table of concrete kernels rather than one generic one**, for ``_reduce_1d_tiled``'s reason
-# (CLAUDE.md section 2.7): a generic kernel pays host-side overload resolution on every launch,
+#: a generic kernel pays host-side overload resolution on every launch,
 # which on a call this small is most of what the fusion just saved. Registered over exactly the
 # dtypes ``allclose``'s own signature admits -- ``float16`` / ``float32`` / ``float64`` and
-# ``wp.vec3`` -- which is section 2.5's rule, not every dtype the template would accept.
+# ``wp.vec3`` -- which is the registration rule, not every dtype the template would accept.
 #
 # The fold is ``wp.min`` over a per-lane 0/1, so "all close" is "the block minimum is 1"; lanes with
 # no element seed 1 (the identity), and the commit is one ``wp.atomic_min`` per block.

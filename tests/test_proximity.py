@@ -152,8 +152,8 @@ def test_closest_point_on_mesh_matches_references(
 
     **trimesh, Class A on the distance, Class C on the point**: ties make the closest *point*
     ambiguous. The distance is the well-defined quantity and is compared directly; a query
-    equidistant from two faces has two valid closest points, and section 6 records the same
-    divergence against Open3D at ~2e-4. Warp's own ``mesh_query_point_no_sign`` is off by up to
+    equidistant from two faces has two valid closest points, and Open3D diverges in the same
+    way at ~2e-4. Warp's own ``mesh_query_point_no_sign`` is off by up to
     2.1e-5, which sets the floor here.
 
     **MeshLib, Class A on the distance, Class C on the point, and the face index is a tie-break
@@ -163,7 +163,7 @@ def test_closest_point_on_mesh_matches_references(
     ordito's; the benchmark rows do the same, which is why the row prices a Python loop and says so.
     The distances agree to **1.2e-07** and the points to **1.6e-04** on a unit-radius fixture, the
     latter being Warp's own ``mesh_query_point_no_sign`` floor rather than a disagreement about
-    geometry (section 6 records the same magnitude against Open3D). The face index is the
+    geometry (Open3D shows the same magnitude). The face index is the
     interesting part and it is why this pair is worth having. It differs on **39 %** of 200 random
     queries, and every one of those is a genuine tie: the two faces always share at least one corner
     (57 of 78 share two, i.e. an edge) and the distances differ by at most 1.2e-07. So the assert is
@@ -705,7 +705,7 @@ def test_mesh_to_mesh_distance_when_every_face_overflows_the_cap(device: str, si
 
     It does **not** cover the other defect this pair of sheets was found alongside --
     ``wp.tile_bvh_query_aabb`` returning out-of-range primitive indices once a traversal round
-    overruns its shared result buffer (CLAUDE.md section 12.2). Checked rather than assumed:
+    overruns its shared result buffer. Checked rather than assumed:
     ``compute-sanitizer`` reports **0 errors** on this fixture with the kernel's index guard removed
     as well as with it, at every ``side`` here, so the overrun is not reachable at this size. That
     defect's evidence is a benchmark-scale mesh and it has no test.
@@ -868,7 +868,7 @@ def test_closest_point_on_edges_matches_meshlib(
     ``distSq`` is squared, which is the named transform.
 
     ``upDistLimitSq`` is passed as float32's max rather than ``inf``: an infinite limit segfaults
-    inside MeshLib's projection code (CLAUDE.md section 7.6), which is a crash rather than an
+    inside MeshLib's projection code, which is a crash rather than an
     exception.
     """
     mesh_tm, _ = unit_box
@@ -1069,7 +1069,7 @@ def test_normals_at_closest_faces_empty(sphere_irregular: tuple[tm.Trimesh, wp.M
 
 def test_normals_at_closest_faces_empty_mesh() -> None:
     """A zero-face mesh reports NaN normals rather than segfaulting."""
-    # A zero-face wp.Mesh is unsafe to build on CUDA (§12.1), so this is CPU-only by construction,
+    # A zero-face wp.Mesh is unsafe to build on CUDA, so this is CPU-only by construction,
     # not by a `device` fixture choice: reproducing the crash this guards against needs the real
     # object, and building it on CUDA would corrupt allocator state rather than reproduce anything.
     device = wp.get_device("cpu")
@@ -1898,11 +1898,11 @@ def test_containing_faces_2d_matches_scipy_and_pyvista(device: str) -> None:
     answers and no false ``-1``. VTK's only transform is the embedding: it locates in 3-D, so the
     lattice and the queries get a zero ``z``.
 
-    Worth stating explicitly because the neighbouring reference is the opposite: section 6 records
-    ``igl.in_element`` as *unusable* for this question -- it never reports element 0 for a query
-    inside it, returns different answers for the same query depending on the batch size, and aborts
-    with ``malloc(): invalid size`` on a 200-point Delaunay. VTK's locator has none of those
-    defects, so a reader generalizing from libigl would skip a reference that works.
+    Worth stating explicitly because the neighbouring reference is the opposite:
+    ``igl.in_element`` is *unusable* for this question -- it never reports element 0 for a query
+    inside it, returns different answers for the same query depending on the batch size, and
+    aborts with ``malloc(): invalid size`` on a 200-point Delaunay. VTK's locator has none of
+    those defects, so a reader generalizing from libigl would skip a reference that works.
 
     Non-vacuous in both directions by construction: the query box overhangs the lattice, so roughly
     72% of queries land inside and 28% outside, and both counts are asserted before comparing. An

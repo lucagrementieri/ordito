@@ -369,7 +369,7 @@ def test_edges_unique_length(request: pytest.FixtureRequest, mesh_name: str) -> 
     ``UndirectedEdgeId``, which is its own numbering. Its answer comes back as an
     ``UndirectedEdgeScalars`` container, which ``np.asarray`` turns into a 0-d ``object`` array
     rather than raising, so it goes through
-    [`tests.conversions.meshlib_scalars_to_numpy`][] (section 6).
+    [`tests.conversions.meshlib_scalars_to_numpy`][].
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
 

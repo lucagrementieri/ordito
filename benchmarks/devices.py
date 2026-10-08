@@ -10,8 +10,8 @@ per-launch one, so the factor scales with launch count rather than with work:
 - an iterative solver pays more than an order of magnitude, and so does a whole test module built
   on one.
 
-Unchanged by ``warp.config.launch_array_access_mode``, so it is CUDA presence and not CLAUDE.md
-section 3.9's launch guard. Either way a
+Unchanged by ``warp.config.launch_array_access_mode``, so it is CUDA presence and not the
+launch guard. Either way a
 ``ordito-cpu`` row taken in a CUDA-initialised process is not a slow number, it is a **wrong** one,
 and it reads as ordito losing to CPU references it actually beats. ``benchmarks/conftest.py`` warns
 when that configuration is selected; this script is the way to avoid it.

@@ -8,8 +8,7 @@ than a generic categorical color:
     uv run python benchmarks/plot_comparison.py <json_dir> --out docs/assets/benchmarks/ --hero
     uv run python benchmarks/plot_comparison.py <json_dir> --out /tmp/charts --group cotmatrix
 
-Design, and why (plans/release.md section 4.3 has the full reasoning; this is the summary that
-matters for reading the code below):
+Design, and why (the summary that matters for reading the code below):
 
 - **Identity is carried by the logo + a muted text label, not by hue.** A logo already
   disambiguates *which* library a bar is; burning a categorical color per bar on top of that would

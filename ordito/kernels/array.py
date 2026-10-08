@@ -44,8 +44,7 @@ LOOP_ADVANCE_STATE_SIZE = 3
 # identical view taken with plain ints, and every round loop in the package took one or two per
 # call. Both bounds have to be unwrapped -- ``__getitem__`` forms ``stop - start`` and
 # ``strides * start`` itself, so one Warp-typed bound is three dispatches. Derived from the
-# constants rather than written out, so the two cannot drift. See ``.claude/CLAUDE.md`` section
-# 13.1.
+# constants rather than written out, so the two cannot drift.
 LOOP_CONDITION_VIEW = slice(int(LOOP_CONDITION), int(LOOP_CONDITION) + 1)
 LOOP_PROGRESS_VIEW = slice(int(LOOP_PROGRESS), int(LOOP_PROGRESS) + 1)
 
@@ -104,7 +103,7 @@ def sign_with_tolerance(value: wp.Float, tolerance: wp.Float) -> wp.int32:
     #
     # The classifiers pass ``TOLERANCE_MERGE_CONSTANT`` because their public entry points
     # (``slice_mesh_with_plane``, ``clip_mesh_with_field``, ``split_faces_along_field``) expose no
-    # tolerance and, per CLAUDE.md section 4.2, should not grow one until a caller needs it;
+    # tolerance and should not grow one until a caller needs it;
     # ``split_mesh_with_plane`` documents a ``tolerance=`` and passes it through. Both spellings are
     # visible at the call site, which is the whole point.
     if value < -tolerance:
@@ -362,7 +361,7 @@ def lift_vec2(p: wp.vec2, z: wp.float32) -> wp.vec3:
     #
     # The fifth of the vec-conversion family above, and one definition rather than two on purpose:
     # ``wp.map``'s cache is keyed by the *unqualified* function name plus the input dtypes
-    # (``.claude/CLAUDE.md`` section 3.5), so two same-named ops in two kernel modules fork one
+    # so two same-named ops in two kernel modules fork one
     # generated module and load it at two hashes.
     #
     # ``z`` stays a parameter because ``creation.extrude_triangulation`` genuinely lifts to a
@@ -578,7 +577,7 @@ def masked_at(mask: wp.array[wp.bool], index: wp.int32) -> wp.bool:
 def mark_at(out_mask: wp.array[wp.bool], index: wp.int32) -> None:
     # The write side of ``masked_at``: set the mask at ``index``, dropping an index outside it
     # rather than writing off the end of the buffer -- which on the CPU device is host-heap
-    # corruption (CLAUDE.md section 12.1). Every writer stores ``True``, so racing threads agree.
+    # corruption. Every writer stores ``True``, so racing threads agree.
     if index >= 0 and index < out_mask.shape[0]:
         out_mask[index] = True
 
@@ -635,7 +634,7 @@ def isin_lookup_mask(
     # the gather's own ``wp.copy``. And the range guard is what makes ``isin``'s ``max_index``
     # escape hatch *safe*: a caller-supplied bound the values exceed reads ``False`` here, where an
     # unguarded gather would read past the end of ``membership`` -- silent memory unsafety rather
-    # than a wrong answer (CLAUDE.md section 12.1).
+    # than a  wrong answer.
     #
     # The guard is ``masked_at``, which reads the *buffer's* own length. ``shifted_index`` already
     # rejects an out-of-range value, so this is a second, independent bound rather than the only
@@ -682,7 +681,7 @@ def bool_flags(mask: wp.array[wp.bool], out_flags: wp.array[wp.int32]) -> None:
     # A plain kernel rather than ``wp.utils.array_cast``, which produces the identical bytes but
     # resolves a generic cast kernel per call and measures about twice as slow, flat in the element
     # count -- so the difference is its host-side resolution and not the copy. ``wp.map`` is not the
-    # spelling either: ``wp.Scalar`` does not instantiate for ``wp.bool`` (CLAUDE.md section 12.4),
+    # spelling either: ``wp.Scalar`` does not instantiate for ``wp.bool``,
     # which is why ``nonzero_flag`` below covers every dtype except this one.
     i = wp.int32(wp.tid())
     out_flags[i] = wp.where(mask[i], 1, 0)
@@ -1085,9 +1084,8 @@ def csr_from_flagged_runs(
     csr_row_offsets(keys, inclusive, i, before, sentinel, n_rows, n_cols, out_offsets)
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5. This module is imported by 25 kernel modules and 15 wrappers, so its
-# rebuilds are felt widely.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``. This module
+# is imported by 25 kernel modules and 15 wrappers, so its rebuilds are felt widely.
 #
 # The index-buffer kernels fill a buffer every caller in the package allocates ``wp.int32``;
 # ``wp.Int`` in their annotation is the template, not a menu. Their three wrappers
@@ -1132,7 +1130,7 @@ class KernelTable(dict[Any, wp.Kernel]):
         raise KeyError(
             f"{self._owner} has no kernel registered for {key!r}; add the dtype to the owning "
             "kernel module's registration rather than launching a generic kernel, which would "
-            "rebuild the whole module on first use (CLAUDE.md section 2.5)."
+            "rebuild the whole module on first use."
         )
 
 
@@ -1146,17 +1144,16 @@ class OverloadTable(KernelTable):
     when several parameters are generic.
 
     Nothing new is compiled. ``_register_overloads`` was already creating these overloads at import
-    for the reason in ``.claude/CLAUDE.md`` section 2.5 (a lazily instantiated overload rebuilds the
-    whole module); this only keeps the ``wp.Kernel`` that ``wp.overload`` returns instead of
-    discarding it. The kernel source stays dtype-generic, so section 1.2's preference for generic
-    ``@wp.func``/kernel bodies is untouched -- what changes is only which object the wrapper hands
-    ``wp.launch``.
+    (a lazily instantiated overload rebuilds the whole module); this only keeps the ``wp.Kernel``
+    that ``wp.overload`` returns instead of discarding it. The kernel source stays
+    dtype-generic, so the preference for generic ``@wp.func``/kernel bodies is untouched -- what
+    changes is only which object the wrapper hands ``wp.launch``.
 
-    A missing key raises rather than falling back to the generic kernel. Falling back would work
-    and would be *slow in the way section 2.5 exists to prevent* -- the first launch at an
-    unregistered dtype rebuilds the whole module, which can take a minute -- so an unregistered
-    dtype is a registration gap to fix, and this turns it from a clock reading into an error naming
-    the kernel.
+    A missing key raises rather than falling back to the generic kernel. Falling back would work and
+    would be *slow in the way registering overloads at import exists to prevent* -- the first launch
+    at an unregistered dtype rebuilds the whole module, which can take a minute -- so an
+    unregistered dtype is a registration gap to fix, and this turns it from a clock reading into an
+    error naming the kernel.
     """
 
     def __init__(self, kernel: wp.Kernel, signatures: Mapping[Any, Sequence[Any]]) -> None:
@@ -1184,7 +1181,7 @@ def morton_code_30(point: wp.vec3, lower: wp.vec3, inv_extent: wp.vec3) -> wp.in
 # Threads a register-blocked ``(item, slice)`` reduction must still launch after grouping its outer
 # items (``RegisterBlockedTable.launch_shape``). Grouping ``width`` items per thread divides the
 # grid by ``width``, so past this floor a wider group trades occupancy for traffic it no longer
-# needs to save (CLAUDE.md section 14.12: a fixed ``width = 8`` cost a 36 k-point cloud 0.82x).
+# needs to save (a fixed ``width = 8`` cost a 36 k-point cloud 0.82x).
 REGISTER_BLOCK_MIN_THREADS = 1 << 17
 
 
@@ -1194,10 +1191,10 @@ class RegisterBlockedTable(KernelTable):
 
     The four strided slice reductions that reduce several outer items per thread from registers
     (``points.hull_support_extremes``, ``bounds.oriented_box_extents``,
-    ``proximity.winding_number_tiled``, ``visibility.support_argmax_sliced``; CLAUDE.md section
-    14.12) launch thread ``(b, j)`` over items ``b * width ..`` and slice ``j``. Which width a
-    launch takes is one rule for all four, held here: the widest that still leaves
-    ``REGISTER_BLOCK_MIN_THREADS`` threads, else the narrowest.
+    ``proximity.winding_number_tiled``, ``visibility.support_argmax_sliced``) launch thread ``(b,
+    j)`` over items ``b * width ..`` and slice ``j``. Which width a launch takes is one rule for all
+    four, held here: the widest that still leaves ``REGISTER_BLOCK_MIN_THREADS`` threads, else the
+    narrowest.
     """
 
     def __init__(
@@ -1247,7 +1244,7 @@ def cast_kernel(source: Any, target: Any) -> wp.Kernel:
     module after it has loaded changes its hash and rebuilds every kernel in it, so a pair built
     lazily into this module would recompile ``kernels/array``, and launching
     ``wp.utils.array_cast``'s ``Any``-generic kernel at a new pair recompiles all of
-    ``warp.utils`` for the same reason (CLAUDE.md section 2.5). A one-kernel module compiles in
+    ``warp.utils`` for the same reason. A one-kernel module compiles in
     isolation and is cached on disk like any other.
     """
     kernel = ASTYPE.get((source, target)) or _CAST_KERNELS.get((source, target))
@@ -1375,7 +1372,7 @@ _register_overloads()
 # distinct *call signature* forks its hash, and a module's hash covers the kernels instantiated in
 # it. Declaring the signatures up front with ``return_kernel=True`` reaches the final module
 # directly for milliseconds of import. The chain is order-dependent, so this is a developer-loop
-# tax rather than a one-time install cost (CLAUDE.md section 3.5).
+# tax rather than a one-time install cost.
 #
 # **The fork axis is not only the dtype, and that is the part that is not guessable.**
 # ``warp._src.utils.map`` keys its cache on ``(is_array, type(input).__name__, dtype, ndim,
@@ -1687,7 +1684,7 @@ def lattice_position(
     #
     # It differs from the two kernels that share it only in the *destination's rank* -- a flat
     # row-major buffer against a ``wp.array3d`` -- so each keeps its own indexing and shares the
-    # arithmetic, per section 3's "factor the family, not the pair".
+    # arithmetic.
     return lower + wp.cw_mul(step, wp.vec3(wp.float32(i), wp.float32(j), wp.float32(k)))
 
 
@@ -1703,7 +1700,7 @@ def trilinear_cell(coordinate: wp.vec3, shape: wp.vec3i) -> tuple[wp.vec3i, wp.v
     # base is 0 and ``base + 1`` is one slice past the end -- an out-of-bounds access at every one
     # of the four stencil corners on that axis. The fraction there is 0, so the *weight* is 0 and no
     # number is ever wrong; the address is computed and dereferenced regardless, which on the CPU
-    # device is host-heap corruption (CLAUDE.md section 12.1) and in release mode is silent on both.
+    # device is host-heap corruption and in release mode is silent on both.
     # Handing back ``next_corner`` is what makes that unwriteable rather than merely documented.
     #
     # For any axis with two or more samples ``base <= shape - 2``, so ``next_corner`` is exactly
@@ -1807,7 +1804,7 @@ def pack_segment_words(
     # thread strides its own segment by ``width``. **The stride is what bounds the grid**: a plain
     # ``dim=(n_segments, longest)`` is mostly threads that exit immediately whenever the split is
     # uneven -- 670 M of them for a 256-way split whose first piece holds nearly all of a 2.6 M
-    # buffer. This is an ordinary grid stride and not section 2.2's ``wp.block_dim()`` case: these
+    # buffer. This is an ordinary grid stride and not the ``wp.block_dim()`` case: these
     # lanes do not cooperate, there is no tile here, and every thread of a plain ``wp.launch``
     # grid runs on both devices, so taking the stride from the grid's own second dimension is
     # correct on CPU as well.

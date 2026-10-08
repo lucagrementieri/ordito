@@ -966,7 +966,7 @@ def accumulate_radius_frame(
     # Launch it over ``blocks_1d(n)``, which covers both ranges: neither exceeds ``n``.
     #
     # This kernel, ``accumulate_loop_frame`` and ``accumulate_turning_angle`` are the lane-strided
-    # single-slot reduction of CLAUDE.md section 13.2: ``wp.launch_tiled(dim=blocks_1d(n),
+    # single-slot reduction: ``wp.launch_tiled(dim=blocks_1d(n),
     # block_dim=TILE_1D)``, lanes striding their own block's chunk by ``wp.block_dim()``, one
     # atomic commit per block. Striding by ``wp.block_dim()`` is what makes it correct on both
     # devices, so there is no ``prefers_tiled_reduction`` branch. Only an *unconditional* atomic
@@ -2098,7 +2098,7 @@ def polyline_total_length(
 ) -> None:
     # Arc length of an open polyline in one launch: the per-segment lengths are summed where they
     # are computed instead of being written to a buffer a separate reduction then reads back in.
-    # That is CLAUDE.md section 14.10's producer-consumer fusion applied to a reduction's producer
+    # That is a producer-consumer fusion applied to a reduction's producer
     # -- ``polyline_length`` ran a ``wp.map`` into an ``(n - 1,)`` scratch array and then
     # ``reduce.sum`` over it: two launches, two allocations and the map's own host-side resolution
     # for an answer that is one number.
@@ -2113,7 +2113,7 @@ def polyline_total_length(
     #
     # Launched ``wp.launch_tiled(dim=kernel_reduce.blocks_1d(n_segments), block_dim=TILE_1D)``:
     # one block per ``ITEMS_PER_BLOCK_1D`` segments, lanes striding that block's own chunk by
-    # ``wp.block_dim()`` (section 2.2, which is what keeps the single-lane CPU device correct), a
+    # ``wp.block_dim()`` (which is what keeps the single-lane CPU device correct), a
     # ``wp.tile_sum`` fold and one atomic per block.
     #
     # ``n_segments`` rather than ``points.shape[0] - 1``, because the closing segment of a *closed*

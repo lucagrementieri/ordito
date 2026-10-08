@@ -846,7 +846,7 @@ def test_heat_signed_distance_matches_potpourri3d(
     So the correlation catches the sign flip and the error bound catches the scale error and the
     shuffle, which is the division of labour the docstring above claims. One caveat worth carrying:
     on ``hemisphere`` the measured mean error is **0.1259 against a 0.1500 bar -- 1.19x**, well
-    inside section 7.4's 3x preference, because that curve sits one ring from the rim where the two
+    inside the 3x preference, because that curve sits one ring from the rim where the two
     boundary handlings diverge most. Do not tighten that bar without re-measuring both fixtures.
 
     The ``hemisphere`` comparison is the ``zero_set`` arm of
@@ -1078,7 +1078,7 @@ def test_extend_scalar_matches_potpourri3d(request: pytest.FixtureRequest, mesh_
     Class A: a scalar field carries no gauge, so this is the one vector-heat comparison that is.
 
     Everything else in this module measures a *tangent* quantity, which agrees only up to a rotation
-    about the normal (section 6). ``extend_scalar`` returns numbers, so it is compared elementwise,
+    about the normal. ``extend_scalar`` returns numbers, so it is compared elementwise,
     which makes it the test pinning the shared diffusion machinery all the others build on.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

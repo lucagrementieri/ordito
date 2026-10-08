@@ -619,14 +619,14 @@ def _poisson_depth(device: str) -> int:
     solve is over the ``2 ** depth`` cubed node grid **whatever the cloud size**, so it octuples per
     level, and the CPU backend is not close to CUDA on it.
 
-    Measured with the two depths **interleaved in one process** and read as the minimum of three
-    (CLAUDE.md section 15.7), dropping a level is an **8.6x** saving per CPU solve, matching the 8x
-    the grid size predicts. Both are negligible on CUDA.
+    Measured with the two depths **interleaved in one process** and read as the minimum of
+    three, dropping a level is an **8.6x** saving per CPU solve, matching the 8x the grid size
+    predicts. Both are negligible on CUDA.
 
     !!! warning "Quote the ratio, not the wall clock"
         This box's CPU timings swing ~40 % with background load, and the same depth-6 solve has been
         seen to spread more than fourfold across full-suite runs. The *ratio* is stable because both
-        sides move together, which is exactly why section 13 asks for an interleaved A/B rather than
+        sides move together, which is exactly why one wants an interleaved A/B rather than
         two numbers taken apart.
 
     Depth 4 is not an option: 2 144 faces is too coarse to resolve the torus hole.
@@ -639,7 +639,7 @@ def _poisson_depth(device: str) -> int:
       cell;
     - ``test_poisson_matches_open3d_metric`` and ``..._pymeshlab_metric`` -- the class-C margin
       falls
-      from 3.4x / 3.7x to **2.64x / 2.44x**, under section 6's 3x floor.
+      from 3.4x / 3.7x to **2.64x / 2.44x**, under the 3x floor.
 
     Keep the *reference* libraries at whatever depth their own comment specifies -- open3d and
     pymeshlab return identical output at 5 and 6 on this cloud and are pinned to 5 on both devices,
@@ -748,7 +748,7 @@ def test_poisson_matches_open3d_metric(device: str):
 
     **Pinned to depth 6 on both devices**, unlike the rest of this section, which drops to 5 on CPU
     (see [`_poisson_depth`][]). Re-measured at depth 5: agreement widens to **0.0057**, a 2.64x
-    margin, under the 3x floor section 6 sets for a class-C threshold. The mutation probe still
+    margin, under the 3x floor for a class-C threshold. The mutation probe still
     fires there (0.0194), so it is the margin that fails the bar and not the sensitivity -- but a
     threshold at 2.6x its measured value is a latent flake, and saving 155 s of CPU time is not
     worth buying one.

@@ -240,7 +240,7 @@ def require_valid_faces(faces: wp.array[wp.int32], n_vertices: int, name: str) -
     (the same memory-safety class as an unvalidated device mismatch, which is why
     [`require_same_device`][ordito._device.require_same_device] exists). Nothing downstream of a
     well-formed mesh checks this -- several reference libraries this package tests against don't
-    either (§7.6) -- so it is a precondition, not a runtime-checked invariant.
+    either -- so it is a precondition, not a runtime-checked invariant.
 
     Unlike [`require_nonempty_mesh`][ordito._device.require_nonempty_mesh], this is **not** free:
     it costs a device reduction and a host readback, because it has to read the actual index

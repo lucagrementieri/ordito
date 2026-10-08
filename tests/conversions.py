@@ -146,7 +146,7 @@ def points_to_warp(points_np: np.ndarray, device: wp.DeviceLike) -> wp.array[wp.
     against a float64 reference bottoms out around 1e-7 rather than at machine epsilon. The
     ``np.ascontiguousarray`` is not ceremony *here* even though Warp accepts a non-contiguous
     payload (probed on 1.16) -- it costs nothing on an already-contiguous array and it keeps one
-    spelling where there were four. Note the contrast with section 4's *index*-array hazard, which
+    spelling where there were four. Note the contrast with the *index*-array hazard, which
     is real and unrelated: a stride is silently ignored on a gather **index**, never on a payload
     upload.
 
@@ -216,11 +216,11 @@ def warp_to_pymeshlab(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int3
     (which already carry a ``tm.Trimesh`` for ``trimesh_to_pymeshlab``).
 
     !!! note "Deliberately unexercised, and not dead"
-        No test calls this today, and that is a decision rather than an oversight -- section 6's
-        inventory points readers at it, so deleting it invites the next person to hand-roll the
-        wrapper and rediscover the hazards above. It also has a caller that is invisible from here:
-        ``tests/parity.py`` keys its reference detection off these converter *names*, so removing
-        one would silently narrow the parity scan.
+        No test calls this today, and that is a decision rather than an oversight -- the
+        inventory of helpers points readers at it, so deleting it invites the next person to
+        hand-roll the wrapper and rediscover the hazards above. It also has a caller that is
+        invisible from here: ``tests/parity.py`` keys its reference detection off these
+        converter *names*, so removing one would silently narrow the parity scan.
     """
     meshset = ml.MeshSet()
     meshset.add_mesh(
@@ -505,11 +505,11 @@ def warp_to_meshlib(vertices_wp: wp.array[wp.vec3], faces_wp: wp.array[wp.int32]
     [`numpy_to_meshlib`][tests.conversions.numpy_to_meshlib], which does the work.
 
     !!! note "Deliberately unexercised, and not dead"
-        No test calls this today, and that is a decision rather than an oversight -- section 6's
-        inventory points readers at it, so deleting it invites the next person to hand-roll the
-        wrapper and rediscover the hazards above. It also has a caller that is invisible from here:
-        ``tests/parity.py`` keys its reference detection off these converter *names*, so removing
-        one would silently narrow the parity scan.
+        No test calls this today, and that is a decision rather than an oversight -- the
+        inventory of helpers points readers at it, so deleting it invites the next person to
+        hand-roll the wrapper and rediscover the hazards above. It also has a caller that is
+        invisible from here: ``tests/parity.py`` keys its reference detection off these
+        converter *names*, so removing one would silently narrow the parity scan.
     """
     return numpy_to_meshlib(vertices_wp.numpy(), faces_wp.numpy())
 
@@ -729,11 +729,11 @@ def warp_to_pymeshfix(
     one-call-per-object rules as [`numpy_to_pymeshfix`][tests.conversions.numpy_to_pymeshfix].
 
     !!! note "Deliberately unexercised, and not dead"
-        No test calls this today, and that is a decision rather than an oversight -- section 6's
-        inventory points readers at it, so deleting it invites the next person to hand-roll the
-        wrapper and rediscover the hazards above. It also has a caller that is invisible from here:
-        ``tests/parity.py`` keys its reference detection off these converter *names*, so removing
-        one would silently narrow the parity scan.
+        No test calls this today, and that is a decision rather than an oversight -- the
+        inventory of helpers points readers at it, so deleting it invites the next person to
+        hand-roll the wrapper and rediscover the hazards above. It also has a caller that is
+        invisible from here: ``tests/parity.py`` keys its reference detection off these
+        converter *names*, so removing one would silently narrow the parity scan.
     """
     return numpy_to_pymeshfix(vertices_wp.numpy(), faces_wp.numpy())
 
@@ -832,7 +832,7 @@ def points_to_torch(points_np: np.ndarray, device: str = "cpu") -> torch.Tensor:
     **Every** ``pytorch3d.ops`` entry point is batched with a leading minibatch axis, and the
     padding is expressed as a separate ``lengths`` argument rather than inferred -- so a single
     cloud goes in as ``x[None]`` and its answer comes back out as ``result[0]``. That wrap is the
-    shape section 6's ``points_to_warp`` note warns about: it is one line, it is needed at every
+    shape of trap that is easy to miss: it is one line, it is needed at every
     call site, and getting it wrong does not raise. ``knn_points(p, q)`` handed a bare ``(P, 3)``
     reads it as ``(N=P, P1=3, D)`` and cheerfully compares three points, which is why the
     pytorch3d comparisons assert the reference's output *shape* before its values.

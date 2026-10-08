@@ -32,7 +32,7 @@ and to within 5 % on the vertex count.
 **pymeshlab** ``generate_resampled_uniform_mesh`` is MeshLab's offset and is timed at the same cell
 size. Its ``offset`` parameter is passed as ``PureValue``, which is mandatory rather than stylistic:
 as a ``PercentageValue`` it runs from full erosion at 0 % to full dilation at 100 %, so its own
-default is the *zero* offset (CLAUDE.md section 7.6).
+default is the *zero* offset.
 
 open3d has no offset, and neither does trimesh or igl: a level-set offset needs a signed distance
 field on a lattice, and of the six CPU references only these two build one.
@@ -324,7 +324,7 @@ def test_marching_cubes(bench_lib: BenchLibrary, resolution: int) -> None:
     watch: read a regression here as the *slope* steepening rather than the absolute number moving.
     ``ordito-cpu`` loses to meshlib by an order of magnitude, which is the other edge of the same
     knife and not a defect to chase -- a hundred-odd threads of C++ against Warp's CPU backend is
-    not a comparison of algorithms, and CLAUDE.md section 9's "decide on the CUDA number" governs.
+    not a comparison of algorithms, and the "decide on the CUDA number" governs.
 
     Each remaining reference has a lattice convention that has to be got right or the row marches a
     shifted field:

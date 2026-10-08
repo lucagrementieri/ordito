@@ -25,7 +25,7 @@ Five functions, three shapes of work, and the split is what the rows are for.
   exists for one reason: it is the only shape MeshLib can be timed in. Its
   ``computeRayThicknessAtVertices`` takes no query set -- it answers at every vertex, in parallel
   over all cores -- so a row against the subsampled group would price a different number of
-  queries, the reason section 6 bars ``findNClosestPointsPerPoint`` from
+  queries, the reason to bar ``findNClosestPointsPerPoint`` from
   ``query_nearest_bvh_k7``. Read it against ``thickness_interior`` for the per-query cost and
   against MeshLib for the one fair CPU-versus-GPU comparison this module has.
 
@@ -114,8 +114,9 @@ def _surface_points_np(bench_case: BenchCase) -> tuple[np.ndarray, np.ndarray]:
     ``(points, normals)`` for the trimesh rows: a vertex subsample with angle-weighted normals.
 
     Vertices rather than ``sample_surface`` points so the query set is the same *kind* of input
-    ordito's rows use, and angle-weighted normals because that is the convention section 6 records
-    as the one the ray methods pair on. Cached per mesh, since building it is not what is timed.
+    ordito's rows use, and angle-weighted normals because that is the convention
+    recorded as the one the ray methods pair on.
+    Cached per mesh, since building it is not what is timed.
     """
     if bench_case.mesh_name not in _surface_np_cache:
         vertices_np, faces_np = bench_case.vertices_np, bench_case.faces_np
@@ -259,9 +260,9 @@ def test_thickness_at_vertices(bench_case: BenchCase) -> None:
     they meet; ``tests/test_visibility.py::test_thickness_at_vertices_matches_meshlib`` pins that
     they agree (5.96e-07) and that the normal convention is the angle-weighted one.
 
-    MeshLib is the only multi-threaded CPU reference in the suite (section 6), so this is a fair
+    MeshLib is the only multi-threaded CPU reference in the suite, so this is a fair
     fight rather than a GPU against one core -- and the ``ordito-cpu`` row will lose to it for that
-    reason regardless of algorithm, which is section 13's "decide on the CUDA number".
+    reason regardless of algorithm, which is the "decide on the CUDA number".
 
     **trimesh is the third row, and unlike the other two it is timed on both groups.** It takes a
     query set, so it can be asked at every vertex here *and* at the subsample in

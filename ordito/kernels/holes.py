@@ -311,7 +311,7 @@ FILL_STATE_SLOTS = 2
 #
 # **Two values, and the choice is an occupancy question rather than a rim-length one.** The grid is
 # ``(n_loops, max_size - span)``, so a *wide* block only pays when that grid on its own would
-# starve the device -- which is CLAUDE.md section 2.3's block-per-item rule in a second place, and
+# starve the device -- which is the block-per-item occupancy rule in a second place, and
 # getting it backwards costs over 10 %. Measured with the emitted face buffer identical at every
 # block size: the wide block wins at one or two long rims and **loses from a few dozen rims up,
 # whatever the rim length** -- the case with the longest spans and a hundred of them is the worst
@@ -1103,7 +1103,7 @@ def row_argmin(
     # One block per row (``wp.launch_tiled(dim=n_a)``) because the costs are no longer tabulated by
     # a 2-D launch first: one thread per row walking every column measured 0.79x at 4 096-vertex
     # rims, where the tabulation's parallelism was worth more than the table's traffic. Lanes stride
-    # by ``wp.block_dim()``, so the one CPU lane walks the whole row (CLAUDE.md section 2.2).
+    # by ``wp.block_dim()``, so the one CPU lane walks the whole row.
     i, lane = wp.tid()
     best_col = INT32_MAX_CONSTANT
     best_val = FLOAT32_INF_CONSTANT
@@ -1456,7 +1456,7 @@ def stitch_dp_tile(
     # of them with a block barrier at a few hundred nanoseconds instead of a launch at ~12 us.
     #
     # ``wp.tile_sum`` over a per-lane value is the barrier. Warp exposes no bare ``__syncthreads``
-    # (§10 has no barrier builtin), and a block-collective reduction both synchronises and orders
+    # (there is no barrier builtin), and a block-collective reduction both synchronises and orders
     # the global writes the next diagonal reads -- verified by removing it, which fails every run
     # at 64 lanes and above and, at 32, passes only because one warp needs no barrier at all.
     #

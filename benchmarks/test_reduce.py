@@ -67,7 +67,7 @@ already ahead in those groups. Two are the same bug in different clothes:
 Those are kernel-time A/Bs, interleaved under one clock state with values verified each round. End
 to end the picture is uneven and worth reading carefully: the large-mesh cells of the axis and
 rank-2 groups gain as much as the kernel A/B predicts, but every scalar-returning group at
-feature-mesh scale moves by less than the cross-session drift band (CLAUDE.md section 15.7), so
+feature-mesh scale moves by less than the cross-session drift band, so
 those cells attribute nothing either way. That is the expected shape — tens of microseconds of such
 a call was never the kernel, so no kernel change can move it.
 

@@ -157,8 +157,8 @@ def test_harmonic(bench_case: BenchCase, order: int) -> None:
     **Declined (2026-10-07): solving ``k=2`` by a sparse Cholesky of the reduced system.** With the
     symbolic analysis on the device and paid by every call, a factored solve is 0.48x / 0.85x /
     1.15x the iteration on ``saddle_small`` / ``saddle`` / ``hemisphere``; it read faster only while
-    ``ordito.cholesky`` kept each pattern's analysis across calls, a cache ``.claude/CLAUDE.md``
-    section 16.16 rejects. Off this axis, on ``saddle_graded``, the ``k=2`` system is past what
+    ``ordito.cholesky`` kept each pattern's analysis across calls, a cache that is not
+    kept. Off this axis, on ``saddle_graded``, the ``k=2`` system is past what
     any iteration converges on (condition number ~1e17): the solve is verified and falls back to a
     factorization after ``linalg.CG_FACTOR_AFTER_ROUNDS`` rounds, 105 ms where it used to run its
     whole cap (13.5 s) and return a map 54 % of the range off. The verification costs ~0.1 ms on

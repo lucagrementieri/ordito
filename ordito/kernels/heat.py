@@ -136,7 +136,7 @@ def unit_gradient_divergence(
     # The gradient is deliberately *not* merged into ``triangles.face_gradients`` behind a
     # ``normalize`` flag: the arithmetic is already shared -- ``face_unit_gradient`` is
     # ``normalize(face_gradient(...))`` -- so a flag would put a mode argument on that path which
-    # only this module's callers would ever set (§4.2, speculative generality: one caller per
+    # only this module's callers would ever set (speculative generality: one caller per
     # mode). The two also return different quantities: a gradient carries the field's rate of
     # change, this carries only a direction.
     f = wp.int32(wp.tid())

@@ -354,7 +354,7 @@ def test_concatenate_rejects_mismatched_devices() -> None:
     ``meshes_data`` parameter, so the guard has to descend into it. The failure it prevents is not
     an exception: the launch device is taken from the first pair's ``vertices`` while the buffer it
     writes is packed onto its ``faces``' device, so a CPU launch against CUDA pointers segfaults
-    with no Python traceback (CLAUDE.md section 12.1).
+    with no Python traceback.
     """
     if not wp.is_cuda_available():
         pytest.skip("needs both devices to construct a mismatch")

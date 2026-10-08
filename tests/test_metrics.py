@@ -485,8 +485,7 @@ def test_chamfer_points_to_mesh_forward_matches_meshlib(
     transform.
 
     Measured 2.4e-07 max absolute difference over 500 points (1.1e-07 relative), which is ordito's
-    float32 vertex storage against MeshLib's float32 -- see the `getNumpyVerts` note in CLAUDE.md
-    section 7.6.
+    float32 vertex storage against MeshLib's float32 (MeshLib stores `getNumpyVerts` as float32).
 
     Three MeshLib call conventions this depends on, each a documented hazard:
     ``updateMeshData`` stores a raw pointer, so ``mesh_ml`` is bound to a name that outlives every
@@ -534,7 +533,7 @@ def _point_triangle_squared(points_np: np.ndarray, triangles_np: np.ndarray) -> 
 
     A hand port of the standard closest-point-on-triangle classification (Ericson, *Real-Time
     Collision Detection*, section 5.1.5), which is the algorithm ``point_mesh_face_distance``'s
-    CUDA/C++ kernel implements. Section 6 sanctions a hand port as a *test* oracle, and it is
+    CUDA/C++ kernel implements. A hand port is a sound *test* oracle, and it is
     needed here rather than optional: pytorch3d returns only the **sum of two directions**, so
     without an independent per-pair table there is no way to isolate the forward half that ordito
     computes. Validated in ``test_chamfer_points_to_mesh_matches_pytorch3d`` both ways -- its

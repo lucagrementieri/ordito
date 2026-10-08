@@ -6,7 +6,7 @@ circle diameters, aspect ratio, dihedral angle. Each `@wp.func` here is generic 
 type, so one definition instantiates at whatever precision the calling kernel uses; before this
 module existed the same quantities were duplicated per precision across three kernel modules.
 
-The rule that keeps arrivals coming here is CLAUDE.md section 3.1's: a general geometric quantity
+The rule that keeps arrivals coming here is: a general geometric quantity
 must not live in a module that owns an *algorithm*, or unrelated modules import the algorithm to
 reach the geometry. ``triangle_aabb``, ``triangle_double_area``, ``circumcircle_diameter``,
 ``point_plane_dot`` and ``triangle_aabb_overlap`` all arrived that way.
@@ -79,7 +79,7 @@ def triangle_area_vector(a: Any, b: Any, c: Any):
     #
     # The tie-break also keeps a face with a repeated vertex exactly zero on CUDA: one of the two
     # edges at the chosen corner is then the zero vector, where the first-corner form left FMA's
-    # ~1e-8 residue (CLAUDE.md section 12.4).
+    # ~1e-8 residue.
     ab = b - a
     bc = c - b
     ca = a - c
@@ -107,8 +107,8 @@ def plane_basis(normal: wp.vec3) -> tuple[wp.vec3, wp.vec3]:
     # memory and must not read it back to build the frame -- a general geometric helper with no
     # point-cloud dependency, which is why it lives here rather than in ``kernels/points.py``: it
     # is reached from two unrelated kernel modules (``kernels/smoothing.py``,
-    # ``kernels/polyline.py``), the same "reached from a second module" trigger CLAUDE.md section
-    # 3.1 already applied to ``triangle_aabb``/``triangle_double_area``/``circumcircle_diameter``.
+    # ``kernels/polyline.py``), the same "reached from a second module" trigger already applied to
+    # ``triangle_aabb``/``triangle_double_area``/``circumcircle_diameter``.
     unit_normal = wp.normalize(normal)
     axis = wp.vec3(1.0, 0.0, 0.0)
     if wp.abs(unit_normal[0]) > 0.9:
@@ -232,8 +232,8 @@ def is_in_aabb(point: Any, min_bound: Any, max_bound: Any) -> wp.bool:
     # ``GetPointIndicesWithinBoundingBox`` compares component-wise for exactly this reason.
     #
     # Generic over the scalar type but fixed at three components: a vector has no readable
-    # component count in kernel scope (the same restriction ``.claude/CLAUDE.md`` section 1.2
-    # records for a matrix's ``.shape``), so a rank-free spelling would have to go back through
+    # component count in kernel scope (the same restriction a matrix's ``.shape``
+    # has), so a rank-free spelling would have to go back through
     # ``wp.min`` and give up the ``nan`` answer.
     return (
         point[0] >= min_bound[0]
@@ -285,7 +285,7 @@ def point_plane_dot(point: Any, plane_normal: Any, plane_origin: Any) -> wp.Floa
 # and the three helpers it is built from. Concrete ``float32`` rather than scalar-generic like most
 # of this module: the box-axis sweep needs a unit vector per axis and a vector literal cannot be
 # built at the caller's precision without threading a type witness through all four signatures,
-# which section 4.2's "no speculative generality" rules out while ``voxels.mark_surface_voxels``
+# which "no speculative generality" rules out while ``voxels.mark_surface_voxels``
 # remains the only caller and is ``float32``. Generalize when a ``float64`` caller appears.
 @wp.func
 def axis_interval_projection(axis: wp.vec3, v0: wp.vec3, v1: wp.vec3, v2: wp.vec3) -> wp.vec2:

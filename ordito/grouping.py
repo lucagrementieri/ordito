@@ -375,7 +375,7 @@ def _unique_hash(
 
     unique_counts = None
     if counts_compact is not None:
-        # A contiguous prefix slice, not a gather-unsafe strided view (CLAUDE.md §3.4) -- no copy
+        # A contiguous prefix slice, not a gather-unsafe strided view -- no copy
         # needed before handing it to ``gather`` as the index array.
         unique_counts = gather(counts_compact, odt.as_dense(perm_buf[:n_unique]))
 

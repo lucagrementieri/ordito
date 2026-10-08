@@ -872,8 +872,8 @@ def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", 
     This group ran for four rounds on ``sphere_med`` concatenated with a shifted copy of itself, and
     **the meshlib ``local`` cell was timing a no-op**: that construction is two components, and
     ``mm.localFixSelfIntersections`` returns a multi-component mesh unchanged -- byte-identical
-    buffers, every colliding face intact, at every configuration probed (CLAUDE.md section 7.6
-    carries the sweep). The row read as this suite's largest single loss against a call that
+    buffers, every colliding face intact, at every configuration probed.
+    The row read as this suite's largest single loss against a call that
     returned its argument.
 
     ``tangle_torus`` is a self-intersecting **single** component, so both libraries do real work and
@@ -911,7 +911,7 @@ def test_fix_self_intersections(bench_case: BenchCase, method: Literal["local", 
             mesh_ml.pack()
             return mesh_ml.topology.numValidFaces()
 
-        # Assert the mutator actually mutated, which is CLAUDE.md section 7.6's standing rule for
+        # Assert the mutator actually mutated, which is the standing rule for
         # MeshLib and the guard whose absence let this group time a no-op for four rounds:
         # ``localFixSelfIntersections`` returns normally on an input it declines, and
         # ``numValidFaces() > 0`` passes that. Both methods change the face count here -- the local

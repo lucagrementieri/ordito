@@ -764,8 +764,8 @@ def vector_area_triplets(
     )
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5. Measured over the suite: 8 overloads created across **9** module loads.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``. Measured
+# over the suite: 8 overloads created across **9** module loads.
 #
 # Every generic argument here is the assembled matrix's value precision, which ``ordito.energies``
 # exposes as the same public ``dtype`` keyword ``ordito.laplacian`` does. The float64 inputs the
@@ -795,7 +795,7 @@ def _register_overloads() -> None:
     i32 = wp.array[wp.int32]
     # ``_zero_at_boundary``'s only caller, ``float64`` in and out (``mass``/``kappa`` are fixed at
     # that precision by their own producers) -- one dtype, not the full ``_MATRIX_DTYPES`` cross
-    # product this kernel's ``wp.Float`` genericity would otherwise admit (CLAUDE.md section 2.5).
+    # product this kernel's ``wp.Float`` genericity would otherwise admit.
     ZERO_AT_INDICES = OverloadTable(zero_at_indices, {wp.float64: [i32, wp.array[wp.float64]]})
     CROUZEIX_RAVIART_MASS_DIAG = OverloadTable(
         crouzeix_raviart_mass_diag,
@@ -806,7 +806,7 @@ def _register_overloads() -> None:
     # separate ``dtype`` keyword, and the kernel casts the entries to the matrix precision, so
     # this is a genuine 2x2 rather than a diagonal. Registering only the diagonal made the first
     # float64-entries/float32-matrix launch recompile this whole module, taking over a minute and
-    # returning the right answer -- the silent cost CLAUDE.md section 2.5 names.
+    # returning the right answer -- the silent cost of a lazily instantiated overload.
     CROUZEIX_RAVIART_COTMATRIX_TRIPLETS = OverloadTable(
         crouzeix_raviart_cotmatrix_triplets,
         {

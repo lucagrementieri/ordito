@@ -616,7 +616,7 @@ def band_cg_initial(
     # ``kernels/reconstruction.poisson_cg_initial`` on a band level, with Jacobi in place of the
     # V-cycle: ``r = b - A x``, ``u = D^-1 r``, ``p = s = 0`` and the first stage of ``||b||^2``,
     # over one column padded to whole blocks of ``span``; the pad is zero. Lanes stride by
-    # ``wp.block_dim()`` (section 2.2).
+    # ``wp.block_dim()``.
     blk, t = wp.tid()
     acc = wp.float64(0.0)
     for kk in range(t, span, wp.block_dim()):

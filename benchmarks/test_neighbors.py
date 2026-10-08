@@ -284,7 +284,7 @@ def _run_pytorch3d_ball(bench_case: BenchCase, radius: float) -> None:
 
     ``K`` is a real parameter of the answer and not just of the buffer: pytorch3d stops filling a
     row once it has ``K`` hits, so an undersized ``K`` makes the row *faster* and the answer wrong.
-    It is asserted here rather than trusted, which is the section 13 rule about verifying values
+    It is asserted here rather than trusted, which is the rule of verifying values
     and not only timing.
     """
     queries_p3d = points_torch_from_numpy(_queries_np(bench_case), bench_case.torch_device)

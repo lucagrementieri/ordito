@@ -958,8 +958,8 @@ class BenchLibrary:
 
         **The sync is per-library, not per-device.** ``wp.synchronize_device`` synchronizes *Warp's*
         stream and says nothing about torch's, so a ``pytorch3d-cuda`` row synchronized the Warp way
-        would time the launch and not the kernel -- the same class of error as section 8's
-        launch-device hazard, in that it does not raise and simply reports a number that is far too
+        would time the launch and not the kernel -- the same class of error as a launch on the wrong
+        device, in that it does not raise and simply reports a number that is far too
         good. That row therefore calls ``torch.cuda.synchronize()`` instead.
 
         **And a ``pytorch3d-cuda`` row releases torch's cached blocks when it finishes**, outside

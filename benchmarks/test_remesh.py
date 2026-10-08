@@ -163,8 +163,8 @@ def test_subdivide(bench_case: BenchCase) -> None:
         ordito, and it is not a size limit -- the *smallest* mesh fails most and the largest never
         does. Compacting the unreferenced vertices away makes it worse, so there is nothing to pass
         it that makes it safe. This is the third memory-unsafe binding in this wheel, alongside
-        ``igl.loop`` and ``igl.in_element``; see the libigl hazards in ``.claude/CLAUDE.md`` section
-        7.6. It stays a *tested* reference on the small clean ``icosahedron`` fixture, where it is
+        ``igl.loop`` and ``igl.in_element``.
+        It stays a *tested* reference on the small clean ``icosahedron`` fixture, where it is
         reliable.
 
     **pytorch3d** is the third reference and the only GPU one. ``SubdivideMeshes()`` is constructed

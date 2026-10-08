@@ -1019,7 +1019,7 @@ def laplacian_entries(
         with ``edges`` not ``None``), check that every index in it falls inside
         ``[0, n_vertices)`` before launching -- a stale ``edges`` array (e.g. from before a
         decimation pass changed the vertex count) otherwise drives the triplet kernel to read
-        ``vertices`` out of bounds with no exception (§12.1's memory-safety class). Pass ``False``
+        ``vertices`` out of bounds with no exception. Pass ``False``
         only when ``edges`` is known correct by construction, as this module's own
         [`laplacian`][ordito.laplacian.laplacian] does when it just derived ``edges`` itself.
 

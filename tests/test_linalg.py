@@ -1718,7 +1718,7 @@ def test_block_diag_matches_scipy(device: str) -> None:
 
     The stack mixes a ``wp.mat22d`` operator -- entering as its scalar expansion over interleaved
     unknowns -- with two scalar ones, one of them a duplicate-accumulating triplet build whose
-    ``nnz`` is a stale capacity (CLAUDE.md 3.7): a stack sized off that field would place the
+    ``nnz`` is a stale capacity: a stack sized off that field would place the
     second block's rows at the wrong entries. A repeated call returns the same matrix, which is what
     lets a solve against it replay its recorded loop.
     """

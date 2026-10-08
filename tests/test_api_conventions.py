@@ -112,7 +112,7 @@ def test_summaries_do_not_name_a_reference_library() -> None:
     A one-line summary says what the function returns, not which C++ call it wraps.
 
     mkdocstrings renders the summary as the entry in the module's API index, so a library name there
-    turns the index into a table of bindings -- the same defect ``.claude/CLAUDE.md`` section 4.1
+    turns the index into a table of bindings -- the same defect the naming rule
     already forbids one level in, where it rules that a function is named after what it returns.
     Attribution is wanted and stays: one line down, in ``Notes`` or ``See Also``.
     """
@@ -139,7 +139,7 @@ def test_coverage_lives_beside_its_module() -> None:
     """
     Every module has a ``tests/`` and a ``benchmarks/`` file named for it, and vice versa.
 
-    ``.claude/CLAUDE.md`` section 4.2's "coverage is per module" rule, made mechanical. The failure
+    "coverage is per module" rule, made mechanical. The failure
     it catches is a function's tests drifting into a neighbour's file, which is invisible until
     somebody goes looking for them -- and a suite file whose module has been renamed out from under
     it.
@@ -173,7 +173,7 @@ def test_kernel_modules_are_named_for_their_wrapper() -> None:
     """
     ``ordito/kernels/<module>.py`` backs ``ordito/<module>.py``, one to one.
 
-    ``.claude/CLAUDE.md`` section 3.1's rule. It is what stops a wrapper module from being created
+    rule. It is what stops a wrapper module from being created
     or renamed while its kernels are left behind under the old name -- the half of a move that
     compiles fine and is therefore easy to skip. ``predicates`` and ``scatter`` are the shared
     kernel-side libraries that back no single module; sub-packages mirror a folder and are not
@@ -186,7 +186,7 @@ def test_private_helpers_follow_their_callers() -> None:
     """
     A private helper is defined below the public function that calls it (the stepdown rule).
 
-    ``.claude/CLAUDE.md`` section 5: a reader should never need to jump backward to a definition
+    a reader should never need to jump backward to a definition
     they have not been introduced to yet. ``_HELPER_ORDER_ALLOWLIST`` carried the 49 sites that
     predated this check as an explicit debt list rather than a silent exemption, and the staleness
     half of it did its job: the list is now drained to a single permanent entry, a helper called at
@@ -265,11 +265,11 @@ def test_kernel_outputs_are_named_and_placed() -> None:
     """
     A kernel argument the kernel writes is named ``out_*``, and every ``out_*`` argument is last.
 
-    ``.claude/CLAUDE.md`` section 2.1's rule, checked from both sides after the first full sweep of
+    rule, checked from both sides after the first full sweep of
     ``kernels/`` found eight outputs wearing plain names (four literally ``out``) and three
     read-only inputs wearing the prefix (``claim_collapses`` read a *prior* kernel's outputs under
     their producer's names). In-place arguments and scratch / persistent-state buffers are exempt
-    by section 3 and listed in ``_KERNEL_OUTPUT_ALLOWLIST``, which is staleness-checked.
+    by the exemption rules and listed in ``_KERNEL_OUTPUT_ALLOWLIST``, which is staleness-checked.
     """
     _fail("kernel output-naming violation(s):", kernel_output_naming_problems())
 
@@ -278,7 +278,7 @@ def test_array_annotations_are_subscript_style() -> None:
     """
     An array annotation reads ``wp.array[T]``, never the pre-1.12 ``wp.array(dtype=T)``.
 
-    ``.claude/CLAUDE.md`` section 1.2. Both spellings compile, so nothing but a check stops the old
+    Both spellings compile, so nothing but a check stops the old
     one from coming back with the next large module: it survived in ``algorithms/ball_pivoting.py``
     (98 of the 176), ``reconstruction.py`` and ``remesh.py`` long after the convention settled, and
     ``remesh.py`` carried both styles at once -- which is the state that leaves a reader unsure
@@ -291,7 +291,7 @@ def test_kernel_casts_use_the_warp_spelling() -> None:
     """
     A cast inside a kernel reads ``wp.int32(...)`` / ``wp.float32(...)``, never ``int`` / ``float``.
 
-    ``.claude/CLAUDE.md`` section 1.3. The two spellings are the same Warp builtins and generate
+    The two spellings are the same Warp builtins and generate
     identical code, so nothing but a check keeps them from coexisting -- the tree carried 329
     ``int(wp.tid())`` against 640 ``wp.int32(...)``, and 46 sites in 41 kernels cast a thread index
     with one spelling and re-cast the same local with the other a few lines later.
@@ -309,13 +309,13 @@ def test_kernel_integer_division_uses_the_floor_spelling() -> None:
     """
     An integer division inside a kernel reads ``//``, never ``/``.
 
-    ``.claude/CLAUDE.md`` section 1.5. On integers the two are the *same* operation in Warp -- both
+    On integers the two are the *same* operation in Warp -- both
     truncate toward zero, where CPython's ``//`` floors -- so this is legibility, not correctness:
     ``/`` on two ``int32``s reads as real division and a reader has to recover both operand types
     before they know the line truncates.
 
     A check rather than an edit because the defect recurred. The third pass converted eight sites
-    and wrote the rule into ``CLAUDE.md``; ``algorithms/multigrid.py``, written afterwards,
+    and wrote the rule down; ``algorithms/multigrid.py``, written afterwards,
     reintroduced two (``column = t / n_rows``, ``column = t / stride``), and the scan added for
     this test turned up four more in ``algorithms/blue_noise.py`` that a textual pass had missed.
     """
@@ -372,7 +372,7 @@ def test_kernel_signatures_use_the_warp_types() -> None:
     """
     A kernel-scope argument or return is annotated ``wp.bool`` / ``wp.int32`` / ``wp.float32``.
 
-    ``.claude/CLAUDE.md`` section 1.2. Warp resolves the bare names to the same types, so -- as with
+    Warp resolves the bare names to the same types, so -- as with
     checks 16 and 17 -- nothing but a scan keeps the two spellings from coexisting: about a fifth
     of the tree's return annotations were the bare form when this was written, plus a dozen bare
     ``int`` / ``bool`` parameters.
@@ -432,7 +432,7 @@ def test_kernel_scope_has_no_python_ternary() -> None:
     """
     A ``@wp.kernel`` / ``@wp.func`` body spells a conditional value ``wp.where(cond, a, b)``.
 
-    ``.claude/CLAUDE.md`` section 1.5. A Python ternary (``a if cond else b``) compiles to the same
+    A Python ternary (``a if cond else b``) compiles to the same
     code as ``wp.where``, so -- as with checks 16, 17 and 18 -- nothing but a scan keeps the two
     spellings apart. This is check 20, added because the sixth kernels pass reported this axis at
     zero and was wrong: two ternaries in ``kernels/intersection.py`` predate that pass by several
@@ -445,7 +445,7 @@ def test_generic_kernels_register_their_overloads() -> None:
     """
     A ``@wp.kernel`` generic over a dtype has its concrete overloads registered at import.
 
-    ``.claude/CLAUDE.md`` section 2.5. Warp instantiates a generic kernel's overload lazily, on the
+    Warp instantiates a generic kernel's overload lazily, on the
     first launch at each new dtype, and a module's hash covers the *instantiated* set -- so a
     lazily-created overload silently rebuilds every kernel in its module. Nothing fails when that
     happens, which is why it needs a check: the whole defect is a cost. Measured before the
@@ -457,8 +457,8 @@ def test_generic_kernels_register_their_overloads() -> None:
     the real-world defect -- a new generic kernel added with no ``_register_overloads`` entry. **It
     cannot tell whether the registered dtype set is complete**, and no cheap check can: proving that
     means launching the whole dispatch, and a missing dtype announces itself as a rebuild rather
-    than a wrong answer. So a suddenly slow test is the symptom to read, per ``.claude/CLAUDE.md``
-    section 15.1 -- the dtype belongs in the module's ``_register_overloads``.
+    than a wrong answer. So a suddenly slow test is the symptom to read -- the
+    dtype belongs in the module's ``_register_overloads``.
     """
     unregistered = [
         key
@@ -473,7 +473,7 @@ def test_only_the_taped_kernel_module_compiles_backward_passes() -> None:
     """
     Every ``ordito.kernels`` module but ``metrics`` sets ``enable_backward`` to ``False``.
 
-    ``.claude/CLAUDE.md`` section 2.6. Only the Chamfer losses in ``kernels/metrics.py`` are
+    Only the Chamfer losses in ``kernels/metrics.py`` are
     recorded on a ``wp.Tape``, yet Warp's default compiles an adjoint for every kernel, and the
     adjoints dominate the build: a cold compile of every kernel module took 2.4x as long with them
     (``energies`` alone 7.5x). Nothing fails when a module forgets the option -- it only costs
@@ -521,7 +521,7 @@ def test_public_functions_document_what_they_raise() -> None:
     """
     A public function with a ``raise`` in its own body documents a ``Raises`` block.
 
-    ``.claude/CLAUDE.md`` section 4.3's "docstring, signature and body must agree", from the side
+    "docstring, signature and body must agree", from the side
     where the body says more than the docstring. Delegated validation is not scanned -- 42 public
     functions correctly document a ``Raises`` their shared guard performs.
     """
@@ -605,16 +605,16 @@ def test_reference_comparisons_carry_a_class_label() -> None:
     """
     A test asserting against a reference library says which class the comparison is.
 
-    ``.claude/CLAUDE.md`` section 7.4, and it is a gate rather than a convention because the
+    and it is a gate rather than a convention because the
     convention has decayed twice: the lowercase ``class b`` spelling went from 21 occurrences to 0
-    in one pass and back to 9 in the next, invisible to the grep section 7.4 prescribes because a
+    in one pass and back to 9 in the next, invisible to the prescribed grep because a
     human reads ``class B`` and ``Class B`` the same. It also closes a rarer and worse case --
     ``test_fill_min_weight_matches_meshlib`` carried a ``parity`` marker, compared a class-C
     statistic against MeshLib and had no docstring at all, which ruff cannot see because ``D103``
     is in the ignore list.
 
     It checks that a label is *present*, never that it is the right one. Choosing between A, B, C
-    and D is a judgement about what transform the comparison needs, and section 14's rule holds
+    and D is a judgement about what transform the comparison needs, and the rule holds
     here as everywhere: a scan can tell that a convention was not broken, not that a new name is a
     good one.
     """
@@ -744,7 +744,7 @@ def test_single_index_tid_carries_the_declarative_cast() -> None:
     """
     A single-index ``wp.tid()`` is assigned as ``wp.int32(wp.tid())``, the one cast the tree keeps.
 
-    ``.claude/CLAUDE.md`` section 1.3. ``wp.tid()`` already returns ``wp.int32``, so both spellings
+    ``wp.tid()`` already returns ``wp.int32``, so both spellings
     generate identical code and the defect is invisible to the compiler and to the suite -- this is
     check 22, the fifth member of the family checks 16, 17, 18 and 20 belong to. It was written
     with the axis at 422 cast against 45 bare, and the drift was per *file* rather than scattered,
@@ -953,8 +953,8 @@ def test_warp_typed_constants_stay_out_of_host_arithmetic() -> None:
     Python component loop rather than builtin dispatch (a different and smaller hazard), and an
     explicit ``wp.length(...)`` / ``wp.cross(...)`` call at Python scope costs a dispatch too but
     is often the right spelling -- ``np.cross`` is measurably *slower* than ``wp.cross`` -- so
-    flagging those would make most of the hits legitimate. The runtime census in CLAUDE.md
-    section 15.11 is what covers the wider class; this check covers the part with no legitimate
+    flagging those would make most of the hits legitimate. The runtime census of host calls
+    is what covers the wider class; this check covers the part with no legitimate
     instance.
     """
     _fail("Warp-typed constant(s) in Python-scope arithmetic:", warp_host_arithmetic_problems())

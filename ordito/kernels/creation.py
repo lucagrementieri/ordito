@@ -1463,7 +1463,7 @@ def cap_ring_of(vertex: wp.int32) -> wp.int32:
     # at most once, and they are what makes this safe at a ring count where the square root's last
     # bit could land either side of a block boundary.
     # Every literal carries its precision: a bare float literal is ``wp.float32`` in kernel scope
-    # and mixing one into a ``float64`` expression is a parse error (CLAUDE.md section 1.2).
+    # and mixing one into a ``float64`` expression is a parse error.
     estimate = (wp.float64(3.0) + wp.sqrt(wp.float64(12 * vertex - 3))) / wp.float64(6.0)
     ring = wp.int32(estimate)
     if ring < 1:

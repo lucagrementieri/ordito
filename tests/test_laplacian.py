@@ -149,7 +149,7 @@ def test_face_gradients_pyvista_reference_is_tangential() -> None:
     benchmarked=False,
     reason="gradientInTri takes one triangle's three corners and three values, so "
     "a batched row would be a Python loop over the face buffer and would time the "
-    "loop rather than MeshLib -- the same reason section 6 bars a per-element loop "
+    "loop rather than MeshLib -- the same reason a per-element loop is barred "
     "from a benchmark row, and the same call shape as triCenter and "
     "triangleAspectRatio in tests/test_triangles.py. It is nonetheless the only "
     "reference in the suite that returns the gradient itself rather than the "
@@ -168,8 +168,8 @@ def test_face_gradients_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
 
     Measured on ``sphere_irregular``: **1.9e-04** absolute, **4.0e-07** relative per face, against
     gradient norms spanning 1 243 (``saddle_graded``: 2.2e-07 relative) -- so the residual is the
-    float32 vertex buffer on both sides (MeshLib stores points in float32 too; section 6 records its
-    own 2.58e-08 round-trip) rather than a disagreement about the formula.
+    float32 vertex buffer on both sides (MeshLib stores points in float32 too; its own
+    round-trip is 2.58e-08) rather than a disagreement about the formula.
 
     The four-argument overload is the one to call: ``gradientInTri(b, c, vb, vc)`` assumes the value
     at ``a`` is zero and returns a different vector, and nothing in the signature says so. And the
@@ -276,7 +276,7 @@ def test_cotmatrix_entries(request: pytest.FixtureRequest, mesh_name: str) -> No
     benchmarked=False,
     reason="leftCotan answers one directed edge per call, so a batched row would "
     "be a Python loop over the edge buffer and would price the loop rather than "
-    "MeshLib's arithmetic -- the per-element rule from section 6. igl carries the "
+    "MeshLib's arithmetic -- the per-element rule. igl carries the "
     "timed row for this group, and it is the same quantity.",
 )
 def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_name: str) -> None:
@@ -445,7 +445,7 @@ def test_cotmatrix_and_mass_match_pytorch3d(sphere_well_shaped: tuple[tm.Trimesh
     row sum onto the diagonal at all (``max|diag|`` is ``0.0``, not merely small), where ordito's
     ``cotmatrix`` assembles it. So the comparison is off-diagonals only, and the zero diagonal is
     asserted rather than sidestepped, because it is what a caller assembling from
-    ``cot_laplacian`` has to know: section 4's ``laplacian_smoothing_loss`` variants need that
+    ``cot_laplacian`` has to know: the ``laplacian_smoothing_loss`` variants need that
     matrix and not this one.
 
     Its second return value is the mass matrix in the reciprocal: ``1 / inv_areas`` is **three
@@ -1041,7 +1041,7 @@ def test_connection_laplacian_matches_potpourri3d(
 
     The second is the real content. A connection Laplacian is defined only up to a choice of
     reference direction per vertex, and the two libraries choose differently, so **individual
-    entries are not comparable** -- CLAUDE.md section 7.6's rule about tangent-space quantities.
+    entries are not comparable** -- the usual rule about tangent-space quantities.
     What a gauge change cannot touch is a diagonal unitary conjugation's invariants, and two are
     checked here: the entry **magnitudes** ``|L_ij|``, which are the cotangent weights, and the
     **whole spectrum**, since ``L`` is Hermitian and conjugation by a unitary preserves eigenvalues.
@@ -1133,7 +1133,7 @@ def test_connection_laplacian_is_symmetric_psd_and_a_rotation_per_block(
     The three properties its docstring promises, and the one comparison the gauge permits.
 
     A single ``2 x 2`` block is gauge-dependent -- it re-expresses a vector in the neighbour's
-    frame, and that frame is fixed by a convention no reference library shares -- so §6 rules out an
+    frame, and that frame is fixed by a convention no reference library shares -- so an
     element-wise oracle here (see ``test_tangent_space.py``, where the holonomy around a face is
     what can be compared). What is gauge-*invariant* is the block's spectral norm: the rotation is
     orthogonal, so ``‖block‖`` must be the cotangent weight itself, whatever frame it maps between.

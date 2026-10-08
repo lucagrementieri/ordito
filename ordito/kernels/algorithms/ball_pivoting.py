@@ -635,7 +635,7 @@ def pivot_front_edges(
         # other consumer of this builtin.
         #
         # **It is not the long-open intermittent ``CUDA error 700`` recorded against this function**
-        # (CLAUDE.md section 16.3), which was the obvious guess and was tested rather than assumed:
+        # (open for this function), which was the obvious guess and was tested rather than assumed:
         # that section's own repro faults with the guard in place exactly as often as without. So
         # the guard rules the tile-BVH garbage-index path *out* as that defect's cause.
         #

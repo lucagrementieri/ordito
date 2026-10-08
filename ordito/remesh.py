@@ -3702,7 +3702,7 @@ def _keep_longest_edges(
     eligible = od.array.flatnonzero(long_mask)
     # Ascending on the negated length is descending on the length, and ``sort_and_argsort`` is the
     # package's one radix-sort spelling. ``order[:remaining]`` is a contiguous *prefix* slice, which
-    # is the case CLAUDE.md section 3.4 says a gather may index through directly -- it is a column
+    # is the case a gather may index through directly -- it is a column
     # (``arr[:, k]``) or a step slice whose stride Warp ignores. Cloning it dense first is a
     # measurable loss on the gather for byte-identical output.
     descending = _launch.empty(eligible.size, dtype=wp.float32, device=device)

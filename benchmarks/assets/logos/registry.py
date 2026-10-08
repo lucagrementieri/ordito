@@ -10,8 +10,8 @@ Not every library has a distinct mark of its own to show. Three rows deliberatel
 ``logo=None``:
 
 - ``pymeshfix`` -- no distinct PyMeshFix project mark exists; its own docs reuse PyVista's logo
-  (``reference/pymeshfix/doc/_static/pyvista_logo_sm.png``), which would misattribute the mark.
-- ``igl`` (libigl) -- no small icon-only mark is bound in this project's vendored ``reference/``
+  (its documentation's ``pyvista_logo_sm.png``), which would misattribute the mark.
+- ``igl`` (libigl) -- no small icon-only mark is bound in this project's vendored
   copy or found on the project's own site.
 - ``potpourri3d`` -- potpourri3d is geometry-central's Python binding and has no separate mark of
   its own; geometry-central likewise has none vendored or found.

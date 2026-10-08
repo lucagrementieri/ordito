@@ -184,7 +184,7 @@ def _assembled_p3d(matrix: torch.Tensor, *, normalize: bool = False) -> torch.Te
 
     Attributed across all three groups in one probe, the coalesce is the dominant leveling cost and
     grows with the mesh, while the row-sum normalization adds a further fraction of it. Read that
-    probe-to-probe rather than against a harness number (section 15.4).
+    probe-to-probe rather than against a harness number.
 
     ``lucy`` is measured separately because holding three ordito operators and the torch tensors
     at once does not fit: on the torch side alone the coalesce is several times the raw assembly,
@@ -253,7 +253,7 @@ def test_cotmatrix(bench_case: BenchCase) -> None:
     sum ordito also assembles.
 
     Even so the row inverts: ordito is ahead on most of the scan sweep and within session drift on
-    the rest (section 15.7). The prebuilt-sparsity-pattern rewrite the old number invited (assemble
+    the rest. The prebuilt-sparsity-pattern rewrite the old number invited (assemble
     into an ``edges_unique`` pattern instead of sorting triplets) is **declined on that
     measurement**: there was never a gap to close. It also returns the lumped mass reciprocal
     alongside, which is what

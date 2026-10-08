@@ -344,7 +344,7 @@ def unshared_projection(
     #
     # ``unshared_vertex`` returns -1 for a degenerate second face (it does not have exactly one
     # vertex off the shared edge), and that sentinel is not a valid index into ``vertices`` --
-    # reading it would be the out-of-bounds access CLAUDE.md's memory-safety rule forbids. There is
+    # reading it would be an out-of-bounds access. There is
     # no meaningful projection for a degenerate face, so it reports as never locally convex
     # (+inf is never < TOLERANCE_MERGE) rather than being read as an arbitrary finite value.
     if other < wp.int32(0):

@@ -468,7 +468,7 @@ def as_dense(view: wp.array[DType, NDim] | wp.indexedarray[DType, NDim]) -> wp.a
 
     ``wp.array.__getitem__`` carries no annotations, so basedpyright infers its return from the two
     branches of the body and every subscript comes back as ``indexedarray | array`` -- including a
-    plain slice, which can only ever produce the dense arm (§3.4: an ``indexedarray`` is what an
+    plain slice, which can only ever produce the dense arm (an ``indexedarray`` is what an
     *integer-array* key yields, and a slice is not one). This narrows the union back, and unlike a
     bare ``cast`` it checks: ``wp.indexedarray`` is not a subclass of ``wp.array``, so the
     ``isinstance`` genuinely discriminates rather than restating the assumption.

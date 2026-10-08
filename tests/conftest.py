@@ -110,8 +110,8 @@ def pytest_addoption(parser: pytest.Parser) -> None:
 def pytest_configure(config: pytest.Config) -> None:
     # Warp reads the flag at each launch, so setting it here -- before any test launches -- is
     # enough. On the CPU device ``wp.launch_tiled`` otherwise runs one lane per block, which hides
-    # every kernel whose lanes partition work by anything but ``wp.block_dim()`` (CLAUDE.md
-    # section 2.2) and keeps ``_device.prefers_tiled_reduction``'s tiled half off the CPU.
+    # every kernel whose lanes partition work by anything but ``wp.block_dim()`` and keeps
+    # ``_device.prefers_tiled_reduction``'s tiled half off the CPU.
     if config.getoption("--cpu-blocks"):
         wp.config.enable_cpu_blocks = True
     config.addinivalue_line(
@@ -158,7 +158,7 @@ def _selected_devices(config: pytest.Config) -> list[str]:
     process*, because **CPU work is ~36x slower once CUDA has been initialised**. Measured on one
     ``heat_signed_distance`` call, same mesh, same code, only ``CUDA_VISIBLE_DEVICES`` differing,
     and unchanged across all three ``launch_array_access_mode`` settings: so it is CUDA *presence*,
-    not section 8's launch-access guard, and the guard is free to stay ``STRICT``. Whole-suite
+    not the launch-access guard, and the guard is free to stay ``STRICT``. Whole-suite
     consequence is roughly 4x, in-process ``--device=both`` against the two passes run separately;
     ``uv run python -m tests.devices`` is the runner that spawns them, and the CPU one sets
     ``CUDA_VISIBLE_DEVICES=""`` for exactly this reason.
@@ -328,7 +328,7 @@ def icosphere(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """
     Build a unit icosphere at ``subdivisions=3``: 642 vertices, 1 280 faces, closed and regular.
 
-    The workhorse curved fixture, and the one whose absence was structural: section 6 says not to
+    The workhorse curved fixture, and the one whose absence was structural: do not
     hand-roll a mesh when a fixture will do, but the only closed fixture was ``icosahedron`` at 12
     vertices -- too coarse for anything that needs curvature -- so 47 tests across 21 files built
     this by hand. ``subdivisions=3`` is where 26 of them clustered.
@@ -1010,8 +1010,7 @@ def bohemian_dome(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
 # This is the one place in ``tests/`` where a fixture's geometry comes from MeshLib. That is
 # deliberate and it is allowed -- a test dependency is what MeshLib is licensed for, and nothing
 # under ``ordito/`` names it -- but it goes through ``meshlib_to_trimesh``, which packs the mesh:
-# reading ``getNumpyFaces`` off an unpacked one returns rows of ``[0, 0, 0]`` (CLAUDE.md
-# section 7.6).
+# reading ``getNumpyFaces`` off an unpacked one returns rows of ``[0, 0, 0]``.
 _TORUS_PRIMARY_RADIUS = 1.0
 _TORUS_RESOLUTION = 16
 
@@ -1050,7 +1049,7 @@ def torus_spikes(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     512 faces, closed and edge-manifold, with the *only* genuinely spiky vertices in the suite: at a
     1.5-pi angle-sum threshold twelve of its 256 vertices fail, and five at pi. Every clean fixture
     has none, so a spike detector or a spike repair tested on one is asserting an empty answer --
-    which is the trap ``test_ears`` fell into (CLAUDE.md section 7.4).
+    which is the trap ``test_ears`` fell into.
 
     The inner and outer tube radii are what make the needles: 0.1 against 0.5 means alternate rings
     sit far apart radially while their neighbours along the tube are close, so the cone at a wide

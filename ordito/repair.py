@@ -198,7 +198,7 @@ def make_solid(
     # This is the trust boundary for "a broken digitised surface": every stage below indexes
     # ``vertices[faces]`` without a bound check, the same way every other per-face kernel wrapper in
     # this package does, so an out-of-range index arriving here would otherwise reach the first one
-    # silently (§12.1's memory-safety class) rather than raising a Python exception.
+    # silently rather than raising a Python exception.
     require_valid_faces(faces, vertices.size, "make_solid")
 
     # Stage 0. The reference does this inside its *loader*, which is why it is easy to leave out and
@@ -1712,7 +1712,7 @@ def flatten_degree3_vertices(
         #
         # Read back and reduced on the host rather than through ``reduce``: a bool mask is one byte
         # per vertex, so below about half a million elements the copy is cheaper than the launch a
-        # device reduction costs (CLAUDE.md section 14.5). This call is over the *vertex* count, so
+        # device reduction costs. This call is over the *vertex* count, so
         # it stays on the readback at every registry mesh.
         if not bool(candidate.numpy().any()):
             break

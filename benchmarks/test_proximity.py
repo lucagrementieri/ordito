@@ -598,7 +598,7 @@ def test_containing_faces_2d(bench_lib: BenchLibrary, rows: int) -> None:
     built lazily on the ``PolyData`` and pre-warmed here, so it too is timed with its index in hand.
     It locates in **3-D** -- the lattice and the queries get a zero ``z`` -- and it is the only
     reference in the suite that answers this question correctly: ``igl.in_element`` returns
-    batch-size-dependent answers and aborts on a 200-point Delaunay (section 6), which is why the
+    batch-size-dependent answers and aborts on a 200-point Delaunay, which is why the
     row exists at all.
     """
     points_np, triangulation_sp, queries_np = _triangular_lattice_2d(rows)

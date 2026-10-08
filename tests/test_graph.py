@@ -143,7 +143,7 @@ def test_edges_to_neighbor_lists_sorts_a_wide_row(device: str) -> None:
 
 
 def test_edges_to_neighbor_lists_rejects_an_out_of_range_endpoint(device: str) -> None:
-    """The guard that keeps an unchecked index off a raw ``degree[a]`` write (section 12.1)."""
+    """The guard that keeps an unchecked index off a raw ``degree[a]`` write."""
     edges_wp = _edges_wp(np.array([[0, 1], [1, 5]], dtype=np.int32), device)
     with pytest.raises(ValueError, match="edge indices must lie in"):
         od.graph.edges_to_neighbor_lists(3, edges_wp)

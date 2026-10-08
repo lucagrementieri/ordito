@@ -487,7 +487,7 @@ comparable:
 filler). `oracle=` names the library that *is* the oracle, and the gate then requires **that** pair to
 be covered — so an exemption is a checked claim rather than an escape hatch. Both markers take string
 literals only; a computed argument is invisible to the static scan and is rejected. Twenty-seven of the
-346 pairs are exempt; the category rubric (D1–D6) is in `.claude/CLAUDE.md` §6.
+346 pairs are exempt.
 
 **Exemptions are for results that cannot be compared, not comparisons that are awkward.** Three rows
 here were heading for exemptions on an 8%-of-displacement Laplacian disagreement until MeshLab's
@@ -913,7 +913,7 @@ loop, **4 963.9 ms** against `rim_long`'s 65 536-segment one and 104 s at 65 536
 curvatures, max abs difference 0.0, so it is algebra rather than an estimator), `fit_line` (D2 — it
 returns the first *principal* axis where `points.fit_line` is trimesh's σ-weighted major axis,
 |dot| 0.802 on an ordinary cloud), `filter_laplacian_integration` and `filter_taubin` (D2 —
-different algorithms, see `.claude/CLAUDE.md` §6), and `random_hills` (D5 — VTK draws its own
+different algorithms), and `random_hills` (D5 — VTK draws its own
 amplitudes and variances from its own generator, so no seed pairs the two).
 
 **Four filters that look like references and are not**, measured 2026-08-21 so no row is written
@@ -1132,8 +1132,7 @@ reading of the 20 000-point row is "ordito is 7x off its own 100 000-point cost 
 "pytorch3d is faster".
 
 Two things about that claim were wrong for a long time and are corrected here, both by re-running
-the sweep **interleaved across size and backend in one pre-warmed process** (§13's rule — the
-original was a sequential sweep, which is exactly the shape that manufactures this artifact, so it
+the sweep **interleaved across size and backend in one pre-warmed process** (the original was a sequential sweep, which is exactly the shape that manufactures this artifact, so it
 had to be re-measured before it could be trusted):
 
 - **It is a `k >= 8` effect and does not exist at `k = 1`.** At `k = 1` the same sweep is flatly

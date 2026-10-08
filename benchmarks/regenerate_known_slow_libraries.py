@@ -31,7 +31,7 @@ still being evaluated, not adopted, when this table was cut. Re-run that analysi
 flip a skipped cell back into a genuinely close race, and this script would not know until someone
 reruns it. Regenerate after any full-suite round that ships a real win (a changed cotmatrix
 assembly, a new BVH adoption, ...), the same discipline as re-probing a tuning constant after a
-Warp upgrade (CLAUDE.md section 9). ``pytest --bench-all-libs`` ignores this table for one run
+Warp upgrade. ``pytest --bench-all-libs`` ignores this table for one run
 without needing to delete it -- use that before regenerating, so the new table is cut from a run
 that saw every library.
 

@@ -508,7 +508,7 @@ def test_mesh_collision_pairs(bench_case: BenchCase, offset_fraction: float, set
     meshlib's ``findCollidingTriangleBitsets`` answers the same question and returns the two masks;
     it is the oracle in ``tests/test_intersection.py``, where the two agree face for face on a
     sphere-versus-box pair. pyvista's ``collision`` is a *contact* count rather than a crossing set
-    -- CLAUDE.md section 7.6 records it reporting 2 600 hits for a 320-cell mesh against its own
+    -- it has been seen reporting 2 600 hits for a 320-cell mesh against its own
     copy -- so its row is a cost comparison only, and the noparity entry says so.
 
     The ``deep`` / ``grazing`` pair is the fixed-width broad phase showing through. ordito

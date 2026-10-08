@@ -11,7 +11,7 @@ rounds each against nothing.
 a cell at ``REFERENCE_FREE_ROUNDS`` (3) rounds instead of the default. The row still measures
 exactly what it measured -- only the sample count drops -- and its ``min`` stays comparable across
 rounds; at three rounds the median is the middle sample, which is what ``aggregate.py --suspect``
-exists to flag (CLAUDE.md section 15.4). No loss-table cell is affected, because a
+exists to flag. No loss-table cell is affected, because a
 reference-free cell is not in the loss table.
 
 **Why this cannot be decided at run time.** References are skipped inside each test body, at run

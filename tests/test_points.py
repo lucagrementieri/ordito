@@ -588,7 +588,7 @@ def test_radial_sort(device: str, with_start: bool) -> None:
 
     The angles are evenly spaced by construction, which is what makes an exact index comparison
     sound: with random angles two neighbours can differ by less than ``float32`` resolves and
-    the orders diverge legitimately (section 6's note on ``lexsort`` and float ties).
+    the orders diverge legitimately (``lexsort`` is unreliable on float ties).
 
     The ``start`` arm rotates the order to begin at a supplied direction. The input is permuted
     first, so a function ignoring ``start`` and returning the input order cannot pass.
@@ -852,7 +852,7 @@ def test_estimate_normals_rejects_a_table_that_is_not_one_row_per_point(device: 
     The launch is one thread per point and each thread reads its own row of ``neighbor_idx``, so a
     table with fewer rows than the cloud is an out-of-bounds read, not a short answer -- and on the
     CPU device a Warp array is host heap, so it is heap corruption with no exception in release
-    mode (CLAUDE.md section 12.1). Only the rank was checked.
+    mode. Only the rank was checked.
 
     Both directions are asserted, because only the short one is unsafe and a guard written against
     inequality is the honest contract: a table with *more* rows than points is a caller error too,

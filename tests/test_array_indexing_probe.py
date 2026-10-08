@@ -1,7 +1,8 @@
 """
 Probe: what Python-scope gather on a ``wp.array`` does with a **non-contiguous index array**.
 
-``.claude/CLAUDE.md`` section 3.4 turns on one platform fact, and it is the kind that cannot be
+The rule on Python-scope gather indexing turns on one platform fact, and it is the kind that
+cannot be
 found by reading: Warp's Python-scope gather ``src[indices]`` reads the index buffer *as if it were
 contiguous* and silently ignores a view's stride. A column of an ``(n, 2)`` edge table, a step
 slice, a reversed view -- each of those is a legal ``wp.array`` that prints correctly on its own and
@@ -10,12 +11,12 @@ one, because it touches a contiguous prefix, so neither the suite nor a benchmar
 
 Every gather in ``ordito/`` therefore either passes a whole array, a contiguous prefix slice, or a
 buffer explicitly ``wp.clone``d out of a view -- a discipline nothing enforced until this file
-existed. Section 3.4 cited it as already present; it was not, and only stale ``__pycache__``
+existed. It was cited as already present; it was not, and only stale ``__pycache__``
 remnants of a one-off exploratory run survived.
 
 These are capability probes, not regression tests for ordito code: they pin what the *platform*
 does, so a future conversion can check rather than guess, and so a Warp release that fixes any of
-this is noticed rather than silently relied upon. See ``.claude/CLAUDE.md`` sections 3.4 and 10.
+this is noticed rather than silently relied upon.
 """
 
 from __future__ import annotations
@@ -37,7 +38,7 @@ def test_gather_through_a_column_view_ignores_the_stride(device: str) -> None:
     hazard invisible. No exception and no warning -- the gather reads ``[0, 10, 1, 11, 2]`` where
     the column says ``[0, 1, 2, 3, 4]``. The two gather asserts are written as "is the flat prefix"
     rather than "is not the column" so this test *inverts* into a fix notification: if a Warp
-    release starts honouring the stride, this fails and section 3.4's rule can be revisited rather
+    release starts honouring the stride, this fails and the stride rule can be revisited rather
     than silently kept.
     """
     payload_np = np.arange(20, dtype=np.float32)
@@ -102,7 +103,7 @@ def test_contiguous_prefix_slice_index_is_safe(device: str) -> None:
 
 def test_indexed_assignment_is_unsupported(device: str) -> None:
     """
-    The other half of section 3.4: scatter has no Python-scope form, so it stays a kernel.
+    The other half of the gather rule: scatter has no Python-scope form, so it stays a kernel.
 
     Asserted as a raise rather than left to a comment, so a Warp release that adds it is noticed.
     """

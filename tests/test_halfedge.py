@@ -469,7 +469,7 @@ def test_require_matching_twins_rejects_a_table_from_another_mesh(
     The table is indexed *by halfedge*, so one cached from a smaller mesh is short rather than
     merely stale, and the kernels that walk it (``ring_degrees_and_starts``, ``write_one_rings``)
     index past its end -- which on the CPU device reads the host heap silently rather than raising,
-    the hazard CLAUDE.md section 12.1 records. Parametrized over all three public ``twins=`` entry
+    a silent hazard. Parametrized over all three public ``twins=`` entry
     points because the check is one shared validator and a site that skips it is invisible
     otherwise.
 
@@ -572,7 +572,7 @@ def test_require_matching_twins_bounds_a_twin_against_the_halfedge_count(device:
     count as ``faces.shape[0] // 3 * 3``, so up to two trailing entries are not halfedges. A twin
     index landing in that gap is inside ``faces`` and outside the halfedges, so a range test
     against the wrong one of the two lets ``halfedge_destination`` read one past the end, which on
-    the CPU device is a host-heap read rather than a fault (CLAUDE.md section 12.1).
+    the CPU device is a host-heap read rather than a fault.
     """
     faces_wp = wp.array(
         np.array([0, 1, 2, 0, 2, 3, 1, 2, 3, 7], dtype=np.int32), dtype=wp.int32, device=device

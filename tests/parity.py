@@ -81,7 +81,7 @@ _HOLLOW_REASON = re.compile(
     r"^(see\b|n/?a$|todo|tbd|different$|not comparable$|no parity$|timing only$)", re.IGNORECASE
 )
 
-# Reference-variable suffixes mandated by CLAUDE.md section 7.1, used by the anti-vacuity check.
+# Reference-variable suffixes mandated by convention, used by the anti-vacuity check.
 # ``trimesh`` and ``scipy`` also allow ``_np``: several benchmark rows are hand-rolled NumPy
 # stand-ins for cached trimesh properties, and every scipy oracle is plain NumPy in and out.
 #
@@ -623,7 +623,7 @@ def _assigned_names(node: ast.FunctionDef) -> set[str]:
     Every name bound anywhere in a test's body, including tuple targets and comprehensions.
 
     Used only by the anti-vacuity check, which asks whether a ``parity``-marked test names a
-    reference variable at all -- the suffix convention from CLAUDE.md section 7.1 is the one
+    reference variable at all -- the suffix convention is the one
     machine-readable trace that a second implementation was consulted.
     """
     names: set[str] = set()
@@ -665,7 +665,7 @@ def suffix_problem(claim: Claim) -> str | None:
     a test that only compares ordito with itself -- a precomputed-argument shortcut, or an
     invariant check. Two signals count as consulting the reference, and either suffices:
 
-    - a **name** carrying the CLAUDE.md reference-variable suffix (``_tm`` / ``_igl`` / ``_pp`` /
+    - a **name** carrying the reference-variable suffix (``_tm`` / ``_igl`` / ``_pp`` /
       ``_pml`` / ``_o3d``, plus ``_np`` where the oracle is hand-rolled NumPy). Matching on suffixes
       rather than on imports is deliberate: ``tests/test_convex.py`` compares against trimesh
       throughout without ever importing it, because the comparison arrives as ``mesh_tm`` from a

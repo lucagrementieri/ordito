@@ -882,7 +882,7 @@ def _reduce_bool(
 
 def _launch_global_bool_tiled(mask: wp.array[wp.bool], spec: _BoolReduceSpec) -> bool:
     # The mask is read as ``wp.bool`` rather than widened to ``int32`` first. ``wp.Scalar`` does
-    # not instantiate for ``wp.bool`` (CLAUDE.md section 12.4), so the shared scalar factories
+    # not instantiate for ``wp.bool``, so the shared scalar factories
     # cannot serve one, and the ``array.astype`` alternative is an allocation of ``4n`` bytes, a
     # launch, a full read of ``n`` and a full write of ``4n``, after which the reduction reads
     # ``4n`` rather than ``n``. See ``kernels.reduce._reduce_bool_1d_tiled`` for the concrete bool

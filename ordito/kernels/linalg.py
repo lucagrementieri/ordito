@@ -490,7 +490,7 @@ def stack_block_diagonal(
 ) -> None:
     # One thread per row of the block-diagonal stack of ``blocks``, copying its block's row with
     # the columns shifted by the rows above it. Each block's stored count is its own last offset,
-    # read here rather than off ``nnz`` (a capacity, CLAUDE.md 3.7), so a row's start needs no
+    # read here rather than off ``nnz`` (a capacity), so a row's start needs no
     # scan and no readback: a handful of blocks, a handful of reads. The last thread also writes
     # the terminating offset.
     r = wp.int32(wp.tid())
@@ -643,7 +643,7 @@ def register_warp_overload(kernel: Any, scalar: Any, **arguments: Any) -> None:
 
     For Warp's *own* generic kernels, whose modules ordito cannot give a ``_register_overloads``:
     each new dtype a launch meets adds an overload, changes the module's hash and recompiles it,
-    exactly as for ordito's (CLAUDE.md section 2.5). Registered before the module first loads, all
+    exactly as for ordito's. Registered before the module first loads, all
     of them compile together once. A generic scalar argument becomes ``scalar``, a generic array
     an array of ``scalar`` at its own rank; ``arguments`` overrides a named argument's scalar
     (a copy between precisions). The concrete signature is derived from the kernel's own

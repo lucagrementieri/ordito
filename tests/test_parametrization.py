@@ -165,7 +165,7 @@ def test_graph_laplacian_matches_igl(request: pytest.FixtureRequest, mesh_name: 
 
     The named transform is ``A - diag(rowsum(A))`` over ``igl.adjacency_matrix``: the definition of
     the umbrella operator, built on the reference side. Note igl's adjacency is sized by ``F.max() +
-    1`` rather than ``len(V)`` (CLAUDE.md section 7.6), which is why it runs on fixtures where every
+    1`` rather than ``len(V)``, which is why it runs on fixtures where every
     vertex is referenced.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

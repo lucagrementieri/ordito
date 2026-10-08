@@ -26,7 +26,7 @@ def mesh_signed_volume(
 ) -> None:
     # The whole mesh's signed volume from the origin, folded as it is formed: each block owns the
     # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it, its lanes stride them by
-    # ``wp.block_dim()`` (so the one CPU lane walks them all, CLAUDE.md section 2.2), and lane 0
+    # ``wp.block_dim()`` (so the one CPU lane walks them all), and lane 0
     # commits one atomic per block. ``triangles.face_signed_volume`` per face, the volume
     # ``triangles.face_signed_volumes`` would have stored for a ``reduce.sum`` pass to read back.
     block, lane = wp.tid()
@@ -48,7 +48,7 @@ def centroid_partials(
     # Each block's area-weighted centroid sum (components 0-2) and area (component 3), stored in the
     # block's own slot for ``reduce.sum`` to fold in a fixed order. A block owns the
     # ``ITEMS_PER_BLOCK_1D`` faces ``block_chunk_1d`` gives it and its lanes stride them by
-    # ``wp.block_dim()`` -- so the one CPU lane walks them all (CLAUDE.md section 2.2) and one
+    # ``wp.block_dim()`` -- so the one CPU lane walks them all) and one
     # kernel serves both devices -- and the per-face contribution is
     # ``triangles.face_area_weighted_centroid``.
     #
@@ -120,7 +120,7 @@ def moment_integrals(
     # per-face buffers, which is four host readbacks over 80 bytes a face written once and read
     # once. Launched ``wp.launch_tiled(dim=[ceil(n_faces / chunk_faces)], block_dim=TILE_1D)``,
     # lanes striding their own block's chunk by ``wp.block_dim()`` so it is correct on the CPU
-    # device too (CLAUDE.md section 2.2) -- the same form as ``points.centered_covariance``, and
+    # device too -- the same form as ``points.centered_covariance``, and
     # unlike ``centroid_tiled`` above, whose lanes partition the outer work and which therefore
     # needs a device pair.
     #

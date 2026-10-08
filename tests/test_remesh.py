@@ -2827,7 +2827,7 @@ def test_subdivide_matches_pytorch3d(sphere_irregular: tuple[tm.Trimesh, wp.Mesh
     its own order and numbers the new midpoints by its own edge table.
 
     The vertex correspondence is a ``cKDTree`` query plus a bijection check and **not**
-    ``lexsort_rows``, which CLAUDE.md section 7.5 records as unusable on float coordinates with
+    ``lexsort_rows``, which unusable on float coordinates with
     ties: two sides that tie in float32 but differ in the 16th float64 digit order those rows
     differently and the compare then fails by the full coordinate range. It passed here only
     because both sides happen to produce bit-identical midpoints today, so any change to either
@@ -3981,7 +3981,7 @@ def test_split_edges_all_matches_igl_and_open3d(
 
     The named transform is a nearest-neighbour bijection on the vertex set, because the three
     libraries number the inserted midpoints in three different orders -- ``lexsort_rows`` is not
-    usable on float coordinates (CLAUDE.md section 7.5), and the counts are asserted first so the
+    usable on float coordinates, and the counts are asserted first so the
     bijection cannot hide a missing or duplicated vertex. Measured max nearest-neighbour distance
     5.4e-08 against both, i.e. ordito's float32 storage.
 

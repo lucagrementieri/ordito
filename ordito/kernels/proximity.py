@@ -277,7 +277,7 @@ def update_nearest_face_pair(
 # Relative slack on the seeded ``max_dist`` of the sampled closest-point queries below. The seed is
 # a corner-to-corner distance, so the sample point it was measured from has its own closest point
 # *within* it -- but at the boundary, and ``mesh_query_point_no_sign`` reports distances a few
-# times 1e-5 off an exact oracle (CLAUDE.md section 12.4). The slack keeps that point a hit.
+# times 1e-5 off an exact oracle. The slack keeps that point a hit.
 _SEED_RELAX = wp.float32(1.0 + 1e-4)
 
 # Slices the target sample is split into by ``sampled_corner_gap_sq``'s second grid dimension.
@@ -475,8 +475,8 @@ def face_to_mesh_distance_tiled(
         # The **upper** half of that test is not defensive: ``wp.tile_bvh_query_aabb`` hands back
         # out-of-range indices on a query whose traversal round finds more primitives than its
         # internal buffer holds, and without this line they are dereferenced. See
-        # ``kernels/algorithms/ball_pivoting.py::pivot_front_edges`` for the diagnosis and
-        # CLAUDE.md section 12.2 for the read of Warp's own source; the short version is that
+        # ``kernels/algorithms/ball_pivoting.py::pivot_front_edges`` for the diagnosis
+        # and the read of Warp's own source; the short version is that
         # ``tile_bvh.h`` counts results with an unconditional ``atomicAdd`` and guards only the
         # *write* against a ``block_dim * 5`` capacity, so once a round overruns it the consumer
         # reads uninitialised shared memory as a primitive index. ``compute-sanitizer`` names this
@@ -518,7 +518,7 @@ def face_to_mesh_distance_tiled(
     # it is keeping what the first pass already found.
     #
     # It is also what makes this pass **safe against the ``wp.tile_bvh_query_aabb`` result-buffer
-    # overrun** the guard above can only half-fix (CLAUDE.md section 12.2): a round that silently
+    # overrun** the guard above can only half-fix: a round that silently
     # dropped primitives now leaves the grid pass's answer standing instead of replacing it with a
     # worse one, so an overrun can cost accuracy but can no longer cost correctness outright.
     if block_best < out_distance_sq[f]:
@@ -721,14 +721,14 @@ def _winding_number_tiled_kernel(width: int) -> wp.Kernel:
         # Lane-free because the threads partition the **outer** work -- the face list -- rather than
         # a sequence one block owns, so there is no `wp.block_dim()` to stride by; on the CPU
         # device, where `wp.launch_tiled` runs one lane per block through Warp 1.18, that lane would
-        # cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section 2.2, and
+        # cover `1/block_dim` of the slice. See
         # `face_to_mesh_distance_tiled` above for the other side of the rule.
         #
         # **The block-per-query rewrite was measured here and declined.** It looked like the
         # strongest candidate in the tree -- the query dimension is already the outer one and the
         # walk covers every face -- and the gain evaporates as the grid fills: a real win on a small
         # mesh with few queries, and nothing at all once the query count is large. A gain that
-        # shrinks with the input is a decline (CLAUDE.md section 9), and the reason is that this
+        # shrinks with the input is a decline, and the reason is that this
         # grid is `n_queries x n_face_slices` and already wide; see
         # `kernels/points.py::hull_support_extremes` for the same trade measured to an outright
         # loss.
@@ -782,7 +782,7 @@ WINDING_NUMBER_TILED = RegisterBlockedTable(
 # A query descends only into nodes whose region contains it, so per query the work is the caps of
 # the siblings along its path plus the leaves it lands in -- about the square root of the face
 # count (2.1 k solid angles per query on a 16 k-face mesh, 17.5 k on 0.87 M faces, 53 k on 28 M,
-# where the direct sum pays the face count). Measured, CLAUDE.md section 16.6:
+# where the direct sum pays the face count). Measured:
 #
 # - **Per query it is compute-bound at the direct sum's own rate** (~2e11 solid angles a second),
 #   so the gain is the work ratio. Reading caps as vertex-index pairs instead of stored positions
@@ -822,7 +822,7 @@ WINDING_TREE_FROM_QUERIES_CPU = 32
 # ``wp.block_dim()``. Swept build + walk at 16 / 32 / 64 / 128 lanes: 32 is best on 69 k faces
 # (1.13x over 64 at 10 k queries, 1.50x at 100 k) and within 1.07x of the best (64) on 0.87-1.1 M
 # faces; 128 lost to both everywhere but 28 M faces (1.01x). It is also the block width this module
-# already launches with, so it adds no compiled variant of the module (CLAUDE.md section 2.5).
+# already launches with, so it adds no compiled variant of the module.
 WINDING_TREE_BLOCK_DIM = 32
 # Every ``atan2`` term is added as an integer multiple of ``2**-bits`` radians (the walk's
 # ``fixed_point_scale`` is ``2**bits``), so the sum is the same whichever lane adds which term in
@@ -1130,8 +1130,8 @@ def winding_number_tree(
 ) -> None:
     # One block per query (``launch_tiled``, dim == n_queries). Every lane walks the whole tree --
     # the same branches, since they share the query -- and the lanes split each node's cap edges or
-    # faces, striding by ``wp.block_dim()`` (one lane on the CPU device, which then covers them all;
-    # CLAUDE.md section 2.2). The walk is stackless: descend to ``2k``; past a finished node climb
+    # faces, striding by ``wp.block_dim()`` (one lane on the CPU device, which
+    # then covers them all). The walk is stackless: descend to ``2k``; past a finished node climb
     # while it is a right child, then step to its sibling; the root finishing ends it.
     q_index, lane = wp.tid()
     block = wp.block_dim()

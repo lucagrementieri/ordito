@@ -754,8 +754,7 @@ def power_step_partials(
     # ``power_step``'s last step, which also stores its block's share of ``|y|^2`` in the block's
     # own slot: the growth ``damped_inverse_diagonal`` folds, in a fixed order, with no separate
     # inner-product pass over ``y``. Launched tiled over ``POWER_ROWS_PER_BLOCK`` rows a block,
-    # lanes striding them by ``wp.block_dim()`` (so the one CPU lane walks them all, CLAUDE.md
-    # section 2.2).
+    # lanes striding them by ``wp.block_dim()`` (so the one CPU lane walks them all).
     block, lane = wp.tid()
     offset, count = power_block_rows(out_y.shape[0], block)
     partial = wp.float64(0.0)

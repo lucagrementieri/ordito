@@ -351,7 +351,7 @@ def test_chamfer_points_to_mesh(bench_case: BenchCase) -> None:
         # The tree is built lazily on the first query and cached on the Mesh, so it is built and
         # pre-warmed *outside* the timed callable -- the row then prices the query, matching what
         # the ordito branch does with a wp.Mesh already in hand. Timing the build instead is one to
-        # two orders of magnitude different (CLAUDE.md section 7.6).
+        # two orders of magnitude different.
         mesh_ml = bench_case.new_mesh_ml()
         projector_ml = mm.PointsToMeshProjector()
         projector_ml.updateMeshData(mesh_ml)

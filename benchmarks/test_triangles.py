@@ -80,8 +80,8 @@ def test_face_normals_and_areas(bench_case: BenchCase) -> None:
 
     The meshlib row is ``computePerFaceNormals`` alone -- normals, not areas -- for the same reason
     pymeshlab's is: its area entry point ``dblArea`` is **per face**, so batching it would mean a
-    Python loop over the face buffer, and that row would time the loop rather than MeshLib (see
-    section 6). Both halves are still compared for correctness, in
+    Python loop over the face buffer, and that row would time the loop rather than MeshLib.
+    Both halves are still compared for correctness, in
     tests/test_triangles.py::test_per_face_quantities_match_meshlib. Pure, so the mesh is built once
     outside the timed callable.
 
@@ -335,7 +335,7 @@ def test_corner_normals(bench_case: BenchCase, creased: bool) -> None:
     """
     if bench_case.mesh_name in _NON_EDGE_MANIFOLD:
         # Rotating about a vertex needs an edge-manifold mesh. Two scan meshes are not:
-        # ``bunny_decimated``'s 87 duplicated faces (CLAUDE.md section 7.6) leave 150 edges with
+        # ``bunny_decimated``'s 87 duplicated faces leave 150 edges with
         # three or more faces, and ``lucy`` has 28. Neither is a size limit -- ``dragon`` is larger.
         pytest.skip(f"{bench_case.mesh_name} is not edge-manifold, so there is no fan to rotate")
     crease_angle = 0.5

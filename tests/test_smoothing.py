@@ -852,7 +852,7 @@ def test_filter_taubin(request: pytest.FixtureRequest, mesh_name: str) -> None:
     """
     Class A: lambda-mu filtering against ``trimesh.smoothing``, at matching iteration counts.
 
-    trimesh counts half-steps where MeshLab counts lambda-mu pairs (section 6), so the
+    trimesh counts half-steps where MeshLab counts lambda-mu pairs, so the
     iteration argument is passed in trimesh's convention here and the pymeshlab comparison
     doubles it separately.
     """
@@ -931,7 +931,7 @@ def test_filter_taubin_recompute_matches_pytorch3d(device: str, iterations: int)
     """
     Class B: ``ops.taubin_smoothing`` under the pass-count doubling, with ``recompute=True``.
 
-    This is the pair section 4's ``recompute`` keyword exists for, and the measurement is what
+    This is the pair the ``recompute`` keyword exists for, and the measurement is what
     justified building it. pytorch3d rebuilds its inverse-distance operator from the *current*
     positions before every half-pass; against one fixed operator the two sit **4.1e-03 / 6.5e-03 /
     9.9e-03** apart at 1 / 3 / 10 of its iterations -- the size of the displacement itself, which
@@ -994,7 +994,7 @@ def test_filter_neighborhood_average(request: pytest.FixtureRequest, mesh_name: 
     Class A: the plain 1-ring mean against open3d's ``filter_smooth_simple``.
 
     Of every library's "Laplacian smoothing", this is the one that weights each neighbour equally
-    and the vertex itself not at all -- section 6 records MeshLab's two undocumented umbrellas and
+    and the vertex itself not at all -- unlike MeshLab's two undocumented umbrellas and
     Open3D's inverse-distance one.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

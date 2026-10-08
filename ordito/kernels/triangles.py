@@ -25,7 +25,7 @@ from ordito.kernels.predicates import (
 wp.set_module_options({"enable_backward": False})
 
 # ``face_quality`` metric selectors. Passed as a warp-uniform kernel argument so all four share one
-# compiled module (a ``wp.Function`` cannot be a kernel argument -- see AGENTS.md section 2.7).
+# compiled module (a ``wp.Function`` cannot be a kernel argument).
 QUALITY_ASPECT_RATIO = wp.constant(wp.int32(0))  # circumradius / (2 * inradius), 1 .. +inf
 QUALITY_RADIUS_RATIO = wp.constant(wp.int32(1))  # VCG QualityRadii, 0 .. 1
 QUALITY_AREA_MAX_SIDE = wp.constant(wp.int32(2))  # 2 * area / longest_side^2, 0 .. sqrt(3)/2
@@ -121,7 +121,7 @@ def write_corner_triple(
     ``repair.flip_faces_masked`` and ``levelset.shell_faces`` keep corner 0 and swap only corners 1
     and 2 -- a *different* reversal, already cross-referenced to each other, and not an adopter of
     this function: conflating the two conventions behind one flag would be the correctness hazard
-    CLAUDE.md section 2.4 warns against, not a simplification.
+    a duplicated decision rule, not a simplification.
     """
     out[row * wp.int32(3) + wp.int32(0)] = a
     out[row * wp.int32(3) + wp.int32(1)] = b
@@ -663,8 +663,8 @@ def face_gradients(
     out_gradients[f] = face_gradient(vertices, faces, normals, areas, values, f)
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5. This module backs 15 kernel modules and 2 wrappers, so each rebuild is
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
+# This module backs 15 kernel modules and 2 wrappers, so each rebuild is
 # widely felt.
 #
 # The vertex precision and the volume precision move together: ``face_signed_volumes`` reads a

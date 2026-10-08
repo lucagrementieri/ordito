@@ -462,8 +462,7 @@ def round_pack_vec3(
     out_packed[tid] = packed
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
 #
 # These take the caller's *key* dtype, and the two sets differ because the two call paths do.
 # ``mark_group_starts`` is reached from ``grouping.group``, which widens through
@@ -472,7 +471,7 @@ def round_pack_vec3(
 # does not: their only caller is ``grouping._unique_hash``, whose ``data_int`` parameter is typed
 # ``wp.array[wp.int32] | wp.array[wp.int64]`` because ``array.bitcast_to_int`` reinterprets every
 # key into one *signed* space before the table sees it. The unsigned rows were unreachable, and
-# section 2.5's rule is to register what the wrapper's dispatch can reach.
+# the rule is to register what the wrapper's dispatch can reach.
 _KEY_DTYPES = (wp.int32, wp.int64, wp.uint32, wp.uint64)
 _TABLE_DTYPES = (wp.int32, wp.int64)
 

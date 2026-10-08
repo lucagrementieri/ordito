@@ -180,7 +180,7 @@ def test_marching_cubes_matches_meshlib(device: str) -> None:
     MeshLib's ``marchingCubes`` marches the same lattice with the same case table, so given the
     identical field the two return the *same mesh* -- 3 744 vertices and 7 484 faces on both sides
     here, agreeing to a two-sided Hausdorff of **1.2e-07**, which is the float32 floor
-    ``getNumpyVerts`` bottoms out at (CLAUDE.md section 7.6). The transform is the whole content of
+    ``getNumpyVerts`` bottoms out at. The transform is the whole content of
     the comparison and it is load-bearing: where ordito's ``bounds`` lower corner is the position
     of sample ``[0, 0, 0]``, ``params.origin`` is that sample's *cell* corner, so passing the same
     number to both leaves the surfaces a rigid half-voxel apart -- measured at 0.0369, exactly the
@@ -260,7 +260,7 @@ def test_marching_cubes_matches_pytorch3d(device: str) -> None:
     Measured on a 16^3 radial field at ``iso=1.0``: **480** vertices and **956** faces from both
     sides, and the matched coordinates agree at **0.0**. Matched rather than indexed because
     nothing pins two case-table walks to one emission order -- and matched by ``cKDTree`` with a
-    bijection check rather than by ``lexsort_rows``, which CLAUDE.md section 7.5 records as
+    bijection check rather than by ``lexsort_rows``, which is
     unusable on float coordinates: the rounding this used to do mitigates the hazard without
     removing it, since two values straddling a rounding boundary still sort differently.
 

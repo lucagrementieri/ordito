@@ -3377,7 +3377,7 @@ def _patch_mask(
     **deliberately not** folded into a helper. Each is already one line, so a
     ``_finish_patch(vertices, faces, mask, return_patch)`` call would replace one line with one
     line and add an indirection the reader has to follow to learn it is a conditional tuple.
-    Section 2.4 asks for merging on identity of *meaning*; these agree because "return two arrays,
+    Merging is for identity of *meaning*; these agree because "return two arrays,
     optionally with a mask" has only one shape, which is the noise case that rule names rather than
     a duplicated decision rule.
     """

@@ -1,7 +1,7 @@
 """
 Affine transform primitives: the three point/vector/normal maps and the device-matrix launcher.
 
-The three `wp.func`s here are `wp.map` targets rather than kernels (CLAUDE.md section 3.5), so the
+The three `wp.func`s here are `wp.map` targets rather than kernels, so the
 public wrappers in [`ordito.transform`][ordito.transform] carry the allocation and the in-place
 ``out=`` contract. `apply_transform_mat44` stays a kernel because its matrix lives in a *device*
 array: `wp.map` broadcasts a uniform, and reading a fitted transform back to the host just to

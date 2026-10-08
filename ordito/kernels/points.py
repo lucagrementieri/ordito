@@ -72,7 +72,7 @@ def centered_covariance(
     # ``reduce`` and imported from there, and what is left is a point-cloud statistic whose only
     # callers are ``points``' own ``gram_matrix`` / ``fit_line`` / ``fit_plane``. ``ordito.reduce``
     # is axis-parametrized array reductions in NumPy's vocabulary; a mat33 of second moments is not
-    # one of those (section 11, the machinery half outranks the subject half).
+    # one of those (the machinery half outranks the subject half).
     #
     # Launched ``wp.launch_tiled(dim=blocks_1d(n), block_dim=TILE_1D)``: one block per
     # ``ITEMS_PER_BLOCK_1D`` points, lanes striding that block's own chunk, nine ``wp.tile_sum``
@@ -85,7 +85,7 @@ def centered_covariance(
     # which is why it turns over sooner than the 25- and 43-slot ``registration`` pair. The tree is
     # also the more accurate of the two, by about an order of magnitude at large ``n``.
     #
-    # No ``prefers_tiled_reduction`` branch, for the reason in ``.claude/CLAUDE.md`` section 2.2:
+    # No ``prefers_tiled_reduction`` branch, for this reason:
     # the lanes partition a chunk the block already owns and stride by ``wp.block_dim()``, which
     # reads 1 on CPU. ``metrics.chamfer_nn_term_tiled`` needs a device pair because *its* lanes
     # partition the outer work at a constant stride; this is the other form.
@@ -178,13 +178,13 @@ def estimate_point_normals(
     #
     # ``neighbor_idx``'s shape is validated by the caller, but a value ``>= points.shape[0]`` is
     # not -- indexing ``points[nb]`` below then reads out of bounds with no exception on CUDA and
-    # corrupts the host heap on CPU (CLAUDE.md section 12.1). Every in-repo caller
+    # corrupts the host heap on CPU. Every in-repo caller
     # (``points.estimate_normals``) builds this table from a *self*-query
     # (``query_nearest(points, points, k)``), which can only ever produce an in-range index or the
     # documented ``-1`` sentinel already handled below, so the gap is latent rather than
     # demonstrated. A guard would cost an unconditional device-wide min/max reduction over the
     # whole table on every call, to protect against an input shape nothing currently constructs --
-    # the speculative-generality case CLAUDE.md section 4.2 asks to leave unbuilt. Revisit if a
+    # a speculative generality best left unbuilt. Revisit if a
     # caller ever builds an asymmetric ``neighbor_idx`` (e.g. from
     # ``query_nearest(other_cloud, points, k)``) for this kernel.
     v = wp.int32(wp.tid())
@@ -264,7 +264,7 @@ def neighbor_distance_moments(
     # of their mean distances)`` folded into them here: a separate fold over this launch's own
     # outputs would re-read them for one more launch. ``MOMENT_ROWS_PER_BLOCK`` rows per block, a
     # narrower fold than the reduce module's, because the kernel writes per row and the wide fold
-    # would collapse the grid (CLAUDE.md section 13.2); lane-strided by ``wp.block_dim()`` so the
+    # would collapse the grid; lane-strided by ``wp.block_dim()`` so the
     # CPU device's single lane covers the block's rows. ``float64`` slots: slot 0 is a *count*,
     # which a float32 stops representing exactly at 2 ** 24.
     #
@@ -682,8 +682,8 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
         # over -- rather than a sequence one block owns, so there is no `wp.block_dim()` for them to
         # stride by and a `wp.tile_max(wp.tile(...))` cannot be reached from here without changing
         # the launch. `wp.launch_tiled` runs one lane per block on the CPU device through Warp 1.18,
-        # and that lane would then cover `1/block_dim` of the slice. See `.claude/CLAUDE.md` section
-        # 2.2; `farthest_point_sample_block` below is the other side of the rule, and reduces with
+        # and that lane would then cover `1/block_dim` of the slice.
+        # `farthest_point_sample_block` below is the other side of the rule, and reduces with
         # `wp.tile_max` on both devices because its stride *is* `wp.block_dim()`.
         #
         # **Converting this to one block per direction was measured and refuted**, which is worth
@@ -693,7 +693,7 @@ def _hull_support_extremes_kernel(width: int) -> wp.Kernel:
         # kernel's *slice* dimension is what fills it. Collapsing that into `block_dim` lanes leaves
         # one block per direction: measured with answers bit-identical, that is a win on a small
         # cloud -- where the call is already microseconds -- and a several-fold **loss** on a large
-        # one, which is section 13's decline shape exactly. Do not re-propose it from the comment
+        # one, which is a decline. Do not re-propose it from the comment
         # above.
         dirs = directions_t()
         for d in range(width):

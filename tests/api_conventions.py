@@ -5,7 +5,7 @@ Each check is a defect class that was actually found rather than an aesthetic pr
 as an ``ast`` scan of ``ordito/`` (excluding ``kernels/``, ``__init__.py`` and private ``_*.py``
 modules) plus a listing of ``tests/`` and ``benchmarks/``, and
 [`tests/test_api_conventions.py`](test_api_conventions.py) fails the default test run on any
-violation. The authoritative list with its reasoning is ``.claude/CLAUDE.md`` section 4.5; what
+violation. The authoritative list is the docstrings below; what
 follows is the one-line claim each check makes, so a failure message reads in context.
 
 1. **A one-line summary says what the function returns, not which C++ call it wraps.** mkdocstrings
@@ -20,9 +20,9 @@ follows is the one-line claim each check makes, so a failure message reads in co
 5. **A private name stays inside its module.** A ``_helper`` imported across a module boundary is a
    function that should have been public, and the alias-on-import is the tell.
 6. **Two modules do not export the same public name**, outside a written allowlist.
-7. **A top-level kernel module is named for the public module it backs**, and vice versa (section
-   3.1). This is what stops a wrapper from being created while its kernels stay under the old name.
-8. **A private helper is defined below its first caller** (section 5's stepdown rule), so a reader
+7. **A top-level kernel module is named for the public module it backs**, and vice
+   versa. This is what stops a wrapper from being created while its kernels stay under the old name.
+8. **A private helper is defined below its first caller**, so a reader
    never jumps backward to a definition they have not met.
 9. **A Warp-version claim names a version at least as new as the installed ``warp-lang``.** It also
    scans ``kernels/``, ``tests/`` and ``benchmarks/``, because a stale ``pytest.skip`` is worse than
@@ -39,11 +39,11 @@ follows is the one-line claim each check makes, so a failure message reads in co
     *extracts* the blocks and [`tests/test_api_conventions.py`](test_api_conventions.py) executes
     them against a mesh fixture, because an example's defect is a runtime one that ``ast.parse``
     cannot see.
-13. **A kernel output argument is named ``out_*`` and sits at the end of the signature** (section
-    2.1). Two argument classes are exempt and carried in ``_KERNEL_OUTPUT_ALLOWLIST``: in-place
-    arguments, and scratch / persistent-state buffers.
-14. **An array annotation is subscript-style** -- ``wp.array[T]``, not ``wp.array(dtype=T)``
-    (section 1.2). Restricted to *annotation* positions, which is what lets it scan the whole
+13. **A kernel output argument is named ``out_*`` and sits at the end of the signature**.
+    Two argument classes are exempt and carried in
+    ``_KERNEL_OUTPUT_ALLOWLIST``: in-place arguments, and scratch / persistent-state buffers.
+14. **An array annotation is subscript-style** -- ``wp.array[T]``, not ``wp.array(dtype=T)``.
+    Restricted to *annotation* positions, which is what lets it scan the whole
     package: ``wp.array(dtype=T)`` is a legal allocation at Python scope.
 15. **A ``wp.launch`` / ``wp.launch_tiled`` names the device it launches on.** The memory-safety
     guard of the family: an omitted ``device=`` runs a kernel on ``cuda:0`` over host pointers,
@@ -51,41 +51,40 @@ follows is the one-line claim each check makes, so a failure message reads in co
     the half that carries the load -- ``conftest.py``'s ``STRICT`` mode only bites when the arrays
     are *not* on the launch device, so on a CUDA run the omission is invisible to it.
 16. **A cast inside a kernel is spelled ``wp.int32`` / ``wp.float32``, never bare ``int`` /
-    ``float``** (section 1.3). Same builtins under a different name, with one asymmetry that
+    ``float``**. Same builtins under a different name, with one asymmetry that
     matters: ``float(...)`` is a *hard compile error* inside a ``wp.Float``-generic function, so it
     silently forecloses genericising that function.
-17. **An integer division inside a kernel is spelled ``//``, never ``/``** (section 1.5). On
+17. **An integer division inside a kernel is spelled ``//``, never ``/``**. On
     integers the two are the *same* operation in Warp, so this is legibility: ``/`` on two
     ``int32``s reads as real division and truncates only because the operands happen to be integers.
     It types an operand only *by declaration*, which is what makes it safe on float-heavy code.
-18. **A kernel-scope argument or return is annotated in Warp's types** (section 1.2). It reads
+18. **A kernel-scope argument or return is annotated in Warp's types**. It reads
     ``@wp.kernel`` / ``@wp.func`` signatures only, because a kernel *factory* is ordinary Python
     whose ``int`` parameters are correct.
-19. **A test comparing against a reference library says which class the comparison is** (section
-    7.4). It accepts all four label phrases the suite uses, keys on ``ast.Assert`` so a fixture
+19. **A test comparing against a reference library says which class the comparison is**.
+    It accepts all four label phrases the suite uses, keys on ``ast.Assert`` so a fixture
     unpack is not a hit, and leaves ``_np`` out because it marks inputs as often as oracles. It
     checks that a label is *present*, never that it is the right one.
-20. **A conditional value in kernel scope is ``wp.where``, not a Python ternary** (section 1.5).
-21. **Nothing under ``ordito/`` names MeshLib or promesh** -- a licensing guard (section 7.6).
-22. **A single-index ``wp.tid()`` is cast** (section 1.3).
+20. **A conditional value in kernel scope is ``wp.where``, not a Python ternary**.
+21. **Nothing under ``ordito/`` names MeshLib or promesh** -- a licensing guard.
+22. **A single-index ``wp.tid()`` is cast**.
 23. **A ``@wp.func`` reached by ``wp.map`` from several call sites has a declaration table**
-    (section 3.5).
 24. **A ``.claude/CLAUDE.md`` cross-reference names a section that exists**, and names a
     *subsection* wherever the chapter has any. The second half is the point: a bare chapter number
     still *resolves*, which is exactly what a resolving check cannot see. Chapters with no
     subsection are accepted bare, read from the heading structure rather than a list.
-25. **No ``!!!`` admonition sits inside a numpydoc item-list section** (section 6). griffe reads
+25. **No ``!!!`` admonition sits inside a numpydoc item-list section**. griffe reads
     each entry's first line as a name, so an admonition header between two ``Raises`` entries
     renders as an exception type.
 26. **A Warp-typed module constant is not used as a Python-scope arithmetic operand or slice
-    bound** (section 4.5). Its operators route through Warp's builtin dispatch.
-27. **No ``warp.sparse`` triplet build under ``ordito/``** (section 3.7). An operator's matrix
+    bound**. Its operators route through Warp's builtin dispatch.
+27. **No ``warp.sparse`` triplet build under ``ordito/``**. An operator's matrix
     is assembled from sorted keys (``array.csr_from_keys``) or, for genuinely unordered input,
     ``array.csr_from_triplets``.
 28. **Every public module is shelved in ``docs/SUMMARY.md`` exactly once.** Zensical's
     ``api-autonav`` builds a page for each module, but the nav is authored by hand, and a module
     missing from it is built and unreachable with ``zensical build --strict`` still green.
-29. **An array's entry opens with its shape as a code span** (section 6): ``(3 * n_faces,)`` flat
+29. **An array's entry opens with its shape as a code span**: ``(3 * n_faces,)`` flat
     triangle index buffer, not ``Length-``, ``Shape ``(``, ``Flat `` or ``Rank-1 `` first.
 
 Why a static scan rather than importing ``ordito``
@@ -153,7 +152,7 @@ _EXTRA_TEST_FILES = frozenset(
         "parity",  # the cross-suite parity gate
         "api_conventions",  # this gate
         "map_uniform_probe",  # a Warp-behaviour probe, not a module's coverage
-        "array_indexing_probe",  # ditto: Python-scope gather semantics, section 3.4
+        "array_indexing_probe",  # ditto: Python-scope gather semantics
         "aggregate",  # covers benchmarks.aggregate, the loss-table loader -- tooling, not a module
         "launch",  # covers ordito._launch, the private launcher every wrapper module calls
         "docs_examples",  # runs the README's and docs/ pages' code blocks, which span modules
@@ -225,7 +224,7 @@ _MODULES_WITHOUT_KERNELS = frozenset({"constants", "io", "mesh", "typing"})
 
 # --- check 8 ------------------------------------------------------------------------------------
 
-# Private helpers that sit above their first caller today. CLAUDE.md section 5 says a helper must
+# Private helpers that sit above their first caller today. A helper must
 # never appear above the caller it serves, and the package had drifted off that rule wholesale
 # before the check existed -- 49 sites across 15 modules, carried here as an explicit debt list
 # rather than a silent exemption. That list has now been drained: one entry remains, and it is not
@@ -369,7 +368,7 @@ _HELPER_ORDER_ALLOWLIST: dict[str, frozenset[str]] = {
     # Not debt: ``_icosphere_face_table`` is called at *module* scope (line 179) to build the
     # ``_ICOSPHERE_FACE_TABLE`` constant, so it has no function caller to sit below and moving it
     # under its use is a NameError at import. This is the one permanent entry; the other 48 sites
-    # this list carried were reordered in the section 4.4 sweep.
+    # this list carried were reordered in the first full sweep.
     "creation": frozenset({"_icosphere_face_table"})
 }
 
@@ -398,8 +397,7 @@ _KERNEL_WRITE_CALLS = frozenset(
 )
 
 # Kernel arguments that are written without the ``out_`` prefix, or that legitimately follow an
-# ``out_`` argument, keyed by ``(kernel module, kernel)``. Two exemption classes, both written into
-# ``.claude/CLAUDE.md`` section 2.1:
+# ``out_`` argument, keyed by ``(kernel module, kernel)``. Two exemption classes, both stated here:
 #
 # - **In-place**: the argument is both the input and the result -- an ``out_`` prefix would misread
 #   as write-only. ``sort_rows_insertion(data)``,
@@ -508,7 +506,7 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # ``faces`` is the same kind of in-place argument and is deliberately *not* listed: the kernel
     # now hands it to ``remesh.write_flipped_quad`` instead of storing into it directly, so this
     # check -- which resolves store targets syntactically -- no longer sees it written at all and
-    # an entry here would match nothing. That is CLAUDE.md section 4.5's tension between the
+    # an entry here would match nothing. That is the tension between the
     # shared-run extraction and a syntactic scan, resolved the way that section resolves it: the
     # extraction wins and the convention goes on binding the parameter unenforced. The staleness
     # half is what reported it, which is the argument for keeping that half.
@@ -600,8 +598,8 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # the same exemption class and is deliberately **not** listed: both kernels now reach it only
     # through ``update_nearest_face_pair``, and this check resolves store targets syntactically, so
     # a buffer written inside a shared ``@wp.func`` is outside its view entirely. An entry for it
-    # would be reported as matching nothing. That is CLAUDE.md section 4.5's documented tension
-    # between this check and section 2.4's "extract the shared run", resolved the way it prescribes:
+    # would be reported as matching nothing. That is the documented tension
+    # between this check and the "extract the shared run" rule, resolved the way it prescribes:
     # the extraction wins and the parameter goes on being scratch, unenforced. Do not re-add the
     # entry -- if the write ever comes back into a kernel body, add it again then.
     ("proximity", "face_to_mesh_distance"): frozenset({"counter", "overflow"}),
@@ -1208,10 +1206,10 @@ def _factory_registered(tree: ast.Module, attribute: str) -> frozenset[str]:
     """
     Names passed as the first argument to ``wp.<attribute>(...)`` anywhere in ``tree``.
 
-    A kernel factory (``.claude/CLAUDE.md`` section 2.7's ``wp.kernel(_k, name=...)``) registers a
+    A kernel factory (``wp.kernel(_k, name=...)``) registers a
     plain nested ``def`` whose body is Warp's DSL but which carries **no decorator**, so every
     check that enumerates kernel scope by walking ``decorator_list`` is blind to it. That is
-    section 4's "a new Warp construct can silently switch off a static check" with the construct
+    the rule "a new Warp construct can silently switch off a static check" with the construct
     being the factory: measured when this was added, **14** such bodies existed and **six** carried
     defects the family of checks 16-22 exists to catch -- four bare ``wp.tid()`` and two
     kernel-scope ternaries, in ``kernels/reduce.py`` and ``kernels/neighbors.py``, the two modules
@@ -1312,7 +1310,7 @@ def kernel_output_naming_problems() -> list[str]:
     """
     Check 13: a kernel output argument without the ``out_`` prefix, or not at the signature's end.
 
-    ``.claude/CLAUDE.md`` section 2.1's naming rule for ``ordito/kernels/``, with its two written
+    naming rule for ``ordito/kernels/``, with its two written
     exemptions (in-place arguments and scratch / persistent-state buffers) carried by
     ``_KERNEL_OUTPUT_ALLOWLIST``. Both directions are checked: a *written* argument must wear the
     prefix, and nothing without the prefix may follow the first argument that wears it.
@@ -1385,7 +1383,7 @@ def array_annotation_style_problems() -> list[str]:
     """
     Check 14: an array annotation spelled ``wp.array(dtype=T)`` rather than ``wp.array[T]``.
 
-    ``.claude/CLAUDE.md`` section 1.2's subscript style, restricted to *annotation* positions so the
+    subscript style, restricted to *annotation* positions so the
     scan can cover the whole package: at Python scope ``wp.array(dtype=T)`` is also a legal
     allocation expression, and only in an annotation is it the pre-1.12 spelling.
 
@@ -1502,7 +1500,7 @@ def builtin_cast_problems() -> list[str]:
     """
     Check 16: a bare ``int(...)`` / ``float(...)`` inside a ``@wp.kernel`` or ``@wp.func`` body.
 
-    ``.claude/CLAUDE.md`` section 1.3: ``wp.int32`` / ``wp.float32`` is the tree's only cast
+    ``wp.int32`` / ``wp.float32`` is the tree's only cast
     spelling. ``int`` and ``float`` are the same Warp builtins under a different name -- ``int(x)``
     compiles only because Warp writes an unconditional ``#define int(x) cast_int(x)`` into every
     generated module header, ``wp::int(x)`` not being valid C++ -- and the generated code is
@@ -1511,7 +1509,7 @@ def builtin_cast_problems() -> list[str]:
     The asymmetry that makes this a rule rather than a preference is ``float``: inside a
     ``wp.Float``-generic function ``total / float(count)`` does not narrow silently, it *fails to
     parse* (``Input types must be the same, got ['float64', 'float32']``). So every bare ``float()``
-    is an unannounced decision that its function will never be generic, against section 14's
+    is an unannounced decision that its function will never be generic, against the
     "prefer dtype-generic ``@wp.func``s". Where the function is or could be generic the spelling is
     ``type(x)(...)``, the ``kernels/predicates.py`` convention.
 
@@ -1652,7 +1650,7 @@ def integer_division_problems() -> list[str]:
     """
     Check 17: an integer ``/`` inside a ``@wp.kernel`` or ``@wp.func`` body.
 
-    ``.claude/CLAUDE.md`` section 1.5: on integers Warp's ``/`` and ``//`` are the *same* operation
+    on integers Warp's ``/`` and ``//`` are the *same* operation
     -- both truncate toward zero, unlike CPython's ``//``, which floors. So this is a legibility
     rule and not a correctness one: ``/`` on two ``int32``s reads as real division and truncates
     only because the operands happen to be integers, which means a reader has to recover both types
@@ -1661,9 +1659,9 @@ def integer_division_problems() -> list[str]:
     between host Python and kernel scope, where the answer changes silently for a negative dividend.
 
     Why a check rather than a one-off edit: the third pass converted eight sites and wrote the rule
-    into ``CLAUDE.md``, and the next module written after it reintroduced two
+    into the project rules, and the next module written after it reintroduced two
     (``algorithms/multigrid.py``'s ``column = t / n_rows`` and ``column = t / stride``). That is
-    section 14's bar for a new check -- the same defect found twice -- and the same failure mode
+    the bar for a new check -- the same defect found twice -- and the same failure mode
     check 16 exists to prevent for casts.
 
     The scan is deliberately conservative, because the cost of a false positive is that the first
@@ -1726,11 +1724,11 @@ def bare_annotation_problems() -> list[str]:
     """
     Check 18: a bare ``bool`` / ``int`` / ``float`` annotation in a kernel-scope signature.
 
-    ``.claude/CLAUDE.md`` section 1.2: kernel arguments and returns are spelled in Warp's types.
+    kernel arguments and returns are spelled in Warp's types.
     Warp resolves the bare names to the same ones, so like checks 16 and 17 this is legibility
     rather than correctness -- and like them, that is exactly why nothing but a scan holds it. The
     tree carried 11 ``-> bool`` against 46 ``-> wp.bool``, five of them predating the fourth kernel
-    pass and the newest written the day after it, which is section 14's bar for a check: the same
+    pass and the newest written the day after it, which is the bar for a check: the same
     defect found twice, in code written after the rule.
 
     The distinction that makes it sound is that it reads *only* ``@wp.kernel`` / ``@wp.func``
@@ -1763,8 +1761,8 @@ def bare_annotation_problems() -> list[str]:
 
 # --- check 19 -----------------------------------------------------------------------------------
 
-# The suffixes ``.claude/CLAUDE.md`` section 7.1 assigns to reference libraries. ``_np`` is
-# deliberately absent: section 7.1 gives it to "NumPy/SciPy" and ``tests/parity.py`` counts it,
+# The suffixes the project assigns to reference libraries. ``_np`` is
+# deliberately absent: the project gives it to "NumPy/SciPy" and ``tests/parity.py`` counts it,
 # which is right there because a ``parity`` marker has already declared that a second implementation
 # was consulted -- but in the suite at large ``_np`` marks *inputs* at least as often as oracles.
 # Measured: adding it takes this scan from 523 comparison tests to 783 and from 0 problems to 290.
@@ -1776,7 +1774,7 @@ def bare_annotation_problems() -> list[str]:
 _REFERENCE_SUFFIXES = ("_tm", "_igl", "_pp", "_pml", "_o3d", "_pv", "_ml", "_pmf", "_gl", "_p3d")
 
 # The four phrases the suite uses to label a comparison, all four in good standing. ``Class [ABCD]``
-# and ``Not a library comparison`` are section 6's named labels; ``Not a parity assert`` and
+# and ``Not a library comparison`` are the named labels; ``Not a parity assert`` and
 # ``Ordito against ordito`` are its ordito-against-ordito family. A gate accepting only the
 # first two would fail 14 correct tests and the author's fix would be to reword good docstrings.
 _COMPARISON_LABELS = re.compile(
@@ -1800,9 +1798,9 @@ def comparison_label_problems() -> list[str]:
     """
     Check 19: a test comparing against a reference library says which class the comparison is.
 
-    ``.claude/CLAUDE.md`` section 7.4 asks for the label and explains what each class means; this
+    asks for the label and explains what each class means; this
     only checks that one of the four phrases is present. It cannot check that the label is the
-    *right* one -- that stays a review question, as section 4.5 says of every naming rule -- and it
+    *right* one -- that stays a review question, as with every naming rule -- and it
     must not try: a ``_tm`` name inside an ``assert`` is not proof of an oracle.
     ``test_split_single_component`` compares ``split``'s output against ``mesh_tm.vertices``, the
     *input* mesh, which is a round trip; and in
@@ -1813,12 +1811,12 @@ def comparison_label_problems() -> list[str]:
     Two decisions make it fire only on real omissions. It keys on ``ast.Assert`` rather than on the
     whole function body, because a fixture unpack ``mesh_tm, mesh_wp = icosphere`` names a ``_tm``
     variable in every mesh test -- keying on the body takes this from 0 problems to 120. And it
-    accepts all four label phrases rather than section 6's two headline ones, for the reason given
+    accepts all four label phrases rather than the two headline ones, for the reason given
     at ``_COMPARISON_LABELS``.
 
     It exists because the convention has decayed twice. Round 2 of the test-suite rescan took the
     lowercase ``class b`` spelling from 21 to 0, and 9 more had accumulated by round 4 -- invisible
-    to the grep section 6 prescribes, since a human reads them the same. The other defect it closes
+    to the prescribed grep, since a human reads them the same. The other defect it closes
     is rarer and worse: ``test_fill_min_weight_matches_meshlib`` carried a ``parity`` marker,
     compared a class-C statistic against MeshLib, and had **no docstring at all**, which ruff cannot
     see because ``D103`` is in the ignore list.
@@ -1854,7 +1852,7 @@ def kernel_scope_ternary_problems() -> list[str]:
     """
     Check 20: a Python ternary (``a if cond else b``) inside a ``@wp.kernel`` or ``@wp.func`` body.
 
-    ``.claude/CLAUDE.md`` section 1.5: the tree's spelling for a conditional value at kernel scope
+    the tree's spelling for a conditional value at kernel scope
     is ``wp.where(cond, a, b)``, 33+ sites in 16 kernel modules. A ternary compiles to the same code
     -- Warp lowers ``ast.IfExp`` the same way it lowers a call to ``wp.where`` -- so like checks 16,
     17 and 18 this is legibility rather than correctness, and like them nothing but a scan holds the
@@ -1890,7 +1888,7 @@ def kernel_scope_ternary_problems() -> list[str]:
 # *reasons* differ and are worth keeping apart -- MeshLib first, then promesh below.
 #
 # MeshLib's licence restricts *use*, not merely distribution of derivatives, and ordito ships
-# ``MIT OR Apache-2.0`` -- so ``.claude/CLAUDE.md``'s MeshLib block requires that nothing under
+# ``MIT OR Apache-2.0`` -- so the licensing rule requires that nothing under
 # ``ordito/`` name the library at all: not the library, not one of its C++ functions, not one of
 # its source files. This is the pattern that sentence's grep asks for, widened in two ways the
 # eighth kernels pass measured as necessary. The ``MR`` prefix covers a source-file or class name
@@ -1931,7 +1929,7 @@ def uncitable_reference_problems() -> list[str]:
     Two libraries qualify, for opposite reasons, and the check is one scan because the *fix* is
     identical either way.
 
-    **MeshLib** -- ``.claude/CLAUDE.md``'s MeshLib block: *"Nothing under ``ordito/`` may name
+    **MeshLib** -- the licensing rule: *"Nothing under ``ordito/`` may name
     MeshLib at all"*, because its licence restricts use rather than distribution and ordito ships
     ``MIT OR Apache-2.0``, so an attribution comment collectively reads as a claim that a
     permissively licensed package is derived from a proprietary one. 89 such references were
@@ -1944,7 +1942,7 @@ def uncitable_reference_problems() -> list[str]:
     claimed a port from it. See the comment above the pattern.
 
     Describe what the code computes, or name the algorithm in the literature's vocabulary -- which
-    is what section 10 asks for independently and what a reader needed anyway. Reading either
+    is what the docs rule asks for independently and what a reader needed anyway. Reading either
     mirror to understand an operation's *interface* stays allowed; naming it here does not.
     """
     problems: list[str] = []
@@ -1979,7 +1977,7 @@ def bare_tid_problems() -> list[str]:
     """
     Check 22: a single-index ``wp.tid()`` assigned without the declarative ``wp.int32`` cast.
 
-    ``.claude/CLAUDE.md`` section 1.3 retires every redundant cast and keeps exactly one -- the tid
+    retires every redundant cast and keeps exactly one -- the tid
     cast -- *because* it is the declarative one: it names the type of the index the whole kernel is
     written against. ``wp.tid()`` already returns ``wp.int32``, so both spellings generate
     identical code and neither the compiler nor the suite can see the difference; this is the fifth
@@ -2043,7 +2041,7 @@ def map_declaration_problems() -> list[str]:
     """
     Check 23: a kernel module that maps its own ``@wp.func`` at two dtypes with no declaration.
 
-    ``.claude/CLAUDE.md`` section 2.5's ``_register_overloads`` rule, one construct over. ``wp.map``
+    ``_register_overloads`` rule, one construct over. ``wp.map``
     generates a module named ``map_<unqualified op name>`` and each distinct *call signature* forks
     its hash, so reaching one op at three signatures builds its module three times -- dozens of
     redundant cold builds over one suite run. ``kernels/array.py``'s ``declare_map_signatures``
@@ -2417,7 +2415,7 @@ def triplet_build_problems() -> list[str]:
 
     ``bsr_from_triplets`` sorts every triplet on a full-width key and allocates scratch several
     times the matrix; on a 28 M-face mesh ``cotmatrix`` spent 9.4 GB a call there for a matrix
-    under 1 GB, and a drained CUDA mempool (CLAUDE.md 13.1) makes every one of those bytes a cost.
+    under 1 GB, and a drained CUDA mempool makes every one of those bytes a cost.
     The package builds its matrices from row-major keys instead -- ``array.csr_from_keys`` when
     the sparsity follows from the mesh, ``array.csr_from_triplets`` when the input is genuinely an
     unordered coordinate list -- so a new call is a regression to route through one of those.
@@ -2577,7 +2575,7 @@ def array_cast_problems() -> list[str]:
 
     Its kernel is ``Any``-generic and lives in Warp's own ``warp.utils`` module, so each dtype pair
     it meets for the first time adds an overload, changes that module's hash and rebuilds every
-    kernel in it (CLAUDE.md section 2.5's mechanism, in a module ordito cannot register overloads
+    kernel in it (the overload-registration mechanism, in a module ordito cannot register overloads
     for). The package converts through ``array.copyto`` / ``array.astype`` instead, whose kernels
     are concrete and built once per pair in a module of their own. Tests may still call it.
 

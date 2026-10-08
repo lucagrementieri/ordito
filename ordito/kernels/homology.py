@@ -194,9 +194,9 @@ def dual_candidate_mask(
     # this being free and being a regression: the reduce module's fold width gives each lane a dozen
     # or so elements, which is right for a kernel whose *only* output is the reduction, and wrong
     # here because this one also writes a mask entry per edge -- the wide fold collapses the grid to
-    # under one block per SM. Section 2.3's occupancy rule: a kernel that already has a per-element
+    # under one block per SM. Occupancy rule: a kernel that already has a per-element
     # dimension must not collapse it into ``block_dim`` lanes. One atomic per tile is still one per
-    # block, which is the shape section 13.2 asks for.
+    # block, which is the right shape for a single-slot atomic reduction.
     offset, n_rows = block_chunk(unique_edges.shape[0], chunk, TILE_1D)
     if n_rows <= 0:
         return

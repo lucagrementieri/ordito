@@ -497,13 +497,13 @@ def divide_by_density(
     # reached still comes out zero either way, since its numerator is zero too -- the two spellings
     # differ only for a corner whose density is *between* zero and the floor, where the clamp
     # scales the answer down smoothly rather than discarding it. An in-place output, so the
-    # argument keeps the ``out_`` prefix and the CLAUDE.md section 2.1 allowlist carries it.
+    # argument keeps the ``out_`` prefix and the output-naming allowlist carries it.
     i, j, k = wp.tid()
     out_field[i, j, k] = out_field[i, j, k] / wp.max(density[i, j, k], min_weight)
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5. This module is reached from 11 wrappers at scattered moments, so it forked
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
+# This module is reached from 11 wrappers at scattered moments, so it forked
 # nearly twice per overload before registration.
 #
 # Each set is the dtypes its call sites actually build, not a menu: ``scatter_add`` accumulates a

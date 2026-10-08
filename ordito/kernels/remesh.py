@@ -283,7 +283,7 @@ def loop_even_positions(
 # ``v`` is the relocated original vertex ``v`` (its self-weight is written by
 # ``loop_even_positions``); row ``n_vertices + e`` is the odd vertex on unique edge ``e``. Every
 # slot is written -- a zero weight where a rule does not apply -- because
-# ``triplet_buffers`` hands back uninitialized memory (CLAUDE.md section 3.7).
+# ``triplet_buffers`` hands back uninitialized memory.
 @wp.kernel
 def loop_edge_triplets(
     unique_edges: wp.array2d[wp.int32],
@@ -2069,7 +2069,7 @@ def smooth_free_vertices(
     out_positions: wp.array[wp.vec3],
 ) -> None:
     # One tangential relaxation step, vetoed per vertex by the same fold rule the two collapse
-    # candidates run -- AGENTS.md section 2.4's one decision rule, one spelling.
+    # candidates run -- one decision rule, one spelling.
     #
     # **It is insurance, and the reason to keep it is that it is free**, not that a fixture needs
     # it: veto against no-veto is within noise and the whole remesh suite passes either way. It
@@ -2813,7 +2813,7 @@ def compact_collapse_vertices(
 
 
 # Objective for ``objective_flip_candidates``. A warp-uniform kernel argument rather than a
-# ``wp.Function``, so both predicates share one compiled module (AGENTS.md section 2.7).
+# ``wp.Function``, so both predicates share one compiled module.
 OBJECTIVE_PLANARITY = wp.constant(wp.int32(0))  # improve triangle shape on a near-planar quad
 OBJECTIVE_CURVATURE = wp.constant(wp.int32(1))  # pick whichever diagonal bends the surface less
 OBJECTIVE_T_VERTEX = wp.constant(wp.int32(2))  # break up a sliver whose apex sits on the far edge
@@ -3273,7 +3273,7 @@ def mark_unique_edge_starts(
     # Not folded into the scan's chunk kernel (``scan_chunks_exclusive``) although the flags are an
     # elementwise map of the keys: that kernel loads its tile with ``wp.tile_load``, which is
     # lane-independent, and forming the flags in it would build the tile from per-lane values,
-    # which collapses to one lane per block on the CPU device (CLAUDE.md section 12.2). The saving
+    # which collapses to one lane per block on the CPU device. The saving
     # is one replayed node a pass, about half a percent of a decimation.
     i = wp.int32(wp.tid())
     start = wp.int32(0)

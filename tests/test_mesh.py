@@ -183,7 +183,7 @@ def test_geometry_matches_trimesh(request: pytest.FixtureRequest, mesh_name: str
     Class A on the cached geometry: same quantities, same order, no transform.
 
     ``mesh.py`` mirrors ``trimesh.Trimesh``'s property names deliberately (the one allowlisted
-    exception to the summary-line rule in section 10), so this is the test that the names mean the
+    exception to the summary-line rule), so this is the test that the names mean the
     same thing and not merely that they exist. Run over every fixture, closed and open, convex and
     not.
 
@@ -698,8 +698,8 @@ def test_predicates_match_trimesh(
     closed orientable meshes, 0 on ``half_torus`` and ``mobius``, 1 on ``hemisphere`` and
     ``boy_surface``. ``is_winding_consistent`` and ``is_volume`` (the conjunction trimesh calls
     ``is_volume``) answer ``True`` on the closed orientable fixtures; the open fixtures, the
-    non-orientable ones and ``half_flipped_sphere`` supply the ``False`` branches. Section 7.4
-    rules out asserting a predicate on one branch only, so the expected answers are asserted too.
+    non-orientable ones and ``half_flipped_sphere`` supply the ``False`` branches. A predicate
+    asserted on one branch only tests one case, so the expected answers are asserted too.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     mesh = od.Trimesh.from_warp_mesh(mesh_wp)

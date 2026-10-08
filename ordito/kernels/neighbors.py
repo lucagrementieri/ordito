@@ -69,7 +69,7 @@ KNN_ROW_BUCKETS = (1, 4, 8, 16, 32, 64)
 # Which accelerator ``ball_count_in_radius`` / ``ball_collect`` traverse. The ball query is one
 # algorithm -- same acceptance rule, same emit protocol -- over two broad phases whose query
 # objects are different types with different ``_next`` builtins, so the enumeration cannot be
-# abstracted behind a ``wp.Function`` parameter (CLAUDE.md section 2.7: ``wp.launch`` cannot pass
+# abstracted behind a ``wp.Function`` parameter (``wp.launch`` cannot pass
 # one as a kernel argument). An int selector can: the branch is warp-uniform, both traversals
 # compile into this one module, and the merged kernels measure within noise of the two they replace
 # on the BVH side and slightly faster on the hash-grid side, where the counting pass no longer
@@ -89,7 +89,7 @@ ACCEL_BVH = wp.constant(wp.int32(1))
 # ``@wp.func`` calls inline at codegen, so this is free -- confirmed rather than assumed, with
 # ``wp.get_cuda_kernel_properties`` reporting identical register counts and zero local memory
 # across the extraction. And the move is *provably* behaviour-neutral where a float32 extraction
-# would not be (CLAUDE.md section 2.4 warns that a green suite is not evidence): neither shared run
+# would not be (a green suite is not evidence): neither shared run
 # contains a floating-point expression, so there is no evaluation order for it to disturb.
 
 
@@ -126,7 +126,7 @@ def bvh_walk_emit(query: wp.BvhQuery, base: wp.int32, out_indices: wp.array[wp.i
 # sphere still wins at the benchmark points -- ball queries 1.00-1.02x at two mean edges and
 # 1.10-1.14x at four, k-NN rows 1.00-1.45x, the weighted query 1.09-1.33x. So a caller whose
 # predicate is a ball still wants this pair rather than the box pair plus a narrow phase. Both
-# counts are exact against a brute-force oracle; CLAUDE.md section 12.8 records the verdict.
+# counts are exact against a brute-force oracle.
 @wp.func
 def ball_count_in_bounds(bvh_id: wp.uint64, q: wp.vec3, radius: wp.float32) -> wp.int32:
     # Broad-phase hits of the ball: every bound whose AABB comes within ``radius`` of ``q``.
@@ -145,9 +145,9 @@ def query_bvh_ball_neighbors(
     bvh_walk_emit(wp.bvh_query_sphere(bvh_id, queries[tid], radius), offsets[tid], out_indices)
 
 
-# The per-query-box pair, in the order its wrapper appears (section 5). Same walk skeleton as the
+# The per-query-box pair, in the order its wrapper appears. Same walk skeleton as the
 # ball above and a different node test; the count half is a ``wp.map`` over
-# ``aabb_count_in_bounds`` rather than a kernel shim (CLAUDE.md section 3.5).
+# ``aabb_count_in_bounds`` rather than a kernel shim.
 #
 # There was a third pair here, for one warp-uniform half extent, and it is gone: it was exactly
 # this one at ``q -+ h``, returned an identical set, and the corner buffers it saved measured flat
@@ -215,8 +215,8 @@ def ball_count_in_radius(
     # ``radius * radius`` round independently -- and the sphere query agrees with the squared form
     # on every row and with the sqrt form on all but a handful, identically on CPU and CUDA. So
     # leaving the grid on ``wp.length`` would make ``backend="hashgrid"`` and ``backend="bvh"``
-    # answer differently at the boundary, which is the one-predicate-one-spelling defect section 3
-    # of CLAUDE.md names; ``test_the_two_backends_agree`` is the gate.
+    # answer differently at the boundary, which is the one-predicate-one-spelling defect;
+    # ``test_the_two_backends_agree`` is the gate.
     #
     # The two spellings are speed-flat as a *narrow* phase, which is why an earlier pass kept the
     # sqrt form; what changed is that the squared form is now what the tighter broad phase speaks.
@@ -494,7 +494,7 @@ def query_bvh_nearest_neighbors(
 # re-zeroed on every deepening attempt: at a wide ``k`` the row, not the geometry, is the call.
 # Holding it in a ``wp.types.vector(length=K)`` puts it in registers, which is why these kernels
 # exist and why ``K`` must be a compile-time constant. A ``wp.zeros(shape=K)`` stack array is a
-# **2x loss** instead, because nothing promotes it to registers (CLAUDE.md section 2.9).
+# **2x loss** instead, because nothing promotes it to registers.
 #
 # Everything the row touches **once per query or per attempt** is factored into the generated
 # ``@wp.func`` set below. The **per-candidate insert alone stays inline**, three times, and the
@@ -673,7 +673,7 @@ def knn_hashgrid_scan(
     # ``[q +/- r]``, so the same "k-th distance <= r certifies" argument applies.
     #
     # The two are NOT merged behind the ``ACCEL_*`` selector the ball queries use, and the reason
-    # is the one that separates section 2.1's case from section 2.5's: there the two accelerators
+    # is the one that separates the two cases: there the two accelerators
     # ran the *same* algorithm and only the enumeration differed, so a warp-uniform int made them
     # one kernel. Here the enclosing searches have genuinely diverged -- the grid path takes a
     # ``widest`` bound and falls back to ``knn_linear_scan`` once the radius outgrows the cell

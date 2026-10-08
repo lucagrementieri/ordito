@@ -1012,8 +1012,8 @@ def solve_spd(
         # ``atol := tol`` whenever ``atol`` is left ``None``, silently turning this "relative
         # residual tolerance" into an *absolute* floor of the same numeric value -- a right-hand
         # side whose own norm falls below ``tol`` then "converges" at the untouched initial guess
-        # in zero iterations, which looks like a correct answer rather than a failure (CLAUDE.md
-        # section 12.7). ``_BatchedCg`` below already passes an explicit zero for the same
+        # in zero iterations, which looks like a correct answer rather than a failure.
+        # ``_BatchedCg`` below already passes an explicit zero for the same
         # reason.
         atol=0.0,
         maxiter=iteration_cap,
@@ -3304,7 +3304,7 @@ def _row_path(matrix: odt.SparseMatrix, n: int, fold: bool) -> tuple[bool, int]:
     read for a column that does not fold.
 
     The block-per-row kernel is a ``launch_tiled`` kernel whose lanes split a row, and the CPU
-    device runs one lane per block (CLAUDE.md section 2.2), so there it would form ``A u`` from
+    device runs one lane per block, so there it would form ``A u`` from
     one lane's share and the solve would stop at zero iterations; the CPU keeps the lane-per-row
     kernel, as ``bsr_mv``'s own heuristic does.
     """

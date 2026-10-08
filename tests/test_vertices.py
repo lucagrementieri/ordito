@@ -387,7 +387,7 @@ def test_vertex_defects(request: pytest.FixtureRequest, mesh_name: str) -> None:
 
     MeshLib's batched ``mn.getNumpyGaussianCurvature`` is used rather than the per-vertex
     ``mm.discreteGaussianCurvature``; the two are bit-identical (measured 0.0) and the batched form
-    is 49-67x faster, which is section 6's rule about its per-vertex entry points.
+    is 49-67x faster, which is why its per-vertex entry points are not looped.
 
     Open and closed fixtures are both needed because the interesting disagreement would be at the
     **boundary**: a reference could reasonably use ``π - Σθ`` there. Measured, none of them does --

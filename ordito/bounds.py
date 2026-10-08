@@ -177,7 +177,7 @@ def enclosing_diagonal(points: wp.array[wp.vec3], other: wp.array[wp.vec3] | Non
     # Taken in NumPy, on the buffer the readback already produced, rather than through two
     # ``wp.vec3`` constructions and ``wp.length``: every Warp operator and builtin at *Python*
     # scope routes through Warp's builtin dispatch (``inspect.signature().bind()`` per operand),
-    # an order of magnitude dearer than this. Section 13.1 has the cost model.
+    # an order of magnitude dearer than this.
     corners_np = corners.numpy()
     return float(np.linalg.norm(-corners_np[3:] - corners_np[:3]))
 
@@ -742,7 +742,7 @@ _REFINE_WINDOW = 32
 # the scan rather than by its per-round ``block_argmin`` pair, so it wants a wide one: the sweep is
 # flat from here up, with the chains identical at every width. 256 rather than the 128 that ties
 # with it because it is Warp's default, so the module is not loaded a second time for a second
-# ``block_dim`` (section 2.5).
+# ``block_dim``.
 _SEED_BLOCK_DIM = 256
 _BOX_OBJECTIVES: dict[str, wp.int32] = {
     "volume": kernel_bounds.BOX_OBJECTIVE_VOLUME,

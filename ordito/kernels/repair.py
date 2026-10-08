@@ -38,7 +38,7 @@ wp.set_module_options({"enable_backward": False})
 def mark_referenced(faces: wp.array[wp.int32], out_flags: wp.array[wp.int32]) -> None:
     # A ``1`` flag at every vertex a face names, in the ``int32`` the scan below reads, so no mask
     # has to be converted first. Out-of-range entries -- the ``-1`` sentinels ``repair`` preserves
-    # through a remap -- are dropped rather than written off the end (CLAUDE.md section 12.1).
+    # through a remap -- are dropped rather than written off the end.
     # Every writer stores ``1``, so racing threads agree.
     index = faces[wp.int32(wp.tid())]
     if index >= 0 and index < out_flags.shape[0]:

@@ -3712,7 +3712,7 @@ def test_repair_clean_mesh_is_a_noop(
     The icosahedron is consistently wound, outward, manifold and well shaped. This is the no-op
     direction, which a threshold that is slightly too aggressive fails while still passing every
     test that feeds it a genuinely defective face. ``collapse_small_triangles`` has no reference at
-    all here -- it is unbound in the igl wheel (section 6) -- so the numpy oracle covers its
+    all here -- it is unbound in the igl wheel -- so the numpy oracle covers its
     collapsing case and this its identity. ``remove_non_manifold_faces`` also hands back the
     caller's own vertex buffer, since nothing was rebuilt.
     """

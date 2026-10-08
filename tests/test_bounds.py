@@ -273,7 +273,7 @@ def _original_face_rows(
     differently, so the face buffers are not comparable as returned. Matching each output vertex to
     the input vertex it came from puts both sides back in one numbering; sorting within each row and
     then lexsorting the rows drops the winding and the face order, neither of which a containment
-    rule fixes. The row canonicalization is exact because it runs on integers -- the section 6
+    rule fixes. The row canonicalization is exact because it runs on integers -- the
     lexsort hazard is about float coordinates, and none survive to here.
 
     The match is nearest-neighbour with a bijection check rather than an equality, because a crop

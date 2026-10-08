@@ -415,8 +415,8 @@ def face_corner_edge_vertices(
     out_edges[i, 1] = faces[halfedge_next(h)]
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5. Two overloads across **2** module loads: the smallest fork in the package.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
+# Two overloads across **2** module loads: the smallest fork in the package.
 #
 # ``ordito.seams.cut_along_edges`` scatters the corner *positions* it is splitting, so the value
 # dtype is the vertex dtype it was handed -- ``wp.vec3`` or ``wp.vec3d`` -- and nothing else reaches

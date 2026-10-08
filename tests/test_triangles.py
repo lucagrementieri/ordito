@@ -69,7 +69,7 @@ def test_face_normals_and_areas_matches_pytorch3d(sphere_irregular: tuple[tm.Tri
     casts -- so a float64 comparison here would be measuring pytorch3d's own downcast.
 
     The ``Meshes`` is built on the **ordito side's own device**: pytorch3d has separate CPU and
-    CUDA kernels, so this is also one of the tests section 6's device rule asks for -- it
+    CUDA kernels, so this is also one of the tests the device rule asks for -- it
     exercises the reference's *own* two backends rather than trusting the CPU pass.
     """
     mesh_tm, mesh_wp = sphere_irregular
@@ -490,7 +490,7 @@ def test_face_angles_extremes_against_pyvista(request: pytest.FixtureRequest, me
     benchmarked=False,
     reason="MeshLib's triCenter is per *face*, so a batched row would be a Python loop over the "
     "face buffer and would time the loop rather than MeshLib -- 49-67x the batched cost where a "
-    "batched form exists at all (section 6). It is a sound correctness oracle at fixture size, "
+    "batched form exists at all. It is a sound correctness oracle at fixture size, "
     "which is what this test uses it as. igl and pyvista carry the timed rows for this group.",
 )
 @pytest.mark.parity(
@@ -509,7 +509,7 @@ def test_face_angles_extremes_against_pyvista(request: pytest.FixtureRequest, me
     benchmarked=False,
     reason="MeshLib has no per-face angle table: mm.angle is a two-vector primitive and sumAngles "
     "is per *vertex*, so both are looped on the reference side and a row here would price the loop "
-    "rather than MeshLib -- the per-element rule from section 6. trimesh, igl and pyvista carry "
+    "rather than MeshLib -- the per-element rule. trimesh, igl and pyvista carry "
     "the timed rows. What sumAngles adds is a second, independent route to the same numbers: the "
     "per-vertex sum of the table, which is the quantity vertex_defects is built from.",
 )
@@ -531,7 +531,7 @@ def test_per_face_quantities_match_meshlib(request: pytest.FixtureRequest, mesh_
     One named transform, the same one ``igl.doublearea`` needs: ``dblArea`` is twice the area.
     Everything else is direct. Three of MeshLib's four entry points here are **per-face** rather
     than batched, so they are looped on the reference side -- fine in a test at this size, and the
-    reason ``benchmarks/`` reads those rows as an upper bound (see section 6).
+    reason ``benchmarks/`` reads those rows as an upper bound
 
     The fourth family is the corner angles, and MeshLib reaches them two ways: ``mm.angle(a, b)``
     on the two corner vectors (Class B -- the transform is building those vectors, and MeshLib's
@@ -671,8 +671,8 @@ def test_face_nondegenerate_mask(saddle_graded: tuple[tm.Trimesh, wp.Mesh], with
     is compared. Both of trimesh's stated degeneracy causes are present in the second case, an
     exactly collinear triangle and one with a repeated corner.
 
-    The appended vertices are exact powers of two and the mesh is scaled to ~1e-2 deliberately
-    (CLAUDE.md section 12.4): both libraries test an *absolute* 1e-8 altitude, and at unit scale FMA
+    The appended vertices are exact powers of two and the mesh is scaled to ~1e-2 deliberately:
+    both libraries test an *absolute* 1e-8 altitude, and at unit scale FMA
     fusion gives a repeated-corner triangle an area of ~1e-8 on CUDA against exactly 0 on the CPU,
     so an inexactly-collinear face would disagree across devices for a reason that is not the
     code's.
@@ -815,7 +815,7 @@ def test_points_to_barycentric_on_a_zero_area_triangle(device: str) -> None:
 
     # The reference the package diverges from, asserted so the divergence stays deliberate. The
     # errstate is not defensive: dividing by the zero area is exactly what is being demonstrated,
-    # so its warning is the expected result rather than a signal about the input (section 7.7).
+    # so its warning is the expected result rather than a signal about the input.
     triangles_np = vertices_np[faces_np].reshape(1, 3, 3)
     with np.errstate(invalid="ignore", divide="ignore"):
         barycentric_tm = tm.triangles.points_to_barycentric(triangles_np, point_np)
@@ -848,7 +848,7 @@ def test_closest_point(request: pytest.FixtureRequest, mesh_name: str):
     reason="the soup form of closest_point has no benchmark group: the whole-mesh query is what "
     "costs anything and it is timed as closest_point_on_mesh, where scipy and open3d carry the "
     "rows. MeshLib's closestPointInTriangle is a four-vector primitive anyway, so a row would time "
-    "a Python loop over the face buffer -- the per-element rule from section 6.",
+    "a Python loop over the face buffer -- the per-element rule.",
 )
 @pytest.mark.parity(
     "barycentric_to_points",

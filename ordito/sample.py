@@ -363,7 +363,7 @@ def sample_surface_poisson_disk(
     #
     # Plain Python floats, not ``wp.float32``: these are *host* arithmetic, and a Warp scalar's
     # operators route through Warp's Python-scope builtin dispatch, hundreds of times a plain
-    # float's (see ``kernels/array.py``'s slot views and section 13.1). The wrapping
+    # float's (see ``kernels/array.py``'s slot views). The wrapping
     # bought nothing even numerically, since ``wp.float32(x)`` only stores ``x`` and rounds when it
     # is marshalled into a launch, which ``wp.launch`` does for a plain float anyway.
     alpha = 8.0

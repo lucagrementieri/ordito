@@ -767,8 +767,7 @@ def interior_mass_rhs_and_seed(
     #   holding only ``-A_ub x_b`` from ``linalg.assemble_interior_system`` (that helper eliminates
     #   the pinned columns of a quadratic form, which has no linear term of its own). ``rhs`` is
     #   genuinely in-place -- an accumulator carrying that prior term in, not a fresh answer --
-    #   which is why it does not carry the ``out_`` prefix reserved for write-only outputs
-    #   (CLAUDE.md section 2.1).
+    #   which is why it does not carry the ``out_`` prefix reserved for write-only outputs.
     # - Seed the reduced solve with the free vertices' *current* positions: the exact inverse of
     #   ``scatter_free_positions`` below, and the counterpart of ``gather_free_positions`` above for
     #   the ``fixed_mask`` partition and the float64 storage the implicit-fairing flow carries.
@@ -1154,7 +1153,7 @@ def mut_dif_adil_pass(
     # coefficient is not stored: ``mut_dif_step_scaled`` recomputes it at its own vertex from the
     # ``out_lv`` row written here, which costs it a normal load against an ``(n,)`` buffer's write
     # and read and the separate reduction launch. A narrower fold than the reduce module's because
-    # the kernel also writes per row (CLAUDE.md section 13.2).
+    # the kernel also writes per row.
     chunk, lane = wp.tid()
     offset, remaining = block_chunk(positions.shape[0], chunk, MUT_DIF_ROWS_PER_BLOCK)
     if remaining <= 0:

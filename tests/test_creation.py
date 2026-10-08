@@ -327,7 +327,7 @@ def test_uv_sphere_matches_meshlib(device: str, sections: int) -> None:
     nearest-neighbour match between the two vertex sets is a **bijection** whose worst displacement
     is **4.7e-07** -- the float32 floor, since MeshLib stores points in float32 too. The positions
     are matched through a KD-tree rather than sorted, because the two emit their rings in different
-    orders and a ``lexsort`` on float coordinates is not reliable at ties (section 6).
+    orders and a ``lexsort`` on float coordinates is not reliable at ties.
 
     Contrast the open3d pairing below, which needs a *different* mapping (``2 * r`` and ``r``)
     and is only equal in the counts -- its latitude rings sit elsewhere, so its volume differs by up
@@ -901,7 +901,7 @@ def test_icosphere_matches_pytorch3d(device: str, subdivisions: int) -> None:
     """
     Class B: ``utils.ico_sphere`` is the *same* construction, to its base table's 4 decimal places.
 
-    Not the rotated-frame situation section 6 records for open3d's Platonic solids -- pytorch3d
+    Not the rotated-frame situation open3d's Platonic solids -- pytorch3d
     starts from the identical ``(+-0.5257, +-0.8507, 0)`` vertex table ordito uses and subdivides
     the same way, so the positions correspond one-to-one and the residual is pytorch3d's table
     being *written* to four decimals: measured 5.8e-05 at level 0 and 5.2e-05 at level 1 by nearest

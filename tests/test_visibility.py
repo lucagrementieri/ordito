@@ -116,7 +116,7 @@ def test_ambient_occlusion_ranks_like_pymeshlab(
     the occluded ones — hence a rank correlation over a torus, whose hole occludes half of its inner
     wall.
 
-    **Mutation probe**, the one section 7.4 requires of a Class C threshold and this test did not
+    **Mutation probe**, the one a Class C threshold requires and this test did not
     carry: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|`` at most
     **0.0695** (mean 0.0269) against the measured **-0.8621** -- a separation of **12.4x**, well
     past the 3x floor, so the threshold is testing the correspondence and not the two marginal
@@ -377,7 +377,7 @@ def test_volumetric_obscurance_ranks_like_pymeshlab(
 
     **Mutation probe**: shuffling the ordito side, 30 permutations on this fixture, gives ``|r|``
     at most **0.0777** (mean 0.0274) against the measured **-0.8651** -- a separation of **11.1x**,
-    past section 7.4's 3x floor.
+    past the 3x floor for a Class C threshold.
     """
     mesh_tm, mesh_wp = torus_irregular
     meshset_pml = trimesh_to_pymeshlab(mesh_tm)
@@ -699,7 +699,7 @@ def test_thickness_at_vertices_matches_meshlib(ellipsoid: tuple[tm.Trimesh, wp.M
 
     The pairing is exact only with the right normals, and that is the substance of this test rather
     than an incidental detail. MeshLib's ``MeshPoint::set`` takes the direction from the
-    *pseudonormal*, which section 6 records as the match for
+    *pseudonormal*, which matches
     [`vertex_normals`][ordito.vertices.vertex_normals] at ``weighting="angle"`` (1.19e-07).
     Measured on the ellipsoid: **5.96e-07** absolute and 3.48e-07 relative with those normals,
     against **0.031** -- five orders worse -- with the area-weighted ones. So the second assert is
@@ -765,7 +765,7 @@ def test_max_tangent_sphere(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -> Non
     The sphere's centre slides along the normal as its radius grows, so a small radius disagreement
     displaces the centre by the same amount; both are compared rather than just the radius, since a
     centre off the normal would be a different failure. The tolerance is set by
-    ``mesh_query_point``'s own accuracy (section 6 records it as up to 2.1e-5 absolute) amplified by
+    ``mesh_query_point``'s own accuracy (up to 2.1e-5 absolute) amplified by
     that sliding, not by a disagreement about the definition. 20 of 20 points finite.
     """
     mesh_tm, mesh_wp = sphere_irregular
@@ -947,7 +947,7 @@ def test_max_tangent_sphere_normalizes_a_non_unit_normal(
     points_wp = mesh_wp.points
     unit_normals_wp = od.vertices.vertex_normals(mesh_wp.points, mesh_wp.indices)
     # Scaled on the host: a ``wp.map(wp.mul, ...)`` over ``vec3`` here would add a signature to the
-    # ``map_mul`` module the package declares at import and rebuild it (CLAUDE.md section 3.5).
+    # ``map_mul`` module the package declares at import and rebuild it.
     scaled_normals_wp = points_to_warp(unit_normals_wp.numpy() * 2.0, mesh_wp.device)
 
     centers_unit_wp, radii_unit_wp = od.visibility.max_tangent_sphere(

@@ -506,7 +506,7 @@ def test_face_adjacency_angles(request: pytest.FixtureRequest, mesh_name: str) -
     benchmarked=False,
     reason="dihedralAngle answers one undirected edge per call, so a batched row "
     "would be a Python loop over the edge buffer and would price the loop rather "
-    "than MeshLib -- the per-element rule from section 6. trimesh carries the timed "
+    "than MeshLib -- the per-element rule. trimesh carries the timed "
     "row for this group. What MeshLib adds here is the sign, which no other "
     "reference for this group reports.",
 )
@@ -641,7 +641,7 @@ def test_face_adjacency_projections_degenerate_second_face(device: str) -> None:
     """
     A degenerate second face's ``-1`` ``face_adjacency_unshared`` entry must not read out of bounds.
 
-    ``vertices[-1]`` would otherwise be read (CLAUDE.md section 12.1); the row reports as ``+inf``
+    ``vertices[-1]`` would otherwise be read; the row reports as ``+inf``
     instead, so it never registers as locally convex.
     """
     vertices_wp = wp.array(

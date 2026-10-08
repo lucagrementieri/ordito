@@ -469,7 +469,7 @@ def test_stitch_min_weight(bench_case: BenchCase) -> None:
     meshlib is the only reference in the package that has this operation at all -- ``stitchHoles``
     is a real two-loop minimum-weight stitch where trimesh and pymeshlab have nothing, which is why
     it is also the oracle in tests/test_holes.py::test_stitch_min_weight_matches_meshlib. The
-    four-argument overload is used deliberately (see section 6): the two-argument one finds the
+    four-argument overload is used deliberately: the two-argument one finds the
     rims itself, and timing that would fold hole detection into the DP.
 
     **This row used to be launch-bound and is not any more.** The grid's ``La + Lb`` sequential

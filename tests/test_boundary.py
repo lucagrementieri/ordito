@@ -321,7 +321,7 @@ def test_boundary_loops_matches_meshlib(request: pytest.FixtureRequest, mesh_nam
     loops_wp = od.boundary.boundary_loops(mesh_wp.points, mesh_wp.indices)
     rings_ml = _meshlib_hole_rings(trimesh_to_meshlib(mesh_tm))
 
-    # Non-vacuity, and the fixture check section 6 asks for: a raw ``slice_plane`` surface reports
+    # Non-vacuity, and the fixture check: a raw ``slice_plane`` surface reports
     # 17 phantom rims to MeshLib where it has one, so the hole *count* is asserted before anything
     # per-hole is compared. These fixtures merge their vertices, which is what makes them sound.
     assert len(rings_ml) == len(loops_wp) > 0

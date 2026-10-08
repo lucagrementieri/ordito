@@ -50,8 +50,8 @@ CG_TILE = 256
 # block count a long column is launched at. Every block pays one block-wide reduction and one
 # partial, so a column of millions of entries at one tile a block spends more on those than on its
 # own streams -- measured on a 17-million-node Poisson grid, where 66 000 one-tile blocks ran the
-# mat-vec with its dots at several times its memory traffic. The block count is the fold width
-# section 2.2 and 13.2 of ``.claude/CLAUDE.md`` describe, not the lane count.
+# mat-vec with its dots at several times its memory traffic. The block count is the fold width,
+# not the lane count.
 CG_TARGET_BLOCKS = 2048
 
 
@@ -110,7 +110,7 @@ def cg_initial(
     # ``copy_x`` set the initial guess is read from the caller's ``x`` and copied into the solver's
     # own ``out_x`` (pitch ``n``) by the same pass, which a kept state's replayed graph then updates
     # -- the copy a separate ``wp.copy`` would otherwise make; unset, ``out_x`` is never touched and
-    # may be ``None``. The lanes stride by ``wp.block_dim()`` for the CPU device (section 2.2).
+    # may be ``None``. The lanes stride by ``wp.block_dim()`` for the CPU device.
     #
     # Generic over the vectors' storage precision (see ``cg_update``); the residual is formed and
     # the norm accumulated in ``float64``.
@@ -162,7 +162,7 @@ def cg_seed(
     # all, since ``wp.capture_while`` reads it first.
     #
     # The fold is ``cg_fold_column``'s for one quantity: the lanes stride the ``n_blocks`` live
-    # partials by ``wp.block_dim()`` (section 2.2) and ``block_sum`` folds them.
+    # partials by ``wp.block_dim()`` and ``block_sum`` folds them.
     c, t = wp.tid()
     acc = wp.float64(0.0)
     for k in range(t, n_blocks, wp.block_dim()):
@@ -252,7 +252,7 @@ def cg_round_terms(r: wp.Float, u: wp.Float, w: wp.Float) -> Any:
     # reduces a round's dots, whatever formed ``w``. A block sums them at that precision too and
     # only the few thousand block partials are folded in ``float64`` (``cg_widen``): on a
     # ``float32`` Poisson grid a ``float64`` sum per entry measured 1.1-1.35x slower on the levels
-    # that fit in L2, for the identical true residual (``.claude/CLAUDE.md`` section 16.16).
+    # that fit in L2, for the identical true residual.
     return wp.vector(r * u, w * u, r * r)
 
 
@@ -307,7 +307,7 @@ def cg_matvec_dots(
     # where this recovers ``alpha`` from ``gamma`` and ``delta`` alone (``cg_update``), so an
     # iteration is one mat-vec with its reduction and one update. Launch tiled over
     # ``(n_columns, stride // CG_TILE)`` at ``block_dim=CG_TILE``; the lanes stride by
-    # ``wp.block_dim()`` for the CPU device (section 2.2). The pad rows write ``w = 0``, so every
+    # ``wp.block_dim()`` for the CPU device. The pad rows write ``w = 0``, so every
     # vector the dots reduce over keeps a zero pad.
     #
     # ``csr_matvec`` itself is left row-per-thread: it is shared with the multigrid V-cycle at four
@@ -388,7 +388,7 @@ def cg_fold_column(
     # block-wide ``wp.vec3d`` reduction whose order is fixed by the launch shape alone -- so every
     # block that folds the same column gets the bit-identical triple and agrees on ``alpha`` and
     # ``beta``, which is what makes a redundant fold a legal stand-in for the grid-wide barrier Warp
-    # does not expose. Block-collective. The lanes stride by ``wp.block_dim()`` (section 2.2).
+    # does not expose. Block-collective. The lanes stride by ``wp.block_dim()``.
     acc = wp.vec3d(0.0, 0.0, 0.0)
     for k in range(t, n_blocks, wp.block_dim()):
         acc += wp.vec3d(partials[0, c, k], partials[1, c, k], partials[2, c, k])
@@ -810,16 +810,15 @@ def cg_one_block(
     out_atol_sq: wp.array[wp.float64],
     out_steps: wp.array[wp.float64],
 ) -> None:
-    # A whole preconditioned conjugate-gradient solve in **one launch**, one block per column,
-    # lanes striding the column's rows and block reductions for barriers: the launch a
-    # ``_BatchedCg`` round spends per graph node becomes a block barrier (CLAUDE.md section
-    # 14.11's trade), and nothing is recorded. It is the Chronopoulos-Gear round ``cg_update``
-    # documents -- the mat-vec with all three dots, then the update -- at two barriers a round
-    # under Jacobi, and one more per Chebyshev step under the squared-Laplacian polynomial. The
-    # stopping rule is ``_BatchedCg``'s, column by column: a column steps while its ``r.r`` exceeds
-    # ``tol^2 ||b_c||^2`` and the round count is inside ``maxiter``, and every column's block
-    # stops on its own. The whole column lives in one SM, so this is for small systems only --
-    # ``linalg.CG_ONE_BLOCK_MAX_ROWS``.
+    # A whole preconditioned conjugate-gradient solve in **one launch**, one block per column, lanes
+    # striding the column's rows and block reductions for barriers: the launch a ``_BatchedCg``
+    # round spends per graph node becomes a block barrier, and nothing is recorded. It is the
+    # Chronopoulos-Gear round ``cg_update`` documents -- the mat-vec with all three dots, then the
+    # update -- at two barriers a round under Jacobi, and one more per Chebyshev step under the
+    # squared-Laplacian polynomial. The stopping rule is ``_BatchedCg``'s, column by column: a
+    # column steps while its ``r.r`` exceeds ``tol^2 ||b_c||^2`` and the round count is inside
+    # ``maxiter``, and every column's block stops on its own. The whole column lives in one SM, so
+    # this is for small systems only -- ``linalg.CG_ONE_BLOCK_MAX_ROWS``.
     #
     # ``out_x`` is the initial guess on entry, ``out_iterations`` (zeroed by the caller, and only
     # written with ``count_iterations`` set) the most rounds any column stepped, ``out_rr`` /

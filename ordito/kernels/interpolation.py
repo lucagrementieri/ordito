@@ -239,8 +239,7 @@ def sample_grid_trilinear(
     out_values[s] = accumulator
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
 #
 # Field dtypes the three transfer kernels admit, and the whole set: every one of them scales the
 # field by a ``float32`` weight and sums, and Warp requires both operands of that product to share a

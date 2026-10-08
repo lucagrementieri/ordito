@@ -461,7 +461,7 @@ def build_local_triangulations(
     m = wp.int32(0)
     for i in range(k):
         if m >= MAX_NEIGHBOURS:
-            # Silent truncation, not a check: this file cannot itself raise (CLAUDE.md section 1.4)
+            # Silent truncation, not a check: this file cannot itself raise
             # if the caller's ``max_neighbours`` violated the module-level invariant. The wrapper's
             # ``max_neighbours > MAX_NEIGHBOURS`` guard is what makes this branch unreachable at
             # the public entry point; a direct launch of this kernel bypasses it.
@@ -989,7 +989,7 @@ def poisson_level_setup(
     # That denominator is 0, not 1, at res == 1 (every axis's clamp collapses to ip == im), but
     # reconstruction.screened_poisson validates 3 <= full_depth <= depth <= 10, so the smallest
     # reachable grid is res = 2**3 + 1 = 9 and no caller in the tree reaches res == 1. Not guarded
-    # here per CLAUDE.md section 4.2 ("no speculative generality") -- add a guard only if a future
+    # here (no speculative generality) -- add a guard only if a future
     # caller can legitimately reach res == 1.
     ip = wp.min(i + 1, res - 1)
     im = wp.max(i - 1, 0)

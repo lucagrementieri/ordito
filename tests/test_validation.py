@@ -447,8 +447,8 @@ def test_is_vertex_manifold_bowtie(device: str) -> None:
 
     A bowtie is edge-manifold but not vertex-manifold, so it separates the two predicates
     rather than failing both -- and igl's fan definition agrees here where Open3D's
-    connectivity one does not (section 6, and
-    [`test_is_vertex_manifold_open3d_agreement_and_divergence`]).
+    connectivity one does not
+    ([`test_is_vertex_manifold_open3d_agreement_and_divergence`]).
     """
     _, faces_wp = numpy_to_warp(_BOWTIE_VERTICES, _BOWTIE_FACES, device)
     manifold_wp = od.validation.is_vertex_manifold(faces_wp)

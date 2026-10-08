@@ -1311,7 +1311,7 @@ def test_isin_max_index_matches_the_inferred_span(device: str) -> None:
     the keyword promises, so the answer is documented as wrong rather than raised -- but the
     element-side lookup range-guards its slot, so it must be wrong by reading ``False`` and not by
     reading past the end of the table. Without the guard this case is an out-of-bounds gather,
-    which on the CPU device is host-heap corruption (CLAUDE.md section 12.1) rather than a failure
+    which on the CPU device is host-heap corruption rather than a failure
     anything here could catch.
     """
     rng = np.random.default_rng(11)

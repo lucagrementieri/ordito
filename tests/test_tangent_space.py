@@ -46,7 +46,7 @@ def test_vertex_tangent_frames_match_potpourri3d(
     Both libraries pick ``basis_x`` by their own convention, so the comparison is that the two
     frames differ by a rotation *about the shared normal* -- one angle for the whole frame,
     checked by reconstructing each side's ``basis_y`` from the other's. Comparing ``basis_x``
-    elementwise is what section 6 rules out. The frame is also checked orthonormal and
+    elementwise is ruled out. The frame is also checked orthonormal and
     right-handed against its own normal at ``1e-5``, tighter than the cross-library ``1e-4``.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)

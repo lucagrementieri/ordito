@@ -1731,7 +1731,7 @@ def resample_uniform(
     # ``math.dist`` rather than ``float(wp.length(upper - lower))``: a Warp operator and a
     # Warp builtin at Python scope each route through builtin dispatch, several times dearer. It
     # computes in float64 where ``wp.length`` is float32, i.e. the correctly-rounded answer for
-    # float32 corners. Section 13.1.
+    # float32 corners.
     diagonal = math.dist(lower, upper)
     if voxel_size is None:
         voxel_size = 0.01 * diagonal

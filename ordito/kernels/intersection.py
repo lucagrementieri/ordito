@@ -1703,8 +1703,7 @@ def emit_linked_curves(
         out_points[start + position + 1] = segments[i, 1]
 
 
-# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``, rule in
-# CLAUDE.md section 2.5.
+# Concrete overloads, registered at import -- rationale in ``ordito/kernels/reduce.py``.
 #
 # Only the scalar field being contoured is generic: ``marching_triangles`` accepts a ``wp.float32``
 # or ``wp.float64`` per-vertex field (the heat solvers produce the latter), while the geometry it

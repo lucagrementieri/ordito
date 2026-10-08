@@ -6,7 +6,7 @@ conversions: each one encodes a *reason* why two correct implementations disagre
 ordering, winding, sign, gauge, or the absence of any correspondence at all -- and that reasoning
 should have one home rather than being re-derived per module.
 
-The classes of comparison, and the bar each has to clear (see CLAUDE.md section 7.4):
+The classes of comparison, and the bar each has to clear (see below):
 
 - **A** direct ``np.allclose`` / ``np.array_equal``. No helper needed.
 - **B** equal after a named transform, at full ``1e-5`` tolerance. Most helpers here are class B:
@@ -109,10 +109,10 @@ def assert_nonconstant(values: np.ndarray, tol: float) -> None:
     """
     Assert a numeric field actually varies, guarding a comparison against passing vacuously.
 
-    The same shape of bug as an empty answer (section 7.4): a reference or a ordito field that
+    The same shape of bug as an empty answer: a reference or a ordito field that
     happens to be constant on its fixture makes a permuted result, an off-by-one gather, or a
     query/vertex index swap all pass. ``tol`` is the field's own spread threshold and has no
-    universal default -- callers pass what CLAUDE.md's own comment at the original site measured.
+    universal default -- callers pass what the original site measured.
     """
     spread = float(np.ptp(values))
     assert spread > tol, f"expected non-constant values, got ptp={spread:.3e} (tol={tol:.3e})"
@@ -156,7 +156,7 @@ def euler_characteristic(faces_np: np.ndarray) -> int:
 
     Ignoring unreferenced vertices is deliberate and is what makes this comparable with a
     reference's answer: an isolated vertex is not part of the surface whose topology is under test,
-    and several libraries drop them silently on the way in (CLAUDE.md section 7.6 on igl's
+    and several libraries drop them silently on the way in (igl's
     ``F.max() + 1`` family). Pass the mesh's own vertex count instead of using this if the
     unreferenced ones are the thing being measured.
     """
@@ -171,7 +171,7 @@ def open_edge_count(faces_np: np.ndarray) -> int:
     Count the undirected edges with exactly one incident face -- the boundary edges.
 
     Note this is *not* pyvista's ``n_open_edges``, which counts boundary **plus** non-manifold edges
-    and reads 7 where this reads 6 on three faces sharing one edge (CLAUDE.md section 7.6).
+    and reads 7 where this reads 6 on three faces sharing one edge.
     """
     return int((edge_multiplicity(faces_np) == 1).sum())
 
@@ -308,8 +308,8 @@ def assert_same_up_to_sign(
 
     Does **not** admit an arbitrary rotation. If the two sides disagree by more than a sign -- a
     tangent frame rotated about its normal -- the answer is gauge-dependent in a stronger sense and
-    must be compared through a genuinely invariant quantity instead (see CLAUDE.md section 7.6 on
-    potpourri3d's tangent spaces).
+    must be compared through a genuinely invariant quantity instead (potpourri3d's tangent spaces
+    are an example).
     """
     a = np.asarray(vectors_a, dtype=np.float64).reshape(-1, np.shape(vectors_a)[-1])
     b = np.asarray(vectors_b, dtype=np.float64).reshape(-1, np.shape(vectors_b)[-1])
