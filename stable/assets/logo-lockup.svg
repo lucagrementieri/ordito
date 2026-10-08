@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1278.4 326.2" role="img" aria-label="ordito">
+  <!-- Mark plus wordmark, for light backgrounds. textLength pins the wordmark's advance width so
+       the lockup does not overflow the viewBox when a viewer resolves a different fallback font. -->
+  <path fill="#98C000" d="M89.2 189.9 L244.2 189.9 L166.7 55.7 ZM244.2 189.9 L399.2 189.9 L321.7 55.7 Z"/>
+  <path fill="#76B900" d="M89.2 189.9 L244.2 189.9 L166.7 324.2 ZM244.2 189.9 L399.2 189.9 L321.7 324.2 Z"/>
+  <path fill="#BAC700" d="M11.7 55.7 L166.7 55.7 L89.2 189.9 ZM321.7 55.7 L476.7 55.7 L399.2 189.9 Z"/>
+  <path fill="#DDCE00" d="M6.8 28.8 L161.8 28.8 L84.3 163.1 ZM326.5 28.8 L481.5 28.8 L404 163.1 Z"/>
+  <path fill="#FFD500" d="M2 2 L157 2 L79.5 136.2 ZM331.4 2 L486.4 2 L408.9 136.2 Z"/>
+  <text x="578.4" y="215" fill="#24350F" textLength="700" lengthAdjust="spacingAndGlyphs"
+        font-family="Inter, 'Helvetica Neue', Helvetica, Arial, sans-serif" font-size="200"
+        font-weight="500">ordito</text>
+</svg>

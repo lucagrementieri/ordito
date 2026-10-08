@@ -1,0 +1,4594 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Triangular mesh library based on NVIDIA Warp">
+      
+      
+      
+        <link rel="canonical" href="https://lucagrementieri.github.io/ordito/stable/examples/differential/">
+      
+      
+        <link rel="prev" href="../inspect/">
+      
+      
+        <link rel="next" href="../geodesics/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../assets/ordito.svg">
+      <meta name="generator" content="zensical-0.0.69">
+    
+    
+      
+        <title>Curvature and differential operators - ordito</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../assets/stylesheets/modern/main.e15858d4.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="ordito" class="md-header__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../../assets/ordito.svg" alt="ordito">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ordito
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Curvature and differential operators
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../.." class="md-tabs__link">
+        
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../getting-started/" class="md-tabs__link">
+        
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../concepts/" class="md-tabs__link">
+        
+  
+  Concepts
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../cookbook/" class="md-tabs__link">
+          
+  
+  Cookbook
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../" class="md-tabs__link">
+          
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../migrating-from/" class="md-tabs__link">
+          
+  
+  Migrating from another library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../performance/" class="md-tabs__link">
+        
+  
+  Performance
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../benchmarks/" class="md-tabs__link">
+        
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      
+  
+  
+  
+  
+    
+      
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../api/ordito/creation/" class="md-tabs__link">
+          
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="ordito" class="md-nav__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../../assets/ordito.svg" alt="ordito">
+
+    </a>
+    ordito
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../cookbook/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cookbook
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Cookbook
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cookbook/clean-and-remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cleaning and remeshing a rough mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cookbook/point-cloud-to-surface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point cloud to watertight surface
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cookbook/geodesic-distance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distance fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../cookbook/align-two-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Aligning two scans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Examples
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Examples
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../trimesh-object/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  The Trimesh object
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Creating meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../inspect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Inspecting meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curvature and differential operators
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curvature and differential operators
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#d1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Gaussian and mean curvature
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Principal curvatures and directions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Gradient of a scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Laplace equation with Dirichlet conditions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Polyharmonic surfaces (k = 1, 2, 3)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Handle-based biharmonic deformation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Isolines of a scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Smoothing a noisy scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Ambient occlusion, obscurance, shape diameter and thickness
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Maximal inscribed spheres and the medial axis
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../geodesics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics and tangent fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Parametrization and textures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Smoothing and fairing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Remeshing and simplification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Repairing meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../volumes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Offsets, voxels and implicit surfaces
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cutting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cutting, slicing and selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../migrating-from/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Migrating from another library
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Migrating from another library
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/trimesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  trimesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/igl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  libigl
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/open3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Open3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/meshlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MeshLab / PyMeshLab
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/potpourri3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  potpourri3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../migrating-from/pytorch3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  PyTorch3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Benchmarks
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_1" id="__nav_9_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Primitives & creation
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Primitives & creation
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  creation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_2" id="__nav_9_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh structure & topology
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_2_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_2">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh structure & topology
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/vertices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  vertices
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/edges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  edges
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/triangles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  triangles
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/halfedge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  halfedge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/adjacency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  adjacency
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/boundary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boundary
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/homology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  homology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/tangent_space/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  tangent_space
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_3" id="__nav_9_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Measures & shape descriptors
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Measures & shape descriptors
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/measures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  measures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/curvature/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  curvature
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/bounds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  bounds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/visibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  visibility
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_4" id="__nav_9_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh editing & repair
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh editing & repair
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/transform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  transform
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  repair
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/holes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  holes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/combine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  remesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  smoothing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/seams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  seams
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/levelset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  levelset
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_5" id="__nav_9_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Spatial queries
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/proximity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  proximity
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/ray/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  ray
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/neighbors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  neighbors
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/intersection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  intersection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  metrics
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_6" id="__nav_9_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds, voxels & reconstruction
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Point clouds, voxels & reconstruction
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  points
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/voxels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  voxels
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reconstruction
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_7" id="__nav_9_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Operators & solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Operators & solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/laplacian/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  laplacian
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/energies/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  energies
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/linalg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  linalg
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/cholesky/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  cholesky
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/interpolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  interpolation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  parametrization
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_8" id="__nav_9_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics & heat-method solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Geodesics & heat-method solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/geodesic_walk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  geodesic_walk
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/heat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  heat
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_9" id="__nav_9_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curves
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_9_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Curves
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/polyline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  polyline
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_10" id="__nav_9_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Attributes & I/O
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_10_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_10">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  io
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_11" id="__nav_9_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_11_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Arrays & infrastructure
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  array
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/reduce/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reduce
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/grouping/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  grouping
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/typing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  typing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/ordito/constants/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#d1" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Gaussian and mean curvature
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d2" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Principal curvatures and directions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d3" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Gradient of a scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d4" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Laplace equation with Dirichlet conditions
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d5" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Polyharmonic surfaces (k = 1, 2, 3)
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d6" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Handle-based biharmonic deformation
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d7" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Isolines of a scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d8" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Smoothing a noisy scalar field
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d9" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Ambient occlusion, obscurance, shape diameter and thickness
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#d10" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Maximal inscribed spheres and the medial axis
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+  
+
+
+<h1 id="curvature-and-differential-operators">Curvature and differential operators</h1>
+<p>Curvature, gradients, Laplace-type equations, and per-vertex shape descriptors.</p>
+<h2 id="d1">Gaussian and mean curvature</h2>
+<p>Three curvature fields on the Stanford dragon.
+<a class="autorefs autorefs-internal" title="vertex_defects" href="../../api/ordito/vertices/#ordito.vertices.vertex_defects"><code>vertex_defects</code></a> is the pointwise angle defect, <code>2pi</code> minus
+the corner angles at a vertex, the discrete Gaussian curvature integrated over the vertex's
+neighbourhood; it is sharp and noisy on a scan.
+<a class="autorefs autorefs-internal" title="discrete_gaussian_curvature" href="../../api/ordito/curvature/#ordito.curvature.discrete_gaussian_curvature"><code>discrete_gaussian_curvature</code></a> and
+<a class="autorefs autorefs-internal" title="discrete_mean_curvature" href="../../api/ordito/curvature/#ordito.curvature.discrete_mean_curvature"><code>discrete_mean_curvature</code></a> are the Cohen-Steiner and
+Morvan curvature measures of a ball around each query point: the defects inside the ball, and
+the dihedral angles of the edges inside it weighted by their length. A wider ball averages over
+more surface. Colour ranges clip at the 90th percentile of the magnitude: the scan's holes and
+stray patches put a few large values in the tails.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"dragon"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">angles</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_angles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">defects</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_defects</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">)</span>
+
+<span class="n">radius</span> <span class="o">=</span> <span class="mf">4.0</span> <span class="o">*</span> <span class="n">od</span><span class="o">.</span><span class="n">edges</span><span class="o">.</span><span class="n">mean_edge_length</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">gaussian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">discrete_gaussian_curvature</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">angles</span><span class="p">,</span> <span class="n">radius</span><span class="p">)</span>
+<span class="n">mean</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">discrete_mean_curvature</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">radius</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> vertices, ball radius </span><span class="si">{</span><span class="n">radius</span><span class="si">:</span><span class="s2">.5f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"median |mean curvature measure| </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">mean</span><span class="o">.</span><span class="n">numpy</span><span class="p">()))</span><span class="si">:</span><span class="s2">.3g</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>437645 vertices, ball radius 0.00181
+median |mean curvature measure| 0.000791
+</code></pre></div>
+<p><img alt="Gaussian and mean curvature" src="../../assets/examples/d1.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#gaussian-curvature">libigl 202</a> · <a href="https://github.com/mikedh/trimesh/blob/main/examples/curvature.ipynb">trimesh: curvature</a> · <a href="https://docs.pyvista.org/api/core/_autosummary/pyvista.PolyDataFilters.curvature">PyVista: curvature</a></p>
+<h2 id="d2">Principal curvatures and directions</h2>
+<p><a class="autorefs autorefs-internal" title="principal_curvature" href="../../api/ordito/curvature/#ordito.curvature.principal_curvature"><code>principal_curvature</code></a> fits a quadric to the
+neighbourhood of every vertex (a ball of a few mean edge lengths) and returns the two principal
+curvatures with their directions: the directions in which the surface bends most and least.
+The close-up draws both direction fields as short line segments, maximal curvature in red and
+minimal in blue; they follow the ridges and valleys of the bunny's face and ears.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">direction_max</span><span class="p">,</span> <span class="n">direction_min</span><span class="p">,</span> <span class="n">k_max</span><span class="p">,</span> <span class="n">k_min</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">curvature</span><span class="o">.</span><span class="n">principal_curvature</span><span class="p">(</span>
+    <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">radius</span><span class="o">=</span><span class="mi">5</span>
+<span class="p">)</span>
+<span class="n">k_max</span><span class="p">,</span> <span class="n">k_min</span> <span class="o">=</span> <span class="n">k_max</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">k_min</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"k_max &gt;= k_min at every vertex: </span><span class="si">{</span><span class="nb">bool</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">all</span><span class="p">(</span><span class="n">k_max</span><span class="w"> </span><span class="o">&gt;=</span><span class="w"> </span><span class="n">k_min</span><span class="p">))</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"median curvatures: k_max </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">k_max</span><span class="p">)</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">, k_min </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">k_min</span><span class="p">)</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>k_max &gt;= k_min at every vertex: True
+median curvatures: k_max 45.5, k_min 1.3
+</code></pre></div>
+<p><img alt="Principal curvatures and directions" src="../../assets/examples/d2.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#curvature-directions">libigl 203</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: filters</a></p>
+<h2 id="d3">Gradient of a scalar field</h2>
+<p>A smooth pattern of hills and valleys defined on the bunny's vertices, and its gradient from
+<a class="autorefs autorefs-internal" title="face_gradients" href="../../api/ordito/laplacian/#ordito.laplacian.face_gradients"><code>face_gradients</code></a>: on each triangle the linear interpolant
+of the vertex values has one constant gradient, which lies in the triangle's plane. The arrows
+point uphill; the magnitude vanishes on hilltops, valley floors and saddles, and the scan's
+small bumps show through it because the gradient is taken along the surface.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">field</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="mf">60.0</span> <span class="o">*</span> <span class="n">x</span><span class="p">)</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">sin</span><span class="p">(</span><span class="mf">60.0</span> <span class="o">*</span> <span class="n">y</span><span class="p">)</span>
+<span class="n">values</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+<span class="n">gradients</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">face_gradients</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">values</span><span class="p">)</span>  <span class="c1"># (n_faces,) wp.vec3d</span>
+<span class="n">magnitude</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">gradients</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">gradients</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> face gradients"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"|grad f| from </span><span class="si">{</span><span class="n">magnitude</span><span class="o">.</span><span class="n">min</span><span class="p">()</span><span class="si">:</span><span class="s2">.2f</span><span class="si">}</span><span class="s2"> to </span><span class="si">{</span><span class="n">magnitude</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="si">:</span><span class="s2">.1f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>69451 face gradients
+|grad f| from 0.33 to 84.8
+</code></pre></div>
+<p><img alt="Gradient of a scalar field" src="../../assets/examples/d3.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#gradient">libigl 204</a> · <a href="https://docs.pyvista.org/examples/01-filter/gradients">PyVista: gradients</a></p>
+<h2 id="d4">Laplace equation with Dirichlet conditions</h2>
+<p>The harmonic function on the bunny that is 0 on its base and 1 at the tips of its ears.
+<a class="autorefs autorefs-internal" title="cotmatrix" href="../../api/ordito/laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> builds the cotangent Laplacian <code>L</code>, and
+<a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../../api/ordito/linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a> minimises the Dirichlet energy <code>x^T
+(-L) x / 2</code> with the pinned vertices held at their values, which solves <code>Lx = 0</code> on the free
+ones. <a class="autorefs autorefs-internal" title="marching_triangles" href="../../api/ordito/intersection/#ordito.intersection.marching_triangles"><code>marching_triangles</code></a> traces level sets of the
+solution; they crowd where the heat would flow fastest, around the neck and the ears.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">height</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="n">base</span> <span class="o">=</span> <span class="n">height</span> <span class="o">&lt;</span> <span class="n">height</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">+</span> <span class="mf">0.005</span>
+<span class="n">ears</span> <span class="o">=</span> <span class="n">height</span> <span class="o">&gt;</span> <span class="n">height</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="mf">0.008</span>
+
+<span class="n">laplacian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">q</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">energies</span><span class="o">.</span><span class="n">k_harmonic</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>  <span class="c1"># the Dirichlet energy -L</span>
+<span class="n">fixed</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">base</span> <span class="o">|</span> <span class="n">ears</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">fixed_values</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">ears</span><span class="p">[</span><span class="kc">None</span><span class="p">]</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span>
+<span class="p">)</span>
+<span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span><span class="p">,</span> <span class="n">n_free</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">min_quad_with_fixed</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">fixed</span><span class="p">,</span> <span class="n">fixed_values</span><span class="p">)</span>
+
+<span class="n">field</span> <span class="o">=</span> <span class="n">ears</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>  <span class="c1"># pinned values, then the solved free ones</span>
+<span class="n">free</span> <span class="o">=</span> <span class="o">~</span><span class="p">(</span><span class="n">base</span> <span class="o">|</span> <span class="n">ears</span><span class="p">)</span>
+<span class="n">field</span><span class="p">[</span><span class="n">free</span><span class="p">]</span> <span class="o">=</span> <span class="n">solution</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">][</span><span class="n">free_map</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">free</span><span class="p">]]</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n_free</span><span class="si">}</span><span class="s2"> free vertices, </span><span class="si">{</span><span class="n">base</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> pinned to 0, </span><span class="si">{</span><span class="n">ears</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> pinned to 1"</span><span class="p">)</span>
+
+<span class="n">values</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">field</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">isolines</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">intersection</span><span class="o">.</span><span class="n">marching_triangles</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">values</span><span class="p">,</span> <span class="n">level</span><span class="p">)[</span><span class="mi">0</span><span class="p">]</span>
+    <span class="k">for</span> <span class="n">level</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="mf">0.05</span><span class="p">,</span> <span class="mf">0.95</span><span class="p">,</span> <span class="mi">10</span><span class="p">)</span>
+<span class="p">]</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>31733 free vertices, 2826 pinned to 0, 275 pinned to 1
+</code></pre></div>
+<p><img alt="Laplace equation with Dirichlet conditions" src="../../assets/examples/d4.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#laplace-equation">libigl 303</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: filters</a></p>
+<h2 id="d5">Polyharmonic surfaces (k = 1, 2, 3)</h2>
+<p>A flat square grid from <a class="autorefs autorefs-internal" title="grid" href="../../api/ordito/creation/#ordito.creation.grid"><code>grid</code></a> is pinned at height 0 outside a circle
+and at height 1 on a small disk in its middle; the heights in between minimise a k-harmonic
+energy. <a class="autorefs autorefs-internal" title="k_harmonic" href="../../api/ordito/energies/#ordito.energies.k_harmonic"><code>k_harmonic</code></a> composes the operator
+<code>(-L) (M^-1 (-L))^(k-1)</code> from the cotangent Laplacian of
+<a class="autorefs autorefs-internal" title="cotmatrix" href="../../api/ordito/laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> and the lumped mass of
+<a class="autorefs autorefs-internal" title="mass_matrix_entries" href="../../api/ordito/laplacian/#ordito.laplacian.mass_matrix_entries"><code>mass_matrix_entries</code></a>, and
+<a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../../api/ordito/linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a> solves for the free heights. Each
+step up in k makes the surface smoother where it meets the pinned regions: k = 1 leaves a kink
+at both rims, k = 2 meets them with a continuous slope, k = 3 also with a continuous
+curvature, which widens the shoulders.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="p">(</span><span class="mi">101</span><span class="p">,</span> <span class="mi">101</span><span class="p">),</span> <span class="n">extents</span><span class="o">=</span><span class="p">(</span><span class="mf">2.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">radius</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">norm</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="p">:</span><span class="mi">2</span><span class="p">],</span> <span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="n">outside</span><span class="p">,</span> <span class="n">top</span> <span class="o">=</span> <span class="n">radius</span> <span class="o">&gt;</span> <span class="mf">0.9</span><span class="p">,</span> <span class="n">radius</span> <span class="o">&lt;</span> <span class="mf">0.15</span>
+<span class="n">pinned</span> <span class="o">=</span> <span class="n">outside</span> <span class="o">|</span> <span class="n">top</span>
+
+<span class="n">laplacian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">mass</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">mass_matrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">fixed</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">pinned</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">heights</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">as_array2d</span><span class="p">(</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">top</span><span class="p">[</span><span class="kc">None</span><span class="p">]</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">float64</span>
+<span class="p">)</span>
+
+<span class="n">surfaces</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">k</span> <span class="ow">in</span> <span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mi">2</span><span class="p">,</span> <span class="mi">3</span><span class="p">):</span>
+    <span class="n">q</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">energies</span><span class="o">.</span><span class="n">k_harmonic</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="n">k</span><span class="p">)</span>
+    <span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">min_quad_with_fixed</span><span class="p">(</span><span class="n">q</span><span class="p">,</span> <span class="n">fixed</span><span class="p">,</span> <span class="n">heights</span><span class="p">)</span>
+    <span class="n">z</span> <span class="o">=</span> <span class="n">top</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+    <span class="n">z</span><span class="p">[</span><span class="o">~</span><span class="n">pinned</span><span class="p">]</span> <span class="o">=</span> <span class="n">solution</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="mi">0</span><span class="p">][</span><span class="n">free_map</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="o">~</span><span class="n">pinned</span><span class="p">]]</span>
+    <span class="n">surfaces</span><span class="p">[</span><span class="n">k</span><span class="p">]</span> <span class="o">=</span> <span class="n">z</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"k = </span><span class="si">{</span><span class="n">k</span><span class="si">}</span><span class="s2">: height at radius 0.5 is </span><span class="si">{</span><span class="n">z</span><span class="p">[</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">radius</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">0.5</span><span class="p">)</span><span class="w"> </span><span class="o">&lt;</span><span class="w"> </span><span class="mf">0.02</span><span class="p">]</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>k = 1: height at radius 0.5 is 0.323
+k = 2: height at radius 0.5 is 0.457
+k = 3: height at radius 0.5 is 0.486
+</code></pre></div>
+<p><img alt="Polyharmonic surfaces (k = 1, 2, 3)" src="../../assets/examples/d5.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#biharmonic-deformation">libigl 401</a> · <a href="https://libigl.github.io/tutorial/#polyharmonic-deformation">libigl 402</a></p>
+<h2 id="d6">Handle-based biharmonic deformation</h2>
+<p>The armadillo's feet are held in place and the top of the scan (its head, ears and raised
+claws) is moved as one handle; every other vertex moves by the
+displacement that minimises the biharmonic energy, the operator
+<a class="autorefs autorefs-internal" title="k_harmonic" href="../../api/ordito/energies/#ordito.energies.k_harmonic"><code>k_harmonic</code></a> builds at <code>k = 2</code> from
+<a class="autorefs autorefs-internal" title="cotmatrix" href="../../api/ordito/laplacian/#ordito.laplacian.cotmatrix"><code>cotmatrix</code></a> and
+<a class="autorefs autorefs-internal" title="mass_matrix_entries" href="../../api/ordito/laplacian/#ordito.laplacian.mass_matrix_entries"><code>mass_matrix_entries</code></a>.
+<a class="autorefs autorefs-internal" title="min_quad_with_fixed" href="../../api/ordito/linalg/#ordito.linalg.min_quad_with_fixed"><code>min_quad_with_fixed</code></a> solves the three coordinates of the
+displacement as three right-hand sides of one system. The displacement is smooth, so the body
+bends as a whole and its surface detail rides along unchanged; the multigrid preconditioner
+keeps the fourth-order solve over the full 173 k-vertex scan short.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"armadillo"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">rest</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">height</span> <span class="o">=</span> <span class="n">rest</span><span class="p">[:,</span> <span class="mi">1</span><span class="p">]</span>
+<span class="n">span</span> <span class="o">=</span> <span class="n">height</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="n">height</span><span class="o">.</span><span class="n">min</span><span class="p">()</span>
+<span class="n">feet</span> <span class="o">=</span> <span class="n">height</span> <span class="o">&lt;</span> <span class="n">height</span><span class="o">.</span><span class="n">min</span><span class="p">()</span> <span class="o">+</span> <span class="mf">0.1</span> <span class="o">*</span> <span class="n">span</span>
+<span class="n">head</span> <span class="o">=</span> <span class="n">height</span> <span class="o">&gt;</span> <span class="n">height</span><span class="o">.</span><span class="n">max</span><span class="p">()</span> <span class="o">-</span> <span class="mf">0.12</span> <span class="o">*</span> <span class="n">span</span>  <span class="c1"># head, ears and claw tips</span>
+
+<span class="n">displacement</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">zeros</span><span class="p">((</span><span class="mi">3</span><span class="p">,</span> <span class="nb">len</span><span class="p">(</span><span class="n">rest</span><span class="p">)))</span>  <span class="c1"># one row per coordinate</span>
+<span class="n">displacement</span><span class="p">[:,</span> <span class="n">head</span><span class="p">]</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">array</span><span class="p">([[</span><span class="mf">50.0</span><span class="p">],</span> <span class="p">[</span><span class="o">-</span><span class="mf">15.0</span><span class="p">],</span> <span class="p">[</span><span class="o">-</span><span class="mf">20.0</span><span class="p">]])</span>
+
+<span class="n">laplacian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">mass</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">mass_matrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">q</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">energies</span><span class="o">.</span><span class="n">k_harmonic</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">mass</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>
+<span class="n">pinned</span> <span class="o">=</span> <span class="n">feet</span> <span class="o">|</span> <span class="n">head</span>
+<span class="n">solution</span><span class="p">,</span> <span class="n">free_map</span><span class="p">,</span> <span class="n">n_free</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">min_quad_with_fixed</span><span class="p">(</span>
+    <span class="n">q</span><span class="p">,</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">pinned</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">displacement</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span>
+    <span class="n">preconditioner</span><span class="o">=</span><span class="s2">"multigrid"</span><span class="p">,</span>
+<span class="p">)</span>
+<span class="n">displacement</span><span class="p">[:,</span> <span class="o">~</span><span class="n">pinned</span><span class="p">]</span> <span class="o">=</span> <span class="n">solution</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="n">free_map</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="o">~</span><span class="n">pinned</span><span class="p">]]</span>
+<span class="n">deformed</span> <span class="o">=</span> <span class="n">rest</span> <span class="o">+</span> <span class="n">displacement</span><span class="o">.</span><span class="n">T</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">n_free</span><span class="si">}</span><span class="s2"> free vertices, </span><span class="si">{</span><span class="n">feet</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> fixed, </span><span class="si">{</span><span class="n">head</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> moved"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>136647 free vertices, 17157 fixed, 19170 moved
+</code></pre></div>
+<p><img alt="Handle-based biharmonic deformation" src="../../assets/examples/d6.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#biharmonic-deformation">libigl 401</a> · <a href="https://meshlib.io/documentation/ExampleLaplacian.html">MeshLib: Laplacian deformation</a></p>
+<h2 id="d7">Isolines of a scalar field</h2>
+<p><a class="autorefs autorefs-internal" title="marching_triangles_with_offsets" href="../../api/ordito/intersection/#ordito.intersection.marching_triangles_with_offsets"><code>marching_triangles_with_offsets</code></a> cuts
+the level set <code>f = c</code> of a per-vertex field out of every triangle and links the pieces into
+curves, returned packed: all points, the offsets where each curve starts, and whether it
+closes. <a class="autorefs autorefs-internal" title="split" href="../../api/ordito/array/#ordito.array.split"><code>split</code></a> unpacks them into one array per curve. Two fields on the
+bunny: its height, whose level sets are horizontal slices, and the geodesic distance from the
+tip of an ear by <a class="autorefs autorefs-internal" title="heat_geodesic" href="../../api/ordito/heat/#ordito.heat.heat_geodesic"><code>heat_geodesic</code></a>, whose level sets are geodesic
+circles.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">height</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[:,</span> <span class="mi">1</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">ear</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">([</span><span class="mi">22820</span><span class="p">],</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">distance</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">heat</span><span class="o">.</span><span class="n">heat_geodesic</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">ear</span><span class="p">)</span>
+
+<span class="n">curves</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">field</span> <span class="ow">in</span> <span class="p">((</span><span class="s2">"height"</span><span class="p">,</span> <span class="n">height</span><span class="p">),</span> <span class="p">(</span><span class="s2">"distance"</span><span class="p">,</span> <span class="n">distance</span><span class="p">)):</span>
+    <span class="n">values</span> <span class="o">=</span> <span class="n">field</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+    <span class="n">curves</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="p">[]</span>
+    <span class="k">for</span> <span class="n">level</span> <span class="ow">in</span> <span class="n">np</span><span class="o">.</span><span class="n">linspace</span><span class="p">(</span><span class="n">values</span><span class="o">.</span><span class="n">min</span><span class="p">(),</span> <span class="n">values</span><span class="o">.</span><span class="n">max</span><span class="p">(),</span> <span class="mi">22</span><span class="p">)[</span><span class="mi">1</span><span class="p">:</span><span class="o">-</span><span class="mi">1</span><span class="p">]:</span>
+        <span class="n">points</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">_closed</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">intersection</span><span class="o">.</span><span class="n">marching_triangles_with_offsets</span><span class="p">(</span>
+            <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">field</span><span class="p">,</span> <span class="nb">float</span><span class="p">(</span><span class="n">level</span><span class="p">)</span>
+        <span class="p">)</span>
+        <span class="n">curves</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">+=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">split</span><span class="p">(</span><span class="n">points</span><span class="p">,</span> <span class="n">offsets</span><span class="p">)</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="nb">len</span><span class="p">(</span><span class="n">curves</span><span class="p">[</span><span class="n">name</span><span class="p">])</span><span class="si">}</span><span class="s2"> curves over 20 levels"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>height: 25 curves over 20 levels
+distance: 31 curves over 20 levels
+</code></pre></div>
+<p><img alt="Isolines of a scalar field" src="../../assets/examples/d7.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#isolines">libigl 905</a> · <a href="https://github.com/nmwsharp/potpourri3d#mesh-utilities">potpourri3d</a> · <a href="https://docs.pyvista.org/examples/01-filter/contouring">PyVista: contouring</a></p>
+<h2 id="d8">Smoothing a noisy scalar field</h2>
+<p>A smooth function on a square (a ramp plus a wave, drawn as a height field), corrupted by noise,
+and three ways to recover it.
+<a class="autorefs autorefs-internal" title="filter_scalar_laplacian" href="../../api/ordito/smoothing/#ordito.smoothing.filter_scalar_laplacian"><code>filter_scalar_laplacian</code></a> repeatedly averages each
+value with its one-ring. The other two solve <code>(M + alpha Q) u = M f</code>: stay close to the noisy
+field <code>f</code> in the mass-weighted norm while keeping a smoothness energy <code>u^T Q u</code> small. With the
+biharmonic energy from <a class="autorefs autorefs-internal" title="k_harmonic" href="../../api/ordito/energies/#ordito.energies.k_harmonic"><code>k_harmonic</code></a>, <code>Q</code> assumes the field is flat
+across the boundary and bends the ramp there; the Hessian energy from
+<a class="autorefs autorefs-internal" title="hessian_energy" href="../../api/ordito/energies/#ordito.energies.hessian_energy"><code>hessian_energy</code></a> has natural boundary conditions and no
+penalty on linear functions, so the ramp keeps its slope up to the rim.
+<a class="autorefs autorefs-internal" title="curved_hessian_energy" href="../../api/ordito/energies/#ordito.energies.curved_hessian_energy"><code>curved_hessian_energy</code></a> is its counterpart for a curved
+surface.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">creation</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">count</span><span class="o">=</span><span class="p">(</span><span class="mi">81</span><span class="p">,</span> <span class="mi">81</span><span class="p">),</span> <span class="n">extents</span><span class="o">=</span><span class="p">(</span><span class="mf">2.0</span><span class="p">,</span> <span class="mf">2.0</span><span class="p">),</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">x</span><span class="p">,</span> <span class="n">y</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">T</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">clean</span> <span class="o">=</span> <span class="mf">1.5</span> <span class="o">*</span> <span class="n">x</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">cos</span><span class="p">(</span><span class="mf">2.5</span> <span class="o">*</span> <span class="n">y</span><span class="p">)</span>
+<span class="n">noisy</span> <span class="o">=</span> <span class="n">clean</span> <span class="o">+</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span><span class="o">.</span><span class="n">normal</span><span class="p">(</span><span class="mf">0.0</span><span class="p">,</span> <span class="mf">0.25</span><span class="p">,</span> <span class="n">clean</span><span class="o">.</span><span class="n">shape</span><span class="p">)</span>
+
+<span class="n">averaged</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_scalar_laplacian</span><span class="p">(</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">noisy</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">),</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">30</span>
+<span class="p">)</span>
+
+<span class="c1"># Minimise |u - f|^2_M + alpha u^T Q u, i.e. solve (M + alpha Q) u = M f, for two energies Q.</span>
+<span class="c1"># M is the diagonal lumped mass matrix, so M f is a per-vertex product.</span>
+<span class="n">lumped</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">mass_matrix_entries</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">mass</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">bsr_diag</span><span class="p">(</span><span class="n">lumped</span><span class="p">)</span>
+<span class="n">mass_f</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">lumped</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span> <span class="o">*</span> <span class="n">noisy</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">laplacian</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">laplacian</span><span class="o">.</span><span class="n">cotmatrix</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">float64</span><span class="p">)</span>
+<span class="n">energies</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="s2">"biharmonic"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">energies</span><span class="o">.</span><span class="n">k_harmonic</span><span class="p">(</span><span class="n">laplacian</span><span class="p">,</span> <span class="n">lumped</span><span class="p">,</span> <span class="n">k</span><span class="o">=</span><span class="mi">2</span><span class="p">),</span>
+    <span class="s2">"hessian"</span><span class="p">:</span> <span class="n">od</span><span class="o">.</span><span class="n">energies</span><span class="o">.</span><span class="n">hessian_energy</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">),</span>
+<span class="p">}</span>
+<span class="n">smoothed</span> <span class="o">=</span> <span class="p">{}</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">q</span> <span class="ow">in</span> <span class="n">energies</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">system</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">bsr_axpy</span><span class="p">(</span><span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">bsr_copy</span><span class="p">(</span><span class="n">q</span><span class="p">),</span> <span class="n">od</span><span class="o">.</span><span class="n">typing</span><span class="o">.</span><span class="n">bsr_copy</span><span class="p">(</span><span class="n">mass</span><span class="p">),</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">1e-3</span><span class="p">)</span>
+    <span class="n">u</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">zeros_like</span><span class="p">(</span><span class="n">mass_f</span><span class="p">)</span>
+    <span class="n">od</span><span class="o">.</span><span class="n">linalg</span><span class="o">.</span><span class="n">solve_spd</span><span class="p">(</span><span class="n">system</span><span class="p">,</span> <span class="n">mass_f</span><span class="p">,</span> <span class="n">u</span><span class="p">)</span>
+    <span class="n">smoothed</span><span class="p">[</span><span class="n">name</span><span class="p">]</span> <span class="o">=</span> <span class="n">u</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+
+<span class="n">rim</span> <span class="o">=</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">x</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.95</span><span class="p">)</span> <span class="o">|</span> <span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">abs</span><span class="p">(</span><span class="n">y</span><span class="p">)</span> <span class="o">&gt;</span> <span class="mf">0.95</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">name</span><span class="p">,</span> <span class="n">u</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">"1-ring average"</span><span class="p">:</span> <span class="n">averaged</span><span class="o">.</span><span class="n">numpy</span><span class="p">(),</span> <span class="o">**</span><span class="n">smoothed</span><span class="p">}</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">error</span> <span class="o">=</span> <span class="n">u</span> <span class="o">-</span> <span class="n">clean</span>
+    <span class="nb">print</span><span class="p">(</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">name</span><span class="si">}</span><span class="s2">: RMS error </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">error</span><span class="o">**</span><span class="mi">2</span><span class="p">))</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> overall, "</span>
+        <span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">sqrt</span><span class="p">(</span><span class="n">np</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">error</span><span class="p">[</span><span class="n">rim</span><span class="p">]</span><span class="w"> </span><span class="o">**</span><span class="w"> </span><span class="mi">2</span><span class="p">))</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2"> along the boundary"</span>
+    <span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>1-ring average: RMS error 0.038 overall, 0.093 along the boundary
+biharmonic: RMS error 0.090 overall, 0.205 along the boundary
+hessian: RMS error 0.028 overall, 0.043 along the boundary
+</code></pre></div>
+<p><img alt="Smoothing a noisy scalar field" src="../../assets/examples/d8.webp" /></p>
+<p>The spike at one corner of the Hessian-smoothed square is the noise of that corner vertex
+surviving: it belongs to a single triangle, so the energy constrains it weakly.</p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#data-smoothing">libigl 712</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: filters</a></p>
+<h2 id="d9">Ambient occlusion, obscurance, shape diameter and thickness</h2>
+<p>Four ray-traced per-vertex descriptors of the happy Buddha, all cast against one <code>wp.Mesh</code>
+BVH.</p>
+<ul>
+<li><a class="autorefs autorefs-internal" title="ambient_occlusion" href="../../api/ordito/visibility/#ordito.visibility.ambient_occlusion"><code>ambient_occlusion</code></a>: the share of the outward
+  hemisphere blocked by the model, shown as the light that gets through.</li>
+<li><a class="autorefs autorefs-internal" title="volumetric_obscurance" href="../../api/ordito/visibility/#ordito.visibility.volumetric_obscurance"><code>volumetric_obscurance</code></a>: the same, with each
+  occluder counted <code>exp(-tau * t)</code> by its distance <code>t</code>, so only nearby geometry darkens a point;
+  it brings out the folds of the robe that a far wall hides in plain occlusion.</li>
+<li><a class="autorefs autorefs-internal" title="shape_diameter" href="../../api/ordito/visibility/#ordito.visibility.shape_diameter"><code>shape_diameter</code></a>: the robust mean length of a cone of
+  rays fired inwards, the local diameter of the volume.</li>
+<li><a class="autorefs autorefs-internal" title="thickness" href="../../api/ordito/visibility/#ordito.visibility.thickness"><code>thickness</code></a>: twice the radius of the largest ball inside
+  the volume touching the point. One ball per point is cheap but follows every small bump of
+  the scan, hence the speckle where the shape diameter is smooth.</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"buddha"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+<span class="n">normals</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">vertices</span><span class="o">.</span><span class="n">vertex_normals</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">diagonal</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">bounds</span><span class="o">.</span><span class="n">enclosing_diagonal</span><span class="p">(</span><span class="n">vertices</span><span class="p">)</span>
+
+<span class="n">occlusion</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">ambient_occlusion</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">)</span>
+<span class="n">obscurance</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">volumetric_obscurance</span><span class="p">(</span>
+    <span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">,</span> <span class="n">tau</span><span class="o">=</span><span class="mf">40.0</span> <span class="o">/</span> <span class="n">diagonal</span>
+<span class="p">)</span>
+<span class="n">diameter</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">shape_diameter</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">)</span>
+<span class="n">thickness</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">thickness</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">vertices</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">normals</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">vertices</span><span class="o">.</span><span class="n">shape</span><span class="p">[</span><span class="mi">0</span><span class="p">]</span><span class="si">}</span><span class="s2"> vertices, mean occlusion </span><span class="si">{</span><span class="n">occlusion</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="n">finite</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">isfinite</span><span class="p">(</span><span class="n">diameter</span><span class="o">.</span><span class="n">numpy</span><span class="p">())</span>
+<span class="nb">print</span><span class="p">(</span>
+    <span class="sa">f</span><span class="s2">"shape diameter: </span><span class="si">{</span><span class="n">finite</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> finite, median </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">diameter</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">finite</span><span class="p">])</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span>
+<span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>543652 vertices, mean occlusion 0.301
+shape diameter: 543621 finite, median 0.0212
+</code></pre></div>
+<p><img alt="Ambient occlusion, obscurance, shape diameter and thickness" src="../../assets/examples/d9.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://libigl.github.io/tutorial/#ambient-occlusion">libigl 606</a> · <a href="https://pymeshlab.readthedocs.io/en/latest/filter_list.html">PyMeshLab: filters</a> · <a href="https://meshlib.io/documentation/index.html">MeshLib: thickness</a></p>
+<h2 id="d10">Maximal inscribed spheres and the medial axis</h2>
+<p>After <a class="autorefs autorefs-internal" title="filter_laplacian" href="../../api/ordito/smoothing/#ordito.smoothing.filter_laplacian"><code>filter_laplacian</code></a> removes the scan's small bumps,
+<a class="autorefs autorefs-internal" title="max_tangent_sphere" href="../../api/ordito/visibility/#ordito.visibility.max_tangent_sphere"><code>max_tangent_sphere</code></a> shrinks a ball touching the surface
+at each face centroid, from the inside, until it touches the surface nowhere else. Its radius is
+a local thickness, and its centre lies on the medial axis: the centres of the larger balls trace
+the bunny's skeleton, a sheet down its body and curves along its ears. Balls touching a small
+crease stay tiny, so the skeleton view keeps balls above a tenth of the largest radius.</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">warp</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">wp</span>
+
+<span class="kn">import</span><span class="w"> </span><span class="nn">ordito</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">od</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">examples</span><span class="w"> </span><span class="kn">import</span> <span class="n">data</span>
+
+<span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span> <span class="o">=</span> <span class="n">data</span><span class="o">.</span><span class="n">load</span><span class="p">(</span><span class="s2">"bunny"</span><span class="p">,</span> <span class="n">device</span><span class="p">)</span>
+<span class="c1"># The scan's millimetre bumps cap every ball touching them; smooth them away first.</span>
+<span class="n">vertices</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">smoothing</span><span class="o">.</span><span class="n">filter_laplacian</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">,</span> <span class="n">iterations</span><span class="o">=</span><span class="mi">20</span><span class="p">)</span>
+<span class="n">mesh</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">Mesh</span><span class="p">(</span><span class="n">points</span><span class="o">=</span><span class="n">vertices</span><span class="p">,</span> <span class="n">indices</span><span class="o">=</span><span class="n">faces</span><span class="p">)</span>
+<span class="c1"># Touch every face at its centroid, where the surface is flat: at a vertex the ball must</span>
+<span class="c1"># also clear the faces around it, which pins it small wherever the scan is bumpy.</span>
+<span class="n">face_normals</span><span class="p">,</span> <span class="n">_</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">triangles</span><span class="o">.</span><span class="n">face_normals_and_areas</span><span class="p">(</span><span class="n">vertices</span><span class="p">,</span> <span class="n">faces</span><span class="p">)</span>
+<span class="n">corners</span> <span class="o">=</span> <span class="n">vertices</span><span class="o">.</span><span class="n">numpy</span><span class="p">()[</span><span class="n">faces</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span><span class="o">.</span><span class="n">reshape</span><span class="p">(</span><span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="mi">3</span><span class="p">)]</span>
+<span class="n">centroids</span> <span class="o">=</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">(</span><span class="n">corners</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">),</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">vec3</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+<span class="n">centers</span><span class="p">,</span> <span class="n">radii</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">visibility</span><span class="o">.</span><span class="n">max_tangent_sphere</span><span class="p">(</span><span class="n">mesh</span><span class="p">,</span> <span class="n">centroids</span><span class="p">,</span> <span class="n">normals</span><span class="o">=</span><span class="n">face_normals</span><span class="p">)</span>
+
+<span class="n">radii</span> <span class="o">=</span> <span class="n">radii</span><span class="o">.</span><span class="n">numpy</span><span class="p">()</span>
+<span class="n">medial</span> <span class="o">=</span> <span class="n">radii</span> <span class="o">&gt;</span> <span class="mf">0.1</span> <span class="o">*</span> <span class="n">radii</span><span class="o">.</span><span class="n">max</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"largest inscribed ball: radius </span><span class="si">{</span><span class="n">radii</span><span class="o">.</span><span class="n">max</span><span class="p">()</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">, median </span><span class="si">{</span><span class="n">np</span><span class="o">.</span><span class="n">median</span><span class="p">(</span><span class="n">radii</span><span class="p">)</span><span class="si">:</span><span class="s2">.4f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">medial</span><span class="o">.</span><span class="n">sum</span><span class="p">()</span><span class="si">}</span><span class="s2"> of </span><span class="si">{</span><span class="n">radii</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> balls above a tenth of the largest"</span><span class="p">)</span>
+</code></pre></div>
+<div class="highlight"><span class="filename">Output</span><pre><span></span><code>largest inscribed ball: radius 0.0412, median 0.0148
+62492 of 69451 balls above a tenth of the largest
+</code></pre></div>
+<p><img alt="Maximal inscribed spheres and the medial axis" src="../../assets/examples/d10.webp" /></p>
+<p class="ordito-credits">Modelled on: <a href="https://trimesh.org/examples.html">trimesh: examples</a> · <a href="https://meshlib.io/documentation/index.html">MeshLib: thickness</a></p>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"../..","features":["navigation.tabs","navigation.sections","navigation.indexes","navigation.top","toc.follow","content.code.copy","search.suggest"],"redirect":null,"search":"../../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"default":"stable","provider":"mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.8b1c90bd.min.js"></script>
+      
+    
+  </body>
+</html>

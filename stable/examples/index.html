@@ -1,0 +1,4566 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Triangular mesh library based on NVIDIA Warp">
+      
+      
+      
+        <link rel="canonical" href="https://lucagrementieri.github.io/ordito/stable/examples/">
+      
+      
+        <link rel="prev" href="../cookbook/align-two-scans/">
+      
+      
+        <link rel="next" href="./trimesh-object/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../assets/ordito.svg">
+      <meta name="generator" content="zensical-0.0.69">
+    
+    
+      
+        <title>Examples - ordito</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../assets/stylesheets/modern/main.e15858d4.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="./.." title="ordito" class="md-header__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../assets/ordito.svg" alt="ordito">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ordito
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Examples
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="./.." class="md-tabs__link">
+        
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../getting-started/" class="md-tabs__link">
+        
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../concepts/" class="md-tabs__link">
+        
+  
+  Concepts
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../cookbook/" class="md-tabs__link">
+          
+  
+  Cookbook
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="././" class="md-tabs__link">
+          
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../migrating-from/" class="md-tabs__link">
+          
+  
+  Migrating from another library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../performance/" class="md-tabs__link">
+        
+  
+  Performance
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../benchmarks/" class="md-tabs__link">
+        
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      
+  
+  
+  
+  
+    
+      
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../api/ordito/creation/" class="md-tabs__link">
+          
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="./.." title="ordito" class="md-nav__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../assets/ordito.svg" alt="ordito">
+
+    </a>
+    ordito
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../cookbook/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cookbook
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Cookbook
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cookbook/clean-and-remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cleaning and remeshing a rough mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cookbook/point-cloud-to-surface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point cloud to watertight surface
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cookbook/geodesic-distance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distance fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cookbook/align-two-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Aligning two scans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" checked>
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="././" class="md-nav__link md-nav__link--active">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Examples
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link md-nav__link--active" for="__nav_5" id="__nav_5_label" tabindex="">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Examples
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./trimesh-object/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  The Trimesh object
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Creating meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./inspect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Inspecting meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./differential/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curvature and differential operators
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./geodesics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics and tangent fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Parametrization and textures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Smoothing and fairing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Remeshing and simplification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Repairing meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./volumes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Offsets, voxels and implicit surfaces
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./cutting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cutting, slicing and selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="./reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../migrating-from/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Migrating from another library
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Migrating from another library
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/trimesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  trimesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/igl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  libigl
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/open3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Open3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/meshlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MeshLab / PyMeshLab
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/potpourri3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  potpourri3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../migrating-from/pytorch3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  PyTorch3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Benchmarks
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_1" id="__nav_9_1_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Primitives & creation
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Primitives & creation
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  creation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_2" id="__nav_9_2_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh structure & topology
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_2_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_2">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh structure & topology
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/vertices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  vertices
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/edges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  edges
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/triangles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  triangles
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/halfedge/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  halfedge
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/adjacency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  adjacency
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/boundary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boundary
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/homology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  homology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/tangent_space/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  tangent_space
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_3" id="__nav_9_3_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Measures & shape descriptors
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Measures & shape descriptors
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/measures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  measures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/curvature/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  curvature
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/bounds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  bounds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/visibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  visibility
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_4" id="__nav_9_4_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh editing & repair
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh editing & repair
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/transform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  transform
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  repair
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/holes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  holes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/combine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  remesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  smoothing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/seams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  seams
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/levelset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  levelset
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_5" id="__nav_9_5_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Spatial queries
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/proximity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  proximity
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/ray/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  ray
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/neighbors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  neighbors
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/intersection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  intersection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  metrics
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_6" id="__nav_9_6_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds, voxels & reconstruction
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Point clouds, voxels & reconstruction
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  points
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/voxels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  voxels
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reconstruction
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_7" id="__nav_9_7_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Operators & solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Operators & solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/laplacian/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  laplacian
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/energies/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  energies
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/linalg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  linalg
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/cholesky/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  cholesky
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/interpolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  interpolation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  parametrization
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_8" id="__nav_9_8_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics & heat-method solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Geodesics & heat-method solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/geodesic_walk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  geodesic_walk
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/heat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  heat
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_9" id="__nav_9_9_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curves
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_9_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Curves
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/polyline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  polyline
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_10" id="__nav_9_10_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Attributes & I/O
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_10_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_10">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  io
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_11" id="__nav_9_11_label" tabindex="0">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_11_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Arrays & infrastructure
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  array
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/reduce/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reduce
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/grouping/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  grouping
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/typing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  typing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/ordito/constants/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#the-trimesh-object" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        The Trimesh object
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#creating-meshes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Creating meshes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#inspecting-meshes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Inspecting meshes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#curvature-and-differential-operators" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Curvature and differential operators
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#geodesics-and-tangent-fields" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Geodesics and tangent fields
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#parametrization-and-textures" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Parametrization and textures
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#smoothing-and-fairing" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Smoothing and fairing
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#remeshing-and-simplification" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Remeshing and simplification
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#repairing-meshes" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Repairing meshes
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#offsets-voxels-and-implicit-surfaces" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Offsets, voxels and implicit surfaces
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#spatial-queries" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Spatial queries
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#cutting-slicing-and-selection" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Cutting, slicing and selection
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#point-clouds" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Point clouds
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconstruction-and-registration" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        Reconstruction and registration
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+  
+  
+
+
+<h1 id="examples">Examples</h1>
+<p>Each example below is a complete, runnable snippet together with the image it produced. The
+inputs are shared across examples so that related operations can be compared on the same shape:
+most use the Stanford bunny, and the rest use the dragon, the happy Buddha, or meshes built with
+<a class="autorefs autorefs-internal" title="ordito.creation" href="../api/ordito/creation/#ordito.creation"><code>ordito.creation</code></a>.</p>
+<p><code>data</code> in the snippets is the gallery's input module
+(<a href="https://github.com/lucagrementieri/ordito/blob/main/examples/data.py"><code>examples/data.py</code></a>). It
+loads a mesh into ordito's layout: <code>wp.vec3</code> vertices and a flat <code>wp.int32</code> face buffer. The code
+runs on whichever Warp <code>device</code> you pass, CPU or CUDA. The images come from
+<code>python -m examples.run</code>, which renders them with PyVista.</p>
+<p>Each example also links the reference-library examples it was modelled on. The images are ordito's
+own output.</p>
+<h2 id="the-trimesh-object"><a href="trimesh-object/">The Trimesh object</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="trimesh-object/#t1"><img alt="Quick start: build a mesh and read its properties" src="../assets/examples/t1-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t1">Quick start: build a mesh and read its properties</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t2"><img alt="Bodies: split, explode and recombine" src="../assets/examples/t2-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t2">Bodies: split, explode and recombine</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t3"><img alt="Rigid and mirror transforms" src="../assets/examples/t3-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t3">Rigid and mirror transforms</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t4"><img alt="Inside tests and surface samples" src="../assets/examples/t4-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t4">Inside tests and surface samples</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t5"><img alt="Edge structure: dihedral angles, convexity and boundaries" src="../assets/examples/t5-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t5">Edge structure: dihedral angles, convexity and boundaries</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t6"><img alt="Caching and functional updates" src="../assets/examples/t6-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t6">Caching and functional updates</a></p>
+</li>
+<li>
+<p><a href="trimesh-object/#t7"><img alt="Reusing cached operators" src="../assets/examples/t7-thumb.webp" /></a></p>
+<p><a href="trimesh-object/#t7">Reusing cached operators</a></p>
+</li>
+</ul>
+</div>
+<h2 id="creating-meshes"><a href="creation/">Creating meshes</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="creation/#c1"><img alt="Primitive gallery" src="../assets/examples/c1-thumb.webp" /></a></p>
+<p><a href="creation/#c1">Primitive gallery</a></p>
+</li>
+<li>
+<p><a href="creation/#c2"><img alt="Parametric surfaces" src="../assets/examples/c2-thumb.webp" /></a></p>
+<p><a href="creation/#c2">Parametric surfaces</a></p>
+</li>
+<li>
+<p><a href="creation/#c3"><img alt="Revolve, extrude and sweep" src="../assets/examples/c3-thumb.webp" /></a></p>
+<p><a href="creation/#c3">Revolve, extrude and sweep</a></p>
+</li>
+<li>
+<p><a href="creation/#c4"><img alt="Polygon triangulation" src="../assets/examples/c4-thumb.webp" /></a></p>
+<p><a href="creation/#c4">Polygon triangulation</a></p>
+</li>
+<li>
+<p><a href="creation/#c5"><img alt="Terrain triangulation" src="../assets/examples/c5-thumb.webp" /></a></p>
+<p><a href="creation/#c5">Terrain triangulation</a></p>
+</li>
+</ul>
+</div>
+<h2 id="inspecting-meshes"><a href="inspect/">Inspecting meshes</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="inspect/#i1"><img alt="Validation masks: boundaries, non-manifold elements, orientation" src="../assets/examples/i1-thumb.webp" /></a></p>
+<p><a href="inspect/#i1">Validation masks: boundaries, non-manifold elements, orientation</a></p>
+</li>
+<li>
+<p><a href="inspect/#i2"><img alt="Bounding boxes, principal axes and a fitted plane" src="../assets/examples/i2-thumb.webp" /></a></p>
+<p><a href="inspect/#i2">Bounding boxes, principal axes and a fitted plane</a></p>
+</li>
+<li>
+<p><a href="inspect/#i3"><img alt="Connected components: label, split, remove debris" src="../assets/examples/i3-thumb.webp" /></a></p>
+<p><a href="inspect/#i3">Connected components: label, split, remove debris</a></p>
+</li>
+<li>
+<p><a href="inspect/#i4"><img alt="Feature edges: creases, convexity and boundaries" src="../assets/examples/i4-thumb.webp" /></a></p>
+<p><a href="inspect/#i4">Feature edges: creases, convexity and boundaries</a></p>
+</li>
+<li>
+<p><a href="inspect/#i5"><img alt="Triangle quality" src="../assets/examples/i5-thumb.webp" /></a></p>
+<p><a href="inspect/#i5">Triangle quality</a></p>
+</li>
+<li>
+<p><a href="inspect/#i6"><img alt="Normals: per face, per vertex, per corner" src="../assets/examples/i6-thumb.webp" /></a></p>
+<p><a href="inspect/#i6">Normals: per face, per vertex, per corner</a></p>
+</li>
+<li>
+<p><a href="inspect/#i7"><img alt="Homology generators: handles and tunnels" src="../assets/examples/i7-thumb.webp" /></a></p>
+<p><a href="inspect/#i7">Homology generators: handles and tunnels</a></p>
+</li>
+<li>
+<p><a href="inspect/#i8"><img alt="Self-intersections and mesh-mesh collisions" src="../assets/examples/i8-thumb.webp" /></a></p>
+<p><a href="inspect/#i8">Self-intersections and mesh-mesh collisions</a></p>
+</li>
+</ul>
+</div>
+<h2 id="curvature-and-differential-operators"><a href="differential/">Curvature and differential operators</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="differential/#d1"><img alt="Gaussian and mean curvature" src="../assets/examples/d1-thumb.webp" /></a></p>
+<p><a href="differential/#d1">Gaussian and mean curvature</a></p>
+</li>
+<li>
+<p><a href="differential/#d2"><img alt="Principal curvatures and directions" src="../assets/examples/d2-thumb.webp" /></a></p>
+<p><a href="differential/#d2">Principal curvatures and directions</a></p>
+</li>
+<li>
+<p><a href="differential/#d3"><img alt="Gradient of a scalar field" src="../assets/examples/d3-thumb.webp" /></a></p>
+<p><a href="differential/#d3">Gradient of a scalar field</a></p>
+</li>
+<li>
+<p><a href="differential/#d4"><img alt="Laplace equation with Dirichlet conditions" src="../assets/examples/d4-thumb.webp" /></a></p>
+<p><a href="differential/#d4">Laplace equation with Dirichlet conditions</a></p>
+</li>
+<li>
+<p><a href="differential/#d5"><img alt="Polyharmonic surfaces (k = 1, 2, 3)" src="../assets/examples/d5-thumb.webp" /></a></p>
+<p><a href="differential/#d5">Polyharmonic surfaces (k = 1, 2, 3)</a></p>
+</li>
+<li>
+<p><a href="differential/#d6"><img alt="Handle-based biharmonic deformation" src="../assets/examples/d6-thumb.webp" /></a></p>
+<p><a href="differential/#d6">Handle-based biharmonic deformation</a></p>
+</li>
+<li>
+<p><a href="differential/#d7"><img alt="Isolines of a scalar field" src="../assets/examples/d7-thumb.webp" /></a></p>
+<p><a href="differential/#d7">Isolines of a scalar field</a></p>
+</li>
+<li>
+<p><a href="differential/#d8"><img alt="Smoothing a noisy scalar field" src="../assets/examples/d8-thumb.webp" /></a></p>
+<p><a href="differential/#d8">Smoothing a noisy scalar field</a></p>
+</li>
+<li>
+<p><a href="differential/#d9"><img alt="Ambient occlusion, obscurance, shape diameter and thickness" src="../assets/examples/d9-thumb.webp" /></a></p>
+<p><a href="differential/#d9">Ambient occlusion, obscurance, shape diameter and thickness</a></p>
+</li>
+<li>
+<p><a href="differential/#d10"><img alt="Maximal inscribed spheres and the medial axis" src="../assets/examples/d10-thumb.webp" /></a></p>
+<p><a href="differential/#d10">Maximal inscribed spheres and the medial axis</a></p>
+</li>
+</ul>
+</div>
+<h2 id="geodesics-and-tangent-fields"><a href="geodesics/">Geodesics and tangent fields</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="geodesics/#g1"><img alt="Geodesic distance with the heat method" src="../assets/examples/g1-thumb.webp" /></a></p>
+<p><a href="geodesics/#g1">Geodesic distance with the heat method</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g2"><img alt="Shortest paths: along the edges and across the faces" src="../assets/examples/g2-thumb.webp" /></a></p>
+<p><a href="geodesics/#g2">Shortest paths: along the edges and across the faces</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g3"><img alt="Tracing straightest geodesics (the exponential map)" src="../assets/examples/g3-thumb.webp" /></a></p>
+<p><a href="geodesics/#g3">Tracing straightest geodesics (the exponential map)</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g4"><img alt="Signed distance to curves on the surface" src="../assets/examples/g4-thumb.webp" /></a></p>
+<p><a href="geodesics/#g4">Signed distance to curves on the surface</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g5"><img alt="Extending values from a few points (geodesic Voronoi cells)" src="../assets/examples/g5-thumb.webp" /></a></p>
+<p><a href="geodesics/#g5">Extending values from a few points (geodesic Voronoi cells)</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g6"><img alt="Parallel transport and the logarithmic map" src="../assets/examples/g6-thumb.webp" /></a></p>
+<p><a href="geodesics/#g6">Parallel transport and the logarithmic map</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g7"><img alt="Smoothing a tangent vector field" src="../assets/examples/g7-thumb.webp" /></a></p>
+<p><a href="geodesics/#g7">Smoothing a tangent vector field</a></p>
+</li>
+<li>
+<p><a href="geodesics/#g8"><img alt="Shortening non-contractible loops" src="../assets/examples/g8-thumb.webp" /></a></p>
+<p><a href="geodesics/#g8">Shortening non-contractible loops</a></p>
+</li>
+</ul>
+</div>
+<h2 id="parametrization-and-textures"><a href="parametrization/">Parametrization and textures</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="parametrization/#p1"><img alt="Flattening a disk: Tutte, harmonic, LSCM and ARAP" src="../assets/examples/p1-thumb.webp" /></a></p>
+<p><a href="parametrization/#p1">Flattening a disk: Tutte, harmonic, LSCM and ARAP</a></p>
+</li>
+<li>
+<p><a href="parametrization/#p2"><img alt="Cutting a closed surface open along seams" src="../assets/examples/p2-thumb.webp" /></a></p>
+<p><a href="parametrization/#p2">Cutting a closed surface open along seams</a></p>
+</li>
+<li>
+<p><a href="parametrization/#p3"><img alt="Baking a field into a texture and reading it back" src="../assets/examples/p3-thumb.webp" /></a></p>
+<p><a href="parametrization/#p3">Baking a field into a texture and reading it back</a></p>
+</li>
+</ul>
+</div>
+<h2 id="smoothing-and-fairing"><a href="smoothing/">Smoothing and fairing</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="smoothing/#s1"><img alt="Denoising a scan: four smoothing filters" src="../assets/examples/s1-thumb.webp" /></a></p>
+<p><a href="smoothing/#s1">Denoising a scan: four smoothing filters</a></p>
+</li>
+<li>
+<p><a href="smoothing/#s2"><img alt="Smoothing without shrinking" src="../assets/examples/s2-thumb.webp" /></a></p>
+<p><a href="smoothing/#s2">Smoothing without shrinking</a></p>
+</li>
+<li>
+<p><a href="smoothing/#s3"><img alt="Mean-curvature flow" src="../assets/examples/s3-thumb.webp" /></a></p>
+<p><a href="smoothing/#s3">Mean-curvature flow</a></p>
+</li>
+<li>
+<p><a href="smoothing/#s4"><img alt="Removing spikes and sharpening detail" src="../assets/examples/s4-thumb.webp" /></a></p>
+<p><a href="smoothing/#s4">Removing spikes and sharpening detail</a></p>
+</li>
+<li>
+<p><a href="smoothing/#s5"><img alt="Fairing a region and smoothing its rim" src="../assets/examples/s5-thumb.webp" /></a></p>
+<p><a href="smoothing/#s5">Fairing a region and smoothing its rim</a></p>
+</li>
+<li>
+<p><a href="smoothing/#s6"><img alt="Relaxation: even triangle areas and a local surface fit" src="../assets/examples/s6-thumb.webp" /></a></p>
+<p><a href="smoothing/#s6">Relaxation: even triangle areas and a local surface fit</a></p>
+</li>
+</ul>
+</div>
+<h2 id="remeshing-and-simplification"><a href="remesh/">Remeshing and simplification</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="remesh/#r1"><img alt="Quadric decimation" src="../assets/examples/r1-thumb.webp" /></a></p>
+<p><a href="remesh/#r1">Quadric decimation</a></p>
+</li>
+<li>
+<p><a href="remesh/#r2"><img alt="Vertex clustering" src="../assets/examples/r2-thumb.webp" /></a></p>
+<p><a href="remesh/#r2">Vertex clustering</a></p>
+</li>
+<li>
+<p><a href="remesh/#r3"><img alt="Subdivision: midpoint and Loop" src="../assets/examples/r3-thumb.webp" /></a></p>
+<p><a href="remesh/#r3">Subdivision: midpoint and Loop</a></p>
+</li>
+<li>
+<p><a href="remesh/#r4"><img alt="Isotropic remeshing" src="../assets/examples/r4-thumb.webp" /></a></p>
+<p><a href="remesh/#r4">Isotropic remeshing</a></p>
+</li>
+<li>
+<p><a href="remesh/#r5"><img alt="Refining to a size or to the surrounding density" src="../assets/examples/r5-thumb.webp" /></a></p>
+<p><a href="remesh/#r5">Refining to a size or to the surrounding density</a></p>
+</li>
+<li>
+<p><a href="remesh/#r6"><img alt="Delaunay flips and the intrinsic Delaunay triangulation" src="../assets/examples/r6-thumb.webp" /></a></p>
+<p><a href="remesh/#r6">Delaunay flips and the intrinsic Delaunay triangulation</a></p>
+</li>
+</ul>
+</div>
+<h2 id="repairing-meshes"><a href="repair/">Repairing meshes</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="repair/#h1"><img alt="Filling holes: fan, minimum weight and smooth" src="../assets/examples/h1-thumb.webp" /></a></p>
+<p><a href="repair/#h1">Filling holes: fan, minimum weight and smooth</a></p>
+</li>
+<li>
+<p><a href="repair/#h2"><img alt="Filling only the small holes" src="../assets/examples/h2-thumb.webp" /></a></p>
+<p><a href="repair/#h2">Filling only the small holes</a></p>
+</li>
+<li>
+<p><a href="repair/#h3"><img alt="Stitching two boundaries" src="../assets/examples/h3-thumb.webp" /></a></p>
+<p><a href="repair/#h3">Stitching two boundaries</a></p>
+</li>
+<li>
+<p><a href="repair/#h4"><img alt="Joining nearby open components" src="../assets/examples/h4-thumb.webp" /></a></p>
+<p><a href="repair/#h4">Joining nearby open components</a></p>
+</li>
+<li>
+<p><a href="repair/#h5"><img alt="Degenerate triangles, duplicate vertices and T-vertices" src="../assets/examples/h5-thumb.webp" /></a></p>
+<p><a href="repair/#h5">Degenerate triangles, duplicate vertices and T-vertices</a></p>
+</li>
+<li>
+<p><a href="repair/#h6"><img alt="Consistent and outward orientation" src="../assets/examples/h6-thumb.webp" /></a></p>
+<p><a href="repair/#h6">Consistent and outward orientation</a></p>
+</li>
+<li>
+<p><a href="repair/#h7"><img alt="Non-manifold repair" src="../assets/examples/h7-thumb.webp" /></a></p>
+<p><a href="repair/#h7">Non-manifold repair</a></p>
+</li>
+<li>
+<p><a href="repair/#h8"><img alt="Fixing self-intersections" src="../assets/examples/h8-thumb.webp" /></a></p>
+<p><a href="repair/#h8">Fixing self-intersections</a></p>
+</li>
+<li>
+<p><a href="repair/#h9"><img alt="Removing tunnels" src="../assets/examples/h9-thumb.webp" /></a></p>
+<p><a href="repair/#h9">Removing tunnels</a></p>
+</li>
+<li>
+<p><a href="repair/#h10"><img alt="One-call watertight solid" src="../assets/examples/h10-thumb.webp" /></a></p>
+<p><a href="repair/#h10">One-call watertight solid</a></p>
+</li>
+</ul>
+</div>
+<h2 id="offsets-voxels-and-implicit-surfaces"><a href="volumes/">Offsets, voxels and implicit surfaces</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="volumes/#v1"><img alt="Offset, thicken and shell" src="../assets/examples/v1-thumb.webp" /></a></p>
+<p><a href="volumes/#v1">Offset, thicken and shell</a></p>
+</li>
+<li>
+<p><a href="volumes/#v2"><img alt="Signed distance field and its level sets" src="../assets/examples/v2-thumb.webp" /></a></p>
+<p><a href="volumes/#v2">Signed distance field and its level sets</a></p>
+</li>
+<li>
+<p><a href="volumes/#v3"><img alt="Meshing an implicit surface: the gyroid" src="../assets/examples/v3-thumb.webp" /></a></p>
+<p><a href="volumes/#v3">Meshing an implicit surface: the gyroid</a></p>
+</li>
+<li>
+<p><a href="volumes/#v4"><img alt="Voxelizing meshes and point clouds" src="../assets/examples/v4-thumb.webp" /></a></p>
+<p><a href="volumes/#v4">Voxelizing meshes and point clouds</a></p>
+</li>
+<li>
+<p><a href="volumes/#v5"><img alt="Voxel morphology" src="../assets/examples/v5-thumb.webp" /></a></p>
+<p><a href="volumes/#v5">Voxel morphology</a></p>
+</li>
+<li>
+<p><a href="volumes/#v6"><img alt="Voxel CSG (approximate booleans)" src="../assets/examples/v6-thumb.webp" /></a></p>
+<p><a href="volumes/#v6">Voxel CSG (approximate booleans)</a></p>
+</li>
+<li>
+<p><a href="volumes/#v7"><img alt="Generalized winding number" src="../assets/examples/v7-thumb.webp" /></a></p>
+<p><a href="volumes/#v7">Generalized winding number</a></p>
+</li>
+</ul>
+</div>
+<h2 id="spatial-queries"><a href="queries/">Spatial queries</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="queries/#q1"><img alt="Ray casting a depth and a normal image" src="../assets/examples/q1-thumb.webp" /></a></p>
+<p><a href="queries/#q1">Ray casting a depth and a normal image</a></p>
+</li>
+<li>
+<p><a href="queries/#q2"><img alt="Rays against a mesh: hits and misses" src="../assets/examples/q2-thumb.webp" /></a></p>
+<p><a href="queries/#q2">Rays against a mesh: hits and misses</a></p>
+</li>
+<li>
+<p><a href="queries/#q3"><img alt="Closest points on a surface" src="../assets/examples/q3-thumb.webp" /></a></p>
+<p><a href="queries/#q3">Closest points on a surface</a></p>
+</li>
+<li>
+<p><a href="queries/#q4"><img alt="Distance between two surfaces" src="../assets/examples/q4-thumb.webp" /></a></p>
+<p><a href="queries/#q4">Distance between two surfaces</a></p>
+</li>
+<li>
+<p><a href="queries/#q5"><img alt="Inside / outside classification" src="../assets/examples/q5-thumb.webp" /></a></p>
+<p><a href="queries/#q5">Inside / outside classification</a></p>
+</li>
+<li>
+<p><a href="queries/#q6"><img alt="Nearest neighbours and ball queries" src="../assets/examples/q6-thumb.webp" /></a></p>
+<p><a href="queries/#q6">Nearest neighbours and ball queries</a></p>
+</li>
+<li>
+<p><a href="queries/#q7"><img alt="Chamfer and Hausdorff distances" src="../assets/examples/q7-thumb.webp" /></a></p>
+<p><a href="queries/#q7">Chamfer and Hausdorff distances</a></p>
+</li>
+</ul>
+</div>
+<h2 id="cutting-slicing-and-selection"><a href="cutting/">Cutting, slicing and selection</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="cutting/#x1"><img alt="Plane sections and slice stacks" src="../assets/examples/x1-thumb.webp" /></a></p>
+<p><a href="cutting/#x1">Plane sections and slice stacks</a></p>
+</li>
+<li>
+<p><a href="cutting/#x2"><img alt="Clipping and capping" src="../assets/examples/x2-thumb.webp" /></a></p>
+<p><a href="cutting/#x2">Clipping and capping</a></p>
+</li>
+<li>
+<p><a href="cutting/#x3"><img alt="Clipping with a scalar field" src="../assets/examples/x3-thumb.webp" /></a></p>
+<p><a href="cutting/#x3">Clipping with a scalar field</a></p>
+</li>
+<li>
+<p><a href="cutting/#x4"><img alt="Cropping to a box" src="../assets/examples/x4-thumb.webp" /></a></p>
+<p><a href="cutting/#x4">Cropping to a box</a></p>
+</li>
+<li>
+<p><a href="cutting/#x5"><img alt="Growing and shrinking selections" src="../assets/examples/x5-thumb.webp" /></a></p>
+<p><a href="cutting/#x5">Growing and shrinking selections</a></p>
+</li>
+<li>
+<p><a href="cutting/#x6"><img alt="Polyline processing" src="../assets/examples/x6-thumb.webp" /></a></p>
+<p><a href="cutting/#x6">Polyline processing</a></p>
+</li>
+</ul>
+</div>
+<h2 id="point-clouds"><a href="points/">Point clouds</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="points/#pc1"><img alt="Down-sampling: voxel grid, farthest point and blue noise" src="../assets/examples/pc1-thumb.webp" /></a></p>
+<p><a href="points/#pc1">Down-sampling: voxel grid, farthest point and blue noise</a></p>
+</li>
+<li>
+<p><a href="points/#pc2"><img alt="Surface sampling: uniform, Poisson disk and blue noise" src="../assets/examples/pc2-thumb.webp" /></a></p>
+<p><a href="points/#pc2">Surface sampling: uniform, Poisson disk and blue noise</a></p>
+</li>
+<li>
+<p><a href="points/#pc3"><img alt="Normal estimation" src="../assets/examples/pc3-thumb.webp" /></a></p>
+<p><a href="points/#pc3">Normal estimation</a></p>
+</li>
+<li>
+<p><a href="points/#pc4"><img alt="Outlier removal: statistical, radius and probabilistic" src="../assets/examples/pc4-thumb.webp" /></a></p>
+<p><a href="points/#pc4">Outlier removal: statistical, radius and probabilistic</a></p>
+</li>
+<li>
+<p><a href="points/#pc5"><img alt="Cloud-to-cloud distance" src="../assets/examples/pc5-thumb.webp" /></a></p>
+<p><a href="points/#pc5">Cloud-to-cloud distance</a></p>
+</li>
+<li>
+<p><a href="points/#pc6"><img alt="Interpolating sparse samples onto a surface" src="../assets/examples/pc6-thumb.webp" /></a></p>
+<p><a href="points/#pc6">Interpolating sparse samples onto a surface</a></p>
+</li>
+<li>
+<p><a href="points/#pc7"><img alt="Convex-hull points and half-space tests" src="../assets/examples/pc7-thumb.webp" /></a></p>
+<p><a href="points/#pc7">Convex-hull points and half-space tests</a></p>
+</li>
+</ul>
+</div>
+<h2 id="reconstruction-and-registration"><a href="reconstruction/">Reconstruction and registration</a></h2>
+<div class="grid cards ordito-gallery">
+<ul>
+<li>
+<p><a href="reconstruction/#rr1"><img alt="Screened Poisson reconstruction" src="../assets/examples/rr1-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr1">Screened Poisson reconstruction</a></p>
+</li>
+<li>
+<p><a href="reconstruction/#rr2"><img alt="Ball pivoting" src="../assets/examples/rr2-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr2">Ball pivoting</a></p>
+</li>
+<li>
+<p><a href="reconstruction/#rr3"><img alt="Local triangulation and uniform resampling" src="../assets/examples/rr3-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr3">Local triangulation and uniform resampling</a></p>
+</li>
+<li>
+<p><a href="reconstruction/#rr4"><img alt="Rigid ICP: point-to-point vs point-to-plane" src="../assets/examples/rr4-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr4">Rigid ICP: point-to-point vs point-to-plane</a></p>
+</li>
+<li>
+<p><a href="reconstruction/#rr5"><img alt="Robust ICP with outliers" src="../assets/examples/rr5-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr5">Robust ICP with outliers</a></p>
+</li>
+<li>
+<p><a href="reconstruction/#rr6"><img alt="Known correspondences: Procrustes alignment" src="../assets/examples/rr6-thumb.webp" /></a></p>
+<p><a href="reconstruction/#rr6">Known correspondences: Procrustes alignment</a></p>
+</li>
+</ul>
+</div>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"..","features":["navigation.tabs","navigation.sections","navigation.indexes","navigation.top","toc.follow","content.code.copy","search.suggest"],"redirect":null,"search":"../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"default":"stable","provider":"mike"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.8b1c90bd.min.js"></script>
+      
+    
+  </body>
+</html>

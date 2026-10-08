@@ -1,0 +1,6548 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Triangular mesh library based on NVIDIA Warp">
+      
+      
+      
+        <link rel="canonical" href="https://lucagrementieri.github.io/ordito/stable/api/ordito/halfedge/">
+      
+      
+        <link rel="prev" href="../triangles/">
+      
+      
+        <link rel="next" href="../adjacency/">
+      
+      
+        
+      
+      
+      <link rel="icon" href="../../../assets/ordito.svg">
+      <meta name="generator" content="zensical-0.0.69">
+    
+    
+      
+        <title>halfedge - ordito</title>
+      
+    
+    
+      
+        
+      
+      <link rel="stylesheet" href="../../../assets/stylesheets/modern/main.e15858d4.min.css">
+      
+        
+          
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/modern/palette.b27955a4.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Inter:300,300i,400,400i,500,500i,700,700i%7CJetBrains+Mono:400,400i,700,700i&amp;display=fallback">
+        <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_scope.pathname.endsWith("/")||(__md_scope=new URL(__md_scope.pathname+"/",location)),__md_hash=e=>[...e].reduce(((e,t)=>(e<<5)-e+t.charCodeAt(0)),0),__md_get=(e,t=localStorage,_=__md_scope)=>JSON.parse(t.getItem(_.pathname+"."+e)),__md_set=(e,t,_=localStorage,a=__md_scope)=>{try{_.setItem(a.pathname+"."+e,JSON.stringify(t))}catch(e){}},document.documentElement.setAttribute("data-platform",navigator.platform)</script>
+    
+      
+
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer" aria-hidden="true"></label>
+    <div data-md-component="skip">
+      <a href="#__skip" class="md-skip">
+        Skip to content
+      </a>
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+<header class="md-header" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="ordito" class="md-header__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../../../assets/ordito.svg" alt="ordito">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer" aria-label="Navigation">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-menu" viewBox="0 0 24 24"><path d="M4 5h16M4 12h16M4 19h16"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            ordito
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              halfedge
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: light)" data-md-color-scheme="default" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="(prefers-color-scheme: dark)" data-md-color-scheme="slate" data-md-color-primary="custom" data-md-color-accent="custom"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      
+      
+        <label class="md-header__button md-icon" for="__search" aria-label="Search">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-search" viewBox="0 0 24 24"><path d="m21 21-4.34-4.34"/><circle cx="11" cy="11" r="8"/></svg>
+        </label>
+        <div class="md-search" data-md-component="search" role="dialog" aria-label="Search">
+  <button type="button" class="md-search__button">
+    Search
+  </button>
+</div>
+      
+    
+    <div class="md-header__source">
+      
+        <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      
+    </div>
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+            
+<nav class="md-tabs" aria-label="Tabs" data-md-component="tabs">
+  <div class="md-grid">
+    <ul class="md-tabs__list">
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../.." class="md-tabs__link">
+        
+  
+  Home
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../getting-started/" class="md-tabs__link">
+        
+  
+  Getting started
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../concepts/" class="md-tabs__link">
+        
+  
+  Concepts
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../cookbook/" class="md-tabs__link">
+          
+  
+  Cookbook
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../examples/" class="md-tabs__link">
+          
+  
+  Examples
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    
+      
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item">
+        <a href="../../../migrating-from/" class="md-tabs__link">
+          
+  
+  Migrating from another library
+
+        </a>
+      </li>
+    
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../performance/" class="md-tabs__link">
+        
+  
+  Performance
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+  
+    <li class="md-tabs__item">
+      <a href="../../../benchmarks/" class="md-tabs__link">
+        
+  
+  Benchmarks
+
+      </a>
+    </li>
+  
+
+      
+        
+  
+  
+  
+    
+  
+  
+    
+      
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+    
+      
+  
+  
+  
+    
+  
+  
+    
+      
+      
+        
+      
+    
+    
+    
+    
+      <li class="md-tabs__item md-tabs__item--active">
+        <a href="../creation/" class="md-tabs__link">
+          
+  
+  API Reference
+
+        </a>
+      </li>
+    
+  
+
+    
+  
+
+      
+    </ul>
+  </div>
+</nav>
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+  
+
+
+<nav class="md-nav md-nav--primary md-nav--lifted" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="ordito" class="md-nav__button md-logo" aria-label="ordito" data-md-component="logo">
+      
+  <img src="../../../assets/ordito.svg" alt="ordito">
+
+    </a>
+    ordito
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/lucagrementieri/ordito" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 7.3.1 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2026 Fonticons, Inc.--><path fill="currentColor" d="M439.6 236.1 244 40.5c-5.4-5.5-12.8-8.5-20.4-8.5s-15 3-20.4 8.4L162.5 81l51.5 51.5c27.1-9.1 52.7 16.8 43.4 43.7l49.7 49.7c34.2-11.8 61.2 31 35.5 56.7-26.5 26.5-70.2-2.9-56-37.3L240.3 199v121.9c25.3 12.5 22.3 41.8 9.1 55-6.4 6.4-15.2 10.1-24.3 10.1s-17.8-3.6-24.3-10.1c-17.6-17.6-11.1-46.9 11.2-56v-123c-20.8-8.5-24.6-30.7-18.6-45L142.6 101 8.5 235.1C3 240.6 0 247.9 0 255.5s3 15 8.5 20.4l195.6 195.7c5.4 5.4 12.7 8.4 20.4 8.4s15-3 20.4-8.4l194.7-194.7c5.4-5.4 8.4-12.8 8.4-20.4s-3-15-8.4-20.4"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Home
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Getting started
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../concepts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Concepts
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../cookbook/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cookbook
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_4" id="__nav_4_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Cookbook
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../cookbook/clean-and-remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cleaning and remeshing a rough mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../cookbook/point-cloud-to-surface/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point cloud to watertight surface
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../cookbook/geodesic-distance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesic distance fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../cookbook/align-two-scans/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Aligning two scans
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../examples/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Examples
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_5" id="__nav_5_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Examples
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/trimesh-object/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  The Trimesh object
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Creating meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/inspect/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Inspecting meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/differential/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curvature and differential operators
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/geodesics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics and tangent fields
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Parametrization and textures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Smoothing and fairing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Remeshing and simplification
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Repairing meshes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/volumes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Offsets, voxels and implicit surfaces
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/queries/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/cutting/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Cutting, slicing and selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../examples/reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Reconstruction and registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+      
+        
+          
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <div class="md-nav__link md-nav__container">
+            <a href="../../../migrating-from/" class="md-nav__link ">
+              
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Migrating from another library
+
+    
+  </span>
+  
+  
+
+            </a>
+            
+              
+              <label class="md-nav__link " for="__nav_6" id="__nav_6_label" tabindex="0">
+                <span class="md-nav__icon md-icon"></span>
+              </label>
+            
+          </div>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Migrating from another library
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/trimesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  trimesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/igl/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  libigl
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/open3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Open3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/meshlab/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  MeshLab / PyMeshLab
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/potpourri3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  potpourri3d
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../migrating-from/pytorch3d/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  PyTorch3D
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../performance/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Performance
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../benchmarks/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Benchmarks
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+        
+        
+      
+      
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  API Reference
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  API Reference
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_1" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_1" id="__nav_9_1_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Primitives & creation
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_1_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_1">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Primitives & creation
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../creation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  creation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_2" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_9_2" id="__nav_9_2_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh structure & topology
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_2_label" aria-expanded="true">
+            <label class="md-nav__title" for="__nav_9_2">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh structure & topology
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../mesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  mesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../vertices/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  vertices
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../edges/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  edges
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../triangles/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  triangles
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  halfedge
+
+    
+  </span>
+  
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="././" class="md-nav__link md-nav__link--active">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  halfedge
+
+    
+  </span>
+  
+  
+
+      </a>
+      
+        
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.halfedge_twins" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        halfedge_twins
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.require_matching_twins" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        require_matching_twins
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.vertex_one_rings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        vertex_one_rings
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.halfedge_mates" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        halfedge_mates
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.key_ordered_halfedges" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        key_ordered_halfedges
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../adjacency/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  adjacency
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../boundary/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  boundary
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../selection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  selection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../validation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  validation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../homology/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  homology
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../tangent_space/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  tangent_space
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_3" id="__nav_9_3_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Measures & shape descriptors
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_3_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_3">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Measures & shape descriptors
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../measures/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  measures
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../curvature/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  curvature
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../bounds/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  bounds
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../visibility/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  visibility
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_4" id="__nav_9_4_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Mesh editing & repair
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_4_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_4">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Mesh editing & repair
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../transform/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  transform
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../repair/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  repair
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../holes/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  holes
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../combine/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  combine
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../remesh/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  remesh
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../smoothing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  smoothing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../seams/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  seams
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../levelset/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  levelset
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_5" id="__nav_9_5_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Spatial queries
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_5_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_5">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Spatial queries
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../proximity/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  proximity
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../ray/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  ray
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../neighbors/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  neighbors
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../intersection/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  intersection
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../metrics/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  metrics
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_6" id="__nav_9_6_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Point clouds, voxels & reconstruction
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_6_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_6">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Point clouds, voxels & reconstruction
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../points/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  points
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../sample/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  sample
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../voxels/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  voxels
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reconstruction/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reconstruction
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../registration/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  registration
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_7" id="__nav_9_7_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Operators & solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_7_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_7">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Operators & solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../laplacian/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  laplacian
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../energies/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  energies
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../linalg/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  linalg
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cholesky/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  cholesky
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../interpolation/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  interpolation
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../parametrization/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  parametrization
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_8" id="__nav_9_8_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Geodesics & heat-method solvers
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_8_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_8">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Geodesics & heat-method solvers
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../geodesic_walk/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  geodesic_walk
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../heat/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  heat
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_9" id="__nav_9_9_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Curves
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_9_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_9">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Curves
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../polyline/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  polyline
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_10" id="__nav_9_10_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Attributes & I/O
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_10_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_10">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Attributes & I/O
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../texture/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  texture
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../io/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  io
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    
+    
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+        
+      
+    
+    
+    
+      
+      
+        
+          
+          
+        
+      
+    
+    
+    <li class="md-nav__item md-nav__item--section md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9_11" >
+        
+          
+          <label class="md-nav__link" for="__nav_9_11" id="__nav_9_11_label" tabindex="">
+            
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  Arrays & infrastructure
+
+    
+  </span>
+  
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        
+          <nav class="md-nav" data-md-level="2" aria-labelledby="__nav_9_11_label" aria-expanded="false">
+            <label class="md-nav__title" for="__nav_9_11">
+              <span class="md-nav__icon md-icon"></span>
+              
+  
+  Arrays & infrastructure
+
+            </label>
+            <ul class="md-nav__list" data-md-scrollfix>
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../array/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  array
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../reduce/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  reduce
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../grouping/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  grouping
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../graph/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  graph
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../typing/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  typing
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+                
+                  
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../constants/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+  constants
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+                
+              
+            </ul>
+          </nav>
+        
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  
+                    
+                    
+                    
+                      
+                    
+                    
+                      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+                      <div class="md-sidebar-button__wrapper">
+                        <label class="md-sidebar-button" for="__toc"></label>
+                      </div>
+                    
+                  
+                  <div class="md-sidebar__inner">
+                    
+
+
+<nav class="md-nav md-nav--secondary" aria-label="On this page">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      On this page
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.halfedge_twins" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        halfedge_twins
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.require_matching_twins" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        require_matching_twins
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.vertex_one_rings" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        vertex_one_rings
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.halfedge_mates" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        halfedge_mates
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#ordito.halfedge.key_ordered_halfedges" class="md-nav__link">
+    <span class="md-ellipsis">
+      <span class="md-typeset">
+        key_ordered_halfedges
+      </span>
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              
+              <article class="md-content__inner md-typeset">
+                <a id="__skip" tabindex="-1"></a>
+                
+                  
+
+
+<div class="doc doc-object doc-module">
+
+
+
+<h1 id="ordito.halfedge" class="doc doc-heading">
+            <span class="doc doc-object-name doc-module-name">ordito.halfedge</span>
+
+
+</h1>
+
+    <div class="doc doc-contents first">
+
+        <p>Implicit halfedge connectivity: edge twins and counter-clockwise vertex one-rings.</p>
+<p>There is no halfedge <em>structure</em> here, only an indexing convention over the flat face buffer every
+other module already uses. Halfedge <code>h = 3 * f + k</code> runs from <code>faces[3f + k]</code> to
+<code>faces[3f + (k + 1) % 3]</code>, so <code>next</code> and <code>prev</code> are index arithmetic and the halfedges of a
+face are consecutive. Exactly two arrays are needed to navigate a mesh:
+<a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a> to cross an edge, and
+<a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a> to rotate around a vertex.</p>
+<p>This is the ordering the tangent-space machinery in <a class="autorefs autorefs-internal" title="ordito.tangent_space" href="../tangent_space/#ordito.tangent_space"><code>ordito.tangent_space</code></a>
+is built on: a rotational order of the outgoing halfedges at a vertex is what turns per-corner
+angles into a polar coordinate system on the tangent plane.</p>
+
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../edges/#ordito.edges">edges</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../tangent_space/#ordito.tangent_space">tangent_space</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-children">
+
+
+
+
+
+
+
+
+
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.halfedge.halfedge_twins" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">halfedge_twins</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">halfedge_twins</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Opposite halfedge of every halfedge, or <code>-1</code> on a boundary.</p>
+<p>Halfedges <code>h = 3 * f + k</code> and <code>twins[h]</code> traverse the same undirected edge in opposite
+directions, so <code>twins[twins[h]] == h</code> wherever <code>twins[h] != -1</code>. The halfedges left at
+<code>-1</code> are exactly the mesh boundary, in the orientation
+<a class="autorefs autorefs-internal" title="oriented_boundary_edges" href="../boundary/#ordito.boundary.oriented_boundary_edges"><code>oriented_boundary_edges</code></a> reports.</p>
+<p>The <em>opposite directions</em> half of that is a precondition on the mesh and not merely a property
+of the output: it holds only where the two faces meeting at an edge are wound consistently, so
+an inconsistently wound or non-orientable mesh is rejected rather than paired up. Every
+consumer of this table -- the counter-clockwise rotation
+<a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a> walks above all -- reads a twin as "the
+same edge, seen from the other side", and there is no other side to see when both halfedges
+face the same way.</p>
+<p>On a CUDA device with <code>n_vertices</code> given, undirected edges are matched by a counting sort of
+the halfedges into per-vertex buckets, each edge under its lower-degree endpoint so that a
+high-valence vertex keeps a small bucket, and each halfedge scans its bucket for the others.
+Otherwise each sorted endpoint pair is packed into one key
+(<a class="autorefs autorefs-internal" title="hash_indices_rows" href="../grouping/#ordito.grouping.hash_indices_rows"><code>hash_indices_rows</code></a>), the keys are radix-sorted with the
+halfedge index as payload, and the runs of equal keys are paired up -- the same mechanism
+behind <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> and
+<a class="autorefs autorefs-internal" title="face_adjacency" href="../adjacency/#ordito.adjacency.face_adjacency"><code>face_adjacency</code></a>, without materializing the unique edge
+list. Both give the same table and reject the same meshes.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> triangle index buffer.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_vertices</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total vertex count, which must exceed every index in <code>faces</code>: it sizes the per-vertex
+buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:
+when <code>None</code> the keys pack against
+<a class="autorefs autorefs-internal" title="INDEX_RADIX_PAIR
+
+
+  
+      module-attribute
+  " href="../constants/#ordito.constants.INDEX_RADIX_PAIR"><code>constants.INDEX_RADIX_PAIR</code></a>, which bounds every
+<code>int32</code> index without a reduction and orders the keys the same way.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>validate</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>True</code> (the default), reject the two meshes below. <code>False</code> skips the check and
+the synchronization it costs, for a caller that knows <code>faces</code> is edge-manifold and
+consistently wound -- one that built it from a buffer already validated here by an
+operation that preserves both; on a mesh that is neither the table is garbage.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> twin halfedge indices on <code>faces.device</code>; <code>-1</code> for boundary
+halfedges.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If an undirected edge carries three or more halfedges (an edge-non-manifold mesh, where
+"the" opposite halfedge is not defined), or if both halfedges of an edge traverse it in the
+<em>same</em> direction, which is what an inconsistently wound or non-orientable mesh looks like
+from here and which leaves the "opposite directions" guarantee above with nothing to mean.
+Detecting either needs one 8-byte readback, so under <code>validate</code> this function
+synchronizes once.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a>
+<a class="autorefs autorefs-internal" title="face_adjacency" href="../adjacency/#ordito.adjacency.face_adjacency"><code>face_adjacency</code></a>
+<a class="autorefs autorefs-internal" title="oriented_boundary_edges" href="../boundary/#ordito.boundary.oriented_boundary_edges"><code>oriented_boundary_edges</code></a></p>
+</details>
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Geodesics & heat-method solvers</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.descend_field">descend_field</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop">shorten_loop</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop_with_offsets">shorten_loop_with_offsets</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.trace_from_face">trace_from_face</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.trace_from_vertex">trace_from_vertex</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh editing & repair</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../repair/#ordito.repair">repair</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../repair/#ordito.repair.flatten_degree3_vertices">flatten_degree3_vertices</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../repair/#ordito.repair.remove_degree3_vertices">remove_degree3_vertices</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../repair/#ordito.repair.straighten_boundary">straighten_boundary</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../seams/#ordito.seams">seams</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../seams/#ordito.seams.cut_along_edges">cut_along_edges</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../seams/#ordito.seams.uv_seam_edges">uv_seam_edges</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.halfedge">halfedge</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.halfedge_mates">halfedge_mates</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.require_matching_twins">require_matching_twins</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.vertex_one_rings">vertex_one_rings</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../mesh/#ordito.mesh">mesh</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../mesh/#ordito.mesh.Trimesh.halfedge_twins">halfedge_twins</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../selection/#ordito.selection">selection</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../selection/#ordito.selection.faces_left_of_contour">faces_left_of_contour</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../tangent_space/#ordito.tangent_space">tangent_space</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../tangent_space/#ordito.tangent_space.halfedge_transport_angles">halfedge_transport_angles</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../triangles/#ordito.triangles">triangles</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../triangles/#ordito.triangles.corner_normals">corner_normals</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/halfedge.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal"> 42</span>
+<span class="normal"> 43</span>
+<span class="normal"> 44</span>
+<span class="normal"> 45</span>
+<span class="normal"> 46</span>
+<span class="normal"> 47</span>
+<span class="normal"> 48</span>
+<span class="normal"> 49</span>
+<span class="normal"> 50</span>
+<span class="normal"> 51</span>
+<span class="normal"> 52</span>
+<span class="normal"> 53</span>
+<span class="normal"> 54</span>
+<span class="normal"> 55</span>
+<span class="normal"> 56</span>
+<span class="normal"> 57</span>
+<span class="normal"> 58</span>
+<span class="normal"> 59</span>
+<span class="normal"> 60</span>
+<span class="normal"> 61</span>
+<span class="normal"> 62</span>
+<span class="normal"> 63</span>
+<span class="normal"> 64</span>
+<span class="normal"> 65</span>
+<span class="normal"> 66</span>
+<span class="normal"> 67</span>
+<span class="normal"> 68</span>
+<span class="normal"> 69</span>
+<span class="normal"> 70</span>
+<span class="normal"> 71</span>
+<span class="normal"> 72</span>
+<span class="normal"> 73</span>
+<span class="normal"> 74</span>
+<span class="normal"> 75</span>
+<span class="normal"> 76</span>
+<span class="normal"> 77</span>
+<span class="normal"> 78</span>
+<span class="normal"> 79</span>
+<span class="normal"> 80</span>
+<span class="normal"> 81</span>
+<span class="normal"> 82</span>
+<span class="normal"> 83</span>
+<span class="normal"> 84</span>
+<span class="normal"> 85</span>
+<span class="normal"> 86</span>
+<span class="normal"> 87</span>
+<span class="normal"> 88</span>
+<span class="normal"> 89</span>
+<span class="normal"> 90</span>
+<span class="normal"> 91</span>
+<span class="normal"> 92</span>
+<span class="normal"> 93</span>
+<span class="normal"> 94</span>
+<span class="normal"> 95</span>
+<span class="normal"> 96</span>
+<span class="normal"> 97</span>
+<span class="normal"> 98</span>
+<span class="normal"> 99</span>
+<span class="normal">100</span>
+<span class="normal">101</span>
+<span class="normal">102</span>
+<span class="normal">103</span>
+<span class="normal">104</span>
+<span class="normal">105</span>
+<span class="normal">106</span>
+<span class="normal">107</span>
+<span class="normal">108</span>
+<span class="normal">109</span>
+<span class="normal">110</span>
+<span class="normal">111</span>
+<span class="normal">112</span>
+<span class="normal">113</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_twins</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Opposite halfedge of every halfedge, or ``-1`` on a boundary.</span>
+
+<span class="sd">    Halfedges ``h = 3 * f + k`` and ``twins[h]`` traverse the same undirected edge in opposite</span>
+<span class="sd">    directions, so ``twins[twins[h]] == h`` wherever ``twins[h] != -1``. The halfedges left at</span>
+<span class="sd">    ``-1`` are exactly the mesh boundary, in the orientation</span>
+<span class="sd">    [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges] reports.</span>
+
+<span class="sd">    The *opposite directions* half of that is a precondition on the mesh and not merely a property</span>
+<span class="sd">    of the output: it holds only where the two faces meeting at an edge are wound consistently, so</span>
+<span class="sd">    an inconsistently wound or non-orientable mesh is rejected rather than paired up. Every</span>
+<span class="sd">    consumer of this table -- the counter-clockwise rotation</span>
+<span class="sd">    [`vertex_one_rings`][ordito.halfedge.vertex_one_rings] walks above all -- reads a twin as "the</span>
+<span class="sd">    same edge, seen from the other side", and there is no other side to see when both halfedges</span>
+<span class="sd">    face the same way.</span>
+
+<span class="sd">    On a CUDA device with ``n_vertices`` given, undirected edges are matched by a counting sort of</span>
+<span class="sd">    the halfedges into per-vertex buckets, each edge under its lower-degree endpoint so that a</span>
+<span class="sd">    high-valence vertex keeps a small bucket, and each halfedge scans its bucket for the others.</span>
+<span class="sd">    Otherwise each sorted endpoint pair is packed into one key</span>
+<span class="sd">    ([`hash_indices_rows`][ordito.grouping.hash_indices_rows]), the keys are radix-sorted with the</span>
+<span class="sd">    halfedge index as payload, and the runs of equal keys are paired up -- the same mechanism</span>
+<span class="sd">    behind [`edges_unique`][ordito.edges.edges_unique] and</span>
+<span class="sd">    [`face_adjacency`][ordito.adjacency.face_adjacency], without materializing the unique edge</span>
+<span class="sd">    list. Both give the same table and reject the same meshes.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    n_vertices</span>
+<span class="sd">        Total vertex count, which must exceed every index in ``faces``: it sizes the per-vertex</span>
+<span class="sd">        buckets, or bounds the sort keys. Passing it is an optimization rather than a requirement:</span>
+<span class="sd">        when ``None`` the keys pack against</span>
+<span class="sd">        [`constants.INDEX_RADIX_PAIR`][ordito.constants.INDEX_RADIX_PAIR], which bounds every</span>
+<span class="sd">        ``int32`` index without a reduction and orders the keys the same way.</span>
+<span class="sd">    validate</span>
+<span class="sd">        When ``True`` (the default), reject the two meshes below. ``False`` skips the check and</span>
+<span class="sd">        the synchronization it costs, for a caller that knows ``faces`` is edge-manifold and</span>
+<span class="sd">        consistently wound -- one that built it from a buffer already validated here by an</span>
+<span class="sd">        operation that preserves both; on a mesh that is neither the table is garbage.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces,)`` twin halfedge indices on ``faces.device``; ``-1`` for boundary</span>
+<span class="sd">        halfedges.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If an undirected edge carries three or more halfedges (an edge-non-manifold mesh, where</span>
+<span class="sd">        "the" opposite halfedge is not defined), or if both halfedges of an edge traverse it in the</span>
+<span class="sd">        *same* direction, which is what an inconsistently wound or non-orientable mesh looks like</span>
+<span class="sd">        from here and which leaves the "opposite directions" guarantee above with nothing to mean.</span>
+<span class="sd">        Detecting either needs one 8-byte readback, so under ``validate`` this function</span>
+<span class="sd">        synchronizes once.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]</span>
+<span class="sd">    [`face_adjacency`][ordito.adjacency.face_adjacency]</span>
+<span class="sd">    [`oriented_boundary_edges`][ordito.boundary.oriented_boundary_edges]</span>
+<span class="sd">    """</span>
+    <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">2</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">faces</span><span class="o">.</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">twins</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">validate</span> <span class="ow">and</span> <span class="n">twins</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">_raise_twin_defects</span><span class="p">(</span><span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+    <span class="k">return</span> <span class="n">twins</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.halfedge.require_matching_twins" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">require_matching_twins</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">require_matching_twins</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Raise unless a precomputed twin table really is one for <code>faces</code>.</p>
+<p>The contract behind every <code>twins=</code> keyword in the package, checked in both of its halves. The
+table is indexed <em>by halfedge</em> (<code>h = 3 * f + k</code>), so it is meaningful only for the face buffer
+it was built from: a table cached from a smaller mesh is not merely stale -- it is short, and
+the kernels that walk it index past its end, which on the CPU device reads the host heap rather
+than raising. And each entry must be the <em>opposite</em> halfedge, since that is what every consumer
+reads it as -- the counter-clockwise rotation
+<a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a> walks, the transport angle
+<a class="autorefs autorefs-internal" title="ordito.tangent_space" href="../tangent_space/#ordito.tangent_space"><code>ordito.tangent_space</code></a> pairs across an edge, and the dual edge
+<a class="autorefs autorefs-internal" title="ordito.selection" href="../selection/#ordito.selection"><code>ordito.selection</code></a> floods through. Public because those callers live in
+three modules and must all reject the same table the same way; only the first reaches the
+rotation, so a check placed in that walk would leave the other two unguarded.</p>
+<p>What it checks is every entry that <em>is</em> present; what it cannot check is an entry that is
+absent. A <code>-1</code> claims "this halfedge has no twin", and deciding whether that is true means
+finding out whether another halfedge spans the same edge -- which is the sort
+<a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a> does and the work <code>twins=</code> exists to skip,
+so demanding it here would make the keyword pointless. A table of nothing but <code>-1</code> therefore
+passes; it is not silent, because a fabricated boundary shortens the fan and
+<a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a> then raises on the ring it could not
+complete.</p>
+<p>The length half is free. The structural half costs one launch over the halfedges and one
+readback, and is only ever paid when a table was actually supplied -- the path a caller takes to
+skip an edge build, a hash, a radix sort, a launch and a readback, so verifying the shortcut
+stays a fraction of what taking it saved. A table this package produced can never fail it, since
+<code>halfedge_twins</code> establishes the property by construction.</p>
+<p>The device half of the same contract is the caller's own <code>require_same_device</code> call, which
+covers every argument it received rather than this pair alone.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> triangle index buffer.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>twins</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> candidate <a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a> table, or
+<code>None</code>.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>twins</code> is given and its length is not <code>3 * n_faces</code>, or if any of its entries is
+not the opposite halfedge of its own index. <code>-1</code> is a boundary halfedge and is always
+accepted.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>
+    Produces the table.
+<a class="autorefs autorefs-internal" title="vertex_one_rings" href="./#ordito.halfedge.vertex_one_rings"><code>vertex_one_rings</code></a></p>
+</details>
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.halfedge">halfedge</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.vertex_one_rings">vertex_one_rings</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../selection/#ordito.selection">selection</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../selection/#ordito.selection.faces_left_of_contour">faces_left_of_contour</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../tangent_space/#ordito.tangent_space">tangent_space</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../tangent_space/#ordito.tangent_space.halfedge_transport_angles">halfedge_transport_angles</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/halfedge.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">116</span>
+<span class="normal">117</span>
+<span class="normal">118</span>
+<span class="normal">119</span>
+<span class="normal">120</span>
+<span class="normal">121</span>
+<span class="normal">122</span>
+<span class="normal">123</span>
+<span class="normal">124</span>
+<span class="normal">125</span>
+<span class="normal">126</span>
+<span class="normal">127</span>
+<span class="normal">128</span>
+<span class="normal">129</span>
+<span class="normal">130</span>
+<span class="normal">131</span>
+<span class="normal">132</span>
+<span class="normal">133</span>
+<span class="normal">134</span>
+<span class="normal">135</span>
+<span class="normal">136</span>
+<span class="normal">137</span>
+<span class="normal">138</span>
+<span class="normal">139</span>
+<span class="normal">140</span>
+<span class="normal">141</span>
+<span class="normal">142</span>
+<span class="normal">143</span>
+<span class="normal">144</span>
+<span class="normal">145</span>
+<span class="normal">146</span>
+<span class="normal">147</span>
+<span class="normal">148</span>
+<span class="normal">149</span>
+<span class="normal">150</span>
+<span class="normal">151</span>
+<span class="normal">152</span>
+<span class="normal">153</span>
+<span class="normal">154</span>
+<span class="normal">155</span>
+<span class="normal">156</span>
+<span class="normal">157</span>
+<span class="normal">158</span>
+<span class="normal">159</span>
+<span class="normal">160</span>
+<span class="normal">161</span>
+<span class="normal">162</span>
+<span class="normal">163</span>
+<span class="normal">164</span>
+<span class="normal">165</span>
+<span class="normal">166</span>
+<span class="normal">167</span>
+<span class="normal">168</span>
+<span class="normal">169</span>
+<span class="normal">170</span>
+<span class="normal">171</span>
+<span class="normal">172</span>
+<span class="normal">173</span>
+<span class="normal">174</span>
+<span class="normal">175</span>
+<span class="normal">176</span>
+<span class="normal">177</span>
+<span class="normal">178</span>
+<span class="normal">179</span>
+<span class="normal">180</span>
+<span class="normal">181</span>
+<span class="normal">182</span>
+<span class="normal">183</span>
+<span class="normal">184</span>
+<span class="normal">185</span>
+<span class="normal">186</span>
+<span class="normal">187</span>
+<span class="normal">188</span>
+<span class="normal">189</span>
+<span class="normal">190</span>
+<span class="normal">191</span>
+<span class="normal">192</span>
+<span class="normal">193</span>
+<span class="normal">194</span>
+<span class="normal">195</span>
+<span class="normal">196</span>
+<span class="normal">197</span>
+<span class="normal">198</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Raise unless a precomputed twin table really is one for ``faces``.</span>
+
+<span class="sd">    The contract behind every ``twins=`` keyword in the package, checked in both of its halves. The</span>
+<span class="sd">    table is indexed *by halfedge* (``h = 3 * f + k``), so it is meaningful only for the face buffer</span>
+<span class="sd">    it was built from: a table cached from a smaller mesh is not merely stale -- it is short, and</span>
+<span class="sd">    the kernels that walk it index past its end, which on the CPU device reads the host heap rather</span>
+<span class="sd">    than raising. And each entry must be the *opposite* halfedge, since that is what every consumer</span>
+<span class="sd">    reads it as -- the counter-clockwise rotation</span>
+<span class="sd">    [`vertex_one_rings`][ordito.halfedge.vertex_one_rings] walks, the transport angle</span>
+<span class="sd">    [`ordito.tangent_space`][ordito.tangent_space] pairs across an edge, and the dual edge</span>
+<span class="sd">    [`ordito.selection`][ordito.selection] floods through. Public because those callers live in</span>
+<span class="sd">    three modules and must all reject the same table the same way; only the first reaches the</span>
+<span class="sd">    rotation, so a check placed in that walk would leave the other two unguarded.</span>
+
+<span class="sd">    What it checks is every entry that *is* present; what it cannot check is an entry that is</span>
+<span class="sd">    absent. A ``-1`` claims "this halfedge has no twin", and deciding whether that is true means</span>
+<span class="sd">    finding out whether another halfedge spans the same edge -- which is the sort</span>
+<span class="sd">    [`halfedge_twins`][ordito.halfedge.halfedge_twins] does and the work ``twins=`` exists to skip,</span>
+<span class="sd">    so demanding it here would make the keyword pointless. A table of nothing but ``-1`` therefore</span>
+<span class="sd">    passes; it is not silent, because a fabricated boundary shortens the fan and</span>
+<span class="sd">    [`vertex_one_rings`][ordito.halfedge.vertex_one_rings] then raises on the ring it could not</span>
+<span class="sd">    complete.</span>
+
+<span class="sd">    The length half is free. The structural half costs one launch over the halfedges and one</span>
+<span class="sd">    readback, and is only ever paid when a table was actually supplied -- the path a caller takes to</span>
+<span class="sd">    skip an edge build, a hash, a radix sort, a launch and a readback, so verifying the shortcut</span>
+<span class="sd">    stays a fraction of what taking it saved. A table this package produced can never fail it, since</span>
+<span class="sd">    ``halfedge_twins`` establishes the property by construction.</span>
+
+<span class="sd">    The device half of the same contract is the caller's own ``require_same_device`` call, which</span>
+<span class="sd">    covers every argument it received rather than this pair alone.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    twins</span>
+<span class="sd">        ``(3 * n_faces,)`` candidate [`halfedge_twins`][ordito.halfedge.halfedge_twins] table, or</span>
+<span class="sd">        ``None``.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``twins`` is given and its length is not ``3 * n_faces``, or if any of its entries is</span>
+<span class="sd">        not the opposite halfedge of its own index. ``-1`` is a boundary halfedge and is always</span>
+<span class="sd">        accepted.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`halfedge_twins`][ordito.halfedge.halfedge_twins]</span>
+<span class="sd">        Produces the table.</span>
+<span class="sd">    [`vertex_one_rings`][ordito.halfedge.vertex_one_rings]</span>
+<span class="sd">    """</span>
+    <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="n">twins</span><span class="o">.</span><span class="n">size</span> <span class="o">!=</span> <span class="n">n_halfedges</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"twins must have one entry per halfedge, got </span><span class="si">{</span><span class="n">twins</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2"> for </span><span class="si">{</span><span class="n">n_halfedges</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="sa">f</span><span class="s2">"halfedges (</span><span class="si">{</span><span class="n">n_halfedges</span><span class="w"> </span><span class="o">//</span><span class="w"> </span><span class="mi">3</span><span class="si">}</span><span class="s2"> faces)"</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">mispaired</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">count_mispaired_twins</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">mispaired</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="c1"># Unavoidable: the count only exists on the device, and the whole point is to raise on it</span>
+    <span class="c1"># before a consumer walks the table.</span>
+    <span class="n">n_mispaired</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">read_scalar</span><span class="p">(</span><span class="n">mispaired</span><span class="p">,</span> <span class="mi">0</span><span class="p">))</span>
+    <span class="k">if</span> <span class="n">n_mispaired</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"twins must hold the opposite halfedge of each halfedge of faces: </span><span class="si">{</span><span class="n">n_mispaired</span><span class="si">}</span><span class="s2"> "</span>
+            <span class="sa">f</span><span class="s2">"entry/entries do not. A twin must run back along the same edge (so "</span>
+            <span class="sa">f</span><span class="s2">"twins[twins[h]] == h and the two endpoints swap), or be -1 on a boundary. Build the "</span>
+            <span class="sa">f</span><span class="s2">"table with halfedge_twins for the same face buffer."</span>
+        <span class="p">)</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.halfedge.vertex_one_rings" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">vertex_one_rings</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">vertex_one_rings</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">twins</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">],</span>
+<span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Outgoing halfedges of every vertex in counter-clockwise order, as a CSR buffer.</p>
+<p>Returned values first and offsets second, the package's packed-buffer convention -- see
+<a class="autorefs autorefs-internal" title="pack_1d_arrays" href="../array/#ordito.array.pack_1d_arrays"><code>array.pack_1d_arrays</code></a>, which states it.</p>
+<p>Vertex <code>v</code> owns <code>ring_halfedges[offsets[v] : offsets[v + 1]]</code>, each entry a halfedge leaving
+<code>v</code>; the ring size is therefore the number of incident <em>faces</em>, one less than the number of
+adjacent vertices at a boundary vertex. Consecutive entries are consecutive around <code>v</code> in the
+direction the face orientation calls counter-clockwise, because the rotation <code>h -&gt;
+twins[prev(h)]</code> steps from edge <code>v -&gt; a</code> to edge <code>v -&gt; b</code> inside the CCW-oriented face
+<code>(v, a, b)</code>.</p>
+<p>A boundary vertex starts its ring at its outgoing boundary halfedge (the clockwise-most edge of
+its fan) so the whole fan is enumerated; interior vertices start at their lowest-indexed
+outgoing halfedge, which makes the rotational <em>order</em> canonical but its starting point
+arbitrary. Isolated vertices get an empty row.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> triangle index buffer.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>twins</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> precomputed <a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>. When
+<code>None</code> it is computed here.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_vertices</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total vertex count (the number of CSR rows). When <code>None</code> it is inferred with
+<a class="autorefs autorefs-internal" title="index_bound" href="../array/#ordito.array.index_bound"><code>array.index_bound</code></a>, which costs a host readback.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>validate</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>When <code>True</code> (the default), reject a pinched vertex, and forward the same choice to
+<a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a> when <code>twins</code> is computed here.
+<code>False</code> skips both checks and their synchronizations, for a caller that knows <code>faces</code>
+is manifold and consistently wound.</p>
+              </div>
+            </td>
+            <td>
+                  <code>True</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>ring_halfedges</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> outgoing halfedges, grouped and ordered per vertex.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>offsets</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices + 1,)</code> CSR row starts; <code>offsets[-1] == 3 * n_faces</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>is_boundary</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.bool">bool</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_vertices,)</code> flags; <code>True</code> where the vertex is incident to a boundary edge.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>twins</code> is given and is not a twin table for <code>faces</code>
+(<a class="autorefs autorefs-internal" title="require_matching_twins" href="./#ordito.halfedge.require_matching_twins"><code>require_matching_twins</code></a> states what that
+means), or if a vertex's rotation closes before its whole fan is covered — a pinched,
+vertex-non-manifold vertex where two fans meet at a single index, under <code>validate</code>.
+Detecting the latter needs one 4-byte readback, so under <code>validate</code> this function
+synchronizes once.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#RuntimeError">RuntimeError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>faces</code> and <code>twins</code> are not all on one device.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>
+<a class="autorefs autorefs-internal" title="require_matching_twins" href="./#ordito.halfedge.require_matching_twins"><code>require_matching_twins</code></a>
+<a class="autorefs autorefs-internal" title="halfedge_tangent_angles" href="../tangent_space/#ordito.tangent_space.halfedge_tangent_angles"><code>halfedge_tangent_angles</code></a></p>
+</details>
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Arrays & infrastructure</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../array/#ordito.array">array</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../array/#ordito.array.pack_1d_arrays">pack_1d_arrays</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Geodesics & heat-method solvers</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../geodesic_walk/#ordito.geodesic_walk">geodesic_walk</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop">shorten_loop</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.shorten_loop_with_offsets">shorten_loop_with_offsets</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../geodesic_walk/#ordito.geodesic_walk.trace_from_vertex">trace_from_vertex</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh editing & repair</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../repair/#ordito.repair">repair</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../repair/#ordito.repair.flatten_degree3_vertices">flatten_degree3_vertices</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../repair/#ordito.repair.remove_degree3_vertices">remove_degree3_vertices</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../adjacency/#ordito.adjacency">adjacency</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../adjacency/#ordito.adjacency.vertex_face_adjacency">vertex_face_adjacency</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.halfedge">halfedge</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.halfedge_twins">halfedge_twins</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.require_matching_twins">require_matching_twins</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../mesh/#ordito.mesh">mesh</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="../mesh/#ordito.mesh.Trimesh">Trimesh</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../mesh/#ordito.mesh.Trimesh.vertex_one_rings">vertex_one_rings</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../tangent_space/#ordito.tangent_space">tangent_space</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../tangent_space/#ordito.tangent_space.halfedge_tangent_angles">halfedge_tangent_angles</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../tangent_space/#ordito.tangent_space.vertex_tangent_frames">vertex_tangent_frames</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/halfedge.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">201</span>
+<span class="normal">202</span>
+<span class="normal">203</span>
+<span class="normal">204</span>
+<span class="normal">205</span>
+<span class="normal">206</span>
+<span class="normal">207</span>
+<span class="normal">208</span>
+<span class="normal">209</span>
+<span class="normal">210</span>
+<span class="normal">211</span>
+<span class="normal">212</span>
+<span class="normal">213</span>
+<span class="normal">214</span>
+<span class="normal">215</span>
+<span class="normal">216</span>
+<span class="normal">217</span>
+<span class="normal">218</span>
+<span class="normal">219</span>
+<span class="normal">220</span>
+<span class="normal">221</span>
+<span class="normal">222</span>
+<span class="normal">223</span>
+<span class="normal">224</span>
+<span class="normal">225</span>
+<span class="normal">226</span>
+<span class="normal">227</span>
+<span class="normal">228</span>
+<span class="normal">229</span>
+<span class="normal">230</span>
+<span class="normal">231</span>
+<span class="normal">232</span>
+<span class="normal">233</span>
+<span class="normal">234</span>
+<span class="normal">235</span>
+<span class="normal">236</span>
+<span class="normal">237</span>
+<span class="normal">238</span>
+<span class="normal">239</span>
+<span class="normal">240</span>
+<span class="normal">241</span>
+<span class="normal">242</span>
+<span class="normal">243</span>
+<span class="normal">244</span>
+<span class="normal">245</span>
+<span class="normal">246</span>
+<span class="normal">247</span>
+<span class="normal">248</span>
+<span class="normal">249</span>
+<span class="normal">250</span>
+<span class="normal">251</span>
+<span class="normal">252</span>
+<span class="normal">253</span>
+<span class="normal">254</span>
+<span class="normal">255</span>
+<span class="normal">256</span>
+<span class="normal">257</span>
+<span class="normal">258</span>
+<span class="normal">259</span>
+<span class="normal">260</span>
+<span class="normal">261</span>
+<span class="normal">262</span>
+<span class="normal">263</span>
+<span class="normal">264</span>
+<span class="normal">265</span>
+<span class="normal">266</span>
+<span class="normal">267</span>
+<span class="normal">268</span>
+<span class="normal">269</span>
+<span class="normal">270</span>
+<span class="normal">271</span>
+<span class="normal">272</span>
+<span class="normal">273</span>
+<span class="normal">274</span>
+<span class="normal">275</span>
+<span class="normal">276</span>
+<span class="normal">277</span>
+<span class="normal">278</span>
+<span class="normal">279</span>
+<span class="normal">280</span>
+<span class="normal">281</span>
+<span class="normal">282</span>
+<span class="normal">283</span>
+<span class="normal">284</span>
+<span class="normal">285</span>
+<span class="normal">286</span>
+<span class="normal">287</span>
+<span class="normal">288</span>
+<span class="normal">289</span>
+<span class="normal">290</span>
+<span class="normal">291</span>
+<span class="normal">292</span>
+<span class="normal">293</span>
+<span class="normal">294</span>
+<span class="normal">295</span>
+<span class="normal">296</span>
+<span class="normal">297</span>
+<span class="normal">298</span>
+<span class="normal">299</span>
+<span class="normal">300</span>
+<span class="normal">301</span>
+<span class="normal">302</span>
+<span class="normal">303</span>
+<span class="normal">304</span>
+<span class="normal">305</span>
+<span class="normal">306</span>
+<span class="normal">307</span>
+<span class="normal">308</span>
+<span class="normal">309</span>
+<span class="normal">310</span>
+<span class="normal">311</span>
+<span class="normal">312</span>
+<span class="normal">313</span>
+<span class="normal">314</span>
+<span class="normal">315</span>
+<span class="normal">316</span>
+<span class="normal">317</span>
+<span class="normal">318</span>
+<span class="normal">319</span>
+<span class="normal">320</span>
+<span class="normal">321</span>
+<span class="normal">322</span>
+<span class="normal">323</span>
+<span class="normal">324</span>
+<span class="normal">325</span>
+<span class="normal">326</span>
+<span class="normal">327</span>
+<span class="normal">328</span>
+<span class="normal">329</span>
+<span class="normal">330</span>
+<span class="normal">331</span>
+<span class="normal">332</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">vertex_one_rings</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">twins</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">validate</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">True</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">]]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Outgoing halfedges of every vertex in counter-clockwise order, as a CSR buffer.</span>
+
+<span class="sd">    Returned values first and offsets second, the package's packed-buffer convention -- see</span>
+<span class="sd">    [`array.pack_1d_arrays`][ordito.array.pack_1d_arrays], which states it.</span>
+
+<span class="sd">    Vertex ``v`` owns ``ring_halfedges[offsets[v] : offsets[v + 1]]``, each entry a halfedge leaving</span>
+<span class="sd">    ``v``; the ring size is therefore the number of incident *faces*, one less than the number of</span>
+<span class="sd">    adjacent vertices at a boundary vertex. Consecutive entries are consecutive around ``v`` in the</span>
+<span class="sd">    direction the face orientation calls counter-clockwise, because the rotation ``h -&gt;</span>
+<span class="sd">    twins[prev(h)]`` steps from edge ``v -&gt; a`` to edge ``v -&gt; b`` inside the CCW-oriented face</span>
+<span class="sd">    ``(v, a, b)``.</span>
+
+<span class="sd">    A boundary vertex starts its ring at its outgoing boundary halfedge (the clockwise-most edge of</span>
+<span class="sd">    its fan) so the whole fan is enumerated; interior vertices start at their lowest-indexed</span>
+<span class="sd">    outgoing halfedge, which makes the rotational *order* canonical but its starting point</span>
+<span class="sd">    arbitrary. Isolated vertices get an empty row.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    twins</span>
+<span class="sd">        ``(3 * n_faces,)`` precomputed [`halfedge_twins`][ordito.halfedge.halfedge_twins]. When</span>
+<span class="sd">        ``None`` it is computed here.</span>
+<span class="sd">    n_vertices</span>
+<span class="sd">        Total vertex count (the number of CSR rows). When ``None`` it is inferred with</span>
+<span class="sd">        [`array.index_bound`][ordito.array.index_bound], which costs a host readback.</span>
+<span class="sd">    validate</span>
+<span class="sd">        When ``True`` (the default), reject a pinched vertex, and forward the same choice to</span>
+<span class="sd">        [`halfedge_twins`][ordito.halfedge.halfedge_twins] when ``twins`` is computed here.</span>
+<span class="sd">        ``False`` skips both checks and their synchronizations, for a caller that knows ``faces``</span>
+<span class="sd">        is manifold and consistently wound.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    ring_halfedges : wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces,)`` outgoing halfedges, grouped and ordered per vertex.</span>
+<span class="sd">    offsets : wp.array[wp.int32]</span>
+<span class="sd">        ``(n_vertices + 1,)`` CSR row starts; ``offsets[-1] == 3 * n_faces``.</span>
+<span class="sd">    is_boundary : wp.array[wp.bool]</span>
+<span class="sd">        ``(n_vertices,)`` flags; ``True`` where the vertex is incident to a boundary edge.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``twins`` is given and is not a twin table for ``faces``</span>
+<span class="sd">        ([`require_matching_twins`][ordito.halfedge.require_matching_twins] states what that</span>
+<span class="sd">        means), or if a vertex's rotation closes before its whole fan is covered — a pinched,</span>
+<span class="sd">        vertex-non-manifold vertex where two fans meet at a single index, under ``validate``.</span>
+<span class="sd">        Detecting the latter needs one 4-byte readback, so under ``validate`` this function</span>
+<span class="sd">        synchronizes once.</span>
+<span class="sd">    RuntimeError</span>
+<span class="sd">        If ``faces`` and ``twins`` are not all on one device.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`halfedge_twins`][ordito.halfedge.halfedge_twins]</span>
+<span class="sd">    [`require_matching_twins`][ordito.halfedge.require_matching_twins]</span>
+<span class="sd">    [`halfedge_tangent_angles`][ordito.tangent_space.halfedge_tangent_angles]</span>
+<span class="sd">    """</span>
+    <span class="n">require_same_device</span><span class="p">(</span><span class="n">faces</span><span class="o">=</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="o">=</span><span class="n">twins</span><span class="p">)</span>
+    <span class="n">require_matching_twins</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">)</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">array</span><span class="o">.</span><span class="n">index_bound</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
+    <span class="c1"># Slots 0-1 are the twin table's two rejections when this call derives it, slot 2 the pinch</span>
+    <span class="c1"># count below: one buffer, so a validated call reads all three back once rather than once for</span>
+    <span class="c1"># the twins and again for the rings. The twin rejections are still raised first.</span>
+    <span class="n">defect_counts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="mi">3</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">check_twins</span> <span class="o">=</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">validate</span>
+    <span class="k">if</span> <span class="n">twins</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="c1"># The pairing writes only the first two slots, so it takes the buffer whole.</span>
+        <span class="n">twins</span> <span class="o">=</span> <span class="n">_pair_halfedges</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">,</span> <span class="n">defect_counts</span><span class="p">)</span>
+
+    <span class="n">offsets</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span> <span class="o">+</span> <span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">ring_halfedges</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="o">-</span><span class="mi">1</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">or</span> <span class="n">n_vertices</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">check_twins</span> <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">_raise_twin_defects</span><span class="p">(</span><span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">2</span><span class="p">))</span>
+        <span class="k">return</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">_launch</span><span class="o">.</span><span class="n">zeros</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+
+    <span class="c1"># One pass over the halfedges sizes the CSR and picks every vertex's two start candidates (row</span>
+    <span class="c1"># 0 over all outgoing halfedges, row 1 over the boundary ones): every face contributes exactly</span>
+    <span class="c1"># one outgoing halfedge per corner, so a vertex's ring size is how often it appears in the</span>
+    <span class="c1"># flat face buffer -- no walk needed. The degrees are counted straight into ``offsets[1:]``,</span>
+    <span class="c1"># already zeroed, and scanned there in place.</span>
+    <span class="n">counts</span> <span class="o">=</span> <span class="n">offsets</span><span class="p">[</span><span class="mi">1</span><span class="p">:]</span>
+    <span class="n">candidate_starts</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">full</span><span class="p">((</span><span class="mi">2</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">),</span> <span class="n">INT32_MAX</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">ring_degrees_and_starts</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">counts</span><span class="p">,</span> <span class="n">candidate_starts</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="c1"># The inclusive scan in place leaves the leading zero, giving the usual CSR bounds.</span>
+    <span class="c1"># Deliberately NOT od.array.counts_to_offsets: that helper always reads the total back, and</span>
+    <span class="c1"># this function never needs it (it is n_halfedges, known on the host). Converting for symmetry</span>
+    <span class="c1"># would add a device synchronization where there is currently none.</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">array_scan</span><span class="p">(</span><span class="n">counts</span><span class="p">,</span> <span class="n">out_array</span><span class="o">=</span><span class="n">counts</span><span class="p">,</span> <span class="n">inclusive</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+
+    <span class="c1"># The walk resolves each vertex's start and boundary flag from the candidates itself, and</span>
+    <span class="c1"># writes the flag for every vertex, so ``is_boundary`` needs no initial value.</span>
+    <span class="n">is_boundary</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">bool</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">incomplete</span> <span class="o">=</span> <span class="n">defect_counts</span><span class="p">[</span><span class="mi">2</span><span class="p">:</span><span class="mi">3</span><span class="p">]</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">write_one_rings</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">candidate_starts</span><span class="p">,</span> <span class="n">twins</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">is_boundary</span><span class="p">,</span> <span class="n">incomplete</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="k">if</span> <span class="ow">not</span> <span class="n">validate</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">is_boundary</span>
+    <span class="n">counts_np</span> <span class="o">=</span> <span class="n">read_values</span><span class="p">(</span><span class="n">defect_counts</span><span class="p">,</span> <span class="mi">0</span><span class="p">,</span> <span class="mi">3</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">check_twins</span><span class="p">:</span>
+        <span class="n">_raise_twin_defects</span><span class="p">(</span><span class="n">counts_np</span><span class="p">)</span>
+    <span class="n">n_incomplete</span> <span class="o">=</span> <span class="nb">int</span><span class="p">(</span><span class="n">counts_np</span><span class="p">[</span><span class="mi">2</span><span class="p">])</span>
+    <span class="k">if</span> <span class="n">n_incomplete</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"vertex_one_rings requires a vertex-manifold mesh: </span><span class="si">{</span><span class="n">n_incomplete</span><span class="si">}</span><span class="s2"> vertex/vertices "</span>
+            <span class="sa">f</span><span class="s2">"have more than one fan of faces (a pinch point)."</span>
+        <span class="p">)</span>
+    <span class="k">return</span> <span class="n">ring_halfedges</span><span class="p">,</span> <span class="n">offsets</span><span class="p">,</span> <span class="n">is_boundary</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.halfedge.halfedge_mates" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">halfedge_mates</span>
+
+
+</h2>
+          <div class="doc-overloads">
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">halfedge_mates</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_key_order</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">False</span><span class="p">]</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+</code></pre></div><div class="doc-signature highlight"><pre><span></span><code><span class="nf">halfedge_mates</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_key_order</span><span class="p">:</span> <span class="n">Literal</span><span class="p">[</span><span class="kc">True</span><span class="p">],</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+</code></pre></div>          </div>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">halfedge_mates</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">return_key_order</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="p">(</span>
+    <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+    <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]</span>
+<span class="p">)</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Every halfedge's partner on its undirected edge, whatever its direction, or how many share it.</p>
+<p>The unvalidated pairing beneath <a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>, for
+consumers that classify edges rather than walk them. Halfedge <code>h = 3 * f + k</code> gets:</p>
+<ul>
+<li>the other halfedge (<code>&gt;= 0</code>) when exactly two halfedges span its edge, whichever way each
+  runs, so a pair wound the same way is a pair here where <code>halfedge_twins</code> rejects it;</li>
+<li><code>-1</code> when it spans its edge alone (a boundary edge);</li>
+<li><code>-2 - lowest</code> when three or more do, <code>lowest</code> being the smallest halfedge on that edge,
+  so a consumer can act on each such edge once.</li>
+</ul>
+<p>So <code>mates[mates[h]] == h</code> wherever <code>mates[h] &gt;= 0</code>, and a pair is acted on once by its
+lower halfedge (<code>h &lt; mates[h]</code>). Nothing is checked and nothing is read back.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> triangle index buffer.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_vertices</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total vertex count, which must exceed every index in <code>faces</code>. When it is given, a CUDA
+device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the
+CPU, through a sort of the edge keys, which is correct for any non-negative indices
+without it. Both give the same table.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>return_key_order</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#bool">bool</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Also return the sort's permutation when the pairing sorted the edge keys, for a caller
+that wants some of the halfedges in key order
+(<a class="autorefs autorefs-internal" title="key_ordered_halfedges" href="./#ordito.halfedge.key_ordered_halfedges"><code>key_ordered_halfedges</code></a>).</p>
+              </div>
+            </td>
+            <td>
+                  <code>False</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+<th>Name</th>          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+<td><code>mates</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> mate codes on <code>faces.device</code>.</p>
+              </div>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+<td><code>key_order</code></td>            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Only with <code>return_key_order</code>: <code>(3 * n_faces,)</code> halfedge indices in ascending
+undirected key order, ties by index -- the order of
+<a class="autorefs autorefs-internal" title="sorted_face_edge_keys" href="../adjacency/#ordito.adjacency.sorted_face_edge_keys"><code>sorted_face_edge_keys</code></a> -- or <code>None</code> when the
+pairing bucketed instead of sorting.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="halfedge_twins" href="./#ordito.halfedge.halfedge_twins"><code>halfedge_twins</code></a>
+<a class="autorefs autorefs-internal" title="key_ordered_halfedges" href="./#ordito.halfedge.key_ordered_halfedges"><code>key_ordered_halfedges</code></a>
+<a class="autorefs autorefs-internal" title="sorted_face_edge_keys" href="../adjacency/#ordito.adjacency.sorted_face_edge_keys"><code>sorted_face_edge_keys</code></a></p>
+</details>
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../adjacency/#ordito.adjacency">adjacency</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../adjacency/#ordito.adjacency.face_connected_component_labels">face_connected_component_labels</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.halfedge">halfedge</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.key_ordered_halfedges">key_ordered_halfedges</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../selection/#ordito.selection">selection</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="../selection/#ordito.selection.region_boundary_edges">region_boundary_edges</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <a href="../validation/#ordito.validation">validation</a>
+  </span>
+
+            <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../validation/#ordito.validation.face_flip_mask">face_flip_mask</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../validation/#ordito.validation.is_orientable">is_orientable</a>
+  </span>
+
+      </li>
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb last">
+      <a href="../validation/#ordito.validation.is_winding_consistent">is_winding_consistent</a>
+  </span>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/halfedge.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">350</span>
+<span class="normal">351</span>
+<span class="normal">352</span>
+<span class="normal">353</span>
+<span class="normal">354</span>
+<span class="normal">355</span>
+<span class="normal">356</span>
+<span class="normal">357</span>
+<span class="normal">358</span>
+<span class="normal">359</span>
+<span class="normal">360</span>
+<span class="normal">361</span>
+<span class="normal">362</span>
+<span class="normal">363</span>
+<span class="normal">364</span>
+<span class="normal">365</span>
+<span class="normal">366</span>
+<span class="normal">367</span>
+<span class="normal">368</span>
+<span class="normal">369</span>
+<span class="normal">370</span>
+<span class="normal">371</span>
+<span class="normal">372</span>
+<span class="normal">373</span>
+<span class="normal">374</span>
+<span class="normal">375</span>
+<span class="normal">376</span>
+<span class="normal">377</span>
+<span class="normal">378</span>
+<span class="normal">379</span>
+<span class="normal">380</span>
+<span class="normal">381</span>
+<span class="normal">382</span>
+<span class="normal">383</span>
+<span class="normal">384</span>
+<span class="normal">385</span>
+<span class="normal">386</span>
+<span class="normal">387</span>
+<span class="normal">388</span>
+<span class="normal">389</span>
+<span class="normal">390</span>
+<span class="normal">391</span>
+<span class="normal">392</span>
+<span class="normal">393</span>
+<span class="normal">394</span>
+<span class="normal">395</span>
+<span class="normal">396</span>
+<span class="normal">397</span>
+<span class="normal">398</span>
+<span class="normal">399</span>
+<span class="normal">400</span>
+<span class="normal">401</span>
+<span class="normal">402</span>
+<span class="normal">403</span>
+<span class="normal">404</span>
+<span class="normal">405</span>
+<span class="normal">406</span>
+<span class="normal">407</span>
+<span class="normal">408</span>
+<span class="normal">409</span>
+<span class="normal">410</span>
+<span class="normal">411</span>
+<span class="normal">412</span>
+<span class="normal">413</span>
+<span class="normal">414</span>
+<span class="normal">415</span>
+<span class="normal">416</span>
+<span class="normal">417</span>
+<span class="normal">418</span>
+<span class="normal">419</span>
+<span class="normal">420</span>
+<span class="normal">421</span>
+<span class="normal">422</span>
+<span class="normal">423</span>
+<span class="normal">424</span>
+<span class="normal">425</span>
+<span class="normal">426</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">halfedge_mates</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span> <span class="o">*</span><span class="p">,</span> <span class="n">return_key_order</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">=</span> <span class="kc">False</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="nb">tuple</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Every halfedge's partner on its undirected edge, whatever its direction, or how many share it.</span>
+
+<span class="sd">    The unvalidated pairing beneath [`halfedge_twins`][ordito.halfedge.halfedge_twins], for</span>
+<span class="sd">    consumers that classify edges rather than walk them. Halfedge ``h = 3 * f + k`` gets:</span>
+
+<span class="sd">    - the other halfedge (``&gt;= 0``) when exactly two halfedges span its edge, whichever way each</span>
+<span class="sd">      runs, so a pair wound the same way is a pair here where ``halfedge_twins`` rejects it;</span>
+<span class="sd">    - ``-1`` when it spans its edge alone (a boundary edge);</span>
+<span class="sd">    - ``-2 - lowest`` when three or more do, ``lowest`` being the smallest halfedge on that edge,</span>
+<span class="sd">      so a consumer can act on each such edge once.</span>
+
+<span class="sd">    So ``mates[mates[h]] == h`` wherever ``mates[h] &gt;= 0``, and a pair is acted on once by its</span>
+<span class="sd">    lower halfedge (``h &lt; mates[h]``). Nothing is checked and nothing is read back.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    n_vertices</span>
+<span class="sd">        Total vertex count, which must exceed every index in ``faces``. When it is given, a CUDA</span>
+<span class="sd">        device pairs a large mesh's halfedges through per-vertex buckets; otherwise, and on the</span>
+<span class="sd">        CPU, through a sort of the edge keys, which is correct for any non-negative indices</span>
+<span class="sd">        without it. Both give the same table.</span>
+<span class="sd">    return_key_order</span>
+<span class="sd">        Also return the sort's permutation when the pairing sorted the edge keys, for a caller</span>
+<span class="sd">        that wants some of the halfedges in key order</span>
+<span class="sd">        ([`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]).</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    mates : wp.array[wp.int32]</span>
+<span class="sd">        ``(3 * n_faces,)`` mate codes on ``faces.device``.</span>
+<span class="sd">    key_order : wp.array[wp.int32] | None</span>
+<span class="sd">        Only with ``return_key_order``: ``(3 * n_faces,)`` halfedge indices in ascending</span>
+<span class="sd">        undirected key order, ties by index -- the order of</span>
+<span class="sd">        [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys] -- or ``None`` when the</span>
+<span class="sd">        pairing bucketed instead of sorting.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`halfedge_twins`][ordito.halfedge.halfedge_twins]</span>
+<span class="sd">    [`key_ordered_halfedges`][ordito.halfedge.key_ordered_halfedges]</span>
+<span class="sd">    [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]</span>
+<span class="sd">    """</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n_halfedges</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+    <span class="n">mates</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">n_halfedges</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">key_order</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span>
+    <span class="k">if</span> <span class="n">n_halfedges</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="n">key_order</span> <span class="o">=</span> <span class="n">mates</span>
+    <span class="k">elif</span> <span class="p">(</span>
+        <span class="n">n_vertices</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+        <span class="ow">and</span> <span class="n">n_halfedges</span> <span class="o">&gt;=</span> <span class="n">_BUCKETED_MATES_FROM_HALFEDGES</span>
+        <span class="ow">and</span> <span class="n">_buckets_on</span><span class="p">(</span><span class="n">faces</span><span class="p">)</span>
+    <span class="p">):</span>
+        <span class="n">degrees</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">buckets</span> <span class="o">=</span> <span class="n">_edge_buckets</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">bucketed_halfedge_mates</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">degrees</span><span class="p">,</span> <span class="n">ends</span><span class="p">,</span> <span class="n">buckets</span><span class="p">,</span> <span class="n">mates</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">else</span><span class="p">:</span>
+        <span class="n">sorted_keys</span><span class="p">,</span> <span class="n">key_order</span> <span class="o">=</span> <span class="n">od</span><span class="o">.</span><span class="n">adjacency</span><span class="o">.</span><span class="n">sorted_face_edge_keys</span><span class="p">(</span><span class="n">faces</span><span class="p">,</span> <span class="n">n_vertices</span><span class="o">=</span><span class="n">n_vertices</span><span class="p">)</span>
+        <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+            <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">sorted_halfedge_mates</span><span class="p">,</span>
+            <span class="n">dim</span><span class="o">=</span><span class="n">n_halfedges</span><span class="p">,</span>
+            <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">sorted_keys</span><span class="p">,</span> <span class="n">key_order</span><span class="p">,</span> <span class="n">mates</span><span class="p">],</span>
+            <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+        <span class="p">)</span>
+    <span class="k">if</span> <span class="n">return_key_order</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">mates</span><span class="p">,</span> <span class="n">key_order</span>
+    <span class="k">return</span> <span class="n">mates</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+<div class="doc doc-object doc-function">
+
+
+<h2 id="ordito.halfedge.key_ordered_halfedges" class="doc doc-heading">
+            <span class="doc doc-object-name doc-function-name">key_ordered_halfedges</span>
+
+
+</h2>
+<div class="doc-signature highlight"><pre><span></span><code><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">inclusive</span><span class="p">:</span> <span class="n">ArrayNdInt32</span><span class="p">,</span>
+    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">key_order</span><span class="p">:</span> <span class="n">array</span><span class="p">[</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span>
+</code></pre></div>
+
+    <div class="doc doc-contents ">
+
+        <p>Return the flagged halfedges, class by class, each class in ascending undirected key order.</p>
+<p>The key is the one <a class="autorefs autorefs-internal" title="edges_unique" href="../edges/#ordito.edges.edges_unique"><code>edges_unique</code></a> orders its rows by, so a
+selection of one halfedge per edge comes back in that function's row order. Halfedges sharing
+a key keep ascending index order. Given the sort's <code>key_order</code>
+(<a class="autorefs autorefs-internal" title="halfedge_mates" href="./#ordito.halfedge.halfedge_mates"><code>halfedge_mates</code></a>' second return), the flags are read in
+that order and nothing is sorted; without it only the flagged halfedges are sorted, which is
+cheap when they are few.</p>
+
+
+<p><span class="doc-section-title">Parameters:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Type</th>
+          <th>Description</th>
+          <th>Default</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                <code>faces</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> triangle index buffer.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>inclusive</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-internal" title="ArrayNdInt32
+
+
+  
+      module-attribute
+   (ordito.typing.ArrayNdInt32)" href="../typing/#ordito.typing.ArrayNdInt32">ArrayNdInt32</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(n_classes * 3 * n_faces,)</code> inclusive scan of 0/1 flags, row <code>c</code> of the flattened
+<code>(n_classes, 3 * n_faces)</code> table flagging the halfedges of class <code>c</code>: entry <code>i</code> of a
+row flags halfedge <code>key_order[i]</code> when <code>key_order</code> is given, halfedge <code>i</code> otherwise.
+Read, not modified.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>count</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>The number of flagged entries, <code>inclusive[-1]</code>, which the caller has already read back
+to size its output.</p>
+              </div>
+            </td>
+            <td>
+                <em>required</em>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>key_order</code>
+            </td>
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>] | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(3 * n_faces,)</code> halfedges in ascending key order, ties by index, or <code>None</code>.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+          <tr class="doc-section-item">
+            <td>
+                <code>n_vertices</code>
+            </td>
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/functions.html#int">int</a> | None</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>Total vertex count, which must exceed every index in <code>faces</code>; the sort then orders only
+the bits a key can occupy. Required to sort more than one class.</p>
+              </div>
+            </td>
+            <td>
+                  <code>None</code>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+    <p><span class="doc-section-title">Returns:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><span title="warp.array">array</span>[<span title="warp.int32">int32</span>]</code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p><code>(count,)</code> halfedge indices on <code>faces.device</code>.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<p><span class="doc-section-title">Raises:</span></p>
+    <table>
+      <thead>
+        <tr>
+          <th>Type</th>
+          <th>Description</th>
+        </tr>
+      </thead>
+      <tbody>
+          <tr class="doc-section-item">
+            <td>
+                  <code><a class="autorefs autorefs-external" href="https://docs.python.org/3/builtins/exceptions.html#ValueError">ValueError</a></code>
+            </td>
+            <td>
+              <div class="doc-md-description">
+                <p>If <code>inclusive</code> is not a whole number of halfedge rows, or several classes are to be
+sorted and <code>n_vertices</code> is not given.</p>
+              </div>
+            </td>
+          </tr>
+      </tbody>
+    </table>
+
+
+<details class="see-also" open>
+  <summary>See Also</summary>
+  <p><a class="autorefs autorefs-internal" title="halfedge_mates" href="./#ordito.halfedge.halfedge_mates"><code>halfedge_mates</code></a>
+<a class="autorefs autorefs-internal" title="sorted_face_edge_keys" href="../adjacency/#ordito.adjacency.sorted_face_edge_keys"><code>sorted_face_edge_keys</code></a></p>
+</details>
+          
+
+
+  <div class="doc doc-backlinks">
+        <b class="doc doc-backlink-type">Referenced by:</b>
+          <ul class="doc doc-backlink-list">
+      <li class="doc doc-backlink">
+            <span class="doc doc-backlink-crumb">
+      <span>API Reference</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <span>Mesh structure & topology</span>
+  </span>
+
+            <span class="doc doc-backlink-crumb">
+      <a href="./#ordito.halfedge">halfedge</a>
+  </span>
+
+            <span class="doc doc-backlink-crumb last">
+      <a href="./#ordito.halfedge.halfedge_mates">halfedge_mates</a>
+  </span>
+
+      </li>
+  </ul>
+
+  </div>
+
+
+            <details class="mkdocstrings-source">
+              <summary>Source code in <code>ordito/halfedge.py</code></summary>
+              <div class="highlight"><table class="highlighttable"><tr><td class="linenos"><div class="linenodiv"><pre><span></span><span class="normal">429</span>
+<span class="normal">430</span>
+<span class="normal">431</span>
+<span class="normal">432</span>
+<span class="normal">433</span>
+<span class="normal">434</span>
+<span class="normal">435</span>
+<span class="normal">436</span>
+<span class="normal">437</span>
+<span class="normal">438</span>
+<span class="normal">439</span>
+<span class="normal">440</span>
+<span class="normal">441</span>
+<span class="normal">442</span>
+<span class="normal">443</span>
+<span class="normal">444</span>
+<span class="normal">445</span>
+<span class="normal">446</span>
+<span class="normal">447</span>
+<span class="normal">448</span>
+<span class="normal">449</span>
+<span class="normal">450</span>
+<span class="normal">451</span>
+<span class="normal">452</span>
+<span class="normal">453</span>
+<span class="normal">454</span>
+<span class="normal">455</span>
+<span class="normal">456</span>
+<span class="normal">457</span>
+<span class="normal">458</span>
+<span class="normal">459</span>
+<span class="normal">460</span>
+<span class="normal">461</span>
+<span class="normal">462</span>
+<span class="normal">463</span>
+<span class="normal">464</span>
+<span class="normal">465</span>
+<span class="normal">466</span>
+<span class="normal">467</span>
+<span class="normal">468</span>
+<span class="normal">469</span>
+<span class="normal">470</span>
+<span class="normal">471</span>
+<span class="normal">472</span>
+<span class="normal">473</span>
+<span class="normal">474</span>
+<span class="normal">475</span>
+<span class="normal">476</span>
+<span class="normal">477</span>
+<span class="normal">478</span>
+<span class="normal">479</span>
+<span class="normal">480</span>
+<span class="normal">481</span>
+<span class="normal">482</span>
+<span class="normal">483</span>
+<span class="normal">484</span>
+<span class="normal">485</span>
+<span class="normal">486</span>
+<span class="normal">487</span>
+<span class="normal">488</span>
+<span class="normal">489</span>
+<span class="normal">490</span>
+<span class="normal">491</span>
+<span class="normal">492</span>
+<span class="normal">493</span>
+<span class="normal">494</span>
+<span class="normal">495</span>
+<span class="normal">496</span>
+<span class="normal">497</span>
+<span class="normal">498</span>
+<span class="normal">499</span>
+<span class="normal">500</span>
+<span class="normal">501</span>
+<span class="normal">502</span>
+<span class="normal">503</span>
+<span class="normal">504</span>
+<span class="normal">505</span>
+<span class="normal">506</span>
+<span class="normal">507</span>
+<span class="normal">508</span>
+<span class="normal">509</span>
+<span class="normal">510</span>
+<span class="normal">511</span>
+<span class="normal">512</span>
+<span class="normal">513</span>
+<span class="normal">514</span>
+<span class="normal">515</span>
+<span class="normal">516</span>
+<span class="normal">517</span>
+<span class="normal">518</span></pre></div></td><td class="code"><div><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">key_ordered_halfedges</span><span class="p">(</span>
+    <span class="n">faces</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">],</span>
+    <span class="n">inclusive</span><span class="p">:</span> <span class="n">odt</span><span class="o">.</span><span class="n">ArrayNdInt32</span><span class="p">,</span>
+    <span class="n">count</span><span class="p">:</span> <span class="nb">int</span><span class="p">,</span>
+    <span class="o">*</span><span class="p">,</span>
+    <span class="n">key_order</span><span class="p">:</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+    <span class="n">n_vertices</span><span class="p">:</span> <span class="nb">int</span> <span class="o">|</span> <span class="kc">None</span> <span class="o">=</span> <span class="kc">None</span><span class="p">,</span>
+<span class="p">)</span> <span class="o">-&gt;</span> <span class="n">wp</span><span class="o">.</span><span class="n">array</span><span class="p">[</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">]:</span>
+<span class="w">    </span><span class="sd">"""</span>
+<span class="sd">    Return the flagged halfedges, class by class, each class in ascending undirected key order.</span>
+
+<span class="sd">    The key is the one [`edges_unique`][ordito.edges.edges_unique] orders its rows by, so a</span>
+<span class="sd">    selection of one halfedge per edge comes back in that function's row order. Halfedges sharing</span>
+<span class="sd">    a key keep ascending index order. Given the sort's ``key_order``</span>
+<span class="sd">    ([`halfedge_mates`][ordito.halfedge.halfedge_mates]' second return), the flags are read in</span>
+<span class="sd">    that order and nothing is sorted; without it only the flagged halfedges are sorted, which is</span>
+<span class="sd">    cheap when they are few.</span>
+
+<span class="sd">    Parameters</span>
+<span class="sd">    ----------</span>
+<span class="sd">    faces</span>
+<span class="sd">        ``(3 * n_faces,)`` triangle index buffer.</span>
+<span class="sd">    inclusive</span>
+<span class="sd">        ``(n_classes * 3 * n_faces,)`` inclusive scan of 0/1 flags, row ``c`` of the flattened</span>
+<span class="sd">        ``(n_classes, 3 * n_faces)`` table flagging the halfedges of class ``c``: entry ``i`` of a</span>
+<span class="sd">        row flags halfedge ``key_order[i]`` when ``key_order`` is given, halfedge ``i`` otherwise.</span>
+<span class="sd">        Read, not modified.</span>
+<span class="sd">    count</span>
+<span class="sd">        The number of flagged entries, ``inclusive[-1]``, which the caller has already read back</span>
+<span class="sd">        to size its output.</span>
+<span class="sd">    key_order</span>
+<span class="sd">        ``(3 * n_faces,)`` halfedges in ascending key order, ties by index, or ``None``.</span>
+<span class="sd">    n_vertices</span>
+<span class="sd">        Total vertex count, which must exceed every index in ``faces``; the sort then orders only</span>
+<span class="sd">        the bits a key can occupy. Required to sort more than one class.</span>
+
+<span class="sd">    Returns</span>
+<span class="sd">    -------</span>
+<span class="sd">    wp.array[wp.int32]</span>
+<span class="sd">        ``(count,)`` halfedge indices on ``faces.device``.</span>
+
+<span class="sd">    Raises</span>
+<span class="sd">    ------</span>
+<span class="sd">    ValueError</span>
+<span class="sd">        If ``inclusive`` is not a whole number of halfedge rows, or several classes are to be</span>
+<span class="sd">        sorted and ``n_vertices`` is not given.</span>
+
+<span class="sd">    See Also</span>
+<span class="sd">    --------</span>
+<span class="sd">    [`halfedge_mates`][ordito.halfedge.halfedge_mates]</span>
+<span class="sd">    [`sorted_face_edge_keys`][ordito.adjacency.sorted_face_edge_keys]</span>
+<span class="sd">    """</span>
+    <span class="n">device</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">device</span>
+    <span class="n">n</span> <span class="o">=</span> <span class="n">faces</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="mi">3</span> <span class="o">*</span> <span class="mi">3</span>
+    <span class="k">if</span> <span class="p">(</span><span class="n">n</span> <span class="o">==</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">inclusive</span><span class="o">.</span><span class="n">size</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">)</span> <span class="ow">or</span> <span class="p">(</span><span class="n">n</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="ow">and</span> <span class="n">inclusive</span><span class="o">.</span><span class="n">size</span> <span class="o">%</span> <span class="n">n</span> <span class="o">!=</span> <span class="mi">0</span><span class="p">):</span>
+        <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span>
+            <span class="sa">f</span><span class="s2">"inclusive must hold a whole number of </span><span class="si">{</span><span class="n">n</span><span class="si">}</span><span class="s2">-halfedge rows, got </span><span class="si">{</span><span class="n">inclusive</span><span class="o">.</span><span class="n">size</span><span class="si">}</span><span class="s2">"</span>
+        <span class="p">)</span>
+    <span class="n">n_classes</span> <span class="o">=</span> <span class="n">inclusive</span><span class="o">.</span><span class="n">size</span> <span class="o">//</span> <span class="n">n</span> <span class="k">if</span> <span class="n">n</span> <span class="o">&gt;</span> <span class="mi">0</span> <span class="k">else</span> <span class="mi">0</span>
+    <span class="k">if</span> <span class="n">key_order</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="n">halfedges</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+        <span class="k">if</span> <span class="n">count</span> <span class="o">&gt;</span> <span class="mi">0</span><span class="p">:</span>
+            <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+                <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">flagged_key_ordered_halfedges</span><span class="p">,</span>
+                <span class="n">dim</span><span class="o">=</span><span class="n">inclusive</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+                <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">inclusive</span><span class="p">,</span> <span class="n">key_order</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n</span><span class="p">),</span> <span class="n">halfedges</span><span class="p">],</span>
+                <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+            <span class="p">)</span>
+        <span class="k">return</span> <span class="n">halfedges</span>
+    <span class="k">if</span> <span class="n">n_vertices</span> <span class="ow">is</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">if</span> <span class="n">n_classes</span> <span class="o">&gt;</span> <span class="mi">1</span><span class="p">:</span>
+            <span class="k">raise</span> <span class="ne">ValueError</span><span class="p">(</span><span class="s2">"n_vertices is required to sort more than one class of halfedges"</span><span class="p">)</span>
+        <span class="n">n_vertices</span> <span class="o">=</span> <span class="n">INDEX_RADIX_PAIR</span>
+    <span class="n">keys</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="n">order</span> <span class="o">=</span> <span class="n">_launch</span><span class="o">.</span><span class="n">empty</span><span class="p">(</span><span class="mi">2</span> <span class="o">*</span> <span class="n">count</span><span class="p">,</span> <span class="n">dtype</span><span class="o">=</span><span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">,</span> <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">)</span>
+    <span class="k">if</span> <span class="n">count</span> <span class="o">==</span> <span class="mi">0</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">order</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">launch</span><span class="p">(</span>
+        <span class="n">kernel_halfedge</span><span class="o">.</span><span class="n">flagged_halfedge_keys</span><span class="p">,</span>
+        <span class="n">dim</span><span class="o">=</span><span class="n">inclusive</span><span class="o">.</span><span class="n">size</span><span class="p">,</span>
+        <span class="n">inputs</span><span class="o">=</span><span class="p">[</span><span class="n">faces</span><span class="p">,</span> <span class="n">inclusive</span><span class="p">,</span> <span class="n">wp</span><span class="o">.</span><span class="n">int32</span><span class="p">(</span><span class="n">n</span><span class="p">),</span> <span class="n">wp</span><span class="o">.</span><span class="n">uint64</span><span class="p">(</span><span class="n">n_vertices</span><span class="p">),</span> <span class="n">keys</span><span class="p">,</span> <span class="n">order</span><span class="p">],</span>
+        <span class="n">device</span><span class="o">=</span><span class="n">device</span><span class="p">,</span>
+    <span class="p">)</span>
+    <span class="n">_launch</span><span class="o">.</span><span class="n">radix_sort_pairs</span><span class="p">(</span>
+        <span class="n">keys</span><span class="p">,</span>
+        <span class="n">order</span><span class="p">,</span>
+        <span class="n">count</span><span class="o">=</span><span class="n">count</span><span class="p">,</span>
+        <span class="n">end_bit</span><span class="o">=</span><span class="nb">min</span><span class="p">(</span><span class="mi">64</span><span class="p">,</span> <span class="nb">max</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="p">(</span><span class="n">n_classes</span> <span class="o">*</span> <span class="n">n_vertices</span> <span class="o">*</span> <span class="n">n_vertices</span> <span class="o">-</span> <span class="mi">1</span><span class="p">)</span><span class="o">.</span><span class="n">bit_length</span><span class="p">())),</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">odt</span><span class="o">.</span><span class="n">as_dense</span><span class="p">(</span><span class="n">order</span><span class="p">[:</span><span class="n">count</span><span class="p">])</span>
+</code></pre></div></td></tr></table></div>
+            </details>
+    </div>
+
+</div>
+
+
+
+  </div>
+
+    </div>
+
+</div>
+
+
+
+
+
+
+
+
+
+  
+  
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" class="lucide lucide-circle-arrow-up" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="m16 12-4-4-4 4M12 16V8"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://zensical.org/" target="_blank" rel="noopener">
+      Zensical
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog" role="status" aria-atomic="true">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    
+      
+      
+      
+      
+        
+        
+      <script id="__config" type="application/json">{"annotate":null,"base":"../../..","features":["navigation.tabs","navigation.sections","navigation.indexes","navigation.top","toc.follow","content.code.copy","search.suggest"],"redirect":null,"search":"../../../assets/javascripts/workers/search.7d14d953.min.js","tags":null,"translations":{"clipboard.copied":"Copied to clipboard","clipboard.copy":"Copy to clipboard","clipboard.error":"Could not copy to clipboard","search.result.more.one":"1 more on this page","search.result.more.other":"# more on this page","search.result.none":"No matching documents","search.result.one":"1 matching document","search.result.other":"# matching documents","search.result.placeholder":"Type to start searching","search.result.term.missing":"Missing","select.version":"Select version"},"version":{"default":"stable","provider":"mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.8b1c90bd.min.js"></script>
+      
+    
+  </body>
+</html>
