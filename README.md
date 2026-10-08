@@ -14,6 +14,9 @@ registration — as plain array-in / array-out functions backed by
 [trimesh](https://trimesh.org)-inspired API. Every function runs on CUDA when a GPU is available
 and falls back to CPU otherwise, with the same code.
 
+*Ordito* (or-DEE-toh) is Italian for the **warp** of a fabric, and an anagram of
+**toroid**: a fitting name for a mesh library built on Warp.
+
 ## Highlights
 
 - **One dependency.** The runtime depends on `warp-lang` alone; NumPy comes with Warp; nothing else
