@@ -131,11 +131,15 @@ def doublearea_from_lengths(l0: wp.Float, l1: wp.Float, l2: wp.Float) -> wp.Floa
     # Twice the area of a triangle from its three side lengths -- the *intrinsic* counterpart of
     # ``triangle_double_area``, for callers holding an edge-length table rather than positions.
     #
-    # Kahan's rearrangement of Heron's formula, which needs the sides sorted ascending; the naive
-    # form loses most of its digits on a needle triangle. The ``wp.max`` clamps a slightly negative
-    # product from round-off, and the ``isnan`` catches what the clamp does not.
-    l0, l1, l2 = sort3(l0, l1, l2)
-    arg = (l0 + (l1 + l2)) * (l2 - (l0 - l1)) * (l2 + (l0 - l1)) * (l0 + (l1 - l2))
+    # Kahan's rearrangement of Heron's formula, ``(a + (b + c))(c - (a - b))(c + (a - b))
+    # (a + (b - c))`` with ``a >= b >= c``: the *largest* side first. ``sort3`` sorts ascending, so
+    # ``a`` is ``l2``. With the order reversed (the smallest side as ``a``, as this read until
+    # 2026-10-08) the parentheses no longer pair sides whose difference is exact, and a needle's
+    # area came out 1.2e-4 off in ``float32`` on ``saddle_graded`` (1.6e-7 in this order). The
+    # ``wp.max`` clamps a slightly negative product from round-off, and the ``isnan`` catches what
+    # the clamp does not.
+    c, b, a = sort3(l0, l1, l2)
+    arg = (a + (b + c)) * (c - (a - b)) * (c + (a - b)) * (a + (b - c))
     dbl_area = type(l0)(0.5) * wp.sqrt(wp.max(arg, type(l0)(0.0)))
     if wp.isnan(dbl_area):
         return type(l0)(0.0)

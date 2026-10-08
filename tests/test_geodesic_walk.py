@@ -10,6 +10,8 @@ continuation and the two libraries resolve that differently (see the module docs
 
 from __future__ import annotations
 
+import itertools
+import warnings
 from typing import cast
 
 import igl
@@ -433,9 +435,11 @@ def test_trace_empty(device: str) -> None:
 # --------------------------------------------------------------------------------------
 
 # Not ``sphere_irregular``: its heat field (72 % obtuse faces) has a spurious local minimum at
-# vertex 300, where 142 of the 499 paths to vertex 0 stop -- the method's limit, matched by
-# potpourri3d's identical field (CLAUDE.md section 16.6). A path test needs a field whose one
-# minimum is the source; ``sphere_well_shaped`` (every one of 399 paths arrives) and
+# vertex 300, where 142 of the 499 descents to vertex 0 stop -- the method's limit, matched by
+# potpourri3d's identical field (CLAUDE.md section 16.6). ``geodesic_path`` finishes those along
+# mesh edges (``test_geodesic_path_finishes_short_paths_along_mesh_edges``), but the comparisons
+# below walk potpourri3d's field with ``descend_field``, which stops there, so they need a field
+# whose one minimum is the source; ``sphere_well_shaped`` (every one of 399 paths arrives) and
 # ``torus_irregular`` have that from vertex 0.
 _PATH_MESHES = ["sphere_well_shaped", "torus_irregular", "unit_box"]
 
@@ -573,6 +577,96 @@ def test_geodesic_path_reaches_its_source(request: pytest.FixtureRequest, mesh_n
         assert float(distance_wp.numpy().max()) < 1e-5 * diagonal
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "n_completed"), [("sphere_irregular", 142), ("sphere_well_shaped", 0)]
+)
+def test_geodesic_path_finishes_short_paths_along_mesh_edges(
+    request: pytest.FixtureRequest, mesh_name: str, n_completed: int
+) -> None:
+    """
+    Class B: a path the heat field strands is finished along the shortest mesh-edge path.
+
+    ``sphere_irregular``'s heat distance has a spurious local minimum (vertex 300, 0.196 against
+    0.59 straight-line), and 142 of the 499 descents to vertex 0 stop there. Each is finished from
+    the vertex it stopped on: the named transform is splitting a returned path at the point the
+    plain descent ([`descend_field`][ordito.geodesic_walk.descend_field] on the same field) stops,
+    after which the tail must be a chain of mesh edges whose length is
+    [`scipy.sparse.csgraph.dijkstra`][]'s edge-graph distance from that vertex (to 1e-5). Every
+    path then ends at the source and none is shorter than ``igl.exact_geodesic``; the completed
+    ones measure 1.05-1.50 of it (median 1.15), inside the 1.00-1.68 of the paths the field carries
+    all the way. The warning counts them; on ``sphere_well_shaped`` nothing is completed and the
+    call is silent. Without the completion all 142 end on that vertex, 0.59 from the source (14 %
+    of the mesh's extent).
+    """
+    from scipy.sparse import csr_matrix
+    from scipy.sparse.csgraph import dijkstra
+
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = np.asarray(mesh_tm.vertices, dtype=np.float64)
+    n_vertices = vertices_np.shape[0]
+    device = mesh_wp.points.device
+    targets_np = np.arange(1, n_vertices, dtype=np.int32)
+    source_wp = wp.array([0], dtype=wp.int32, device=device)
+    targets_wp = wp.array(targets_np, dtype=wp.int32, device=device)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        paths = od.array.split(
+            *od.geodesic_walk.geodesic_path(mesh_wp.points, mesh_wp.indices, source_wp, targets_wp)
+        )
+    messages = [str(w.message) for w in caught if "geodesic_path:" in str(w.message)]
+    if n_completed:
+        assert len(messages) == 1
+        assert f"{n_completed} of {len(targets_np)} paths" in messages[0]
+    else:
+        assert messages == []
+
+    distance_wp = od.heat.heat_geodesic(mesh_wp.points, mesh_wp.indices, source_wp)
+    plain = od.array.split(
+        *od.geodesic_walk.descend_field(mesh_wp.points, mesh_wp.indices, distance_wp, targets_wp)
+    )
+    edges = mesh_tm.edges_unique
+    lengths = np.linalg.norm(vertices_np[edges[:, 0]] - vertices_np[edges[:, 1]], axis=1)
+    graph = csr_matrix(
+        (
+            np.r_[lengths, lengths],
+            (np.r_[edges[:, 0], edges[:, 1]], np.r_[edges[:, 1], edges[:, 0]]),
+        ),
+        shape=(n_vertices, n_vertices),
+    )
+    edge_set = {tuple(e) for e in np.sort(edges, axis=1).tolist()}
+    graph_distance = dijkstra(graph, indices=[0])[0]
+    exact = np.asarray(
+        igl.exact_geodesic(
+            vertices_np,
+            np.ascontiguousarray(mesh_tm.faces, dtype=np.int64),
+            np.array([0], dtype=np.int64),
+            np.array([], dtype=np.int64),
+            targets_np.astype(np.int64),
+            np.array([], dtype=np.int64),
+        )
+    )
+    completed = 0
+    for target, path, stopped in zip(targets_np, paths, plain, strict=True):
+        points_np = path.numpy().astype(np.float64)
+        assert np.linalg.norm(points_np[-1] - vertices_np[0]) < 1e-5
+        length = float(np.linalg.norm(np.diff(points_np, axis=0), axis=1).sum())
+        assert length >= exact[target - 1] * (1.0 - 1e-5)
+        stopped_np = stopped.numpy()
+        if np.linalg.norm(stopped_np[-1] - vertices_np[0]) < 1e-5:
+            assert len(points_np) == len(stopped_np)
+            continue
+        completed += 1
+        # The stop is a vertex here (a local minimum); the tail runs from it along edges.
+        tail = points_np[len(stopped_np) - 1 :]
+        ids = [int(np.argmin(np.linalg.norm(vertices_np - q, axis=1))) for q in tail]
+        assert np.allclose(vertices_np[ids], tail, atol=1e-6)
+        assert all(tuple(sorted(pair)) in edge_set for pair in itertools.pairwise(ids))
+        tail_length = float(np.linalg.norm(np.diff(tail, axis=0), axis=1).sum())
+        assert np.isclose(tail_length, graph_distance[ids[0]], rtol=1e-5)
+    assert completed == n_completed
+
+
 @pytest.mark.parity("geodesic_path", "potpourri3d")
 def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     sphere_well_shaped: tuple[tm.Trimesh, wp.Mesh],
@@ -585,7 +679,7 @@ def test_geodesic_path_matches_potpourri3d_on_a_sphere(
     ``sphere_well_shaped`` over 24 targets: ordito is never shorter (minimum ratio **1.0000**),
     median **1.0116** and worst **1.0848**. The gap is the heat field's first-order accuracy, which
     is the price of getting every path from one solve. (On ``sphere_irregular`` a path stopping at
-    the field's spurious minimum reads 0.04 of the geodesic; see ``_PATH_MESHES``.)
+    the field's spurious minimum is finished along mesh edges; see ``_PATH_MESHES``.)
 
     **This fixture is simply connected on purpose.** On a torus the comparison inverts, for a
     reason that is not an error on either side: ``find_geodesic_path`` shortens within the

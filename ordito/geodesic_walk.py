@@ -29,6 +29,7 @@ that one solves a vector-heat system -- and geodesic *distance* by the heat meth
 
 from __future__ import annotations
 
+import warnings
 from collections.abc import Sequence
 from typing import cast, overload
 
@@ -365,7 +366,6 @@ def descend_field(
         vertex_faces=vertex_faces,
         gradients=gradients,
     )
-    device = vertices.device
     n_vertices = vertices.size
     if values.size != n_vertices:
         raise ValueError(
@@ -380,32 +380,10 @@ def descend_field(
         raise ValueError(
             f"gradients must have one entry per face, got {gradients.size} for {n_faces}"
         )
-    n_paths = starts.size
-    if n_paths == 0:
-        return _launch.empty_packed(wp.vec3, device)
-
-    if twins is None:
-        twins = halfedge_twins(faces, n_vertices=n_vertices)
-    if vertex_faces is None:
-        vertex_faces = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
-    if gradients is None:
-        gradients = od.laplacian.face_gradients(vertices, faces, values)
-    incident_faces, face_offsets = vertex_faces
-
-    inputs = [
-        vertices,
-        faces,
-        twins,
-        face_offsets,
-        incident_faces,
-        values,
-        gradients,
-        starts,
-        wp.float64(stop_value),
-        wp.int32(max_steps),
-        wp.float32(_length_epsilon(vertices, faces)),
-    ]
-    return _trace(kernel_geodesic_walk.descent_paths, inputs, n_paths, device)
+    points, offsets, _ = _descend(
+        vertices, faces, values, starts, stop_value, twins, vertex_faces, gradients, max_steps
+    )
+    return points, offsets
 
 
 @overload
@@ -485,6 +463,12 @@ def geodesic_path(
     RuntimeError
         If ``vertices``, ``faces``, ``source`` and ``targets`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        When a path stopped short of the source on the heat distance and was finished along mesh
+        edges (see Notes); the message counts them.
+
     Examples
     --------
     ```python
@@ -501,8 +485,14 @@ def geodesic_path(
     field's error rather than the walk's. It is never *shorter* than the true geodesic, which is the
     invariant worth testing against.
 
-    A path that cannot reach the source stops early rather than failing; see
-    [`descend_field`][ordito.geodesic_walk.descend_field] for the four ways that happens.
+    **Every path reaches the source.** The heat distance can have a spurious local minimum -- on a
+    mesh of mostly obtuse triangles a vertex can read well below its neighbours -- and a descent
+    can also run into the mesh boundary. A path stopped either way is finished along the shortest
+    mesh-edge path from where it stopped to the nearest source, and a warning counts how many were.
+    That tail follows edges, so it is longer than the surface geodesic it stands in for; it is
+    never shorter. Only ``max_steps`` running out leaves a path truncated, as does a target in a
+    component no source reaches. [`descend_field`][ordito.geodesic_walk.descend_field] keeps the
+    plain behaviour: a descent of any other field stops where that field does.
 
     See Also
     --------
@@ -524,9 +514,143 @@ def geodesic_path(
         if owned
         else od.heat.heat_geodesic(bound.vertices, bound.faces, source, t)
     )
-    return descend_field(
-        bound.vertices, bound.faces, distance, targets, stop_value=0.0, max_steps=max_steps
+    points, offsets, n_completed = _descend(
+        bound.vertices,
+        bound.faces,
+        distance,
+        targets,
+        0.0,
+        None,
+        None,
+        None,
+        max_steps,
+        complete_to=source,
     )
+    if n_completed > 0:
+        warnings.warn(
+            f"geodesic_path: {n_completed} of {targets.size} paths stopped short of the source "
+            "on the heat distance (a spurious local minimum, or the mesh boundary); each was "
+            "finished along the shortest mesh-edge path from where it stopped.",
+            stacklevel=2,
+        )
+    return points, offsets
+
+
+def _descend(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    values: wp.array[wp.float64],
+    starts: wp.array[wp.int32],
+    stop_value: float,
+    twins: wp.array[wp.int32] | None,
+    vertex_faces: tuple[wp.array[wp.int32], wp.array[wp.int32]] | None,
+    gradients: wp.array[wp.vec3d] | None,
+    max_steps: int,
+    *,
+    complete_to: wp.array[wp.int32] | None = None,
+) -> tuple[wp.array[wp.vec3], wp.array[wp.int32], int]:
+    """
+    ``descend_field``'s walk; with ``complete_to``, short paths are finished along mesh edges.
+
+    Returns the packed paths and how many were finished that way. A path stops short of
+    ``stop_value`` at a local minimum of ``values``, on a flat face, or at the mesh boundary; with
+    ``complete_to`` (the source vertices) the walk then follows the shortest-edge-path tree to the
+    nearest of them. That tree is only built when a path needs it: the plain walk's counting pass
+    counts the short ones first (one 4-byte read).
+    """
+    device = vertices.device
+    n_vertices = vertices.size
+    n_paths = starts.size
+    if n_paths == 0:
+        points, offsets = _launch.empty_packed(wp.vec3, device)
+        return points, offsets, 0
+
+    if twins is None:
+        twins = halfedge_twins(faces, n_vertices=n_vertices)
+    if vertex_faces is None:
+        vertex_faces = od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
+    if gradients is None:
+        gradients = od.laplacian.face_gradients(vertices, faces, values)
+    incident_faces, face_offsets = vertex_faces
+
+    inputs = [
+        vertices,
+        faces,
+        twins,
+        face_offsets,
+        incident_faces,
+        values,
+        gradients,
+        starts,
+        wp.float64(stop_value),
+        wp.int32(max_steps),
+        wp.float32(_length_epsilon(vertices, faces)),
+    ]
+    kernel = kernel_geodesic_walk.descent_paths
+    no_graph = _launch.empty(0, dtype=wp.float32, device=device)
+    no_offsets = _launch.empty(0, dtype=wp.int32, device=device)
+    no_points = _launch.empty(0, dtype=wp.vec3, device=device)
+    counts = _launch.empty(n_paths, dtype=wp.int32, device=device)
+    # One flag per path that stopped short, and their number in the last slot.
+    short_paths = (
+        _launch.zeros(n_paths + 1, dtype=wp.int32, device=device)
+        if complete_to is not None
+        else _launch.empty(0, dtype=wp.int32, device=device)
+    )
+    _launch.launch(
+        kernel,
+        dim=n_paths,
+        inputs=[*inputs, no_graph, short_paths, no_offsets],
+        outputs=[counts, no_points],
+        device=device,
+    )
+    graph = no_graph
+    n_short = 0
+    if complete_to is not None:
+        # Host readback: whether any path needs the edge-graph completion decides whether its
+        # shortest-path relaxation runs at all.
+        n_short = int(read_scalar(short_paths, index=n_paths))
+        if n_short > 0:
+            graph = _edge_graph_distance(vertices, faces, complete_to)
+            _launch.launch(
+                kernel,
+                dim=n_paths,
+                inputs=[*inputs, graph, short_paths, no_offsets],
+                outputs=[counts, no_points],
+                device=device,
+            )
+
+    # Host readback: only the device knows the walk's total length, and it sizes the point buffer.
+    offsets, total = od.array.counts_to_offsets(counts)
+    points = _launch.empty(total, dtype=wp.vec3, device=device)
+    _launch.launch(
+        kernel,
+        dim=n_paths,
+        inputs=[*inputs, graph, short_paths, offsets],
+        outputs=[counts, points],
+        device=device,
+    )
+    return points, offsets, n_short
+
+
+def _edge_graph_distance(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], sources: wp.array[wp.int32]
+) -> wp.array[wp.float32]:
+    """``(n_vertices,)`` shortest mesh-edge path length to the nearest source; 1e30 if none."""
+    device = vertices.device
+    n_vertices = vertices.size
+    edges = od.edges.edges_unique(faces, n_vertices=n_vertices, validate=False)[0]
+    lengths = od.edges.edges_unique_length(vertices, faces, edges)
+    adjacency = od.graph.edges_to_csr(n_vertices, edges, lengths)
+    seed = wp.full(n_vertices, 1.0e30, dtype=wp.float32, device=device)
+    _launch.launch(
+        kernel_geodesic_walk.seed_graph_sources,
+        dim=sources.size,
+        inputs=[sources],
+        outputs=[seed],
+        device=device,
+    )
+    return od.graph.shortest_path_envelope(adjacency, seed)
 
 
 def shorten_loop(

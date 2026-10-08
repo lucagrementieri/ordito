@@ -50,6 +50,7 @@ filter at all but a one-sided Lipschitz projection, and lives in
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
@@ -1344,6 +1345,13 @@ def filter_neighborhood_average(
     return _as_vec3(positions)
 
 
+# ``filter_mut_dif_laplacian`` warns above this relative rounding uncertainty of its mean
+# coefficient (the largest over its passes). On an exact sphere or torus it is ~2e-5 and a 1e-7
+# perturbation of the input moves the result by ~1e-7 of its extent; on every fixture with saddles
+# it is 2e-3 to 1e5 and the same perturbation moves the result by 3e-5 to 1e-2.
+_MUT_DIF_SENSITIVITY_LIMIT = 1e-3
+
+
 def filter_mut_dif_laplacian(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -1403,6 +1411,21 @@ def filter_mut_dif_laplacian(
     RuntimeError
         If ``vertices``, ``faces``, ``face_normals`` and ``face_areas`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        When the result is sensitive to rounding-level changes of the input (see Notes).
+
+    Notes
+    -----
+    Every step divides by the mean of ``1 / |N . (V - L.V)|`` over the vertices. Where a vertex's
+    normal residual is near zero -- a saddle, a bump's inflection -- that term dominates the mean
+    and its value is set by rounding, so the whole result is chaotically sensitive to its input: a
+    1e-7 relative change of the vertices can move it by a percent of the mesh's extent, in the
+    reference implementation as here. The call measures the mean's relative uncertainty under the
+    input's ``float32`` rounding on every pass and warns when it exceeds 1e-3. On a convex or
+    otherwise saddle-free surface it stays near 1e-5.
+
     See Also
     --------
     [`filter_laplacian`][ordito.smoothing.filter_laplacian]
@@ -1429,7 +1452,8 @@ def filter_mut_dif_laplacian(
     eps = 0.01 * float(od.reduce.max(face_areas)) ** 0.5 if volume_constraint else 0.0
 
     lv = _launch.empty(n, dtype=wp.vec3d, device=device)
-    adil_sum = _launch.zeros(1, dtype=wp.float64, device=device)
+    adil_sum = _launch.zeros(2, dtype=wp.float64, device=device)
+    sensitivity = _launch.zeros(1, dtype=wp.float64, device=device)
     nxt = _launch.empty(n, dtype=wp.vec3d, device=device)
     # The three volumes the constraint needs, kept on the device for the whole loop: the input's
     # (fixed), this pass's, and the eps-probe's, with the calibrated slope beside them. Reading any
@@ -1470,7 +1494,7 @@ def filter_mut_dif_laplacian(
             kernel_smoothing.mut_dif_step_scaled,
             dim=n,
             inputs=[positions, lv, adil_sum, inv_n, wp.float64(lamb), normals, wp.float64(eps)],
-            outputs=[nxt, probe],
+            outputs=[nxt, probe, sensitivity],
             device=device,
         )
         positions, nxt = nxt, positions
@@ -1496,6 +1520,16 @@ def filter_mut_dif_laplacian(
                 device=device,
             )
 
+    # Host readback: the one number the warning decides on, read once after every pass is queued.
+    uncertainty = float(read_scalar(sensitivity))
+    if uncertainty > _MUT_DIF_SENSITIVITY_LIMIT:
+        warnings.warn(
+            "filter_mut_dif_laplacian: the mean diffusion coefficient every step divides by is "
+            f"uncertain to {uncertainty:.2g} of itself from the input's float32 rounding alone: "
+            "near-zero normal residuals (saddles, inflections) dominate it, so the result is "
+            "sensitive to rounding-level changes of the input; see Notes.",
+            stacklevel=2,
+        )
     return _as_vec3(positions)
 
 

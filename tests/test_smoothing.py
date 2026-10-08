@@ -1047,6 +1047,43 @@ def test_filter_mut_dif_laplacian(
     assert np.allclose(smoothed_wp.numpy(), mesh_ref.vertices, rtol=1e-5, atol=1e-5)
 
 
+@pytest.mark.parametrize(
+    ("mesh_name", "warns"),
+    [("sphere_round", False), ("sphere_irregular", True), ("saddle_graded", True)],
+)
+def test_filter_mut_dif_laplacian_warns_where_it_is_sensitive_to_rounding(
+    request: pytest.FixtureRequest, mesh_name: str, warns: bool
+) -> None:
+    """
+    Not a library comparison: the warning fires exactly where the result is chaotic in its input.
+
+    The premise of ``test_filter_mut_dif_laplacian``, asserted: a 3e-7 relative perturbation of
+    the vertices moves the result by more than 1e-4 of the mesh's extent where the call warns
+    (measured 2.6e-3 / 1.1e-3 on ``sphere_irregular``, CUDA / CPU, and 1.8e-2 on
+    ``saddle_graded``; the mean's rounding uncertainty reads 0.035 and 1e2 there, over the 1e-3
+    limit), and by less than 2e-6 where it does not (``sphere_round``, an exact sphere: 4.2e-7, the
+    perturbation itself carried through; uncertainty 2e-5).
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_np = mesh_wp.points.numpy().astype(np.float64)
+    noise = 3e-7 * np.random.default_rng(0).standard_normal(vertices_np.shape)
+    perturbed_wp = points_to_warp((vertices_np * (1.0 + noise)).astype(np.float32), mesh_wp.device)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        smoothed_wp = od.smoothing.filter_mut_dif_laplacian(
+            mesh_wp.points, mesh_wp.indices, lamb=0.5, iterations=8, volume_constraint=False
+        )
+        warned = sum("filter_mut_dif_laplacian:" in str(w.message) for w in caught)
+        smoothed_perturbed_wp = od.smoothing.filter_mut_dif_laplacian(
+            perturbed_wp, mesh_wp.indices, lamb=0.5, iterations=8, volume_constraint=False
+        )
+    assert warned == int(warns)
+    movement = np.abs(smoothed_wp.numpy() - smoothed_perturbed_wp.numpy()).max() / np.ptp(
+        vertices_np
+    )
+    assert movement > 1e-4 if warns else movement < 2e-6
+
+
 @pytest.mark.parity(
     "filter_implicit_fairing",
     "igl",

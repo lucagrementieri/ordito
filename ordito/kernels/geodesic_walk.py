@@ -594,6 +594,35 @@ def descend_to_neighbour(
 
 
 @wp.func
+def graph_predecessor(
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    face_offsets: wp.array[wp.int32],
+    vertex_faces: wp.array[wp.int32],
+    graph_distance: wp.array[wp.float32],
+    v: wp.int32,
+) -> wp.int32:
+    # ``v``'s parent in the shortest-edge-path tree of ``graph_distance`` (a converged
+    # ``graph.shortest_path_envelope`` from the sources): the 1-ring neighbour minimizing
+    # ``d(u) + |p_u - p_v|``, or -1 when none lies strictly lower than ``v`` (a source, or a
+    # component no source reaches). Every edge length is positive, so the minimizer's ``d`` is
+    # strictly below ``d(v)`` and a chain of these steps ends at a source.
+    best = wp.int32(-1)
+    best_value = graph_distance[v]
+    best_through = wp.float32(3.4e38)
+    for slot in range(face_offsets[v], face_offsets[v + 1]):
+        f = vertex_faces[slot]
+        for k in range(3):
+            other = faces[f * 3 + k]
+            if other != v and graph_distance[other] < best_value:
+                through = graph_distance[other] + wp.length(vertices[other] - vertices[v])
+                if through < best_through:
+                    best = other
+                    best_through = through
+    return best
+
+
+@wp.func
 def descent_walk(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -606,9 +635,10 @@ def descent_walk(
     stop_value: wp.float64,
     max_steps: wp.int32,
     length_epsilon: wp.float32,
+    graph_distance: wp.array[wp.float32],
     write_begin: wp.int32,
     out_points: wp.array[wp.vec3],
-) -> wp.int32:
+) -> tuple[wp.int32, wp.int32]:
     # Follow the steepest descent of a per-vertex field from ``start_vertex`` until the field drops
     # to ``stop_value``. With a geodesic distance field to a source, that traces the geodesic *back*
     # to the source -- the path a caller reads in either direction.
@@ -632,6 +662,11 @@ def descent_walk(
 
     face = wp.int32(-1)
     entry_edge = wp.int32(-1)
+    # Where the walk stopped short of ``stop_value``: a vertex (a local minimum of the field) or a
+    # face (a flat one, or a descent into the mesh boundary). Both -1 when it arrived, or ran out
+    # of ``max_steps`` -- a cap, not a stop.
+    short_vertex = wp.int32(-1)
+    short_face = wp.int32(-1)
     for _step in range(max_steps):
         if face < wp.int32(0):
             # --- at a vertex -------------------------------------------------------------------
@@ -648,7 +683,8 @@ def descent_walk(
             # No face's descent leads out of this vertex: step along an edge instead.
             neighbour = descend_to_neighbour(faces, face_offsets, vertex_faces, values, vertex)
             if neighbour < wp.int32(0):
-                break  # a local minimum of the field
+                short_vertex = vertex  # a local minimum of the field
+                break
             vertex = neighbour
             point = vertices[vertex]
             last_value = values[vertex]
@@ -676,7 +712,8 @@ def descent_walk(
                 if values[faces[face * 3 + k]] < values[lowest]:
                     lowest = faces[face * 3 + k]
             if values[lowest] >= last_value and face >= wp.int32(0):
-                break  # no progress available here
+                short_face = face  # no progress available here
+                break
             vertex = lowest
             point = vertices[vertex]
             last_value = values[vertex]
@@ -728,7 +765,8 @@ def descent_walk(
 
         twin = twins[face * 3 + edge]
         if twin == wp.int32(-1):
-            break  # the descent ran into the mesh boundary
+            short_face = face  # the descent ran into the mesh boundary
+            break
         next_face = twin // wp.int32(3)
         next_gradient = gradients[next_face]
         enters = wp.bool(False)
@@ -756,7 +794,30 @@ def descent_walk(
         last_value = values[vertex]
         count = emit_walk_point(out_points, write_begin, count, point)
         face = wp.int32(-1)
-    return count
+
+    stopped_short = wp.int32(0)
+    if short_vertex >= wp.int32(0) or short_face >= wp.int32(0):
+        stopped_short = wp.int32(1)
+        if graph_distance.shape[0] > 0:
+            # Finish along the shortest-edge-path tree. From a face, first to its corner nearest
+            # the source by that distance (a straight segment inside the face).
+            if short_vertex < wp.int32(0):
+                short_vertex = faces[short_face * 3]
+                for k in range(1, 3):
+                    corner = faces[short_face * 3 + k]
+                    if graph_distance[corner] < graph_distance[short_vertex]:
+                        short_vertex = corner
+                count = emit_walk_point(out_points, write_begin, count, vertices[short_vertex])
+            vertex = short_vertex
+            for _step in range(max_steps):
+                parent = graph_predecessor(
+                    vertices, faces, face_offsets, vertex_faces, graph_distance, vertex
+                )
+                if parent < wp.int32(0):
+                    break
+                vertex = parent
+                count = emit_walk_point(out_points, write_begin, count, vertices[vertex])
+    return count, stopped_short
 
 
 @wp.kernel
@@ -772,17 +833,28 @@ def descent_paths(
     stop_value: wp.float64,
     max_steps: wp.int32,
     length_epsilon: wp.float32,
+    graph_distance: wp.array[wp.float32],
+    short_paths: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     out_counts: wp.array[wp.int32],
     out_points: wp.array[wp.vec3],
 ) -> None:
-    # One path per thread. ``offsets`` is empty on the counting pass, which is how the two passes
-    # share ``descent_walk`` -- the same convention ``trace_from_faces`` uses.
+    # One path per thread, in three passes sharing ``descent_walk`` -- the convention
+    # ``trace_from_faces`` uses, plus one. ``offsets`` is empty on the counting passes.
+    #
+    # * Counting, ``graph_distance`` empty: a non-empty ``short_paths`` (``n_paths + 1`` zeros)
+    #   records which paths stopped short of ``stop_value`` and, in its last slot, how many.
+    # * Counting again with ``graph_distance`` (the completion): only the flagged paths walk, as
+    #   only their lengths change; the rest keep their counts.
+    # * Writing, ``offsets`` given: every path walks and writes its points.
     r = wp.int32(wp.tid())
     write_begin = wp.int32(-1)
     if offsets.shape[0] > 0:
         write_begin = offsets[r]
-    out_counts[r] = descent_walk(
+    elif graph_distance.shape[0] > 0 and short_paths.shape[0] > 0:
+        if short_paths[r] == wp.int32(0):
+            return
+    count, stopped_short = descent_walk(
         vertices,
         faces,
         twins,
@@ -794,9 +866,15 @@ def descent_paths(
         stop_value,
         max_steps,
         length_epsilon,
+        graph_distance,
         write_begin,
         out_points,
     )
+    out_counts[r] = count
+    if offsets.shape[0] == 0 and graph_distance.shape[0] == 0 and short_paths.shape[0] > 0:
+        if stopped_short != wp.int32(0):
+            short_paths[r] = wp.int32(1)
+            wp.atomic_add(short_paths, starts.shape[0], wp.int32(1))
 
 
 @wp.func
@@ -1084,3 +1162,10 @@ def shorten_loop_advance(
     out_state[SHORTEN_UNCHANGED] = unchanged
     if unchanged >= 2 or sweeps >= out_state[SHORTEN_MAX_SWEEPS] or out_state[SHORTEN_LENGTH] == 0:
         out_state[SHORTEN_DONE] = 1
+
+
+@wp.kernel
+def seed_graph_sources(sources: wp.array[wp.int32], out_distance: wp.array[wp.float32]) -> None:
+    # ``geodesic_path``'s edge-graph distance seed: zero at every source vertex (the rest of
+    # ``out_distance`` holds the "unreached" value it was allocated with).
+    out_distance[sources[wp.int32(wp.tid())]] = wp.float32(0.0)

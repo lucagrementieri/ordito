@@ -17,8 +17,8 @@ wp.set_module_options({"enable_backward": False})
 
 @wp.func
 def cot_entries_from_l2(
-    l2_0: wp.float32, l2_1: wp.float32, l2_2: wp.float32, dbl_area: wp.float32
-) -> tuple[wp.float32, wp.float32, wp.float32]:
+    l2_0: wp.Float, l2_1: wp.Float, l2_2: wp.Float, dbl_area: wp.Float
+) -> tuple[wp.Float, wp.Float, wp.Float]:
     # A zero-area triangle contributes nothing rather than an infinity. Its angles are 0 or pi, so
     # it has no finite cotangent, and ``doublearea_from_lengths`` deliberately reports 0.0 for one:
     # without this guard that 0 divides straight through to +-inf, and a *single* collapsed face
@@ -29,9 +29,10 @@ def cot_entries_from_l2(
     # sliver triangle still yields its (huge, finite) weight, because that is ill-conditioning
     # rather than a division by zero and the fix for it is mollification -- see
     # ``laplacian.robust_laplacian``.
-    denominator = wp.float32(4.0) * dbl_area
-    if denominator <= wp.float32(0.0):
-        return wp.float32(0.0), wp.float32(0.0), wp.float32(0.0)
+    denominator = type(dbl_area)(4.0) * dbl_area
+    zero = type(dbl_area)(0.0)
+    if denominator <= zero:
+        return zero, zero, zero
     c0 = (l2_1 + l2_2 - l2_0) / denominator
     c1 = (l2_2 + l2_0 - l2_1) / denominator
     c2 = (l2_0 + l2_1 - l2_2) / denominator
@@ -40,8 +41,8 @@ def cot_entries_from_l2(
 
 @wp.func
 def cot_entries_from_edge_lengths(
-    l0: wp.float32, l1: wp.float32, l2: wp.float32
-) -> tuple[wp.float32, wp.float32, wp.float32]:
+    l0: wp.Float, l1: wp.Float, l2: wp.Float
+) -> tuple[wp.Float, wp.Float, wp.Float]:
     l2_0 = l0 * l0
     l2_1 = l1 * l1
     l2_2 = l2 * l2
@@ -92,12 +93,69 @@ def cotmatrix_entries(
 def cotmatrix_entries_intrinsic(
     edge_lengths: wp.array2d[wp.float32], out_cot: wp.array2d[wp.Float]
 ) -> None:
+    # Evaluated at the output's precision: the lengths are ``float32``, but the law of cosines
+    # cancels their squares against each other, so a ``float64`` table formed in ``float32`` and
+    # cast (as this did until 2026-10-08) carried ``float32``'s cancellation error -- 6.5x the
+    # ``1e-5`` tolerance off igl's ``float64`` answer on the same lengths, on ``saddle_graded``.
     f = wp.int32(wp.tid())
     l0, l1, l2 = row_triple(edge_lengths, f)
-    c0, c1, c2 = cot_entries_from_edge_lengths(l0, l1, l2)
-    out_cot[f, 0] = type(out_cot[f, 0])(c0)
-    out_cot[f, 1] = type(out_cot[f, 1])(c1)
-    out_cot[f, 2] = type(out_cot[f, 2])(c2)
+    c0, c1, c2 = cot_entries_from_edge_lengths(
+        type(out_cot[f, 0])(l0), type(out_cot[f, 0])(l1), type(out_cot[f, 0])(l2)
+    )
+    out_cot[f, 0] = c0
+    out_cot[f, 1] = c1
+    out_cot[f, 2] = c2
+
+
+# Relative perturbation of one ``float32`` length by its rounding: half an ulp.
+LENGTH_ROUNDING = wp.float64(5.9604645e-08)
+
+
+@wp.kernel
+def intrinsic_rounding_rows(
+    faces: wp.array[wp.int32],
+    edge_lengths: wp.array2d[wp.float32],
+    out_error: wp.array[wp.float64],
+    out_scale: wp.array[wp.float64],
+) -> None:
+    # How far the rounding of ``float32`` edge lengths can move the intrinsic cotangent weights,
+    # gathered per operator row: each half-cotangent's change under a half-ulp relative change of
+    # each of its face's three lengths (in ``float64``, so the finite difference measures the
+    # lengths' conditioning and not this kernel's arithmetic), summed into the rows of the edge it
+    # weights, beside the row's sum of ``|weight|``. A needle's area is ``eps * aspect^2`` sensitive
+    # to its sides, so a needle's rows are where the ratio grows.
+    f = wp.int32(wp.tid())
+    l0, l1, l2 = row_triple(edge_lengths, f)
+    d0 = wp.float64(l0)
+    d1 = wp.float64(l1)
+    d2 = wp.float64(l2)
+    c0, c1, c2 = cot_entries_from_edge_lengths(d0, d1, d2)
+    step = wp.float64(1.0) + LENGTH_ROUNDING
+    a0, a1, a2 = cot_entries_from_edge_lengths(d0 * step, d1, d2)
+    b0, b1, b2 = cot_entries_from_edge_lengths(d0, d1 * step, d2)
+    e0, e1, e2 = cot_entries_from_edge_lengths(d0, d1, d2 * step)
+    bound = wp.vec3d(
+        wp.abs(a0 - c0) + wp.abs(b0 - c0) + wp.abs(e0 - c0),
+        wp.abs(a1 - c1) + wp.abs(b1 - c1) + wp.abs(e1 - c1),
+        wp.abs(a2 - c2) + wp.abs(b2 - c2) + wp.abs(e2 - c2),
+    )
+    weight = wp.vec3d(wp.abs(c0), wp.abs(c1), wp.abs(c2))
+    for k in range(3):
+        # Half-cotangent ``k`` weights the edge opposite corner ``k``.
+        for end in range(1, 3):
+            v = faces[f * 3 + (k + end) % 3]
+            wp.atomic_add(out_error, v, bound[k])
+            wp.atomic_add(out_scale, v, weight[k])
+
+
+@wp.kernel
+def max_row_ratio(
+    error: wp.array[wp.float64], scale: wp.array[wp.float64], out_max: wp.array[wp.float64]
+) -> None:
+    # The largest ``error / scale`` over the rows that carry any weight.
+    v = wp.int32(wp.tid())
+    if scale[v] > wp.float64(0.0):
+        wp.atomic_max(out_max, 0, error[v] / scale[v])
 
 
 @wp.func

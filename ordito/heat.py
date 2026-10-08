@@ -44,6 +44,8 @@ live in [`ordito.laplacian`][ordito.laplacian], tangent frames in
 from __future__ import annotations
 
 import logging
+import math
+import warnings
 import weakref
 from dataclasses import dataclass
 from typing import cast, overload
@@ -55,7 +57,7 @@ import ordito as od
 import ordito.linalg as twl
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import read_values, require_same_device
 from ordito.constants import TILE_1D
 from ordito.kernels import heat as kernel_heat
 from ordito.kernels import linalg as kernel_linalg
@@ -115,6 +117,12 @@ _CG_TOLERANCE = 1e-8
 _HEAT_CHECK_ROUNDS = 16
 _HEAT_CHANGE_TOLERANCE = 1e-6
 _HEAT_SETTLE_ROUNDS = 192
+
+# ``extend_scalar`` warns once its field leaves the source values' range by more than this fraction
+# of the range. Where every cotangent weight is non-negative the overshoot is exactly 0 (spheres
+# and tori, regular or irregularly sampled, 2 to 40 sources); where obtuse triangles make some
+# negative it is 2e-3 to 14x the range (``sphere_irregular``, ``torus_irregular``).
+_EXTEND_RANGE_TOLERANCE = 1e-6
 
 
 HeatOperators = tuple[
@@ -1036,8 +1044,19 @@ def extend_scalar(
     RuntimeError
         If ``vertices``, ``faces``, ``sources`` and ``values`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        When the extended field leaves the range of the source values (see Notes).
+
     Notes
     -----
+    The extension stays inside the source values' range exactly when every cotangent weight is
+    non-negative: the diffusion is then a convex average. On a mesh with obtuse triangles some
+    weights are negative, and the quotient can overshoot -- far, where the indicator is small. The
+    call warns when that happens, measuring every vertex a source reaches; geometry-central's
+    extension does the same arithmetic and returns the same values.
+
     The ``vertices, faces`` form logs at ``INFO`` on the ``ordito.heat`` logger when it built a
     factorization it is about to drop, as [`heat_geodesic`][ordito.heat.heat_geodesic] does.
 
@@ -1081,10 +1100,12 @@ def _extend_scalar(
     rhs = odt.as_array2d(
         _launch.zeros((2, n_vertices), dtype=wp.float64, device=device), wp.float64
     )
+    # ``(min, -max, -overshoot)`` of the extension against the source values; see the kernels.
+    value_range = wp.full(3, math.inf, dtype=wp.float64, device=device)
     _launch.launch(
         kernel_heat.seed_source_scalars,
         dim=n_sources,
-        inputs=[sources, values, rhs[0], rhs[1]],
+        inputs=[sources, values, rhs[0], rhs[1], value_range],
         device=device,
     )
     diffused = odt.as_array2d(
@@ -1092,16 +1113,34 @@ def _extend_scalar(
     )
     solver.diffuse(rhs, diffused)
     # Converged per vertex, so only an exactly zero indicator -- a component no source reaches --
-    # has no value to extend (``divide_nonzero``).
+    # has no value to extend.
     extended = _launch.empty(n_vertices, dtype=wp.float64, device=device)
-    _launch.map(
-        kernel_heat.divide_nonzero,
-        odt.as_dense(diffused[1]),
-        odt.as_dense(diffused[0]),
-        out=extended,
+    _launch.launch(
+        kernel_heat.extend_from_ratio,
+        dim=n_vertices,
+        inputs=[odt.as_dense(diffused[0]), odt.as_dense(diffused[1])],
+        outputs=[extended, value_range],
+        device=device,
     )
     _log_discarded("extend_scalar", owned, solver)
+    # Host readback: the overshoot decides the warning; the three values are one copy.
+    low, negative_high, negative_excess = read_values(value_range, 0, 3)
+    _warn_if_out_of_range(float(low), -float(negative_high), -float(negative_excess))
     return extended
+
+
+def _warn_if_out_of_range(low: float, high: float, excess: float) -> None:
+    """Warn when ``extend_scalar``'s field leaves its source values' range by more than rounding."""
+    if math.isinf(excess):  # no vertex had a non-zero indicator to measure
+        return
+    scale = max(high - low, abs(low), abs(high))
+    if excess > _EXTEND_RANGE_TOLERANCE * scale:
+        warnings.warn(
+            f"extend_scalar: the extended field leaves the source values' range "
+            f"[{low:.6g}, {high:.6g}] by {excess:.3g}. The cotangent weights of obtuse triangles "
+            "are negative here, so the diffusion is not a convex average; see Notes.",
+            stacklevel=4,
+        )
 
 
 @overload

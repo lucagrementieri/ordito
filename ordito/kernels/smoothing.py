@@ -1119,6 +1119,22 @@ def mut_dif_adil(normal: wp.vec3, position: wp.vec3d, lv: wp.vec3d) -> wp.float6
 
 MUT_DIF_ROWS_PER_BLOCK = wp.constant(256)
 
+# ``float32``'s unit roundoff relative to a coordinate: the rounding a ``float32`` input carries.
+FLOAT32_ROUNDING = wp.float64(1.1920929e-07)
+
+
+@wp.func
+def mut_dif_adil_rounding(position: wp.vec3d, adil: wp.float64) -> wp.float64:
+    # This vertex's term of the mean coefficient's rounding sensitivity: ``adil`` is ``1/r`` with
+    # ``r`` the normal residual, so an input rounding ``delta`` of the position moves it by
+    # ``adil^2 delta``. Summed over vertices and divided by the sum of ``adil`` it is the relative
+    # uncertainty of the mean every step divides by, which a residual near zero (a saddle, an
+    # inflection) makes large.
+    delta = FLOAT32_ROUNDING * wp.max(
+        wp.abs(position[0]), wp.max(wp.abs(position[1]), wp.abs(position[2]))
+    )
+    return adil * adil * delta
+
 
 @wp.kernel
 def mut_dif_adil_pass(
@@ -1130,6 +1146,8 @@ def mut_dif_adil_pass(
     out_lv: wp.array[wp.vec3d],
     out_adil_sum: wp.array[wp.float64],
 ) -> None:
+    # ``out_adil_sum[0]`` gathers the coefficients, ``[1]`` their rounding sensitivity
+    # (``mut_dif_adil_rounding``).
     # Applies the operator row and folds each vertex's ``mut_dif_adil`` straight into the mean's
     # sum: ``MUT_DIF_ROWS_PER_BLOCK`` rows per block, lane-strided by ``wp.block_dim()`` (so the
     # CPU device's single lane covers the block's rows), one ``float64`` atomic per block. The
@@ -1142,12 +1160,16 @@ def mut_dif_adil_pass(
     if remaining <= 0:
         return
     total = wp.float64(0.0)
+    rounding = wp.float64(0.0)
     for r in range(lane, remaining, wp.block_dim()):
         i = offset + r
         lv = operator_row(offsets, columns, values, positions, i)
         out_lv[i] = lv
-        total = total + mut_dif_adil(normals[i], positions[i], lv)
+        adil = mut_dif_adil(normals[i], positions[i], lv)
+        total = total + adil
+        rounding = rounding + mut_dif_adil_rounding(positions[i], adil)
     commit_block_total(lane, total, out_adil_sum, 0)
+    commit_block_total(lane, rounding, out_adil_sum, 1)
 
 
 @wp.func
@@ -1167,6 +1189,7 @@ def mut_dif_step_scaled(
     probe_scale: wp.float64,
     out_next: wp.array[wp.vec3d],
     out_probe: wp.array[wp.vec3d],
+    out_sensitivity: wp.array[wp.float64],
 ) -> None:
     # ``mut_dif_step`` with the mean coefficient read from a device scalar (adil_sum[0] * inv_n),
     # so the smoothing loop never synchronises with the host. A real kernel rather than wp.map:
@@ -1178,6 +1201,9 @@ def mut_dif_step_scaled(
     # has just computed rather than read back by a map of its own.
     i = wp.int32(wp.tid())
     mean_adil = adil_sum[0] * inv_n
+    if i == wp.int32(0):
+        # The largest relative rounding uncertainty of the mean over the passes, for the warning.
+        wp.atomic_max(out_sensitivity, 0, adil_sum[1] / adil_sum[0])
     position = positions[i]
     row = lv[i]
     stepped = mut_dif_step(position, row, mut_dif_adil(normals[i], position, row), mean_adil, lamb)

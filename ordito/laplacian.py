@@ -32,6 +32,7 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal, NamedTuple, overload
 
 import warp as wp
@@ -39,7 +40,7 @@ import warp as wp
 import ordito as od
 import ordito.typing as odt
 from ordito import _launch
-from ordito._device import require_same_device
+from ordito._device import read_scalar, require_same_device
 from ordito.constants import TOLERANCE_MOLLIFY
 from ordito.edges import edges_unique, face_edge_lengths, faces_to_edges
 from ordito.kernels import laplacian as kernel_laplacian
@@ -393,6 +394,16 @@ def cotmatrix(
     return od.array.bsr_from_csr(n_vertices, n_vertices, offsets, columns, values)
 
 
+# ``robust_laplacian`` warns when rounding its ``float32`` lengths can move an operator row by more
+# than this fraction of the row's scale (``kernels/laplacian.intrinsic_rounding_rows``, a bound the
+# measured row error sits about 7x under). Measured 2026-10-08: <= 1e-6 on every needle-free fixture
+# and on ``saddle_graded`` (whose needles' rows it puts at 5.4e-7), 2e-4 to 3.9e-4 on
+# ``sphere_irregular`` / the irregular tori without the Delaunay flips (measured row error 2.4e-5 to
+# 5.6e-5), 9e-6 to 2.6e-5 with them (the flips remove the needles). 1e-4 is ~1.4e-5 of real row
+# error, 100x the ``float32`` floor.
+_INTRINSIC_ROUNDING_LIMIT = 1e-4
+
+
 def robust_laplacian(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
@@ -449,6 +460,21 @@ def robust_laplacian(
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
+    Warns
+    -----
+    UserWarning
+        When the ``float32`` edge lengths do not determine the weights (see Notes).
+
+    Notes
+    -----
+    The operator is built from ``float32`` edge lengths, and a needle triangle's cotangents are
+    sensitive to its lengths as ``eps * aspect^2``: on a mesh with aspect ratios in the hundreds the
+    rounding of the lengths alone moves operator rows by around 1e-5 to 1e-4 of their scale, where
+    [`cotmatrix`][ordito.laplacian.cotmatrix], built from positions, stays near ``float32``'s
+    1e-7. The call bounds that movement row by row and warns when it exceeds 1e-4. The Delaunay
+    flips usually remove such needles; the warning is mostly a hazard of
+    ``use_intrinsic_delaunay=False``.
+
     See Also
     --------
     [`intrinsic_delaunay`][ordito.remesh.intrinsic_delaunay]
@@ -463,7 +489,44 @@ def robust_laplacian(
         intrinsic_faces = faces
         lengths, _ = mollify_intrinsic(vertices, faces, epsilon=epsilon)
     entries = cotmatrix_entries_intrinsic(lengths, dtype=dtype)
+    _warn_if_lengths_undetermined(vertices.size, intrinsic_faces, lengths)
     return cotmatrix(vertices, intrinsic_faces, cot_entries=entries, dtype=dtype)
+
+
+def _warn_if_lengths_undetermined(
+    n_vertices: int, faces: wp.array[wp.int32], lengths: odt.Array2dFloat32
+) -> None:
+    """Warn when rounding the ``float32`` lengths alone can move an operator row noticeably."""
+    device = faces.device
+    n_faces = faces.size // 3
+    if n_faces == 0:
+        return
+    error = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    scale = _launch.zeros(n_vertices, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_laplacian.intrinsic_rounding_rows,
+        dim=n_faces,
+        inputs=[faces, lengths],
+        outputs=[error, scale],
+        device=device,
+    )
+    worst = _launch.zeros(1, dtype=wp.float64, device=device)
+    _launch.launch(
+        kernel_laplacian.max_row_ratio,
+        dim=n_vertices,
+        inputs=[error, scale],
+        outputs=[worst],
+        device=device,
+    )
+    # Host readback: the one number the warning decides on.
+    ratio = float(read_scalar(worst))
+    if ratio > _INTRINSIC_ROUNDING_LIMIT:
+        warnings.warn(
+            f"robust_laplacian: rounding the float32 edge lengths alone can move an operator row "
+            f"by {ratio:.2g} of its scale: needle triangles are not determined by their lengths "
+            "to float32 precision. cotmatrix, built from positions, does not have this limit.",
+            stacklevel=3,
+        )
 
 
 def mollify_intrinsic(

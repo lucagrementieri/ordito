@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import warnings
 from typing import Literal, cast
 
 import igl
@@ -34,13 +35,14 @@ from tests.conversions import (
     trimesh_to_pyvista,
 )
 
-# The intrinsic route takes ``float32`` edge lengths, and on ``saddle_graded``'s needles those
-# lengths do not determine the triangle: igl's own ``cotmatrix_entries``, handed its float64
-# lengths rounded to float32, moves by 1.2e-4 (296 entries past 1e-5), the area being
-# ``eps * aspect^2`` sensitive to the sides. So no length-based comparison can hold there, and
-# the positions-based ones above carry that fixture. Nor on ``sphere_irregular`` (aspect ~300):
-# rounding its lengths moves 171 of igl's entries past 1e-5 (3.5e-2 at worst). The irregular but
-# needle-free ``sphere_well_shaped`` (aspect ~6) moves them by at most 7.6e-07.
+# The intrinsic route takes ``float32`` edge lengths, and on needles those lengths do not determine
+# the triangle: igl's own ``cotmatrix_entries``, handed its ``float64`` lengths rounded to
+# ``float32``, moves by 22x the ``1e-5`` entry tolerance on ``saddle_graded`` and 25x on
+# ``sphere_irregular`` (the area is ``eps * aspect^2`` sensitive to the sides). So a comparison
+# against a reference fed ``float64`` lengths or positions cannot hold there, and these tests keep
+# the needle-free ``sphere_well_shaped`` (0.03x). ``test_cotmatrix_entries_intrinsic`` runs on the
+# hard fixtures by handing igl the same rounded lengths; ``robust_laplacian`` warns where the
+# rounding moves its rows (``test_robust_laplacian_warns_where_lengths_do_not_determine_it``).
 _INTRINSIC_MESHES = ["sphere_well_shaped", "sphere_well_shaped_open"]
 
 # -----------------------------------------------------------------------------------------
@@ -331,33 +333,42 @@ def test_cotmatrix_entries_matches_meshlib(request: pytest.FixtureRequest, mesh_
 
 
 @pytest.mark.parametrize("dtype", [wp.float32, wp.float64], ids=["float32", "float64"])
-@pytest.mark.parametrize("mesh_name", _INTRINSIC_MESHES)
+@pytest.mark.parametrize("mesh_name", MESHES)
 @pytest.mark.parity("cotmatrix_entries_intrinsic", "igl")
 def test_cotmatrix_entries_intrinsic(
     request: pytest.FixtureRequest, mesh_name: str, dtype: type[wp.float32 | wp.float64]
 ) -> None:
     """
-    Class A: the length-only overload, fed igl's own ``edge_lengths`` so only the formula differs.
+    Class A: the length-only overload against igl's, both fed the same ``float32`` lengths.
 
-    Passing the reference's lengths in rather than ordito's isolates the cotangent formula
-    from [`ordito.edges`], which has its own oracle. igl overloads the same name on the
-    argument shape.
+    igl's ``edge_lengths``, rounded to ``float32``, go to both sides, so only the formula differs
+    -- not [`ordito.edges`] (which has its own oracle), and not the rounding, which on these
+    needles moves igl's own answer 22-25x the ``1e-5`` tolerance (``_INTRINSIC_MESHES``).
 
-    On the ``float64`` arm the dtype must change without the values changing. The dtype is asserted
-    as well as the values, because a silent ``float32`` return would still pass the ``1e-5``
-    comparison and lose precision only where it matters -- in a downstream solve.
+    The ``float64`` arm evaluates in ``float64`` and equals igl's ``float64`` evaluation bit for
+    bit on both fixtures (asserted at 1e-12). It used to compute in ``float32`` and cast: 6.5x the
+    ``1e-5`` tolerance off on ``saddle_graded``. The ``float32`` arm is ``float32`` arithmetic, and
+    the law of cosines cancels a needle's squared sides, so it is measured against each face's
+    largest weight: 2.0e-7 / 2.3e-7 there (``saddle_graded`` / ``sphere_irregular``), bar 1e-6.
+    With the area's Kahan formula fed the sides in the wrong order (as it was until 2026-10-08) the
+    ``float32`` arm fails on both fixtures (a needle's area 1.2e-4 off); the ``float64`` arm does
+    not see it, the reversed order costing only ``float64`` digits.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
-    edge_lengths_igl = np.asarray(igl.edge_lengths(*mesh_igl(mesh_tm)))
-    cot_entries_igl = igl.cotmatrix_entries(edge_lengths_igl)
+    edge_lengths_np = np.asarray(igl.edge_lengths(*mesh_igl(mesh_tm))).astype(np.float32)
+    cot_entries_igl = igl.cotmatrix_entries(edge_lengths_np.astype(np.float64))
     edge_lengths_wp = odt.as_array2d(
-        wp.array(edge_lengths_igl.astype(np.float32), dtype=wp.float32, device=mesh_wp.device),
-        wp.float32,
+        wp.array(edge_lengths_np, dtype=wp.float32, device=mesh_wp.device), wp.float32
     )
     cot_entries_wp = od.laplacian.cotmatrix_entries_intrinsic(edge_lengths_wp, dtype=dtype)
 
     assert cot_entries_wp.dtype == dtype
-    assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-5, atol=1e-5)
+    assert np.ptp(cot_entries_igl) > 100.0  # non-vacuity: the needles' weights are present
+    if dtype == wp.float64:
+        assert np.allclose(cot_entries_wp.numpy(), cot_entries_igl, rtol=1e-12, atol=0.0)
+    else:
+        face_scale = np.abs(cot_entries_igl).max(axis=1, keepdims=True)
+        assert (np.abs(cot_entries_wp.numpy() - cot_entries_igl) / face_scale).max() < 1e-6
 
 
 # -----------------------------------------------------------------------------------------
@@ -709,10 +720,12 @@ def test_robust_laplacian_keeps_couplings_the_plain_one_drops(
     vertices_np, _, vertices_wp, faces_wp = sliver_patch
     n_vertices = len(vertices_np)
     plain = bsr_to_dense(od.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
-    robust = bsr_to_dense(
-        od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
-        n_vertices,
-    )
+    # A mollified degenerate face is the needle whose weights its float32 lengths cannot fix.
+    with pytest.warns(UserWarning, match="robust_laplacian:"):
+        robust_operator = od.laplacian.robust_laplacian(
+            vertices_wp, faces_wp, use_intrinsic_delaunay=False
+        )
+    robust = bsr_to_dense(robust_operator, n_vertices)
 
     assert np.isfinite(plain).all()
     assert np.isfinite(robust).all()
@@ -765,10 +778,12 @@ def test_robust_laplacian_barely_perturbs_the_rows_it_did_not_need_to(
     assert delta > 0.0
 
     plain = bsr_to_dense(od.laplacian.cotmatrix(vertices_wp, faces_wp), n_vertices)
-    robust = bsr_to_dense(
-        od.laplacian.robust_laplacian(vertices_wp, faces_wp, use_intrinsic_delaunay=False),
-        n_vertices,
-    )
+    # A mollified degenerate face is the needle whose weights its float32 lengths cannot fix.
+    with pytest.warns(UserWarning, match="robust_laplacian:"):
+        robust_operator = od.laplacian.robust_laplacian(
+            vertices_wp, faces_wp, use_intrinsic_delaunay=False
+        )
+    robust = bsr_to_dense(robust_operator, n_vertices)
     clean = np.setdiff1d(np.arange(n_vertices), np.unique(faces_np[(faces_np == apex_c).any(1)]))
     block = np.ix_(clean, clean)
     scale = np.abs(plain[block]).max()
@@ -870,6 +885,49 @@ def test_robust_laplacian_matches_igl_intrinsic_delaunay(
 # -----------------------------------------------------------------------------------------
 # mollify_intrinsic
 # -----------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "use_intrinsic_delaunay", "warns"),
+    [
+        ("sphere_irregular", False, True),
+        ("sphere_irregular", True, False),
+        ("saddle_graded", False, False),
+        ("sphere_well_shaped", False, False),
+    ],
+)
+def test_robust_laplacian_warns_where_lengths_do_not_determine_it(
+    request: pytest.FixtureRequest, mesh_name: str, use_intrinsic_delaunay: bool, warns: bool
+) -> None:
+    """
+    Not a library comparison: the warning fires where rounding the ``float32`` lengths moves rows.
+
+    Without the Delaunay flips the operator is ``cotmatrix``'s triangulation, so the movement is
+    measurable directly, against ``cotmatrix`` from positions in ``float64``: 5.6e-5 of a row's
+    scale on ``sphere_irregular`` (the warning's bound reads 3.9e-4, over its 1e-4 limit), 8.2e-8 on
+    ``saddle_graded`` and 1.9e-7 on ``sphere_well_shaped`` (bounds 5.4e-7 and 1e-6). With the flips
+    ``sphere_irregular``'s needles are gone and the bound reads 9.5e-6: silent.
+    """
+    _mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        operator = od.laplacian.robust_laplacian(
+            mesh_wp.points,
+            mesh_wp.indices,
+            dtype=wp.float64,
+            use_intrinsic_delaunay=use_intrinsic_delaunay,
+        )
+    messages = [str(w.message) for w in caught if "robust_laplacian:" in str(w.message)]
+    assert len(messages) == int(warns)
+    if use_intrinsic_delaunay:
+        return
+    reference = bsr_to_csr(
+        od.laplacian.cotmatrix(mesh_wp.points, mesh_wp.indices, dtype=wp.float64)
+    )
+    moved = abs(bsr_to_csr(operator) - reference).tocsr()
+    row_scale = np.asarray(abs(reference).sum(axis=1)).ravel()
+    movement = (np.asarray(moved.max(axis=1).todense()).ravel() / row_scale).max()
+    assert movement > 1e-5 if warns else movement < 1e-6
 
 
 def test_mollify_intrinsic_is_a_no_op_on_a_clean_mesh(

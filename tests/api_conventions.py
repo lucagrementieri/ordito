@@ -539,6 +539,9 @@ _KERNEL_OUTPUT_ALLOWLIST: dict[tuple[str, str], frozenset[str]] = {
     # its parity and stop flag, and this one counts the sweep's accepted replacements into it for
     # ``shorten_loop_advance`` to read and clear. The answers are the count and arc tables.
     ("geodesic_walk", "shorten_loop_counts"): frozenset({"state"}),
+    # ``descent_paths``' first counting pass flags the paths that stopped short in ``short_paths``
+    # (and counts them in its last slot); the completion pass reads the flags back as its mask.
+    ("geodesic_walk", "descent_paths"): frozenset({"short_paths"}),
     # ``cursors`` is the bucket write head the counting sort hands slots out with: it holds the
     # bucket starts going in and is advanced to their ends, which the pairing kernel then reads as
     # bounds. The answer is ``out_buckets``.

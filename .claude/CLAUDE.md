@@ -1442,7 +1442,7 @@ their numbers), which found five ordito defects, each fixed and pinned (next lis
   sign at 1 500).
 - *Wrong claim in the test*: `extend_scalar` interpolates only where every cotangent weight is
   non-negative (M-matrix); on `sphere_irregular` both ordito and geometry-central return 5.43 for
-  sources in [1, 5] (-6.18 at 1 500 vertices). A thickened shell's volume exceeds `area * thickness` on a saddle (Steiner).
+  sources in [1, 5] (-6.18 at 1 500 vertices). It now warns when that happens (§16.10). A thickened shell's volume exceeds `area * thickness` on a saddle (Steiner).
   Barycentric coordinates of a rounded point move by `eps |p| / altitude`, and an intrinsic
   Delaunay weight that should be zero rounds by its row's scale -- bounds must scale with the
   conditioning, not be absolute.
@@ -2828,9 +2828,22 @@ Consequence: the shared argmin/argmax/swap helpers in `kernels/array.py` are con
   true, huge cotangent (-1.25e8) where the `float32` lengths' rounding used to read it as zero area,
   so `conftest.sliver_patch` became exactly collinear to keep testing the zero-area rule; and the
   intrinsic overloads (`cotmatrix_entries_intrinsic`, `robust_laplacian`, mollification), which
-  only have `float32` lengths, keep the law of cosines and cannot represent a needle at all --
-  igl's own cotangents move by 1.2e-4 when its lengths are rounded to `float32`.
-  `cotmatrix_entries_intrinsic(dtype=wp.float64)` also computes in `float32` and casts (open).
+  only have `float32` lengths, keep the law of cosines.
+- **The intrinsic path's needle error was mostly a bug, and the rest is real** (2026-10-08).
+  `predicates.doublearea_from_lengths` fed Kahan's stable Heron formula the sides smallest-first
+  (it needs `a >= b >= c`, the largest as `a`): a needle's `float32` area was 1.2e-4 off on
+  `saddle_graded`, 1.6e-7 in Kahan's order, and the intrinsic operator's rows went from 5.7e-5 of
+  their scale off a `float64` positions build to 8.2e-8 there. `cotmatrix_entries_intrinsic(dtype=
+  wp.float64)` now evaluates in `float64` (it computed in `float32` and cast) and equals igl's on
+  the same lengths bit for bit. What remains is the lengths' rounding itself: igl's own
+  cotangents, fed `float32`-rounded lengths, move 22-25x the `1e-5` entry tolerance on
+  `saddle_graded` / `sphere_irregular`, and the operator's rows 5.6e-5 / 2.4e-5 on
+  `sphere_irregular` / `torus_irregular` without the Delaunay flips. `robust_laplacian` bounds
+  that per row (`kernels/laplacian.intrinsic_rounding_rows`: each half-cotangent's change under a
+  half-ulp of each length, in `float64`, over the row's sum of `|weight|`) and **warns above
+  1e-4**: 2e-4 to 3.9e-4 on the irregular fixtures without flips, 9e-6 to 2.6e-5 with them, <= 1e-6
+  on needle-free ones and on `saddle_graded`. Cost: two launches and a read, 0.37-0.44 -> 0.51 ms on
+  a 41 k-vertex sphere.
 - **The same contraction makes `-orient2d(p)` and `orient2d(mirror_y(p))` different predicates on
   CUDA** (a near-collinear vertex flips its convex/reflex verdict). `kernels/polyline.mirror_y`
   evaluates the mirrored loop explicitly. **Never substitute an algebraic identity inside a sign
@@ -5604,8 +5617,19 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   (1.42 on `torus_irregular`). potpourri3d's identical method gives the same field to 2e-5 of the
   range; its intrinsic-Delaunay `use_robust=True` field has *two* such minima and leaves 238
   paths short, so retriangulating is not the fix. The walk is faithful (identical paths on
-  either library's field); the test compares against the same walk over potpourri3d's field. OPEN:
-  a spurious minimum stops a path silently (documented in `descend_field`).
+  either library's field); the test compares against the same walk over potpourri3d's field.
+- **`geodesic_path` finishes a stranded path along mesh edges, and warns** (2026-10-08,
+  `geodesic_walk._descend`, `kernels/geodesic_walk.graph_predecessor`). A descent that stops short
+  of the source (a local minimum, a flat face, the boundary; not `max_steps`) continues from its
+  nearest corner along the shortest-edge-path tree of a `graph.shortest_path_envelope` distance,
+  whose only minima are the sources. The first counting pass flags the short paths (one 4-byte
+  read); only then is the graph distance built and only the flagged paths re-walked. All 142 of
+  `sphere_irregular`'s stranded paths (ending 0.59 from the source) now arrive at 1.05-1.50 of the
+  exact geodesic, inside the 1.00-1.68 of the paths the field carries; `saddle_graded` finishes 77
+  boundary stops. **Silent truncation was not rare**: a radially perturbed `icosphere(6)` stranded
+  369 of 2 000 paths, an exact one 2. Cost when paths need it: 13.5 -> 15.1 ms (perturbed) and
+  34 -> 38 ms (exact), ~2.8 ms of it the Bellman-Ford relaxation; re-walking every path instead of
+  the flagged ones cost 17.6 / 51 ms. `descend_field` keeps stopping where its field does.
 
 ### 16.7 `sample`
 
@@ -5703,6 +5727,14 @@ through its module, and nothing calls `wp.load_module` / `wp.force_load` at impo
   folds the same way. Both docstrings state the limit; neither guards it (a whole-mesh intersection
   test per call); `offset_mesh` is the fold-free alternative. A test of "no self-intersection"
   after a normal displacement needs a needle-free fixture, and says so.
+- **`filter_mut_dif_laplacian` warns where its result is chaotic in its input** (2026-10-08). Every
+  step divides by the mean of `adil = 1/|N.(V - L.V)|`, which a near-zero residual (saddle,
+  inflection) dominates. The adil pass also sums `adil^2 * eps32 * max|p_i|` (the mean's rounding
+  uncertainty, `kernels/smoothing.mut_dif_adil_rounding`); the step keeps its maximum over the
+  passes and one read after the loop decides: warn above 1e-3. Measured ~2e-5 on an exact sphere or
+  torus (a 3e-7 input perturbation moves the result 4.2e-7 of its extent, the perturbation itself),
+  0.035 / 1e2 on `sphere_irregular` / `saddle_graded` (moves of 1.1e-3 to 2.6e-3 and 1.8e-2).
+  Cost flat (1.02-1.10 vs 1.04-1.12 ms at 41 k vertices).
 - **`smoothing.inflate`'s inherited volume constraint is load-bearing** (it restores the volume
   the smoothing half-step removed); exposing it as a keyword was declined (§4.2). **It is device
   resident** (2026-10-03, `smoothing._VolumeConstraint`, shared with `filter_laplacian`): the
@@ -6052,6 +6084,13 @@ Rules and semantics are §3.7 (check 27); this records the measured consequences
 - **Tangent-field quantities are gauge-dependent and the float32 transport-angle storage sets a
   noise floor** (§12.4, §7.6).
 
+- **`extend_scalar` warns when its field leaves the source values' range** (2026-10-08,
+  `kernels/heat.extend_from_ratio`): the seed kernel collects the sources' `(min, -max)` and the
+  divide kernel the overshoot, all `atomic_min` into one `wp.full(3, inf)`, read once. The overshoot
+  is exactly 0 wherever every cotangent weight is non-negative (exact and irregularly sampled
+  spheres and tori, 2-40 sources) and 2e-3 to 14x the range where obtuse triangles make some
+  negative (`sphere_irregular`, `torus_irregular`); the bar is 1e-6 of the range. Cost: the read,
+  0.37 -> 0.43 ms on a factored 41 k-vertex call.
 - **On a mesh of mostly obtuse triangles the heat method's error is large, and it is the
   method's** (2026-10-08): `sphere_irregular` (72 % obtuse) reads up to 0.588 of a 5.18 range off
   `igl.exact_geodesic` (mean 0.201), `torus_irregular` 0.558 of 4.93, exactly potpourri3d's

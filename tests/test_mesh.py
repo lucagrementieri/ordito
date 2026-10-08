@@ -1259,6 +1259,10 @@ def _precomputed_argument_cases(
     }
 
 
+# ``sphere_irregular`` has saddles, so ``filter_mut_dif_laplacian`` warns that its result is
+# sensitive to rounding-level changes of the input; both forms of the call run the same
+# arithmetic on the same bits, so the equality below holds regardless.
+@pytest.mark.filterwarnings("ignore:filter_mut_dif_laplacian:UserWarning")
 @pytest.mark.parametrize("name", _PRECOMPUTED_ARGUMENT_IDS)
 def test_a_precomputed_argument_does_not_change_the_answer(
     sphere_irregular: tuple[tm.Trimesh, wp.Mesh], name: str

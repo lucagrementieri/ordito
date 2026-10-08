@@ -320,12 +320,18 @@ def seed_source_scalars(
     values: wp.array[wp.float64],
     out_indicator: wp.array[wp.float64],
     out_weighted: wp.array[wp.float64],
+    out_range: wp.array[wp.float64],
 ) -> None:
     # Scalar extension needs two right-hand sides: where the sources are, and what they carry.
+    # ``out_range`` (seeded ``+inf``) also collects the source values' range for
+    # ``extend_from_ratio``'s overshoot check, stored as ``(min, -max)`` so both ends are one
+    # ``atomic_min`` from one ``wp.full``.
     s = wp.int32(wp.tid())
     v = sources[s]
     wp.atomic_add(out_indicator, v, wp.float64(1.0))
     wp.atomic_add(out_weighted, v, values[s])
+    wp.atomic_min(out_range, 0, values[s])
+    wp.atomic_min(out_range, 1, -values[s])
 
 
 @wp.kernel
@@ -369,6 +375,28 @@ def divide_nonzero(numerator: wp.float64, denominator: wp.float64) -> wp.float64
     if denominator == wp.float64(0.0):
         return wp.float64(0.0)
     return numerator / denominator
+
+
+@wp.kernel
+def extend_from_ratio(
+    diffused_indicator: wp.array[wp.float64],
+    diffused_weighted: wp.array[wp.float64],
+    out_extended: wp.array[wp.float64],
+    out_range: wp.array[wp.float64],
+) -> None:
+    # ``extend_scalar``'s quotient, and how far it leaves the sources' range: with every heat
+    # weight non-negative the extension is a convex combination of the source values, and an
+    # overshoot past ``[min, max]`` is the sign that obtuse triangles made the system lose that.
+    # The overshoot is stored negated in ``out_range[2]`` (seeded ``+inf``, one ``atomic_min``
+    # like the range ``seed_source_scalars`` wrote in slots 0 and 1); a vertex no source reaches
+    # (indicator exactly zero) has no value and is not measured.
+    i = wp.int32(wp.tid())
+    indicator = diffused_indicator[i]
+    extended = divide_nonzero(diffused_weighted[i], indicator)
+    out_extended[i] = extended
+    if indicator != wp.float64(0.0):
+        excess = wp.max(extended - (-out_range[1]), out_range[0] - extended)
+        wp.atomic_min(out_range, 2, -wp.max(excess, wp.float64(0.0)))
 
 
 @wp.func

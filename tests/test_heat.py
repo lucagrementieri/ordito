@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import functools
 import logging
+import warnings
 from collections.abc import Callable
 from typing import Any
 
@@ -1085,12 +1086,14 @@ def test_extend_scalar_matches_potpourri3d(request: pytest.FixtureRequest, mesh_
     sources_np = np.array([0, n_vertices // 3, 2 * n_vertices // 3], dtype=np.int32)
     values_np = np.array([1.0, 2.0, 5.0])
 
-    extended_wp = od.heat.extend_scalar(
-        mesh_wp.points,
-        mesh_wp.indices,
-        wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device),
-        wp.array(values_np, dtype=wp.float64, device=mesh_wp.device),
-    )
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        extended_wp = od.heat.extend_scalar(
+            mesh_wp.points,
+            mesh_wp.indices,
+            wp.array(sources_np, dtype=wp.int32, device=mesh_wp.device),
+            wp.array(values_np, dtype=wp.float64, device=mesh_wp.device),
+        )
     extended_pp = np.asarray(
         _solver_pp(mesh_tm).extend_scalar(sources_np.tolist(), values_np.tolist())
     )
@@ -1118,7 +1121,13 @@ def test_extend_scalar_matches_potpourri3d(request: pytest.FixtureRequest, mesh_
     # No range invariant here: both fixtures carry negative cotangent weights, and there the ratio
     # of two diffusions is not a convex combination. On ``sphere_irregular`` it reaches 5.43 for
     # sources in [1, 5], and geometry-central on the same discretization returns the same value to
-    # 2.3e-5; the invariant is asserted on ``icosphere(5)`` in the far-field test below.
+    # 2.3e-5; the invariant is asserted on ``icosphere(5)`` in the far-field test below. What is
+    # asserted is the warning: exactly when the field leaves the source range (``sphere_irregular``
+    # does, ``saddle_graded`` stays inside), so a vacuous arm cannot pass.
+    excess = max(extended_wp.numpy().max() - 5.0, 1.0 - extended_wp.numpy().min())
+    warned = any("extend_scalar:" in str(w.message) for w in caught)
+    assert warned == (excess > 4e-6)
+    assert warned == (mesh_name == "sphere_irregular")
 
 
 def test_extend_scalar_matches_potpourri3d_far_from_the_sources(
