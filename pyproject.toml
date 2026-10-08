@@ -78,6 +78,9 @@ dev = ["basedpyright>=1.39", "ruff>=0.9", "scipy-stubs>=1.17.1.5"]
 # not as a request to load a plugin. The same holds for ``api-autonav``, which generates the API
 # pages natively from 0.0.66 on (hence the floor) and is not installed either.
 docs = [
+    # Zensical's fork of mike (git source below, never published to PyPI), the versioned-deploy
+    # bridge until Zensical ships native versioning. It builds with ``zensical build``.
+    "mike",
     "mkdocstrings[python]>=0.27",
     # Pre-1.0 and moving fast; the exact version is pinned in ``uv.lock``, as ``warp-lang`` is.
     "zensical>=0.0.66",
@@ -172,6 +175,7 @@ url = "https://download.pytorch.org/whl/cu128"
 [tool.uv.sources]
 pytorch3d = { git = "https://github.com/facebookresearch/pytorch3d.git", branch = "main" }
 torch = { index = "pytorch-cu128" }
+mike = { git = "https://github.com/squidfunk/mike.git" }
 
 [tool.setuptools.packages.find]
 exclude = ["reference*"]

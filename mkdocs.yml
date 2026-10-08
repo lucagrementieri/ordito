@@ -45,6 +45,14 @@ theme:
         icon: material/brightness-4
         name: Switch to light mode
 
+# Versioned docs through Zensical's fork of mike: each version lives in its own directory of the
+# `gh-pages` branch and the root redirects to the `default` alias. Only `stable` is deployed for
+# now; a release-numbered version would be `mike deploy --update-aliases <x.y> stable`.
+extra:
+  version:
+    provider: mike
+    default: stable
+
 extra_css:
   - stylesheets/extra.css
 

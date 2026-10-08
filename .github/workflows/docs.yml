@@ -9,17 +9,15 @@ on:
     tags:
       - "v*"
 
-# Deployment goes through GitHub's native Pages pipeline rather than a force-push to a
-# `gh-pages` branch, so the repository's Pages source must be set to "GitHub Actions"
-# (Settings > Pages > Build and deployment). `id-token: write` is what lets `deploy-pages`
-# authenticate over OIDC; `contents` drops to read because nothing pushes a branch any more.
+# Versioned docs go through Zensical's fork of mike, which commits each version into its own
+# directory of the `gh-pages` branch and pushes it. The repository's Pages source must therefore
+# be "Deploy from a branch", branch `gh-pages`, folder `/ (root)` (Settings > Pages > Build and
+# deployment), and `contents: write` is what lets the job push that branch.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
-# A queued run waits for the one in flight rather than cancelling it, so a deploy is never
-# interrupted half-published.
+# A queued run waits for the one in flight rather than cancelling it, so two runs never race on a
+# push to `gh-pages`.
 concurrency:
   group: pages
   cancel-in-progress: false
@@ -27,11 +25,11 @@ concurrency:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # mike commits on top of the existing `gh-pages` branch, so the clone needs it.
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
 
       # Pinned to an exact version, unlike every other action here: astral-sh stopped
       # publishing moving major tags after `v7`, so `@v10` does not resolve.
@@ -46,15 +44,19 @@ jobs:
 
       # `--strict` is the gate: it exits 1 on a dangling `[`name`][ordito.old.path]`
       # cross-reference, which is the mechanical backstop for the five artifacts a moved or
-      # renamed public function has to take with it (.claude/CLAUDE.md §4.4).
-      - name: Build docs
+      # renamed public function has to take with it (.claude/CLAUDE.md §4.4). mike's own build
+      # below runs `zensical build --clean` without `--strict`, so this step is what fails the run.
+      - name: Check docs
         run: uv run zensical build --strict
 
-      - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v5
-        with:
-          path: ./site
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+      # `stable` is the only version for now. Once releases get their own versions, deploy
+      # `${GITHUB_REF_NAME#v}` with `--update-aliases ... stable` on tags and keep `main` as `dev`.
       - name: Deploy docs
-        id: deployment
-        uses: actions/deploy-pages@v5
+        run: |
+          uv run mike deploy --push stable
+          uv run mike set-default --push --allow-empty stable
