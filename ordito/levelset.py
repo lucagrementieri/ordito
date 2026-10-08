@@ -113,7 +113,7 @@ _MAX_CONE_WORK = 1 << 34
 
 
 def marching_cubes(
-    field: odt.Array3dFloat32,
+    field: odt.ArrayNdFloat32,
     iso: float = 0.0,
     *,
     bounds: tuple[wp.vec3, wp.vec3] | None = None,

@@ -29,23 +29,25 @@ has to take part in. Dropping that arm loses the minimum and makes the tree thre
 
 **The dual side is a Boruvka forest, and a forest is all that is needed**: ``homology_generators``
 reads the cotree as a *set* -- the generators are the edges in neither tree -- and the loop tracing
-walks the **primal** parents. So the dual side has no root and no parent pointers, and its shape is
-free to choose. Breadth-first is the one shape that is expensive here: the dual graph restricted to
-non-primal-tree edges is *already nearly a tree*, so its diameter is enormous -- on the benchmark
-meshes a dual traversal runs several times the primal's level count. Boruvka needs ``O(log F)``
-rounds instead. Each round gives every component its minimum-index incident candidate edge, accepts
-those edges and unions the components; the union-find core is
+walks the **primal** parents. So the dual side has no root and no parent pointers, and only its
+weight is fixed, not how it is traversed. Breadth-first is the one shape that is expensive here: the
+dual graph restricted to non-primal-tree edges is *already nearly a tree*, so its diameter is
+enormous -- on the benchmark meshes a dual traversal runs several times the primal's level count.
+Boruvka needs ``O(log F)`` rounds instead. Each round gives every component its minimum-key incident
+candidate edge (``forest_edge_key``: longest loop through the root first, so the forest is a maximum
+spanning tree under that length and the leftovers are the greedy system of loops), accepts those
+edges and unions the components; the union-find core is
 [`find_representative`][ordito.kernels.algorithms.connected_components.find_representative] and
 [`ecl_hook_edge`][ordito.kernels.algorithms.connected_components.ecl_hook_edge], imported rather
 than re-derived, so the forest and ``graph.connected_component_labels`` share one implementation of
 the pointer-jumping find and of the CAS hook.
 
-**Why the accepted set is a forest.** Edge *indices* are distinct, so "minimum incident index" is a
-strict total order on the candidate edges, and the classical Boruvka argument applies: a cycle among
-the accepted edges would need a strictly decreasing cycle of minima. The round reads its components
-from an immutable ``roots`` snapshot taken before any union, which is what makes that argument exact
-here -- deciding against a ``label`` array that other threads are mutating would let one component
-accept two edges in a round and could close a cycle.
+**Why the accepted set is a forest.** Edge *indices* are distinct and fill the key's low half, so
+"minimum incident key" is a strict total order on the candidate edges, and the classical Boruvka
+argument applies: a cycle among the accepted edges would need a strictly decreasing cycle of minima.
+The round reads its components from an immutable ``roots`` snapshot taken before any union, which is
+what makes that argument exact here -- deciding against a ``label`` array that other threads are
+mutating would let one component accept two edges in a round and could close a cycle.
 
 **Both loops carry their own condition so the wrapper can capture them**, and both do it through
 the package's shared round-loop slot table rather than one of their own -- ``array.LOOP_ROUND`` /
@@ -68,16 +70,15 @@ right half to cut: the tracer needs the depths to size a loop without walking it
 
 import warp as wp
 
-from ordito.constants import INT32_MAX, TILE_1D
+from ordito.constants import INT32_MAX, TILE_1D, UINT64_MAX_CONSTANT
 from ordito.kernels.algorithms.connected_components import ecl_hook_edge, find_representative
 from ordito.kernels.array import LOOP_PROGRESS, LOOP_ROUND
 from ordito.kernels.reduce import block_chunk, block_chunk_1d, commit_block_sum, commit_block_total
 
 wp.set_module_options({"enable_backward": False})
 
-# One past the largest edge index any proposal can hold, so ``wp.atomic_min`` starts empty. The
-# candidate count is bounded by the unique-edge count, which is well inside int32.
-FOREST_NO_PROPOSAL = wp.constant(wp.int32(INT32_MAX))
+# Larger than every proposal key ``forest_edge_key`` can form, so ``wp.atomic_min`` starts empty.
+FOREST_NO_PROPOSAL = UINT64_MAX_CONSTANT
 
 # ``parents`` is seeded with this and narrowed by ``wp.atomic_min``, so "no parent yet" has to be
 # larger than every vertex index rather than the ``-1`` a sequential traversal would write. It
@@ -249,7 +250,7 @@ def guards_and_dual_candidates(
 
 @wp.kernel
 def forest_round_setup(
-    labels: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_proposal: wp.array[wp.int32]
+    labels: wp.array[wp.int32], out_roots: wp.array[wp.int32], out_proposal: wp.array[wp.uint64]
 ) -> None:
     # Open a Boruvka round: freeze this round's component of every node and empty the proposal
     # slots. ``find_representative`` path-compresses ``labels`` as it goes, so the snapshot doubles
@@ -292,20 +293,40 @@ def boruvka_cross_edge(
     return root_a, root_b
 
 
+@wp.func
+def forest_edge_key(
+    unique_edges: wp.array2d[wp.int32], distances: wp.array[wp.int32], e: wp.int32
+) -> wp.uint64:
+    # The Boruvka order of edge ``e``: its fundamental loop's length through the primal tree,
+    # longest first, then the lowest edge index. The loop closed by ``(a, b)`` runs from the root
+    # down to ``a``, across, and back up from ``b``, so its hop length is ``depth(a) + depth(b) +
+    # 1`` -- read off the depths the level loop already wrote, with no apex search. Ranking the
+    # *longest* first makes the forest a maximum spanning tree of the dual under that weight, which
+    # leaves over exactly the greedy system: each generator is the shortest loop through the root
+    # independent of the ones before it (Erickson and Whittlesey, "Greedy optimal homotopy and
+    # homology generators", SODA 2005). The edge index in the low half makes the order strict,
+    # which the forest argument in this module's docstring needs.
+    weight = distances[unique_edges[e, 0]] + distances[unique_edges[e, 1]] + 1
+    return (wp.uint64(INT32_MAX - weight) << wp.uint64(32)) | wp.uint64(e)
+
+
 @wp.kernel
 def forest_propose(
     candidate: wp.array[wp.bool],
     edge_faces: wp.array2d[wp.int32],
     roots: wp.array[wp.int32],
-    out_proposal: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    distances: wp.array[wp.int32],
+    out_proposal: wp.array[wp.uint64],
 ) -> None:
-    # Offer each candidate edge to the components on both sides; the lowest edge index wins.
+    # Offer each candidate edge to the components on both sides; the smallest key wins.
     e = wp.int32(wp.tid())
     root_a, root_b = boruvka_cross_edge(candidate, edge_faces, roots, e)
     if root_a < 0:
         return
-    wp.atomic_min(out_proposal, root_a, e)
-    wp.atomic_min(out_proposal, root_b, e)
+    key = forest_edge_key(unique_edges, distances, e)
+    wp.atomic_min(out_proposal, root_a, key)
+    wp.atomic_min(out_proposal, root_b, key)
 
 
 @wp.kernel
@@ -313,7 +334,9 @@ def forest_link(
     candidate: wp.array[wp.bool],
     edge_faces: wp.array2d[wp.int32],
     roots: wp.array[wp.int32],
-    proposal: wp.array[wp.int32],
+    unique_edges: wp.array2d[wp.int32],
+    distances: wp.array[wp.int32],
+    proposal: wp.array[wp.uint64],
     labels: wp.array[wp.int32],
     out_state: wp.array[wp.int32],
 ) -> None:
@@ -338,7 +361,8 @@ def forest_link(
     root_a, root_b = boruvka_cross_edge(candidate, edge_faces, roots, e)
     if root_a < 0:
         return
-    if proposal[root_a] != e and proposal[root_b] != e:
+    key = forest_edge_key(unique_edges, distances, e)
+    if proposal[root_a] != key and proposal[root_b] != key:
         return
     candidate[e] = False
     out_state[LOOP_PROGRESS] = 1

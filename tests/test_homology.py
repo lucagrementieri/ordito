@@ -17,6 +17,8 @@ from collections.abc import Container
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
+import scipy.sparse.csgraph as csgraph
 import trimesh as tm
 import warp as wp
 from meshlib import mrmeshpy as mm
@@ -121,6 +123,106 @@ def test_homology_generators_are_not_contractible(
         assert len(components) == 1
 
 
+def _greedy_loop_lengths(faces_np: np.ndarray, n_vertices: int, root: int) -> list[int]:
+    """
+    Hop lengths through ``root`` of the greedy system of loops, built with SciPy alone.
+
+    A breadth-first tree from ``root``, then a maximum spanning tree of the dual graph over the
+    edges the tree left, weighted by each edge's loop length through the root ``depth(a) + depth(b)
+    + 1``; the edges in neither tree are the generators. The trees are SciPy's and break ties their
+    own way; the weights depend only on the depths, which every breadth-first tree shares.
+    """
+    corners = np.sort(faces_np[:, [[0, 1], [1, 2], [2, 0]]].reshape(-1, 2), axis=1)
+    edges, corner_edge = np.unique(corners, axis=0, return_inverse=True)
+    graph = sp.coo_matrix(
+        (np.ones(len(edges)), (edges[:, 0], edges[:, 1])), shape=(n_vertices, n_vertices)
+    )
+    _, parents = csgraph.breadth_first_order(graph, root, directed=False, return_predecessors=True)
+    depth = csgraph.shortest_path(graph, unweighted=True, directed=False, indices=root)
+    children = np.flatnonzero(parents >= 0)
+    tree = set(
+        zip(
+            np.minimum(children, parents[children]).tolist(),
+            np.maximum(children, parents[children]).tolist(),
+            strict=True,
+        )
+    )
+    in_tree = np.array([(a, b) in tree for a, b in edges.tolist()])
+    order = np.argsort(corner_edge.ravel(), kind="stable")
+    edge_faces = np.repeat(np.arange(len(faces_np)), 3)[order].reshape(-1, 2)
+    weight = depth[edges[:, 0]] + depth[edges[:, 1]] + 1
+    candidates = np.flatnonzero(~in_tree)
+    # A minimum spanning tree of ``max + 1 - weight`` is a maximum one of ``weight``.
+    cost = weight[candidates].max() + 1 - weight[candidates]
+    dual = sp.coo_matrix(
+        (cost, (edge_faces[candidates, 0], edge_faces[candidates, 1])),
+        shape=(len(faces_np), len(faces_np)),
+    )
+    forest = csgraph.minimum_spanning_tree(dual.tocsr()).tocoo()
+    cotree = set(
+        zip(
+            np.minimum(forest.row, forest.col).tolist(),
+            np.maximum(forest.row, forest.col).tolist(),
+            strict=True,
+        )
+    )
+    return sorted(
+        int(weight[e])
+        for e in candidates.tolist()
+        if (int(edge_faces[e].min()), int(edge_faces[e].max())) not in cotree
+    )
+
+
+@pytest.mark.parametrize("mesh_name", ["torus", "torus_irregular", "bohemian_dome", "genus_two"])
+@pytest.mark.parametrize("root", [0, 5])
+def test_homology_generators_are_the_greedy_system(
+    request: pytest.FixtureRequest, mesh_name: str, root: int
+) -> None:
+    """
+    Class B: equal after a named transform -- each loop's hop length through the root, sorted.
+
+    The basis is the greedy system of loops through ``root`` (Erickson and Whittlesey): every
+    generator is the shortest loop through the root independent of the ones before it, which is
+    what makes a handle near the root come out as its own short loop. SciPy builds the same system
+    from its own breadth-first tree and its own minimum spanning tree, and its trees break ties
+    differently, so the loops are not comparable -- their weights are. A generator traced through
+    the apex ``a`` of its two tree paths has hop length ``len(loop)``, and the based loop the
+    greedy order ranks is that plus the stem to the root twice, ``len(loop) + 2 * depth(a)``.
+
+    Mutation probe: ranking the dual forest by lowest edge index, the construction this replaced,
+    fails every one of the eight cases (``torus`` at root 0 reads ``[33, 42]`` against ``[32,
+    32]``).
+    """
+    mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
+    faces_np = np.asarray(mesh_tm.faces)
+    n_vertices = len(mesh_tm.vertices)
+    expected_np = _greedy_loop_lengths(faces_np, n_vertices, root)
+    assert len(expected_np) >= 2  # non-vacuity: every fixture has a handle
+
+    graph = sp.coo_matrix(
+        (np.ones(faces_np.size), (faces_np.ravel(), np.roll(faces_np, -1, axis=1).ravel())),
+        shape=(n_vertices, n_vertices),
+    )
+    depth = csgraph.shortest_path(graph, unweighted=True, directed=False, indices=root)
+    loops = od.homology.homology_generators(mesh_wp.points, mesh_wp.indices, root=root)
+    based_lengths = sorted(int(loop.size + 2 * depth[loop.numpy()].min()) for loop in loops)
+    assert based_lengths == expected_np
+
+
+def test_homology_generators_reject_a_bad_root(torus_irregular: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """Not a library comparison: the two ways a root can fail to be a vertex the faces reach."""
+    _, mesh_wp = torus_irregular
+    vertices_np = mesh_wp.points.numpy()
+    with pytest.raises(ValueError, match="root must index a vertex"):
+        od.homology.homology_generators(mesh_wp.points, mesh_wp.indices, root=len(vertices_np))
+    # One extra vertex no face uses: in range, but the traversal from it reaches nothing.
+    padded_wp = wp.array(
+        np.vstack([vertices_np, vertices_np[:1]]), dtype=wp.vec3, device=mesh_wp.points.device
+    )
+    with pytest.raises(ValueError, match="is not referenced by any face"):
+        od.homology.homology_generators(padded_wp, mesh_wp.indices, root=len(vertices_np))
+
+
 def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Mesh]) -> None:
     """
     Ordito against ordito: the docstring promises a reproducible basis, so pin it.
@@ -129,8 +231,10 @@ def test_homology_generators_are_reproducible(genus_two: tuple[tm.Trimesh, wp.Me
     there first would still pass every invariant in this file -- the loops would be simple, closed
     and non-contractible, just different ones. What makes it deterministic is that each claim is
     resolved by an extremum rather than by arrival: the primal tree takes the lowest-indexed
-    frontier vertex (``wp.atomic_min`` on the parent) and the dual forest the lowest-indexed
-    incident edge. Four runs, because a race that loses once in two is not one worth shipping.
+    frontier vertex (``wp.atomic_min`` on the parent) and the dual forest the incident edge with the
+    longest loop through the root, the lowest index on a tie. Four runs, because a race that loses
+    once in two is not one worth shipping.
+
 
     ``genus_two`` rather than the torus so there are four generators to disagree about, and the
     loops are compared *elementwise*: a count-only check passes on any valid basis, which is

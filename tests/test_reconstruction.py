@@ -1377,7 +1377,8 @@ def test_resample_uniform_empty(device: str) -> None:
 # The wave-parallel front is interpolating (output vertices are input points) and edge-manifold
 # after cleanup, but is not guaranteed watertight on densely sampled closed surfaces (v1
 # limitation), so the tests assert those robust invariants rather than watertightness / Euler.
-# open3d BPA (``_o3d``) is used only as a loose face-count sanity reference.
+# open3d BPA (``_o3d``) is a loose face-count reference on the icosphere and the wound-triangle-set
+# oracle on a Fibonacci sphere, where both pivot the identical triangulation.
 # ======================================================================================
 
 
@@ -1414,6 +1415,53 @@ def test_ball_pivoting_closes_a_dense_sphere(device: str):
     assert np.max(cKDTree(points_np).query(vertices_np)[0]) < 1e-6
 
 
+@pytest.mark.parity("ball_pivoting", "open3d")
+@pytest.mark.parametrize("normal_sign", [1.0, -1.0], ids=["outward", "inward"])
+def test_ball_pivoting_winds_faces_with_the_normals(device: str, normal_sign: float):
+    """
+    Class A against open3d: the same wound triangle set, every face agreeing with the normals.
+
+    Open3D winds each triangle so its normal agrees with the point normals (``CreateTriangle``), and
+    on this Fibonacci sphere both implementations pivot the identical triangulation, so the
+    comparison is the whole wound face set, not only the unoriented one. Parametrized over outward
+    and inward normals: the winding must follow the normals, not be re-derived from the volume.
+
+    Without the fix the seed triangle took whatever corner order its neighbourhood scan produced and
+    every pivot repeated its front edge in the parent's direction, so neighbouring faces alternated
+    winding (half the raw faces opposed the normals). On this fixture the result is not watertight,
+    so the cleanup's volume flip did not run and the output kept whichever winding its
+    per-component seed face had (volume -4.18 with outward normals, one face of 7 992 agreeing with
+    them). Both arms fail the per-face agreement assert without the fix.
+    """
+    from scipy.spatial import cKDTree
+
+    points_wp = od.sample.sample_fibonacci_sphere(4000, device=device)
+    points_np = points_wp.numpy().astype(np.float64)
+    normals_np = normal_sign * points_np
+    normals_wp = points_to_warp(normals_np, device)
+    radius = 0.08
+
+    vertices_wp, faces_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
+    distance, input_index = cKDTree(points_np).query(vertices_wp.numpy().astype(np.float64))
+    assert np.max(distance) < 1e-6
+    faces_np = np.asarray(input_index)[faces_wp.numpy().reshape(-1, 3)]
+
+    face_normals_np = np.cross(
+        points_np[faces_np[:, 1]] - points_np[faces_np[:, 0]],
+        points_np[faces_np[:, 2]] - points_np[faces_np[:, 0]],
+    )
+    agreement = np.einsum("ij,ikj->ik", face_normals_np, normals_np[faces_np])
+    assert np.all(agreement > 0.0)
+    assert np.sign(od.measures.volume(vertices_wp, faces_wp)) == normal_sign
+
+    mesh_o3d = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+        points_to_open3d(points_np, normals_np), o3d.utility.DoubleVector([radius])
+    )
+    faces_o3d = np.asarray(mesh_o3d.triangles)
+    assert faces_o3d.shape[0] > 0
+    assert_unordered_rows_equal(canonical_winding(faces_np), canonical_winding(faces_o3d))
+
+
 def test_ball_pivoting_is_reproducible(device: str):
     """
     Two runs of one build on one cloud must reconstruct the same triangles.
@@ -1430,16 +1478,13 @@ def test_ball_pivoting_is_reproducible(device: str):
     torus, four runs of the pre-fix implementation give 2 980 / 3 036 / 3 042 / 3 089 faces and
     four different meshes, against a constant 3 269 and one mesh after it.
 
-    Two assertions, covering different halves:
+    Two assertions, covering different halves, both on the **wound** triangle set -- same
+    triangles and same winding. Not compared buffer-to-buffer: ``CNT_FACE`` is a ``wp.atomic_add``,
+    so the row order is deliberately still arrival-ordered:
 
-    * the wave loop's own output, compared as a **wound** triangle set — same triangles and same
-      winding, which is the property the key buys. Not compared buffer-to-buffer: ``CNT_FACE`` is a
-      ``wp.atomic_add``, so the row order is deliberately still arrival-ordered;
-    * the public function, compared as an **unoriented** triangle set, because its cleanup tail
-      runs [`repair.make_winding_consistent`][ordito.repair.make_winding_consistent], whose
-      arbitrary per-component seed face is still chosen nondeterministically (measured on this same
-      fixture). That is a separate defect in that module, and it is why the second assertion sorts
-      within the row rather than using ``canonical_winding``.
+    * the wave loop's own output, which is the property the key buys;
+    * the public function, whose cleanup tail keeps the winding the wave loop wrote from the
+      normals rather than re-deriving it.
     """
     torus_tm = tm.creation.torus(
         major_radius=1.0, minor_radius=0.35, major_sections=64, minor_sections=32
@@ -1470,8 +1515,7 @@ def test_ball_pivoting_is_reproducible(device: str):
     _vertices, first_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
     _vertices, second_wp = od.reconstruction.ball_pivoting(points_wp, normals_wp, radius=radius)
     assert_unordered_rows_equal(
-        np.sort(first_wp.numpy().reshape(-1, 3), axis=1),
-        np.sort(second_wp.numpy().reshape(-1, 3), axis=1),
+        canonical_winding(first_wp.numpy()), canonical_winding(second_wp.numpy())
     )
 
 

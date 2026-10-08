@@ -43,9 +43,7 @@ def run(device: str) -> dict[str, Any]:
     laplacian = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
     mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
     fixed = wp.array(pinned, dtype=wp.bool, device=device)
-    heights = od.typing.as_array2d(
-        wp.array(top[None].astype(np.float64), dtype=wp.float64, device=device), wp.float64
-    )
+    heights = wp.array(top[None].astype(np.float64), dtype=wp.float64, device=device)
 
     surfaces = {}
     for k in (1, 2, 3):

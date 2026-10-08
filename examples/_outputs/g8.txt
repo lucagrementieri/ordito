@@ -1,2 +1,2 @@
-torus: 2 loops, length 10.79 -> 8.04 (65 sweeps)
-handles: 18 loops, length 485.80 -> 451.22 (11 sweeps)
+torus: 2 loops, length 10.74 -> 8.00 (65 sweeps)
+handles: 18 loops, length 381.73 -> 357.38 (10 sweeps)

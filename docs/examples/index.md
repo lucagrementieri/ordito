@@ -226,9 +226,9 @@ own output.
 
     [Smoothing without shrinking](smoothing.md#s2)
 
--   [![Mean-curvature flow](../assets/examples/s3-thumb.webp)](smoothing.md#s3)
+-   [![Mean-curvature flow, plain and conformalized](../assets/examples/s3-thumb.webp)](smoothing.md#s3)
 
-    [Mean-curvature flow](smoothing.md#s3)
+    [Mean-curvature flow, plain and conformalized](smoothing.md#s3)
 
 -   [![Removing spikes and sharpening detail](../assets/examples/s4-thumb.webp)](smoothing.md#s4)
 

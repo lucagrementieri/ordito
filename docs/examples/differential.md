@@ -134,9 +134,7 @@ ears = height > height.max() - 0.008
 laplacian = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
 q = od.energies.k_harmonic(laplacian, k=1)  # the Dirichlet energy -L
 fixed = wp.array(base | ears, dtype=wp.bool, device=device)
-fixed_values = od.typing.as_array2d(
-    wp.array(ears[None].astype(np.float64), dtype=wp.float64, device=device), wp.float64
-)
+fixed_values = wp.array(ears[None].astype(np.float64), dtype=wp.float64, device=device)
 solution, free_map, n_free = od.linalg.min_quad_with_fixed(q, fixed, fixed_values)
 
 field = ears.astype(np.float64)  # pinned values, then the solved free ones
@@ -186,9 +184,7 @@ pinned = outside | top
 laplacian = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
 mass = od.laplacian.mass_matrix_entries(vertices, faces, dtype=wp.float64)
 fixed = wp.array(pinned, dtype=wp.bool, device=device)
-heights = od.typing.as_array2d(
-    wp.array(top[None].astype(np.float64), dtype=wp.float64, device=device), wp.float64
-)
+heights = wp.array(top[None].astype(np.float64), dtype=wp.float64, device=device)
 
 surfaces = {}
 for k in (1, 2, 3):
@@ -420,7 +416,7 @@ print(
 
 ```text title="Output"
 543652 vertices, mean occlusion 0.301
-shape diameter: 543621 finite, median 0.0212
+shape diameter: 543620 finite, median 0.0212
 ```
 
 ![Ambient occlusion, obscurance, shape diameter and thickness](../assets/examples/d9.webp)
@@ -462,8 +458,8 @@ print(f"{medial.sum()} of {radii.size} balls above a tenth of the largest")
 ```
 
 ```text title="Output"
-largest inscribed ball: radius 0.0412, median 0.0148
-62492 of 69451 balls above a tenth of the largest
+largest inscribed ball: radius 0.1191, median 0.0148
+41522 of 69451 balls above a tenth of the largest
 ```
 
 ![Maximal inscribed spheres and the medial axis](../assets/examples/d10.webp)

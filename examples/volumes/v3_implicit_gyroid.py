@@ -38,9 +38,7 @@ def run(device: str) -> dict[str, Any]:
     bounds = (wp.vec3(-extent, -extent, -extent), wp.vec3(extent, extent, extent))
     surfaces = {}
     for name, field in {"box": gyroid, "ball": in_ball}.items():
-        lattice = od.typing.as_array3d(
-            wp.array(field.astype(np.float32), dtype=wp.float32, device=device), wp.float32
-        )
+        lattice = wp.array(field.astype(np.float32), dtype=wp.float32, device=device)
         surfaces[name] = od.levelset.marching_cubes(lattice, 0.0, bounds=bounds)
         v, f = surfaces[name]
         print(f"{name}: {f.shape[0] // 3} faces, watertight {od.validation.is_watertight(v, f)}")

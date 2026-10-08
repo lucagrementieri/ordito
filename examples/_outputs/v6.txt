@@ -1,3 +1,3 @@
-bunny union box: 183112 faces
-bunny intersection box: 49336 faces
-bunny difference box: 95672 faces
+bunny union box: 183512 faces
+bunny intersection box: 49472 faces
+bunny difference box: 96020 faces

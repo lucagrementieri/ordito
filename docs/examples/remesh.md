@@ -127,9 +127,9 @@ print(f"faces below 0.5: {(before < 0.5).sum()} -> {(after < 0.5).sum()}")
 ```
 
 ```text title="Output"
-faces: 69451 -> 20678
+faces: 69451 -> 20460
 mean radius ratio: 0.814 -> 0.967
-faces below 0.5: 618 -> 16
+faces below 0.5: 618 -> 17
 ```
 
 ![Isotropic remeshing](../assets/examples/r4.webp)
@@ -228,11 +228,11 @@ for build in (od.laplacian.cotmatrix, od.laplacian.robust_laplacian):
 ```
 
 ```text title="Output"
-input: 412 negative half-cotangents
+input: 415 negative half-cotangents
 flip_to_delaunay: 24 negative half-cotangents
 intrinsic_delaunay: 23 negative half-cotangents
 230 intrinsic flips
-cotmatrix: 410 negative off-diagonal entries
+cotmatrix: 414 negative off-diagonal entries
 robust_laplacian: 8 negative off-diagonal entries
 ```
 

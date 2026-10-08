@@ -33,7 +33,7 @@ arriving from libigl, where ``cotmatrix`` and ``crouzeix_raviart_cotmatrix`` sit
 from __future__ import annotations
 
 import warnings
-from typing import Literal, NamedTuple, overload
+from typing import Literal, NamedTuple, cast, overload
 
 import warp as wp
 
@@ -1406,10 +1406,10 @@ def mass_matrix_entries(
 def mass_matrix(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
-    dtype: type = wp.float32,
+    dtype: type[odt.Block] = wp.float32,
     *,
     face_areas: wp.array[wp.float32] | None = None,
-) -> odt.BsrMatrix[wp.float32]:
+) -> odt.BsrMatrix[odt.Block]:
     """
     Diagonal barycentric lumped mass matrix of the mesh.
 
@@ -1449,6 +1449,9 @@ def mass_matrix(
     Matches ``igl::massmatrix`` under ``MASSMATRIX_TYPE_BARYCENTRIC``.
     """
     require_same_device(vertices=vertices, faces=faces, face_areas=face_areas)
-    return odt.bsr_diag(
-        diag=mass_matrix_entries(vertices, faces, dtype=dtype, face_areas=face_areas)
+    # ``mass_matrix_entries`` resolves its return by overload, which a ``Block`` cannot select.
+    diagonal = cast(
+        "wp.array[odt.Block]",
+        mass_matrix_entries(vertices, faces, dtype=cast("type", dtype), face_areas=face_areas),
     )
+    return odt.bsr_diag(diag=diagonal)

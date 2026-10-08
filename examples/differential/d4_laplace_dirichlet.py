@@ -41,9 +41,7 @@ def run(device: str) -> dict[str, Any]:
     laplacian = od.laplacian.cotmatrix(vertices, faces, dtype=wp.float64)
     q = od.energies.k_harmonic(laplacian, k=1)  # the Dirichlet energy -L
     fixed = wp.array(base | ears, dtype=wp.bool, device=device)
-    fixed_values = od.typing.as_array2d(
-        wp.array(ears[None].astype(np.float64), dtype=wp.float64, device=device), wp.float64
-    )
+    fixed_values = wp.array(ears[None].astype(np.float64), dtype=wp.float64, device=device)
     solution, free_map, n_free = od.linalg.min_quad_with_fixed(q, fixed, fixed_values)
 
     field = ears.astype(np.float64)  # pinned values, then the solved free ones

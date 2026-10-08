@@ -1794,9 +1794,11 @@ def ball_pivoting(
     compacted list of its boundary edges, mutated in place as triangles commit. Each wave pivots
     every live front edge independently through a hash-grid ball query and commits a conflict-free
     independent set via a two-phase vertex claim. Manifoldness is protected by an interior-edge
-    guard (an edge already shared by two triangles never gains a third). The result is passed
-    through the standard cleanup tail (deduplicate, drop degenerate / non-manifold faces, orient
-    outward, optionally fill small holes).
+    guard (an edge already shared by two triangles never gains a third). Every triangle is wound so
+    its normal agrees with the point normals: a seed triangle by its vertices' normals, every later
+    one consistently with the triangle it pivots from. The result is passed through the standard
+    cleanup tail (deduplicate, drop degenerate / non-manifold faces, optionally fill small holes),
+    which keeps that winding.
 
 
     Parameters
@@ -1830,7 +1832,8 @@ def ball_pivoting(
         ``(m,)`` referenced input points, compacted from index zero, on ``points.device``,
         ``m <= n``.
     faces : wp.array[wp.int32]
-        ``(3 * n_faces,)`` flat triangle index buffer, oriented outward.
+        ``(3 * n_faces,)`` flat triangle index buffer, wound consistently with ``normals`` (outward
+        when they point outward).
 
     Raises
     ------
@@ -1855,18 +1858,15 @@ def ball_pivoting(
     packed from their own vertices and the wave counter rather than by the order they reached an
     atomic counter -- device state the loop advances deterministically, so the ordering varies
     between waves (which keeps a front edge from being starved by a globally fixed key) without
-    varying between runs. Three caveats on how far that reaches:
+    varying between runs. Two caveats on how far that reaches:
 
     * the default ``radius <= 0`` is **not** covered. The auto-guess averages the nearest-neighbour
       spacings with a device reduction whose summation order is not fixed, so two calls on one cloud
       can guess radii a few ULP apart -- enough to tip a borderline pivot and change the triangle
       set. Pass ``radius`` explicitly wherever the result has to be reproducible;
     * the face buffer's *row order* is not pinned -- ``commit_triangles`` appends with a
-      ``wp.atomic_add`` -- so compare reconstructions as a set of triangles, not buffer-to-buffer;
-    * neither is the *winding* of a component the cleanup tail cannot orient by volume, since
-      [`make_winding_consistent`][ordito.repair.make_winding_consistent] seeds each connected
-      component from an arbitrary face. Compare with the row entries sorted, or orient both sides
-      first.
+      ``wp.atomic_add`` -- so compare reconstructions as a set of wound triangles, not
+      buffer-to-buffer.
 
     Results are not comparable across devices, where floating-point contraction differs.
 
@@ -1910,7 +1910,9 @@ def ball_pivoting(
 
     count = int(read_scalar(state.counters, kernel_bpa.CNT_FACE))
     faces = _launch.clone(odt.as_dense(state.all_faces[: count * 3]))
-    return _clean_reconstruction(points, faces, crit_hole_length)
+    # Orientation is not re-derived (``orient=False``): every triangle is already wound from the
+    # normals, and ``make_normals_outward`` would rewind an inward-normal cloud's mesh outward.
+    return _clean_reconstruction(points, faces, crit_hole_length, orient=False)
 
 
 class _BpaState:

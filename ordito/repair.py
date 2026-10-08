@@ -2318,9 +2318,26 @@ def remove_tunnels(
     [`euler_characteristic`][ordito.measures.euler_characteristic] -- verified rather than
     reported, and the invariant to assert if you extend this.
 
+    The basis is the greedy system of loops through a root vertex
+    ([`homology_generators`][ordito.homology.homology_generators]), so a handle near the root comes
+    out as its own short loop. One far from the root can come out only inside a combination with
+    other classes, which no shortening within the class can separate again; so when no loop of that
+    basis is short enough, the basis is computed again from one vertex of each of its loops in turn,
+    shortest loop first, until one of them yields a short loop. The call that finds nothing, which
+    is the last one of the documented loop, therefore computes up to ``2 * genus + 1`` bases.
+
     Nothing is removed when no loop is short enough, and the input is returned unchanged -- so this
     is safe to run on a mesh whose genus is intended, provided ``max_length`` is below the scale of
     its real handles.
+
+    !!! warning "A short handle can still be missed"
+        The search is over loops through the roots tried, not over every loop of the surface: the
+        short loop of a handle is found when one of the roots lies on or near it. A handle whose
+        short loop passes near none of them, and that every basis carries only in combination, is
+        reported as not short and stays. On a slab whose tunnels sit a narrow bar from its edge,
+        one of eight such bars can survive at a ``max_length`` just above the bar's girth. The
+        loops that are cut are always non-separating and under ``max_length``; only the
+        completeness is not guaranteed.
 
     !!! note "One disjoint pass per call"
         The loops kept are pairwise **vertex-disjoint**, shortest first. Cutting along two loops
@@ -2392,20 +2409,23 @@ def remove_tunnels(
     require_same_device(vertices=vertices, faces=faces)
     if max_length < 0.0:
         raise ValueError(f"max_length must be non-negative, got {max_length}")
-    # The basis stays packed from the generators through the shortening to the measuring, so no
-    # per-loop array is built and split again on the way.
-    loops, loop_offsets = od.homology.homology_generators_with_offsets(vertices, faces)
-    if loop_offsets.size == 1:
+    short = _shortened_basis(vertices, faces, None, max_iter)
+    if not short:
         return vertices, faces, 0
-
-    shortened, shortened_offsets, _sweeps = od.geodesic_walk.shorten_loop_with_offsets(
-        vertices, faces, loops, loop_offsets, max_iter=max_iter
-    )
-    # A basis has 2 * genus loops of a handful of indices each, so everything after the measuring
-    # runs on the host, over one readback of them all.
-    lengths, loops_np = _measure_loops(vertices, shortened, shortened_offsets)
-    short = sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
     selected = _disjoint_loops([loop for length, loop in short if length <= max_length])
+    if not selected:
+        # The basis is the greedy one through its root, so a handle far from the root can appear
+        # only inside a longer combination of classes. Before answering "nothing is short", base a
+        # basis on one vertex of each loop found, shortest first: a root near a handle finds that
+        # handle's own short loop first.
+        roots = list(dict.fromkeys(int(loop[0]) for _, loop in short))
+        for root in roots:
+            candidates = _shortened_basis(vertices, faces, root, max_iter)
+            selected = _disjoint_loops(
+                [loop for length, loop in candidates if length <= max_length]
+            )
+            if selected:
+                break
     if not selected:
         return vertices, faces, 0
 
@@ -2425,6 +2445,28 @@ def remove_tunnels(
         od.holes.fill_min_weight(cut_vertices, cut_faces, metric=metric),
         len(selected),
     )
+
+
+def _shortened_basis(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], root: int | None, max_iter: int
+) -> list[tuple[float, np.ndarray]]:
+    """
+    Shorten and measure the homology basis through ``root``, as ``(length, loop)`` pairs.
+
+    Sorted shortest first; the sort is stable, so equal lengths stay in basis order. Empty for a
+    sphere. The basis stays packed from the generators through the shortening to the measuring, so
+    no per-loop array is built and split again on the way; a basis has ``2 * genus`` loops of a
+    handful of indices each, so everything after the measuring runs on the host, over one readback
+    of them all.
+    """
+    loops, loop_offsets = od.homology.homology_generators_with_offsets(vertices, faces, root=root)
+    if loop_offsets.size == 1:
+        return []
+    shortened, shortened_offsets, _sweeps = od.geodesic_walk.shorten_loop_with_offsets(
+        vertices, faces, loops, loop_offsets, max_iter=max_iter
+    )
+    lengths, loops_np = _measure_loops(vertices, shortened, shortened_offsets)
+    return sorted(zip(lengths, loops_np, strict=True), key=lambda pair: pair[0])
 
 
 def _measure_loops(

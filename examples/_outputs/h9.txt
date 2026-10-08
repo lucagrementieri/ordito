@@ -1,4 +1,5 @@
 genus before: 4
+cut 1 tunnel(s)
 cut 2 tunnel(s)
 cut 0 tunnel(s)
-genus after: 2
+genus after: 1

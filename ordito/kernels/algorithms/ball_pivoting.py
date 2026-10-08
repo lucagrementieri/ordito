@@ -15,12 +15,21 @@ front edges wave after wave and roughly doubles the wave count. See that functio
 unique within a wave, and ``commit_triangles`` for the one other place arrival order used to leak in
 (the triangle-budget check).
 
-Two things this deliberately does *not* pin, so compare a run as a **set** of triangles rather than
-buffer to buffer. ``CNT_FACE`` is still a ``wp.atomic_add``, so the face buffer's row order remains
-arrival-ordered; determinizing it would mean sorting the whole buffer for a property no caller has
-asked for. And ``reconstruction.ball_pivoting``'s cleanup tail loses the winding again, because
-``repair.make_winding_consistent`` seeds each connected component from an arbitrary face -- a defect
-in that module rather than this one.
+One thing this deliberately does *not* pin, so compare a run as a **set** of wound triangles
+rather than buffer to buffer: ``CNT_FACE`` is still a ``wp.atomic_add``, so the face buffer's row
+order remains arrival-ordered; determinizing it would mean sorting the whole buffer for a property
+no caller has asked for.
+
+Winding
+-------
+Every committed triangle is wound so its normal agrees with the point normals, and this is
+load-bearing for the geometry, not only for the output. A seed is wound by its vertices' normals
+(``seed_triangles``); a pivot across front edge ``(src, tgt)`` -- stored in the direction its one
+face traverses it -- proposes ``(tgt, src, c)``, the consistent winding. ``pivot_front_edges`` reads
+the ball's rotation sense off that stored direction: about ``tgt - src`` of a correctly wound face a
+positive rotation carries the ball *away* from the face. On a wrongly wound face the same rule rolls
+the ball back over the face it came from, and the crease guard (which compares ``|cos|``) passes a
+triangle folded flat onto its parent -- the thin fins an inconsistently wound front grows.
 
 Persistent state
 ----------------
@@ -423,7 +432,23 @@ def seed_triangles(
             ):
                 continue
             if ball_is_empty(grid_id, points, center, radius, p, a, b):
-                propose_triangle(p, a, b, front_capacity, counters, out_owner, out_a, out_b, out_c)
+                # Wound so its normal agrees with the point normals (Open3D's ``CreateTriangle``
+                # rule). Every later triangle inherits this winding across the edge it pivots over
+                # (``pivot_front_edges``), whose rotation sense is read off it. Reversed as
+                # ``(a, p, b)`` rather than ``(p, b, a)`` so the ``proposal_key`` pair stays
+                # ``{p, a}``.
+                outward = wp.dot(
+                    triangle_normal(points[p], points[a], points[b]),
+                    normals[p] + normals[a] + normals[b],
+                )
+                if outward < 0.0:
+                    propose_triangle(
+                        a, p, b, front_capacity, counters, out_owner, out_a, out_b, out_c
+                    )
+                else:
+                    propose_triangle(
+                        p, a, b, front_capacity, counters, out_owner, out_a, out_b, out_c
+                    )
                 return
 
     # No candidate pair among those seen produced a valid seed: release this neighbourhood so a
@@ -600,7 +625,7 @@ def pivot_front_edges(
             ):  # fmt: skip
                 if lane == 0:
                     propose_triangle(
-                        src, tgt, cached, front_capacity, counters, out_owner, out_a, out_b, out_c
+                        tgt, src, cached, front_capacity, counters, out_owner, out_a, out_b, out_c
                     )
                 continue
 
@@ -612,6 +637,8 @@ def pivot_front_edges(
             continue
 
         mp = wp.lerp(p_src, p_tgt, 0.5)
+        # Signed by the stored edge direction, so the rotation rolls away from ``opp`` only because
+        # the face is wound with the normals (module docstring, "Winding").
         axis = wp.normalize(p_tgt - p_src)
         a_dir = wp.normalize(center - mp)
 
@@ -706,8 +733,10 @@ def pivot_front_edges(
             # candidate and comes back next wave, which is the branch above.
             edges.state[slot] = EDGE_RETIRED
         elif lane == 0:
+            # ``(tgt, src, c)``: the new triangle crosses the edge in the direction opposite to the
+            # face that owns it, which is what makes the two consistently wound.
             propose_triangle(
-                src, tgt, block_best, front_capacity, counters, out_owner, out_a, out_b, out_c
+                tgt, src, block_best, front_capacity, counters, out_owner, out_a, out_b, out_c
             )
 
 

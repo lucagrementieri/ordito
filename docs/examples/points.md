@@ -28,7 +28,7 @@ print(f"blue noise: {blue.shape[0]}")
 ```text title="Output"
 437645 input points
 voxel grid: 6269, farthest point: 6269
-blue noise: 6184
+blue noise: 6186
 ```
 
 ![Down-sampling: voxel grid, farthest point and blue noise](../assets/examples/pc1.webp)
@@ -70,7 +70,7 @@ for name, gap in (("uniform", gap_uniform), ("Poisson", gap_poisson), ("blue", g
 
 ```text title="Output"
  uniform: 4000 samples, gap median 0.00177, min 0.00003
- Poisson: 4000 samples, gap median 0.00311, min 0.00003
+ Poisson: 4000 samples, gap median 0.00315, min 0.00280
     blue: 4016 samples, gap median 0.00316, min 0.00300
 ```
 

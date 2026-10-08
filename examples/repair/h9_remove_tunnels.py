@@ -14,17 +14,15 @@ META = Meta(
     summary="""
     A ring torus carries three thin handles fused onto its tube, the kind of spurious topology a
     scan picks up where two sheets touch: genus 4, of which only the ring's own tunnel is meant.
-    [`remove_tunnels`][ordito.repair.remove_tunnels] computes a homology basis, shortens each
-    loop within its class, and cuts the surface along every loop no longer than `max_length`,
+    [`remove_tunnels`][ordito.repair.remove_tunnels] computes a greedy homology basis (each loop
+    the shortest independent one through its root), shortens each loop within its class, and
+    cuts the surface along every loop no longer than `max_length`,
     sealing both rims of each cut (red); nothing moves, so the cut is only visible as new
     topology. The threshold sits far below the ring's own loops, so the
     intended tunnel survives. One call removes at most one tunnel per family of dependent loops,
     hence the loop until nothing is cut.
-    [`euler_characteristic`][ordito.measures.euler_characteristic] tracks the genus.
-
-    The test is on *shortened* loop length, and shortening is a local descent: here the basis
-    loops through one of the handles stay several times longer than its girth, so that handle is
-    not found at this threshold.
+    [`euler_characteristic`][ordito.measures.euler_characteristic] tracks the genus: all three
+    handles are cut and the torus keeps its own tunnel.
     """,
     credits=(("MeshLib examples", "https://meshlib.io/documentation/Examples.html"),),
 )

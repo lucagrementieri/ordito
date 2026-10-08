@@ -37,7 +37,7 @@ _OWNER_SENTINEL = INT32_MAX
 
 
 def rasterize_attribute(
-    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], attribute: odt.Array2dFloat32, resolution: int
+    uv: wp.array[wp.vec2], faces: wp.array[wp.int32], attribute: odt.ArrayNdFloat32, resolution: int
 ) -> odt.Array3dFloat32:
     """
     Rasterize a per-vertex attribute into a square UV-space texture.
@@ -68,6 +68,8 @@ def rasterize_attribute(
 
     Raises
     ------
+    TypeError
+        If ``attribute`` is not a rank-2 ``wp.float32`` array.
     ValueError
         If ``resolution`` is not positive, if ``uv`` and ``attribute`` disagree on their row
         count, or if any finite UV lies outside ``[0, 1]``.

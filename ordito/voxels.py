@@ -113,8 +113,11 @@ def voxelize_mesh(
 
     The work is flattened into one thread per **(triangle, candidate cell)** pair rather than one
     per triangle, because per-triangle window sizes span orders of magnitude on any real mesh and a
-    thread-per-triangle launch is load-imbalanced by that same factor. Each triangle's window is its
-    exact inclusive AABB span, whose sizes are prefix-summed into the work-item offsets.
+    thread-per-triangle launch is load-imbalanced by that same factor. Each triangle's window is
+    every closed cell its closed AABB meets -- both cells across a plane the AABB touches -- and
+    the window sizes are prefix-summed into the work-item offsets. The window and the overlap test
+    both work in cell units, ``(p - origin) / voxel_size``, so a triangle lying exactly on a cell
+    face, edge or corner is kept in every cell sharing it, at any ``origin``.
 
     Parameters
     ----------
@@ -164,10 +167,11 @@ def voxelize_mesh(
 
     Notes
     -----
-    Open3D runs the same test in ``float64`` and this one runs in ``float32``, so a triangle exactly
-    tangent to a cell plane can be resolved differently by the two. Nothing else differs: Open3D's
-    ``round((max - min) / voxel_size) + 2`` candidate window is a superset of the exact AABB window
-    used here, and a cell outside a triangle's AABB cannot overlap the triangle.
+    Open3D runs the same test in ``float64`` and this one runs in ``float32``, so a triangle within
+    rounding of a cell plane can be resolved differently by the two. Open3D's candidate window
+    also starts at the cell *containing* each triangle's lower corner, so a triangle lying exactly
+    on a cell plane is never tested against the cell below it and that cell is missing from its
+    result; this one tests both. Away from cell planes the accepted sets agree.
 
     trimesh's ``voxelize_subdivide`` is a *different* algorithm -- subdivide until every edge is
     under half a pitch, then round each vertex to a cell -- and its result neither contains nor is
@@ -217,7 +221,6 @@ def voxelize_mesh(
             faces,
             offsets,
             origin,
-            wp.float32(voxel_size),
             wp.float32(1.0 / voxel_size),
             candidate_cells,
             accepted,

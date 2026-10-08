@@ -114,8 +114,8 @@ print(f"seams found from the UV chart: {seam_pairs.shape[0]} edges")
 ```
 
 ```text title="Output"
-2 loops, 177 cut edges; the cut mesh has 1 boundary loop
-seams found from the UV chart: 177 edges
+2 loops, 176 cut edges; the cut mesh has 1 boundary loop
+seams found from the UV chart: 176 edges
 ```
 
 ![Cutting a closed surface open along seams](../assets/examples/p2.webp)
@@ -150,9 +150,7 @@ uv = wp.array(uv, dtype=wp.vec2, device=device)
 
 _, _, k1, k2 = od.curvature.principal_curvature(vertices, faces)
 mean = 0.5 * (k1.numpy() + k2.numpy())
-field = od.typing.as_array2d(
-    wp.array(mean[:, None], dtype=wp.float32, device=device), wp.float32
-)
+field = wp.array(mean[:, None], dtype=wp.float32, device=device)
 
 images, restored = {}, {}
 for resolution in (512, 32):

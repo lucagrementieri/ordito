@@ -110,9 +110,11 @@ def test_voxelize_mesh_matches_open3d(
     """
     Class A: the accepted cell sets are identical, compared after ``lexsort_rows`` on both sides.
 
-    open3d walks a ``round((max - min) / voxel_size) + 2`` candidate window and ordito the exact
-    inclusive AABB window, but a cell outside a triangle's AABB cannot overlap the triangle, so the
-    windows differ only in rejected candidates. Both then run Moller's 13-axis test with no epsilon.
+    open3d walks a ``round((max - min) / voxel_size) + 2`` candidate window from ``floor(min)`` and
+    ordito every closed cell the closed AABB meets. The two differ only for a triangle lying on a
+    cell plane (open3d never tests the cell below it), which the non-round ``_OFFSET`` keeps out of
+    this fixture; ``test_voxelize_mesh_box_on_cell_planes_matches_exact_count`` covers that case.
+    Both then run Moller's 13-axis test with no epsilon.
     """
     mesh_tm, vertices_wp, faces_wp = sphere
     voxel_size = 0.13
@@ -279,6 +281,79 @@ def test_voxelize_mesh_solid_is_sealed(
     assert od.voxels.occupancy_at_points(
         solid, wp.array([wp.vec3(*mesh_tm.center_mass.tolist())], dtype=wp.vec3, device=device)
     ).numpy()[0]
+
+
+@pytest.mark.parametrize(
+    ("voxel_size", "origin"),
+    [
+        pytest.param(0.125, (-0.0625, -0.0625, -0.0625), id="half-cell"),
+        pytest.param(0.125, (-0.125, -0.0625, -0.0625), id="faces-on-x-planes"),
+        pytest.param(0.125, (-0.125, -0.125, -0.125), id="every-face-on-a-plane"),
+        pytest.param(0.125, (0.25, -0.0625, 0.375), id="origin-above-the-mesh-on-planes"),
+        pytest.param(0.125, (0.3125, 0.1875, -0.0625), id="origin-above-the-mesh-half-cell"),
+        pytest.param(0.1, (-0.1, -0.05, -0.05), id="inexact-faces-near-planes"),
+        pytest.param(0.1, (0.3, 0.3, 0.3), id="inexact-origin-above-the-mesh"),
+    ],
+)
+@pytest.mark.parametrize("mode", ["surface", "solid"])
+def test_voxelize_mesh_box_on_cell_planes_matches_exact_count(
+    device: str,
+    voxel_size: float,
+    origin: tuple[float, float, float],
+    mode: Literal["surface", "solid"],
+):
+    """
+    Not a library comparison: no reference computes the closed-cell overlap here.
+
+    open3d starts its candidate window at ``floor(min)``, so a triangle lying on a cell plane is
+    never tested against the cell below that plane: on this box at a ``0.125`` voxel with the
+    ``x`` faces on planes it returns 210 cells where the closed test gives 260. The oracle is
+    analytic instead. A closed box ``[a, b]`` (in cell units, per axis) meets the closed cells
+    ``ceil(a) - 1 .. floor(b)``; the solid set is the product of those ranges, and the surface set
+    is the part of it meeting a face, i.e. whose index on some axis also meets ``a`` or ``b``.
+
+    ``a`` and ``b`` are the box corners mapped to cell units the way the kernel maps them,
+    ``(corner - origin) * float32(1 / voxel_size)`` in float32, so the oracle is exact for every
+    arm. At a ``0.125`` voxel with origins on multiples of half a cell every coordinate is exact,
+    and the faces sit *exactly* on cell planes in the arms that say so, including origins above
+    the mesh's lower corner (negative cell indices); there each face meets the two cells across
+    it, and the cells across a box edge or corner meet it only along that edge or at that point.
+    The ``0.1`` arms are the inexact case, where rounding puts each face just inside one cell.
+
+    Dropping the cell below a plane fails the six exact on-plane arms (the surface arm loses that
+    box face, the solid arm returns only an unsealed shell). Testing a candidate against the cell
+    in world units, where its faces are ``origin + i * voxel_size`` rounded differently from the
+    window, fails the inexact arms: at origin ``0.3`` every face was rejected and the grid was
+    empty.
+    """
+    bounds = np.array([[0.0, 0.0, 0.0], [1.0, 0.75, 0.5]])
+    vertices_wp, faces_wp = od.creation.box(bounds=bounds.tolist(), device=device)
+    grid = od.voxels.voxelize_mesh(
+        vertices_wp, faces_wp, voxel_size, origin=wp.vec3(*origin), mode=mode
+    )
+
+    inverse_np = np.float32(1.0 / voxel_size)
+    origin_np = np.array(origin, dtype=np.float32)
+    lower_np = (bounds[0].astype(np.float32) - origin_np) * inverse_np
+    upper_np = (bounds[1].astype(np.float32) - origin_np) * inverse_np
+    ranges = [
+        np.arange(np.ceil(lo) - 1, np.floor(hi) + 1, dtype=np.int32)
+        for lo, hi in zip(lower_np, upper_np, strict=True)
+    ]
+    cells_np = np.stack(np.meshgrid(*ranges, indexing="ij"), axis=-1).reshape(-1, 3)
+    if mode == "surface":
+        on_face_np = np.zeros(cells_np.shape[0], dtype=bool)
+        for axis in range(3):
+            for plane in (lower_np[axis], upper_np[axis]):
+                index_np = cells_np[:, axis]
+                on_face_np |= (index_np >= np.ceil(plane) - 1) & (index_np <= np.floor(plane))
+        cells_np = cells_np[on_face_np]
+
+    # Non-vacuity: a shell of several hundred cells, and a solid with an interior.
+    assert cells_np.shape[0] > 200
+    assert np.array_equal(
+        lexsort_rows(od.voxels.cells(grid).numpy()), lexsort_rows(cells_np.astype(np.int32))
+    )
 
 
 def test_voxelize_mesh_rejects_too_many_candidates(

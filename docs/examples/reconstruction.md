@@ -39,7 +39,7 @@ for name, depth, method in runs:
 ```text title="Output"
 dense depth 6: 23720 faces
 dense depth 8: 377948 faces
-adaptive depth 8: 416261 faces
+adaptive depth 8: 378540 faces
 ```
 
 ![Screened Poisson reconstruction](../assets/examples/rr1.webp)
@@ -73,8 +73,8 @@ print(f"{len(holes)} boundary loops left open")
 ```
 
 ```text title="Output"
-58599 triangles over 30000 points
-53 boundary loops left open
+58697 triangles over 30000 points
+29 boundary loops left open
 ```
 
 ![Ball pivoting](../assets/examples/rr2.webp)
@@ -196,7 +196,7 @@ for kernel in ("none", "huber", "tukey"):
 ```
 
 ```text title="Output"
- none: recovered a rotation of 28.4 degrees (true: 15.0)
+ none: recovered a rotation of 28.2 degrees (true: 15.0)
 huber: recovered a rotation of 15.4 degrees (true: 15.0)
 tukey: recovered a rotation of 15.6 degrees (true: 15.0)
 ```

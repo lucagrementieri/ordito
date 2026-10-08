@@ -991,9 +991,9 @@ def test_remove_tunnels(bench_case: BenchCase) -> None:
     basis and the shortening together are a small minority. That is worth stating because the
     obvious reading of the chain is the reverse -- the basis is the expensive thing in its own group
     and the shortening is the new code -- and neither is where the time goes.
-    Note both rows eliminate **one** tunnel: the loops kept per call are vertex-disjoint, so
-    ``handles_64``'s 128 overlapping generators still yield one, and its extra cost is the larger
-    basis and the longer loops rather than more cutting.
+    The rows do not eliminate the same number of tunnels: ``handles_1`` has one, and on
+    ``handles_64`` the loops kept per call are a vertex-disjoint, independent family of 23 of its
+    128 generators, so its extra cost is the larger basis, the longer loops and more cutting.
 
     ordito-only, and not by omission. MeshLib is the only library that binds the operation and its
     ``eliminateTunnels`` is a **no-op** on every input probed -- unchanged face count and Euler

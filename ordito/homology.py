@@ -35,7 +35,11 @@ from ordito.kernels import scatter as kernel_scatter
 
 
 def homology_generators(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, copy: bool = False
+    vertices: wp.array[wp.vec3],
+    faces: wp.array[wp.int32],
+    *,
+    root: int | None = None,
+    copy: bool = False,
 ) -> list[wp.array[wp.int32]]:
     """
     Non-contractible loops of the surface, as ordered vertex-index cycles.
@@ -45,12 +49,18 @@ def homology_generators(
     (the start vertex is not repeated, matching
     [`boundary_loops`][ordito.boundary.boundary_loops]).
 
-    The loops are a *basis*, not canonical: any generating set is as valid as any other, and this
-    one falls out of the spanning trees the construction happens to build. They are also as long
-    and as jagged as those trees, which is what
-    [`shorten_loop`][ordito.geodesic_walk.shorten_loop] is for. The basis is **reproducible**, and
-    the same on every device: the primal tree resolves competing claims by lowest vertex index and
-    the dual forest by lowest edge index, so neither depends on the order the threads ran in.
+    The loops are a *basis*, not canonical: any generating set is as valid as any other. This one
+    is the **greedy system of loops through the root** in the hop metric (Erickson and Whittlesey,
+    *Greedy optimal homotopy and homology generators*, SODA 2005): the primal tree is a
+    breadth-first tree from ``root``, and the dual forest is a maximum spanning tree under the
+    length of each edge's loop through the root, so each generator is the shortest loop through the
+    root independent of the ones before it. A handle near the root therefore shows up as its own
+    short loop rather than as part of a combination; one far from it can still be represented only
+    through longer loops, so which loops come out depends on where the root is. The loops are as
+    jagged as the tree, which is what [`shorten_loop`][ordito.geodesic_walk.shorten_loop] is for.
+    The basis is **reproducible**, and the same on every device: the primal tree resolves competing
+    claims by lowest vertex index and the dual forest breaks equal loop lengths by lowest edge
+    index, so neither depends on the order the threads ran in.
 
     Parameters
     ----------
@@ -59,6 +69,9 @@ def homology_generators(
     faces
         ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,
         edge-manifold surface: the counting argument this rests on assumes it.
+    root
+        Vertex the loops are based at, or ``None`` for a referenced vertex the connectivity fixes
+        (the same one on every call and device). Must be a referenced vertex.
     copy
         Return independent buffers instead of views into one packed allocation.
 
@@ -74,7 +87,8 @@ def homology_generators(
         If the mesh has a boundary, since a surface with boundary has a different homology basis
         (every boundary loop contributes one, and the tree-cotree count no longer applies), or if
         its referenced vertices are not all in one connected component, since the count is then a
-        sum over components that a single pair of spanning trees does not produce.
+        sum over components that a single pair of spanning trees does not produce, or if ``root``
+        is not a referenced vertex.
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -88,12 +102,12 @@ def homology_generators(
         Fixes how many loops there are: ``2 * g == 2 - chi``.
     [`boundary_loops`][ordito.boundary.boundary_loops]
     """
-    loops, offsets = homology_generators_with_offsets(vertices, faces)
+    loops, offsets = homology_generators_with_offsets(vertices, faces, root=root)
     return od.array.split(loops, offsets, copy=copy)
 
 
 def homology_generators_with_offsets(
-    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32]
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], *, root: int | None = None
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Non-contractible loops of the surface, packed: every loop's vertices, then their offsets.
@@ -108,6 +122,9 @@ def homology_generators_with_offsets(
     faces
         ``(3 * n_faces,)`` triangle index buffer. Must be a closed, connected,
         edge-manifold surface: the counting argument this rests on assumes it.
+    root
+        Vertex the loops are based at, or ``None`` for a referenced vertex the connectivity fixes
+        (the same one on every call and device). Must be a referenced vertex.
 
     Returns
     -------
@@ -121,8 +138,9 @@ def homology_generators_with_offsets(
     Raises
     ------
     ValueError
-        If the mesh has a boundary, or its referenced vertices are not all in one connected
-        component (see [`homology_generators`][ordito.homology.homology_generators]).
+        If the mesh has a boundary, its referenced vertices are not all in one connected
+        component, or ``root`` is not a referenced vertex (see
+        [`homology_generators`][ordito.homology.homology_generators]).
     RuntimeError
         If ``vertices`` and ``faces`` are not all on one device.
 
@@ -137,6 +155,8 @@ def homology_generators_with_offsets(
     device = faces.device
     n_vertices = vertices.size
     n_faces = faces.size // 3
+    if root is not None and not 0 <= root < n_vertices:
+        raise ValueError(f"root must index a vertex in [0, {n_vertices}), got {root}")
     if n_vertices == 0 or n_faces == 0:
         return _launch.empty_packed(wp.int32, device)
 
@@ -162,7 +182,7 @@ def homology_generators_with_offsets(
     # The vertex graph the primal tree spans. Unsorted rows, which the level loop cannot see: it
     # resolves competing claims by lowest vertex index, not by column position.
     neighbors, offsets = od.graph.edges_to_neighbor_lists(n_vertices, unique_edges, validate=False)
-    parents, distances = _primal_spanning_tree(offsets, neighbors, unique_edges)
+    parents, distances = _primal_spanning_tree(offsets, neighbors, unique_edges, root)
 
     # Both preconditions are counting questions, and both are answered on the device into one
     # three-slot buffer that is read back once: a guard that raises does not need to raise early,
@@ -203,18 +223,23 @@ def homology_generators_with_offsets(
             "homology_generators requires a closed surface: this mesh has "
             f"{3 * n_faces - 2 * n_interior} boundary edge(s)."
         )
+    if root is not None and n_reached == 1:
+        raise ValueError(f"root {root} is not referenced by any face")
     if n_reached != n_referenced:
         raise ValueError(
             "homology_generators requires a connected surface: the traversal reached "
             f"{n_reached} of {n_referenced} referenced vertices."
         )
 
-    _remove_dual_spanning_forest(candidate, edge_faces, n_faces)
+    _remove_dual_spanning_forest(candidate, edge_faces, n_faces, unique_edges, distances)
     return _trace_generator_loops(candidate, unique_edges, parents, distances)
 
 
 def _primal_spanning_tree(
-    offsets: wp.array[wp.int32], columns: wp.array[wp.int32], unique_edges: odt.Array2dInt32
+    offsets: wp.array[wp.int32],
+    columns: wp.array[wp.int32],
+    unique_edges: odt.Array2dInt32,
+    root: int | None,
 ) -> tuple[wp.array[wp.int32], wp.array[wp.int32]]:
     """
     Rooted spanning tree of the vertex graph as ``(parents, distances)``.
@@ -224,13 +249,13 @@ def _primal_spanning_tree(
     [`NO_PARENT`][ordito.kernels.homology.NO_PARENT] at the root and at every unreferenced vertex,
     which the tree never reaches; ``distances`` holds the depth, or ``-1`` for the same vertices.
 
-    **The root is the lowest-indexed *referenced* vertex, read on the device rather than handed in**
-    -- one host readback the call does not take. Rooting at vertex 0 unconditionally is the bug
-    that avoids: on a mesh whose vertex 0 carries no edges the "tree" is a single isolated node,
-    every primal edge becomes a generator, and the count comes back enormous rather than
-    wrong-looking. [`edges_unique`][ordito.edges.edges_unique] returns its rows lexicographically
-    sorted, so the first entry of the flattened buffer *is* that vertex -- referenced by
-    construction, and deterministic -- which is what lets the seed be
+    **The default root is the first vertex of the first unique edge, read on the device rather
+    than handed in** -- one host readback the call does not take; a caller's ``root`` is uploaded
+    instead. Rooting at vertex 0 unconditionally is the bug that avoids: on a mesh whose vertex 0
+    carries no edges the "tree" is a single isolated node, every primal edge becomes a generator,
+    and the count comes back enormous rather than wrong-looking. An endpoint of an edge is
+    referenced by construction, and [`edges_unique`][ordito.edges.edges_unique]'s row order is a
+    function of ``faces`` alone, so the default is deterministic -- which is what lets the seed be
     [`scatter_index`][ordito.kernels.scatter.scatter_index] at ``dim=1`` rather than a kernel of
     its own.
 
@@ -246,9 +271,8 @@ def _primal_spanning_tree(
     # it before the first round; nothing claimed yet. Allocated holding those values rather than
     # zeroed and then assigned -- the zeroing is thrown away and the assign is a second upload.
     state = _launch.array([1, 1, 0], dtype=wp.int32, device=device)
-    _launch.launch(
-        kernel_scatter.scatter_index, dim=1, inputs=[unique_edges[0], distances], device=device
-    )
+    seed = unique_edges[0] if root is None else _launch.array([root], dtype=wp.int32, device=device)
+    _launch.launch(kernel_scatter.scatter_index, dim=1, inputs=[seed, distances], device=device)
 
     # A level claims at least one vertex or the loop is over, so ``n_vertices + 1`` bounds it --
     # cheap insurance against a captured loop hanging the device rather than answering wrongly.
@@ -268,7 +292,11 @@ def _primal_spanning_tree(
 
 
 def _remove_dual_spanning_forest(
-    candidate: wp.array[wp.bool], edge_faces: odt.Array2dInt32, n_faces: int
+    candidate: wp.array[wp.bool],
+    edge_faces: odt.Array2dInt32,
+    n_faces: int,
+    unique_edges: odt.Array2dInt32,
+    distances: wp.array[wp.int32],
 ) -> None:
     """
     Clear from ``candidate``, in place, a spanning forest of the dual graph over its edges.
@@ -276,7 +304,8 @@ def _remove_dual_spanning_forest(
     What is left set is exactly the generator edges: interior, in neither the primal tree nor the
     dual forest.
 
-    Boruvka: each round hands every component its lowest-indexed incident candidate edge, accepts
+    Boruvka: each round hands every component its incident candidate edge whose loop through the
+    root is longest (``kernels/homology.forest_edge_key``, lowest index on a tie), accepts
     those edges and unions the components, so the component count at least halves per round and the
     loop finishes in ``O(log n_faces)`` of them. Four launches per round and no host
     synchronization; the round cap in the state word only bounds a loop the halving argument
@@ -293,7 +322,7 @@ def _remove_dual_spanning_forest(
         return
     labels = od.array.arange(n_faces, device=device)
     roots = _launch.empty(n_faces, dtype=wp.int32, device=device)
-    proposal = _launch.empty(n_faces, dtype=wp.int32, device=device)
+    proposal = _launch.empty(n_faces, dtype=wp.uint64, device=device)
     # The condition starts true because ``wp.capture_while`` reads it before the first round;
     # allocated holding that seed rather than zeroed and then assigned.
     state = _launch.array([0, 1, 0], dtype=wp.int32, device=device)
@@ -311,13 +340,13 @@ def _remove_dual_spanning_forest(
         _launch.launch(
             kernel_homology.forest_propose,
             dim=n_candidates,
-            inputs=[candidate, edge_faces, roots, proposal],
+            inputs=[candidate, edge_faces, roots, unique_edges, distances, proposal],
             device=device,
         )
         _launch.launch(
             kernel_homology.forest_link,
             dim=n_candidates,
-            inputs=[candidate, edge_faces, roots, proposal, labels, state],
+            inputs=[candidate, edge_faces, roots, unique_edges, distances, proposal, labels, state],
             device=device,
         )
         _launch.launch(kernel_array.loop_advance, dim=1, inputs=[max_rounds, state], device=device)

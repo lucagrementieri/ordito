@@ -42,9 +42,7 @@ def run(device: str) -> dict[str, Any]:
 
     _, _, k1, k2 = od.curvature.principal_curvature(vertices, faces)
     mean = 0.5 * (k1.numpy() + k2.numpy())
-    field = od.typing.as_array2d(
-        wp.array(mean[:, None], dtype=wp.float32, device=device), wp.float32
-    )
+    field = wp.array(mean[:, None], dtype=wp.float32, device=device)
 
     images, restored = {}, {}
     for resolution in (512, 32):
@@ -59,12 +57,7 @@ def run(device: str) -> dict[str, Any]:
         "image": images[512].numpy()[:, :, 0],
         "restored": {k: v.numpy()[:, 0] for k, v in restored.items()},
         "mask": od.texture.rasterize_attribute(
-            uv,
-            faces,
-            od.typing.as_array2d(
-                wp.ones((mean.size, 1), dtype=wp.float32, device=device), wp.float32
-            ),
-            512,
+            uv, faces, wp.ones((mean.size, 1), dtype=wp.float32, device=device), 512
         ).numpy()[:, :, 0],
     }
 

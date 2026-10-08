@@ -312,7 +312,7 @@ CG_MULTIGRID_DOMINANCE = 2.15
 def min_quad_with_fixed(
     q: odt.SparseMatrix,
     fixed_mask: wp.array[wp.bool],
-    fixed_values: odt.Array2dFloat,
+    fixed_values: odt.ArrayNdFloat64,
     *,
     tol: float = CG_TOLERANCE,
     check_every: int = CG_CHECK_EVERY,
@@ -344,8 +344,8 @@ def min_quad_with_fixed(
     fixed_mask
         ``(n_dofs,)`` mask: ``True`` marks a pinned degree of freedom.
     fixed_values
-        ``(n_rhs, n_dofs)`` prescribed values; only the entries where ``fixed_mask`` is ``True`` are
-        read.
+        ``(n_rhs, n_dofs)`` prescribed values, ``float64``; only the entries where ``fixed_mask``
+        is ``True`` are read.
     tol
         Relative residual tolerance for the conjugate-gradient solve.
     check_every
@@ -383,6 +383,8 @@ def min_quad_with_fixed(
     ValueError
         If ``solver`` is not ``"iterative"`` or ``"direct"``, or ``preconditioner`` is not a name
         [`solve_spd_columns`][ordito.linalg.solve_spd_columns] accepts.
+    TypeError
+        If ``fixed_values`` is not a rank-2 ``wp.float64`` array.
     RuntimeError
         If ``fixed_mask``, ``fixed_values`` and ``coordinates`` are not all on one device.
 
@@ -410,6 +412,7 @@ def min_quad_with_fixed(
     [`solve_spd_columns`][ordito.linalg.solve_spd_columns]
     """
     require_same_device(fixed_mask=fixed_mask, fixed_values=fixed_values, coordinates=coordinates)
+    odt.ensure_ndim(fixed_values, 2, dtype=wp.float64)
     if solver not in ("iterative", "direct"):
         raise ValueError(
             f'min_quad_with_fixed: unknown solver {solver!r}, expected "iterative" or "direct".'

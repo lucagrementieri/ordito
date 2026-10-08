@@ -61,8 +61,7 @@ def run(device: str) -> dict[str, Any]:
     bunny_vertices, bunny_faces = data.load("bunny", device)
     bunny = (bunny_vertices, od.holes.fill_min_weight(bunny_vertices, bunny_faces))
     box = od.creation.box(bounds=[[-0.01, 0.02, -0.08], [0.08, 0.12, 0.08]], device=device)
-    # The origin is half a cell off round numbers so that no box face lies on a cell boundary.
-    carved = csg(bunny, box, 0.0012, origin=wp.vec3(-0.1006, -0.0006, -0.0906))
+    carved = csg(bunny, box, 0.0012, origin=wp.vec3(-0.1, 0.0, -0.09))
     for name, (_, f) in carved.items():
         print(f"bunny {name} box: {f.shape[0] // 3} faces")
     # --8<-- [end:code]

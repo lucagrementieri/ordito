@@ -137,7 +137,7 @@ print(f"edge crossings per torus ray: up to {max(len(ray) for ray in torus_rays)
 
 ```text title="Output"
 torus ray lengths: 4.000 to 4.000
-edge crossings per torus ray: up to 246
+edge crossings per torus ray: up to 247
 ```
 
 ![Tracing straightest geodesics (the exponential map)](../assets/examples/g3.webp)
@@ -375,8 +375,8 @@ for name in ("torus", "handles"):
 ```
 
 ```text title="Output"
-torus: 2 loops, length 10.79 -> 8.04 (65 sweeps)
-handles: 18 loops, length 485.80 -> 451.22 (11 sweeps)
+torus: 2 loops, length 10.74 -> 8.00 (65 sweeps)
+handles: 18 loops, length 381.73 -> 357.38 (10 sweeps)
 ```
 
 ![Shortening non-contractible loops](../assets/examples/g8.webp)

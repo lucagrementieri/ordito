@@ -19,6 +19,7 @@ from pymeshfix import _meshfix
 
 import ordito as od
 from benchmarks.meshes import BUILDERS
+from benchmarks.meshes import _handles as handles_slab  # pyright: ignore[reportPrivateUsage]
 from tests.comparisons import (
     assert_unordered_rows_equal,
     canonical_winding,
@@ -3418,18 +3419,52 @@ def _genus(faces_wp: wp.array[wp.int32]) -> int:
 @pytest.fixture
 def handles_64(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
     """
-    Build the benchmark's genus-64 slab: the one input whose disjoint short loops are *dependent*.
+    Build the benchmark's genus-64 slab: one call cuts a family of 23 loops at once.
 
     Local rather than shared because nothing else in ``tests/`` needs a genus this high. It is the
-    fixture for the independence half of ``remove_tunnels``: a vertex-disjoint family of 23 of its
-    shortened generators together bounds a piece of the slab, so cutting all 23 splits the surface
-    in two -- measured, before the component check, chi -126 -> -78 against the -80 that 23 cuts
-    claim. None of the smaller ``_handles`` variants probed (3 to 10 holes a side, at three edge
-    lengths) produces a dependent family, so the size is load-bearing.
+    input where one call cuts many vertex-disjoint loops together, so a family that bounded a piece
+    of the slab between its loops would split it; the greedy basis's family here is independent,
+    and the dependent case is pinned directly by
+    ``test_remove_tunnels_keeps_one_of_two_parallel_loops``.
     """
     vertices_np, faces_np = BUILDERS["handles_64"]()
     mesh = tm.Trimesh(vertices_np, faces_np, process=False)
     return mesh, trimesh_to_warp(mesh, device)
+
+
+def test_remove_tunnels_keeps_one_of_two_parallel_loops(torus: tuple[tm.Trimesh, wp.Mesh]) -> None:
+    """
+    Not a library comparison: the independence rule, on the smallest dependent family there is.
+
+    Two meridians of a torus, half a turn apart, are vertex-disjoint and each non-separating, but
+    together they bound two annuli: cutting along both splits the torus in two, where cutting along
+    one drops the genus by one. The cut labels must see two components, the rule must keep exactly
+    one loop, and cutting along it and filling must leave a connected sphere.
+    """
+    mesh_tm, mesh_wp = torus
+    vertices_np = np.asarray(mesh_tm.vertices)
+    major_angle = np.arctan2(vertices_np[:, 1], vertices_np[:, 0])
+    rings = []
+    for angle in (major_angle[0], major_angle[0] + np.pi):
+        ring = np.flatnonzero(np.isclose(np.cos(major_angle - angle), 1.0))
+        radial = np.hypot(vertices_np[ring, 0], vertices_np[ring, 1]) - 1.0
+        rings.append(ring[np.argsort(np.arctan2(vertices_np[ring, 2], radial))].astype(np.int32))
+    assert len(rings[0]) == len(rings[1]) >= 3
+    assert not set(rings[0].tolist()) & set(rings[1].tolist())  # disjoint, as the rule requires
+
+    faces_wp = mesh_wp.indices
+    labels_wp, sides = od.repair._cut_face_labels(faces_wp, rings)  # pyright: ignore[reportPrivateUsage]
+    labels_np = labels_wp.numpy()
+    assert np.unique(labels_np).size == 2  # non-vacuity: the pair really is dependent
+    kept = od.repair._independent_loops(rings, labels_np, sides())  # pyright: ignore[reportPrivateUsage]
+    assert len(kept) == 1
+
+    cut_vertices_wp, cut_faces_wp = od.repair._cut_along_loops(  # pyright: ignore[reportPrivateUsage]
+        mesh_wp.points, faces_wp, kept
+    )
+    filled_wp = od.holes.fill_min_weight(cast("wp.array[wp.vec3]", cut_vertices_wp), cut_faces_wp)
+    assert _genus(filled_wp) == 0
+    assert np.unique(od.adjacency.face_connected_component_labels(filled_wp).numpy()).size == 1
 
 
 @pytest.mark.parity(
@@ -3472,9 +3507,9 @@ def test_remove_tunnels_drops_the_genus_by_the_count_it_reports(
     and together they exclude the failure this function's shape invites: a cut along loops that
     cross, which shatters the surface into pieces while every individual step still looks correct
     (measured, before the disjointness rule: four spheres from a genus-2 union, and chi 8). And
-    disjointness alone is not enough: on ``handles_64`` a disjoint family is *dependent*, splitting
-    the slab in two while chi still rises, which is what the component assert catches and why the
-    parametrization carries a genus-64 input.
+    disjointness alone is not enough: a disjoint family can be *dependent*, splitting the surface
+    while chi still rises, which is what the component assert catches and why the parametrization
+    carries a genus-64 input cutting 23 loops in one call.
 
     Open3D's ``is_watertight`` is **not** among them, and the reason is a measured convention rather
     than a defect on either side. It is the composition ``is_edge_manifold && is_vertex_manifold &&
@@ -3520,23 +3555,97 @@ def test_remove_tunnels_iterates_to_a_sphere(genus_two: tuple[tm.Trimesh, wp.Mes
     """
     Not a library comparison: see above. This pins the documented "call it again" contract.
 
-    One call takes at most one loop per vertex-disjoint family, so a basis whose loops all overlap
+    One call takes at most one loop per vertex-disjoint family, so a basis whose loops overlap
     needs another round. The docstring tells callers to loop until ``removed`` is ``0``, and this
-    is that loop: a genus-2 union reaches genus 0 in **two** rounds and the third reports nothing,
-    which is both the termination proof and the reason the count is not just the genus.
+    is that loop: a genus-2 union reaches genus 0, the counts summing to the genus, and the last
+    call reports nothing, which is the termination proof.
     """
     _, mesh_wp = genus_two
     vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
     rounds = 0
+    total = 0
     while True:
         vertices_wp, faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, 1e9)
         if removed == 0:
             break
         rounds += 1
-        assert rounds <= 4  # it must terminate, and two rounds is what this fixture takes
-    assert rounds == 2
+        total += removed
+        assert rounds <= 4  # it must terminate; one round per handle at the most
+    assert total == 2
     assert _genus(faces_wp) == 0
     assert od.validation.is_edge_manifold(faces_wp)
+
+
+@pytest.fixture
+def torus_with_thin_handles(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Build a ring torus with three identical thin handles fused onto its tube: genus 4.
+
+    Local because it is the one input whose short loops sit far from the basis root: each handle's
+    girth is ``2 * pi * 0.045``, about 0.28, against 2.51 and more for the ring's own loops, and
+    three identical handles leave the greedy basis a choice of which ones to express as a
+    combination.
+    """
+    ring = tm.creation.torus(1.0, 0.4, 96, 48)
+    handles = []
+    for angle in (0.3, 2.4, 4.2):
+        handle = tm.creation.torus(0.22, 0.045, 48, 12)
+        handle.apply_transform(tm.transformations.rotation_matrix(np.pi / 2, [1, 0, 0]))
+        handle.apply_translation((1.0, 0.0, 0.4))  # astride the top of the tube
+        handle.apply_transform(tm.transformations.rotation_matrix(angle, [0, 0, 1]))
+        handles.append(handle)
+    mesh = tm.boolean.union([ring, *handles])
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.fixture
+def slab_with_nine_tunnels(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """
+    Build a 16 x 16 x 1 slab with 3 x 3 tunnels: genus 9, every short loop around a bar of it.
+
+    The bars between neighbouring tunnels are about 6.3 round and the walls of the tunnels about
+    10, so a ``max_length`` of 11 makes every handle a thin one.
+    """
+    vertices_np, faces_np = handles_slab(3, max_edge=0.3)
+    mesh = tm.Trimesh(vertices_np, faces_np, process=False)
+    return mesh, trimesh_to_warp(mesh, device)
+
+
+@pytest.mark.parametrize(
+    ("mesh_name", "max_length", "genus_after"),
+    [("torus_with_thin_handles", 2.0, 1), ("slab_with_nine_tunnels", 11.0, 0)],
+)
+def test_remove_tunnels_cuts_every_handle_under_max_length(
+    request: pytest.FixtureRequest, mesh_name: str, max_length: float, genus_after: int
+) -> None:
+    """
+    Not a library comparison: see above. Looping to ``removed == 0`` must cut every short handle.
+
+    ``0`` is the documented answer "no loop is short enough", so a call must not return it while a
+    handle shorter than ``max_length`` remains. On the torus the three handles, 0.28 round, must all
+    go and the ring's own tunnel, whose shortest loop is 2.51, must stay; on the slab every handle
+    is under 11 and the result is a sphere. Each round's count must match its genus drop.
+
+    A homology basis can carry a far handle only inside a combination of classes, and shortening
+    within the class cannot undo that: before the greedy basis and the re-rooting, the torus stopped
+    at genus 2 (one handle never cut at any ``max_length`` up to 2.0) and the slab at genus 6.
+    """
+    _, mesh_wp = request.getfixturevalue(mesh_name)
+    vertices_wp, faces_wp = mesh_wp.points, mesh_wp.indices
+    genus = _genus(faces_wp)
+    assert genus > genus_after  # non-vacuity: there are handles to cut
+    removed = -1
+    for _ in range(genus + 1):
+        vertices_wp, faces_wp, removed = od.repair.remove_tunnels(vertices_wp, faces_wp, max_length)
+        assert _genus(faces_wp) == genus - removed
+        genus -= removed
+        if removed == 0:
+            break
+    assert removed == 0
+    assert genus == genus_after
+    assert od.validation.is_edge_manifold(faces_wp)
+    labels_np = od.adjacency.face_connected_component_labels(faces_wp).numpy()
+    assert np.unique(labels_np).size == 1
 
 
 def test_remove_tunnels_leaves_a_long_tunnel_and_a_sphere_alone(

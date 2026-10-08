@@ -792,6 +792,11 @@ def equalize_triangle_areas(
     *previous* pass's positions, so the whole mesh moves at once and the result does not depend on
     a vertex ordering.
 
+    Boundary vertices are held where they are. A boundary vertex's triangles form an open fan,
+    whose total area no motion of that vertex preserves, so its minimum would collapse the fan onto
+    the rim rather than even it out; the rim's triangles are evened out by their interior vertices
+    instead.
+
     Parameters
     ----------
     vertices
@@ -809,8 +814,9 @@ def equalize_triangle_areas(
         pulls the whole 1-ring inward, so leave this on when the shape matters and off when only
         the triangle quality does.
     region
-        ``(n_vertices,)`` mask of the vertices allowed to move. ``None`` moves every one.
-        Vertices outside it stay exactly where they are, and are still read as neighbours.
+        ``(n_vertices,)`` mask of the vertices allowed to move. ``None`` moves every interior
+        vertex. Vertices outside it stay exactly where they are, and are still read as neighbours;
+        boundary vertices stay put whether or not it includes them.
     max_displacement
         Clamp every vertex into a ball of this radius around its **input** position, applied after
         each pass. ``None`` leaves the relaxation unbounded. Use it when the surface has to stay
@@ -865,6 +871,7 @@ def equalize_triangle_areas(
         if vertex_faces is not None
         else od.adjacency.vertex_face_adjacency(faces, n_vertices=n_vertices)
     )
+    region = _without_boundary_vertices(vertices, faces, region)
     positions = _launch.clone(vertices)
     normals = _launch.zeros(n_vertices, dtype=wp.vec3, device=device)
     nxt = _launch.empty(n_vertices, dtype=wp.vec3, device=device)
@@ -893,6 +900,33 @@ def equalize_triangle_areas(
         )
         positions, nxt = nxt, positions
     return positions
+
+
+def _without_boundary_vertices(
+    vertices: wp.array[wp.vec3], faces: wp.array[wp.int32], region: wp.array[wp.bool] | None
+) -> wp.array[wp.bool] | None:
+    """
+    ``region`` less the boundary vertices, or ``region`` itself on a closed mesh.
+
+    A boundary vertex's incident triangles form an open fan, whose summed area is not invariant
+    under any motion of that vertex, so the per-vertex minimum collapses the fan toward the
+    neighbouring rim instead of evening it out (in the tangent plane, a vertex with one incident
+    triangle is sent onto the line of its opposite edge, which can be arbitrarily far away). The
+    vertices are held instead; their incident triangles are still evened out by the interior
+    vertices around them.
+    """
+    boundary = od.boundary.boundary_vertex_indices(vertices, faces)
+    if boundary.size == 0:
+        return region
+    n_vertices = vertices.size
+    held = od.array.indices_to_mask(boundary, n_vertices, device=vertices.device)
+    movable = (
+        _launch.full(n_vertices, True, dtype=wp.bool, device=vertices.device)
+        if region is None
+        else _launch.clone(region)
+    )
+    _launch.map(kernel_array.mask_and_not, movable, held, out=movable)
+    return movable
 
 
 def relax_keep_volume(
@@ -1665,22 +1699,36 @@ def filter_implicit_fairing(
     iterations: int = 10,
     *,
     pin_boundary: bool = True,
+    conformalized: bool = False,
 ) -> wp.array[wp.vec3]:
     """
     Implicit fairing with the cotangent Laplace-Beltrami operator (Desbrun et al.).
 
     Solves the backward-Euler diffusion ``(M - lamb L) V' = M V`` each pass, where ``L`` is the
     cotangent stiffness matrix ([`cotmatrix`][ordito.laplacian.cotmatrix]) and ``M`` the
-    barycentric lumped mass matrix ([`mass_matrix`][ordito.laplacian.mass_matrix]), both recomputed
-    from the current geometry. This is the most accurate of the smoothing filters (curvature flow;
-    libigl tutorial 205). The solve uses ``float64`` throughout.
+    barycentric lumped mass matrix ([`mass_matrix`][ordito.laplacian.mass_matrix]). By default both
+    are recomputed from the current geometry every pass, which is mean-curvature flow; with
+    ``conformalized`` the stiffness stays the input's and only the mass follows the surface, which
+    is the conformalized mean-curvature flow of Kazhdan, Solomon and Ben-Chen (2012; libigl tutorial
+    205). A single pass is the same either way. The solve uses ``float64`` throughout.
+
+    Mean-curvature flow develops singularities: thin parts (a neck, an ear, a tube) shrink fastest
+    and pinch off in finite time, whatever the time step. As they do, their triangles degenerate,
+    the cotangent weights rebuilt from them grow without bound (a zero-area triangle contributes
+    none), the system's conditioning collapses -- each pass's solve takes orders of magnitude more
+    iterations -- and positions on the collapsing region stop meaning anything. That is the flow,
+    not the solver. The conformalized flow keeps the input's weights, so its system stays about as
+    well conditioned as the first pass's and a thin part thins without pinching off; it still
+    shrinks the surface (toward a point on a closed mesh, toward the pinned rim on an open one), so
+    a long enough flow still flattens triangles. Its reference geometry is each call's input:
+    continue a conformalized flow by asking for more ``iterations``, since a second call restarts
+    it from the first call's output and a sequence of single-pass calls is the ordinary flow.
 
     On a mesh with an open boundary the flow needs a boundary condition, which is what
     ``pin_boundary`` supplies: without one the unconstrained boundary is pulled inward, collapsing
-    the triangles there, and since the system is solved by conjugate gradient (the only Warp solver
-    available) further passes diverge rather than degrade gracefully. Pinning turns the pass into a
-    Dirichlet problem over the interior, which is the formulation Desbrun et al. give for a surface
-    with boundary and is well posed for any number of passes.
+    the triangles there, and further passes diverge rather than degrade gracefully. Pinning turns
+    the pass into a Dirichlet problem over the interior, which is the formulation Desbrun et al.
+    give for a surface with boundary.
 
     A closed mesh has no boundary, so ``pin_boundary`` costs nothing and changes nothing there --
     the solve is over every vertex either way, and curvature flow on a closed surface still shrinks
@@ -1701,6 +1749,9 @@ def filter_implicit_fairing(
         Hold boundary vertices at their input positions and solve only for the interior. A no-op on
         a closed mesh. Set ``False`` for the unconstrained flow, which is free to shrink the
         boundary — expect [`solve_spd`][ordito.linalg.solve_spd] to warn once it stops converging.
+    conformalized
+        Keep the input's cotangent stiffness for every pass and rebuild only the mass: the
+        conformalized flow, which stays well posed where the ordinary flow pinches.
 
     Returns
     -------
@@ -1744,14 +1795,22 @@ def filter_implicit_fairing(
 
     # The sparsity depends on the connectivity alone, so it is built once for every pass.
     pattern = laplacian.mesh_operator_pattern(faces, n)
+    # The conformalized flow keeps the input's stiffness for every pass; only the mass follows the
+    # surface.
+    fixed_stiffness = (
+        laplacian.cotmatrix(vertices, faces, dtype=wp.float64, pattern=pattern)
+        if conformalized
+        else None
+    )
     fairing = _FairingSolver()
     for _ in range(iterations):
         current = _as_vec3(positions)
-        # Rebuilt every iteration on purpose: the cotangent weights depend on ``current``, which
-        # the fairing step moves, so implicit fairing must re-linearise on the moving surface.
-        cot_entries = laplacian.cotmatrix_entries(current, faces)
-        stiffness = laplacian.cotmatrix(
-            current, faces, cot_entries=cot_entries, dtype=wp.float64, pattern=pattern
+        # Otherwise rebuilt every pass: the cotangent weights depend on ``current``, which the
+        # fairing step moves, so the ordinary flow re-linearises on the moving surface.
+        stiffness = (
+            fixed_stiffness
+            if fixed_stiffness is not None
+            else laplacian.cotmatrix(current, faces, dtype=wp.float64, pattern=pattern)
         )
 
         mass = laplacian.mass_matrix_entries(current, faces, dtype=wp.float64)

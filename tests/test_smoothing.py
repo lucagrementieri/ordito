@@ -682,6 +682,78 @@ def test_equalize_triangle_areas_respects_its_region_and_bound(device: str) -> N
         )
 
 
+def _noisy_open_icosphere_3(device: str) -> tuple[wp.array[wp.vec3], wp.array[wp.int32]]:
+    """
+    Return ``_noisy_icosphere_3`` with its top cap cut off, as vertex and face buffers.
+
+    The cut follows the faces, so the rim is jagged: some of its vertices keep a single incident
+    triangle, which is the case the tangent-plane solve sends furthest.
+    """
+    mesh_tm = _noisy_icosphere(3, 0.02)
+    vertices_np = np.asarray(mesh_tm.vertices)
+    faces_np = np.asarray(mesh_tm.faces)
+    kept_np = faces_np[vertices_np[faces_np].mean(axis=1)[:, 2] < 0.5]
+    return numpy_to_warp(vertices_np, kept_np.ravel().astype(np.int32), device)
+
+
+@pytest.mark.parametrize("no_shrinkage", [False, True])
+def test_equalize_triangle_areas_holds_the_boundary(device: str, no_shrinkage: bool) -> None:
+    """
+    Not a library comparison: the one reference moves boundary vertices, which is the defect.
+
+    A boundary vertex's incident triangles are an open fan whose total area no motion of that vertex
+    preserves, so its per-vertex minimum collapses the fan onto the rim (``equalizeTriAreas`` does
+    exactly that: on this mesh it shrank the smallest triangle to 3 % of the input's and, in the
+    tangent plane, sent a single-triangle rim vertex 3.2 away on a unit sphere). The rim is held
+    instead. Three invariants: every boundary vertex is returned bit for bit, the interior moved
+    (non-vacuity), and the areas became more even without any triangle shrinking below the input's
+    smallest -- the last is what fails when the fans collapse, the first when a rim vertex leaves.
+    """
+    vertices_wp, faces_wp = _noisy_open_icosphere_3(device)
+    vertices_np = vertices_wp.numpy()
+    faces_np = faces_wp.numpy().reshape(-1, 3)
+    boundary_np = od.boundary.boundary_vertex_indices(vertices_wp, faces_wp).numpy()
+    degree_np = np.bincount(faces_np.ravel(), minlength=len(vertices_np))
+    # Non-vacuity: an open mesh, with a rim vertex on one triangle (the tangent-plane failure).
+    assert boundary_np.size > 0
+    assert (degree_np[boundary_np] == 1).any()
+
+    relaxed_np = od.smoothing.equalize_triangle_areas(
+        vertices_wp, faces_wp, 10, 0.5, no_shrinkage=no_shrinkage
+    ).numpy()
+
+    assert np.array_equal(relaxed_np[boundary_np], vertices_np[boundary_np])
+    assert np.abs(relaxed_np - vertices_np).max() > 1e-3
+    before = od.triangles.face_normals_and_areas(vertices_wp, faces_wp)[1].numpy()
+    relaxed_wp = wp.array(relaxed_np, dtype=wp.vec3, device=device)
+    after = od.triangles.face_normals_and_areas(relaxed_wp, faces_wp)[1].numpy()
+    assert after.std() < 0.5 * before.std()
+    assert after.min() >= before.min()
+
+
+def test_equalize_triangle_areas_cpu_matches_cuda_on_an_open_mesh() -> None:
+    """
+    Ordito against ordito: both devices relax an open mesh to the same positions, to ``float32``.
+
+    The tangent-plane solve of a rim vertex with one triangle is ill-conditioned, so the vertex
+    normal's float-atomic last bits once put the two devices 2.3 apart here; with the rim held
+    every remaining solve is a closed fan and the devices agree to rounding. The oracle for the
+    positions themselves is ``test_equalize_triangle_areas_matches_meshlib`` (closed mesh).
+    """
+    if not wp.is_cuda_available():
+        pytest.skip("needs both devices to compare them")
+    relaxed = {}
+    for no_shrinkage in (False, True):
+        for device in ("cpu", "cuda:0"):
+            vertices_wp, faces_wp = _noisy_open_icosphere_3(device)
+            relaxed[no_shrinkage, device] = od.smoothing.equalize_triangle_areas(
+                vertices_wp, faces_wp, 10, 0.5, no_shrinkage=no_shrinkage
+            ).numpy()
+        assert np.allclose(
+            relaxed[no_shrinkage, "cpu"], relaxed[no_shrinkage, "cuda:0"], rtol=1e-5, atol=1e-5
+        )
+
+
 @pytest.mark.parity("relax_keep_volume", "meshlib")
 def test_relax_keep_volume_matches_meshlib(device: str) -> None:
     """
@@ -1125,6 +1197,71 @@ def test_filter_implicit_fairing(sphere_irregular: tuple[tm.Trimesh, wp.Mesh]) -
     )
 
     assert np.allclose(smoothed_wp.numpy(), vertices_igl, rtol=1e-4, atol=1e-4)
+
+
+def _dumbbell(device: str) -> tuple[tm.Trimesh, wp.Mesh]:
+    """Two unit spheres joined by a long neck of radius 0.2, which mean-curvature flow pinches."""
+    heights = np.linspace(-3.0, 3.0, 121)
+    radii = np.sqrt(np.clip(1.0 - (np.abs(heights) - 2.0) ** 2, 0.0, None))
+    radii = np.maximum(radii, 0.2 * (np.abs(heights) < 2.0))
+    mesh_tm = tm.creation.revolve(np.column_stack([radii, heights]), sections=48)
+    mesh_tm.merge_vertices()
+    return mesh_tm, trimesh_to_warp(mesh_tm, device)
+
+
+@pytest.mark.parity(
+    "filter_implicit_fairing",
+    "igl",
+    benchmarked=False,
+    reason="libigl binds no implicit-fairing driver; the conformalized flow is its tutorial 205, "
+    "one igl.cotmatrix of the input plus one igl.massmatrix and a scipy spsolve per pass, "
+    "assembled here, so a row would time a solver comparison rather than this group's.",
+)
+def test_filter_implicit_fairing_conformalized_matches_igl(device: str) -> None:
+    """
+    Class A against libigl's conformalized mean-curvature flow, to ``float32``.
+
+    The reference is tutorial 205 without its display rescale: the input's ``igl.cotmatrix``, a
+    per-pass ``igl.massmatrix`` and a direct solve.
+
+    The fixture is a dumbbell whose thin neck the ordinary flow pinches within these ten passes,
+    which is what makes the comparison more than a restatement of the ordinary one: the ordinary
+    flow's smallest triangle falls to ~1e-10 of the input's there (asserted, so the fixture keeps
+    exercising the singularity) while the conformalized one keeps a sixth of it. One pass is the
+    same flow either way, so a single-pass call must agree with the ordinary one.
+    """
+    mesh_tm, mesh_wp = _dumbbell(device)
+    lamb = 0.004
+    iterations = 10
+    vertices_igl = np.array(mesh_tm.vertices, dtype=np.float64)
+    faces_igl = np.array(mesh_tm.faces, dtype=np.int64)
+    stiffness_igl = cast("sp.csc_matrix[np.float64]", igl.cotmatrix(vertices_igl, faces_igl))
+    for _ in range(iterations):
+        mass_igl = igl.massmatrix(vertices_igl, faces_igl, igl.MASSMATRIX_TYPE_BARYCENTRIC)
+        system_igl = (mass_igl - lamb * stiffness_igl).tocsc()
+        vertices_igl = cast("np.ndarray", spla.spsolve(system_igl, mass_igl.dot(vertices_igl)))
+
+    conformal_wp = od.smoothing.filter_implicit_fairing(
+        mesh_wp.points, mesh_wp.indices, lamb=lamb, iterations=iterations, conformalized=True
+    )
+    assert np.allclose(conformal_wp.numpy(), vertices_igl, rtol=1e-5, atol=1e-5)
+
+    ordinary_wp = od.smoothing.filter_implicit_fairing(
+        mesh_wp.points, mesh_wp.indices, lamb=lamb, iterations=iterations
+    )
+    input_area = float(mesh_tm.area_faces.min())
+    ordinary_area = od.triangles.face_normals_and_areas(ordinary_wp, mesh_wp.indices)[1].numpy()
+    conformal_area = od.triangles.face_normals_and_areas(conformal_wp, mesh_wp.indices)[1].numpy()
+    assert ordinary_area.min() < 1e-6 * input_area
+    assert conformal_area.min() > 0.1 * input_area
+
+    single_pass = {
+        conformalized: od.smoothing.filter_implicit_fairing(
+            mesh_wp.points, mesh_wp.indices, lamb=lamb, iterations=1, conformalized=conformalized
+        ).numpy()
+        for conformalized in (False, True)
+    }
+    assert np.allclose(single_pass[True], single_pass[False], rtol=0, atol=1e-6)
 
 
 def test_filter_implicit_fairing_pins_the_boundary_and_stays_stable(

@@ -852,17 +852,19 @@ def test_shorten_loop_preserves_the_homotopy_class(
     the length it converges to is a property of the class and not of the curve handed to it. Running
     it from the input loop and from the shortened one must therefore give the same number, and that
     is the whole correctness claim: shortening is allowed to move the curve anywhere in its class
-    and nowhere else. Measured **bit-identical** on both generators of the fixture (relative
-    difference 0.0), and the same on a 24x12 torus and on a genus-2 union.
+    and nowhere else. The edge-flip flow stops at a *local* geodesic, and a class on this bumpy
+    torus holds more than one: from the minor generator the two starts land on geodesics 3.6e-5
+    apart relative, the major one bit-identical. A loop that leaked into another class would move
+    the length by far more -- the fixture's two classes differ by 36 % -- so the bound is 1e-4.
 
     A length comparison alone could not carry this. A sweep that leaked out of its class would
     usually get *shorter*, so it would look like a better result; the invariant is what says no.
 
     The gap that remains is real and is not tested as an equality: this stays on the edge graph
     where the reference crosses face interiors, and the ratio to the geodesic length is between
-    **1.066x** and **1.578x** across the three meshes above -- widest where the mesh is a regular
-    grid whose rows are not geodesics, because a one-ring move cannot step the loop off a row
-    without lengthening the edge path first.
+    **1.002x** and **1.721x** on this fixture and on a genus-2 union -- widest where the mesh is a
+    regular grid whose rows are not geodesics, because a one-ring move cannot step the loop off a
+    row without lengthening the edge path first.
     """
     mesh_tm, mesh_wp = torus_irregular
     vertices_np = np.ascontiguousarray(mesh_tm.vertices, dtype=np.float64)
@@ -888,9 +890,9 @@ def test_shorten_loop_preserves_the_homotopy_class(
         exact_before = geodesic_length(loop_wp)
         exact_after = geodesic_length(shortened_loop_wp)
         assert exact_before > 0.0  # a contractible loop would have collapsed to a point here
-        assert np.allclose(exact_after, exact_before, rtol=1e-5, atol=1e-5)
+        assert np.allclose(exact_after, exact_before, rtol=1e-4, atol=1e-5)
         assert after >= exact_after - 1e-6  # the class's geodesic bounds any curve the sweeps reach
-    assert improved >= 1  # and the sweeps did something: 1.411x on this fixture's major generator
+    assert improved >= 1  # and the sweeps did something: 1.207x on this fixture's major generator
 
 
 @pytest.mark.parametrize("mesh_name", ["torus_irregular", "genus_two"])
@@ -909,7 +911,7 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
     The second oracle for this group, and it isolates something
     [`test_shorten_loop_preserves_the_homotopy_class`][tests.test_geodesic_walk.test_shorten_loop_preserves_the_homotopy_class]
     cannot. That test compares against ``potpourri3d.EdgeFlipGeodesicSolver``, which is allowed to
-    leave the edge graph, so its 1.066x-1.578x gap mixes two separate things: how far ordito's
+    leave the edge graph, so its 1.002x-1.721x gap mixes two separate things: how far ordito's
     sweep is from the best *edge path*, and how far the best edge path is from the true geodesic.
     ``findShortestEquivalentLoops`` stays on mesh edges, so the ratio here is the first of those
     alone -- the local-versus-global gap over one search space.
@@ -922,19 +924,20 @@ def test_shorten_loop_bounded_by_meshlib(request: pytest.FixtureRequest, mesh_na
     goes through ordito's own adjacency. The ratio then bounds the length gap.
 
     The bug class the threshold excludes is a sweep that stalls or lengthens. Measured ratios of
-    ordito's length to the reference's total: **1.07 and 1.54** on ``torus``, **1.18 / 1.31 /
-    1.55 / 1.17** on ``genus_two`` -- so the 2.0 threshold clears the worst by 1.29x. The mutation
-    probe is the unshortened tree-cotree loop, which the sweep is what removes: feeding ``torus``'s
-    major generator raw takes the ratio to **2.17** and fails. That margin is narrower than a
-    threshold test would normally want, which is why the edge-walk assert above carries the weight
-    and this one is a bound rather than the claim.
+    ordito's length to the reference's total: **1.00 and 1.51** on ``torus``, **1.00 / 1.10 / 1.17 /
+    1.15** on ``genus_two`` -- so the 2.0 threshold clears the worst by 1.32x. The mutation probe is
+    the unshortened tree-cotree loop, which the sweep is what removes: feeding ``genus_two``'s third
+    generator raw takes the ratio to **2.63** and fails. That margin is narrower than a threshold
+    test would normally want, which is why the edge-walk assert above carries the weight and this
+    one is a bound rather than the claim.
+
 
     !!! warning "The reference returns a loop *system*, so the comparable total is a sum"
         ``findShortestEquivalentLoops`` may split one loop into several that are jointly equivalent
-        to it -- measured, 2 loops for two of ``genus_two``'s four generators. Comparing against
-        ``min`` of the returned lengths therefore reads a ratio of **3.71** on one of them and looks
-        like a gross disagreement; against the ``sum`` the same generator reads 1.31. The sum is the
-        equivalent object.
+        to it, and comparing against ``min`` of the returned lengths would then read a gross
+        disagreement. The sum is the equivalent object. On these fixtures' greedy generators every
+        returned system is a single loop, so the sum guards the split case rather than exercising
+        it.
     """
     mesh_tm, mesh_wp = request.getfixturevalue(mesh_name)
     vertices_np = mesh_wp.points.numpy().astype(np.float64)

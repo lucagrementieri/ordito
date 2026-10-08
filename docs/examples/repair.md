@@ -199,7 +199,7 @@ print(f"seam vertices welded: {patch_vertices.shape[0] - welded_vertices.shape[0
 ```text title="Output"
 zero-area faces: 4; faces after dropping them: 412
 faces after collapsing small ones: 416 -> 392
-welded: 4 slivers, worst aspect ratio 1591
+welded: 4 slivers, worst aspect ratio 1590
 flipped: 0 slivers, worst aspect ratio 2
 seam vertices welded: 5
 ```
@@ -326,8 +326,8 @@ for method in ("local", "voxel"):
 ```
 
 ```text title="Output"
-self-intersecting faces: 325 of 9216
-local: 10122 faces, 0 still intersecting
+self-intersecting faces: 384 of 9216
+local: 9852 faces, 0 still intersecting
 voxel: 54484 faces, 0 still intersecting
 ```
 
@@ -340,17 +340,15 @@ Modelled on: [MeshLib: self-intersections](https://meshlib.io/documentation/Exam
 
 A ring torus carries three thin handles fused onto its tube, the kind of spurious topology a
 scan picks up where two sheets touch: genus 4, of which only the ring's own tunnel is meant.
-[`remove_tunnels`][ordito.repair.remove_tunnels] computes a homology basis, shortens each
-loop within its class, and cuts the surface along every loop no longer than `max_length`,
+[`remove_tunnels`][ordito.repair.remove_tunnels] computes a greedy homology basis (each loop
+the shortest independent one through its root), shortens each loop within its class, and
+cuts the surface along every loop no longer than `max_length`,
 sealing both rims of each cut (red); nothing moves, so the cut is only visible as new
 topology. The threshold sits far below the ring's own loops, so the
 intended tunnel survives. One call removes at most one tunnel per family of dependent loops,
 hence the loop until nothing is cut.
-[`euler_characteristic`][ordito.measures.euler_characteristic] tracks the genus.
-
-The test is on *shortened* loop length, and shortening is a local descent: here the basis
-loops through one of the handles stay several times longer than its girth, so that handle is
-not found at this threshold.
+[`euler_characteristic`][ordito.measures.euler_characteristic] tracks the genus: all three
+handles are cut and the torus keeps its own tunnel.
 
 ```python
 import ordito as od
@@ -369,9 +367,10 @@ print("genus after:", (2 - od.measures.euler_characteristic(faces)) // 2)
 
 ```text title="Output"
 genus before: 4
+cut 1 tunnel(s)
 cut 2 tunnel(s)
 cut 0 tunnel(s)
-genus after: 2
+genus after: 1
 ```
 
 ![Removing tunnels](../assets/examples/h9.webp)

@@ -1165,7 +1165,10 @@ def revolve(
         Angle in radians to revolve through. ``None`` (the default) is a full revolution.
     cap
         For a partial revolution, triangulate the two end faces so the result is a closed volume.
-        Ignored for a full revolution, which needs no caps. Requires a simple (non
+        The profile is then the boundary of the cap polygon, so it is closed whether or not its
+        last point repeats its first: the segment from its last point back to its first is
+        revolved into a wall like every other (a closing segment on the axis sweeps no area and
+        adds no wall). Ignored for a full revolution, which needs no caps. Requires a simple (non
         self-intersecting) profile — see
         [`triangulate_polygon`][ordito.polyline.triangulate_polygon].
     sections
@@ -1240,6 +1243,14 @@ def revolve(
     # the merged output. The two kernels below then write their final layout directly, with no
     # compaction pass and no device-to-host synchronization.
     profile_np = linestring.numpy().astype(np.float64)
+    capped = cap and not closed
+    if capped and per > 2 and not _repeats_first_point(profile_np):
+        # A capped profile is the boundary of its cap polygon, so its closing segment is a wall
+        # too. Repeating the first point lets the column fold below weld that wall to the first
+        # column, exactly as for a profile that closes itself.
+        profile_np = np.vstack((profile_np, profile_np[:1]))
+        linestring = _upload_points(profile_np, wp.vec2, device)
+        per += 1
     # A closed revolution folds its last slice back onto the first; an open one keeps them all.
     # The vertex layout and the launch must agree on this exactly -- the layout reserves the block
     # the kernel then writes into -- so it is computed once and passed to both.
@@ -1259,7 +1270,7 @@ def revolve(
 
     cap_faces = None
     n_cap = 0
-    if cap and not closed:
+    if capped:
         profile_3d = _launch.empty(per, dtype=wp.vec3, device=device)
         _launch.map(kernel_array.lift_vec2, linestring, wp.float32(0.0), out=profile_3d)
         # Ear clipping introduces no new vertices, so its indices address profile points directly --
@@ -1373,12 +1384,17 @@ def _revolve_vertex_layout(
     per = profile_np.shape[0]
     on_axis_np = np.abs(profile_np[:, 0]) <= TOLERANCE_MERGE
     column_np = np.arange(per, dtype=np.int32)
-    if per > 2 and bool(np.all(np.abs(profile_np[0] - profile_np[-1]) <= TOLERANCE_MERGE)):
+    if per > 2 and _repeats_first_point(profile_np):
         column_np[per - 1] = 0
     owns_np = column_np == np.arange(per)
     counts_np = np.where(on_axis_np, 1, n_kept_slices) * owns_np
     offsets_np = np.concatenate(([0], np.cumsum(counts_np)[:-1])).astype(np.int32)
     return column_np, offsets_np, on_axis_np, int(counts_np.sum())
+
+
+def _repeats_first_point(profile_np: np.ndarray) -> bool:
+    """Whether a profile's last point repeats its first, within ``1e-8`` on each component."""
+    return bool(np.all(np.abs(profile_np[0] - profile_np[-1]) <= TOLERANCE_MERGE))
 
 
 def extrude_triangulation(

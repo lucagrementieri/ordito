@@ -1285,6 +1285,32 @@ def test_revolve_partial_revolution(device: str, cap: bool) -> None:
         _assert_same_faces(vertices_wp, faces_wp, mesh_tm)
 
 
+@pytest.mark.parametrize("repeat_first", [False, True])
+def test_revolve_capped_profile_closes_itself(device: str, repeat_first: bool) -> None:
+    """
+    Class B on the solid: a capped section is closed whether or not it repeats its first point.
+
+    The transform is on the reference's side: trimesh is handed the section with its first point
+    repeated, since it revolves an unrepeated one as an open profile and leaves the closing wall
+    out between its two caps (a hole of ``2 * sections`` edges). Both arms of ordito must match
+    that one solid, so a missing closing wall (unrepeated arm) and a doubled one (repeated arm)
+    each fail the closedness and the volume.
+    """
+    t_np = np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False)
+    section_np = np.column_stack((1.0 + 0.3 * np.cos(t_np), 0.5 * np.sin(t_np)))
+    closed_np = np.vstack((section_np, section_np[:1]))
+    vertices_wp, faces_wp = od.creation.revolve(
+        points_to_warp_uv(closed_np if repeat_first else section_np, device),
+        angle=1.5 * np.pi,
+        cap=True,
+        sections=16,
+    )
+    mesh_tm = tm.creation.revolve(closed_np, angle=1.5 * np.pi, cap=True, sections=16)
+    assert mesh_tm.is_watertight
+    _assert_closed(vertices_wp, faces_wp)
+    _assert_same_solid(vertices_wp, faces_wp, mesh_tm)
+
+
 def test_revolve_invalid(device: str) -> None:
     with pytest.raises(ValueError, match="at least 2 points"):
         od.creation.revolve(points_to_warp_uv(np.zeros((1, 2)), device))

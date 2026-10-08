@@ -106,14 +106,16 @@ Mut. dif. Laplacian: volume x 1.000
 Modelled on: [Open3D: Taubin vs Laplacian](https://www.open3d.org/docs/release/tutorial/geometry/mesh.html) · [PyMeshLab: smoothing](https://pymeshlab.readthedocs.io/en/latest/filter_list.html)
 {: .ordito-credits }
 
-## Mean-curvature flow {#s3}
+## Mean-curvature flow, plain and conformalized {#s3}
 
-Each step of [`filter_implicit_fairing`][ordito.smoothing.filter_implicit_fairing] moves every
-vertex along its mean-curvature normal by solving one implicit (backward Euler) system with
-the cotangent Laplacian and the mass matrix, rebuilt from the current shape. Repeating it is
-mean-curvature flow: the fur-like bumps vanish in the first step, then the thin ears shrink
-fastest and melt into the head while the body rounds off. The rims of the scan's holes in the
-base are held fixed, so the base stays where it is. Surface areas come from
+Each pass of [`filter_implicit_fairing`][ordito.smoothing.filter_implicit_fairing] moves every
+vertex along its mean-curvature normal by one implicit (backward Euler) step of
+``(M - lamb L) V' = M V``. Rebuilding the cotangent Laplacian ``L`` from the current shape
+every pass is mean-curvature flow: the fur-like bumps vanish first, then the thin ears shrink
+fastest and pinch. With ``conformalized=True`` the stiffness stays the input's and only the
+mass follows the surface (Kazhdan, Solomon and Ben-Chen 2012): each pass solves a system as
+well conditioned as the first, so a long flow stays cheap. The rims of the scan's holes in the
+base are held fixed. Surface areas come from
 [`face_normals_and_areas`][ordito.triangles.face_normals_and_areas].
 
 ```python
@@ -121,30 +123,43 @@ import ordito as od
 from examples import data
 
 vertices, faces = data.load("bunny", device)
-frames = [vertices]
+
+# Plain flow: each call rebuilds the Laplacian from the shape it is given.
+plain = [vertices]
 for _ in range(3):
-    frames.append(
-        od.smoothing.filter_implicit_fairing(frames[-1], faces, lamb=1e-4, iterations=1)
+    plain.append(
+        od.smoothing.filter_implicit_fairing(plain[-1], faces, lamb=1e-4, iterations=1)
     )
-for step, positions in enumerate(frames):
-    _, areas = od.triangles.face_normals_and_areas(positions, faces)
-    print(f"step {step}: surface area {areas.numpy().sum():.4f}")
+
+# Conformalized flow: one call, the input's Laplacian kept for every pass.
+conformal = [vertices] + [
+    od.smoothing.filter_implicit_fairing(
+        vertices, faces, lamb=1e-4, iterations=passes, conformalized=True
+    )
+    for passes in (1, 3, 6)
+]
+for name, frames in (("plain", plain), ("conformalized", conformal)):
+    areas = [od.triangles.face_normals_and_areas(v, faces)[1].numpy() for v in frames]
+    print(
+        f"{name:>13}: area {' -> '.join(f'{a.sum():.4f}' for a in areas)}, "
+        f"smallest triangle {areas[-1].min() / areas[0].min():.2g} of the input's"
+    )
 ```
 
 ```text title="Output"
-step 0: surface area 0.0571
-step 1: surface area 0.0425
-step 2: surface area 0.0347
-step 3: surface area 0.0295
+        plain: area 0.0571 -> 0.0425 -> 0.0347 -> 0.0295, smallest triangle 0 of the input's
+conformalized: area 0.0571 -> 0.0425 -> 0.0301 -> 0.0191, smallest triangle 1.1e-08 of the input's
 ```
 
-![Mean-curvature flow](../assets/examples/s3.webp)
+![Mean-curvature flow, plain and conformalized](../assets/examples/s3.webp)
 
-The flow is continued only until the ears are about to vanish. Beyond that point their
-triangles collapse to zero area, the cotangent system rebuilt from them is badly conditioned,
-and further steps become slow and can throw single vertices far off the surface. Pinching
-off thin parts is a known property of mean-curvature flow; the conformalized variant (which
-keeps the Laplacian of the input) avoids it but is not what this filter computes.
+Neither variant keeps the triangles well shaped: on the bunny the ears still shrink to slivers
+under the conformalized flow, and both outputs end with triangles a tiny fraction of the
+input's. What differs is the linear system. The plain flow rebuilds its cotangent weights from
+those slivers, so each further pass needs far more solver iterations; the conformalized flow
+keeps the input's weights, so it does not. Pinching off thin parts is a property of
+mean-curvature flow itself. The conformalized flow keeps one stiffness for the whole call, so
+it is run as one call with several passes rather than as repeated calls.
 
 Modelled on: [libigl 205](https://libigl.github.io/tutorial/#laplacian)
 {: .ordito-credits }
@@ -267,7 +282,7 @@ for name, positions in (("noisy", noisy), ("relaxed", relaxed)):
 
 ```text title="Output"
      scan: triangle area spread (std / mean) 0.249
-equalized: triangle area spread (std / mean) 0.161
+equalized: triangle area spread (std / mean) 0.147
     noisy: mean distance from the clean scan 3.50e-04
   relaxed: mean distance from the clean scan 1.82e-04
 ```

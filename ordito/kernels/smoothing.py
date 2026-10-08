@@ -1628,9 +1628,10 @@ def equal_area_position_f64(
 # lucy (one pass, against the float64 accumulation): 1e-6 still let a dragon ring through 3e-6
 # off, from 1e-4 the largest difference is the positions' own float32 rounding. Ten passes through
 # ``equalize_triangle_areas``: 1.44x bunny, 2.9x dragon, 3.2x lucy (1.8x with ``no_shrinkage``,
-# which recomputes normals each pass). With ``no_shrinkage`` the filter flings ~500 dragon vertices
-# beyond 0.01 of their start in ten passes on either accumulation, and those chaotic vertices
-# differ run to run on the float64 one too; everything else agrees to rounding.
+# which recomputes normals each pass). The ~500 dragon vertices ``no_shrinkage`` once flung beyond
+# 0.01 in ten passes (chaotic, differing run to run and between devices) were boundary vertices,
+# whose open fan has no area-preserving motion; the wrapper holds the boundary, and none moves that
+# far now.
 EQUAL_AREA_F32_CONDITION = wp.constant(wp.float64(1.0e-4))
 
 

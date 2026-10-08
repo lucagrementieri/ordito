@@ -198,7 +198,7 @@ print(f"{(aspect > 4).sum()} of {aspect.size} faces have an aspect ratio above 4
 ```
 
 ```text title="Output"
-aspect ratio: median 1.231, worst 1666.9
+aspect ratio: median 1.231, worst 1666.7
 85 of 69451 faces have an aspect ratio above 4
 ```
 
@@ -284,7 +284,7 @@ print(f"total loop length {before:.1f} before shortening, {after:.1f} after ({sw
 ```text title="Output"
 torus: 2 generators (genus 1)
 slab: 18 generators (genus 9)
-total loop length 485.8 before shortening, 451.2 after (11 sweeps)
+total loop length 381.7 before shortening, 357.4 after (10 sweeps)
 ```
 
 ![Homology generators: handles and tunnels](../assets/examples/i7.webp)

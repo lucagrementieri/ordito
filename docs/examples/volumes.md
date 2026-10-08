@@ -94,9 +94,7 @@ in_ball = np.maximum(gyroid, np.sqrt(x**2 + y**2 + z**2) - 0.95 * extent)
 bounds = (wp.vec3(-extent, -extent, -extent), wp.vec3(extent, extent, extent))
 surfaces = {}
 for name, field in {"box": gyroid, "ball": in_ball}.items():
-    lattice = od.typing.as_array3d(
-        wp.array(field.astype(np.float32), dtype=wp.float32, device=device), wp.float32
-    )
+    lattice = wp.array(field.astype(np.float32), dtype=wp.float32, device=device)
     surfaces[name] = od.levelset.marching_cubes(lattice, 0.0, bounds=bounds)
     v, f = surfaces[name]
     print(f"{name}: {f.shape[0] // 3} faces, watertight {od.validation.is_watertight(v, f)}")
@@ -229,16 +227,15 @@ spheres = csg(sphere_a, sphere_b, 0.02, origin=wp.vec3(-1.1, -1.1, -1.1))
 bunny_vertices, bunny_faces = data.load("bunny", device)
 bunny = (bunny_vertices, od.holes.fill_min_weight(bunny_vertices, bunny_faces))
 box = od.creation.box(bounds=[[-0.01, 0.02, -0.08], [0.08, 0.12, 0.08]], device=device)
-# The origin is half a cell off round numbers so that no box face lies on a cell boundary.
-carved = csg(bunny, box, 0.0012, origin=wp.vec3(-0.1006, -0.0006, -0.0906))
+carved = csg(bunny, box, 0.0012, origin=wp.vec3(-0.1, 0.0, -0.09))
 for name, (_, f) in carved.items():
     print(f"bunny {name} box: {f.shape[0] // 3} faces")
 ```
 
 ```text title="Output"
-bunny union box: 183112 faces
-bunny intersection box: 49336 faces
-bunny difference box: 95672 faces
+bunny union box: 183512 faces
+bunny intersection box: 49472 faces
+bunny difference box: 96020 faces
 ```
 
 ![Voxel CSG (approximate booleans)](../assets/examples/v6.webp)

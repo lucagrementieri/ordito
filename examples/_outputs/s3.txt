@@ -1,4 +1,2 @@
-step 0: surface area 0.0571
-step 1: surface area 0.0425
-step 2: surface area 0.0347
-step 3: surface area 0.0295
+        plain: area 0.0571 -> 0.0425 -> 0.0347 -> 0.0295, smallest triangle 0 of the input's
+conformalized: area 0.0571 -> 0.0425 -> 0.0301 -> 0.0191, smallest triangle 1.1e-08 of the input's

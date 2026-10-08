@@ -899,9 +899,11 @@ def test_equalize_triangle_areas(bench_case: BenchCase) -> None:
     3.6e-07 with).
 
     meshlib's ``equalizeTriAreas`` is the same solve, threaded across vertices and mutating in
-    place, so its mesh is rebuilt per round -- and the positions agree **exactly**
-    (``tests/test_smoothing.py``), which is what makes the ratio a fair one. ordito wins it by more
-    than an order of magnitude at every size.
+    place, so its mesh is rebuilt per round -- and the positions agree **exactly** on a closed mesh
+    (``tests/test_smoothing.py``), which is what makes the ratio a fair one. On an open mesh ordito
+    holds the boundary vertices where meshlib solves for them too (collapsing the rim's fans), so
+    meshlib does a few hundred more per-vertex solves on the scans: a negligible share of a pass.
+    ordito wins it by more than an order of magnitude at every size.
 
     The first mesh in a selection carries the module's compile and therefore reads slower than it
     is; read the large rows against each other, where the scaling is clean.

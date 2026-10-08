@@ -269,6 +269,24 @@ def test_min_quad_with_fixed_rejects_off_menu_choices(device: str) -> None:
         )
 
 
+def test_min_quad_with_fixed_rejects_values_of_another_rank_or_dtype(device: str) -> None:
+    """
+    Not a library comparison: the parameter is typed rank-free, so the rank is checked at runtime.
+
+    A rank-1 or ``float32`` ``fixed_values`` raises ``TypeError`` before anything is launched, and
+    the rank-2 ``float64`` buffer it must be is accepted as a plain ``wp.array``.
+    """
+    matrix_wp, fixed_wp, values_wp, _ = _pinned_grid(device)
+    with pytest.raises(TypeError, match="expected 2D array"):
+        od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_wp.flatten())
+    values_f32_wp = wp.array(values_wp.numpy().astype(np.float32), device=device)
+    with pytest.raises(TypeError, match="expected dtype"):
+        od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, values_f32_wp)
+    plain_wp: wp.array[wp.float64] = wp.array(values_wp.numpy(), device=device)
+    solution_wp, _, n_free = od.linalg.min_quad_with_fixed(matrix_wp, fixed_wp, plain_wp)
+    assert solution_wp.shape == (values_wp.shape[0], n_free)
+
+
 # --- free_partition / assemble_interior_system ---------------------------------------------
 
 

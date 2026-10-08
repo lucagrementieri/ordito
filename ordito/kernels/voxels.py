@@ -15,7 +15,7 @@ deliberate.** Every kernel *downstream* of a built grid -- ``point_cell``,
 ``cell_center_positions``, ``corner_position`` -- goes through ``wp.volume_world_to_index`` /
 ``wp.volume_index_to_world``, so the convention above is read off the object that defines it
 instead of re-implemented. The *voxelization* kernels -- ``voxel_cell``, ``voxel_cell_indices``,
-``triangle_voxel_window`` -- run before any volume exists: they produce the cells
+``triangle_lattice_window`` -- run before any volume exists: they produce the cells
 ``Volume.allocate_by_voxels`` then builds a grid from, so there is no volume id to pass and the
 ``(origin, voxel_size)`` scalar form is required rather than preferred. Measured perf-neutral either
 way, so this is a single-source-of-truth split and not a speed one.
@@ -43,12 +43,21 @@ wp.set_module_options({"enable_backward": False})
 
 
 @wp.func
+def voxel_lattice_position(position: wp.vec3, origin: wp.vec3, inverse_size: wp.float32) -> wp.vec3:
+    # A world position in lattice units: cell ``(i, j, k)`` is the box ``[i, i + 1] x [j, j + 1] x
+    # [k, k + 1]`` here, with integer corners that are exact in float32. The one place the
+    # world-to-lattice map is spelled, so a cell index and a tri-box test in these units round
+    # identically.
+    return (position - origin) * inverse_size
+
+
+@wp.func
 def voxel_cell(position: wp.vec3, origin: wp.vec3, inverse_size: wp.float32) -> wp.vec3i:
     # Integer voxel a position falls in, for the grid anchored at ``origin`` with cell width
     # ``1 / inverse_size``. ``wp.floor`` rather than a cast, so negative coordinates round the same
     # way positive ones do (a C-style truncation would fold the two cells either side of the origin
     # into one).
-    local = (position - origin) * inverse_size
+    local = voxel_lattice_position(position, origin, inverse_size)
     return wp.vec3i(
         wp.int32(wp.floor(local[0])), wp.int32(wp.floor(local[1])), wp.int32(wp.floor(local[2]))
     )
@@ -100,34 +109,51 @@ def voxel_cell_indices(
 
 
 @wp.func
-def triangle_voxel_window_from_vertices(
-    v0: wp.vec3, v1: wp.vec3, v2: wp.vec3, origin: wp.vec3, inverse_size: wp.float32
-) -> tuple[wp.vec3i, wp.vec3i]:
-    # Inclusive lower/upper cell of the exact AABB window of a triangle already in hand. Shared by
-    # the count and test passes below, which MUST enumerate the same window: the second writes into
-    # the slots the first reserved, so a window that disagreed by one cell would write out of range.
-    #
-    # Open3D walks ``round((max - min) / vs) + 2`` cells, a strict superset of this one; a cell
-    # outside the triangle's own AABB cannot overlap the triangle, so the *accepted* sets are
-    # identical and only the number of rejected candidates differs.
-    lower, upper = triangle_aabb(v0, v1, v2)
-    return voxel_cell(lower, origin, inverse_size), voxel_cell(upper, origin, inverse_size)
-
-
-@wp.func
-def triangle_voxel_window(
+def triangle_lattice_vertices(
     vertices: wp.array[wp.vec3],
     faces: wp.array[wp.int32],
     face_index: wp.int32,
     origin: wp.vec3,
     inverse_size: wp.float32,
-) -> tuple[wp.vec3i, wp.vec3i]:
-    # Gathers the face's own vertices and defers to the vertex-taking form above. Kept separate from
-    # it (rather than folded into one signature) because ``test_triangle_candidates`` below needs
-    # the gathered v0/v1/v2 for its own overlap test right after computing the window, and calling
-    # through this wrapper would gather them a second time to get at them.
+) -> tuple[wp.vec3, wp.vec3, wp.vec3]:
+    # A face's corners in lattice units (``voxel_lattice_position``). The count and test passes
+    # below both start here, so the window one reserves and the window the other walks come from
+    # the same rounded corners.
     v0, v1, v2 = face_vertices(vertices, faces, face_index)
-    return triangle_voxel_window_from_vertices(v0, v1, v2, origin, inverse_size)
+    return (
+        voxel_lattice_position(v0, origin, inverse_size),
+        voxel_lattice_position(v1, origin, inverse_size),
+        voxel_lattice_position(v2, origin, inverse_size),
+    )
+
+
+@wp.func
+def triangle_lattice_window(p0: wp.vec3, p1: wp.vec3, p2: wp.vec3) -> tuple[wp.vec3i, wp.vec3i]:
+    # Inclusive lower/upper cell of every *closed* lattice cell the triangle's closed AABB meets,
+    # for corners already in lattice units. Shared by the count and test passes below, which MUST
+    # enumerate the same window: the second writes into the slots the first reserved, so a window
+    # that disagreed by one cell would write out of range.
+    #
+    # The lower end is ``ceil(min) - 1``, not ``floor(min)``: the two agree unless the bound sits
+    # exactly on a lattice plane, and there the cell *below* the plane touches the triangle too (a
+    # face of a box lying on a cell boundary meets both cells sharing it). ``floor`` would omit
+    # that cell from the window, so the closed test could never accept it.
+    #
+    # Open3D walks ``round((max - min) / vs) + 2`` cells from ``floor(min)``: wider above, but it
+    # shares the omission below, so on a triangle lying on a cell plane it misses the cell under the
+    # plane. Off the planes a cell disjoint from the triangle's closed AABB cannot overlap the
+    # triangle, and the *accepted* sets agree.
+    lower, upper = triangle_aabb(p0, p1, p2)
+    return (
+        wp.vec3i(
+            wp.int32(wp.ceil(lower[0])) - 1,
+            wp.int32(wp.ceil(lower[1])) - 1,
+            wp.int32(wp.ceil(lower[2])) - 1,
+        ),
+        wp.vec3i(
+            wp.int32(wp.floor(upper[0])), wp.int32(wp.floor(upper[1])), wp.int32(wp.floor(upper[2]))
+        ),
+    )
 
 
 @wp.kernel
@@ -140,7 +166,8 @@ def count_triangle_candidates(
     out_counts_f32: wp.array[wp.float32],
 ) -> None:
     f = wp.int32(wp.tid())
-    lo, hi = triangle_voxel_window(vertices, faces, f, origin, inverse_size)
+    p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
+    lo, hi = triangle_lattice_window(p0, p1, p2)
     # int64 so a wildly under-sized voxel does not wrap the product into a plausible small count --
     # each axis span widens to int64 *before* the subtraction, not after, so the subtraction itself
     # cannot already overflow int32 for a triangle whose window is that wide (the convention
@@ -159,7 +186,6 @@ def test_triangle_candidates(
     faces: wp.array[wp.int32],
     offsets: wp.array[wp.int32],
     origin: wp.vec3,
-    voxel_size: wp.float32,
     inverse_size: wp.float32,
     out_cells: wp.array2d[wp.int32],
     out_mask: wp.array[wp.int32],
@@ -178,12 +204,8 @@ def test_triangle_candidates(
     # if a caller legitimately needs a wider ``max_candidates``.
     item = wp.int32(wp.tid())
     f = binary_search_index(offsets, item) - 1
-    # Gather the face's own vertices once and feed them to both the window (for this item's cell)
-    # and the overlap test below, rather than calling ``triangle_voxel_window`` (which would gather
-    # the same three rows again internally) -- this is the dominant work unit in the kernel, one
-    # gather per (triangle, candidate-cell) work item rather than two.
-    v0, v1, v2 = face_vertices(vertices, faces, f)
-    lo, hi = triangle_voxel_window_from_vertices(v0, v1, v2, origin, inverse_size)
+    p0, p1, p2 = triangle_lattice_vertices(vertices, faces, f, origin, inverse_size)
+    lo, hi = triangle_lattice_window(p0, p1, p2)
     span_y = hi[1] - lo[1] + 1
     span_z = hi[2] - lo[2] + 1
 
@@ -195,10 +217,18 @@ def test_triangle_candidates(
     k = rest % span_z
     cell = wp.vec3i(lo[0] + i, lo[1] + j, lo[2] + k)
 
-    half = wp.vec3(0.5 * voxel_size, 0.5 * voxel_size, 0.5 * voxel_size)
-    center = voxel_cell_center(cell, origin, voxel_size)
+    # The overlap test runs in lattice units, where the cell is exactly ``[i, i + 1]`` per axis
+    # (centre and half-width are exact in float32). In world units the cell's faces would be
+    # ``origin + i * voxel_size`` rounded, which need not agree with the rounding that placed the
+    # triangle in the window, so a triangle on a cell plane could fall outside every cell it is
+    # tested against. Window and test read the same rounded corners instead: a corner exactly on a
+    # plane is on it for both, and the closed test accepts the cells on either side of it.
+    half = wp.vec3(0.5, 0.5, 0.5)
+    center = wp.vec3(
+        wp.float32(cell[0]) + 0.5, wp.float32(cell[1]) + 0.5, wp.float32(cell[2]) + 0.5
+    )
     write_row_triple(out_cells, item, cell[0], cell[1], cell[2])
-    out_mask[item] = wp.where(triangle_aabb_overlap(center, half, v0, v1, v2), 1, 0)
+    out_mask[item] = wp.where(triangle_aabb_overlap(center, half, p0, p1, p2), 1, 0)
 
 
 # ---------------------------------------------------------------------------------------------
