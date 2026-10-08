@@ -1,6 +1,6 @@
-/* Palette derived from the mark (docs/assets/logo.svg): yellow #FFD500 through NVIDIA green
-   #76B900. The header is a near-black green in both schemes, because every mark tone clears 7:1
-   against it while the lightest clears only 1.42:1 against white.
+/* Palette of the green-and-yellow mark (docs/assets/ordito.svg),
+   whose darkest tone is NVIDIA green #76B900. The header is a near-black green in both schemes,
+   because every mark tone clears 7:1 against it while the yellows clear under 2:1 against white.
 
    --md-typeset-a-color is not optional here: with a near-black primary, Material derives
    near-black body links. The values below are the lightest members of the ramp that still reach
